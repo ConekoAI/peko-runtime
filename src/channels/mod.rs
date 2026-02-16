@@ -3,9 +3,11 @@
 //! This module provides different channels for agents to communicate:
 //! - CLI: Interactive terminal interface
 //! - HTTP: Webhook-based HTTP server
+//! - Telegram: Telegram Bot API integration
 
 pub mod cli;
 pub mod http;
+pub mod telegram;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -30,6 +32,7 @@ pub trait Channel: Send + Sync {
 // Re-exports for convenience
 pub use cli::CliChannel;
 pub use http::HttpChannel;
+pub use telegram::{TelegramChannel, TelegramConfig};
 
 #[cfg(test)]
 mod tests {
