@@ -247,4 +247,14 @@ impl Provider for MockProvider {
     ) -> Result<String> {
         Ok("FINAL_ANSWER: test".to_string())
     }
+
+    async fn chat_with_system(
+        &self,
+        _system_prompt: Option<&str>,
+        message: &str,
+        _model: &str,
+        _temperature: f64,
+    ) -> Result<String> {
+        Ok(format!("FINAL_ANSWER: {}", message))
+    }
 }
