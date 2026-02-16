@@ -27,6 +27,7 @@ pub mod providers;
 pub mod security;
 pub mod skills;
 pub mod tools;
+pub mod tunnel;
 pub mod types;
 
 pub use agent::Agent;
