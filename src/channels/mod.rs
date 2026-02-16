@@ -5,10 +5,12 @@
 //! - HTTP: Webhook-based HTTP server
 //! - Telegram: Telegram Bot API integration
 //! - Discord: Discord Bot API integration
+//! - Slack: Slack Web API integration
 
 pub mod cli;
 pub mod discord;
 pub mod http;
+pub mod slack;
 pub mod telegram;
 
 use anyhow::Result;
@@ -35,6 +37,7 @@ pub trait Channel: Send + Sync {
 pub use cli::CliChannel;
 pub use discord::{DiscordChannel, DiscordConfig};
 pub use http::HttpChannel;
+pub use slack::{SlackChannel, SlackConfig};
 pub use telegram::{TelegramChannel, TelegramConfig};
 
 #[cfg(test)]
