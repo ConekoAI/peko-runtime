@@ -2,11 +2,10 @@ use clap::{Parser, Subcommand};
 use pekobot::agent::Agent;
 use pekobot::channels::cli::{CliChannel, run_interactive_loop};
 use pekobot::coneko::{ConekoAdapter, ConekoConfig};
-use pekobot::identity::did::DIDScope;
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
-use pekobot::types::provider::{ProviderConfig, ProviderType};
-use std::path::PathBuf;
+use pekobot::types::provider::{ProviderConfig, ProviderType, ModelConfig};
+use std::collections::HashMap;
 use tracing::{info, warn};
 
 /// Pekobot - Lightweight Multi-Agent Runtime
@@ -135,15 +134,16 @@ async fn main() -> anyhow::Result<()> {
         Commands::Agent { config, name, provider, model, db, coneko, coneko_token } => {
             info!("Starting Pekobot agent: {}", name);
             
+            // Clone coneko for later use
+            let coneko_for_status = coneko.clone();
+            
             // Build config
             let agent_config = if let Some(config_path) = config {
                 info!("Loading config from: {}", config_path);
-                build_default_config(&name, &provider, model, db, coneko, coneko_token
-                )
+                build_default_config(&name, &provider, model, db, coneko, coneko_token)
             } else {
                 warn!("No config specified, using defaults");
-                build_default_config(&name, &provider, model, db, coneko, coneko_token
-                )
+                build_default_config(&name, &provider, model, db, coneko, coneko_token)
             };
             
             // Create and start agent
@@ -159,8 +159,8 @@ async fn main() -> anyhow::Result<()> {
                     println!("   State: {:?}", agent.state());
                     
                     // Show Coneko status if enabled
-                    if coneko.is_some() {
-                        println!("   Coneko: 🌐 Connected to {}", coneko.as_ref().unwrap());
+                    if let Some(endpoint) = coneko_for_status {
+                        println!("   Coneko: 🌐 Connected to {}", endpoint);
                     } else {
                         println!("   Coneko: ⚪ Disabled (use --coneko to enable)");
                     }
@@ -381,13 +381,7 @@ fn build_default_config(
         ProviderType::OpenAI => "gpt-4o-mini".to_string(),
         ProviderType::Anthropic => "claude-3-haiku".to_string(),
         ProviderType::Ollama => "llama3".to_string(),
-    });
-    
-    let database_path = db_path.map(PathBuf::from).unwrap_or_else(|| {
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("pekobot")
-            .join(format!("{}.db", name))
+        ProviderType::OpenAICompatible => "gpt-4o-mini".to_string(),
     });
 
     // Build Coneko config if endpoint provided
@@ -425,16 +419,34 @@ fn build_default_config(
         ],
         provider: ProviderConfig {
             provider_type,
-            api_key: None, // Will use env var
-            model,
-            temperature: 0.7,
-            max_tokens: 2048,
+            api_key: None,
+            api_key_env: None,
+            base_url: None,
+            default_model: model.clone(),
+            models: {
+                let mut m = HashMap::new();
+                m.insert(model.clone(), ModelConfig {
+                    name: model,
+                    max_tokens: 2048,
+                    temperature: 0.7,
+                    top_p: 1.0,
+                    presence_penalty: 0.0,
+                    frequency_penalty: 0.0,
+                });
+                m
+            },
             timeout_seconds: 30,
+            max_retries: 3,
+            retry_delay_ms: 1000,
         },
         memory: Some(MemoryConfig {
-            enabled: true,
-            max_entries: 10000,
-            database_path: Some(database_path),
+            enable_semantic_search: false,
+            embedding_model: None,
+            max_entries_per_agent: Some(10000),
+            default_ttl_seconds: None,
+            auto_cleanup: true,
+            cleanup_interval_seconds: 3600,
+            database_path: db_path,
         }),
         tools: None,
         channels: None,
