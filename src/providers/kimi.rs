@@ -102,15 +102,6 @@ impl Provider for KimiProvider {
 
         Ok(content.to_string())
     }
-
-    async fn complete_with_tools(
-        &self,
-        _messages: Vec<serde_json::Value>,
-        _tools: Vec<serde_json::Value>,
-    ) -> Result<serde_json::Value> {
-        // Kimi supports tool calling - implement similar to OpenAI
-        anyhow::bail!("Tool calling not yet implemented for Kimi")
-    }
 }
 
 #[cfg(test)]

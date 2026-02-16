@@ -22,6 +22,7 @@ pub mod identity;
 pub mod memory;
 pub mod providers;
 pub mod tools;
+pub mod types;
 
 pub use agent::Agent;
 pub use config::Config;

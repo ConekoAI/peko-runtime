@@ -7,10 +7,11 @@ use anyhow::{Context, Result};
 use crate::tools::Tool;
 use crate::memory::sqlite::SqliteMemory;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Memory tool for storing and retrieving agent memories
 pub struct MemoryTool {
-    memory: Arc<SqliteMemory>,
+    memory: Arc<Mutex<SqliteMemory>>,
     agent_did: String,
 }
 
@@ -18,13 +19,13 @@ impl MemoryTool {
     /// Create a new memory tool
     pub fn new(memory: SqliteMemory, agent_did: String) -> Self {
         Self {
-            memory: Arc::new(memory),
+            memory: Arc::new(Mutex::new(memory)),
             agent_did,
         }
     }
 
     /// Create with shared memory reference
-    pub fn with_arc(memory: Arc<SqliteMemory>, agent_did: String) -> Self {
+    pub fn with_arc(memory: Arc<Mutex<SqliteMemory>>, agent_did: String) -> Self {
         Self { memory, agent_did }
     }
 }
@@ -54,7 +55,8 @@ impl Tool for MemoryTool {
 
                 let metadata = params.get("metadata").cloned();
                 
-                let id = self.memory.store(content, metadata)
+                let memory = self.memory.lock().await;
+                let id = memory.store(content, metadata)
                     .context("Failed to store memory")?;
 
                 Ok(json!({

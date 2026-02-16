@@ -111,7 +111,7 @@ impl ConekoAdapter {
     }
 
     /// Create an enabled adapter
-    pub fn enabled(endpoint: &str, auth_token: Option&str>) -> Self {
+    pub fn enabled(endpoint: &str, auth_token: Option<&str>) -> Self {
         Self {
             enabled: true,
             endpoint: endpoint.trim_end_matches('/').to_string(),
