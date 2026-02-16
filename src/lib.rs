@@ -19,6 +19,7 @@ pub mod channels;
 pub mod config;
 pub mod coneko;
 pub mod cron;
+pub mod daemon;
 pub mod heartbeat;
 pub mod identity;
 pub mod memory;
