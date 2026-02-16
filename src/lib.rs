@@ -23,6 +23,7 @@ pub mod heartbeat;
 pub mod identity;
 pub mod memory;
 pub mod providers;
+pub mod security;
 pub mod skills;
 pub mod tools;
 pub mod types;

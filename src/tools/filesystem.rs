@@ -7,77 +7,78 @@ use std::path::Path;
 use tokio::fs;
 
 use crate::tools::Tool;
+use crate::security::SecurityPolicy;
 
-/// File system tool for reading and writing files
-pub struct FileSystemTool;
+/// File system tool for reading and writing files with security sandboxing
+pub struct FileSystemTool {
+    policy: SecurityPolicy,
+}
 
 impl FileSystemTool {
-    /// Create a new file system tool
+    /// Create a new file system tool with default security policy
     pub fn new() -> Self {
-        Self
+        Self {
+            policy: SecurityPolicy::default(),
+        }
+    }
+
+    /// Create with custom security policy
+    pub fn with_policy(policy: SecurityPolicy) -> Self {
+        Self { policy }
     }
 
     /// Read a file
-    async fn read_file(path: &str) -> Result<serde_json::Value> {
-        let path = Path::new(path);
-        
-        // Security check: prevent path traversal
-        if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-            return Err(anyhow::anyhow!("Path traversal not allowed"));
-        }
+    async fn read_file(&self, path: &str) -> Result<serde_json::Value> {
+        // Apply security policy
+        let resolved = self.policy.resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
 
-        let content = fs::read_to_string(path)
+        let content = fs::read_to_string(&resolved)
             .await
-            .with_context(|| format!("Failed to read file: {}", path.display()))?;
+            .with_context(|| format!("Failed to read file: {}", resolved.display()))?;
 
         Ok(json!({
             "content": content,
-            "path": path.display().to_string(),
+            "path": resolved.display().to_string(),
             "size": content.len(),
             "success": true,
         }))
     }
 
     /// Write a file
-    async fn write_file(path: &str, content: &str) -> Result<serde_json::Value> {
-        let path = Path::new(path);
-        
-        // Security check: prevent path traversal
-        if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-            return Err(anyhow::anyhow!("Path traversal not allowed"));
-        }
+    async fn write_file(&self, path: &str, content: &str) -> Result<serde_json::Value> {
+        // Apply security policy
+        let resolved = self.policy.resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
 
         // Create parent directories if needed
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = resolved.parent() {
             fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("Failed to create directories: {}", parent.display()))?;
         }
 
-        fs::write(path, content)
+        fs::write(&resolved, content)
             .await
-            .with_context(|| format!("Failed to write file: {}", path.display()))?;
+            .with_context(|| format!("Failed to write file: {}", resolved.display()))?;
 
         Ok(json!({
-            "path": path.display().to_string(),
+            "path": resolved.display().to_string(),
             "bytes_written": content.len(),
             "success": true,
         }))
     }
 
     /// List directory contents
-    async fn list_dir(path: &str) -> Result<serde_json::Value> {
-        let path = Path::new(path);
-        
-        // Security check: prevent path traversal
-        if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-            return Err(anyhow::anyhow!("Path traversal not allowed"));
-        }
+    async fn list_dir(&self, path: &str) -> Result<serde_json::Value> {
+        // Apply security policy
+        let resolved = self.policy.resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
 
         let mut entries = Vec::new();
-        let mut dir = fs::read_dir(path)
+        let mut dir = fs::read_dir(&resolved)
             .await
-            .with_context(|| format!("Failed to read directory: {}", path.display()))?;
+            .with_context(|| format!("Failed to read directory: {}", resolved.display()))?;
 
         while let Some(entry) = dir.next_entry().await? {
             let metadata = entry.metadata().await?;
@@ -103,24 +104,21 @@ impl FileSystemTool {
         }
 
         Ok(json!({
-            "path": path.display().to_string(),
+            "path": resolved.display().to_string(),
             "entries": entries,
             "success": true,
         }))
     }
 
     /// Check if a file exists
-    async fn file_exists(path: &str) -> Result<serde_json::Value> {
-        let path = Path::new(path);
-        
-        // Security check: prevent path traversal
-        if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-            return Err(anyhow::anyhow!("Path traversal not allowed"));
-        }
+    async fn file_exists(&self, path: &str) -> Result<serde_json::Value> {
+        // Apply security policy
+        let resolved = self.policy.resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
 
-        let exists = fs::try_exists(path).await.unwrap_or(false);
+        let exists = fs::try_exists(&resolved).await.unwrap_or(false);
         let metadata = if exists {
-            fs::metadata(path).await.ok().map(|m| json!({
+            fs::metadata(&resolved).await.ok().map(|m| json!({
                 "is_file": m.is_file(),
                 "is_dir": m.is_dir(),
                 "size": m.len(),
@@ -130,7 +128,7 @@ impl FileSystemTool {
         };
 
         Ok(json!({
-            "path": path.display().to_string(),
+            "path": resolved.display().to_string(),
             "exists": exists,
             "metadata": metadata,
             "success": true,
@@ -138,33 +136,30 @@ impl FileSystemTool {
     }
 
     /// Delete a file
-    async fn delete_file(path: &str) -> Result<serde_json::Value> {
-        let path = Path::new(path);
-        
-        // Security check: prevent path traversal
-        if path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-            return Err(anyhow::anyhow!("Path traversal not allowed"));
-        }
+    async fn delete_file(&self, path: &str) -> Result<serde_json::Value> {
+        // Apply security policy
+        let resolved = self.policy.resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
 
-        let metadata = fs::metadata(path).await;
+        let metadata = fs::metadata(&resolved).await;
         
         match metadata {
             Ok(m) if m.is_file() => {
-                fs::remove_file(path)
+                fs::remove_file(&resolved)
                     .await
-                    .with_context(|| format!("Failed to delete file: {}", path.display()))?;
+                    .with_context(|| format!("Failed to delete file: {}", resolved.display()))?;
             }
             Ok(m) if m.is_dir() => {
-                fs::remove_dir_all(path)
+                fs::remove_dir_all(&resolved)
                     .await
-                    .with_context(|| format!("Failed to delete directory: {}", path.display()))?;
+                    .with_context(|| format!("Failed to delete directory: {}", resolved.display()))?;
             }
-            Ok(_) => return Err(anyhow::anyhow!("Unknown file type: {}", path.display())),
-            Err(e) => return Err(anyhow::anyhow!("File not found: {} - {}", path.display(), e)),
+            Ok(_) => return Err(anyhow::anyhow!("Unknown file type: {}", resolved.display())),
+            Err(e) => return Err(anyhow::anyhow!("File not found: {} - {}", resolved.display(), e)),
         }
 
         Ok(json!({
-            "path": path.display().to_string(),
+            "path": resolved.display().to_string(),
             "success": true,
         }))
     }
@@ -198,17 +193,17 @@ impl Tool for FileSystemTool {
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: path"))?;
 
         match action {
-            "read" => Self::read_file(path).await,
+            "read" => self.read_file(path).await,
             "write" => {
                 let content = params
                     .get("content")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("Missing required parameter: content for write action"))?;
-                Self::write_file(path, content).await
+                self.write_file(path, content).await
             }
-            "list" => Self::list_dir(path).await,
-            "exists" => Self::file_exists(path).await,
-            "delete" => Self::delete_file(path).await,
+            "list" => self.list_dir(path).await,
+            "exists" => self.file_exists(path).await,
+            "delete" => self.delete_file(path).await,
             _ => Err(anyhow::anyhow!("Unknown action: {}. Use read, write, list, exists, or delete", action)),
         }
     }
