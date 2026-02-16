@@ -1,5 +1,9 @@
 //! Agent management module
 
+pub mod loop_;
+
+pub use loop_::{AgenticLoop, AgenticResult, ToolCall};
+
 use crate::a2a::{A2AFlowHandler, A2AProtocol, SharedRegistry};
 use crate::identity::{storage::KeyStorage, did::DIDScope, Identity};
 use crate::memory::sqlite::SqliteMemory;
