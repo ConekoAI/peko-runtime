@@ -3,7 +3,9 @@ use pekobot::agent::Agent;
 use pekobot::channels::cli::{CliChannel, run_interactive_loop};
 use pekobot::coneko::{ConekoAdapter, ConekoConfig};
 use pekobot::identity::did::DIDScope;
-use pekobot::types::agent::{AgentCapability, AgentConfig, MemoryConfig, ProviderConfig, ProviderType};
+use pekobot::types::agent::{AgentCapability, AgentConfig};
+use pekobot::types::memory::MemoryConfig;
+use pekobot::types::provider::{ProviderConfig, ProviderType};
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -290,6 +292,10 @@ async fn main() -> anyhow::Result<()> {
                             name: c,
                             version: "1.0".to_string(),
                             description: None,
+                            parameters: None,
+                            required_auth: None,
+                            estimated_cost: None,
+                            estimated_duration: None,
                         })
                         .collect();
                     
@@ -395,17 +401,26 @@ fn build_default_config(
     
     AgentConfig {
         name: name.to_string(),
-        did_scope: DIDScope::Local,
+        description: Some(format!("Pekobot agent: {}", name)),
+        tenant: None,
         capabilities: vec![
             AgentCapability {
                 name: "messaging".to_string(),
                 version: "1.0".to_string(),
                 description: Some("Basic messaging capability".to_string()),
+                parameters: None,
+                required_auth: None,
+                estimated_cost: None,
+                estimated_duration: None,
             },
             AgentCapability {
                 name: "task_execution".to_string(),
                 version: "1.0".to_string(),
                 description: Some("Execute tasks".to_string()),
+                parameters: None,
+                required_auth: None,
+                estimated_cost: None,
+                estimated_duration: None,
             },
         ],
         provider: ProviderConfig {
@@ -416,11 +431,16 @@ fn build_default_config(
             max_tokens: 2048,
             timeout_seconds: 30,
         },
-        memory: MemoryConfig {
+        memory: Some(MemoryConfig {
             enabled: true,
             max_entries: 10000,
             database_path: Some(database_path),
-        },
+        }),
+        tools: None,
+        channels: None,
+        auto_accept_trusted: false,
+        approval_threshold: Some(100.0),
+        default_timeout_seconds: 300,
         coneko: coneko_config,
     }
 }
