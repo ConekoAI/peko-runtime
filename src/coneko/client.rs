@@ -6,7 +6,7 @@
 //! - Health checks and connection management
 
 use super::ConekoAdapter;
-use crate::a2a::types::{A2AMessage, AgentReference};
+use crate::a2a::A2AMessage;
 use crate::types::agent::AgentCapability;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

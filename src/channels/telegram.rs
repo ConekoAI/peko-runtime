@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::channels::Channel;
@@ -40,7 +40,7 @@ pub struct TelegramChannel {
     message_tx: mpsc::Sender<String>,
     message_rx: mpsc::Receiver<String>,
     chat_id_tx: mpsc::Sender<i64>,
-    chat_id_rx: mpsc::Receiver<i64>,
+    chat_id_rx: Mutex<mpsc::Receiver<i64>>,
     last_update_id: Option<i64>,
 }
 
@@ -60,7 +60,7 @@ impl TelegramChannel {
             message_tx,
             message_rx,
             chat_id_tx,
-            chat_id_rx,
+            chat_id_rx: Mutex::new(chat_id_rx),
             last_update_id: None,
         }
     }
@@ -197,9 +197,10 @@ impl Channel for TelegramChannel {
         "telegram"
     }
 
-    async fn send(&self, message: &str) -> anyhow::Result<()> {
+    async fn send(&mut self, message: &str) -> anyhow::Result<()> {
         // Try to get the last chat ID for replies
-        if let Ok(chat_id) = self.chat_id_rx.try_recv() {
+        let mut chat_id_rx = self.chat_id_rx.lock().await;
+        if let Ok(chat_id) = chat_id_rx.try_recv() {
             self.send_message(chat_id, message).await?;
         } else {
             warn!("No chat ID available for reply");

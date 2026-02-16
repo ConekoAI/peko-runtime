@@ -5,7 +5,7 @@ use crate::a2a::message::{
     MessageType, Payload, Price, QuotePayload, TaskStatus,
 };
 use chrono::{Duration, Utc};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 /// Result of handling an A2A message
@@ -95,7 +95,7 @@ impl A2AFlowHandler {
                 expires_at: quote.valid_until,
                 quote_data: quote.clone(),
             };
-            self.pending_quotes.insert(quote_id, state);
+            self.pending_quotes.insert(quote_id.clone(), state);
 
             // Create response message
             let response = message.reply_to(
@@ -255,7 +255,8 @@ impl A2AFlowHandler {
     }
 
     /// Generate a quote for an intent
-    fn generate_quote(&self, message: &A2AMessage, intent: &IntentPayload) -> QuotePayload {
+    fn generate_quote(&self, _message: &A2AMessage, intent: &IntentPayload
+    ) -> QuotePayload {
         let quote_id = format!("quote_{}", Uuid::new_v4().simple());
 
         // TODO: Calculate actual pricing based on intent

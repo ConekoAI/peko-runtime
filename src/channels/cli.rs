@@ -79,7 +79,7 @@ impl Channel for CliChannel {
         &self.name
     }
 
-    async fn send(&self, message: &str) -> Result<()> {
+    async fn send(&mut self, message: &str) -> Result<()> {
         self.print_agent_response(message);
         Ok(())
     }
@@ -104,7 +104,7 @@ impl Channel for CliChannel {
 }
 
 /// Interactive conversation loop for CLI
-pub async fn run_interactive_loop<C: Channel>(
+pub async fn run_interactive_loop<C: Channel + 'static>(
     channel: &mut C,
     agent_name: &str,
 ) -> Result<()> {

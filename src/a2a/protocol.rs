@@ -222,7 +222,7 @@ impl A2AProtocol {
         message_type: MessageType,
         payload: Payload,
     ) -> Result<A2AMessage> {
-        let message = A2AMessage::new(sender_did, recipient_did, message_type, payload);
+        let message = A2AMessage::new(sender_did, recipient_did, message_type.clone(), payload);
         let signed = self.sign_message(message)?;
         
         // Send via message bus

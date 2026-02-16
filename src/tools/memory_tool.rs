@@ -3,11 +3,11 @@
 use async_trait::async_trait;
 use serde_json::json;
 use anyhow::{Context, Result};
+use tokio::sync::Mutex;
 
 use crate::tools::Tool;
 use crate::memory::sqlite::SqliteMemory;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Memory tool for storing and retrieving agent memories
 pub struct MemoryTool {
@@ -79,7 +79,8 @@ impl Tool for MemoryTool {
                     .map(|n| n as usize)
                     .unwrap_or(10);
 
-                let entries = self.memory.search(query, limit)
+                let memory = self.memory.lock().await;
+                let entries = memory.search(query, limit)
                     .context("Failed to search memories")?;
 
                 let results: Vec<serde_json::Value> = entries.iter().map(|e| {
@@ -108,7 +109,8 @@ impl Tool for MemoryTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("Missing required parameter: id for get action"))?;
 
-                match self.memory.get(id) {
+                let memory = self.memory.lock().await;
+                match memory.get(id) {
                     Ok(Some(entry)) => {
                         Ok(json!({
                             "success": true,
@@ -143,7 +145,8 @@ impl Tool for MemoryTool {
                     .map(|n| n as usize)
                     .unwrap_or(10);
 
-                let entries = self.memory.recent(limit)
+                let memory = self.memory.lock().await;
+                let entries = memory.recent(limit)
                     .context("Failed to get recent memories")?;
 
                 let results: Vec<serde_json::Value> = entries.iter().map(|e| {
@@ -169,7 +172,8 @@ impl Tool for MemoryTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("Missing required parameter: id for delete action"))?;
 
-                let success = self.memory.delete(id)
+                let memory = self.memory.lock().await;
+                let success = memory.delete(id)
                     .context("Failed to delete memory")?;
 
                 Ok(json!({
@@ -181,7 +185,8 @@ impl Tool for MemoryTool {
             }
 
             "clear" | "wipe" => {
-                self.memory.clear()
+                let memory = self.memory.lock().await;
+                memory.clear()
                     .context("Failed to clear memories")?;
 
                 Ok(json!({
@@ -201,7 +206,7 @@ pub struct MemoryToolFactory;
 
 impl MemoryToolFactory {
     /// Create a memory tool if memory is available
-    pub fn create(memory: Option<Arc<SqliteMemory>>, agent_did: String) -> Option<MemoryTool> {
+    pub fn create(memory: Option<Arc<Mutex<SqliteMemory>>>, agent_did: String) -> Option<MemoryTool> {
         memory.map(|m| MemoryTool::with_arc(m, agent_did))
     }
 }
@@ -241,7 +246,7 @@ mod tests {
     async fn test_memory_search() {
         let (memory, _temp) = create_test_memory();
         
-        // Store something first
+        // Store something first (direct access before wrapping)
         memory.store("Hello world test", None).unwrap();
         memory.store("Another entry", None).unwrap();
 
@@ -265,7 +270,7 @@ mod tests {
     async fn test_memory_recent() {
         let (memory, _temp) = create_test_memory();
         
-        // Store a few entries
+        // Store a few entries (direct access before wrapping)
         memory.store("First", None).unwrap();
         memory.store("Second", None).unwrap();
         memory.store("Third", None).unwrap();

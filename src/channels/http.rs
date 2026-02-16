@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
 
@@ -42,7 +43,6 @@ impl HttpChannel {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         self.shutdown_tx = Some(shutdown_tx);
         
-        let message_tx = self.message_rx.clone();
         // We need a separate sender for the server task
         let (msg_tx, mut msg_rx) = mpsc::channel::<String>(100);
         
@@ -104,7 +104,7 @@ impl Channel for HttpChannel {
         &self.name
     }
 
-    async fn send(&self, message: &str) -> Result<()> {
+    async fn send(&mut self, message: &str) -> Result<()> {
         // For HTTP channel, send could post to a configured webhook
         // For now, just log it
         println!("🌐 [{}] Outgoing: {}", self.name, message);
@@ -130,8 +130,6 @@ async fn run_http_server(
     message_tx: mpsc::Sender<String>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    
     loop {
         tokio::select! {
             result = listener.accept() => {

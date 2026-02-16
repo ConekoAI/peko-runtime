@@ -247,7 +247,7 @@ impl Agent {
         let identity_name = format!("{}-{}", tenant, config.name);
 
         // Try to load existing identity
-        if let Some(identity) = storage.load(&identity_name)? {
+        if let Ok(identity) = storage.load(&identity_name) {
             info!("Loaded existing identity: {}", identity.did);
             return Ok(identity);
         }
@@ -257,10 +257,9 @@ impl Agent {
         let identity = Identity::generate(
             DIDScope::Local,
             Some(tenant),
-            None,
         )?;
 
-        storage.store(&identity_name, &identity)?;
+        storage.store(&identity)?;
         info!("Created and stored new identity: {}", identity.did);
 
         Ok(identity)

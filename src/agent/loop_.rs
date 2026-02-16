@@ -3,7 +3,7 @@
 use crate::a2a::message::{A2AMessage, MessageType, Payload, IntentPayload};
 use crate::agent::Agent;
 use crate::providers::Provider;
-use crate::tools::{Tool, ToolResult};
+use crate::tools::Tool;
 use anyhow::{Context, Result};
 use serde_json::json;
 use tracing::{debug, info, warn};
@@ -41,7 +41,7 @@ impl AgenticLoop {
     pub async fn run(&mut self,
         prompt: &str,
     ) -> Result<AgenticResult> {
-        info!("Starting agentic loop for agent: {}", self.agent.name);
+        info!("Starting agentic loop for agent: {}", self.agent.name());
         
         let mut iteration = 0;
         let mut context = vec![
@@ -63,7 +63,7 @@ impl AgenticLoop {
                     success: false,
                     final_answer: "Max iterations reached".to_string(),
                     tool_calls: vec![],
-                    iterations,
+                    iterations: iteration,
                 });
             }
 

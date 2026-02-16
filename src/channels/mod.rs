@@ -22,7 +22,7 @@ pub trait Channel: Send + Sync {
     fn name(&self) -> &str;
     
     /// Send a message through the channel
-    async fn send(&self, message: &str) -> Result<()>;
+    async fn send(&mut self, message: &str) -> Result<()>;
     
     /// Receive a message from the channel
     /// Returns None if no message is available (non-blocking)

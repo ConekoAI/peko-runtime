@@ -48,7 +48,7 @@ pub mod registry;
 pub use client::{AgentInfo, ConekoClient};
 pub use registry::{LocalRegistry, UnifiedRegistry};
 
-use crate::a2a::types::A2AMessage;
+use crate::a2a::A2AMessage;
 use crate::types::agent::AgentCapability;
 use serde::{Deserialize, Serialize};
 
