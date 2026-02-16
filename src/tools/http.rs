@@ -58,6 +58,11 @@ impl HttpTool {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent("Pekobot/0.1.0")
+            // Connection pooling settings
+            .pool_idle_timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(30))
             .build()
             .context("Failed to create HTTP client")?;
 
@@ -69,6 +74,30 @@ impl HttpTool {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .user_agent("Pekobot/0.1.0")
+            // Connection pooling settings
+            .pool_idle_timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(30))
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        Ok(Self { client })
+    }
+
+    /// Create with full custom configuration including connection pooling
+    pub fn with_config(
+        timeout_secs: u64,
+        pool_idle_timeout_secs: u64,
+        pool_max_idle: usize,
+    ) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .user_agent("Pekobot/0.1.0")
+            .pool_idle_timeout(std::time::Duration::from_secs(pool_idle_timeout_secs))
+            .pool_max_idle_per_host(pool_max_idle)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .http2_keep_alive_interval(std::time::Duration::from_secs(30))
             .build()
             .context("Failed to create HTTP client")?;
 
