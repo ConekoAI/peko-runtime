@@ -79,17 +79,40 @@ impl Provider for AnthropicProvider {
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
+        self.chat_with_system(None, prompt, &self.config.model, self.config.temperature as f64).await
+    }
+
+    async fn chat_with_system(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<String> {
+        let mut messages: Vec<Message> = Vec::new();
+        
+        // Add system message if provided
+        if let Some(system) = system_prompt {
+            messages.push(Message {
+                role: "system".to_string(),
+                content: system.to_string(),
+            });
+        }
+        
+        // Add user message
+        messages.push(Message {
+            role: "user".to_string(),
+            content: message.to_string(),
+        });
+
         let request = MessagesRequest {
-            model: self.config.model.clone(),
+            model: model.to_string(),
             max_tokens: self.config.max_tokens,
-            temperature: Some(self.config.temperature),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
+            temperature: Some(temperature as f32),
+            messages,
         };
 
-        debug!("Sending request to Anthropic: model={}", self.config.model);
+        debug!("Sending request to Anthropic: model={}", model);
 
         let response = self
             .client

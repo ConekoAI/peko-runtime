@@ -107,8 +107,18 @@ impl Provider for OllamaProvider {
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
+        self.chat_with_system(None, prompt, &self.config.model, self.config.temperature as f64).await
+    }
+
+    async fn chat_with_system(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<String> {
         let mut options = serde_json::Map::new();
-        options.insert("temperature".to_string(), serde_json::json!(self.config.temperature));
+        options.insert("temperature".to_string(), serde_json::json!(temperature));
         
         if let Some(ctx) = self.config.num_ctx {
             options.insert("num_ctx".to_string(), serde_json::json!(ctx));
@@ -118,14 +128,21 @@ impl Provider for OllamaProvider {
             options.insert("num_gpu".to_string(), serde_json::json!(gpu));
         }
 
+        // Build prompt with system message if provided
+        let full_prompt = if let Some(system) = system_prompt {
+            format!("{system}\n\n{message}")
+        } else {
+            message.to_string()
+        };
+
         let request = GenerateRequest {
-            model: self.config.model.clone(),
-            prompt: prompt.to_string(),
+            model: model.to_string(),
+            prompt: full_prompt,
             stream: false,
             options: Some(options),
         };
 
-        debug!("Sending request to Ollama: model={}", self.config.model);
+        debug!("Sending request to Ollama: model={}", model);
 
         let response = self
             .client

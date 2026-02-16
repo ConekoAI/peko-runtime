@@ -41,13 +41,16 @@ impl KimiProvider {
     }
 
     /// Build request body
-    fn build_request_body(&self,
+    fn build_request_body(
+        &self,
         messages: Vec<serde_json::Value>,
+        model: &str,
+        temperature: f64,
     ) -> serde_json::Value {
         json!({
-            "model": self.model,
+            "model": model,
             "messages": messages,
-            "temperature": 0.7,
+            "temperature": temperature,
             "stream": false
         })
     }
@@ -63,14 +66,33 @@ impl Provider for KimiProvider {
         &self,
         prompt: &str,
     ) -> Result<String> {
-        let messages = vec![
-            json!({
-                "role": "user",
-                "content": prompt
-            })
-        ];
+        self.chat_with_system(None, prompt, &self.model, 0.7).await
+    }
 
-        let body = self.build_request_body(messages);
+    async fn chat_with_system(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+        model: &str,
+        temperature: f64,
+    ) -> Result<String> {
+        let mut messages: Vec<serde_json::Value> = Vec::new();
+        
+        // Add system message if provided
+        if let Some(system) = system_prompt {
+            messages.push(json!({
+                "role": "system",
+                "content": system
+            }));
+        }
+        
+        // Add user message
+        messages.push(json!({
+            "role": "user",
+            "content": message
+        }));
+
+        let body = self.build_request_body(messages, model, temperature);
 
         let response = self.client
             .post(format!("{}/chat/completions", self.base_url))
@@ -123,7 +145,7 @@ mod tests {
             json!({"role": "user", "content": "Hello"})
         ];
         
-        let body = provider.build_request_body(messages);
+        let body = provider.build_request_body(messages, "kimi-k2.5", 0.7);
         assert_eq!(body["model"], "kimi-k2.5");
         assert!(body["messages"].as_array().unwrap().len() > 0);
     }

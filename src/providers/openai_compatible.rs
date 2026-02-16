@@ -158,20 +158,43 @@ impl Provider for OpenAICompatibleProvider {
         &self,
         prompt: &str
     ) -> anyhow::Result<String> {
+        self.chat_with_system(None, prompt, &self.config.model, self.config.temperature as f64).await
+    }
+
+    async fn chat_with_system(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<String> {
+        let mut messages: Vec<Message> = Vec::new();
+        
+        // Add system message if provided
+        if let Some(system) = system_prompt {
+            messages.push(Message {
+                role: "system".to_string(),
+                content: system.to_string(),
+            });
+        }
+        
+        // Add user message
+        messages.push(Message {
+            role: "user".to_string(),
+            content: message.to_string(),
+        });
+
         let request = ChatCompletionRequest {
-            model: self.config.model.clone(),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
+            model: model.to_string(),
+            messages,
             max_tokens: Some(self.config.max_tokens),
-            temperature: Some(self.config.temperature),
+            temperature: Some(temperature as f32),
         };
 
         debug!(
             "Sending request to {}: model={}",
             self.name,
-            self.config.model
+            model
         );
 
         let response = self
