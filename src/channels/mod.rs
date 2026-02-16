@@ -4,8 +4,10 @@
 //! - CLI: Interactive terminal interface
 //! - HTTP: Webhook-based HTTP server
 //! - Telegram: Telegram Bot API integration
+//! - Discord: Discord Bot API integration
 
 pub mod cli;
+pub mod discord;
 pub mod http;
 pub mod telegram;
 
@@ -15,7 +17,7 @@ use async_trait::async_trait;
 /// Channel trait for bidirectional communication
 ///
 /// Implement this trait to create new communication channels.
-/// Channels are used by agents to receive input and send output.
+/// Channels are used by agents to communicate.
 #[async_trait]
 pub trait Channel: Send + Sync {
     /// Get the channel name
@@ -31,6 +33,7 @@ pub trait Channel: Send + Sync {
 
 // Re-exports for convenience
 pub use cli::CliChannel;
+pub use discord::{DiscordChannel, DiscordConfig};
 pub use http::HttpChannel;
 pub use telegram::{TelegramChannel, TelegramConfig};
 

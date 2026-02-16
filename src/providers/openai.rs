@@ -70,6 +70,29 @@ impl OpenAIProvider {
     pub fn from_env() -> anyhow::Result<Self> {
         Self::new(OpenAIConfig::from_env()?)
     }
+
+    /// Build messages from system prompt and user message
+    fn build_messages(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+    ) -> Vec<Message> {
+        let mut messages = Vec::new();
+        
+        if let Some(sys) = system_prompt {
+            messages.push(Message {
+                role: "system".to_string(),
+                content: sys.to_string(),
+            });
+        }
+        
+        messages.push(Message {
+            role: "user".to_string(),
+            content: message.to_string(),
+        });
+        
+        messages
+    }
 }
 
 #[async_trait]
@@ -79,17 +102,24 @@ impl Provider for OpenAIProvider {
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
+        self.chat(prompt, &self.config.model, self.config.temperature as f64).await
+    }
+
+    async fn chat_with_system(
+        &self,
+        system_prompt: Option<&str>,
+        message: &str,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<String> {
         let request = ChatCompletionRequest {
-            model: self.config.model.clone(),
-            messages: vec![Message {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
+            model: model.to_string(),
+            messages: self.build_messages(system_prompt, message),
             max_tokens: Some(self.config.max_tokens),
-            temperature: Some(self.config.temperature),
+            temperature: Some(temperature as f32),
         };
 
-        debug!("Sending request to OpenAI: model={}", self.config.model);
+        debug!("Sending request to OpenAI: model={}", model);
 
         let response = self
             .client
@@ -113,7 +143,7 @@ impl Provider for OpenAIProvider {
             .choices
             .into_iter()
             .next()
-            .and_then(|c| Some(c.message.content))
+            .map(|c| c.message.content)
             .unwrap_or_default();
 
         debug!("Received {} tokens from OpenAI", completion.usage.total_tokens);
