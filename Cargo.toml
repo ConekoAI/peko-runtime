@@ -26,6 +26,8 @@ clap = { version = "4.4", features = ["derive"] }
 ed25519-dalek = "2.1"
 rand = "0.8"
 base64 = "0.22"
+blake3 = "1.5"
+bs58 = "0.5"
 
 # SQLite
 rusqlite = { version = "0.30", features = ["bundled"] }
