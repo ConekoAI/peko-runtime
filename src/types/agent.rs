@@ -1,5 +1,6 @@
 //! Agent configuration and state types
 
+use crate::coneko::ConekoConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -28,6 +29,8 @@ pub struct AgentConfig {
     pub approval_threshold: Option<f64>,
     /// Default timeout for tasks (seconds)
     pub default_timeout_seconds: u64,
+    /// Coneko network configuration (optional)
+    pub coneko: Option<ConekoConfig>,
 }
 
 impl Default for AgentConfig {
@@ -44,6 +47,7 @@ impl Default for AgentConfig {
             auto_accept_trusted: false,
             approval_threshold: Some(100.0),
             default_timeout_seconds: 300,
+            coneko: None,
         }
     }
 }
@@ -53,16 +57,28 @@ impl Default for AgentConfig {
 pub struct AgentCapability {
     /// Unique capability name
     pub name: String,
+    /// Capability version (semver)
+    #[serde(default = "default_version")]
+    pub version: String,
     /// Human-readable description
-    pub description: String,
-    /// Input parameters
-    pub parameters: Vec<CapabilityParameter>,
-    /// Required authentication scopes
-    pub required_auth: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Input parameters (legacy field)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Vec<CapabilityParameter>>,
+    /// Required authentication scopes (legacy field)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_auth: Option<Vec<String>>,
     /// Estimated cost per invocation (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_cost: Option<f64>,
     /// Estimated duration
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_duration: Option<String>,
+}
+
+fn default_version() -> String {
+    "1.0".to_string()
 }
 
 /// Capability parameter definition

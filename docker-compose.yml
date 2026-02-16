@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Pekobot agent example
+  pekobot-agent:
+    build: .
+    image: pekobot:latest
+    container_name: pekobot-agent
+    environment:
+      - RUST_LOG=info
+      - PEKOBOT_DATA_DIR=/data
+    volumes:
+      - pekobot-data:/data
+    command: ["agent", "--name", "docker-agent"]
+    networks:
+      - pekobot-network
+
+  # Pekobot orchestrator example
+  pekobot-orchestrator:
+    build: .
+    image: pekobot:latest
+    container_name: pekobot-orchestrator
+    environment:
+      - RUST_LOG=info
+      - PEKOBOT_DATA_DIR=/data
+    volumes:
+      - pekobot-orchestrator-data:/data
+    command: ["orchestrate"]
+    networks:
+      - pekobot-network
+    depends_on:
+      - pekobot-agent
+
+  # Optional: Coneko network (if you have a Coneko server)
+  # coneko:
+  #   image: coneko:latest
+  #   container_name: coneko
+  #   ports:
+  #     - "8080:8080"
+  #   networks:
+  #     - pekobot-network
+
+volumes:
+  pekobot-data:
+  pekobot-orchestrator-data:
+
+networks:
+  pekobot-network:
+    driver: bridge

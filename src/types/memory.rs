@@ -112,6 +112,8 @@ pub struct MemoryConfig {
     pub auto_cleanup: bool,
     /// Cleanup interval (seconds)
     pub cleanup_interval_seconds: u64,
+    /// Database file path (if None, uses default location)
+    pub database_path: Option<String>,
 }
 
 impl Default for MemoryConfig {
@@ -123,6 +125,7 @@ impl Default for MemoryConfig {
             default_ttl_seconds: None,
             auto_cleanup: true,
             cleanup_interval_seconds: 3600,
+            database_path: None,
         }
     }
 }
