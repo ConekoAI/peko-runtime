@@ -6,10 +6,12 @@
 //! - Telegram: Telegram Bot API integration
 //! - Discord: Discord Bot API integration
 //! - Slack: Slack Web API integration
+//! - Matrix: Matrix Client-Server API integration
 
 pub mod cli;
 pub mod discord;
 pub mod http;
+pub mod matrix;
 pub mod slack;
 pub mod telegram;
 
@@ -37,6 +39,7 @@ pub trait Channel: Send + Sync {
 pub use cli::CliChannel;
 pub use discord::{DiscordChannel, DiscordConfig};
 pub use http::HttpChannel;
+pub use matrix::{MatrixChannel, MatrixConfig};
 pub use slack::{SlackChannel, SlackConfig};
 pub use telegram::{TelegramChannel, TelegramConfig};
 
