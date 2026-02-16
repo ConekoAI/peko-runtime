@@ -77,8 +77,8 @@ impl OllamaProvider {
     /// Check if Ollama is available
     pub async fn is_available(&self) -> bool {
         match self.client.get(format!("{}/api/tags", self.config.base_url)).send().await {
-            Ok(response) -> response.status().is_success(),
-            Err(_) -> false,
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
         }
     }
 
