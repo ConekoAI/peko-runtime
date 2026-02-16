@@ -108,25 +108,50 @@
 |------|------|-------------|
 | `tests/edge_case_tests.rs` | 14,827 B | Edge case unit tests |
 | `tests/a2a_flow_tests.rs` | 25,275 B | A2A flow integration tests |
+| `tests/vector_memory_tests.rs` | 14,754 B | Vector embedding tests (NEW) |
 | `benches/performance_benchmarks.rs` | 15,842 B | Criterion benchmarks |
-| `SECURITY_AUDIT.md` | 11,334 B | Security audit checklist |
+| `SECURITY_AUDIT.md` | 11,334 B | General security audit |
+| `SECURITY_AUDIT_SANDBOX.md` | 16,905 B | Sandbox/allowlist security (NEW) |
 | `AGENTS.md` | This file | Agent identity |
 | `SOUL.md` | 1,557 B | Agent personality |
 | `USER.md` | 1,388 B | User profile (Miz) |
 
-## Security Audit Summary
+## Priority Shift - ZeroClaw + Multi-Agent (2025-02-16)
 
+### New Focus Areas:
+1. **Vector Memory Testing** - Tests for Gamma's embedding implementation
+2. **Sandbox Security Audit** - ZeroClaw-compatible allowlist/sandbox security
+3. **Performance Benchmarks** - Expanded benchmark suite
+
+### Completed:
+- [x] `tests/vector_memory_tests.rs` (14,754 bytes)
+  - Vector storage with embedding tests
+  - Cosine similarity search tests
+  - Metadata-filtered vector search
+  - Edge cases (zero vectors, large embeddings, negative values)
+  - Hybrid search (keyword + vector) tests
+  - Performance tests for small/large datasets
+  
+- [x] `SECURITY_AUDIT_SANDBOX.md` (16,905 bytes)
+  - Tool execution sandbox requirements
+  - SSRF and DNS rebinding protection specs
+  - Path traversal prevention
+  - Process execution security
+  - ZeroClaw feature compatibility mapping
+  - Implementation checklist with phases
+  - 9 critical/high priority findings
+
+### Security Audit Summary
+
+**General Audit (`SECURITY_AUDIT.md`):**
 **Overall Risk Level:** 🟡 MEDIUM
+- 3 Critical findings (signatures, SSRF, impersonation)
+- 4 High priority (keystorage, DoS, logging, DNS rebinding)
 
-**Critical Findings (3):**
-1. SIGNATURE-001: No signature verification on A2A messages
-2. SSRF-001: HTTP tool vulnerable to SSRF attacks
-3. IMPERSONATION-001: Agent impersonation possible
+**Sandbox Audit (`SECURITY_AUDIT_SANDBOX.md`):**
+**Overall Risk Level:** 🔴 HIGH
+- 3 Critical (tool allowlist, SSRF, path traversal)
+- 3 High priority (command injection, env filtering, size limits)
+- ZeroClaw feature gaps identified
 
-**High Priority (4):**
-4. KEYSTORAGE-001: No file permissions on private keys
-5. DOS-001: No message size limits or rate limiting
-6. LOGGING-001: API keys may be exposed in logs
-7. DNSREBIND-001: No DNS rebinding protection
-
-See `SECURITY_AUDIT.md` for full details.
+See both audit files for full details.
