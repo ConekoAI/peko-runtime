@@ -8,6 +8,7 @@
 use pekobot::agent::{AgenticLoop, Agent};
 use pekobot::providers::KimiProvider;
 use pekobot::tools::Tool;
+use pekobot::types::agent::AgentConfig;
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -93,7 +94,11 @@ async fn main() -> anyhow::Result<()> {
     println!("✓ Kimi provider initialized");
     
     // Create agent
-    let agent = Agent::new("test-agent").await?;
+    let agent_config = AgentConfig {
+        name: "test-agent".to_string(),
+        ..Default::default()
+    };
+    let agent = Agent::new(agent_config).await?;
     println!("✓ Agent created: {}", agent.name());
     
     // Create tools
