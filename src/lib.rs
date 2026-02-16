@@ -21,6 +21,7 @@ pub mod coneko;
 pub mod identity;
 pub mod memory;
 pub mod providers;
+pub mod skills;
 pub mod tools;
 pub mod types;
 
