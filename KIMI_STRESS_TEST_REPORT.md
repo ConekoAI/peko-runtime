@@ -1,141 +1,113 @@
 # Kimi API Stress Test Report
 
 **Date:** February 17, 2026  
-**Status:** ⏳ Waiting for fresh API key
+**Status:** ⏳ Clarification needed on API type
 
-## Current Status
+## Important Distinction
 
-The existing API key in `~/.openclaw/agents/main/agent/auth-profiles.json` is returning:
+There are **two different** Kimi APIs:
+
+### 1. Moonshot API (`KimiProvider`)
+- **Endpoint:** `https://api.moonshot.cn`
+- **Format:** OpenAI-compatible
+- **Auth:** Bearer token
+- **Pricing:** Pay-per-token
+- **Use case:** General Kimi model access
+
+### 2. Kimi Code (`KimiCodeProvider`) ✅ **THIS IS WHAT YOU NEED**
+- **Endpoint:** `https://api.kimi-code.moonshot.cn` (or similar)
+- **Format:** Anthropic-compatible (uses Claude Code backend)
+- **Auth:** `x-api-key` header
+- **Pricing:** Subscription-based
+- **Use case:** Coding assistant
+
+## The Problem
+
+The 401 error occurred because we were trying to use **Moonshot API** format with what appears to be a **Kimi Code** key.
+
+## Updated Implementation
+
+I've added a **new provider** specifically for Kimi Code:
+
+```rust
+// src/providers/kimi_code.rs
+pub struct KimiCodeProvider;
 ```
-Status: 401 Unauthorized
-Error: Invalid Authentication
-```
 
-## How to Refresh the API Key
+**Key differences from Moonshot API:**
+- Uses `x-api-key` header (like Anthropic)
+- Uses `/v1/messages` endpoint (like Anthropic)
+- Strips `kimi-` prefix from keys if present
+- Reads `KIMI_API_KEY`, `KIMICODE_API_KEY`, or `MOONSHOT_API_KEY`
 
-1. Visit: https://platform.moonshot.cn/
-2. Log in to your account
-3. Generate a new API key
-4. Update using one of these methods:
+## How to Test Kimi Code
 
-### Option 1: Quick Test (Environment Variable)
+### Option 1: Environment Variable
 ```bash
-export KIMI_API_KEY="sk-kimi-YOUR_NEW_KEY_HERE"
-cd ~/pekora/projects/pekobot
+export KIMI_API_KEY="your-kimi-code-api-key"
+# Or if your key has the kimi- prefix:
+export KIMI_API_KEY="kimi-your-actual-key"
+```
+
+### Option 2: Using the Provider Directly
+```rust
+use pekobot::providers::{KimiCodeProvider, Provider};
+
+let provider = KimiCodeProvider::from_env()?;
+let response = provider.complete("Hello!").await?;
+```
+
+## Testing Both Providers
+
+### Test Moonshot API (if you have that key)
+```bash
+export MOONSHOT_API_KEY="sk-..."
 cargo run --example kimi_api_test
 ```
 
-### Option 2: Permanent Update (Auth Profiles)
+### Test Kimi Code (subscription-based)
 ```bash
-# Edit the auth profiles file
-nano ~/.openclaw/agents/main/agent/auth-profiles.json
-
-# Update the key field under profiles.kimi-coding:default
-{
-  "profiles": {
-    "kimi-coding:default": {
-      "type": "api_key",
-      "provider": "kimi-coding",
-      "key": "sk-kimi-YOUR_NEW_KEY_HERE"
-    }
-  }
-}
-```
-
-## Stress Tests Ready to Run
-
-Once you have a valid key, the following tests can be executed:
-
-### 1. Basic API Connectivity Test
-**File:** `examples/kimi_api_test.rs`
-**Purpose:** Verify basic API connectivity and response format
-**Command:**
-```bash
-cargo run --example kimi_api_test
-```
-
-### 2. Agentic Loop Test
-**File:** `examples/agentic_loop_test.rs`
-**Purpose:** Test full agentic loop with tool calling (EchoTool, CalculatorTool)
-**Command:**
-```bash
-cargo run --example agentic_loop_test
-```
-**Expected:**
-- Test 1: Echo back 'Hello from Pekobot!'
-- Test 2: Calculate 23 + 47 using calculator
-- Test 3: What is 100 divided by 4?
-
-### 3. Unit Tests
-**Purpose:** Test Kimi provider implementation
-**Command:**
-```bash
-cargo test --lib kimi::
-```
-
-### 4. Full Stress Test Suite
-**File:** `stress_test_kimi.sh`
-**Purpose:** Run all tests in sequence
-**Command:**
-```bash
-./stress_test_kimi.sh YOUR_API_KEY
-```
-
-## Expected Results
-
-When the API key is valid, you should see:
-
-```
-✅ SUCCESS! Kimi API is working.
-Content: Hello from Pekobot!
-
---- Test 1 ---
-Prompt: Echo back 'Hello from Pekobot!'
-Success: true
-Iterations: 1
-Answer: Echo: Hello from Pekobot!
-
---- Test 2 ---
-Prompt: Calculate 23 + 47 using the calculator tool
-Success: true
-Iterations: 2
-Answer: 70
-
---- Test 3 ---
-Prompt: What is 100 divided by 4?
-Success: true
-Iterations: 2
-Answer: 25
+export KIMI_API_KEY="your-key"
+# Run a test with KimiCodeProvider
 ```
 
 ## Manual Verification
 
-You can also test manually with curl:
-
+### For Moonshot API:
 ```bash
 curl https://api.moonshot.cn/v1/chat/completions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "kimi-k2.5", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+### For Kimi Code:
+```bash
+curl https://api.kimi-code.moonshot.cn/v1/messages \
+  -H "x-api-key: YOUR_KEY" \
+  -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "kimi-k2.5",
+    "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```
 
 ## Pekobot Provider Stats
 
-- **Total Providers:** 14
-- **Kimi Provider:** Implemented and ready
-- **Status:** Waiting for valid API key for live testing
-- **Code:** `src/providers/kimi.rs` (~120 lines)
+- **Total Providers:** 15 (added Kimi Code)
+- **Kimi (Moonshot):** `src/providers/kimi.rs` - OpenAI-compatible
+- **Kimi Code:** `src/providers/kimi_code.rs` - Anthropic-compatible ⭐ NEW
 
 ## Next Steps
 
-1. ⏳ Get fresh API key from Moonshot dashboard
-2. ⏳ Run `cargo run --example kimi_api_test` to verify
-3. ⏳ Run `cargo run --example agentic_loop_test` for full test
-4. ✅ Mark live API testing as complete
+1. Confirm which API key you have (Moonshot or Kimi Code)
+2. If Kimi Code: Use the new `KimiCodeProvider`
+3. If Moonshot: The existing `KimiProvider` should work
+4. Run appropriate test based on your key type
 
 ---
 
-*Report generated by Pekora (Pekobot) 🐰*
+*Updated by Pekora (Pekobot) 🐰*  
+*Now supporting both Moonshot API and Kimi Code!*
