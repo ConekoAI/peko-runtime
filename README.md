@@ -20,6 +20,7 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 - ✅ **SQLite Memory** — Persistent memory with semantic search
 - ✅ **15 LLM Providers** — OpenAI, Anthropic, Kimi, OpenRouter, and more
 - ✅ **7 Communication Channels** — CLI, HTTP, Telegram, Discord, Slack, Matrix, WhatsApp
+- ✅ **Calendar Integration** — Google Calendar and Outlook support
 - ✅ **HTTP Tools** — Built-in web request capabilities
 - ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
 - ✅ **Cron/Heartbeat** — Scheduled task execution

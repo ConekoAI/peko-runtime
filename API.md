@@ -334,6 +334,59 @@ adapter.stop().await?;
 
 ## Tools
 
+### CalendarTool
+
+Integrates with Google Calendar and Outlook for scheduling.
+
+```rust
+use pekobot::tools::calendar::{CalendarCredentials, CalendarProvider, CalendarTool};
+
+let credentials = CalendarCredentials {
+    client_id: "...".to_string(),
+    client_secret: "...".to_string(),
+    access_token: "...".to_string(),
+    refresh_token: Some("...".to_string()),
+    token_expires_at: None,
+};
+
+let tool = CalendarTool::new(CalendarProvider::Google, credentials);
+
+// List events
+let events = tool.execute(json!({
+    "command": "list_events",
+    "start": "2026-02-17T09:00:00Z",
+    "end": "2026-02-17T17:00:00Z"
+})).await?;
+
+// Find available slots
+let slots = tool.execute(json!({
+    "command": "find_slots",
+    "start": "2026-02-17T09:00:00Z",
+    "end": "2026-02-17T17:00:00Z",
+    "duration_minutes": 60
+})).await?;
+
+// Create event
+let event = tool.execute(json!({
+    "command": "create_event",
+    "title": "Team Meeting",
+    "start": "2026-02-17T14:00:00Z",
+    "end": "2026-02-17T15:00:00Z",
+    "attendees": ["colleague@example.com"]
+})).await?;
+```
+
+**Environment Variables:**
+```bash
+CALENDAR_PROVIDER=google  # or outlook
+CALENDAR_CLIENT_ID=...
+CALENDAR_CLIENT_SECRET=...
+CALENDAR_ACCESS_TOKEN=...
+CALENDAR_REFRESH_TOKEN=...
+```
+
+---
+
 ### HttpTool
 
 ```rust
