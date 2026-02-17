@@ -25,9 +25,9 @@ impl Default for KimiCodeConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            // Kimi Code uses a different endpoint than Moonshot API
-            base_url: "https://api.kimi-code.moonshot.cn".to_string(),
-            model: "kimi-k2.5".to_string(),
+            // Correct endpoint from pi-mono: https://api.kimi.com/coding
+            base_url: "https://api.kimi.com/coding".to_string(),
+            model: "k2p5".to_string(),
             max_tokens: 4096,
             temperature: 0.7,
             timeout_seconds: 60,
@@ -39,13 +39,11 @@ impl KimiCodeConfig {
     /// Create config from environment
     pub fn from_env() -> anyhow::Result<Self> {
         // Kimi Code can use KIMI_API_KEY or KIMICODE_API_KEY
+        // NOTE: Do NOT strip the "sk-kimi-" prefix - the key works as-is!
         let api_key = std::env::var("KIMI_API_KEY")
             .or_else(|_| std::env::var("KIMICODE_API_KEY"))
             .or_else(|_| std::env::var("MOONSHOT_API_KEY"))
-            .map_err(|_| anyhow::anyhow!("KIMI_API_KEY, KIMICODE_API_KEY, or MOONSHOT_API_KEY not set"))?
-            // Strip "kimi-" prefix if present (some keys include it)
-            .trim_start_matches("kimi-")
-            .to_string();
+            .map_err(|_| anyhow::anyhow!("KIMI_API_KEY, KIMICODE_API_KEY, or MOONSHOT_API_KEY not set"))?;
         
         Ok(Self {
             api_key,
@@ -87,7 +85,7 @@ impl KimiCodeProvider {
     /// Create with API key directly
     pub fn with_api_key(api_key: String) -> anyhow::Result<Self> {
         let config = KimiCodeConfig {
-            api_key: api_key.trim_start_matches("kimi-").to_string(),
+            api_key,  // Use key as-is (do not strip prefix)
             ..Default::default()
         };
         Self::new(config)
@@ -216,11 +214,11 @@ mod tests {
     #[test]
     fn test_kimi_code_config_default() {
         let config = KimiCodeConfig::default();
-        assert_eq!(config.model, "kimi-k2.5");
+        assert_eq!(config.model, "k2p5");
         assert_eq!(config.max_tokens, 4096);
         assert_eq!(config.temperature, 0.7);
-        // Should use Kimi Code endpoint, not Moonshot
-        assert!(config.base_url.contains("kimi-code") || config.base_url.contains("moonshot"));
+        // Should use correct Kimi Code endpoint from pi-mono
+        assert!(config.base_url.contains("api.kimi.com"));
     }
 
     #[tokio::test]
