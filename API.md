@@ -372,6 +372,121 @@ async fn run_agent() -> Result<()> {
 
 ---
 
+## Channels
+
+Channels provide different ways for users to interact with agents.
+
+### CLI Channel
+
+Interactive terminal interface (default).
+
+```rust
+use pekobot::channels::cli::{CliChannel, run_interactive_loop};
+
+let mut channel = CliChannel::new();
+run_interactive_loop(agent, &mut channel).await?;
+```
+
+### HTTP Channel
+
+Webhook-based communication for external integrations.
+
+```rust
+use pekobot::channels::http::HttpChannel;
+
+let channel = HttpChannel::new(
+    "0.0.0.0:8080",
+    "/webhook",
+)?;
+channel.start(agent).await?;
+```
+
+### WhatsApp Channel
+
+WhatsApp Business API integration for customer service bots.
+
+**Environment Variables:**
+```bash
+WHATSAPP_ACCESS_TOKEN=your_token
+WHATSAPP_PHONE_NUMBER_ID=your_phone_id
+WHATSAPP_VERIFY_TOKEN=your_verify_token
+```
+
+**Example:**
+```rust
+use pekobot::channels::whatsapp::WhatsAppChannel;
+
+let mut channel = WhatsAppChannel::from_env()?;
+
+// Send message
+channel.send_to_number("+1234567890", "Hello!").await?;
+
+// Parse incoming webhook
+let messages = channel.parse_webhook_payload(&payload);
+```
+
+See `examples/whatsapp_customer_service.rs` for a complete customer service bot.
+
+### Telegram Channel
+
+Telegram Bot API integration.
+
+```rust
+use pekobot::channels::telegram::TelegramChannel;
+
+let token = std::env::var("TELEGRAM_BOT_TOKEN")?;
+let mut channel = TelegramChannel::new(token);
+channel.start(agent).await?;
+```
+
+### Discord Channel
+
+Discord bot integration with user allowlisting.
+
+```rust
+use pekobot::channels::discord::DiscordChannel;
+
+let config = DiscordConfig {
+    bot_token: std::env::var("DISCORD_BOT_TOKEN")?,
+    allowed_users: vec!["user1#1234".to_string()],
+};
+let mut channel = DiscordChannel::new(config);
+channel.start(agent).await?;
+```
+
+### Slack Channel
+
+Slack workspace integration.
+
+```rust
+use pekobot::channels::slack::SlackChannel;
+
+let config = SlackConfig {
+    bot_token: std::env::var("SLACK_BOT_TOKEN")?,
+    app_token: std::env::var("SLACK_APP_TOKEN")?,
+};
+let mut channel = SlackChannel::new(config)?;
+channel.start(agent).await?;
+```
+
+### Matrix Channel
+
+Matrix protocol (Element, etc.) support.
+
+```rust
+use pekobot::channels::matrix::MatrixChannel;
+
+let config = MatrixConfig {
+    homeserver: "https://matrix.org".to_string(),
+    user_id: "@bot:matrix.org".to_string(),
+    access_token: std::env::var("MATRIX_ACCESS_TOKEN")?,
+};
+let mut channel = MatrixChannel::new(config);
+channel.start(agent).await?;
+```
+
+---
+
 ## Feature Flags
 
 | Flag | Description |
@@ -379,6 +494,12 @@ async fn run_agent() -> Result<()> {
 | `default` | Core functionality |
 | `coneko` | Coneko network integration |
 | `openai` | OpenAI provider |
+| `all-channels` | All communication channels |
+| `whatsapp` | WhatsApp Business API |
+| `telegram` | Telegram Bot API |
+| `discord` | Discord integration |
+| `slack` | Slack integration |
+| `matrix` | Matrix protocol |
 
 ---
 

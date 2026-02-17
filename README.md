@@ -18,15 +18,32 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 - ✅ **A2A Protocol** — Full Agent-to-Agent messaging (12 message types)
 - ✅ **Multi-Agent Orchestration** — Local registry and message routing
 - ✅ **SQLite Memory** — Persistent memory with semantic search
-- ✅ **LLM Providers** — OpenAI integration (extensible to others)
+- ✅ **15 LLM Providers** — OpenAI, Anthropic, Kimi, OpenRouter, and more
+- ✅ **7 Communication Channels** — CLI, HTTP, Telegram, Discord, Slack, Matrix, WhatsApp
 - ✅ **HTTP Tools** — Built-in web request capabilities
-- ✅ **CLI Interface** — Rich command-line interface
-- ✅ **HTTP Channel** — Webhook-based agent communication
+- ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
+- ✅ **Cron/Heartbeat** — Scheduled task execution
 - ✅ **Coneko Adapter** — Optional network integration
 
 ## Quick Start
 
-### Installation
+### Prerequisites
+
+Depending on which channel you use, you'll need different API keys:
+
+**For LLM providers:**
+```bash
+export OPENAI_API_KEY="your-key"  # or ANTHROPIC_API_KEY, KIMI_API_KEY, etc.
+```
+
+**For WhatsApp channel:**
+```bash
+export WHATSAPP_ACCESS_TOKEN="your-token"
+export WHATSAPP_PHONE_NUMBER_ID="your-phone-id"
+export WHATSAPP_VERIFY_TOKEN="your-verify-token"
+```
+
+See `.env.example` for all available options.
 
 ```bash
 # Clone the repository
