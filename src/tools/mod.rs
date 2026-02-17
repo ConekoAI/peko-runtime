@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod calendar;
+pub mod document;
 pub mod filesystem;
 pub mod http;
 pub mod memory_tool;
@@ -11,6 +12,7 @@ pub mod traits;
 
 pub use browser::BrowserTool;
 pub use calendar::{CalendarCredentials, CalendarProvider, CalendarTool};
+pub use document::DocumentTool;
 pub use filesystem::FileSystemTool;
 pub use http::{HttpMethod, HttpTool};
 pub use memory_tool::{MemoryTool, MemoryToolFactory};

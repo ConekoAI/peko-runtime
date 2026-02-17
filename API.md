@@ -387,6 +387,45 @@ CALENDAR_REFRESH_TOKEN=...
 
 ---
 
+### DocumentTool
+
+Process PDFs, images, and extract structured data from documents.
+
+```rust
+use pekobot::tools::document::DocumentTool;
+
+let tool = DocumentTool::new();
+
+// Extract text from PDF
+let result = tool.execute(json!({
+    "command": "extract_text",
+    "file_path": "/path/to/document.pdf"
+})).await?;
+
+// OCR on scanned image
+let result = tool.execute(json!({
+    "command": "ocr",
+    "image_path": "/path/to/scanned_receipt.png"
+})).await?;
+
+// Parse invoice
+let result = tool.execute(json!({
+    "command": "parse_invoice",
+    "text": "Invoice #12345..."
+})).await?;
+```
+
+**Prerequisites:**
+```bash
+# Ubuntu/Debian
+sudo apt-get install poppler-utils tesseract-ocr tesseract-ocr-eng
+
+# macOS
+brew install poppler tesseract
+```
+
+---
+
 ### HttpTool
 
 ```rust
