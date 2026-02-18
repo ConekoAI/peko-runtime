@@ -17,6 +17,7 @@ pub mod agent;
 pub mod a2a;
 pub mod capability_registry;
 pub mod channels;
+pub mod tool_registry;
 pub mod config;
 pub mod coneko;
 pub mod cron;
