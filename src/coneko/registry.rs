@@ -261,6 +261,10 @@ mod tests {
             name: name.to_string(),
             version: "1.0".to_string(),
             description: None,
+            parameters: None,
+            required_auth: None,
+            estimated_cost: None,
+            estimated_duration: None,
         }
     }
 

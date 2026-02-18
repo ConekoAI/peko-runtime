@@ -467,7 +467,7 @@ impl EmailTool {
     }
 
     fn calculate_urgency(&self, email: &Email) -> f32 {
-        let mut score = 0.0;
+        let mut score: f32 = 0.0;
 
         // Check subject for urgency markers
         let subject_lower = email.subject.to_lowercase();
