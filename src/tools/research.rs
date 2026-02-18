@@ -691,7 +691,7 @@ impl ResearchTool {
     }
 
     fn assess_transparency(&self, html: &str) -> f32 {
-        let html_lower = html.to_lowerercase();
+        let html_lower = html.to_lowercase();
         let has_about = html_lower.contains("about us") || html_lower.contains("about page");
         let has_contact = html_lower.contains("contact") || html_lower.contains("email");
         let has_author = html_lower.contains("author") || html_lower.contains("written by");

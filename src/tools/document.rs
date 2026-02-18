@@ -150,7 +150,7 @@ impl DocumentTool {
         let pages: Vec<PageContent> = text
             .split("\f") // Form feed character often indicates page breaks
             .enumerate()
-            .filter(|(_, content)| !content.trim().is_empty())
+            .filter(|(_: 0026usize, content: 00260026str)| !content.trim().is_empty())
             .map(|(i, content)| PageContent {
                 page_number: i + 1,
                 text: content.trim().to_string(),

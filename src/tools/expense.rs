@@ -420,7 +420,7 @@ impl ExpenseTool {
             // Calculate tax deductible amount
             if let Some(ref tax_cat_code) = expense.tax_category {
                 if let Some(tax_cat) = self.config.tax_categories.iter().find(|t| t.code == *tax_cat_code) {
-                    entry.tax_deductible_amount += expense.total_amount * (tax_cat.deductible_percent / 100.0);
+                    entry.tax_deductible_amount += expense.total_amount * (tax_cat.deductible_percent / 100.0f32);
                 }
             }
 
