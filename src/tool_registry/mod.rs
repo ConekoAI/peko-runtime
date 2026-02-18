@@ -429,7 +429,7 @@ linux_x64 = "https://pekohub.io/tools/calendar/1.2.0/linux_x64.so"
         let manifest: ToolManifest = toml::from_str(toml).unwrap();
         assert_eq!(manifest.tool.name, "calendar");
         assert_eq!(manifest.tool.version, "1.2.0");
-        assert!(manifest.capabilities.provides.contains("scheduling.calendar_read"));
+        assert!(manifest.capabilities.provides.contains(&"scheduling.calendar_read".to_string()));
     }
 
     #[test]

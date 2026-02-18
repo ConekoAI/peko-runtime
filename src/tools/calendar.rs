@@ -493,7 +493,7 @@ impl CalendarTool {
     ) -> Option<CalendarEvent> {
         let id = data.get("id")?.as_str()?.to_string();
         let title = data.get("subject")?.as_str()?.to_string();
-        let status = data.get("showAs")?.as_str()?.unwrap_or("busy").to_string();
+        let status = data.get("showAs")?.as_str().map_or("busy", |s| s).to_string();
 
         let start_time = data
             .get("start")?

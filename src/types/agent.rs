@@ -255,16 +255,17 @@ mod tests {
     fn test_capability_serialization() {
         let cap = AgentCapability {
             name: "test-cap".to_string(),
-            description: "Test capability".to_string(),
-            parameters: vec![CapabilityParameter {
+            version: "1.0".to_string(),
+            description: Some("Test capability".to_string()),
+            parameters: Some(vec![CapabilityParameter {
                 name: "input".to_string(),
                 param_type: "string".to_string(),
                 description: "Input parameter".to_string(),
                 required: true,
                 default: None,
                 schema: None,
-            }],
-            required_auth: vec!["read".to_string()],
+            }]),
+            required_auth: Some(vec!["read".to_string()]),
             estimated_cost: None,
             estimated_duration: Some("1s".to_string()),
         };
