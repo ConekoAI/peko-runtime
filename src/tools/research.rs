@@ -582,7 +582,7 @@ impl ResearchTool {
     fn extract_author(&self, html: &str) -> Option<String> {
         // Try common author meta tags
         let patterns = [
-            r"<meta[^>]*name=[\"']author[\"'][^>]*content=[\"']([^\"']+)[\"']",
+            r#"<meta[^>]*name=["']author["'][^>]*content=["']([^"']+)["']"#,
             r"by\s+([A-Z][a-z]+\s+[A-Z][a-z]+)",
         ];
         
@@ -601,8 +601,8 @@ impl ResearchTool {
     fn extract_date(&self, html: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         // Try to find date in meta tags or content
         let patterns = [
-            r"<meta[^>]*property=[\"']article:published_time[\"'][^>]*content=[\"']([^\"']+)[\"']",
-            r"<meta[^>]*name=[\"']date[\"'][^>]*content=[\"']([^\"']+)[\"']",
+            r#"<meta[^>]*property=["']article:published_time["'][^>]*content=["']([^"']+)["']"#,
+            r#"<meta[^>]*name=["']date["'][^>]*content=["']([^"']+)["']"#,
         ];
         
         for pattern in &patterns {
@@ -758,8 +758,8 @@ impl ResearchTool {
         let main_finding = Finding {
             topic: query.to_string(),
             summary: format!(
-                "Based on {} sources analyzed, the research indicates multiple perspectives on {}. "
-                + "Key themes include implementation challenges, potential benefits, and considerations for adoption.",
+                "Based on {} sources analyzed, the research indicates multiple perspectives on {}. \
+                 Key themes include implementation challenges, potential benefits, and considerations for adoption.",
                 sources.len(),
                 query
             ),
