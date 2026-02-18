@@ -148,7 +148,7 @@ impl DocumentTool {
 
         // Split into pages (rough approximation by form feed or page markers)
         let pages: Vec<PageContent> = text
-            .split("\f") // Form feed character often indicates page breaks
+            .split('\f') // Form feed character often indicates page breaks
             .enumerate()
             .filter(|(i, content)| !content.trim().is_empty())
             .map(|(i, content)| PageContent {
