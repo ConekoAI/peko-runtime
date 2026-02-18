@@ -426,6 +426,58 @@ brew install poppler tesseract
 
 ---
 
+### SocialMediaTool
+
+Post and schedule content on Twitter/X and LinkedIn.
+
+```rust
+use pekobot::tools::social_media::SocialMediaTool;
+
+let tool = SocialMediaTool::from_env()?;
+
+// Draft a post
+let result = tool.execute(json!({
+    "command": "draft_post",
+    "platform": "twitter",
+    "content": "Excited to announce our new product!"
+})).await?;
+
+// Schedule for later
+let result = tool.execute(json!({
+    "command": "schedule_post",
+    "post_id": "post_abc123",
+    "scheduled_at": "2026-02-20T14:00:00Z"
+})).await?;
+
+// Publish immediately
+let result = tool.execute(json!({
+    "command": "publish",
+    "post_id": "post_abc123"
+})).await?;
+
+// Get analytics
+let result = tool.execute(json!({
+    "command": "get_analytics",
+    "post_id": "post_abc123"
+})).await?;
+```
+
+**Environment Variables:**
+```bash
+# Twitter/X API
+TWITTER_API_KEY=...
+TWITTER_API_SECRET=...
+TWITTER_ACCESS_TOKEN=...
+TWITTER_ACCESS_SECRET=...
+
+# LinkedIn API
+LINKEDIN_CLIENT_ID=...
+LINKEDIN_CLIENT_SECRET=...
+LINKEDIN_ACCESS_TOKEN=...
+```
+
+---
+
 ### HttpTool
 
 ```rust
