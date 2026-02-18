@@ -1,7 +1,11 @@
 //! Pekohub Tool Registry
 //!
-//! Local tool loading and management for Pekobot.
-//! Phase 1: Load tools from local filesystem.
+//! Local and remote tool management for Pekobot.
+//! Phase 1: Local filesystem loading
+//! Phase 2: Remote registry with HTTP download
+
+mod remote;
+pub use remote::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
