@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::tools::Tool;
-use crate::types::agent::AgentInfo;
+use crate::coneko::AgentInfo;
 
 /// Simple session message
 #[derive(Debug, Clone)]

@@ -28,6 +28,7 @@ rand = "0.8"
 base64 = "0.22"
 blake3 = "1.5"
 bs58 = "0.5"
+sha2 = "0.10"
 
 # SQLite
 rusqlite = { version = "0.30", features = ["bundled"] }

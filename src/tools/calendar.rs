@@ -119,8 +119,8 @@ impl CalendarTool {
         };
 
         if should_refresh {
-            if let Some(refresh_token) = &self.credentials.refresh_token {
-                self.refresh_token(refresh_token).await?;
+            if let Some(refresh_token) = self.credentials.refresh_token.clone() {
+                self.refresh_token(&refresh_token).await?;
             }
         }
 

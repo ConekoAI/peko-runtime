@@ -377,7 +377,7 @@ impl ResearchTool {
                     .unwrap_or_else(|| "\"Unknown Author.\" ".to_string());
                 
                 format!(
-                    "\"{}\" {}. Web. {}. \u003c{}\u003e",
+                    "\"{}\" {}. Web. {}. <{}>",
                     content.title,
                     author,
                     accessed.format("%d %b. %Y"),
@@ -566,13 +566,13 @@ impl ResearchTool {
 
     fn extract_main_content(&self, html: &str) -> String {
         // Remove scripts and styles
-        let cleaned = regex::Regex::new(r"<script[^\u003e]*>[ -]*?</script>").unwrap()
+        let cleaned = regex::Regex::new(r"<script[^>]*>[ -]*?</script>").unwrap()
             .replace_all(html, "");
-        let cleaned = regex::Regex::new(r"<style[^\u003e]*>[ -]*?</style>").unwrap()
+        let cleaned = regex::Regex::new(r"<style[^>]*>[ -]*?</style>").unwrap()
             .replace_all(&cleaned, "");
         
         // Extract text from common content areas
-        let text = regex::Regex::new(r"<[^\u003e]+>").unwrap()
+        let text = regex::Regex::new(r"<[^>]+>").unwrap()
             .replace_all(&cleaned, " ");
         
         // Clean up whitespace
@@ -582,7 +582,7 @@ impl ResearchTool {
     fn extract_author(&self, html: &str) -> Option<String> {
         // Try common author meta tags
         let patterns = [
-            r"<meta[^\u003e]*name=[\"']author[\"'][^\u003e]*content=[\"']([^\"']+)[\"']",
+            r"<meta[^>]*name=[\"']author[\"'][^>]*content=[\"']([^\"']+)[\"']",
             r"by\s+([A-Z][a-z]+\s+[A-Z][a-z]+)",
         ];
         
@@ -601,8 +601,8 @@ impl ResearchTool {
     fn extract_date(&self, html: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         // Try to find date in meta tags or content
         let patterns = [
-            r"<meta[^\u003e]*property=[\"']article:published_time[\"'][^\u003e]*content=[\"']([^\"']+)[\"']",
-            r"<meta[^\u003e]*name=[\"']date[\"'][^\u003e]*content=[\"']([^\"']+)[\"']",
+            r"<meta[^>]*property=[\"']article:published_time[\"'][^>]*content=[\"']([^\"']+)[\"']",
+            r"<meta[^>]*name=[\"']date[\"'][^>]*content=[\"']([^\"']+)[\"']",
         ];
         
         for pattern in &patterns {
