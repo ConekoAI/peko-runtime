@@ -3,6 +3,7 @@
 pub mod browser;
 pub mod calendar;
 pub mod document;
+pub mod email;
 pub mod expense;
 pub mod filesystem;
 pub mod http;
@@ -16,6 +17,7 @@ pub mod traits;
 pub use browser::BrowserTool;
 pub use calendar::{CalendarCredentials, CalendarProvider, CalendarTool};
 pub use document::DocumentTool;
+pub use email::{EmailConfig, EmailTool, EmailProvider, ReplyTone};
 pub use expense::{ExpenseConfig, ExpenseTool};
 pub use filesystem::FileSystemTool;
 pub use http::{HttpMethod, HttpTool};
