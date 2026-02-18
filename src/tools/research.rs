@@ -135,7 +135,7 @@ pub struct CredibilityFactors {
     pub bias_indicator: BiasLevel,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BiasLevel {
     Minimal,
