@@ -23,6 +23,10 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 - ✅ **Calendar Integration** — Google Calendar and Outlook support
 - ✅ **Document Processing** — PDF text extraction, OCR, invoice parsing
 - ✅ **Social Media** — Twitter/X and LinkedIn posting and scheduling
+- ✅ **Inventory Management** — Shopify and WooCommerce monitoring with alerts
+- ✅ **Expense Tracking** — Receipt OCR, categorization, and accounting exports
+- ✅ **Email Assistant** — Gmail and Outlook integration with smart replies
+- ✅ **Research Agent** — Web search with source assessment and citations
 - ✅ **HTTP Tools** — Built-in web request capabilities
 - ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
 - ✅ **Cron/Heartbeat** — Scheduled task execution
@@ -197,6 +201,37 @@ pekobot/
 | 6 | ✅ | Channels (CLI + HTTP) |
 | 7 | ✅ | Coneko adapter |
 | 8 | ✅ | Polish (docs, examples, tests, Docker) |
+
+## Tool Registry (Pekohub)
+
+Pekobot supports on-demand tool installation from the Pekohub cloud registry:
+
+```bash
+# Search for tools
+pekobot tool search calendar
+
+# Install a tool
+pekobot tool install calendar
+
+# List installed tools
+pekobot tool list
+
+# Check for updates
+pekobot tool update --check
+```
+
+Tools are downloaded from Pekohub, verified (SHA256 + Ed25519), and cached locally at `~/.cache/pekobot/tools/`.
+
+**Minimal Runtime Mode:**
+Build Pekobot with only the core runtime (~2MB), then download tools as needed:
+
+```bash
+# Build minimal runtime
+cargo build --release --no-default-features
+
+# Tools downloaded on first use
+pekobot agent --minimal --auto-install-tools
+```
 
 ## Development
 
