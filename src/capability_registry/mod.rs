@@ -1,23 +1,24 @@
 //! Capability Registry Client
 //!
-//! Lightweight client for querying Coneko's capability registry.
-//! Pekobot stays minimal — all registry logic lives in Coneko.
+//! Lightweight clients for querying Coneko's Layer 2 infrastructure.
+//! Pekobot stays minimal — all registry/reputation logic lives in Coneko.
 //!
 //! Usage:
 //! ```rust
-//! use pekobot::capability_registry::{RegistryClient, RegistryClientConfig};
+//! use pekobot::capability_registry::{RegistryClient, ReputationClient};
 //!
-//! let client = RegistryClient::new(RegistryClientConfig {
-//!     endpoint: "http://coneko.local:3000".to_string(),
-//!     api_key: None,
-//!     timeout_secs: 30,
-//! })?;
+//! let registry = RegistryClient::default()?;
+//! let agents = registry.find_agents("scheduling.calendar_read", None).await?;
 //!
-//! let agents = client.find_agents("scheduling.calendar_read", None).await?;
+//! let reputation = ReputationClient::default_client()?;
+//! let score = reputation.get_score("did:pekobot:local:agent123", false).await?;
 //! ```
 
 mod client;
 pub use client::*;
+
+mod reputation_client;
+pub use reputation_client::*;
 
 // Re-export standard capability IDs for convenience
 pub mod standard_capabilities {
