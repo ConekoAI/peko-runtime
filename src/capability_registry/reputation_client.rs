@@ -184,7 +184,7 @@ impl ReputationClient {
     /// Force recalculation of reputation score
     pub async fn calculate_score(
         &self,
-        agent_did: >str,
+        agent_did: &str,
     ) -> anyhow::Result<ReputationScore> {
         let url = format!(
             "{}/reputation/scores/{}/calculate",

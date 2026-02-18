@@ -106,7 +106,7 @@ pub enum SandboxLevel {
 }
 
 /// Installed tool information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledTool {
     /// Tool manifest
     pub manifest: ToolManifest,

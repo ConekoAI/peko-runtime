@@ -790,9 +790,9 @@ impl ResearchTool {
         let high_cred_sources = sources.iter().filter(|s| s.credibility_score > 0.7).count();
 
         format!(
-            "This report provides a comprehensive analysis of '{}' based on {} sources. "
-            + "The average source credibility is {:.0}%. {} sources are rated as highly credible. "
-            + "Key findings indicate {} main themes with an overall confidence level of {:.0}%.",
+            "This report provides a comprehensive analysis of '{}' based on {} sources. \
+             The average source credibility is {:.0}%. {} sources are rated as highly credible. \
+             Key findings indicate {} main themes with an overall confidence level of {:.0}%.",
             query,
             sources.len(),
             avg_credibility * 100.0,
