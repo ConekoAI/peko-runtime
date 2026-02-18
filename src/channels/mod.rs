@@ -75,7 +75,7 @@ mod tests {
             &self.name
         }
 
-        async fn send(&self, _message: &str) -> Result<()> {
+        async fn send(&mut self, _message: &str) -> Result<()> {
             Ok(())
         }
 

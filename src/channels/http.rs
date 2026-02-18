@@ -207,7 +207,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_http_channel_send() {
-        let channel = HttpChannel::new("webhook", "127.0.0.1:9999");
+        let mut channel = HttpChannel::new("webhook", "127.0.0.1:9999");
         let result = channel.send("Hello").await;
         assert!(result.is_ok());
     }

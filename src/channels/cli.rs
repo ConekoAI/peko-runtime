@@ -169,7 +169,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_cli_channel_send() {
-        let channel = CliChannel::new("test");
+        let mut channel = CliChannel::new("test");
         // Should not panic
         let result = channel.send("Hello").await;
         assert!(result.is_ok());

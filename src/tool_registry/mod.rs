@@ -186,7 +186,7 @@ impl ToolRegistry {
     }
 
     /// Install tool from local manifest
-    pub fn install_local_tool(
+    pub async fn install_local_tool(
         &mut self,
         manifest_path: &Path,
     ) -> anyhow::Result<InstalledTool> {
