@@ -146,9 +146,9 @@ impl DocumentTool {
             }
         };
 
-        // Split into pages (rough approximation by form feed or page markers)
+        // Split into pages (rough approximation by newlines or page markers)
         let pages: Vec<PageContent> = text
-            .split('\f') // Form feed character often indicates page breaks
+            .split("\n\n") // Double newline often indicates page breaks
             .enumerate()
             .filter(|(i, content)| !content.trim().is_empty())
             .map(|(i, content)| PageContent {
