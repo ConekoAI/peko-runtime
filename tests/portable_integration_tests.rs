@@ -64,6 +64,10 @@ async fn test_export_import_roundtrip() {
     let config = create_test_config("roundtrip-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
     let original_did = identity.did.clone();
+    
+    // Store identity first (required for export)
+    let key_storage = KeyStorage::new().unwrap();
+    key_storage.store(&identity).unwrap();
 
     // Export
     let export_opts = ExportOptions {
@@ -106,6 +110,10 @@ async fn test_export_with_encryption() {
     let config = create_test_config("encrypted-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
     let original_did = identity.did.clone();
+    
+    // Store identity first
+    let key_storage = KeyStorage::new().unwrap();
+    key_storage.store(&identity).unwrap();
 
     // Export with encryption
     let export_opts = ExportOptions {
@@ -145,6 +153,10 @@ async fn test_import_with_key_rotation() {
     let config = create_test_config("rotation-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
     let original_did = identity.did.clone();
+    
+    // Store identity first
+    let key_storage = KeyStorage::new().unwrap();
+    key_storage.store(&identity).unwrap();
 
     // Export
     let export_opts = ExportOptions {
@@ -184,6 +196,10 @@ async fn test_package_inspection() {
 
     let config = create_test_config("inspect-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
+    
+    // Store identity first
+    let key_storage = KeyStorage::new().unwrap();
+    key_storage.store(&identity).unwrap();
 
     // Export
     let export_opts = ExportOptions {
@@ -217,19 +233,22 @@ async fn test_export_import_with_memory() {
     // Create agent with memory
     let config = create_test_config("memory-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
+    
+    // Store identity first
+    let key_storage = KeyStorage::new().unwrap();
+    key_storage.store(&identity).unwrap();
 
     // Create and populate memory
     {
         use pekobot::memory::sqlite::SqliteMemory;
-        let memory = SqliteMemory::new(
-            Some(&memory_path),
-            "memory-test",
-        ).await.unwrap();
+        
+        // SqliteMemory::new is NOT async
+        let memory = SqliteMemory::new(&memory_path, "memory-test").unwrap();
 
         memory.store(
             "Test memory entry",
             Some(serde_json::json!({"test": true})),
-        ).await.unwrap();
+        ).unwrap();
     }
 
     // Export with memory
