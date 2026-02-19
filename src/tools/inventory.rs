@@ -1,10 +1,9 @@
 //! Inventory Management Tool
 //!
 //! E-commerce inventory monitoring with low-stock alerts and reorder automation.
-//! Supports Shopify and WooCommerce APIs.
+//! Supports Shopify and `WooCommerce` APIs.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Inventory tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +33,7 @@ pub struct PlatformCredentials {
     pub api_key: String,
     /// API secret (for Shopify)
     pub api_secret: Option<String>,
-    /// Password or consumer secret (for WooCommerce)
+    /// Password or consumer secret (for `WooCommerce`)
     pub password: Option<String>,
 }
 
@@ -74,8 +73,8 @@ pub struct LowStockAlert {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertSeverity {
-    Warning,  // Below threshold but not critical
-    Critical, // Very low stock
+    Warning,    // Below threshold but not critical
+    Critical,   // Very low stock
     OutOfStock, // Zero stock
 }
 
@@ -161,33 +160,21 @@ impl InventoryTool {
         product_id: &str,
     ) -> anyhow::Result<ProductInventory> {
         match self.config.platform {
-            EcommercePlatform::Shopify => {
-                self.get_shopify_product(product_id).await
-            }
-            EcommercePlatform::WooCommerce => {
-                self.get_woocommerce_product(product_id).await
-            }
+            EcommercePlatform::Shopify => self.get_shopify_product(product_id).await,
+            EcommercePlatform::WooCommerce => self.get_woocommerce_product(product_id).await,
         }
     }
 
     /// List all products with inventory
-    pub async fn list_inventory(
-        &self,
-    ) -> anyhow::Result<Vec<ProductInventory>> {
+    pub async fn list_inventory(&self) -> anyhow::Result<Vec<ProductInventory>> {
         match self.config.platform {
-            EcommercePlatform::Shopify => {
-                self.list_shopify_inventory().await
-            }
-            EcommercePlatform::WooCommerce => {
-                self.list_woocommerce_inventory().await
-            }
+            EcommercePlatform::Shopify => self.list_shopify_inventory().await,
+            EcommercePlatform::WooCommerce => self.list_woocommerce_inventory().await,
         }
     }
 
     /// Check for low stock items
-    pub async fn check_low_stock(
-        &self,
-    ) -> anyhow::Result<Vec<LowStockAlert>> {
+    pub async fn check_low_stock(&self) -> anyhow::Result<Vec<LowStockAlert>> {
         let products = self.list_inventory().await?;
         let mut alerts = Vec::new();
 
@@ -241,9 +228,7 @@ impl InventoryTool {
     }
 
     /// Generate reorder suggestions
-    pub async fn suggest_reorders(
-        &self,
-    ) -> anyhow::Result<Vec<ReorderSuggestion>> {
+    pub async fn suggest_reorders(&self) -> anyhow::Result<Vec<ReorderSuggestion>> {
         let alerts = self.check_low_stock().await?;
         let mut suggestions = Vec::new();
 
@@ -279,13 +264,16 @@ impl InventoryTool {
         items: Vec<OrderItem>,
     ) -> anyhow::Result<PurchaseOrder> {
         let order = PurchaseOrder {
-            id: format!("PO-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase()),
+            id: format!(
+                "PO-{}",
+                uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
+            ),
             supplier: supplier.clone(),
             items,
             status: OrderStatus::Draft,
             created_at: chrono::Utc::now(),
             expected_delivery: Some(
-                chrono::Utc::now() + chrono::Duration::days(supplier.lead_time_days as i64)
+                chrono::Utc::now() + chrono::Duration::days(i64::from(supplier.lead_time_days)),
             ),
             total_amount: None, // Calculate from items
         };
@@ -298,7 +286,7 @@ impl InventoryTool {
         &self,
         product_id: &str,
         quantity_adjustment: i32,
-        reason: &str,
+        _reason: &str,
     ) -> anyhow::Result<ProductInventory> {
         // In real implementation, would call platform API
         // For now, return mock updated inventory
@@ -311,16 +299,14 @@ impl InventoryTool {
     }
 
     // Shopify API methods
-    async fn get_shopify_product(
-        &self,
-        product_id: &str,
-    ) -> anyhow::Result<ProductInventory> {
+    async fn get_shopify_product(&self, product_id: &str) -> anyhow::Result<ProductInventory> {
         let url = format!(
             "{}/admin/api/2024-01/products/{}.json",
             self.config.store_url, product_id
         );
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&url)
             .header("X-Shopify-Access-Token", &self.config.credentials.api_key)
             .send()
@@ -334,7 +320,7 @@ impl InventoryTool {
         // In production, would parse actual Shopify product JSON
         Ok(ProductInventory {
             id: product_id.to_string(),
-            sku: format!("SKU-{}", product_id),
+            sku: format!("SKU-{product_id}"),
             name: "Product Name".to_string(),
             current_stock: 10,
             reserved_stock: 2,
@@ -347,15 +333,14 @@ impl InventoryTool {
         })
     }
 
-    async fn list_shopify_inventory(
-        &self,
-    ) -> anyhow::Result<Vec<ProductInventory>> {
+    async fn list_shopify_inventory(&self) -> anyhow::Result<Vec<ProductInventory>> {
         let url = format!(
             "{}/admin/api/2024-01/products.json?limit=250",
             self.config.store_url
         );
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&url)
             .header("X-Shopify-Access-Token", &self.config.credentials.api_key)
             .send()
@@ -407,20 +392,18 @@ impl InventoryTool {
     }
 
     // WooCommerce API methods
-    async fn get_woocommerce_product(
-        &self,
-        product_id: &str,
-    ) -> anyhow::Result<ProductInventory> {
+    async fn get_woocommerce_product(&self, product_id: &str) -> anyhow::Result<ProductInventory> {
         let url = format!(
             "{}/wp-json/wc/v3/products/{}",
             self.config.store_url, product_id
         );
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&url)
             .basic_auth(
                 &self.config.credentials.api_key,
-                self.config.credentials.password.as_ref()
+                self.config.credentials.password.as_ref(),
             )
             .send()
             .await?;
@@ -432,7 +415,7 @@ impl InventoryTool {
         // Parse WooCommerce response (simplified)
         Ok(ProductInventory {
             id: product_id.to_string(),
-            sku: format!("SKU-{}", product_id),
+            sku: format!("SKU-{product_id}"),
             name: "WooCommerce Product".to_string(),
             current_stock: 20,
             reserved_stock: 5,
@@ -445,19 +428,18 @@ impl InventoryTool {
         })
     }
 
-    async fn list_woocommerce_inventory(
-        &self,
-    ) -> anyhow::Result<Vec<ProductInventory>> {
+    async fn list_woocommerce_inventory(&self) -> anyhow::Result<Vec<ProductInventory>> {
         let url = format!(
             "{}/wp-json/wc/v3/products?per_page=100",
             self.config.store_url
         );
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&url)
             .basic_auth(
                 &self.config.credentials.api_key,
-                self.config.credentials.password.as_ref()
+                self.config.credentials.password.as_ref(),
             )
             .send()
             .await?;
@@ -467,26 +449,24 @@ impl InventoryTool {
         }
 
         // Parse WooCommerce products (simplified mock)
-        Ok(vec![
-            ProductInventory {
-                id: "wc_001".to_string(),
-                sku: "BOOK-001".to_string(),
-                name: "Technical Manual".to_string(),
-                current_stock: 8,
-                reserved_stock: 2,
-                available_stock: 6,
-                low_stock_threshold: 10,
-                reorder_point: 5,
-                reorder_quantity: 20,
-                supplier_info: Some(SupplierInfo {
-                    name: "Publishers Inc".to_string(),
-                    contact_email: Some("orders@publishers.com".to_string()),
-                    api_endpoint: None,
-                    lead_time_days: 10,
-                }),
-                last_updated: chrono::Utc::now(),
-            },
-        ])
+        Ok(vec![ProductInventory {
+            id: "wc_001".to_string(),
+            sku: "BOOK-001".to_string(),
+            name: "Technical Manual".to_string(),
+            current_stock: 8,
+            reserved_stock: 2,
+            available_stock: 6,
+            low_stock_threshold: 10,
+            reorder_point: 5,
+            reorder_quantity: 20,
+            supplier_info: Some(SupplierInfo {
+                name: "Publishers Inc".to_string(),
+                contact_email: Some("orders@publishers.com".to_string()),
+                api_endpoint: None,
+                lead_time_days: 10,
+            }),
+            last_updated: chrono::Utc::now(),
+        }])
     }
 }
 

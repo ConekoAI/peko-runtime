@@ -1,16 +1,16 @@
 //! Example: Testing the agentic loop with Kimi provider
-//! 
+//!
 //! Run with: cargo run --example agentic_loop_test
-//! 
+//!
 //! Requires KIMI_API_KEY or MOONSHOT_API_KEY environment variable.
 //! The key can be found in ~/.openclaw/agents/main/agent/auth-profiles.json
 
-use pekobot::agent::{AgenticLoop, Agent};
+use async_trait::async_trait;
+use pekobot::agent::{Agent, AgenticLoop};
 use pekobot::providers::KimiProvider;
 use pekobot::tools::Tool;
 use pekobot::types::agent::AgentConfig;
 use pekobot::types::provider::{ProviderConfig, ProviderType};
-use async_trait::async_trait;
 use serde_json::json;
 
 /// Simple echo tool for testing
@@ -27,10 +27,11 @@ impl Tool for EchoTool {
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let message = params.get("message")
+        let message = params
+            .get("message")
             .and_then(|m| m.as_str())
             .unwrap_or("No message provided");
-        
+
         Ok(json!({
             "success": true,
             "output": format!("Echo: {}", message)
@@ -52,7 +53,10 @@ impl Tool for CalculatorTool {
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let operation = params.get("operation").and_then(|o| o.as_str()).unwrap_or("");
+        let operation = params
+            .get("operation")
+            .and_then(|o| o.as_str())
+            .unwrap_or("");
         let a = params.get("a").and_then(|n| n.as_f64()).unwrap_or(0.0);
         let b = params.get("b").and_then(|n| n.as_f64()).unwrap_or(0.0);
 
@@ -84,16 +88,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Load API key from OpenClaw config
     let api_key = load_kimi_api_key()?;
-    
+
     println!("🐰 Pekobot Agentic Loop Test");
     println!("============================");
-    
+
     // Create provider
-    let provider = KimiProvider::new(api_key)
-        .with_model("kimi-k2.5");
-    
+    let provider = KimiProvider::new(api_key).with_model("kimi-k2.5");
+
     println!("✓ Kimi provider initialized");
-    
+
     // Create agent with minimal config (no provider needed for agentic loop)
     let agent_config = AgentConfig {
         name: "test-agent".to_string(),
@@ -106,29 +109,25 @@ async fn main() -> anyhow::Result<()> {
     };
     let agent = Agent::new(agent_config).await?;
     println!("✓ Agent created: {}", agent.name());
-    
+
     // Create tools
-    let tools: Vec<Box<dyn Tool>> = vec![
-        Box::new(EchoTool),
-        Box::new(CalculatorTool),
-    ];
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool), Box::new(CalculatorTool)];
     println!("✓ Tools registered: {}", tools.len());
-    
+
     // Create agentic loop
-    let mut loop_ = AgenticLoop::new(agent, Box::new(provider), tools)
-        .with_max_iterations(5);
-    
+    let mut loop_ = AgenticLoop::new(agent, Box::new(provider), tools).with_max_iterations(5);
+
     // Test prompts
     let prompts = vec![
         "Echo back 'Hello from Pekobot!'",
         "Calculate 23 + 47 using the calculator tool",
         "What is 100 divided by 4?",
     ];
-    
+
     for (i, prompt) in prompts.iter().enumerate() {
         println!("\n--- Test {} ---", i + 1);
         println!("Prompt: {}", prompt);
-        
+
         match loop_.run(prompt).await {
             Ok(result) => {
                 println!("Success: {}", result.success);
@@ -140,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    
+
     println!("\n✅ All tests completed!");
     Ok(())
 }
@@ -154,25 +153,25 @@ fn load_kimi_api_key() -> anyhow::Result<String> {
     if let Ok(key) = std::env::var("MOONSHOT_API_KEY") {
         return Ok(key);
     }
-    
+
     // Try to load from OpenClaw auth profiles
-    let home = std::env::var("HOME")
-        .map_err(|_| anyhow::anyhow!("HOME environment variable not set"))?;
-    
+    let home =
+        std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME environment variable not set"))?;
+
     let auth_profiles_path = std::path::PathBuf::from(home)
         .join(".openclaw")
         .join("agents")
         .join("main")
         .join("agent")
         .join("auth-profiles.json");
-    
+
     if auth_profiles_path.exists() {
         let content = std::fs::read_to_string(&auth_profiles_path)
             .map_err(|e| anyhow::anyhow!("Failed to read auth profiles: {}", e))?;
-        
+
         let profiles: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| anyhow::anyhow!("Failed to parse auth profiles: {}", e))?;
-        
+
         if let Some(key) = profiles
             .get("profiles")
             .and_then(|p| p.get("kimi-coding:default"))
@@ -182,7 +181,7 @@ fn load_kimi_api_key() -> anyhow::Result<String> {
             return Ok(key.to_string());
         }
     }
-    
+
     Err(anyhow::anyhow!(
         "Kimi API key not found. Set KIMI_API_KEY or MOONSHOT_API_KEY environment variable, \
          or ensure ~/.openclaw/agents/main/agent/auth-profiles.json exists with a valid key."

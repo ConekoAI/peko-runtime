@@ -14,7 +14,7 @@ pub trait Tunnel: Send + Sync {
     /// Provider name
     fn name(&self) -> &str;
 
-    /// Start tunnel, expose local_host:local_port, return public URL
+    /// Start tunnel, expose `local_host:local_port`, return public URL
     async fn start(&self, local_host: &str, local_port: u16) -> Result<String>;
 
     /// Stop tunnel gracefully
@@ -62,6 +62,7 @@ pub struct CloudflareTunnel {
 
 impl CloudflareTunnel {
     /// Create new Cloudflare tunnel
+    #[must_use] 
     pub fn new(token: String) -> Self {
         Self {
             token,
@@ -72,7 +73,7 @@ impl CloudflareTunnel {
 
 #[async_trait::async_trait]
 impl Tunnel for CloudflareTunnel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "cloudflare"
     }
 
@@ -103,10 +104,9 @@ impl Tunnel for CloudflareTunnel {
 
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
         while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(5),
-                reader.next_line()
-            ).await {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(5), reader.next_line())
+                .await
+            {
                 Ok(Ok(Some(line))) => {
                     tracing::debug!("cloudflared: {}", line);
                     if let Some(idx) = line.find("https://") {
@@ -119,7 +119,7 @@ impl Tunnel for CloudflareTunnel {
                     }
                 }
                 Ok(Ok(None)) => break,
-                Ok(Err(e)) => bail!("Error reading cloudflared: {}", e),
+                Ok(Err(e)) => bail!("Error reading cloudflared: {e}"),
                 Err(_) => {} // timeout, keep trying
             }
         }
@@ -166,6 +166,7 @@ pub struct NgrokTunnel {
 
 impl NgrokTunnel {
     /// Create new ngrok tunnel
+    #[must_use] 
     pub fn new(auth_token: String, domain: Option<String>) -> Self {
         Self {
             auth_token,
@@ -177,7 +178,7 @@ impl NgrokTunnel {
 
 #[async_trait::async_trait]
 impl Tunnel for NgrokTunnel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ngrok"
     }
 
@@ -269,6 +270,7 @@ pub struct TailscaleTunnel {
 
 impl TailscaleTunnel {
     /// Create new Tailscale tunnel
+    #[must_use] 
     pub fn new(funnel: bool, hostname: Option<String>) -> Self {
         Self {
             funnel,
@@ -280,7 +282,7 @@ impl TailscaleTunnel {
 
 #[async_trait::async_trait]
 impl Tunnel for TailscaleTunnel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "tailscale"
     }
 
@@ -294,7 +296,7 @@ impl Tunnel for TailscaleTunnel {
         if let Some(ref hostname) = self.hostname {
             args.push(format!("{hostname}:{local_port}"));
         } else {
-            args.push(format!("{}:{}", local_host, local_port));
+            args.push(format!("{local_host}:{local_port}"));
         }
 
         let child = Command::new("tailscale")
@@ -313,7 +315,7 @@ impl Tunnel for TailscaleTunnel {
         let public_url = if self.funnel {
             format!("https://{}.{}", hostname, "ts.net")
         } else {
-            format!("http://{}:{}", hostname, local_port)
+            format!("http://{hostname}:{local_port}")
         };
 
         let mut guard = self.proc.lock().await;
@@ -358,21 +360,27 @@ pub enum TunnelConfig {
     /// Cloudflare Tunnel
     Cloudflare { token: String },
     /// ngrok
-    Ngrok { auth_token: String, domain: Option<String> },
+    Ngrok {
+        auth_token: String,
+        domain: Option<String>,
+    },
     /// Tailscale Funnel
-    Tailscale { funnel: bool, hostname: Option<String> },
+    Tailscale {
+        funnel: bool,
+        hostname: Option<String>,
+    },
 }
 
 /// Create tunnel from config
+#[must_use] 
 pub fn create_tunnel(config: &TunnelConfig) -> Option<Box<dyn Tunnel>> {
     match config {
         TunnelConfig::None => None,
-        TunnelConfig::Cloudflare { token } => {
-            Some(Box::new(CloudflareTunnel::new(token.clone())))
-        }
-        TunnelConfig::Ngrok { auth_token, domain } => {
-            Some(Box::new(NgrokTunnel::new(auth_token.clone(), domain.clone())))
-        }
+        TunnelConfig::Cloudflare { token } => Some(Box::new(CloudflareTunnel::new(token.clone()))),
+        TunnelConfig::Ngrok { auth_token, domain } => Some(Box::new(NgrokTunnel::new(
+            auth_token.clone(),
+            domain.clone(),
+        ))),
         TunnelConfig::Tailscale { funnel, hostname } => {
             Some(Box::new(TailscaleTunnel::new(*funnel, hostname.clone())))
         }
@@ -386,6 +394,7 @@ pub struct TunnelManager {
 
 impl TunnelManager {
     /// Create new tunnel manager
+    #[must_use] 
     pub fn new(config: &TunnelConfig) -> Self {
         Self {
             tunnel: create_tunnel(config),
@@ -413,6 +422,7 @@ impl TunnelManager {
     }
 
     /// Get public URL
+    #[must_use] 
     pub fn public_url(&self) -> Option<String> {
         self.tunnel.as_ref().and_then(|t| t.public_url())
     }

@@ -1,9 +1,9 @@
 //! Perplexity AI provider implementation
 //! AI search engine with real-time web access
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
 
 use crate::providers::Provider;
 
@@ -16,6 +16,7 @@ pub struct PerplexityProvider {
 
 impl PerplexityProvider {
     /// Create new Perplexity provider from API key
+    #[must_use] 
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
@@ -32,6 +33,7 @@ impl PerplexityProvider {
     }
 
     /// Set model
+    #[must_use] 
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self
@@ -40,14 +42,11 @@ impl PerplexityProvider {
 
 #[async_trait]
 impl Provider for PerplexityProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "perplexity"
     }
 
-    async fn complete(
-        &self,
-        prompt: &str,
-    ) -> Result<String> {
+    async fn complete(&self, prompt: &str) -> Result<String> {
         self.chat_with_system(None, prompt, &self.model, 0.7).await
     }
 
@@ -92,7 +91,7 @@ impl Provider for PerplexityProvider {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Perplexity API error ({}): {}", status, error_text);
+            anyhow::bail!("Perplexity API error ({status}): {error_text}");
         }
 
         let result: serde_json::Value = response
@@ -118,9 +117,8 @@ mod tests {
 
     #[test]
     fn test_perplexity_provider_creation() {
-        let provider = PerplexityProvider::new("test-key".to_string())
-            .with_model("sonar");
-        
+        let provider = PerplexityProvider::new("test-key".to_string()).with_model("sonar");
+
         assert_eq!(provider.name(), "perplexity");
     }
 }

@@ -1,6 +1,6 @@
 //! Agent registry for local multi-agent orchestration
 
-use crate::a2a::message::{A2AMessage, MessageType, Payload, IntentPayload, QuotePayload, AcceptPayload, ContractPayload};
+use crate::a2a::message::A2AMessage;
 use crate::agent::Agent;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -16,6 +16,7 @@ pub struct MessageBus {
 
 impl MessageBus {
     /// Create a new message bus
+    #[must_use] 
     pub fn new() -> (Self, mpsc::Receiver<A2AMessage>) {
         let (sender, receiver) = mpsc::channel(100);
         (Self { sender }, receiver)
@@ -52,6 +53,7 @@ pub type ArcAgent = std::sync::Arc<tokio::sync::Mutex<Agent>>;
 
 impl AgentRegistry {
     /// Create a new agent registry
+    #[must_use] 
     pub fn new(message_bus: MessageBus) -> Self {
         Self {
             agents: RwLock::new(HashMap::new()),
@@ -63,16 +65,19 @@ impl AgentRegistry {
     pub async fn register(&self, agent: Agent) -> Result<()> {
         let did = agent.did().to_string();
         let name = agent.name().to_string();
-        
+
         let mut agents = self.agents.write().await;
-        
+
         if agents.contains_key(&did) {
-            return Err(anyhow::anyhow!("Agent with DID {} already registered", did));
+            return Err(anyhow::anyhow!("Agent with DID {did} already registered"));
         }
 
-        agents.insert(did.clone(), std::sync::Arc::new(tokio::sync::Mutex::new(agent)));
+        agents.insert(
+            did.clone(),
+            std::sync::Arc::new(tokio::sync::Mutex::new(agent)),
+        );
         info!("Registered agent: {} ({})", name, did);
-        
+
         Ok(())
     }
 
@@ -80,11 +85,11 @@ impl AgentRegistry {
     pub async fn unregister(&self, did: &str) -> Result<Option<ArcAgent>> {
         let mut agents = self.agents.write().await;
         let removed = agents.remove(did);
-        
+
         if removed.is_some() {
             info!("Unregistered agent: {}", did);
         }
-        
+
         Ok(removed)
     }
 
@@ -115,13 +120,13 @@ impl AgentRegistry {
     pub async fn list_agents(&self) -> Vec<(String, String)> {
         let agents = self.agents.read().await;
         let mut result = Vec::new();
-        
+
         for (did, agent) in agents.iter() {
             if let Ok(agent) = agent.try_lock() {
                 result.push((did.clone(), agent.name().to_string()));
             }
         }
-        
+
         result
     }
 
@@ -133,16 +138,19 @@ impl AgentRegistry {
     /// Route a message to its recipient
     pub async fn route_message(&self, message: A2AMessage) -> Result<()> {
         let recipient_did = &message.recipient.did;
-        
-        debug!("Routing message {} to {}", message.message_id, recipient_did);
-        
+
+        debug!(
+            "Routing message {} to {}",
+            message.message_id, recipient_did
+        );
+
         // Find the recipient agent
         let agent = self.get_by_did(recipient_did).await;
-        
+
         if let Some(agent) = agent {
             // Process the message in the agent
-            let mut agent = agent.lock().await;
-            
+            let agent = agent.lock().await;
+
             // Store the message in agent memory
             if let Err(e) = agent.store_memory(
                 &format!("Received A2A message: {:?}", message.message_type),
@@ -155,19 +163,18 @@ impl AgentRegistry {
             ) {
                 warn!("Failed to store message in memory: {}", e);
             }
-            
+
             info!(
                 "Delivered message {} to agent {} (type: {:?})",
                 message.message_id,
                 agent.name(),
                 message.message_type
             );
-            
+
             Ok(())
         } else {
             Err(anyhow::anyhow!(
-                "Recipient agent not found: {}",
-                recipient_did
+                "Recipient agent not found: {recipient_did}"
             ))
         }
     }
@@ -175,14 +182,14 @@ impl AgentRegistry {
     /// Start all registered agents
     pub async fn start_all(&self) -> Result<()> {
         let agents = self.agents.read().await;
-        
+
         for (did, agent) in agents.iter() {
-            let mut agent = agent.lock().await;
+            let agent = agent.lock().await;
             if let Err(e) = agent.start().await {
                 error!("Failed to start agent {}: {}", did, e);
             }
         }
-        
+
         info!("Started {} agents", agents.len());
         Ok(())
     }
@@ -190,14 +197,14 @@ impl AgentRegistry {
     /// Stop all registered agents
     pub async fn stop_all(&self) -> Result<()> {
         let agents = self.agents.read().await;
-        
+
         for (did, agent) in agents.iter() {
-            let mut agent = agent.lock().await;
+            let agent = agent.lock().await;
             if let Err(e) = agent.stop().await {
                 error!("Failed to stop agent {}: {}", did, e);
             }
         }
-        
+
         info!("Stopped {} agents", agents.len());
         Ok(())
     }
@@ -207,6 +214,7 @@ impl AgentRegistry {
 pub type SharedRegistry = std::sync::Arc<AgentRegistry>;
 
 /// Create a new shared registry with message bus
+#[must_use] 
 pub fn create_registry() -> (SharedRegistry, mpsc::Receiver<A2AMessage>) {
     let (bus, receiver) = MessageBus::new();
     let registry = std::sync::Arc::new(AgentRegistry::new(bus));
@@ -221,7 +229,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry() {
         use crate::types::provider::{ProviderConfig, ProviderType};
-        
+
         let (bus, _receiver) = MessageBus::new();
         let registry = AgentRegistry::new(bus);
 

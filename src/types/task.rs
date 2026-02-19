@@ -1,7 +1,7 @@
 //! Task management types
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Task definition
@@ -98,6 +98,7 @@ impl std::fmt::Display for TaskState {
 
 impl TaskState {
     /// Check if task is active (not terminal)
+    #[must_use] 
     pub fn is_active(&self) -> bool {
         matches!(
             self,
@@ -111,6 +112,7 @@ impl TaskState {
     }
 
     /// Check if task is terminal (completed, failed, cancelled)
+    #[must_use] 
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -119,6 +121,7 @@ impl TaskState {
     }
 
     /// Check if task can be cancelled
+    #[must_use] 
     pub fn can_cancel(&self) -> bool {
         matches!(
             self,
@@ -130,12 +133,14 @@ impl TaskState {
 /// Task priority
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, PartialOrd)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TaskPriority {
     /// Lowest priority
     Lowest = 0,
     /// Low priority
     Low = 1,
     /// Normal priority
+    #[default]
     Normal = 2,
     /// High priority
     High = 3,
@@ -145,11 +150,6 @@ pub enum TaskPriority {
     Critical = 5,
 }
 
-impl Default for TaskPriority {
-    fn default() -> Self {
-        TaskPriority::Normal
-    }
-}
 
 impl std::fmt::Display for TaskPriority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -252,6 +252,7 @@ pub struct TaskQuery {
 
 impl Task {
     /// Create a new task
+    #[must_use] 
     pub fn new(task_type: &str, requested_by: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -280,48 +281,56 @@ impl Task {
     }
 
     /// Set description
+    #[must_use] 
     pub fn with_description(mut self, desc: &str) -> Self {
         self.description = Some(desc.to_string());
         self
     }
 
     /// Set parameters
+    #[must_use] 
     pub fn with_parameters(mut self, params: serde_json::Value) -> Self {
         self.parameters = params;
         self
     }
 
     /// Set priority
+    #[must_use] 
     pub fn with_priority(mut self, priority: TaskPriority) -> Self {
         self.priority = priority;
         self
     }
 
     /// Set assigned agent
+    #[must_use] 
     pub fn assign_to(mut self, agent_did: &str) -> Self {
         self.assigned_to = Some(agent_did.to_string());
         self
     }
 
     /// Set deadline
+    #[must_use] 
     pub fn with_deadline(mut self, deadline: DateTime<Utc>) -> Self {
         self.deadline = Some(deadline);
         self
     }
 
     /// Set parent task
+    #[must_use] 
     pub fn with_parent(mut self, parent_id: &str) -> Self {
         self.parent_id = Some(parent_id.to_string());
         self
     }
 
     /// Set tags
+    #[must_use] 
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
 
     /// Set timeout
+    #[must_use] 
     pub fn with_timeout(mut self, seconds: u64) -> Self {
         self.timeout_seconds = seconds;
         self
@@ -360,16 +369,16 @@ impl Task {
     }
 
     /// Check if task is overdue
+    #[must_use] 
     pub fn is_overdue(&self) -> bool {
         match self.deadline {
-            Some(deadline) => {
-                !self.state.is_terminal() && Utc::now() > deadline
-            }
+            Some(deadline) => !self.state.is_terminal() && Utc::now() > deadline,
             None => false,
         }
     }
 
     /// Get execution duration (if started)
+    #[must_use] 
     pub fn execution_duration(&self) -> Option<chrono::Duration> {
         match (self.started_at, self.completed_at) {
             (Some(start), Some(end)) => Some(end - start),
@@ -399,7 +408,7 @@ mod tests {
     #[test]
     fn test_task_state_transitions() {
         let mut task = Task::new("test", "did:pekobot:local:test");
-        
+
         assert!(task.state.is_active());
         assert!(!task.state.is_terminal());
 
@@ -416,7 +425,7 @@ mod tests {
             cost: None,
         };
         task.mark_completed(result);
-        
+
         assert_eq!(task.state, TaskState::Completed);
         assert!(task.state.is_terminal());
         assert!(!task.state.can_cancel());

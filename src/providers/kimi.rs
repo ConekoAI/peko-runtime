@@ -1,8 +1,8 @@
 //! Kimi provider implementation
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
 
 use crate::providers::Provider;
 
@@ -20,11 +20,12 @@ impl KimiProvider {
         let api_key = std::env::var("KIMI_API_KEY")
             .or_else(|_| std::env::var("MOONSHOT_API_KEY"))
             .context("KIMI_API_KEY or MOONSHOT_API_KEY environment variable required")?;
-        
+
         Ok(Self::new(api_key))
     }
 
     /// Create new Kimi provider with API key
+    #[must_use] 
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
@@ -35,6 +36,7 @@ impl KimiProvider {
     }
 
     /// Set model
+    #[must_use] 
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self
@@ -58,14 +60,11 @@ impl KimiProvider {
 
 #[async_trait]
 impl Provider for KimiProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "kimi"
     }
 
-    async fn complete(
-        &self,
-        prompt: &str,
-    ) -> Result<String> {
+    async fn complete(&self, prompt: &str) -> Result<String> {
         self.chat_with_system(None, prompt, &self.model, 0.7).await
     }
 
@@ -77,7 +76,7 @@ impl Provider for KimiProvider {
         temperature: f64,
     ) -> Result<String> {
         let mut messages: Vec<serde_json::Value> = Vec::new();
-        
+
         // Add system message if provided
         if let Some(system) = system_prompt {
             messages.push(json!({
@@ -85,7 +84,7 @@ impl Provider for KimiProvider {
                 "content": system
             }));
         }
-        
+
         // Add user message
         messages.push(json!({
             "role": "user",
@@ -94,7 +93,8 @@ impl Provider for KimiProvider {
 
         let body = self.build_request_body(messages, model, temperature);
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -106,7 +106,7 @@ impl Provider for KimiProvider {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Kimi API error ({}): {}", status, error_text);
+            anyhow::bail!("Kimi API error ({status}): {error_text}");
         }
 
         let result: serde_json::Value = response
@@ -132,19 +132,16 @@ mod tests {
 
     #[test]
     fn test_kimi_provider_creation() {
-        let provider = KimiProvider::new("test-api-key".to_string())
-            .with_model("kimi-k2.5");
-        
+        let provider = KimiProvider::new("test-api-key".to_string()).with_model("kimi-k2.5");
+
         assert_eq!(provider.name(), "kimi");
     }
 
     #[test]
     fn test_build_request_body() {
         let provider = KimiProvider::new("test".to_string());
-        let messages = vec![
-            json!({"role": "user", "content": "Hello"})
-        ];
-        
+        let messages = vec![json!({"role": "user", "content": "Hello"})];
+
         let body = provider.build_request_body(messages, "kimi-k2.5", 0.7);
         assert_eq!(body["model"], "kimi-k2.5");
         assert!(body["messages"].as_array().unwrap().len() > 0);

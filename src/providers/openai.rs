@@ -1,4 +1,4 @@
-//! OpenAI provider implementation
+//! `OpenAI` provider implementation
 
 use super::traits::Provider;
 use async_trait::async_trait;
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, error, info};
 
-/// OpenAI API configuration
+/// `OpenAI` API configuration
 #[derive(Debug, Clone)]
 pub struct OpenAIConfig {
     pub api_key: String,
@@ -36,7 +36,7 @@ impl OpenAIConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .map_err(|_| anyhow::anyhow!("OPENAI_API_KEY not set"))?;
-        
+
         Ok(Self {
             api_key,
             ..Default::default()
@@ -44,14 +44,14 @@ impl OpenAIConfig {
     }
 }
 
-/// OpenAI provider
+/// `OpenAI` provider
 pub struct OpenAIProvider {
     config: OpenAIConfig,
     client: Client,
 }
 
 impl OpenAIProvider {
-    /// Create a new OpenAI provider
+    /// Create a new `OpenAI` provider
     pub fn new(config: OpenAIConfig) -> anyhow::Result<Self> {
         if config.api_key.is_empty() {
             return Err(anyhow::anyhow!("OpenAI API key is required"));
@@ -72,37 +72,34 @@ impl OpenAIProvider {
     }
 
     /// Build messages from system prompt and user message
-    fn build_messages(
-        &self,
-        system_prompt: Option<&str>,
-        message: &str,
-    ) -> Vec<Message> {
+    fn build_messages(&self, system_prompt: Option<&str>, message: &str) -> Vec<Message> {
         let mut messages = Vec::new();
-        
+
         if let Some(sys) = system_prompt {
             messages.push(Message {
                 role: "system".to_string(),
                 content: sys.to_string(),
             });
         }
-        
+
         messages.push(Message {
             role: "user".to_string(),
             content: message.to_string(),
         });
-        
+
         messages
     }
 }
 
 #[async_trait]
 impl Provider for OpenAIProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "openai"
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
-        self.chat(prompt, &self.config.model, self.config.temperature as f64).await
+        self.chat(prompt, &self.config.model, f64::from(self.config.temperature))
+            .await
     }
 
     async fn chat_with_system(
@@ -134,7 +131,9 @@ impl Provider for OpenAIProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("OpenAI API error: {} - {}", status, error_text);
-            return Err(anyhow::anyhow!("OpenAI API error: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!(
+                "OpenAI API error: {status} - {error_text}"
+            ));
         }
 
         let completion: ChatCompletionResponse = response.json().await?;
@@ -146,7 +145,10 @@ impl Provider for OpenAIProvider {
             .map(|c| c.message.content)
             .unwrap_or_default();
 
-        debug!("Received {} tokens from OpenAI", completion.usage.total_tokens);
+        debug!(
+            "Received {} tokens from OpenAI",
+            completion.usage.total_tokens
+        );
 
         Ok(content)
     }

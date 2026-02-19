@@ -13,13 +13,12 @@
 
 #![warn(clippy::all, clippy::pedantic)]
 
-pub mod agent;
 pub mod a2a;
+pub mod agent;
 pub mod capability_registry;
 pub mod channels;
-pub mod tool_registry;
-pub mod config;
 pub mod coneko;
+pub mod config;
 pub mod cron;
 pub mod daemon;
 pub mod heartbeat;
@@ -28,6 +27,7 @@ pub mod memory;
 pub mod providers;
 pub mod security;
 pub mod skills;
+pub mod tool_registry;
 pub mod tools;
 pub mod tunnel;
 pub mod types;

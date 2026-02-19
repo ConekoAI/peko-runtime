@@ -60,15 +60,15 @@ pub struct ToolCapabilities {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinaryUrls {
-    /// Linux x86_64 binary URL
+    /// Linux `x86_64` binary URL
     pub linux_x64: Option<String>,
     /// Linux ARM64 binary URL
     pub linux_arm64: Option<String>,
-    /// macOS x86_64 binary URL
+    /// macOS `x86_64` binary URL
     pub macos_x64: Option<String>,
     /// macOS ARM64 (Apple Silicon) binary URL
     pub macos_arm64: Option<String>,
-    /// Windows x86_64 binary URL
+    /// Windows `x86_64` binary URL
     pub windows_x64: Option<String>,
 }
 
@@ -76,7 +76,7 @@ pub struct BinaryUrls {
 pub struct InstallScript {
     /// Shell command to run (Unix)
     pub unix: Option<String>,
-    /// PowerShell command to run (Windows)
+    /// `PowerShell` command to run (Windows)
     pub windows: Option<String>,
     /// Environment variables to set
     pub env: Option<HashMap<String, String>>,
@@ -135,9 +135,7 @@ pub struct ToolRegistryConfig {
 
 impl Default for ToolRegistryConfig {
     fn default() -> Self {
-        let cache_dir = dirs::cache_dir()
-            .map(|d| d.join("pekobot").join("tools"))
-            .unwrap_or_else(|| PathBuf::from("/tmp/pekobot-tools"));
+        let cache_dir = dirs::cache_dir().map_or_else(|| PathBuf::from("/tmp/pekobot-tools"), |d| d.join("pekobot").join("tools"));
 
         Self {
             cache_dir,
@@ -172,16 +170,13 @@ impl ToolRegistry {
     }
 
     /// Load tool from local filesystem
-    pub fn load_tool_from_path(
-        &self,
-        manifest_path: &Path,
-    ) -> anyhow::Result<ToolManifest> {
+    pub fn load_tool_from_path(&self, manifest_path: &Path) -> anyhow::Result<ToolManifest> {
         let content = std::fs::read_to_string(manifest_path)?;
         let manifest: ToolManifest = toml::from_str(&content)?;
-        
+
         // Validate manifest
         self.validate_manifest(&manifest)?;
-        
+
         Ok(manifest)
     }
 
@@ -197,13 +192,12 @@ impl ToolRegistry {
         // Check if already installed
         if let Some(existing) = self.installed_tools.get(&tool_name) {
             if existing.manifest.tool.version == tool_version {
-                anyhow::bail!(
-                    "Tool {}@{} is already installed",
-                    tool_name, tool_version
-                );
+                anyhow::bail!("Tool {tool_name}@{tool_version} is already installed");
             }
-            println!("Upgrading {} from {} to {}", 
-                tool_name, existing.manifest.tool.version, tool_version);
+            println!(
+                "Upgrading {} from {} to {}",
+                tool_name, existing.manifest.tool.version, tool_version
+            );
         }
 
         // Create install directory
@@ -216,7 +210,8 @@ impl ToolRegistry {
 
         // Handle installation
         if let Some(ref binaries) = manifest.binaries {
-            self.download_binaries(&manifest, binaries, &install_dir).await?;
+            self.download_binaries(&manifest, binaries, &install_dir)
+                .await?;
         }
 
         if let Some(ref install) = manifest.install {
@@ -231,30 +226,33 @@ impl ToolRegistry {
             is_active: true,
         };
 
-        self.installed_tools.insert(tool_name.clone(), installed.clone());
+        self.installed_tools
+            .insert(tool_name.clone(), installed.clone());
         self.save_installed_tools()?;
 
-        println!("✅ Installed {}@{}", tool_name, tool_version);
+        println!("✅ Installed {tool_name}@{tool_version}");
 
         Ok(installed)
     }
 
     /// List all installed tools
+    #[must_use] 
     pub fn list_installed(&self) -> Vec<&InstalledTool> {
         self.installed_tools.values().collect()
     }
 
     /// Get installed tool by name
+    #[must_use] 
     pub fn get_tool(&self, name: &str) -> Option<&InstalledTool> {
         self.installed_tools.get(name)
     }
 
     /// Uninstall a tool
-    pub fn uninstall_tool(&mut self,
-        name: &str,
-    ) -> anyhow::Result<()> {
-        let tool = self.installed_tools.get(name)
-            .ok_or_else(|| anyhow::anyhow!("Tool {} not found", name))?;
+    pub fn uninstall_tool(&mut self, name: &str) -> anyhow::Result<()> {
+        let tool = self
+            .installed_tools
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Tool {name} not found"))?;
 
         // Remove installation directory
         std::fs::remove_dir_all(&tool.install_path)?;
@@ -263,16 +261,14 @@ impl ToolRegistry {
         self.installed_tools.remove(name);
         self.save_installed_tools()?;
 
-        println!("✅ Uninstalled {}", name);
+        println!("✅ Uninstalled {name}");
 
         Ok(())
     }
 
     /// Find tools by capability
-    pub fn find_by_capability(
-        &self,
-        capability: &str,
-    ) -> Vec<&InstalledTool> {
+    #[must_use] 
+    pub fn find_by_capability(&self, capability: &str) -> Vec<&InstalledTool> {
         self.installed_tools
             .values()
             .filter(|tool| {
@@ -285,10 +281,7 @@ impl ToolRegistry {
     }
 
     /// Load tool manifests from directory
-    pub fn scan_tools_directory(
-        &self,
-        dir: &Path,
-    ) -> anyhow::Result<Vec<ToolManifest>> {
+    pub fn scan_tools_directory(&self, dir: &Path) -> anyhow::Result<Vec<ToolManifest>> {
         let mut manifests = Vec::new();
 
         if !dir.exists() {
@@ -299,10 +292,10 @@ impl ToolRegistry {
             let entry = entry?;
             let path = entry.path();
 
-            if path.extension().map(|e| e == "toml").unwrap_or(false) {
+            if path.extension().is_some_and(|e| e == "toml") {
                 match self.load_tool_from_path(&path) {
                     Ok(manifest) => manifests.push(manifest),
-                    Err(e) => eprintln!("Failed to load {:?}: {}", path, e),
+                    Err(e) => eprintln!("Failed to load {path:?}: {e}"),
                 }
             }
         }
@@ -311,10 +304,7 @@ impl ToolRegistry {
     }
 
     /// Validate tool manifest
-    fn validate_manifest(
-        &self,
-        manifest: &ToolManifest,
-    ) -> anyhow::Result<()> {
+    fn validate_manifest(&self, manifest: &ToolManifest) -> anyhow::Result<()> {
         // Check required fields
         if manifest.tool.name.is_empty() {
             anyhow::bail!("Tool name is required");
@@ -338,10 +328,9 @@ impl ToolRegistry {
     }
 
     /// Load installed tools from cache
-    fn load_installed_tools(&mut self,
-    ) -> anyhow::Result<()> {
+    fn load_installed_tools(&mut self) -> anyhow::Result<()> {
         let state_file = self.config.cache_dir.join("installed.json");
-        
+
         if !state_file.exists() {
             return Ok(());
         }
@@ -350,18 +339,15 @@ impl ToolRegistry {
         let tools: Vec<InstalledTool> = serde_json::from_str(&content)?;
 
         for tool in tools {
-            self.installed_tools.insert(
-                tool.manifest.tool.name.clone(),
-                tool,
-            );
+            self.installed_tools
+                .insert(tool.manifest.tool.name.clone(), tool);
         }
 
         Ok(())
     }
 
     /// Save installed tools to cache
-    fn save_installed_tools(&self,
-    ) -> anyhow::Result<()> {
+    fn save_installed_tools(&self) -> anyhow::Result<()> {
         let state_file = self.config.cache_dir.join("installed.json");
         let tools: Vec<&InstalledTool> = self.installed_tools.values().collect();
         let content = serde_json::to_string_pretty(&tools)?;
@@ -390,7 +376,7 @@ impl ToolRegistry {
         #[cfg(unix)]
         {
             if let Some(ref unix_cmd) = script.unix {
-                println!("Running install script: {}", unix_cmd);
+                println!("Running install script: {unix_cmd}");
                 // Would execute: std::process::Command::new("sh").arg("-c").arg(unix_cmd)
             }
         }
@@ -429,7 +415,10 @@ linux_x64 = "https://pekohub.io/tools/calendar/1.2.0/linux_x64.so"
         let manifest: ToolManifest = toml::from_str(toml).unwrap();
         assert_eq!(manifest.tool.name, "calendar");
         assert_eq!(manifest.tool.version, "1.2.0");
-        assert!(manifest.capabilities.provides.contains(&"scheduling.calendar_read".to_string()));
+        assert!(manifest
+            .capabilities
+            .provides
+            .contains(&"scheduling.calendar_read".to_string()));
     }
 
     #[test]

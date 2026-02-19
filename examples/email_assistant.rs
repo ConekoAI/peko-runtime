@@ -10,7 +10,7 @@ use clap::Parser;
 use std::io::{self, Write};
 
 use pekobot::tools::email::{
-    EmailConfig, EmailTool, EmailProvider, EmailCredentials, ReplySettings, ReplyTone,
+    EmailConfig, EmailCredentials, EmailProvider, EmailTool, ReplySettings, ReplyTone,
 };
 
 #[derive(Parser)]
@@ -59,7 +59,10 @@ async fn main() -> anyhow::Result<()> {
             match tool.get_inbox_summary().await {
                 Ok(summary) => {
                     println!("📨 INBOX SUMMARY");
-                    println!("Generated: {}\n", summary.generated_at.format("%Y-%m-%d %H:%M"));
+                    println!(
+                        "Generated: {}\n",
+                        summary.generated_at.format("%Y-%m-%d %H:%M")
+                    );
 
                     println!("📈 Overview:");
                     println!("  Total unread: {}", summary.total_unread);
@@ -77,21 +80,30 @@ async fn main() -> anyhow::Result<()> {
                         println!("🔴 URGENT ({} emails):\n", summary.urgent_emails.len());
                         for (i, email) in summary.urgent_emails.iter().enumerate() {
                             println!("  {}. {}", i + 1, email.subject);
-                            println!("     From: {}", 
-                                email.from.name.as_ref().unwrap_or(&email.from.email));
-                            println!("     Preview: {}...", 
-                                &email.preview_text[..email.preview_text.len().min(60)]);
+                            println!(
+                                "     From: {}",
+                                email.from.name.as_ref().unwrap_or(&email.from.email)
+                            );
+                            println!(
+                                "     Preview: {}...",
+                                &email.preview_text[..email.preview_text.len().min(60)]
+                            );
                             println!("     Urgency: {:.0}%", email.urgency_score * 100.0);
                             println!("     Action: {:?}\n", email.suggested_action);
                         }
                     }
 
                     if !summary.requires_reply.is_empty() {
-                        println!("💬 REQUIRES REPLY ({} emails):\n", summary.requires_reply.len());
+                        println!(
+                            "💬 REQUIRES REPLY ({} emails):\n",
+                            summary.requires_reply.len()
+                        );
                         for (i, email) in summary.requires_reply.iter().enumerate().take(5) {
                             println!("  {}. {}", i + 1, email.subject);
-                            println!("     From: {}",
-                                email.from.name.as_ref().unwrap_or(&email.from.email));
+                            println!(
+                                "     From: {}",
+                                email.from.name.as_ref().unwrap_or(&email.from.email)
+                            );
                             println!("     Urgency: {:.0}%\n", email.urgency_score * 100.0);
                         }
                     }

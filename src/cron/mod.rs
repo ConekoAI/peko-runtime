@@ -1,6 +1,6 @@
 //! Cron scheduler for periodic task execution
 //!
-//! Stores cron jobs in SQLite and provides scheduling functionality.
+//! Stores cron jobs in `SQLite` and provides scheduling functionality.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -40,8 +40,9 @@ impl CronScheduler {
     /// Initialize the database schema
     fn init_db(&self) -> Result<()> {
         if let Some(parent) = self.db_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create cron directory: {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create cron directory: {}", parent.display())
+            })?;
         }
 
         let conn = Connection::open(&self.db_path)
@@ -173,7 +174,7 @@ impl CronScheduler {
     pub fn remove_job(&self, id: &str) -> Result<bool> {
         let conn = Connection::open(&self.db_path)?;
         let changed = conn.execute("DELETE FROM cron_jobs WHERE id = ?1", params![id])?;
-        
+
         if changed > 0 {
             info!("Removed cron job {}", id);
             Ok(true)
@@ -184,19 +185,17 @@ impl CronScheduler {
     }
 
     /// Update job after execution
-    pub fn update_after_run(
-        &self,
-        job_id: &str,
-        success: bool,
-        output: &str,
-    ) -> Result<()> {
+    pub fn update_after_run(&self, job_id: &str, success: bool, output: &str) -> Result<()> {
         let now = Utc::now();
         let status = if success { "ok" } else { "error" };
 
         // Get the job to recalculate next run
-        let job = self.list_jobs()?.into_iter().find(|j| j.id == job_id)
+        let job = self
+            .list_jobs()?
+            .into_iter()
+            .find(|j| j.id == job_id)
             .context("Job not found")?;
-        
+
         let next_run = next_run_for(&job.expression, now)?;
 
         let conn = Connection::open(&self.db_path)?;
@@ -284,7 +283,7 @@ mod tests {
     fn test_list_jobs() {
         let (scheduler, _tmp) = test_scheduler();
         scheduler.add_job("*/10 * * * *", "echo test").unwrap();
-        
+
         let jobs = scheduler.list_jobs().unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].command, "echo test");
@@ -309,7 +308,7 @@ mod tests {
     fn test_remove_job() {
         let (scheduler, _tmp) = test_scheduler();
         let job = scheduler.add_job("*/15 * * * *", "echo remove").unwrap();
-        
+
         assert!(scheduler.remove_job(&job.id).unwrap());
         assert!(!scheduler.remove_job(&job.id).unwrap());
         assert!(scheduler.list_jobs().unwrap().is_empty());
@@ -319,8 +318,10 @@ mod tests {
     fn test_update_after_run() {
         let (scheduler, _tmp) = test_scheduler();
         let job = scheduler.add_job("*/15 * * * *", "echo run").unwrap();
-        
-        scheduler.update_after_run(&job.id, false, "failed output").unwrap();
+
+        scheduler
+            .update_after_run(&job.id, false, "failed output")
+            .unwrap();
 
         let jobs = scheduler.list_jobs().unwrap();
         let stored = jobs.iter().find(|j| j.id == job.id).unwrap();

@@ -2,15 +2,15 @@
 //!
 //! Run with: cargo bench
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use pekobot::{
-    agent::{Agent, Orchestrator},
     a2a::{
         flows::A2AFlowHandler,
         message::{A2AMessage, IntentPayload, MessageType, Payload, QuotePayload},
         protocol::A2AProtocol,
         registry::create_registry,
     },
+    agent::{Agent, Orchestrator},
     config::Config,
     identity::did::{DIDScope, Identity},
     memory::sqlite::SqliteMemory,
@@ -28,22 +28,16 @@ fn benchmark_identity_generation(c: &mut Criterion) {
     group.sample_size(100);
 
     group.bench_function("generate_local_identity", |b| {
-        b.iter(|| {
-            Identity::generate(DIDScope::Local, Some("benchmark")).unwrap()
-        })
+        b.iter(|| Identity::generate(DIDScope::Local, Some("benchmark")).unwrap())
     });
 
     group.bench_function("generate_public_identity", |b| {
-        b.iter(|| {
-            Identity::generate(DIDScope::Public, None).unwrap()
-        })
+        b.iter(|| Identity::generate(DIDScope::Public, None).unwrap())
     });
 
     group.bench_function("parse_did", |b| {
         let did = "did:pekobot:local:benchmark:abc123def456";
-        b.iter(|| {
-            Identity::parse_did(black_box(did)).unwrap()
-        })
+        b.iter(|| Identity::parse_did(black_box(did)).unwrap())
     });
 
     group.finish();
@@ -66,38 +60,36 @@ fn benchmark_memory_operations(c: &mut Criterion) {
         let mut counter = 0;
         b.iter(|| {
             counter += 1;
-            memory.store(
-                &format!("Test content {}", counter),
-                Some(json!({"index": counter})),
-            ).unwrap()
+            memory
+                .store(
+                    &format!("Test content {}", counter),
+                    Some(json!({"index": counter})),
+                )
+                .unwrap()
         })
     });
 
     // Prepare data for search benchmark
     for i in 0..100 {
-        memory.store(
-            &format!("Searchable content number {}", i),
-            Some(json!({"id": i})),
-        ).unwrap();
+        memory
+            .store(
+                &format!("Searchable content number {}", i),
+                Some(json!({"id": i})),
+            )
+            .unwrap();
     }
 
     group.bench_function("search", |b| {
-        b.iter(|| {
-            memory.search(black_box("content"), 10).unwrap()
-        })
+        b.iter(|| memory.search(black_box("content"), 10).unwrap())
     });
 
     group.bench_function("get_by_id", |b| {
         let id = memory.store("Retrievable content", None).unwrap();
-        b.iter(|| {
-            memory.get(black_box(&id)).unwrap()
-        })
+        b.iter(|| memory.get(black_box(&id)).unwrap())
     });
 
     group.bench_function("recent", |b| {
-        b.iter(|| {
-            memory.recent(black_box(10)).unwrap()
-        })
+        b.iter(|| memory.recent(black_box(10)).unwrap())
     });
 
     group.finish();
@@ -115,10 +107,9 @@ fn benchmark_memory_throughput(c: &mut Criterion) {
             let memory = SqliteMemory::new(&db_path, "benchmark").unwrap();
 
             for i in 0..1000 {
-                memory.store(
-                    &format!("Bulk content {}", i),
-                    Some(json!({"index": i})),
-                ).unwrap();
+                memory
+                    .store(&format!("Bulk content {}", i), Some(json!({"index": i})))
+                    .unwrap();
             }
         })
     });
@@ -230,9 +221,7 @@ fn benchmark_a2a_message_creation(c: &mut Criterion) {
             Payload::Intent(intent),
         );
 
-        b.iter(|| {
-            serde_json::to_string(black_box(&msg)).unwrap()
-        })
+        b.iter(|| serde_json::to_string(black_box(&msg)).unwrap())
     });
 
     group.finish();
@@ -263,7 +252,10 @@ fn benchmark_flow_handler(c: &mut Criterion) {
         );
 
         b.iter(|| {
-            handler.handle_intent(black_box(&msg), black_box(&msg.payload_as_intent().unwrap()))
+            handler.handle_intent(
+                black_box(&msg),
+                black_box(&msg.payload_as_intent().unwrap()),
+            )
         })
     });
 
@@ -320,9 +312,7 @@ fn benchmark_agent_lifecycle(c: &mut Criterion) {
 
     group.bench_function("create_agent_with_memory", |b| {
         b.to_async(&rt).iter(|| async {
-            let config = Config::agent("bench-agent-mem")
-                .with_memory(true)
-                .build();
+            let config = Config::agent("bench-agent-mem").with_memory(true).build();
             Agent::new(config).await.unwrap()
         })
     });
@@ -394,7 +384,7 @@ fn benchmark_registry_operations(c: &mut Criterion) {
             },
             |(registry, did)| async move {
                 registry.get_by_did(&did).await;
-            }
+            },
         )
     });
 
@@ -418,13 +408,16 @@ fn benchmark_protocol_throughput(c: &mut Criterion) {
             let protocol = A2AProtocol::new(registry);
 
             for i in 0..100 {
-                protocol.send_intent(
-                    "did:pekobot:local:sender",
-                    "did:pekobot:local:recipient",
-                    &format!("task-{}", i),
-                    json!({"index": i}),
-                    true,
-                ).await.unwrap();
+                protocol
+                    .send_intent(
+                        "did:pekobot:local:sender",
+                        "did:pekobot:local:recipient",
+                        &format!("task-{}", i),
+                        json!({"index": i}),
+                        true,
+                    )
+                    .await
+                    .unwrap();
             }
         })
     });
@@ -462,17 +455,23 @@ fn benchmark_complete_flow(c: &mut Criterion) {
                 Payload::Intent(intent),
             );
 
-            let FlowResult::Response(quote_msg) = provider.handle_intent(
-                &intent_msg, &intent_msg.payload_as_intent().unwrap()
-            ) else { panic!("Expected quote") };
+            let FlowResult::Response(quote_msg) =
+                provider.handle_intent(&intent_msg, &intent_msg.payload_as_intent().unwrap())
+            else {
+                panic!("Expected quote")
+            };
 
-            let FlowResult::Response(accept_msg) = consumer.handle_quote(
-                &quote_msg, &quote_msg.payload_as_quote().unwrap()
-            ) else { panic!("Expected accept") };
+            let FlowResult::Response(accept_msg) =
+                consumer.handle_quote(&quote_msg, &quote_msg.payload_as_quote().unwrap())
+            else {
+                panic!("Expected accept")
+            };
 
-            let FlowResult::Response(_contract_msg) = provider.handle_accept(
-                &accept_msg, &accept_msg.payload_as_accept().unwrap()
-            ) else { panic!("Expected contract") };
+            let FlowResult::Response(_contract_msg) =
+                provider.handle_accept(&accept_msg, &accept_msg.payload_as_accept().unwrap())
+            else {
+                panic!("Expected contract")
+            };
         })
     });
 

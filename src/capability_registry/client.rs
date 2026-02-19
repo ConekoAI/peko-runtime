@@ -146,11 +146,11 @@ impl RegistryClient {
         );
 
         if let Some(rep) = min_reputation {
-            url.push_str(&format!("?minReputation={}", rep));
+            url.push_str(&format!("?minReputation={rep}"));
         }
 
         let response = self.http_client.get(&url).send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Registry query failed: {}", response.status());
         }
@@ -165,13 +165,13 @@ impl RegistryClient {
         agent_did: &str,
     ) -> anyhow::Result<Option<AgentCapabilityAdvertisement>> {
         let url = format!("{}/registry/agents/{}", self.config.endpoint, agent_did);
-        
+
         let response = self.http_client.get(&url).send().await?;
-        
+
         if response.status() == 404 {
             return Ok(None);
         }
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Registry query failed: {}", response.status());
         }
@@ -187,7 +187,7 @@ impl RegistryClient {
         match_mode: MatchMode,
     ) -> anyhow::Result<Vec<AgentCapabilityAdvertisement>> {
         let url = format!("{}/registry/query", self.config.endpoint);
-        
+
         let body = QueryRequest {
             capabilities,
             match_mode: match match_mode {
@@ -195,13 +195,9 @@ impl RegistryClient {
                 MatchMode::Any => "any",
             },
         };
-        
-        let response = self.http_client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await?;
-        
+
+        let response = self.http_client.post(&url).json(&body).send().await?;
+
         if !response.status().is_success() {
             anyhow::bail!("Registry query failed: {}", response.status());
         }
@@ -211,21 +207,18 @@ impl RegistryClient {
     }
 
     /// Get capability definition
-    pub async fn get_capability(
-        &self,
-        capability_id: &str,
-    ) -> anyhow::Result<Option<Capability>> {
+    pub async fn get_capability(&self, capability_id: &str) -> anyhow::Result<Option<Capability>> {
         let url = format!(
             "{}/registry/capabilities/{}",
             self.config.endpoint, capability_id
         );
-        
+
         let response = self.http_client.get(&url).send().await?;
-        
+
         if response.status() == 404 {
             return Ok(None);
         }
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Registry query failed: {}", response.status());
         }
@@ -240,13 +233,14 @@ impl RegistryClient {
         advertisement: &AgentCapabilityAdvertisement,
     ) -> anyhow::Result<()> {
         let url = format!("{}/registry/advertise", self.config.endpoint);
-        
-        let response = self.http_client
+
+        let response = self
+            .http_client
             .post(&url)
             .json(advertisement)
             .send()
             .await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Failed to advertise: {}", response.status());
         }

@@ -1,7 +1,7 @@
 //! A2A Message types
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// A2A Protocol version
 pub const A2A_VERSION: &str = "1.0";
@@ -42,10 +42,11 @@ pub struct AgentReference {
 }
 
 impl AgentReference {
+    #[must_use] 
     pub fn new(did: &str, name: Option<&str>) -> Self {
         Self {
             did: did.to_string(),
-            name: name.map(|s| s.to_string()),
+            name: name.map(std::string::ToString::to_string),
         }
     }
 }
@@ -264,6 +265,7 @@ pub struct ErrorPayload {
 
 impl A2AMessage {
     /// Create a new message with auto-generated IDs
+    #[must_use] 
     pub fn new(
         sender_did: &str,
         recipient_did: &str,
@@ -284,12 +286,8 @@ impl A2AMessage {
     }
 
     /// Create a reply to an existing message
-    pub fn reply_to(
-        &self,
-        sender_did: &str,
-        message_type: MessageType,
-        payload: Payload,
-    ) -> Self {
+    #[must_use] 
+    pub fn reply_to(&self, sender_did: &str, message_type: MessageType, payload: Payload) -> Self {
         Self {
             a2a_version: A2A_VERSION.to_string(),
             message_id: uuid::Uuid::new_v4().to_string(),
@@ -304,6 +302,7 @@ impl A2AMessage {
     }
 
     /// Get payload as specific type
+    #[must_use] 
     pub fn payload_as_intent(&self) -> Option<&IntentPayload> {
         match &self.payload {
             Payload::Intent(p) => Some(p),
@@ -311,6 +310,7 @@ impl A2AMessage {
         }
     }
 
+    #[must_use] 
     pub fn payload_as_quote(&self) -> Option<&QuotePayload> {
         match &self.payload {
             Payload::Quote(p) => Some(p),
@@ -318,6 +318,7 @@ impl A2AMessage {
         }
     }
 
+    #[must_use] 
     pub fn payload_as_accept(&self) -> Option<&AcceptPayload> {
         match &self.payload {
             Payload::Accept(p) => Some(p),
@@ -325,6 +326,7 @@ impl A2AMessage {
         }
     }
 
+    #[must_use] 
     pub fn payload_as_contract(&self) -> Option<&ContractPayload> {
         match &self.payload {
             Payload::Contract(p) => Some(p),
@@ -332,6 +334,7 @@ impl A2AMessage {
         }
     }
 
+    #[must_use] 
     pub fn payload_as_error(&self) -> Option<&ErrorPayload> {
         match &self.payload {
             Payload::Error(p) => Some(p),

@@ -4,14 +4,14 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::channels::Channel;
 
 /// Telegram channel configuration
 #[derive(Debug, Clone)]
 pub struct TelegramConfig {
-    /// Bot token from @BotFather
+    /// Bot token from @`BotFather`
     pub bot_token: String,
     /// Allowed chat IDs (empty = allow all)
     pub allowed_chats: Vec<i64>,
@@ -24,7 +24,7 @@ impl TelegramConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
             .map_err(|_| anyhow::anyhow!("TELEGRAM_BOT_TOKEN not set"))?;
-        
+
         Ok(Self {
             bot_token,
             allowed_chats: vec![],
@@ -46,6 +46,7 @@ pub struct TelegramChannel {
 
 impl TelegramChannel {
     /// Create a new Telegram channel
+    #[must_use] 
     pub fn new(config: TelegramConfig) -> Self {
         let (message_tx, message_rx) = mpsc::channel(100);
         let (chat_id_tx, chat_id_rx) = mpsc::channel(100);
@@ -66,7 +67,7 @@ impl TelegramChannel {
     }
 
     /// Start polling for updates
-    pub async fn start_polling(mut self: Arc<Self>) -> anyhow::Result<()> {
+    pub async fn start_polling(self: Arc<Self>) -> anyhow::Result<()> {
         info!("Starting Telegram polling");
 
         loop {
@@ -79,14 +80,14 @@ impl TelegramChannel {
             }
 
             tokio::time::sleep(tokio::time::Duration::from_secs(
-                self.config.poll_interval_secs
-            )).await;
+                self.config.poll_interval_secs,
+            ))
+            .await;
         }
     }
 
     /// Poll for updates from Telegram
-    async fn poll_updates(&self
-    ) -> anyhow::Result<()> {
+    async fn poll_updates(&self) -> anyhow::Result<()> {
         let url = format!(
             "https://api.telegram.org/bot{}/getUpdates",
             self.config.bot_token
@@ -94,24 +95,20 @@ impl TelegramChannel {
 
         let mut params = serde_json::Map::new();
         params.insert("limit".to_string(), json!(100));
-        
+
         if let Some(offset) = self.last_update_id {
             params.insert("offset".to_string(), json!(offset + 1));
         }
 
-        let response = self.client
-            .post(&url)
-            .json(&params)
-            .send()
-            .await?;
+        let response = self.client.post(&url).json(&params).send().await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
-            return Err(anyhow::anyhow!("Telegram API error: {}", error_text));
+            return Err(anyhow::anyhow!("Telegram API error: {error_text}"));
         }
 
         let updates: TelegramResponse<Vec<Update>> = response.json().await?;
-        
+
         if !updates.ok {
             return Err(anyhow::anyhow!("Telegram API returned error"));
         }
@@ -124,12 +121,9 @@ impl TelegramChannel {
     }
 
     /// Process a single update
-    async fn process_update(
-        &self,
-        update: Update
-    ) -> anyhow::Result<()> {
-        let update_id = update.update_id;
-        
+    async fn process_update(&self, update: Update) -> anyhow::Result<()> {
+        let _update_id = update.update_id;
+
         let message = match update.message {
             Some(m) => m,
             None => return Ok(()),
@@ -138,8 +132,7 @@ impl TelegramChannel {
         let chat_id = message.chat.id;
 
         // Check allowed chats
-        if !self.config.allowed_chats.is_empty() 
-            && !self.config.allowed_chats.contains(&chat_id) {
+        if !self.config.allowed_chats.is_empty() && !self.config.allowed_chats.contains(&chat_id) {
             warn!("Ignoring message from unauthorized chat: {}", chat_id);
             return Ok(());
         }
@@ -152,19 +145,15 @@ impl TelegramChannel {
 
         // Store chat ID for replies
         let _ = self.chat_id_tx.send(chat_id).await;
-        
+
         // Send message content
         self.message_tx.send(text).await?;
-        
+
         Ok(())
     }
 
     /// Send a message to Telegram
-    pub async fn send_message(
-        &self,
-        chat_id: i64,
-        text: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn send_message(&self, chat_id: i64, text: &str) -> anyhow::Result<()> {
         let url = format!(
             "https://api.telegram.org/bot{}/sendMessage",
             self.config.bot_token
@@ -176,15 +165,11 @@ impl TelegramChannel {
             "parse_mode": "Markdown"
         });
 
-        let response = self.client
-            .post(&url)
-            .json(&params)
-            .send()
-            .await?;
+        let response = self.client.post(&url).json(&params).send().await?;
 
         if !response.status().is_success() {
             let error = response.text().await?;
-            return Err(anyhow::anyhow!("Failed to send message: {}", error));
+            return Err(anyhow::anyhow!("Failed to send message: {error}"));
         }
 
         Ok(())
@@ -193,7 +178,7 @@ impl TelegramChannel {
 
 #[async_trait]
 impl Channel for TelegramChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "telegram"
     }
 
@@ -212,7 +197,7 @@ impl Channel for TelegramChannel {
         match self.message_rx.try_recv() {
             Ok(msg) => Ok(Some(msg)),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => Ok(None),
-            Err(e) => Err(anyhow::anyhow!("Channel error: {}", e)),
+            Err(e) => Err(anyhow::anyhow!("Channel error: {e}")),
         }
     }
 }

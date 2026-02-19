@@ -20,21 +20,21 @@ impl CliChannel {
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(100);
-        
+
         // Spawn stdin reader task
         let tx = stdin_tx.clone();
         let _input_handle = tokio::spawn(async move {
             let stdin = tokio::io::stdin();
             let reader = BufReader::new(stdin);
             let mut lines = reader.lines();
-            
+
             while let Ok(Some(line)) = lines.next_line().await {
                 if tx.send(line).await.is_err() {
                     break;
                 }
             }
         });
-        
+
         Self {
             name,
             stdin_tx,
@@ -42,7 +42,7 @@ impl CliChannel {
             _input_handle,
         }
     }
-    
+
     /// Print a styled banner
     pub fn print_banner(&self) {
         println!("\n╔════════════════════════════════════════╗");
@@ -50,26 +50,26 @@ impl CliChannel {
         println!("╚════════════════════════════════════════╝");
         println!("   Channel: {}\n", self.name);
     }
-    
+
     /// Print a prompt for user input
     pub fn print_prompt(&self) {
         print!("\n💬 You: ");
         std::io::stdout().flush().unwrap();
     }
-    
+
     /// Print agent response
     pub fn print_agent_response(&self, response: &str) {
-        println!("\n🐱 Agent: {}", response);
+        println!("\n🐱 Agent: {response}");
     }
-    
+
     /// Print system message
     pub fn print_system(&self, message: &str) {
-        println!("\n⚡ {}", message);
+        println!("\n⚡ {message}");
     }
-    
+
     /// Print error
     pub fn print_error(&self, error: &str) {
-        eprintln!("\n❌ Error: {}", error);
+        eprintln!("\n❌ Error: {error}");
     }
 }
 
@@ -88,8 +88,10 @@ impl Channel for CliChannel {
         // Try to receive from stdin channel with timeout
         match tokio::time::timeout(
             tokio::time::Duration::from_millis(100),
-            self.stdin_rx.recv()
-        ).await {
+            self.stdin_rx.recv(),
+        )
+        .await
+        {
             Ok(Some(line)) => {
                 if line.trim().is_empty() {
                     Ok(None)
@@ -109,40 +111,48 @@ pub async fn run_interactive_loop<C: Channel + 'static>(
     agent_name: &str,
 ) -> Result<()> {
     use crate::channels::cli::CliChannel;
-    
+
     // Print welcome
     if let Some(cli) = (channel as &dyn std::any::Any).downcast_ref::<CliChannel>() {
         cli.print_banner();
-        cli.print_system(&format!("Agent '{}' is ready! Type 'exit' or 'quit' to stop.", agent_name));
+        cli.print_system(&format!(
+            "Agent '{agent_name}' is ready! Type 'exit' or 'quit' to stop."
+        ));
     }
-    
+
     loop {
         // Print prompt
         if let Some(cli) = (channel as &dyn std::any::Any).downcast_ref::<CliChannel>() {
             cli.print_prompt();
         }
-        
+
         // Wait for input
         match channel.receive().await? {
             Some(input) => {
                 let trimmed = input.trim();
-                
+
                 // Check for exit commands
                 match trimmed.to_lowercase().as_str() {
                     "exit" | "quit" | "bye" => {
-                        if let Some(cli) = (channel as &dyn std::any::Any).downcast_ref::<CliChannel>() {
+                        if let Some(cli) =
+                            (channel as &dyn std::any::Any).downcast_ref::<CliChannel>()
+                        {
                             cli.print_system("Goodbye! 👋");
                         }
                         break;
                     }
                     "help" => {
-                        if let Some(cli) = (channel as &dyn std::any::Any).downcast_ref::<CliChannel>() {
+                        if let Some(cli) =
+                            (channel as &dyn std::any::Any).downcast_ref::<CliChannel>()
+                        {
                             cli.print_agent_response("Available commands:\n  help - Show this message\n  exit/quit/bye - Stop the agent");
                         }
                     }
                     _ => {
                         // Echo back for now (would be processed by agent)
-                        let response = format!("Received: '{}' (agent processing not yet implemented)", trimmed);
+                        let response = format!(
+                            "Received: '{trimmed}' (agent processing not yet implemented)"
+                        );
                         channel.send(&response).await?;
                     }
                 }
@@ -153,20 +163,20 @@ pub async fn run_interactive_loop<C: Channel + 'static>(
             }
         }
     }
-    
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_cli_channel_name() {
         let channel = CliChannel::new("test");
         assert_eq!(channel.name(), "test");
     }
-    
+
     #[tokio::test]
     async fn test_cli_channel_send() {
         let mut channel = CliChannel::new("test");

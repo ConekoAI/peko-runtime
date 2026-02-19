@@ -1,13 +1,12 @@
 //! File system tool for file operations
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
-use std::path::Path;
 use tokio::fs;
 
-use crate::tools::Tool;
 use crate::security::SecurityPolicy;
+use crate::tools::Tool;
 
 /// File system tool for reading and writing files with security sandboxing
 pub struct FileSystemTool {
@@ -16,6 +15,7 @@ pub struct FileSystemTool {
 
 impl FileSystemTool {
     /// Create a new file system tool with default security policy
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             policy: SecurityPolicy::default(),
@@ -30,14 +30,13 @@ impl FileSystemTool {
     /// Read a file
     async fn read_file(&self, path: &str) -> Result<serde_json::Value> {
         // Apply security policy
-        let resolved = self.policy.resolve_path(path)
-            .ok_or_else(|| {
-                if path.contains("..") {
-                    anyhow::anyhow!("Path traversal not allowed: {}", path)
-                } else {
-                    anyhow::anyhow!("Path not allowed by security policy: {}", path)
-                }
-            })?;
+        let resolved = self.policy.resolve_path(path).ok_or_else(|| {
+            if path.contains("..") {
+                anyhow::anyhow!("Path traversal not allowed: {path}")
+            } else {
+                anyhow::anyhow!("Path not allowed by security policy: {path}")
+            }
+        })?;
 
         let content = fs::read_to_string(&resolved)
             .await
@@ -54,8 +53,10 @@ impl FileSystemTool {
     /// Write a file
     async fn write_file(&self, path: &str, content: &str) -> Result<serde_json::Value> {
         // Apply security policy
-        let resolved = self.policy.resolve_path(path)
-            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
+        let resolved = self
+            .policy
+            .resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {path}"))?;
 
         // Create parent directories if needed
         if let Some(parent) = resolved.parent() {
@@ -78,8 +79,10 @@ impl FileSystemTool {
     /// List directory contents
     async fn list_dir(&self, path: &str) -> Result<serde_json::Value> {
         // Apply security policy
-        let resolved = self.policy.resolve_path(path)
-            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
+        let resolved = self
+            .policy
+            .resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {path}"))?;
 
         let mut entries = Vec::new();
         let mut dir = fs::read_dir(&resolved)
@@ -119,16 +122,20 @@ impl FileSystemTool {
     /// Check if a file exists
     async fn file_exists(&self, path: &str) -> Result<serde_json::Value> {
         // Apply security policy
-        let resolved = self.policy.resolve_path(path)
-            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
+        let resolved = self
+            .policy
+            .resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {path}"))?;
 
         let exists = fs::try_exists(&resolved).await.unwrap_or(false);
         let metadata = if exists {
-            fs::metadata(&resolved).await.ok().map(|m| json!({
-                "is_file": m.is_file(),
-                "is_dir": m.is_dir(),
-                "size": m.len(),
-            }))
+            fs::metadata(&resolved).await.ok().map(|m| {
+                json!({
+                    "is_file": m.is_file(),
+                    "is_dir": m.is_dir(),
+                    "size": m.len(),
+                })
+            })
         } else {
             None
         };
@@ -144,11 +151,13 @@ impl FileSystemTool {
     /// Delete a file
     async fn delete_file(&self, path: &str) -> Result<serde_json::Value> {
         // Apply security policy
-        let resolved = self.policy.resolve_path(path)
-            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
+        let resolved = self
+            .policy
+            .resolve_path(path)
+            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {path}"))?;
 
         let metadata = fs::metadata(&resolved).await;
-        
+
         match metadata {
             Ok(m) if m.is_file() => {
                 fs::remove_file(&resolved)
@@ -156,12 +165,18 @@ impl FileSystemTool {
                     .with_context(|| format!("Failed to delete file: {}", resolved.display()))?;
             }
             Ok(m) if m.is_dir() => {
-                fs::remove_dir_all(&resolved)
-                    .await
-                    .with_context(|| format!("Failed to delete directory: {}", resolved.display()))?;
+                fs::remove_dir_all(&resolved).await.with_context(|| {
+                    format!("Failed to delete directory: {}", resolved.display())
+                })?;
             }
             Ok(_) => return Err(anyhow::anyhow!("Unknown file type: {}", resolved.display())),
-            Err(e) => return Err(anyhow::anyhow!("File not found: {} - {}", resolved.display(), e)),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "File not found: {} - {}",
+                    resolved.display(),
+                    e
+                ))
+            }
         }
 
         Ok(json!({
@@ -179,11 +194,11 @@ impl Default for FileSystemTool {
 
 #[async_trait]
 impl Tool for FileSystemTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "filesystem"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "File system operations. Actions: read, write, list, exists, delete. Parameters: {\"action\": \"read|write|list|exists|delete\", \"path\": string, \"content\": string (for write)}"
     }
 
@@ -204,13 +219,17 @@ impl Tool for FileSystemTool {
                 let content = params
                     .get("content")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing required parameter: content for write action"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Missing required parameter: content for write action")
+                    })?;
                 self.write_file(path, content).await
             }
             "list" => self.list_dir(path).await,
             "exists" => self.file_exists(path).await,
             "delete" => self.delete_file(path).await,
-            _ => Err(anyhow::anyhow!("Unknown action: {}. Use read, write, list, exists, or delete", action)),
+            _ => Err(anyhow::anyhow!(
+                "Unknown action: {action}. Use read, write, list, exists, or delete"
+            )),
         }
     }
 }
@@ -232,7 +251,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let policy = SecurityPolicy {
             workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,  // Allow absolute paths for tests
+            workspace_only: false, // Allow absolute paths for tests
             ..SecurityPolicy::default()
         };
         let tool = FileSystemTool::with_policy(policy);
@@ -259,7 +278,10 @@ mod tests {
         let result = tool.execute(read_params).await;
         assert!(result.is_ok());
         let response = result.unwrap();
-        assert_eq!(response.get("content").unwrap().as_str().unwrap(), "Hello, World!");
+        assert_eq!(
+            response.get("content").unwrap().as_str().unwrap(),
+            "Hello, World!"
+        );
     }
 
     #[tokio::test]
@@ -267,7 +289,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let policy = SecurityPolicy {
             workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,  // Allow absolute paths for tests
+            workspace_only: false, // Allow absolute paths for tests
             ..SecurityPolicy::default()
         };
         let tool = FileSystemTool::with_policy(policy);
@@ -299,13 +321,15 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let policy = SecurityPolicy {
             workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,  // Allow absolute paths for tests
+            workspace_only: false, // Allow absolute paths for tests
             ..SecurityPolicy::default()
         };
         let tool = FileSystemTool::with_policy(policy);
 
         // Create a test file
-        fs::write(temp_dir.path().join("test.txt"), "test").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "test")
+            .await
+            .unwrap();
 
         let list_params = json!({
             "action": "list",
@@ -324,7 +348,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let policy = SecurityPolicy {
             workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,  // Allow absolute paths for tests
+            workspace_only: false, // Allow absolute paths for tests
             ..SecurityPolicy::default()
         };
         let tool = FileSystemTool::with_policy(policy);

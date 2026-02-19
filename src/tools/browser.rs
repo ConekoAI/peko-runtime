@@ -89,6 +89,7 @@ pub enum BrowserAction {
 
 impl BrowserTool {
     /// Create a new browser tool
+    #[must_use] 
     pub fn new(allowed_domains: Vec<String>, session_name: Option<String>) -> Self {
         Self {
             allowed_domains: normalize_domains(allowed_domains),
@@ -194,8 +195,7 @@ impl BrowserTool {
     }
 
     /// Execute a browser action
-    async fn execute_action(
-    &self, action: BrowserAction) -> anyhow::Result<serde_json::Value> {
+    async fn execute_action(&self, action: BrowserAction) -> anyhow::Result<serde_json::Value> {
         match action {
             BrowserAction::Open { url } => {
                 self.validate_url(&url)?;
@@ -333,11 +333,11 @@ impl BrowserTool {
 
 #[async_trait]
 impl Tool for BrowserTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "browser"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Web browser automation using agent-browser CLI. Supports navigation, clicking, \
         filling forms, taking screenshots, and getting accessibility snapshots. \
         Use 'snapshot' to get interactive elements with refs (@e1, @e2), then use refs \
@@ -430,7 +430,10 @@ impl Tool for BrowserTool {
             "get_title" => BrowserAction::GetTitle,
             "get_url" => BrowserAction::GetUrl,
             "screenshot" => BrowserAction::Screenshot {
-                path: params.get("path").and_then(|v| v.as_str()).map(String::from),
+                path: params
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 full_page: params
                     .get("full_page")
                     .and_then(serde_json::Value::as_bool)
@@ -442,7 +445,10 @@ impl Tool for BrowserTool {
                     .and_then(|v| v.as_str())
                     .map(String::from),
                 ms: params.get("ms").and_then(serde_json::Value::as_u64),
-                text: params.get("text").and_then(|v| v.as_str()).map(String::from),
+                text: params
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             },
             "press" => {
                 let key = params

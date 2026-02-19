@@ -20,6 +20,7 @@ pub struct OpenAICompatibleConfig {
 
 impl OpenAICompatibleConfig {
     /// Create a Groq configuration
+    #[must_use] 
     pub fn groq(api_key: &str, model: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
@@ -32,6 +33,7 @@ impl OpenAICompatibleConfig {
     }
 
     /// Create a Together AI configuration
+    #[must_use] 
     pub fn together(api_key: &str, model: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
@@ -44,6 +46,7 @@ impl OpenAICompatibleConfig {
     }
 
     /// Create a Fireworks AI configuration
+    #[must_use] 
     pub fn fireworks(api_key: &str, model: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
@@ -57,9 +60,8 @@ impl OpenAICompatibleConfig {
 
     /// Create from environment with custom prefix
     pub fn from_env(env_var: &str) -> anyhow::Result<Self> {
-        let api_key = std::env::var(env_var)
-            .map_err(|_| anyhow::anyhow!("{} not set", env_var))?;
-        
+        let api_key = std::env::var(env_var).map_err(|_| anyhow::anyhow!("{env_var} not set"))?;
+
         Ok(Self {
             api_key,
             base_url: String::new(),
@@ -80,10 +82,7 @@ pub struct OpenAICompatibleProvider {
 
 impl OpenAICompatibleProvider {
     /// Create a new provider
-    pub fn new(
-        name: &str,
-        config: OpenAICompatibleConfig
-    ) -> anyhow::Result<Self> {
+    pub fn new(name: &str, config: OpenAICompatibleConfig) -> anyhow::Result<Self> {
         if config.api_key.is_empty() {
             return Err(anyhow::anyhow!("API key is required"));
         }
@@ -117,15 +116,18 @@ impl OpenAICompatibleProvider {
 
     /// Create a Fireworks AI provider
     pub fn fireworks(api_key: &str, model: &str) -> anyhow::Result<Self> {
-        Self::new("fireworks", OpenAICompatibleConfig::fireworks(api_key, model))
+        Self::new(
+            "fireworks",
+            OpenAICompatibleConfig::fireworks(api_key, model),
+        )
     }
 
     /// Create Groq from environment
     pub fn groq_from_env() -> anyhow::Result<Self> {
-        let api_key = std::env::var("GROQ_API_KEY")
-            .map_err(|_| anyhow::anyhow!("GROQ_API_KEY not set"))?;
-        let model = std::env::var("GROQ_MODEL")
-            .unwrap_or_else(|_| "llama-3.1-8b-instant".to_string());
+        let api_key =
+            std::env::var("GROQ_API_KEY").map_err(|_| anyhow::anyhow!("GROQ_API_KEY not set"))?;
+        let model =
+            std::env::var("GROQ_MODEL").unwrap_or_else(|_| "llama-3.1-8b-instant".to_string());
         Self::groq(&api_key, &model)
     }
 
@@ -154,11 +156,14 @@ impl Provider for OpenAICompatibleProvider {
         &self.name
     }
 
-    async fn complete(
-        &self,
-        prompt: &str
-    ) -> anyhow::Result<String> {
-        self.chat_with_system(None, prompt, &self.config.model, self.config.temperature as f64).await
+    async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
+        self.chat_with_system(
+            None,
+            prompt,
+            &self.config.model,
+            f64::from(self.config.temperature),
+        )
+        .await
     }
 
     async fn chat_with_system(
@@ -169,7 +174,7 @@ impl Provider for OpenAICompatibleProvider {
         temperature: f64,
     ) -> anyhow::Result<String> {
         let mut messages: Vec<Message> = Vec::new();
-        
+
         // Add system message if provided
         if let Some(system) = system_prompt {
             messages.push(Message {
@@ -177,7 +182,7 @@ impl Provider for OpenAICompatibleProvider {
                 content: system.to_string(),
             });
         }
-        
+
         // Add user message
         messages.push(Message {
             role: "user".to_string(),
@@ -191,11 +196,7 @@ impl Provider for OpenAICompatibleProvider {
             temperature: Some(temperature as f32),
         };
 
-        debug!(
-            "Sending request to {}: model={}",
-            self.name,
-            model
-        );
+        debug!("Sending request to {}: model={}", self.name, model);
 
         let response = self
             .client
@@ -223,14 +224,12 @@ impl Provider for OpenAICompatibleProvider {
         let content = completion
             .choices
             .into_iter()
-            .next()
-            .and_then(|c| Some(c.message.content))
+            .next().map(|c| c.message.content)
             .unwrap_or_default();
 
         debug!(
             "Received {} tokens from {}",
-            completion.usage.total_tokens,
-            self.name
+            completion.usage.total_tokens, self.name
         );
 
         Ok(content)
@@ -284,16 +283,23 @@ mod tests {
 
     #[test]
     fn test_together_config() {
-        let config = OpenAICompatibleConfig::together("test_key", "meta-llama/Llama-3.1-8B-Instruct-Turbo");
+        let config =
+            OpenAICompatibleConfig::together("test_key", "meta-llama/Llama-3.1-8B-Instruct-Turbo");
         assert_eq!(config.base_url, "https://api.together.xyz/v1");
         assert_eq!(config.model, "meta-llama/Llama-3.1-8B-Instruct-Turbo");
     }
 
     #[test]
     fn test_fireworks_config() {
-        let config = OpenAICompatibleConfig::fireworks("test_key", "accounts/fireworks/models/llama-v3p1-8b-instruct");
+        let config = OpenAICompatibleConfig::fireworks(
+            "test_key",
+            "accounts/fireworks/models/llama-v3p1-8b-instruct",
+        );
         assert_eq!(config.base_url, "https://api.fireworks.ai/inference/v1");
-        assert_eq!(config.model, "accounts/fireworks/models/llama-v3p1-8b-instruct");
+        assert_eq!(
+            config.model,
+            "accounts/fireworks/models/llama-v3p1-8b-instruct"
+        );
     }
 
     #[test]
@@ -306,7 +312,7 @@ mod tests {
             temperature: 0.7,
             timeout_seconds: 60,
         };
-        
+
         let result = OpenAICompatibleProvider::new("test", config);
         assert!(result.is_err());
     }
@@ -321,7 +327,7 @@ mod tests {
             temperature: 0.7,
             timeout_seconds: 60,
         };
-        
+
         let result = OpenAICompatibleProvider::new("test", config);
         assert!(result.is_err());
     }

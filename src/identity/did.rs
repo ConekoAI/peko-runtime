@@ -1,8 +1,8 @@
 //! DID (Decentralized Identifier) creation and validation
 
-use serde::{Deserialize, Serialize};
-use tracing::{info, debug};
 use crate::identity::keys::KeyPair;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 /// DID method for Pekobot
 pub const DID_METHOD: &str = "pekobot";
@@ -94,26 +94,25 @@ impl Identity {
     /// Generate a new identity with keys
     pub fn generate(scope: DIDScope, tenant: Option<&str>) -> anyhow::Result<Self> {
         info!("Generating new DID identity with scope: {}", scope);
-        
+
         // Generate ed25519 keypair
         let keypair = KeyPair::generate();
         let public_key_bytes = keypair.verifying_key.as_bytes();
-        
+
         // Create key hash from public key
         let key_hash = blake3::hash(public_key_bytes).to_hex().to_string()[..16].to_string();
-        
+
         // Build DID
         let did = match tenant {
-            Some(t) => format!("did:{}:{}:{}:{}", DID_METHOD, scope, t, key_hash),
-            None => format!("did:{}:{}:{}", DID_METHOD, scope, key_hash),
+            Some(t) => format!("did:{DID_METHOD}:{scope}:{t}:{key_hash}"),
+            None => format!("did:{DID_METHOD}:{scope}:{key_hash}"),
         };
-        
+
         debug!("Generated DID: {}", did);
-        
+
         // Create DID document
-        let document = Self::create_did_document(&did, &keypair, scope,
-        );
-        
+        let document = Self::create_did_document(&did, &keypair, scope);
+
         Ok(Self {
             did,
             document,
@@ -122,29 +121,23 @@ impl Identity {
     }
 
     /// Create DID document
-    fn create_did_document(
-        did: &str,
-        keypair: &KeyPair,
-        _scope: DIDScope,
-    ) -> DIDDocument {
-        let key_id = format!("{}#keys-1", did);
+    fn create_did_document(did: &str, keypair: &KeyPair, _scope: DIDScope) -> DIDDocument {
+        let key_id = format!("{did}#keys-1");
         let public_key_bytes = keypair.verifying_key.as_bytes();
         let public_key_multibase = format!("z{}", bs58::encode(public_key_bytes).into_string());
-        
+
         DIDDocument {
             context: vec![
                 "https://www.w3.org/ns/did/v1".to_string(),
                 "https://w3id.org/security/suites/ed25519-2020/v1".to_string(),
             ],
             id: did.to_string(),
-            verification_method: vec![
-                VerificationMethod {
-                    id: key_id.clone(),
-                    key_type: "Ed25519VerificationKey2020".to_string(),
-                    controller: did.to_string(),
-                    public_key_multibase,
-                }
-            ],
+            verification_method: vec![VerificationMethod {
+                id: key_id.clone(),
+                key_type: "Ed25519VerificationKey2020".to_string(),
+                controller: did.to_string(),
+                public_key_multibase,
+            }],
             authentication: vec![key_id.clone()],
             assertion_method: vec![key_id],
             service: vec![], // Empty initially, can add later
@@ -156,18 +149,18 @@ impl Identity {
     /// Parse a DID string
     pub fn parse_did(did: &str) -> anyhow::Result<ParsedDID> {
         let parts: Vec<&str> = did.split(':').collect();
-        
+
         if parts.len() < 3 || parts[0] != "did" || parts[1] != DID_METHOD {
             anyhow::bail!("Invalid DID format");
         }
-        
+
         let scope = match parts[2] {
             "public" => DIDScope::Public,
             "local" => DIDScope::Local,
             "private" => DIDScope::Private,
             _ => anyhow::bail!("Invalid DID scope"),
         };
-        
+
         // Format: did:pekobot:scope:keyhash OR did:pekobot:scope:tenant:keyhash
         let (tenant, key_hash) = if parts.len() == 4 {
             (None, parts[3].to_string())
@@ -176,7 +169,7 @@ impl Identity {
         } else {
             anyhow::bail!("Invalid DID format");
         };
-        
+
         Ok(ParsedDID {
             method: DID_METHOD.to_string(),
             scope,
@@ -186,6 +179,7 @@ impl Identity {
     }
 
     /// Get the DID string
+    #[must_use] 
     pub fn did(&self) -> &str {
         &self.did
     }
@@ -196,8 +190,11 @@ impl Identity {
     }
 
     /// Resolve verification method by ID
+    #[must_use] 
     pub fn resolve_verification_method(&self, method_id: &str) -> Option<&VerificationMethod> {
-        self.document.verification_method.iter()
+        self.document
+            .verification_method
+            .iter()
             .find(|vm| vm.id == method_id)
     }
 }
@@ -209,7 +206,7 @@ mod tests {
     #[test]
     fn test_generate_identity() {
         let identity = Identity::generate(DIDScope::Local, Some("acme")).unwrap();
-        
+
         assert!(identity.did.starts_with("did:pekobot:local:acme:"));
         assert_eq!(identity.document.id, identity.did);
         assert!(!identity.document.verification_method.is_empty());
@@ -220,7 +217,7 @@ mod tests {
     fn test_parse_did() {
         let did = "did:pekobot:local:acme:abc123";
         let parsed = Identity::parse_did(did).unwrap();
-        
+
         assert_eq!(parsed.method, "pekobot");
         assert_eq!(parsed.scope, DIDScope::Local);
         assert_eq!(parsed.tenant, Some("acme".to_string()));
@@ -231,7 +228,7 @@ mod tests {
     fn test_parse_public_did() {
         let did = "did:pekobot:public:xyz789";
         let parsed = Identity::parse_did(did).unwrap();
-        
+
         assert_eq!(parsed.scope, DIDScope::Public);
         assert_eq!(parsed.tenant, None);
     }
@@ -240,7 +237,7 @@ mod tests {
     fn test_document_to_json() {
         let identity = Identity::generate(DIDScope::Public, None).unwrap();
         let json = identity.document_to_json().unwrap();
-        
+
         assert!(json.contains("@context"));
         assert!(json.contains(&identity.did));
     }

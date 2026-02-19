@@ -6,22 +6,22 @@
 //! - Multi-party negotiations
 //! - Quote expiration
 
+use chrono::{Duration, Utc};
 use pekobot::{
-    agent::{Agent, Orchestrator},
     a2a::{
         flows::{A2AFlowHandler, FlowResult},
         message::{
-            A2AMessage, AcceptPayload, ContractPayload, CompletionPayload, CompletionResult,
+            A2AMessage, AcceptPayload, CompletionPayload, CompletionResult, ContractPayload,
             ContractTerms, DataPayload, Deliverable, ErrorPayload, IntentPayload, MessageType,
             Payload, Price, PriceItem, QuotePayload, RejectPayload, StatusPayload, TaskStatus,
         },
         protocol::A2AProtocol,
         registry::create_registry,
     },
+    agent::{Agent, Orchestrator},
     config::Config,
     identity::did::DIDScope,
 };
-use chrono::{Duration, Utc};
 use serde_json::json;
 
 // ============================================================================
@@ -47,9 +47,8 @@ fn test_flow_handler_intent_to_quote() {
         Payload::Intent(intent),
     );
 
-    let result = provider_handler.handle_intent(&intent_msg,
-        &intent_msg.payload_as_intent().unwrap()
-    );
+    let result =
+        provider_handler.handle_intent(&intent_msg, &intent_msg.payload_as_intent().unwrap());
 
     match result {
         FlowResult::Response(quote_msg) => {
@@ -77,12 +76,10 @@ fn test_flow_handler_quote_under_threshold_auto_accept() {
         price: Price {
             amount: 50.0, // Under $1000 threshold
             currency: "USD".to_string(),
-            breakdown: Some(vec![
-                PriceItem {
-                    description: "Base fee".to_string(),
-                    amount: 50.0,
-                },
-            ]),
+            breakdown: Some(vec![PriceItem {
+                description: "Base fee".to_string(),
+                amount: 50.0,
+            }]),
         },
         valid_until: Utc::now() + Duration::hours(24),
         terms: "Standard terms".to_string(),
@@ -96,10 +93,7 @@ fn test_flow_handler_quote_under_threshold_auto_accept() {
         Payload::Quote(quote),
     );
 
-    let result = consumer_handler.handle_quote(
-        &quote_msg,
-        &quote_msg.payload_as_quote().unwrap()
-    );
+    let result = consumer_handler.handle_quote(&quote_msg, &quote_msg.payload_as_quote().unwrap());
 
     match result {
         FlowResult::Response(accept_msg) => {
@@ -136,10 +130,7 @@ fn test_flow_handler_quote_over_threshold_requires_approval() {
         Payload::Quote(quote),
     );
 
-    let result = consumer_handler.handle_quote(
-        &quote_msg,
-        &quote_msg.payload_as_quote().unwrap()
-    );
+    let result = consumer_handler.handle_quote(&quote_msg, &quote_msg.payload_as_quote().unwrap());
 
     match result {
         FlowResult::RequiresApproval(reason) => {
@@ -174,10 +165,7 @@ fn test_flow_handler_expired_quote() {
         Payload::Quote(quote),
     );
 
-    let result = consumer_handler.handle_quote(
-        &quote_msg,
-        &quote_msg.payload_as_quote().unwrap()
-    );
+    let result = consumer_handler.handle_quote(&quote_msg, &quote_msg.payload_as_quote().unwrap());
 
     match result {
         FlowResult::Error(msg) => {
@@ -207,10 +195,9 @@ fn test_flow_handler_accept_to_contract() {
         Payload::Intent(intent),
     );
 
-    let FlowResult::Response(quote_msg) = provider_handler.handle_intent(
-        &intent_msg,
-        &intent_msg.payload_as_intent().unwrap()
-    ) else {
+    let FlowResult::Response(quote_msg) =
+        provider_handler.handle_intent(&intent_msg, &intent_msg.payload_as_intent().unwrap())
+    else {
         panic!("Expected quote");
     };
 
@@ -230,10 +217,8 @@ fn test_flow_handler_accept_to_contract() {
         Payload::Accept(accept),
     );
 
-    let result = provider_handler.handle_accept(
-        &accept_msg,
-        &accept_msg.payload_as_accept().unwrap()
-    );
+    let result =
+        provider_handler.handle_accept(&accept_msg, &accept_msg.payload_as_accept().unwrap());
 
     match result {
         FlowResult::Response(contract_msg) => {
@@ -265,10 +250,8 @@ fn test_flow_handler_accept_invalid_quote() {
         Payload::Accept(accept),
     );
 
-    let result = provider_handler.handle_accept(
-        &accept_msg,
-        &accept_msg.payload_as_accept().unwrap()
-    );
+    let result =
+        provider_handler.handle_accept(&accept_msg, &accept_msg.payload_as_accept().unwrap());
 
     match result {
         FlowResult::Error(msg) => {
@@ -309,34 +292,29 @@ fn test_complete_negotiation_flow() {
     );
 
     // Step 2: Provider handles intent, sends quote
-    let FlowResult::Response(quote_msg) = provider_handler.handle_intent(
-        &intent_msg,
-        &intent_msg.payload_as_intent().unwrap()
-    ) else {
+    let FlowResult::Response(quote_msg) =
+        provider_handler.handle_intent(&intent_msg, &intent_msg.payload_as_intent().unwrap())
+    else {
         panic!("Expected quote response");
     };
 
     // Step 3: Consumer handles quote, sends accept
-    let FlowResult::Response(accept_msg) = consumer_handler.handle_quote(
-        &quote_msg,
-        &quote_msg.payload_as_quote().unwrap()
-    ) else {
+    let FlowResult::Response(accept_msg) =
+        consumer_handler.handle_quote(&quote_msg, &quote_msg.payload_as_quote().unwrap())
+    else {
         panic!("Expected accept response");
     };
 
     // Step 4: Provider handles accept, sends contract
-    let FlowResult::Response(contract_msg) = provider_handler.handle_accept(
-        &accept_msg,
-        &accept_msg.payload_as_accept().unwrap()
-    ) else {
+    let FlowResult::Response(contract_msg) =
+        provider_handler.handle_accept(&accept_msg, &accept_msg.payload_as_accept().unwrap())
+    else {
         panic!("Expected contract response");
     };
 
     // Step 5: Consumer handles contract
-    let result = consumer_handler.handle_contract(
-        &contract_msg,
-        &contract_msg.payload_as_contract().unwrap()
-    );
+    let result = consumer_handler
+        .handle_contract(&contract_msg, &contract_msg.payload_as_contract().unwrap());
 
     match result {
         FlowResult::Handled => {
@@ -428,13 +406,15 @@ async fn test_protocol_send_intent() {
     let protocol = A2AProtocol::new(registry);
 
     // Send an intent
-    let result = protocol.send_intent(
-        "did:pekobot:local:sender",
-        "did:pekobot:local:recipient",
-        "test-task",
-        json!({"key": "value"}),
-        true,
-    ).await;
+    let result = protocol
+        .send_intent(
+            "did:pekobot:local:sender",
+            "did:pekobot:local:recipient",
+            "test-task",
+            json!({"key": "value"}),
+            true,
+        )
+        .await;
 
     assert!(result.is_ok());
     let sent_msg = result.unwrap();
@@ -517,22 +497,26 @@ async fn test_multi_party_negotiation() {
     let protocol = orchestrator.protocol().unwrap();
 
     // Request quotes from both providers
-    let intent1 = protocol.send_intent(
-        &consumer_did,
-        &provider1_did,
-        "get-quote",
-        json!({"item": "widget"}),
-        true,
-    ).await;
+    let intent1 = protocol
+        .send_intent(
+            &consumer_did,
+            &provider1_did,
+            "get-quote",
+            json!({"item": "widget"}),
+            true,
+        )
+        .await;
     assert!(intent1.is_ok());
 
-    let intent2 = protocol.send_intent(
-        &consumer_did,
-        &provider2_did,
-        "get-quote",
-        json!({"item": "widget"}),
-        true,
-    ).await;
+    let intent2 = protocol
+        .send_intent(
+            &consumer_did,
+            &provider2_did,
+            "get-quote",
+            json!({"item": "widget"}),
+            true,
+        )
+        .await;
     assert!(intent2.is_ok());
 }
 
@@ -674,10 +658,9 @@ fn test_flow_cleanup_expired_quotes() {
     );
 
     // Generate quote
-    let FlowResult::Response(_) = handler.handle_intent(
-        &intent_msg,
-        &intent_msg.payload_as_intent().unwrap()
-    ) else {
+    let FlowResult::Response(_) =
+        handler.handle_intent(&intent_msg, &intent_msg.payload_as_intent().unwrap())
+    else {
         panic!("Expected quote");
     };
 
@@ -727,14 +710,12 @@ fn test_status_payload_variants() {
 fn test_completion_payload() {
     let completion = CompletionPayload {
         result: CompletionResult::Success,
-        deliverables: vec![
-            Deliverable {
-                id: "deliv_1".to_string(),
-                description: "Final report".to_string(),
-                content_type: "application/pdf".to_string(),
-                content: json!({"url": "https://example.com/report.pdf"}),
-            },
-        ],
+        deliverables: vec![Deliverable {
+            id: "deliv_1".to_string(),
+            description: "Final report".to_string(),
+            content_type: "application/pdf".to_string(),
+            content: json!({"url": "https://example.com/report.pdf"}),
+        }],
         final_report: Some("Task completed successfully".to_string()),
     };
 

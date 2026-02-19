@@ -23,13 +23,13 @@
 //! 4. Run: cargo run --example social_media_manager
 
 use pekobot::agent::Agent;
-use pekobot::channels::cli::{CliChannel, run_interactive_loop};
+use pekobot::channels::cli::{run_interactive_loop, CliChannel};
 use pekobot::tools::social_media::SocialMediaTool;
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
-use pekobot::types::provider::{ProviderConfig, ProviderType, ModelConfig};
+use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use std::collections::HashMap;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -123,9 +123,12 @@ fn check_social_credentials() {
 async fn create_social_media_agent() -> anyhow::Result<Agent> {
     let agent_config = AgentConfig {
         name: "social-media-manager".to_string(),
-        description: Some("AI social media management assistant for marketing agencies".to_string()),
+        description: Some(
+            "AI social media management assistant for marketing agencies".to_string(),
+        ),
         capabilities: vec![AgentCapability::Text, AgentCapability::ToolUse],
-        system_prompt: Some(r#"
+        system_prompt: Some(
+            r#"
 You are a social media manager for a marketing agency.
 
 Your responsibilities:
@@ -146,7 +149,9 @@ Best posting times:
 - LinkedIn: Tuesday-Thursday, 10 AM - 12 PM
 
 Always review posts before scheduling and provide engagement insights.
-"#.to_string()),
+"#
+            .to_string(),
+        ),
         metadata: {
             let mut m = HashMap::new();
             m.insert("role".to_string(), "social_media_manager".to_string());
@@ -276,20 +281,22 @@ async fn run_social_media_loop(
 }
 
 /// Draft a new post
-async fn draft_post(
-    tool: &SocialMediaTool,
-    platform: &str,
-    content: &str,
-) -> anyhow::Result<()> {
+async fn draft_post(tool: &SocialMediaTool, platform: &str, content: &str) -> anyhow::Result<()> {
     info!("📝 Drafting post for {}...", platform);
 
-    let result = tool.execute(serde_json::json!({
-        "command": "draft_post",
-        "platform": platform,
-        "content": content
-    })).await?;
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "draft_post",
+            "platform": platform,
+            "content": content
+        }))
+        .await?;
 
-    if result.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+    if result
+        .get("success")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
+    {
         if let Some(post) = result.get("post") {
             if let Some(id) = post.get("id").and_then(|i| i.as_str()) {
                 println!("\n✅ Post drafted!");
@@ -315,13 +322,19 @@ async fn schedule_post(
     info!("📅 Scheduling post {} for {}...", post_id, datetime);
 
     // Parse datetime (expecting ISO 8601)
-    let result = tool.execute(serde_json::json!({
-        "command": "schedule_post",
-        "post_id": post_id,
-        "scheduled_at": datetime
-    })).await?;
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "schedule_post",
+            "post_id": post_id,
+            "scheduled_at": datetime
+        }))
+        .await?;
 
-    if result.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+    if result
+        .get("success")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
+    {
         println!("\n✅ Post scheduled!");
         println!("   ID: {}", post_id);
         println!("   Time: {}", datetime);
@@ -333,21 +346,27 @@ async fn schedule_post(
 }
 
 /// Publish a post immediately
-async fn publish_post(
-    tool: &SocialMediaTool,
-    post_id: &str,
-) -> anyhow::Result<()> {
+async fn publish_post(tool: &SocialMediaTool, post_id: &str) -> anyhow::Result<()> {
     info!("🚀 Publishing post {}...", post_id);
 
-    let result = tool.execute(serde_json::json!({
-        "command": "publish",
-        "post_id": post_id
-    })).await?;
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "publish",
+            "post_id": post_id
+        }))
+        .await?;
 
-    if result.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+    if result
+        .get("success")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
+    {
         println!("\n✅ Post published!");
         println!("   ID: {}", post_id);
-        println!("   Time: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+        println!(
+            "   Time: {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
     } else {
         println!("❌ Failed to publish post");
     }
@@ -356,12 +375,12 @@ async fn publish_post(
 }
 
 /// List scheduled posts
-async fn list_scheduled(
-    tool: &SocialMediaTool,
-) -> anyhow::Result<()> {
-    let result = tool.execute(serde_json::json!({
-        "command": "list_scheduled"
-    })).await?;
+async fn list_scheduled(tool: &SocialMediaTool) -> anyhow::Result<()> {
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "list_scheduled"
+        }))
+        .await?;
 
     if let Some(posts) = result.get("posts").and_then(|p| p.as_array()) {
         if posts.is_empty() {
@@ -372,7 +391,7 @@ async fn list_scheduled(
                 if let (Some(id), Some(platform), Some(time)) = (
                     post.get("id").and_then(|i| i.as_str()),
                     post.get("platform").and_then(|p| p.as_str()),
-                    post.get("scheduled_at").and_then(|t| t.as_str())
+                    post.get("scheduled_at").and_then(|t| t.as_str()),
                 ) {
                     println!("   • [{}] {} - {}", id, platform, time);
                 }
@@ -384,12 +403,12 @@ async fn list_scheduled(
 }
 
 /// List drafts
-async fn list_drafts(
-    tool: &SocialMediaTool,
-) -> anyhow::Result<()> {
-    let result = tool.execute(serde_json::json!({
-        "command": "list_drafts"
-    })).await?;
+async fn list_drafts(tool: &SocialMediaTool) -> anyhow::Result<()> {
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "list_drafts"
+        }))
+        .await?;
 
     if let Some(posts) = result.get("posts").and_then(|p| p.as_array()) {
         if posts.is_empty() {
@@ -400,7 +419,7 @@ async fn list_drafts(
                 if let (Some(id), Some(platform), Some(preview)) = (
                     post.get("id").and_then(|i| i.as_str()),
                     post.get("platform").and_then(|p| p.as_str()),
-                    post.get("content_preview").and_then(|c| c.as_str())
+                    post.get("content_preview").and_then(|c| c.as_str()),
                 ) {
                     println!("   • [{}] {}: {}...", id, platform, preview);
                 }
@@ -412,21 +431,33 @@ async fn list_drafts(
 }
 
 /// Get analytics for a post
-async fn get_analytics(
-    tool: &SocialMediaTool,
-    post_id: &str,
-) -> anyhow::Result<()> {
-    let result = tool.execute(serde_json::json!({
-        "command": "get_analytics",
-        "post_id": post_id
-    })).await?;
+async fn get_analytics(tool: &SocialMediaTool, post_id: &str) -> anyhow::Result<()> {
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "get_analytics",
+            "post_id": post_id
+        }))
+        .await?;
 
-    if result.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+    if result
+        .get("success")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
+    {
         if let Some(analytics) = result.get("analytics") {
             let likes = analytics.get("likes").and_then(|l| l.as_u64()).unwrap_or(0);
-            let replies = analytics.get("replies").and_then(|r| r.as_u64()).unwrap_or(0);
-            let reposts = analytics.get("reposts").and_then(|r| r.as_u64()).unwrap_or(0);
-            let impressions = analytics.get("impressions").and_then(|i| i.as_u64()).unwrap_or(0);
+            let replies = analytics
+                .get("replies")
+                .and_then(|r| r.as_u64())
+                .unwrap_or(0);
+            let reposts = analytics
+                .get("reposts")
+                .and_then(|r| r.as_u64())
+                .unwrap_or(0);
+            let impressions = analytics
+                .get("impressions")
+                .and_then(|i| i.as_u64())
+                .unwrap_or(0);
 
             println!("\n📊 Analytics for post {}:", post_id);
             println!("   ❤️  Likes: {}", likes);
@@ -443,7 +474,8 @@ async fn get_analytics(
 
 /// Print help text
 fn print_help() {
-    println!(r#"
+    println!(
+        r#"
 📱 Social Media Manager Commands:
 
   draft <platform> <content>    - Create a new post draft
@@ -472,5 +504,6 @@ The agent will:
 Prerequisites:
 - Twitter API credentials (for Twitter/X posting)
 - LinkedIn API credentials (for LinkedIn posting)
-"#);
+"#
+    );
 }

@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
     // Handle command
     if args.list {
         println!("\n📋 Listing available tools from registry...\n");
-        
+
         match remote_client.list_tools(None).await {
             Ok(tools) => {
                 if tools.is_empty() {
@@ -74,8 +74,10 @@ async fn main() -> anyhow::Result<()> {
                         println!("     Version: {}", tool.version);
                         println!("     Description: {}", tool.description);
                         println!("     Author: {}", tool.author);
-                        println!("     Downloads: {} | Rating: {:.1}/5.0", 
-                            tool.downloads, tool.rating);
+                        println!(
+                            "     Downloads: {} | Rating: {:.1}/5.0",
+                            tool.downloads, tool.rating
+                        );
                         println!("     Categories: {:?}", tool.categories);
                         println!();
                     }
@@ -91,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(query) = args.search {
         println!("\n🔍 Searching for '{}'...\n", query);
-        
+
         match remote_client.search_tools(&query).await {
             Ok(results) => {
                 if results.is_empty() {
@@ -101,11 +103,13 @@ async fn main() -> anyhow::Result<()> {
                     for tool in results {
                         println!("  📦 {}@{}", tool.name, tool.version);
                         println!("     {}", tool.description);
-                        println!("     Downloads: {} | Rating: {:.1}/5.0", 
-                            tool.downloads, tool.rating);
+                        println!(
+                            "     Downloads: {} | Rating: {:.1}/5.0",
+                            tool.downloads, tool.rating
+                        );
                         println!();
                     }
-                    
+
                     println!("💡 To install a tool, run:");
                     println!("   cargo run --example pekohub_remote -- --install <tool-name>");
                 }
@@ -119,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(tool_name) = args.install {
         println!("\n📥 Installing '{}' from remote registry...\n", tool_name);
-        
+
         // In a real scenario, this would download and install
         println!("This would:");
         println!("  1. Fetch tool manifest from https://pekohub.io");
@@ -128,31 +132,35 @@ async fn main() -> anyhow::Result<()> {
         println!("  4. Verify Ed25519 signature");
         println!("  5. Install to local cache directory");
         println!();
-        
+
         // Mock installation
         println!("✅ Mock installation complete for '{}'", tool_name);
-        println!("   Installed to: {:?}", 
-            local_registry.config.cache_dir.join(&tool_name));
+        println!(
+            "   Installed to: {:?}",
+            local_registry.config.cache_dir.join(&tool_name)
+        );
     }
 
     if args.check_updates {
         println!("\n🔄 Checking for updates...\n");
-        
+
         let installed = local_registry.list_installed();
-        
+
         if installed.is_empty() {
             println!("No tools installed locally.");
         } else {
             for tool in installed {
                 let name = &tool.manifest.tool.name;
                 let current_version = &tool.manifest.tool.version;
-                
+
                 println!("Checking {}@{}...", name, current_version);
-                
+
                 match remote_client.check_for_updates(name, current_version).await {
                     Ok(Some(new_manifest)) => {
-                        println!("  ⬆️  Update available: {} -> {}",
-                            current_version, new_manifest.tool.version);
+                        println!(
+                            "  ⬆️  Update available: {} -> {}",
+                            current_version, new_manifest.tool.version
+                        );
                     }
                     Ok(None) => {
                         println!("  ✓ Up to date");

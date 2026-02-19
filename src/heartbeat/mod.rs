@@ -35,6 +35,7 @@ pub struct HeartbeatEngine {
 
 impl HeartbeatEngine {
     /// Create a new heartbeat engine
+    #[must_use] 
     pub fn new(config: HeartbeatConfig) -> Self {
         Self { config }
     }
@@ -76,16 +77,17 @@ impl HeartbeatEngine {
     /// Read HEARTBEAT.md and return all parsed tasks
     pub async fn collect_tasks(&self) -> Result<Vec<String>> {
         let heartbeat_path = self.config.workspace_dir.join("HEARTBEAT.md");
-        
+
         if !heartbeat_path.exists() {
             return Ok(Vec::new());
         }
-        
+
         let content = tokio::fs::read_to_string(&heartbeat_path).await?;
         Ok(Self::parse_tasks(&content))
     }
 
     /// Parse tasks from HEARTBEAT.md (lines starting with `- `)
+    #[must_use] 
     pub fn parse_tasks(content: &str) -> Vec<String> {
         content
             .lines()
@@ -99,7 +101,7 @@ impl HeartbeatEngine {
     /// Create a default HEARTBEAT.md if it doesn't exist
     pub async fn ensure_heartbeat_file(workspace_dir: &PathBuf) -> Result<()> {
         let path = workspace_dir.join("HEARTBEAT.md");
-        
+
         if !path.exists() {
             let default = "# Periodic Tasks
 
@@ -121,13 +123,13 @@ impl HeartbeatEngine {
 /// Run heartbeat tasks and return results
 pub async fn execute_tasks(tasks: Vec<String>) -> Vec<(String, Result<String>)> {
     let mut results = Vec::new();
-    
+
     for task in tasks {
         // For now, just return the task as a result
         // In a full implementation, this would execute the task
-        results.push((task.clone(), Ok(format!("Task queued: {}", task))));
+        results.push((task.clone(), Ok(format!("Task queued: {task}"))));
     }
-    
+
     results
 }
 
@@ -210,7 +212,7 @@ mod tests {
             interval_minutes: 30,
             workspace_dir: dir.clone(),
         });
-        
+
         let count = engine.tick().await.unwrap();
         assert_eq!(count, 0);
 
@@ -232,7 +234,7 @@ mod tests {
             interval_minutes: 30,
             workspace_dir: dir.clone(),
         });
-        
+
         let count = engine.tick().await.unwrap();
         assert_eq!(count, 3);
 

@@ -57,7 +57,10 @@ sandbox = "network"
     println!("\n📄 Loading tool manifest...");
     match registry.load_tool_from_path(&manifest_path) {
         Ok(manifest) => {
-            println!("✅ Loaded: {}@{}", manifest.tool.name, manifest.tool.version);
+            println!(
+                "✅ Loaded: {}@{}",
+                manifest.tool.name, manifest.tool.version
+            );
             println!("   Description: {}", manifest.tool.description);
             println!("   Category: {:?}", manifest.tool.category);
             println!("   Provides: {:?}", manifest.capabilities.provides);
@@ -74,9 +77,10 @@ sandbox = "network"
     println!("\n🔧 Installing tool...");
     match registry.install_local_tool(&manifest_path).await {
         Ok(installed) => {
-            println!("✅ Installed: {}@{}", 
-                installed.manifest.tool.name,
-                installed.manifest.tool.version);
+            println!(
+                "✅ Installed: {}@{}",
+                installed.manifest.tool.name, installed.manifest.tool.version
+            );
             println!("   Path: {:?}", installed.install_path);
             println!("   Installed at: {}", installed.installed_at);
         }
@@ -92,10 +96,10 @@ sandbox = "network"
         println!("   No tools installed");
     } else {
         for tool in installed {
-            println!("   • {}@{} - {}",
-                tool.manifest.tool.name,
-                tool.manifest.tool.version,
-                tool.manifest.tool.description);
+            println!(
+                "   • {}@{} - {}",
+                tool.manifest.tool.name, tool.manifest.tool.version, tool.manifest.tool.description
+            );
         }
     }
 
@@ -103,9 +107,10 @@ sandbox = "network"
     println!("\n🔍 Finding tools with 'weather.current' capability...");
     let weather_tools = registry.find_by_capability("weather.current");
     for tool in weather_tools {
-        println!("   Found: {}@{}",
-            tool.manifest.tool.name,
-            tool.manifest.tool.version);
+        println!(
+            "   Found: {}@{}",
+            tool.manifest.tool.name, tool.manifest.tool.version
+        );
     }
 
     // Create another sample tool
@@ -132,9 +137,10 @@ permissions = ["network", "calendar"]
     println!("\n🔍 Finding scheduling tools...");
     let scheduling_tools = registry.find_by_capability("scheduling.calendar_read");
     for tool in scheduling_tools {
-        println!("   Found: {}@{}",
-            tool.manifest.tool.name,
-            tool.manifest.tool.version);
+        println!(
+            "   Found: {}@{}",
+            tool.manifest.tool.name, tool.manifest.tool.version
+        );
     }
 
     // Scan directory for tools
@@ -154,7 +160,7 @@ permissions = ["network", "calendar"]
     // Cleanup
     println!("\n🧹 Cleaning up...");
     let _ = std::fs::remove_dir_all(&tools_dir);
-    
+
     // Uninstall tools
     if registry.get_tool("weather").is_some() {
         registry.uninstall_tool("weather")?;

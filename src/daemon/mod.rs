@@ -3,7 +3,7 @@
 //! Runs Pekobot as a background service with component supervision
 //! and automatic restart on failure.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::future::Future;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
@@ -157,6 +157,7 @@ fn spawn_state_writer(config: DaemonConfig) -> JoinHandle<()> {
 }
 
 /// Check if daemon is already running
+#[must_use] 
 pub fn is_daemon_running(state_file: &PathBuf) -> bool {
     if let Ok(content) = std::fs::read_to_string(state_file) {
         if let Ok(state) = serde_json::from_str::<DaemonState>(&content) {

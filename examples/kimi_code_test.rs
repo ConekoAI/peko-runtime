@@ -1,5 +1,5 @@
 //! Kimi Code API Test
-//! 
+//!
 //! Tests the Kimi Code provider using the auth profile key
 
 use std::env;
@@ -10,9 +10,10 @@ async fn main() {
     println!("==========================\n");
 
     // Load API key from auth profiles
-    let auth_file = std::fs::read_to_string(
-        format!("{}/.openclaw/agents/main/agent/auth-profiles.json", env::var("HOME").unwrap_or_default())
-    );
+    let auth_file = std::fs::read_to_string(format!(
+        "{}/.openclaw/agents/main/agent/auth-profiles.json",
+        env::var("HOME").unwrap_or_default()
+    ));
 
     let api_key = match auth_file {
         Ok(content) => {
@@ -57,7 +58,7 @@ async fn test_kimi_code(api_key: &str) {
     });
 
     let client = reqwest::Client::new();
-    
+
     // Try different possible endpoints
     let endpoints = [
         "https://api.kimi-code.moonshot.cn/v1/messages",
@@ -67,7 +68,7 @@ async fn test_kimi_code(api_key: &str) {
 
     for endpoint in &endpoints {
         println!("🔍 Trying endpoint: {}", endpoint);
-        
+
         let response = client
             .post(*endpoint)
             .header("x-api-key", api_key.trim_start_matches("kimi-"))
@@ -81,16 +82,19 @@ async fn test_kimi_code(api_key: &str) {
             Ok(resp) => {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
-                
+
                 if status.is_success() {
                     println!("✅ SUCCESS! Status: {}", status);
-                    
+
                     // Parse response
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
                         if let Some(content) = json["content"][0]["text"].as_str() {
                             println!("\n📝 Response:\n{}\n", content.trim());
                         } else {
-                            println!("\n📄 Raw response:\n{}\n", serde_json::to_string_pretty(&json).unwrap_or_default());
+                            println!(
+                                "\n📄 Raw response:\n{}\n",
+                                serde_json::to_string_pretty(&json).unwrap_or_default()
+                            );
                         }
                     }
                     return;

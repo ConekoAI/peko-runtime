@@ -13,7 +13,7 @@ pub struct EmailConfig {
     pub provider: EmailProvider,
     /// User email address
     pub email_address: String,
-    /// OAuth2 credentials
+    /// `OAuth2` credentials
     pub credentials: EmailCredentials,
     /// Default reply settings
     pub reply_settings: ReplySettings,
@@ -30,7 +30,7 @@ pub enum EmailProvider {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmailCredentials {
-    /// Access token (OAuth2)
+    /// Access token (`OAuth2`)
     pub access_token: String,
     /// Refresh token
     pub refresh_token: Option<String>,
@@ -190,7 +190,7 @@ pub struct EmailFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilterCondition {
-    pub field: String, // "from", "subject", "body", "has_attachment"
+    pub field: String,    // "from", "subject", "body", "has_attachment"
     pub operator: String, // "contains", "equals", "starts_with"
     pub value: String,
 }
@@ -229,7 +229,7 @@ impl EmailTool {
     pub async fn get_inbox_summary(&self) -> anyhow::Result<InboxSummary> {
         // Fetch recent emails
         let emails = self.list_emails(50).await?;
-        
+
         let mut categories: HashMap<String, u32> = HashMap::new();
         let mut urgent = Vec::new();
         let mut requires_reply = Vec::new();
@@ -247,7 +247,7 @@ impl EmailTool {
 
             // Check urgency
             let urgency = self.calculate_urgency(email);
-            
+
             let preview = EmailPreview {
                 id: email.id.clone(),
                 subject: email.subject.clone(),
@@ -326,7 +326,7 @@ impl EmailTool {
         tone: Option<ReplyTone>,
     ) -> anyhow::Result<SmartReply> {
         let email = self.get_email(email_id).await?;
-        
+
         if email.is_none() {
             anyhow::bail!("Email not found");
         }
@@ -336,7 +336,7 @@ impl EmailTool {
 
         // Analyze email content
         let key_points = self.extract_key_points(&original);
-        
+
         // Generate draft based on tone and content
         let draft_body = self.generate_draft_body(&original, &tone, &key_points);
         let subject = if original.subject.to_lowercase().starts_with("re:") {
@@ -348,7 +348,7 @@ impl EmailTool {
         // Add signature if configured
         let final_body = if self.config.reply_settings.include_signature {
             if let Some(ref sig) = self.config.reply_settings.signature {
-                format!("{}\n\n--\n{}", draft_body, sig)
+                format!("{draft_body}\n\n--\n{sig}")
             } else {
                 draft_body
             }
@@ -388,7 +388,7 @@ impl EmailTool {
     ) -> anyhow::Result<ScheduledEmail> {
         // In production, would store in database and have cron job process
         let scheduled = ScheduledEmail {
-            id: format!("sch_{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+            id: format!("sch_{}", &uuid::Uuid::new_v4().to_string()[..8]),
             email,
             scheduled_at: send_at,
             status: ScheduledStatus::Pending,
@@ -399,7 +399,7 @@ impl EmailTool {
     }
 
     /// Cancel scheduled email
-    pub async fn cancel_scheduled(&self, scheduled_id: &str) -> anyhow::Result<bool> {
+    pub async fn cancel_scheduled(&self, _scheduled_id: &str) -> anyhow::Result<bool> {
         // In production, would update database
         Ok(true)
     }
@@ -415,15 +415,13 @@ impl EmailTool {
     /// Archive email
     pub async fn archive_email(&self, email_id: &str) -> anyhow::Result<()> {
         match self.config.provider {
-            EmailProvider::Gmail => {
-                self.modify_gmail_label(email_id, "INBOX", false).await
-            }
+            EmailProvider::Gmail => self.modify_gmail_label(email_id, "INBOX", false).await,
             _ => Ok(()),
         }
     }
 
     /// Create email filter
-    pub async fn create_filter(&self, filter: EmailFilter) -> anyhow::Result<()> {
+    pub async fn create_filter(&self, _filter: EmailFilter) -> anyhow::Result<()> {
         // In production, would create via provider API
         Ok(())
     }
@@ -434,10 +432,11 @@ impl EmailTool {
         let subject_lower = email.subject.to_lowercase();
         let from_lower = email.from.email.to_lowercase();
 
-        if subject_lower.contains("unsubscribe") 
+        if subject_lower.contains("unsubscribe")
             || from_lower.contains("newsletter")
             || from_lower.contains("noreply")
-            || subject_lower.contains("digest") {
+            || subject_lower.contains("digest")
+        {
             return "newsletter".to_string();
         }
 
@@ -445,21 +444,24 @@ impl EmailTool {
             return "conversation".to_string();
         }
 
-        if from_lower.contains("support") 
+        if from_lower.contains("support")
             || from_lower.contains("help")
-            || subject_lower.contains("ticket") {
+            || subject_lower.contains("ticket")
+        {
             return "support".to_string();
         }
 
         if subject_lower.contains("invoice")
             || subject_lower.contains("payment")
-            || subject_lower.contains("receipt") {
+            || subject_lower.contains("receipt")
+        {
             return "financial".to_string();
         }
 
         if subject_lower.contains("meeting")
             || subject_lower.contains("calendar")
-            || subject_lower.contains("invitation") {
+            || subject_lower.contains("invitation")
+        {
             return "calendar".to_string();
         }
 
@@ -519,9 +521,9 @@ impl EmailTool {
 
     fn requires_reply(&self, email: &Email) -> bool {
         let subject_lower = email.subject.to_lowercase();
-        
+
         // Check if email asks questions
-        if email.body_text.contains("?") {
+        if email.body_text.contains('?') {
             return true;
         }
 
@@ -535,9 +537,10 @@ impl EmailTool {
         }
 
         // Check subject for reply indicators
-        if subject_lower.contains("?") 
+        if subject_lower.contains('?')
             || subject_lower.contains("request")
-            || subject_lower.contains("approval") {
+            || subject_lower.contains("approval")
+        {
             return true;
         }
 
@@ -589,24 +592,19 @@ impl EmailTool {
 
         // Simple response template
         let body = match tone {
-            ReplyTone::Brief => {
-                "Got it, thanks for letting me know.".to_string()
-            }
+            ReplyTone::Brief => "Got it, thanks for letting me know.".to_string(),
             _ => {
                 if key_points.iter().any(|p| p.contains("Question")) {
                     format!(
-                        "{}\n\nThanks for your email. I've reviewed your questions and will get back to you with answers shortly.\n\n{}",
-                        greeting, closing
+                        "{greeting}\n\nThanks for your email. I've reviewed your questions and will get back to you with answers shortly.\n\n{closing}"
                     )
                 } else if key_points.iter().any(|p| p.contains("request")) {
                     format!(
-                        "{}\n\nThanks for reaching out. I'll take care of this and update you soon.\n\n{}",
-                        greeting, closing
+                        "{greeting}\n\nThanks for reaching out. I'll take care of this and update you soon.\n\n{closing}"
                     )
                 } else {
                     format!(
-                        "{}\n\nThanks for your email. I've received it and will respond if needed.\n\n{}",
-                        greeting, closing
+                        "{greeting}\n\nThanks for your email. I've received it and will respond if needed.\n\n{closing}"
                     )
                 }
             }
@@ -618,11 +616,11 @@ impl EmailTool {
     // Gmail API implementations
     async fn list_gmail_emails(&self, max_results: u32) -> anyhow::Result<Vec<Email>> {
         let url = format!(
-            "https://www.googleapis.com/gmail/v1/users/me/messages?maxResults={}",
-            max_results
+            "https://www.googleapis.com/gmail/v1/users/me/messages?maxResults={max_results}"
         );
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&url)
             .bearer_auth(&self.config.credentials.access_token)
             .send()
@@ -643,11 +641,11 @@ impl EmailTool {
 
     async fn get_gmail_email(&self, email_id: &str) -> anyhow::Result<Option<Email>> {
         let url = format!(
-            "https://www.googleapis.com/gmail/v1/users/me/messages/{}",
-            email_id
+            "https://www.googleapis.com/gmail/v1/users/me/messages/{email_id}"
         );
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(&url)
             .bearer_auth(&self.config.credentials.access_token)
             .send()
@@ -667,7 +665,10 @@ impl EmailTool {
 
     async fn send_gmail_email(&self, _email: &Email) -> anyhow::Result<String> {
         // Would call Gmail API send endpoint
-        Ok(format!("msg_{}", uuid::Uuid::new_v4().to_string()[..8].to_string()))
+        Ok(format!(
+            "msg_{}",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ))
     }
 
     async fn modify_gmail_label(
@@ -689,21 +690,31 @@ impl EmailTool {
     }
 
     async fn get_outlook_email(&self, _email_id: &str) -> anyhow::Result<Option<Email>> {
-        Ok(Some(self.create_mock_email("general", "Outlook Test Email")))
+        Ok(Some(
+            self.create_mock_email("general", "Outlook Test Email"),
+        ))
     }
 
     async fn send_outlook_email(&self, _email: &Email) -> anyhow::Result<String> {
-        Ok(format!("msg_{}", uuid::Uuid::new_v4().to_string()[..8].to_string()))
+        Ok(format!(
+            "msg_{}",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ))
     }
 
     // Helper to create mock emails
     fn create_mock_email(&self, category: &str, subject: &str) -> Email {
-        let urgency_keywords = vec!["urgent", "deadline", "action required", "asap"];
-        let is_urgent = urgency_keywords.iter().any(|k| subject.to_lowercase().contains(k));
+        let urgency_keywords = ["urgent", "deadline", "action required", "asap"];
+        let is_urgent = urgency_keywords
+            .iter()
+            .any(|k| subject.to_lowercase().contains(k));
 
         Email {
-            id: format!("msg_{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
-            thread_id: format!("thread_{}", uuid::Uuid::new_v4().to_string()[..8].to_string()),
+            id: format!("msg_{}", &uuid::Uuid::new_v4().to_string()[..8]),
+            thread_id: format!(
+                "thread_{}",
+                &uuid::Uuid::new_v4().to_string()[..8]
+            ),
             subject: subject.to_string(),
             from: EmailAddress {
                 name: Some("John Doe".to_string()),
@@ -715,7 +726,9 @@ impl EmailTool {
             }],
             cc: vec![],
             bcc: vec![],
-            body_text: format!("This is a sample {} email body for testing purposes.", category),
+            body_text: format!(
+                "This is a sample {category} email body for testing purposes."
+            ),
             body_html: None,
             timestamp: chrono::Utc::now() - chrono::Duration::hours(if is_urgent { 1 } else { 24 }),
             labels: vec![category.to_string(), "inbox".to_string()],

@@ -2,7 +2,7 @@
 
 use super::flows::{A2AFlowHandler, FlowResult};
 use super::message::{A2AMessage, MessageType, Payload};
-use crate::a2a::registry::{AgentRegistry, SharedRegistry};
+use crate::a2a::registry::SharedRegistry;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use tokio::sync::mpsc::Receiver;
@@ -27,7 +27,8 @@ impl A2AProtocol {
     }
 
     /// Register a flow handler for an agent
-    pub fn register_agent_handler(&mut self,
+    pub fn register_agent_handler(
+        &mut self,
         agent_did: impl Into<String>,
         handler: A2AFlowHandler,
     ) {
@@ -37,9 +38,7 @@ impl A2AProtocol {
     }
 
     /// Handle a single incoming message
-    pub async fn handle_message(&mut self,
-        message: A2AMessage,
-    ) -> Result<Option<A2AMessage>> {
+    pub async fn handle_message(&mut self, message: A2AMessage) -> Result<Option<A2AMessage>> {
         debug!(
             "Handling message {} of type {:?} from {} to {}",
             message.message_id, message.message_type, message.sender.did, message.recipient.did
@@ -57,10 +56,7 @@ impl A2AProtocol {
         let handler = self.flow_handlers.get_mut(&message.recipient.did);
 
         if handler.is_none() {
-            warn!(
-                "No flow handler for recipient: {}",
-                message.recipient.did
-            );
+            warn!("No flow handler for recipient: {}", message.recipient.did);
             return Ok(None);
         }
 
@@ -137,12 +133,12 @@ impl A2AProtocol {
             FlowResult::Response(response) => {
                 // Sign and send response
                 let signed = self.sign_message(response)?;
-                
+
                 // Route response back
                 if let Err(e) = self.registry.route_message(signed.clone()).await {
                     warn!("Failed to route response: {}", e);
                 }
-                
+
                 Ok(Some(signed))
             }
             FlowResult::RequiresApproval(reason) => {
@@ -160,9 +156,7 @@ impl A2AProtocol {
     }
 
     /// Run the protocol message loop
-    pub async fn run(&mut self,
-        mut receiver: Receiver<A2AMessage>,
-    ) -> Result<()> {
+    pub async fn run(&mut self, mut receiver: Receiver<A2AMessage>) -> Result<()> {
         info!("Starting A2A Protocol message loop");
 
         while let Some(message) = receiver.recv().await {
@@ -176,14 +170,12 @@ impl A2AProtocol {
     }
 
     /// Sign a message with the sender's key
-    fn sign_message(&self,
-        mut message: A2AMessage,
-    ) -> Result<A2AMessage> {
+    fn sign_message(&self, mut message: A2AMessage) -> Result<A2AMessage> {
         // TODO: Implement real signing with agent's private key
         // For now, use a placeholder signature
         message.signature = format!(
             "sig_{}_{}",
-            message.sender.did.replace(":", "_"),
+            message.sender.did.replace(':', "_"),
             message.message_id
         );
         Ok(message)
@@ -224,19 +216,19 @@ impl A2AProtocol {
     ) -> Result<A2AMessage> {
         let message = A2AMessage::new(sender_did, recipient_did, message_type.clone(), payload);
         let signed = self.sign_message(message)?;
-        
+
         // Send via message bus
         self.registry
             .message_bus()
             .send(signed.clone())
             .await
             .context("Failed to send message")?;
-        
+
         info!(
             "Sent message {} from {} to {} (type: {:?})",
             signed.message_id, sender_did, recipient_did, message_type
         );
-        
+
         Ok(signed)
     }
 
@@ -267,13 +259,13 @@ impl A2AProtocol {
     }
 
     /// Get the registry
+    #[must_use] 
     pub fn registry(&self) -> &SharedRegistry {
         &self.registry
     }
 
     /// Cleanup expired quotes periodically
-    pub fn cleanup_expired_quotes(&mut self,
-    ) {
+    pub fn cleanup_expired_quotes(&mut self) {
         for handler in self.flow_handlers.values_mut() {
             handler.cleanup_expired_quotes();
         }

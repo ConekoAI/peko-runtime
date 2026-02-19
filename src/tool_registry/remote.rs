@@ -4,10 +4,9 @@
 //! Downloads tools on-demand with signature verification.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::tool_registry::{ToolManifest, InstalledTool, ToolRegistryConfig};
+use crate::tool_registry::{InstalledTool, ToolManifest};
 
 /// Remote registry configuration
 #[derive(Debug, Clone)]
@@ -53,7 +52,10 @@ pub struct ToolIndexEntry {
 #[derive(Debug, Clone)]
 pub enum DownloadProgress {
     Starting,
-    Downloading { bytes_downloaded: u64, total_bytes: u64 },
+    Downloading {
+        bytes_downloaded: u64,
+        total_bytes: u64,
+    },
     Verifying,
     Installing,
     Complete,
@@ -69,10 +71,7 @@ pub struct RemoteRegistryClient {
 
 impl RemoteRegistryClient {
     /// Create new remote registry client
-    pub fn new(
-        config: RemoteRegistryConfig,
-        cache_dir: PathBuf,
-    ) -> anyhow::Result<Self> {
+    pub fn new(config: RemoteRegistryConfig, cache_dir: PathBuf) -> anyhow::Result<Self> {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .user_agent("Pekobot-Tool-Registry/1.0")
@@ -89,22 +88,17 @@ impl RemoteRegistryClient {
     }
 
     /// Search for tools in remote registry
-    pub async fn search_tools(
-        &self,
-        query: &str,
-    ) -> anyhow::Result<Vec<ToolIndexEntry>> {
+    pub async fn search_tools(&self, query: &str) -> anyhow::Result<Vec<ToolIndexEntry>> {
         let url = format!("{}/api/v1/tools/search", self.config.registry_url);
-        
-        let mut request = self.http_client
-            .get(&url)
-            .query(&[("q", query)]);
-        
+
+        let mut request = self.http_client.get(&url).query(&[("q", query)]);
+
         if let Some(ref key) = self.config.api_key {
-            request = request.header("Authorization", format!("Bearer {}", key));
+            request = request.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = request.send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Search failed: {}", response.status());
         }
@@ -114,24 +108,21 @@ impl RemoteRegistryClient {
     }
 
     /// List all available tools
-    pub async fn list_tools(
-        &self,
-        category: Option<&str>,
-    ) -> anyhow::Result<Vec<ToolIndexEntry>> {
+    pub async fn list_tools(&self, category: Option<&str>) -> anyhow::Result<Vec<ToolIndexEntry>> {
         let url = format!("{}/api/v1/tools", self.config.registry_url);
-        
+
         let mut request = self.http_client.get(&url);
-        
+
         if let Some(cat) = category {
             request = request.query(&[("category", cat)]);
         }
-        
+
         if let Some(ref key) = self.config.api_key {
-            request = request.header("Authorization", format!("Bearer {}", key));
+            request = request.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = request.send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("List failed: {}", response.status());
         }
@@ -153,17 +144,17 @@ impl RemoteRegistryClient {
         );
 
         let mut request = self.http_client.get(&url);
-        
+
         if let Some(ref key) = self.config.api_key {
-            request = request.header("Authorization", format!("Bearer {}", key));
+            request = request.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = request.send().await?;
-        
+
         if response.status() == 404 {
-            anyhow::bail!("Tool {}@{} not found in registry", tool_name, version_str);
+            anyhow::bail!("Tool {tool_name}@{version_str} not found in registry");
         }
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Failed to fetch manifest: {}", response.status());
         }
@@ -178,7 +169,7 @@ impl RemoteRegistryClient {
         tool_name: &str,
         version: Option<&str>,
     ) -> anyhow::Result<InstalledTool> {
-        println!("📦 Installing {} from registry...", tool_name);
+        println!("📦 Installing {tool_name} from registry...");
 
         // Step 1: Fetch manifest
         println!("  Fetching manifest...");
@@ -186,15 +177,13 @@ impl RemoteRegistryClient {
         println!("  Found {}@{}", manifest.tool.name, manifest.tool.version);
 
         // Step 2: Determine binary URL for current platform
-        let binary_url = self.get_binary_url(&manifest)
+        let binary_url = self
+            .get_binary_url(&manifest)
             .ok_or_else(|| anyhow::anyhow!("No binary available for current platform"))?;
 
         // Step 3: Download binary
         println!("  Downloading binary...");
-        let binary_path = self.download_binary(
-            &binary_url,
-            &manifest,
-        ).await?;
+        let binary_path = self.download_binary(&binary_url, &manifest).await?;
 
         // Step 4: Verify signature if enabled
         if self.config.verify_signatures {
@@ -206,26 +195,24 @@ impl RemoteRegistryClient {
         println!("  Installing...");
         let installed = self.install_to_local(&manifest, &binary_path).await?;
 
-        println!("✅ Successfully installed {}@{}", 
-            manifest.tool.name, manifest.tool.version);
+        println!(
+            "✅ Successfully installed {}@{}",
+            manifest.tool.name, manifest.tool.version
+        );
 
         Ok(installed)
     }
 
     /// Download binary with progress
-    async fn download_binary(
-        &self,
-        url: &str,
-        manifest: &ToolManifest,
-    ) -> anyhow::Result<PathBuf> {
+    async fn download_binary(&self, url: &str, manifest: &ToolManifest) -> anyhow::Result<PathBuf> {
         let tool_name = &manifest.tool.name;
         let version = &manifest.tool.version;
-        
+
         // Create download directory
         let download_dir = self.cache_dir.join("downloads");
         std::fs::create_dir_all(&download_dir)?;
-        
-        let binary_path = download_dir.join(format!("{}-{}", tool_name, version));
+
+        let binary_path = download_dir.join(format!("{tool_name}-{version}"));
 
         // Check if already cached
         if binary_path.exists() {
@@ -235,25 +222,23 @@ impl RemoteRegistryClient {
 
         // Download
         let mut request = self.http_client.get(url);
-        
+
         if let Some(ref key) = self.config.api_key {
-            request = request.header("Authorization", format!("Bearer {}", key));
+            request = request.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = request.send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Download failed: {}", response.status());
         }
 
         // Get total size if available
-        let total_size = response
-            .content_length()
-            .unwrap_or(0);
+        let total_size = response.content_length().unwrap_or(0);
 
         // Stream download
         let bytes = response.bytes().await?;
-        
+
         if total_size > 0 && bytes.len() as u64 != total_size {
             anyhow::bail!("Download incomplete");
         }
@@ -280,7 +265,7 @@ impl RemoteRegistryClient {
         binary_path: &PathBuf,
         manifest: &ToolManifest,
     ) -> anyhow::Result<()> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         // Calculate SHA256 checksum
         let content = std::fs::read(binary_path)?;
@@ -289,18 +274,20 @@ impl RemoteRegistryClient {
         let checksum = format!("{:x}", hasher.finalize());
 
         // Verify against manifest
-        if let Some(ref expected_checksum) = manifest.security.as_ref().and_then(|s| s.checksum.clone()) {
+        if let Some(ref expected_checksum) =
+            manifest.security.as_ref().and_then(|s| s.checksum.clone())
+        {
             if checksum != *expected_checksum {
                 anyhow::bail!(
-                    "Checksum mismatch! Expected: {}, Got: {}",
-                    expected_checksum, checksum
+                    "Checksum mismatch! Expected: {expected_checksum}, Got: {checksum}"
                 );
             }
             println!("    ✓ Checksum verified");
         }
 
         // Verify Ed25519 signature if available
-        if let Some(ref expected_sig) = manifest.security.as_ref().and_then(|s| s.signature.clone()) {
+        if let Some(_expected_sig) = manifest.security.as_ref().and_then(|s| s.signature.clone())
+        {
             // In production, would verify Ed25519 signature
             // For now, just check it's present
             println!("    ✓ Signature present (verification skipped in demo)");
@@ -343,9 +330,7 @@ impl RemoteRegistryClient {
     }
 
     /// Get binary URL for current platform
-    fn get_binary_url(&self,
-        manifest: &ToolManifest,
-    ) -> Option<String> {
+    fn get_binary_url(&self, manifest: &ToolManifest) -> Option<String> {
         let binaries = manifest.binaries.as_ref()?;
 
         #[cfg(target_os = "linux")]
@@ -380,34 +365,34 @@ impl RemoteRegistryClient {
         current_version: &str,
     ) -> anyhow::Result<Option<ToolManifest>> {
         let latest = self.get_tool_manifest(tool_name, Some("latest")).await?;
-        
-        if latest.tool.version != current_version {
+
+        if latest.tool.version == current_version {
+            println!("{tool_name} is up to date ({current_version})");
+            Ok(None)
+        } else {
             println!(
                 "Update available: {} -> {}",
                 current_version, latest.tool.version
             );
             Ok(Some(latest))
-        } else {
-            println!("{} is up to date ({})", tool_name, current_version);
-            Ok(None)
         }
     }
 
     /// Get download stats for a tool
-    pub async fn get_tool_stats(
-        &self,
-        tool_name: &str,
-    ) -> anyhow::Result<ToolStats> {
-        let url = format!("{}/api/v1/tools/{}/stats", self.config.registry_url, tool_name);
-        
+    pub async fn get_tool_stats(&self, tool_name: &str) -> anyhow::Result<ToolStats> {
+        let url = format!(
+            "{}/api/v1/tools/{}/stats",
+            self.config.registry_url, tool_name
+        );
+
         let mut request = self.http_client.get(&url);
-        
+
         if let Some(ref key) = self.config.api_key {
-            request = request.header("Authorization", format!("Bearer {}", key));
+            request = request.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = request.send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Failed to fetch stats: {}", response.status());
         }
@@ -434,10 +419,7 @@ mod tests {
     #[test]
     fn test_remote_registry_client() {
         let cache_dir = std::env::temp_dir().join("pekohub-test");
-        let client = RemoteRegistryClient::new(
-            RemoteRegistryConfig::default(),
-            cache_dir,
-        );
+        let client = RemoteRegistryClient::new(RemoteRegistryConfig::default(), cache_dir);
         assert!(client.is_ok());
     }
 }

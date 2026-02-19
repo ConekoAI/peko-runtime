@@ -1,12 +1,11 @@
 //! Calendar tool for scheduling and managing events
 //!
 //! Supports Google Calendar and Outlook/Exchange integration.
-//! Handles OAuth2 authentication and token refresh.
+//! Handles `OAuth2` authentication and token refresh.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
 
 use crate::tools::Tool;
 
@@ -24,12 +23,12 @@ impl std::str::FromStr for CalendarProvider {
         match s.to_lowercase().as_str() {
             "google" | "gcal" => Ok(CalendarProvider::Google),
             "outlook" | "exchange" | "microsoft" => Ok(CalendarProvider::Outlook),
-            _ => Err(anyhow::anyhow!("Unknown calendar provider: {}", s)),
+            _ => Err(anyhow::anyhow!("Unknown calendar provider: {s}")),
         }
     }
 }
 
-/// OAuth2 credentials for calendar access
+/// `OAuth2` credentials for calendar access
 #[derive(Debug, Clone)]
 pub struct CalendarCredentials {
     pub client_id: String,
@@ -69,10 +68,8 @@ pub struct CalendarTool {
 
 impl CalendarTool {
     /// Create new calendar tool
-    pub fn new(
-        provider: CalendarProvider,
-        credentials: CalendarCredentials,
-    ) -> Self {
+    #[must_use] 
+    pub fn new(provider: CalendarProvider, credentials: CalendarCredentials) -> Self {
         Self {
             provider,
             credentials,
@@ -102,6 +99,7 @@ impl CalendarTool {
     }
 
     /// Set calendar ID (default is "primary")
+    #[must_use] 
     pub fn with_calendar_id(mut self, id: String) -> Self {
         self.calendar_id = id;
         self
@@ -127,10 +125,8 @@ impl CalendarTool {
         Ok(())
     }
 
-    /// Refresh OAuth2 token
-    async fn refresh_token(&mut self,
-        refresh_token: &str,
-    ) -> anyhow::Result<()> {
+    /// Refresh `OAuth2` token
+    async fn refresh_token(&mut self, refresh_token: &str) -> anyhow::Result<()> {
         match self.provider {
             CalendarProvider::Google => {
                 let url = "https://oauth2.googleapis.com/token";
@@ -141,16 +137,11 @@ impl CalendarTool {
                     ("grant_type", "refresh_token"),
                 ];
 
-                let response = self
-                    .client
-                    .post(url)
-                    .form(&params)
-                    .send()
-                    .await?;
+                let response = self.client.post(url).form(&params).send().await?;
 
                 if !response.status().is_success() {
                     let error = response.text().await?;
-                    return Err(anyhow::anyhow!("Token refresh failed: {}", error));
+                    return Err(anyhow::anyhow!("Token refresh failed: {error}"));
                 }
 
                 let data: serde_json::Value = response.json().await?;
@@ -158,10 +149,9 @@ impl CalendarTool {
                     self.credentials.access_token = token.to_string();
                 }
 
-                if let Some(expires_in) = data.get("expires_in").and_then(|e| e.as_i64()) {
-                    self.credentials.token_expires_at = Some(
-                        chrono::Utc::now() + chrono::Duration::seconds(expires_in),
-                    );
+                if let Some(expires_in) = data.get("expires_in").and_then(serde_json::Value::as_i64) {
+                    self.credentials.token_expires_at =
+                        Some(chrono::Utc::now() + chrono::Duration::seconds(expires_in));
                 }
             }
             CalendarProvider::Outlook => {
@@ -175,16 +165,11 @@ impl CalendarTool {
                     ("scope", "https://graph.microsoft.com/Calendars.ReadWrite"),
                 ];
 
-                let response = self
-                    .client
-                    .post(url)
-                    .form(&params)
-                    .send()
-                    .await?;
+                let response = self.client.post(url).form(&params).send().await?;
 
                 if !response.status().is_success() {
                     let error = response.text().await?;
-                    return Err(anyhow::anyhow!("Token refresh failed: {}", error));
+                    return Err(anyhow::anyhow!("Token refresh failed: {error}"));
                 }
 
                 let data: serde_json::Value = response.json().await?;
@@ -215,7 +200,10 @@ impl CalendarTool {
                 let response = self
                     .client
                     .get(&url)
-                    .header("Authorization", format!("Bearer {}", self.credentials.access_token))
+                    .header(
+                        "Authorization",
+                        format!("Bearer {}", self.credentials.access_token),
+                    )
                     .query(&[
                         ("timeMin", start.to_rfc3339()),
                         ("timeMax", end.to_rfc3339()),
@@ -226,7 +214,7 @@ impl CalendarTool {
 
                 if !response.status().is_success() {
                     let error = response.text().await?;
-                    return Err(anyhow::anyhow!("Google Calendar API error: {}", error));
+                    return Err(anyhow::anyhow!("Google Calendar API error: {error}"));
                 }
 
                 let data: serde_json::Value = response.json().await?;
@@ -252,7 +240,10 @@ impl CalendarTool {
                 let response = self
                     .client
                     .get(&url)
-                    .header("Authorization", format!("Bearer {}", self.credentials.access_token))
+                    .header(
+                        "Authorization",
+                        format!("Bearer {}", self.credentials.access_token),
+                    )
                     .query(&[
                         ("startDateTime", start.to_rfc3339()),
                         ("endDateTime", end.to_rfc3339()),
@@ -262,7 +253,7 @@ impl CalendarTool {
 
                 if !response.status().is_success() {
                     let error = response.text().await?;
-                    return Err(anyhow::anyhow!("Outlook API error: {}", error));
+                    return Err(anyhow::anyhow!("Outlook API error: {error}"));
                 }
 
                 let data: serde_json::Value = response.json().await?;
@@ -358,17 +349,19 @@ impl CalendarTool {
                 }
 
                 if !attendees.is_empty() {
-                    body["attendees"] = json!(
-                        attendees.iter().map(|email| {
-                            json!({ "email": email })
-                        }).collect::<Vec<_>>()
-                    );
+                    body["attendees"] = json!(attendees
+                        .iter()
+                        .map(|email| { json!({ "email": email }) })
+                        .collect::<Vec<_>>());
                 }
 
                 let response = self
                     .client
                     .post(&url)
-                    .header("Authorization", format!("Bearer {}", self.credentials.access_token))
+                    .header(
+                        "Authorization",
+                        format!("Bearer {}", self.credentials.access_token),
+                    )
                     .header("Content-Type", "application/json")
                     .json(&body)
                     .send()
@@ -376,7 +369,7 @@ impl CalendarTool {
 
                 if !response.status().is_success() {
                     let error = response.text().await?;
-                    return Err(anyhow::anyhow!("Failed to create event: {}", error));
+                    return Err(anyhow::anyhow!("Failed to create event: {error}"));
                 }
 
                 let data: serde_json::Value = response.json().await?;
@@ -406,22 +399,26 @@ impl CalendarTool {
                 }
 
                 if !attendees.is_empty() {
-                    body["attendees"] = json!(
-                        attendees.iter().map(|email| {
+                    body["attendees"] = json!(attendees
+                        .iter()
+                        .map(|email| {
                             json!({
                                 "emailAddress": {
                                     "address": email
                                 },
                                 "type": "required"
                             })
-                        }).collect::<Vec<_>>()
-                    );
+                        })
+                        .collect::<Vec<_>>());
                 }
 
                 let response = self
                     .client
                     .post(url)
-                    .header("Authorization", format!("Bearer {}", self.credentials.access_token))
+                    .header(
+                        "Authorization",
+                        format!("Bearer {}", self.credentials.access_token),
+                    )
                     .header("Content-Type", "application/json")
                     .json(&body)
                     .send()
@@ -429,7 +426,7 @@ impl CalendarTool {
 
                 if !response.status().is_success() {
                     let error = response.text().await?;
-                    return Err(anyhow::anyhow!("Failed to create event: {}", error));
+                    return Err(anyhow::anyhow!("Failed to create event: {error}"));
                 }
 
                 let data: serde_json::Value = response.json().await?;
@@ -440,12 +437,13 @@ impl CalendarTool {
     }
 
     /// Parse Google Calendar event JSON
-    fn parse_google_event(&self,
-        data: &serde_json::Value,
-    ) -> Option<CalendarEvent> {
+    fn parse_google_event(&self, data: &serde_json::Value) -> Option<CalendarEvent> {
         let id = data.get("id")?.as_str()?.to_string();
         let title = data.get("summary")?.as_str()?.to_string();
-        let description = data.get("description").and_then(|d| d.as_str()).map(|s| s.to_string());
+        let description = data
+            .get("description")
+            .and_then(|d| d.as_str())
+            .map(std::string::ToString::to_string);
         let status = data.get("status")?.as_str()?.to_string();
 
         let start_time = data
@@ -462,14 +460,21 @@ impl CalendarTool {
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))?;
 
-        let location = data.get("location").and_then(|l| l.as_str()).map(|s| s.to_string());
+        let location = data
+            .get("location")
+            .and_then(|l| l.as_str())
+            .map(std::string::ToString::to_string);
 
         let attendees: Vec<String> = data
             .get("attendees")
             .and_then(|a| a.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|a| a.get("email").and_then(|e| e.as_str()).map(|s| s.to_string()))
+                    .filter_map(|a| {
+                        a.get("email")
+                            .and_then(|e| e.as_str())
+                            .map(std::string::ToString::to_string)
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -487,13 +492,14 @@ impl CalendarTool {
     }
 
     /// Parse Outlook event JSON
-    fn parse_outlook_event(
-        &self,
-        data: &serde_json::Value,
-    ) -> Option<CalendarEvent> {
+    fn parse_outlook_event(&self, data: &serde_json::Value) -> Option<CalendarEvent> {
         let id = data.get("id")?.as_str()?.to_string();
         let title = data.get("subject")?.as_str()?.to_string();
-        let status = data.get("showAs")?.as_str().map_or("busy", |s| s).to_string();
+        let status = data
+            .get("showAs")?
+            .as_str()
+            .map_or("busy", |s| s)
+            .to_string();
 
         let start_time = data
             .get("start")?
@@ -513,13 +519,13 @@ impl CalendarTool {
             .get("body")
             .and_then(|b| b.get("content"))
             .and_then(|c| c.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let location = data
             .get("location")
             .and_then(|l| l.get("displayName"))
             .and_then(|d| d.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let attendees: Vec<String> = data
             .get("attendees")
@@ -530,7 +536,7 @@ impl CalendarTool {
                         a.get("emailAddress")
                             .and_then(|e| e.get("address"))
                             .and_then(|a| a.as_str())
-                            .map(|s| s.to_string())
+                            .map(std::string::ToString::to_string)
                     })
                     .collect()
             })
@@ -551,11 +557,11 @@ impl CalendarTool {
 
 #[async_trait]
 impl Tool for CalendarTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "calendar"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         r#"Calendar tool for scheduling meetings and checking availability.
 
 Supports Google Calendar and Outlook/Exchange.
@@ -578,10 +584,7 @@ Environment Variables Required:
 - CALENDAR_REFRESH_TOKEN (optional but recommended)"#
     }
 
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let command = params
             .get("command")
             .and_then(|c| c.as_str())
@@ -589,7 +592,7 @@ Environment Variables Required:
 
         // Clone self to allow mutation for token refresh
         let mut tool = CalendarTool {
-            provider: self.provider.clone(),
+            provider: self.provider,
             credentials: self.credentials.clone(),
             client: self.client.clone(),
             calendar_id: self.calendar_id.clone(),
@@ -602,14 +605,22 @@ Environment Variables Required:
                     .and_then(|s| s.as_str())
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'start' parameter (ISO 8601 format required)"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Missing or invalid 'start' parameter (ISO 8601 format required)"
+                        )
+                    })?;
 
                 let end = params
                     .get("end")
                     .and_then(|e| e.as_str())
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'end' parameter (ISO 8601 format required)"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Missing or invalid 'end' parameter (ISO 8601 format required)"
+                        )
+                    })?;
 
                 let events = tool.list_events(start, end).await?;
 
@@ -646,7 +657,7 @@ Environment Variables Required:
 
                 let duration = params
                     .get("duration_minutes")
-                    .and_then(|d| d.as_i64())
+                    .and_then(serde_json::Value::as_i64)
                     .unwrap_or(60);
 
                 let slots = tool.find_available_slots(start, end, duration).await?;
@@ -687,20 +698,12 @@ Environment Variables Required:
                 let attendees: Vec<&str> = params
                     .get("attendees")
                     .and_then(|a| a.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|a| a.as_str())
-                            .collect()
-                    })
+                    .map(|arr| arr.iter().filter_map(|a| a.as_str()).collect())
                     .unwrap_or_default();
 
-                let event = tool.create_event(
-                    title,
-                    start,
-                    end,
-                    description,
-                    attendees,
-                ).await?;
+                let event = tool
+                    .create_event(title, start, end, description, attendees)
+                    .await?;
 
                 Ok(json!({
                     "success": true,
@@ -719,8 +722,7 @@ Environment Variables Required:
             }
 
             _ => Err(anyhow::anyhow!(
-                "Unknown command: {}. Use 'list_events', 'find_slots', or 'create_event'",
-                command
+                "Unknown command: {command}. Use 'list_events', 'find_slots', or 'create_event'"
             )),
         }
     }

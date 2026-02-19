@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 /// A skill is a user-defined capability with tools and prompts
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,16 +126,16 @@ impl SkillsRegistry {
     /// Load a single skill from a directory
     fn load_skill_from_dir(&self, dir: &Path) -> Result<Skill> {
         let manifest_path = dir.join("SKILL.toml");
-        
+
         if !manifest_path.exists() {
-            anyhow::bail!("SKILL.toml not found in {:?}", dir);
+            anyhow::bail!("SKILL.toml not found in {dir:?}");
         }
 
         let content = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("Failed to read {:?}", manifest_path))?;
+            .with_context(|| format!("Failed to read {manifest_path:?}"))?;
 
         let manifest: SkillManifest = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse {:?}", manifest_path))?;
+            .with_context(|| format!("Failed to parse {manifest_path:?}"))?;
 
         let skill = Skill {
             name: manifest.skill.name,
@@ -152,16 +152,19 @@ impl SkillsRegistry {
     }
 
     /// Get a skill by name
+    #[must_use] 
     pub fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.get(name)
     }
 
     /// Get all loaded skills
+    #[must_use] 
     pub fn list(&self) -> Vec<&Skill> {
         self.skills.values().collect()
     }
 
     /// Get skills by tag
+    #[must_use] 
     pub fn find_by_tag(&self, tag: &str) -> Vec<&Skill> {
         self.skills
             .values()
@@ -170,6 +173,7 @@ impl SkillsRegistry {
     }
 
     /// Get all tools from all skills
+    #[must_use] 
     pub fn all_tools(&self) -> Vec<(&str, &SkillTool)> {
         self.skills
             .values()
@@ -178,11 +182,13 @@ impl SkillsRegistry {
     }
 
     /// Check if a skill is loaded
+    #[must_use] 
     pub fn has(&self, name: &str) -> bool {
         self.skills.contains_key(name)
     }
 
     /// Get the skills directory path
+    #[must_use] 
     pub fn skills_dir(&self) -> &Path {
         &self.skills_dir
     }
@@ -190,8 +196,8 @@ impl SkillsRegistry {
 
 /// Load a skill from a TOML string (for testing)
 pub fn parse_skill_manifest(content: &str) -> Result<Skill> {
-    let manifest: SkillManifest = toml::from_str(content)
-        .context("Failed to parse skill manifest")?;
+    let manifest: SkillManifest =
+        toml::from_str(content).context("Failed to parse skill manifest")?;
 
     Ok(Skill {
         name: manifest.skill.name,
@@ -253,7 +259,7 @@ version = "0.1.0"
 
         let mut registry = SkillsRegistry::new(temp.path());
         let count = registry.load_all().unwrap();
-        
+
         assert_eq!(count, 1);
         assert!(registry.has("test-skill"));
         assert!(registry.get("test-skill").is_some());
@@ -262,7 +268,7 @@ version = "0.1.0"
     #[test]
     fn test_find_by_tag() {
         let temp = TempDir::new().unwrap();
-        
+
         let skill1_dir = temp.path().join("skill1");
         std::fs::create_dir(&skill1_dir).unwrap();
         std::fs::write(
@@ -272,7 +278,8 @@ name = "skill1"
 description = "Test"
 tags = ["utility"]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
 
         let skill2_dir = temp.path().join("skill2");
         std::fs::create_dir(&skill2_dir).unwrap();
@@ -283,7 +290,8 @@ name = "skill2"
 description = "Test"
 tags = ["utility", "network"]
 "#,
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut registry = SkillsRegistry::new(temp.path());
         registry.load_all().unwrap();

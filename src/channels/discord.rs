@@ -1,11 +1,10 @@
 //! Discord channel implementation
-//! 
+//!
 //! Uses Discord Bot API for sending messages and Gateway WebSocket for receiving.
 
 use super::Channel;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use tracing::{debug, error, info, warn};
 
@@ -27,7 +26,7 @@ impl DiscordConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let bot_token = std::env::var("DISCORD_BOT_TOKEN")
             .map_err(|_| anyhow::anyhow!("DISCORD_BOT_TOKEN not set"))?;
-        
+
         Ok(Self {
             bot_token,
             guild_id: std::env::var("DISCORD_GUILD_ID").ok(),
@@ -67,12 +66,17 @@ impl DiscordChannel {
         if self.config.allowed_users.is_empty() {
             return true; // Allow all if no restrictions
         }
-        self.config.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        self.config
+            .allowed_users
+            .iter()
+            .any(|u| u == "*" || u == user_id)
     }
 
     /// Send message to a specific channel
     async fn send_to_channel(&self, channel_id: &str, message: &str) -> Result<()> {
-        let url = format!("https://discord.com/api/v10/channels/{}/messages", channel_id);
+        let url = format!(
+            "https://discord.com/api/v10/channels/{channel_id}/messages"
+        );
         let body = serde_json::json!({ "content": message });
 
         let response = self
@@ -88,7 +92,7 @@ impl DiscordChannel {
         if !status.is_success() {
             let error = response.text().await.unwrap_or_default();
             error!("Discord API error: {} - {}", status, error);
-            return Err(anyhow::anyhow!("Discord API error: {} - {}", status, error));
+            return Err(anyhow::anyhow!("Discord API error: {status} - {error}"));
         }
 
         debug!("Sent message to Discord channel {}", channel_id);
@@ -98,13 +102,17 @@ impl DiscordChannel {
 
 #[async_trait]
 impl Channel for DiscordChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "discord"
     }
 
     async fn send(&mut self, message: &str) -> Result<()> {
         // Try to send to the last known channel, or the configured channel
-        if let Some(channel_id) = self.last_channel_id.as_ref().or(self.config.channel_id.as_ref()) {
+        if let Some(channel_id) = self
+            .last_channel_id
+            .as_ref()
+            .or(self.config.channel_id.as_ref())
+        {
             self.send_to_channel(channel_id, message).await?;
         } else {
             warn!("No Discord channel ID available for sending");
@@ -124,7 +132,7 @@ impl Channel for DiscordChannel {
         // 2. Listen for messages
         // 3. Filter by guild/channel/user
         // 4. Queue messages for processing
-        
+
         // For now, return None (non-blocking)
         Ok(None)
     }

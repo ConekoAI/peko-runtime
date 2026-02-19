@@ -16,26 +16,27 @@ pub struct VectorMemory {
 impl VectorMemory {
     /// Create a new vector memory store
     pub fn new<P: AsRef<Path>>(path: P, namespace: &str, embedding_dim: usize) -> Result<Self> {
-        let conn = Connection::open(path)
-            .context("Failed to open SQLite database")?;
-        
+        let conn = Connection::open(path).context("Failed to open SQLite database")?;
+
         let store = Self {
             conn,
             namespace: namespace.to_string(),
             embedding_dim,
         };
-        
+
         store.initialize()?;
-        
-        info!("Vector memory initialized for namespace: {} (dim: {})", namespace, embedding_dim);
+
+        info!(
+            "Vector memory initialized for namespace: {} (dim: {})",
+            namespace, embedding_dim
+        );
         Ok(store)
     }
 
     /// Initialize database tables
     fn initialize(&self) -> Result<()> {
-        self.conn.execute_batch(
-            &format!(
-                r#"
+        self.conn
+            .execute_batch(r"
                 CREATE TABLE IF NOT EXISTS memory_entries (
                     id TEXT PRIMARY KEY,
                     namespace TEXT NOT NULL,
@@ -59,9 +60,8 @@ impl VectorMemory {
 
                 -- Virtual table for vector similarity using sqlite-vss (if available)
                 -- Fallback to manual cosine similarity
-                "#,
-            ),
-        ).context("Failed to initialize memory tables")?;
+                ")
+            .context("Failed to initialize memory tables")?;
 
         Ok(())
     }
@@ -90,23 +90,25 @@ impl VectorMemory {
 
         // Store entry
         tx.execute(
-            r#"
+            r"
             INSERT INTO memory_entries 
             (id, namespace, content, metadata, created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            "#,
+            ",
             params![id, self.namespace, content, metadata_json, now, now],
-        ).context("Failed to store memory entry")?;
+        )
+        .context("Failed to store memory entry")?;
 
         // Store embedding as binary
         let embedding_bytes = embedding_to_bytes(&embedding);
         tx.execute(
-            r#"
+            r"
             INSERT INTO memory_embeddings (entry_id, embedding, model)
             VALUES (?1, ?2, ?3)
-            "#,
+            ",
             params![id, embedding_bytes, model],
-        ).context("Failed to store embedding")?;
+        )
+        .context("Failed to store embedding")?;
 
         tx.commit()?;
 
@@ -130,16 +132,16 @@ impl VectorMemory {
         }
 
         let query_norm = vector_norm(query_embedding);
-        
+
         // Fetch all embeddings for this namespace and compute cosine similarity
         let mut stmt = self.conn.prepare(
-            r#"
+            r"
             SELECT e.id, e.content, e.metadata, e.created_at, 
                    e.access_count, e.last_accessed_at, m.embedding, m.model
             FROM memory_entries e
             JOIN memory_embeddings m ON e.id = m.entry_id
             WHERE e.namespace = ?1
-            "#,
+            ",
         )?;
 
         let entries = stmt
@@ -148,27 +150,27 @@ impl VectorMemory {
                 let content: String = row.get(1)?;
                 let metadata_json: Option<String> = row.get(2)?;
                 let metadata = metadata_json
-                    .map(|m| serde_json::from_str(&m).ok())
-                    .flatten();
+                    .and_then(|m| serde_json::from_str(&m).ok());
                 let created_at: String = row.get(3)?;
                 let access_count: i64 = row.get(4)?;
                 let last_accessed: Option<String> = row.get(5)?;
                 let embedding_bytes: Vec<u8> = row.get(6)?;
                 let model: Option<String> = row.get(7)?;
-                
+
                 let embedding = bytes_to_embedding(&embedding_bytes);
-                
+
                 let last_accessed_at = last_accessed
-                    .map(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
-                    .flatten()
+                    .and_then(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc));
-                
+
                 let timestamp = chrono::DateTime::parse_from_rfc3339(&created_at)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                        3,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    ))?
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?
                     .with_timezone(&chrono::Utc);
 
                 let entry = MemoryEntry {
@@ -205,7 +207,11 @@ impl VectorMemory {
         results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
         results.truncate(limit);
 
-        debug!("Found {} similar entries above threshold {}", results.len(), min_similarity);
+        debug!(
+            "Found {} similar entries above threshold {}",
+            results.len(),
+            min_similarity
+        );
         Ok(results)
     }
 
@@ -217,16 +223,19 @@ impl VectorMemory {
         min_similarity: f32,
     ) -> Result<Vec<SimilarityResult>> {
         // Get the embedding for the reference entry
-        let embedding_bytes: Option<Vec<u8>> = self.conn.query_row(
-            r#"
+        let embedding_bytes: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                r"
             SELECT m.embedding 
             FROM memory_embeddings m
             JOIN memory_entries e ON m.entry_id = e.id
             WHERE e.id = ?1 AND e.namespace = ?2
-            "#,
-            params![entry_id, self.namespace],
-            |row| row.get(0),
-        ).optional()?;
+            ",
+                params![entry_id, self.namespace],
+                |row| row.get(0),
+            )
+            .optional()?;
 
         let embedding = match embedding_bytes {
             Some(bytes) => bytes_to_embedding(&bytes),
@@ -243,25 +252,24 @@ impl VectorMemory {
 
     /// Get a memory entry by ID
     pub fn get(&self, id: &str) -> Result<Option<MemoryEntry>> {
-        let row = self.conn
+        let row = self
+            .conn
             .query_row(
-                r#"
+                r"
                 SELECT id, content, metadata, created_at, access_count, last_accessed_at 
                 FROM memory_entries
                 WHERE id = ?1 AND namespace = ?2
-                "#,
+                ",
                 params![id, self.namespace],
                 |row| {
                     let metadata_json: Option<String> = row.get(2)?;
                     let metadata = metadata_json
-                        .map(|m| serde_json::from_str(&m).ok())
-                        .flatten();
+                        .and_then(|m| serde_json::from_str(&m).ok());
                     let last_accessed: Option<String> = row.get(5)?;
                     let last_accessed_at = last_accessed
-                        .map(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
-                        .flatten()
+                        .and_then(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
                         .map(|dt| dt.with_timezone(&chrono::Utc));
-                    
+
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -276,9 +284,9 @@ impl VectorMemory {
 
         if let Some((id, content, metadata, created_at, access_count, last_accessed_at)) = row {
             let _ = self.update_access_stats(&id);
-            
+
             let timestamp = chrono::DateTime::parse_from_rfc3339(&created_at)
-                .map_err(|e| anyhow::anyhow!("Invalid timestamp: {}", e))?
+                .map_err(|e| anyhow::anyhow!("Invalid timestamp: {e}"))?
                 .with_timezone(&chrono::Utc);
 
             Ok(Some(MemoryEntry {
@@ -319,11 +327,11 @@ impl VectorMemory {
     fn update_access_stats(&self, id: &str) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
-            r#"
+            r"
             UPDATE memory_entries 
             SET access_count = access_count + 1, last_accessed_at = ?1
             WHERE id = ?2
-            "#,
+            ",
             params![now, id],
         )?;
         Ok(())
@@ -336,7 +344,10 @@ impl VectorMemory {
             params![self.namespace],
         )?;
 
-        warn!("Cleared {} entries from namespace: {}", affected, self.namespace);
+        warn!(
+            "Cleared {} entries from namespace: {}",
+            affected, self.namespace
+        );
         Ok(affected)
     }
 }
@@ -351,10 +362,7 @@ pub struct SimilarityResult {
 
 /// Convert a vector of f32 to bytes for storage
 fn embedding_to_bytes(embedding: &[f32]) -> Vec<u8> {
-    embedding
-        .iter()
-        .flat_map(|&f| f.to_le_bytes())
-        .collect()
+    embedding.iter().flat_map(|&f| f.to_le_bytes()).collect()
 }
 
 /// Convert bytes back to a vector of f32
@@ -408,9 +416,11 @@ mod tests {
     #[test]
     fn test_store_and_retrieve() {
         let (store, _temp) = create_test_store();
-        
+
         let embedding = create_test_embedding(384, 0.1);
-        let id = store.store("Test content", embedding, Some("test-model"), None).unwrap();
+        let id = store
+            .store("Test content", embedding, Some("test-model"), None)
+            .unwrap();
         assert!(!id.is_empty());
 
         let entry = store.get(&id).unwrap().unwrap();
@@ -420,24 +430,32 @@ mod tests {
     #[test]
     fn test_similarity_search() {
         let (store, _temp) = create_test_store();
-        
+
         // Store entries with different embeddings
         let embedding1 = create_test_embedding(384, 0.1);
-        store.store("Content A", embedding1.clone(), None, None).unwrap();
-        
+        store
+            .store("Content A", embedding1.clone(), None, None)
+            .unwrap();
+
         let embedding2 = create_test_embedding(384, 0.9);
-        store.store("Content B", embedding2.clone(), None, None).unwrap();
-        
+        store
+            .store("Content B", embedding2.clone(), None, None)
+            .unwrap();
+
         let embedding3 = create_test_embedding(384, -0.5);
         store.store("Content C", embedding3, None, None).unwrap();
 
         // Search with embedding similar to B
         let query = create_test_embedding(384, 0.85);
-        let results = store.search_similar(&query, 10, -1.0).unwrap();  // Use -1.0 to include all similarities
-        
+        let results = store.search_similar(&query, 10, -1.0).unwrap(); // Use -1.0 to include all similarities
+
         // Should have at least 2 results (Content A and B have positive similarity with query,
         // Content C has negative similarity but should still be included with threshold -1.0)
-        assert!(results.len() >= 2, "Expected at least 2 results, got {}", results.len());
+        assert!(
+            results.len() >= 2,
+            "Expected at least 2 results, got {}",
+            results.len()
+        );
         // Content B should be most similar (highest similarity score)
         assert_eq!(results[0].entry.content, "Content B");
         assert!(results[0].similarity > 0.99);
@@ -446,15 +464,21 @@ mod tests {
     #[test]
     fn test_find_similar_to() {
         let (store, _temp) = create_test_store();
-        
+
         let embedding1 = create_test_embedding(384, 0.1);
-        let id1 = store.store("Reference content", embedding1.clone(), None, None).unwrap();
-        
+        let id1 = store
+            .store("Reference content", embedding1.clone(), None, None)
+            .unwrap();
+
         let embedding2 = create_test_embedding(384, 0.11); // Very similar
-        store.store("Similar content", embedding2, None, None).unwrap();
-        
+        store
+            .store("Similar content", embedding2, None, None)
+            .unwrap();
+
         let embedding3 = create_test_embedding(384, -0.9); // Very different
-        store.store("Different content", embedding3, None, None).unwrap();
+        store
+            .store("Different content", embedding3, None, None)
+            .unwrap();
 
         let results = store.find_similar_to(&id1, 5, 0.5).unwrap();
         assert_eq!(results.len(), 1);
@@ -464,7 +488,7 @@ mod tests {
     #[test]
     fn test_dimension_mismatch() {
         let (store, _temp) = create_test_store();
-        
+
         let wrong_embedding = create_test_embedding(100, 0.1);
         let result = store.store("Test", wrong_embedding, None, None);
         assert!(result.is_err());

@@ -16,11 +16,12 @@ pub struct ReliableProvider {
 
 impl ReliableProvider {
     /// Create a new reliable provider
-    /// 
+    ///
     /// # Arguments
     /// * `providers` - Vector of (name, provider) tuples, tried in order
     /// * `max_retries` - Maximum retries per provider before falling back
     /// * `base_backoff_ms` - Initial backoff in milliseconds (minimum 50)
+    #[must_use] 
     pub fn new(
         providers: Vec<(String, Box<dyn Provider>)>,
         max_retries: u32,
@@ -34,16 +35,13 @@ impl ReliableProvider {
     }
 
     /// Create with sensible defaults (3 retries, 100ms base backoff)
+    #[must_use] 
     pub fn with_defaults(providers: Vec<(String, Box<dyn Provider>)>) -> Self {
         Self::new(providers, 3, 100)
     }
 
     /// Add a provider to the chain
-    pub fn add_provider(
-        mut self,
-        name: impl Into<String>,
-        provider: Box<dyn Provider>,
-    ) -> Self {
+    pub fn add_provider(mut self, name: impl Into<String>, provider: Box<dyn Provider>) -> Self {
         self.providers.push((name.into(), provider));
         self
     }
@@ -51,13 +49,11 @@ impl ReliableProvider {
 
 #[async_trait]
 impl Provider for ReliableProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "reliable"
     }
 
-    async fn complete(&self,
-        prompt: &str,
-    ) -> anyhow::Result<String> {
+    async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
         self.chat_with_system(None, prompt, "default", 0.7).await
     }
 
@@ -82,8 +78,7 @@ impl Provider for ReliableProvider {
                         if attempt > 0 {
                             info!(
                                 provider = provider_name,
-                                attempt,
-                                "Provider recovered after retries"
+                                attempt, "Provider recovered after retries"
                             );
                         }
                         return Ok(resp);
@@ -144,10 +139,7 @@ mod tests {
             "mock"
         }
 
-        async fn complete(
-            &self,
-            _prompt: &str,
-        ) -> anyhow::Result<String> {
+        async fn complete(&self, _prompt: &str) -> anyhow::Result<String> {
             let calls = self.calls.fetch_add(1, Ordering::SeqCst);
             if calls < self.fail_until_attempt {
                 Err(anyhow::anyhow!("Simulated failure"))
@@ -176,11 +168,7 @@ mod tests {
             response: "success",
         };
 
-        let reliable = ReliableProvider::new(
-            vec![("primary".to_string(), Box::new(inner))],
-            2,
-            10,
-        );
+        let reliable = ReliableProvider::new(vec![("primary".to_string(), Box::new(inner))], 2, 10);
 
         let result = reliable.complete("test").await.unwrap();
         assert_eq!(result, "success");
@@ -196,11 +184,7 @@ mod tests {
             response: "recovered",
         };
 
-        let reliable = ReliableProvider::new(
-            vec![("primary".to_string(), Box::new(inner))],
-            3,
-            10,
-        );
+        let reliable = ReliableProvider::new(vec![("primary".to_string(), Box::new(inner))], 3, 10);
 
         let result = reliable.complete("test").await.unwrap();
         assert_eq!(result, "recovered");

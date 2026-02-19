@@ -1,9 +1,9 @@
 //! Fireworks AI provider implementation
 //! Fast inference for open-source models
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
 
 use crate::providers::Provider;
 
@@ -16,6 +16,7 @@ pub struct FireworksProvider {
 
 impl FireworksProvider {
     /// Create new Fireworks provider from API key
+    #[must_use] 
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
@@ -32,6 +33,7 @@ impl FireworksProvider {
     }
 
     /// Set model
+    #[must_use] 
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self
@@ -40,14 +42,11 @@ impl FireworksProvider {
 
 #[async_trait]
 impl Provider for FireworksProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "fireworks"
     }
 
-    async fn complete(
-        &self,
-        prompt: &str,
-    ) -> Result<String> {
+    async fn complete(&self, prompt: &str) -> Result<String> {
         self.chat_with_system(None, prompt, &self.model, 0.7).await
     }
 
@@ -92,7 +91,7 @@ impl Provider for FireworksProvider {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Fireworks API error ({}): {}", status, error_text);
+            anyhow::bail!("Fireworks API error ({status}): {error_text}");
         }
 
         let result: serde_json::Value = response
@@ -120,7 +119,7 @@ mod tests {
     fn test_fireworks_provider_creation() {
         let provider = FireworksProvider::new("test-key".to_string())
             .with_model("accounts/fireworks/models/llama-v3p1-8b-instruct");
-        
+
         assert_eq!(provider.name(), "fireworks");
     }
 }

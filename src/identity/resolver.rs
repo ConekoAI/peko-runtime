@@ -5,14 +5,14 @@
 //! - Network resolution via Coneko (optional)
 //! - Caching for performance
 
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use anyhow::{Context, Result};
-use tracing::{info, debug};
+use tracing::{debug, info};
 
-use crate::identity::did::{DIDDocument};
+use crate::identity::did::DIDDocument;
 use crate::identity::storage::KeyStorage;
 
 /// Cache entry with expiration
@@ -36,6 +36,7 @@ pub struct DidResolver {
 
 impl DidResolver {
     /// Create a new resolver with local storage only
+    #[must_use] 
     pub fn local(storage: KeyStorage) -> Self {
         Self {
             local_storage: Some(storage),
@@ -46,6 +47,7 @@ impl DidResolver {
     }
 
     /// Create a resolver with network capability
+    #[must_use] 
     pub fn with_coneko(storage: KeyStorage, endpoint: String) -> Self {
         Self {
             local_storage: Some(storage),
@@ -56,6 +58,7 @@ impl DidResolver {
     }
 
     /// Create a read-only resolver (for verifying others' DIDs)
+    #[must_use] 
     pub fn readonly() -> Self {
         Self {
             local_storage: None,
@@ -91,7 +94,7 @@ impl DidResolver {
             }
         }
 
-        anyhow::bail!("DID not found: {}", did)
+        anyhow::bail!("DID not found: {did}")
     }
 
     /// Resolve multiple DIDs in parallel
@@ -122,18 +125,21 @@ impl DidResolver {
     /// Cache a document
     async fn cache_document(&self, did: String, document: DIDDocument) {
         let mut cache = self.cache.write().await;
-        cache.insert(did, CacheEntry {
-            document,
-            expires_at: Instant::now() + self.cache_ttl,
-        });
+        cache.insert(
+            did,
+            CacheEntry {
+                document,
+                expires_at: Instant::now() + self.cache_ttl,
+            },
+        );
     }
 
     /// Resolve from Coneko network
     async fn resolve_from_network(&self, did: &str, endpoint: &str) -> Result<DIDDocument> {
-        let url = format!("{}/api/v1/did/resolve?did={}", endpoint, did);
-        
+        let url = format!("{endpoint}/api/v1/did/resolve?did={did}");
+
         debug!("Resolving DID from network: {}", did);
-        
+
         let client = reqwest::Client::new();
         let response = client
             .get(&url)
@@ -143,7 +149,7 @@ impl DidResolver {
             .context("Failed to contact Coneko endpoint")?;
 
         if !response.status().is_success() {
-            anyhow::bail!("DID not found on network: {}", did);
+            anyhow::bail!("DID not found on network: {did}");
         }
 
         let document: DIDDocument = response
@@ -162,21 +168,23 @@ impl DidResolver {
     /// Get the public key for a DID
     pub async fn get_public_key(&self, did: &str) -> Result<Vec<u8>> {
         let document = self.resolve(did).await?;
-        
+
         // Get the first verification method
-        let vm = document.verification_method.first()
+        let vm = document
+            .verification_method
+            .first()
             .context("No verification methods in DID document")?;
-        
+
         // Decode multibase public key
         let key_multibase = &vm.public_key_multibase;
         if !key_multibase.starts_with('z') {
             anyhow::bail!("Unsupported key encoding");
         }
-        
+
         let key_bytes = bs58::decode(&key_multibase[1..])
             .into_vec()
             .context("Failed to decode public key")?;
-        
+
         Ok(key_bytes)
     }
 
@@ -191,7 +199,8 @@ impl DidResolver {
     pub async fn cache_stats(&self) -> (usize, usize) {
         let cache = self.cache.read().await;
         let total = cache.len();
-        let valid = cache.values()
+        let valid = cache
+            .values()
             .filter(|entry| entry.expires_at > Instant::now())
             .count();
         (valid, total)
@@ -216,39 +225,42 @@ pub async fn verify_signature(
     message: &[u8],
     signature: &[u8; 64],
 ) -> Result<()> {
-    use ed25519_dalek::{VerifyingKey, Signature, Verifier};
-    
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
     // Get public key
     let key_bytes = resolver.get_public_key(did).await?;
     if key_bytes.len() != 32 {
         anyhow::bail!("Invalid public key length");
     }
-    
+
     let mut key_array = [0u8; 32];
     key_array.copy_from_slice(&key_bytes);
-    
+
     let verifying_key = VerifyingKey::from_bytes(&key_array)?;
     let sig = Signature::from_bytes(signature);
-    
-    verifying_key.verify(message, &sig)
-        .map_err(|e| anyhow::anyhow!("Signature verification failed: {}", e))
+
+    verifying_key
+        .verify(message, &sig)
+        .map_err(|e| anyhow::anyhow!("Signature verification failed: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use crate::identity::did::DIDScope;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_resolve_local() {
         let temp_dir = TempDir::new().unwrap();
         let storage = KeyStorage::with_path(temp_dir.path().to_path_buf()).unwrap();
-        let identity = storage.generate_identity(DIDScope::Local, Some("test")).unwrap();
-        
+        let identity = storage
+            .generate_identity(DIDScope::Local, Some("test"))
+            .unwrap();
+
         let resolver = DidResolver::local(storage);
         let doc = resolver.resolve(&identity.did).await.unwrap();
-        
+
         assert_eq!(doc.id, identity.did);
     }
 
@@ -257,17 +269,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = KeyStorage::with_path(temp_dir.path().to_path_buf()).unwrap();
         let identity = storage.generate_identity(DIDScope::Public, None).unwrap();
-        
+
         let resolver = DidResolver::local(storage);
-        
+
         // First resolve
         let doc1 = resolver.resolve(&identity.did).await.unwrap();
-        
+
         // Second resolve (should hit cache)
         let doc2 = resolver.resolve(&identity.did).await.unwrap();
-        
+
         assert_eq!(doc1.id, doc2.id);
-        
+
         let (valid, total) = resolver.cache_stats().await;
         assert_eq!(valid, 1);
         assert_eq!(total, 1);
@@ -278,9 +290,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = KeyStorage::with_path(temp_dir.path().to_path_buf()).unwrap();
         let identity = storage.generate_identity(DIDScope::Private, None).unwrap();
-        
+
         let resolver = DidResolver::local(storage);
-        
+
         assert!(resolver.verify(&identity.did).await);
         assert!(!resolver.verify("did:pekobot:public:nonexistent").await);
     }

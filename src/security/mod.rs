@@ -27,7 +27,14 @@ pub struct ActionTracker {
     actions: Mutex<Vec<Instant>>,
 }
 
+impl Default for ActionTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ActionTracker {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             actions: Mutex::new(Vec::new()),
@@ -36,7 +43,7 @@ impl ActionTracker {
 
     /// Record an action and return current count
     pub fn record(&self) -> usize {
-        let mut actions = self.actions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut actions = self.actions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let cutoff = Instant::now()
             .checked_sub(std::time::Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
@@ -47,7 +54,7 @@ impl ActionTracker {
 
     /// Count actions without recording
     pub fn count(&self) -> usize {
-        let mut actions = self.actions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut actions = self.actions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let cutoff = Instant::now()
             .checked_sub(std::time::Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
@@ -58,7 +65,7 @@ impl ActionTracker {
 
 impl Clone for ActionTracker {
     fn clone(&self) -> Self {
-        let actions = self.actions.lock().unwrap_or_else(|e| e.into_inner());
+        let actions = self.actions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Self {
             actions: Mutex::new(actions.clone()),
         }
@@ -140,10 +147,8 @@ impl SecurityPolicy {
         }
 
         // Split on command separators
-        let normalized = command
-            .replace("&&", "\x00")
-            .replace("||", "\x00");
-        
+        let normalized = command.replace("&&", "\x00").replace("||", "\x00");
+
         let separators: &[char] = &['\n', ';', '|'];
         let mut normalized = normalized;
         for sep in separators {
@@ -213,7 +218,9 @@ impl SecurityPolicy {
 
     /// Check if a resolved path is within workspace
     pub fn is_resolved_path_allowed(&self, resolved: &Path) -> bool {
-        let workspace = self.workspace_dir.canonicalize()
+        let workspace = self
+            .workspace_dir
+            .canonicalize()
             .unwrap_or_else(|_| self.workspace_dir.clone());
         resolved.starts_with(&workspace)
     }
@@ -336,7 +343,7 @@ mod tests {
             max_actions_per_hour: 3,
             ..SecurityPolicy::default()
         };
-        
+
         assert!(policy.record_action());
         assert!(policy.record_action());
         assert!(policy.record_action());

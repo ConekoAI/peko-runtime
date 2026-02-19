@@ -1,8 +1,8 @@
 //! HTTP tool for making web requests
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
 
 use crate::tools::Tool;
 
@@ -42,7 +42,7 @@ impl std::str::FromStr for HttpMethod {
             "DELETE" => Ok(HttpMethod::Delete),
             "PATCH" => Ok(HttpMethod::Patch),
             "HEAD" => Ok(HttpMethod::Head),
-            _ => Err(anyhow::anyhow!("Unknown HTTP method: {}", s)),
+            _ => Err(anyhow::anyhow!("Unknown HTTP method: {s}")),
         }
     }
 }
@@ -113,11 +113,11 @@ impl Default for HttpTool {
 
 #[async_trait]
 impl Tool for HttpTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "http"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Make HTTP requests to web services. Parameters: {\"url\": string, \"method\": \"GET|POST|PUT|DELETE|PATCH\", \"headers\": object (optional), \"body\": object|string (optional)}"
     }
 
@@ -132,7 +132,7 @@ impl Tool for HttpTool {
         let method = params
             .get("method")
             .and_then(|v| v.as_str())
-            .map(|m| m.parse::<HttpMethod>())
+            .map(str::parse::<HttpMethod>)
             .transpose()?
             .unwrap_or_default();
 
@@ -170,10 +170,7 @@ impl Tool for HttpTool {
         }
 
         // Execute request
-        let response = request
-            .send()
-            .await
-            .context("HTTP request failed")?;
+        let response = request.send().await.context("HTTP request failed")?;
 
         let status = response.status();
         let headers = response.headers().clone();
@@ -187,7 +184,7 @@ impl Tool for HttpTool {
 
         // Build response object
         let mut response_headers = serde_json::Map::new();
-        for (key, value) in headers.iter() {
+        for (key, value) in &headers {
             if let Ok(val_str) = value.to_str() {
                 response_headers.insert(key.to_string(), json!(val_str));
             }
@@ -209,16 +206,25 @@ mod tests {
 
     #[test]
     fn test_http_method_parsing() {
-        assert!(matches!("GET".parse::<HttpMethod>().unwrap(), HttpMethod::Get));
-        assert!(matches!("post".parse::<HttpMethod>().unwrap(), HttpMethod::Post));
-        assert!(matches!("DELETE".parse::<HttpMethod>().unwrap(), HttpMethod::Delete));
+        assert!(matches!(
+            "GET".parse::<HttpMethod>().unwrap(),
+            HttpMethod::Get
+        ));
+        assert!(matches!(
+            "post".parse::<HttpMethod>().unwrap(),
+            HttpMethod::Post
+        ));
+        assert!(matches!(
+            "DELETE".parse::<HttpMethod>().unwrap(),
+            HttpMethod::Delete
+        ));
     }
 
     #[test]
     fn test_http_tool_creation() {
         let tool = HttpTool::new();
         assert!(tool.is_ok());
-        
+
         let tool = tool.unwrap();
         assert_eq!(tool.name(), "http");
         assert!(!tool.description().is_empty());
@@ -227,7 +233,7 @@ mod tests {
     #[tokio::test]
     async fn test_http_get() {
         let tool = HttpTool::new().unwrap();
-        
+
         // Use httpbin.org for testing (or mock in real tests)
         let params = json!({
             "url": "https://httpbin.org/get",
@@ -235,7 +241,7 @@ mod tests {
         });
 
         let result = tool.execute(params).await;
-        
+
         // This may fail in test environments without internet
         // In production, use mock servers
         if let Ok(response) = result {

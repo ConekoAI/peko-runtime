@@ -1,12 +1,12 @@
 //! Memory tool for agent memory operations
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
 use tokio::sync::Mutex;
 
-use crate::tools::Tool;
 use crate::memory::sqlite::SqliteMemory;
+use crate::tools::Tool;
 use std::sync::Arc;
 
 /// Memory tool for storing and retrieving agent memories
@@ -32,11 +32,11 @@ impl MemoryTool {
 
 #[async_trait]
 impl Tool for MemoryTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "memory"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Store and retrieve memories. Actions: 'store' (save content), 'search' (find by query), 'get' (by id), 'recent' (latest N), 'clear' (delete all). Parameters: {\"action\": string, \"content\": string (for store), \"query\": string (for search), \"id\": string (for get), \"limit\": number (for recent)}"
     }
 
@@ -54,7 +54,6 @@ impl Tool for MemoryTool {
                     .ok_or_else(|| anyhow::anyhow!("Missing required parameter: content for store action"))?;
 
                 let metadata = params.get("metadata").cloned();
-                
                 let memory = self.memory.lock().await;
                 let id = memory.store(content, metadata)
                     .context("Failed to store memory")?;
@@ -75,9 +74,8 @@ impl Tool for MemoryTool {
 
                 let limit = params
                     .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as usize)
-                    .unwrap_or(10);
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or(10, |n| n as usize);
 
                 let memory = self.memory.lock().await;
                 let entries = memory.search(query, limit)
@@ -134,16 +132,15 @@ impl Tool for MemoryTool {
                             "id": id,
                         }))
                     }
-                    Err(e) => Err(e.into()),
+                    Err(e) => Err(e),
                 }
             }
 
             "recent" | "latest" => {
                 let limit = params
                     .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as usize)
-                    .unwrap_or(10);
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or(10, |n| n as usize);
 
                 let memory = self.memory.lock().await;
                 let entries = memory.recent(limit)
@@ -196,17 +193,21 @@ impl Tool for MemoryTool {
                 }))
             }
 
-            _ => Err(anyhow::anyhow!("Unknown memory action: {}. Valid actions: store, search, get, recent, delete, clear", action)),
+            _ => Err(anyhow::anyhow!("Unknown memory action: {action}. Valid actions: store, search, get, recent, delete, clear")),
         }
     }
 }
 
-/// Factory for creating memory tools without needing direct SqliteMemory access
+/// Factory for creating memory tools without needing direct `SqliteMemory` access
 pub struct MemoryToolFactory;
 
 impl MemoryToolFactory {
     /// Create a memory tool if memory is available
-    pub fn create(memory: Option<Arc<Mutex<SqliteMemory>>>, agent_did: String) -> Option<MemoryTool> {
+    #[must_use] 
+    pub fn create(
+        memory: Option<Arc<Mutex<SqliteMemory>>>,
+        agent_did: String,
+    ) -> Option<MemoryTool> {
         memory.map(|m| MemoryTool::with_arc(m, agent_did))
     }
 }
@@ -245,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_search() {
         let (memory, _temp) = create_test_memory();
-        
+
         // Store something first (direct access before wrapping)
         memory.store("Hello world test", None).unwrap();
         memory.store("Another entry", None).unwrap();
@@ -269,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_recent() {
         let (memory, _temp) = create_test_memory();
-        
+
         // Store a few entries (direct access before wrapping)
         memory.store("First", None).unwrap();
         memory.store("Second", None).unwrap();

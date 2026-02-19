@@ -35,6 +35,7 @@ impl Default for OllamaConfig {
 
 impl OllamaConfig {
     /// Create config with custom base URL
+    #[must_use] 
     pub fn with_host(base_url: &str) -> Self {
         Self {
             base_url: base_url.to_string(),
@@ -43,6 +44,7 @@ impl OllamaConfig {
     }
 
     /// Create config with model
+    #[must_use] 
     pub fn with_model(model: &str) -> Self {
         Self {
             model: model.to_string(),
@@ -76,7 +78,12 @@ impl OllamaProvider {
 
     /// Check if Ollama is available
     pub async fn is_available(&self) -> bool {
-        match self.client.get(format!("{}/api/tags", self.config.base_url)).send().await {
+        match self
+            .client
+            .get(format!("{}/api/tags", self.config.base_url))
+            .send()
+            .await
+        {
             Ok(response) => response.status().is_success(),
             Err(_) => false,
         }
@@ -91,7 +98,10 @@ impl OllamaProvider {
             .await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to list models: {}", response.status()));
+            return Err(anyhow::anyhow!(
+                "Failed to list models: {}",
+                response.status()
+            ));
         }
 
         let tags: TagsResponse = response.json().await?;
@@ -102,12 +112,18 @@ impl OllamaProvider {
 
 #[async_trait]
 impl Provider for OllamaProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ollama"
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
-        self.chat_with_system(None, prompt, &self.config.model, self.config.temperature as f64).await
+        self.chat_with_system(
+            None,
+            prompt,
+            &self.config.model,
+            f64::from(self.config.temperature),
+        )
+        .await
     }
 
     async fn chat_with_system(
@@ -119,11 +135,11 @@ impl Provider for OllamaProvider {
     ) -> anyhow::Result<String> {
         let mut options = serde_json::Map::new();
         options.insert("temperature".to_string(), serde_json::json!(temperature));
-        
+
         if let Some(ctx) = self.config.num_ctx {
             options.insert("num_ctx".to_string(), serde_json::json!(ctx));
         }
-        
+
         if let Some(gpu) = self.config.num_gpu {
             options.insert("num_gpu".to_string(), serde_json::json!(gpu));
         }
@@ -156,7 +172,9 @@ impl Provider for OllamaProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("Ollama API error: {} - {}", status, error_text);
-            return Err(anyhow::anyhow!("Ollama API error: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!(
+                "Ollama API error: {status} - {error_text}"
+            ));
         }
 
         let completion: GenerateResponse = response.json().await?;
@@ -234,7 +252,7 @@ mod tests {
     fn test_ollama_provider_creation() {
         let provider = OllamaProvider::local();
         assert!(provider.is_ok());
-        
+
         let provider = provider.unwrap();
         assert_eq!(provider.name(), "ollama");
     }

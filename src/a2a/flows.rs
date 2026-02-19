@@ -65,13 +65,9 @@ impl A2AFlowHandler {
     }
 
     /// Handle an incoming INTENT message
-    /// 
+    ///
     /// Flow: Receive Intent → Evaluate → Send Capability or Quote
-    pub fn handle_intent(
-        &mut self,
-        message: &A2AMessage,
-        intent: &IntentPayload,
-    ) -> FlowResult {
+    pub fn handle_intent(&mut self, message: &A2AMessage, intent: &IntentPayload) -> FlowResult {
         info!(
             "Handling INTENT from {} for task: {}",
             message.sender.did, intent.task
@@ -98,13 +94,13 @@ impl A2AFlowHandler {
             self.pending_quotes.insert(quote_id.clone(), state);
 
             // Create response message
-            let response = message.reply_to(
-                &self.agent_did,
-                MessageType::Quote,
-                Payload::Quote(quote),
-            );
+            let response =
+                message.reply_to(&self.agent_did, MessageType::Quote, Payload::Quote(quote));
 
-            info!("Generated quote {} for intent {}", quote_id, message.message_id);
+            info!(
+                "Generated quote {} for intent {}",
+                quote_id, message.message_id
+            );
             FlowResult::Response(response)
         } else {
             // Just acknowledge the intent
@@ -115,11 +111,7 @@ impl A2AFlowHandler {
     /// Handle an incoming QUOTE message
     ///
     /// Flow: Receive Quote → Evaluate → Accept, Reject, or Counter
-    pub fn handle_quote(
-        &mut self,
-        message: &A2AMessage,
-        quote: &QuotePayload,
-    ) -> FlowResult {
+    pub fn handle_quote(&mut self, message: &A2AMessage, quote: &QuotePayload) -> FlowResult {
         info!(
             "Handling QUOTE {} from {} for ${:.2} {}",
             quote.quote_id, message.sender.did, quote.price.amount, quote.price.currency
@@ -163,23 +155,16 @@ impl A2AFlowHandler {
     /// Handle an incoming ACCEPT message
     ///
     /// Flow: Receive Accept → Generate Contract → Send Contract
-    pub fn handle_accept(
-        &mut self,
-        message: &A2AMessage,
-        accept: &AcceptPayload,
-    ) -> FlowResult {
+    pub fn handle_accept(&mut self, message: &A2AMessage, accept: &AcceptPayload) -> FlowResult {
         info!(
             "Handling ACCEPT for quote {} from {}",
             accept.quote_id, message.sender.did
         );
 
         // Find the pending quote
-        let quote_state = match self.pending_quotes.remove(&accept.quote_id) {
-            Some(state) => state,
-            None => {
-                warn!("Quote {} not found or already processed", accept.quote_id);
-                return FlowResult::Error("Quote not found".to_string());
-            }
+        let quote_state = if let Some(state) = self.pending_quotes.remove(&accept.quote_id) { state } else {
+            warn!("Quote {} not found or already processed", accept.quote_id);
+            return FlowResult::Error("Quote not found".to_string());
         };
 
         // Check if quote is expired
@@ -255,20 +240,18 @@ impl A2AFlowHandler {
     }
 
     /// Generate a quote for an intent
-    fn generate_quote(&self, _message: &A2AMessage, intent: &IntentPayload
-    ) -> QuotePayload {
+    fn generate_quote(&self, _message: &A2AMessage, intent: &IntentPayload) -> QuotePayload {
         let quote_id = format!("quote_{}", Uuid::new_v4().simple());
 
         // TODO: Calculate actual pricing based on intent
         // For now, use a simple heuristic
         let base_price = 50.0;
-        let complexity_multiplier = if intent.parameters.as_object().map(|o| o.len()).unwrap_or(0)
-            > 3
-        {
-            1.5
-        } else {
-            1.0
-        };
+        let complexity_multiplier =
+            if intent.parameters.as_object().map_or(0, serde_json::Map::len) > 3 {
+                1.5
+            } else {
+                1.0
+            };
 
         let amount = base_price * complexity_multiplier;
 
@@ -324,12 +307,12 @@ impl A2AFlowHandler {
             signatures: vec![
                 ContractSignature {
                     did: self.agent_did.clone(),
-                    signature: format!("sig_provider_{}", contract_id), // TODO: Real signature
+                    signature: format!("sig_provider_{contract_id}"), // TODO: Real signature
                     timestamp: now,
                 },
                 ContractSignature {
                     did: accept_message.sender.did.clone(),
-                    signature: format!("sig_consumer_{}", contract_id), // TODO: Real signature
+                    signature: format!("sig_consumer_{contract_id}"), // TODO: Real signature
                     timestamp: now,
                 },
             ],
@@ -337,11 +320,13 @@ impl A2AFlowHandler {
     }
 
     /// Get pending quotes
+    #[must_use] 
     pub fn pending_quotes(&self) -> &std::collections::HashMap<String, QuoteState> {
         &self.pending_quotes
     }
 
     /// Get active contracts
+    #[must_use] 
     pub fn active_contracts(&self) -> &std::collections::HashMap<String, ContractState> {
         &self.active_contracts
     }
@@ -406,7 +391,7 @@ mod tests {
     #[test]
     fn test_handle_quote_auto_accept() {
         let mut handler = A2AFlowHandler::new("did:pekobot:local:consumer");
-        
+
         // Create a quote under threshold
         let quote = QuotePayload {
             quote_id: "quote_123".to_string(),

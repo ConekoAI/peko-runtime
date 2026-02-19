@@ -3,16 +3,16 @@
 //! Uses Matrix Client-Server API for communication.
 
 use super::Channel;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::VecDeque;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 /// Matrix channel configuration
 #[derive(Debug, Clone)]
 pub struct MatrixConfig {
-    /// Matrix homeserver URL (e.g., "https://matrix.org")
+    /// Matrix homeserver URL (e.g., "<https://matrix.org>")
     pub homeserver: String,
     /// Access token for authentication
     pub access_token: String,
@@ -31,7 +31,7 @@ impl MatrixConfig {
             .map_err(|_| anyhow::anyhow!("MATRIX_ACCESS_TOKEN not set"))?;
         let room_id = std::env::var("MATRIX_ROOM_ID")
             .map_err(|_| anyhow::anyhow!("MATRIX_ROOM_ID not set"))?;
-        
+
         Ok(Self {
             homeserver,
             access_token,
@@ -102,11 +102,14 @@ impl MatrixChannel {
     /// Create new Matrix channel
     pub fn new(config: MatrixConfig) -> Self {
         let homeserver = config.homeserver.trim_end_matches('/').to_string();
-        
+
         info!("Matrix channel initialized for {}", homeserver);
-        
+
         Self {
-            config: MatrixConfig { homeserver, ..config },
+            config: MatrixConfig {
+                homeserver,
+                ..config
+            },
             client: reqwest::Client::new(),
             message_queue: VecDeque::new(),
             bot_user_id: None,
@@ -124,17 +127,26 @@ impl MatrixChannel {
         if self.config.allowed_users.is_empty() {
             return true; // Allow all if no restrictions
         }
-        self.config.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        self.config
+            .allowed_users
+            .iter()
+            .any(|u| u == "*" || u == user_id)
     }
 
     /// Get bot's own user ID
     async fn fetch_bot_user_id(&mut self) -> Result<Option<String>> {
-        let url = format!("{}/_matrix/client/v3/account/whoami", self.config.homeserver);
-        
+        let url = format!(
+            "{}/_matrix/client/v3/account/whoami",
+            self.config.homeserver
+        );
+
         let response = self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .send()
             .await?;
 
@@ -165,7 +177,10 @@ impl MatrixChannel {
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .json(&body)
             .send()
             .await?;
@@ -173,7 +188,7 @@ impl MatrixChannel {
         if !response.status().is_success() {
             let error = response.text().await.unwrap_or_default();
             error!("Matrix API error: {}", error);
-            return Err(anyhow::anyhow!("Matrix API error: {}", error));
+            return Err(anyhow::anyhow!("Matrix API error: {error}"));
         }
 
         debug!("Sent message to Matrix room {}", self.config.room_id);
@@ -188,19 +203,22 @@ impl MatrixChannel {
         );
 
         if let Some(next_batch) = &self.next_batch {
-            url.push_str(&format!("&since={}", next_batch));
+            url.push_str(&format!("&since={next_batch}"));
         }
 
         let response = self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .send()
             .await?;
 
         if !response.status().is_success() {
             let error = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Matrix sync error: {}", error));
+            return Err(anyhow::anyhow!("Matrix sync error: {error}"));
         }
 
         let sync: SyncResponse = response.json().await?;
@@ -242,7 +260,7 @@ impl MatrixChannel {
 
 #[async_trait]
 impl Channel for MatrixChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "matrix"
     }
 

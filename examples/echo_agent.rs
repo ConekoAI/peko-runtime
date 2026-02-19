@@ -1,5 +1,5 @@
 //! Echo Agent Example
-//! 
+//!
 //! A simple agent that echoes back messages with a twist.
 //! Demonstrates basic agent setup, memory usage, and task execution.
 

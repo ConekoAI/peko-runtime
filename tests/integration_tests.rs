@@ -7,8 +7,8 @@
 //! - Provider interactions (mocked)
 
 use pekobot::{
-    agent::{Agent, Orchestrator},
     a2a::registry::create_registry,
+    agent::{Agent, Orchestrator},
     config::Config,
 };
 
@@ -75,9 +75,7 @@ async fn test_multi_agent_workflow() {
 /// Test agent memory persistence across operations
 #[tokio::test]
 async fn test_memory_persistence() {
-    let config = Config::agent("memory-test")
-        .with_memory(true)
-        .build();
+    let config = Config::agent("memory-test").with_memory(true).build();
 
     let agent = Agent::new(config).await.unwrap();
     agent.start().await.unwrap();
@@ -86,7 +84,10 @@ async fn test_memory_persistence() {
     let memories = vec![
         ("First memory", serde_json::json!({"order": 1})),
         ("Second memory", serde_json::json!({"order": 2})),
-        ("Third memory about cats", serde_json::json!({"order": 3, "topic": "cats"})),
+        (
+            "Third memory about cats",
+            serde_json::json!({"order": 3, "topic": "cats"}),
+        ),
     ];
 
     for (content, metadata) in memories {
@@ -165,17 +166,15 @@ async fn test_config_variations() {
     // Agent without memory
     let config_no_memory = Config::agent("no-memory").build();
     let agent_no_mem = Agent::new(config_no_memory).await.unwrap();
-    
+
     // Trying to use memory should fail
     let result = agent_no_mem.store_memory("test", None);
     assert!(result.is_err());
 
     // Agent with memory
-    let config_with_memory = Config::agent("with-memory")
-        .with_memory(true)
-        .build();
+    let config_with_memory = Config::agent("with-memory").with_memory(true).build();
     let agent_with_mem = Agent::new(config_with_memory).await.unwrap();
-    
+
     let result = agent_with_mem.store_memory("test", None);
     assert!(result.is_ok());
 }

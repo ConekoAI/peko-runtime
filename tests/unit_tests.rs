@@ -1,6 +1,10 @@
 //! Unit tests for Pekobot core functionality
 
-use pekobot::{agent::Agent, config::Config, identity::{did::DIDScope, Identity}};
+use pekobot::{
+    agent::Agent,
+    config::Config,
+    identity::{did::DIDScope, Identity},
+};
 
 #[tokio::test]
 async fn test_agent_creation_basic() {
@@ -42,7 +46,7 @@ async fn test_agent_execution_without_provider() {
     // Without a provider, should return echo response
     let result = agent.execute("Hello, World!").await;
     assert!(result.is_ok());
-    
+
     let response = result.unwrap();
     assert!(response.contains("Echo:"));
     assert!(response.contains("Hello, World!"));
@@ -96,9 +100,7 @@ fn test_did_serialization() {
 
 #[tokio::test]
 async fn test_memory_operations() {
-    let config = Config::agent("memory-test")
-        .with_memory(true)
-        .build();
+    let config = Config::agent("memory-test").with_memory(true).build();
 
     let agent = Agent::new(config).await.unwrap();
     agent.start().await.unwrap();
@@ -116,7 +118,7 @@ async fn test_memory_operations() {
     // Search for the memory
     let search_results = agent.search_memory("test memory", 5);
     assert!(search_results.is_ok());
-    
+
     let results = search_results.unwrap();
     // Should find at least one result
     assert!(!results.is_empty());
@@ -145,7 +147,7 @@ fn test_a2a_message_types() {
         action: "test".to_string(),
         parameters: serde_json::json!({}),
     };
-    
+
     match intent {
         A2AMessageType::Intent { action, .. } => {
             assert_eq!(action, "test");
@@ -156,8 +158,8 @@ fn test_a2a_message_types() {
 
 #[tokio::test]
 async fn test_orchestrator_creation() {
-    use pekobot::agent::Orchestrator;
     use pekobot::a2a::registry::create_registry;
+    use pekobot::agent::Orchestrator;
 
     // Empty orchestrator
     let orch = Orchestrator::new();

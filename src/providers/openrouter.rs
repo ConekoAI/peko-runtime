@@ -1,4 +1,4 @@
-//! OpenRouter provider implementation
+//! `OpenRouter` provider implementation
 //! Provides access to 100+ models through a single API
 
 use super::traits::Provider;
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, error, info};
 
-/// OpenRouter provider
+/// `OpenRouter` provider
 pub struct OpenRouterProvider {
     api_key: String,
     client: Client,
@@ -43,7 +43,7 @@ struct ResponseMessage {
 }
 
 impl OpenRouterProvider {
-    /// Create new OpenRouter provider
+    /// Create new `OpenRouter` provider
     pub fn new(api_key: String) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
@@ -77,13 +77,14 @@ impl OpenRouterProvider {
 
 #[async_trait]
 impl Provider for OpenRouterProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "openrouter"
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
         // Default to anthropic/claude-3.5-sonnet
-        self.chat_with_system(None, prompt, "anthropic/claude-3.5-sonnet", 0.7).await
+        self.chat_with_system(None, prompt, "anthropic/claude-3.5-sonnet", 0.7)
+            .await
     }
 
     async fn chat_with_system(
@@ -130,7 +131,9 @@ impl Provider for OpenRouterProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("OpenRouter API error: {} - {}", status, error_text);
-            return Err(anyhow::anyhow!("OpenRouter API error: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!(
+                "OpenRouter API error: {status} - {error_text}"
+            ));
         }
 
         let chat_response: ChatResponse = response.json().await?;

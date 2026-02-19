@@ -46,13 +46,13 @@ use pekobot::channels::http::HttpChannel;
 use pekobot::tools::calendar::{CalendarCredentials, CalendarProvider, CalendarTool};
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
-use pekobot::types::provider::{ProviderConfig, ProviderType, ModelConfig};
+use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 /// Shared application state
 struct AppState {
@@ -127,20 +127,19 @@ async fn main() -> anyhow::Result<()> {
     info!("");
 
     // Initialize calendar tool
-    let calendar = CalendarTool::from_env()
-        .map_err(|e| {
-            eprintln!("❌ Failed to initialize calendar: {}", e);
-            eprintln!("");
-            eprintln!("Make sure you have set these environment variables:");
-            eprintln!("  - CALENDAR_PROVIDER (google or outlook)");
-            eprintln!("  - CALENDAR_CLIENT_ID");
-            eprintln!("  - CALENDAR_CLIENT_SECRET");
-            eprintln!("  - CALENDAR_ACCESS_TOKEN");
-            eprintln!("  - CALENDAR_REFRESH_TOKEN (recommended)");
-            eprintln!("");
-            eprintln!("See .env.example for details.");
-            e
-        })?;
+    let calendar = CalendarTool::from_env().map_err(|e| {
+        eprintln!("❌ Failed to initialize calendar: {}", e);
+        eprintln!("");
+        eprintln!("Make sure you have set these environment variables:");
+        eprintln!("  - CALENDAR_PROVIDER (google or outlook)");
+        eprintln!("  - CALENDAR_CLIENT_ID");
+        eprintln!("  - CALENDAR_CLIENT_SECRET");
+        eprintln!("  - CALENDAR_ACCESS_TOKEN");
+        eprintln!("  - CALENDAR_REFRESH_TOKEN (recommended)");
+        eprintln!("");
+        eprintln!("See .env.example for details.");
+        e
+    })?;
 
     info!("✅ Calendar connected");
 
@@ -178,7 +177,10 @@ async fn main() -> anyhow::Result<()> {
     info!("   POST /handle-request      - Natural language meeting request");
     info!("");
     info!("💡 Example usage:");
-    info!("   curl -X POST http://localhost:{}/available-slots \\", port);
+    info!(
+        "   curl -X POST http://localhost:{}/available-slots \\",
+        port
+    );
     info!("     -H 'Content-Type: application/json' \\");
     info!("     -d '{{\"date\": \"2026-02-20\", \"duration_minutes\": 60}}'");
     info!("");
@@ -272,13 +274,17 @@ async fn get_available_slots(
 
     let start = chrono::Utc
         .from_local_datetime(
-            &date.and_hms_opt(state.preferences.working_hours_start as u32, 0, 0).unwrap(),
+            &date
+                .and_hms_opt(state.preferences.working_hours_start as u32, 0, 0)
+                .unwrap(),
         )
         .unwrap();
 
     let end = chrono::Utc
         .from_local_datetime(
-            &date.and_hms_opt(state.preferences.working_hours_end as u32, 0, 0).unwrap(),
+            &date
+                .and_hms_opt(state.preferences.working_hours_end as u32, 0, 0)
+                .unwrap(),
         )
         .unwrap();
 
@@ -451,7 +457,11 @@ Respond in this exact JSON format:
             let json_str = extract_json_from_response(&response);
             match serde_json::from_str::<Value>(json_str) {
                 Ok(parsed) => {
-                    if parsed.get("needs_clarification").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    if parsed
+                        .get("needs_clarification")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
                         let question = parsed
                             .get("clarification_question")
                             .and_then(|q| q.as_str())
@@ -482,13 +492,11 @@ Respond in this exact JSON format:
                         ]
                     }))
                 }
-                Err(_) => {
-                    Json(serde_json::json!({
-                        "success": false,
-                        "error": "Could not parse request",
-                        "raw_response": response
-                    }))
-                }
+                Err(_) => Json(serde_json::json!({
+                    "success": false,
+                    "error": "Could not parse request",
+                    "raw_response": response
+                })),
             }
         }
         Err(e) => {
@@ -526,7 +534,8 @@ async fn create_meeting_scheduler_agent() -> anyhow::Result<Agent> {
         name: "meeting-scheduler".to_string(),
         description: Some("AI meeting scheduler for consultants".to_string()),
         capabilities: vec![AgentCapability::Text, AgentCapability::ToolUse],
-        system_prompt: Some(r#"
+        system_prompt: Some(
+            r#"
 You are an AI meeting scheduler for a busy consultant.
 
 Your job:
@@ -547,7 +556,9 @@ When parsing, extract:
 - Preferred date/time
 - Meeting topic
 - Duration estimate
-"#.to_string()),
+"#
+            .to_string(),
+        ),
         metadata: {
             let mut m = HashMap::new();
             m.insert("role".to_string(), "meeting_scheduler".to_string());

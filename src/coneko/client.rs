@@ -11,7 +11,7 @@ use crate::types::agent::AgentCapability;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// HTTP client for Coneko network
 pub struct ConekoClient {
@@ -98,7 +98,7 @@ impl ConekoClient {
     /// Check if the Coneko server is reachable
     pub async fn health_check(&self) -> Result<bool> {
         let url = format!("{}/health", self.endpoint);
-        
+
         match self.http.get(&url).send().await {
             Ok(response) => {
                 let healthy = response.status().is_success();
@@ -127,7 +127,7 @@ impl ConekoClient {
         tenant: &str,
     ) -> Result<()> {
         let url = format!("{}/api/v1/agents/register", self.endpoint);
-        
+
         let request = RegisterRequest {
             did: did.to_string(),
             name: name.to_string(),
@@ -140,9 +140,9 @@ impl ConekoClient {
         debug!("Registering agent {} with Coneko", did);
 
         let mut req_builder = self.http.post(&url).json(&request);
-        
+
         if let Some(token) = &self.auth_token {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
+            req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
         }
 
         let response = req_builder
@@ -161,20 +161,20 @@ impl ConekoClient {
             Ok(())
         } else {
             let error_msg = body.error.unwrap_or_else(|| "Unknown error".to_string());
-            anyhow::bail!("Registration failed: {}", error_msg)
+            anyhow::bail!("Registration failed: {error_msg}")
         }
     }
 
     /// Unregister an agent from Coneko
     pub async fn unregister_agent(&self, did: &str) -> Result<()> {
         let url = format!("{}/api/v1/agents/{}/unregister", self.endpoint, did);
-        
+
         debug!("Unregistering agent {} from Coneko", did);
 
         let mut req_builder = self.http.post(&url);
-        
+
         if let Some(token) = &self.auth_token {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
+            req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
         }
 
         let response = req_builder
@@ -188,7 +188,7 @@ impl ConekoClient {
         } else {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Unregistration failed: {} - {}", status, text)
+            anyhow::bail!("Unregistration failed: {status} - {text}")
         }
     }
 
@@ -200,7 +200,7 @@ impl ConekoClient {
         tenant: Option<&str>,
     ) -> Result<Vec<AgentInfo>> {
         let url = format!("{}/api/v1/agents/discover", self.endpoint);
-        
+
         let request = DiscoverRequest {
             capabilities,
             scope: scope.map(String::from),
@@ -210,9 +210,9 @@ impl ConekoClient {
         debug!("Discovering agents with filters: {:?}", request);
 
         let mut req_builder = self.http.post(&url).json(&request);
-        
+
         if let Some(token) = &self.auth_token {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
+            req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
         }
 
         let response = req_builder
@@ -230,29 +230,26 @@ impl ConekoClient {
             info!("Discovered {} agents", body.agents.len());
             Ok(body.agents)
         } else {
-            anyhow::bail!("Discovery failed: {}", status)
+            anyhow::bail!("Discovery failed: {status}")
         }
     }
 
     /// Send a message to an agent through Coneko
     pub async fn send_message(&self, message: &A2AMessage) -> Result<String> {
         let url = format!("{}/api/v1/messages", self.endpoint);
-        
+
         debug!(
             "Sending message {} to {} via Coneko",
             message.message_id, message.recipient.did
         );
 
         let mut req_builder = self.http.post(&url).json(message);
-        
+
         if let Some(token) = &self.auth_token {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
+            req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
         }
 
-        let response = req_builder
-            .send()
-            .await
-            .context("Failed to send message")?;
+        let response = req_builder.send().await.context("Failed to send message")?;
 
         let status = response.status();
         let body: SendResponse = response
@@ -261,25 +258,27 @@ impl ConekoClient {
             .context("Failed to parse send response")?;
 
         if status.is_success() && body.success {
-            let message_id = body.message_id.unwrap_or_else(|| message.message_id.clone());
+            let message_id = body
+                .message_id
+                .unwrap_or_else(|| message.message_id.clone());
             debug!("Message sent successfully: {}", message_id);
             Ok(message_id)
         } else {
             let error_msg = body.error.unwrap_or_else(|| "Unknown error".to_string());
-            anyhow::bail!("Failed to send message: {}", error_msg)
+            anyhow::bail!("Failed to send message: {error_msg}")
         }
     }
 
     /// Poll for messages for a specific agent
     pub async fn poll_messages(&self, did: &str) -> Result<Vec<A2AMessage>> {
         let url = format!("{}/api/v1/agents/{}/messages", self.endpoint, did);
-        
+
         debug!("Polling messages for agent {}", did);
 
         let mut req_builder = self.http.get(&url);
-        
+
         if let Some(token) = &self.auth_token {
-            req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
+            req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
         }
 
         let response = req_builder
@@ -288,15 +287,13 @@ impl ConekoClient {
             .context("Failed to poll messages")?;
 
         if response.status().is_success() {
-            let messages: Vec<A2AMessage> = response
-                .json()
-                .await
-                .context("Failed to parse messages")?;
-            
+            let messages: Vec<A2AMessage> =
+                response.json().await.context("Failed to parse messages")?;
+
             if !messages.is_empty() {
                 debug!("Received {} messages", messages.len());
             }
-            
+
             Ok(messages)
         } else {
             anyhow::bail!("Failed to poll messages: {}", response.status())
@@ -402,7 +399,7 @@ mod tests {
     async fn test_health_check_disabled() {
         let adapter = ConekoAdapter::disabled();
         assert!(!adapter.is_enabled());
-        
+
         // Health check on disabled adapter returns false
         let result = adapter.health_check().await;
         assert!(result.is_ok());

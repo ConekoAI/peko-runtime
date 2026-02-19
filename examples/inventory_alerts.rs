@@ -135,8 +135,11 @@ async fn main() -> anyhow::Result<()> {
                     println!("{}. {} {}", i + 1, icon, suggestion.product_name);
                     println!("   SKU: {}", suggestion.sku);
                     println!("   Current: {} units", suggestion.current_stock);
-                    println!("   Suggested order: {} units", suggestion.suggested_quantity);
-                    
+                    println!(
+                        "   Suggested order: {} units",
+                        suggestion.suggested_quantity
+                    );
+
                     if let Some(ref supplier) = suggestion.supplier {
                         println!("   Supplier: {}", supplier.name);
                         if let Some(ref email) = supplier.contact_email {
@@ -144,11 +147,11 @@ async fn main() -> anyhow::Result<()> {
                         }
                         println!("   Lead time: {} days", supplier.lead_time_days);
                     }
-                    
+
                     if let Some(cost) = suggestion.total_cost {
                         println!("   Est. cost: ${:.2}", cost);
                     }
-                    
+
                     println!("   Reason: {}", suggestion.reason);
                     println!();
                 }
@@ -174,15 +177,23 @@ async fn main() -> anyhow::Result<()> {
                                 Ok(order) => {
                                     println!(
                                         "✅ Created purchase order {} for {} ({} units)",
-                                        order.id, suggestion.product_name, suggestion.suggested_quantity
+                                        order.id,
+                                        suggestion.product_name,
+                                        suggestion.suggested_quantity
                                     );
                                     println!(
                                         "   Expected delivery: {}",
-                                        order.expected_delivery.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "TBD".to_string())
+                                        order
+                                            .expected_delivery
+                                            .map(|d| d.format("%Y-%m-%d").to_string())
+                                            .unwrap_or_else(|| "TBD".to_string())
                                     );
                                 }
                                 Err(e) => {
-                                    println!("❌ Failed to create order for {}: {}", suggestion.product_name, e);
+                                    println!(
+                                        "❌ Failed to create order for {}: {}",
+                                        suggestion.product_name, e
+                                    );
                                 }
                             }
                         }
@@ -201,17 +212,16 @@ async fn main() -> anyhow::Result<()> {
     match tool.list_inventory().await {
         Ok(products) => {
             println!("Total products: {}", products.len());
-            
-            let low_stock_count = products.iter()
+
+            let low_stock_count = products
+                .iter()
                 .filter(|p| (p.available_stock as u32) < p.low_stock_threshold)
                 .count();
-            
-            let out_of_stock_count = products.iter()
-                .filter(|p| p.available_stock <= 0)
-                .count();
-            
+
+            let out_of_stock_count = products.iter().filter(|p| p.available_stock <= 0).count();
+
             let total_value: i32 = products.iter().map(|p| p.current_stock).sum();
-            
+
             println!("Low stock items: {}", low_stock_count);
             println!("Out of stock: {}", out_of_stock_count);
             println!("Total units in stock: {}", total_value);

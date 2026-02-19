@@ -1,7 +1,7 @@
 //! Social Media tool for posting and managing content
 //!
-//! Supports Twitter/X and LinkedIn integration.
-//! Handles OAuth2 authentication and API rate limits.
+//! Supports Twitter/X and `LinkedIn` integration.
+//! Handles `OAuth2` authentication and API rate limits.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,7 @@ impl std::str::FromStr for Platform {
         match s.to_lowercase().as_str() {
             "twitter" | "x" | "twitter/x" => Ok(Platform::Twitter),
             "linkedin" | "linked-in" => Ok(Platform::LinkedIn),
-            _ => Err(anyhow::anyhow!("Unknown platform: {}", s)),
+            _ => Err(anyhow::anyhow!("Unknown platform: {s}")),
         }
     }
 }
@@ -68,7 +68,7 @@ pub struct TwitterCredentials {
     pub access_secret: String,
 }
 
-/// LinkedIn API credentials
+/// `LinkedIn` API credentials
 #[derive(Debug, Clone)]
 pub struct LinkedInCredentials {
     pub client_id: String,
@@ -90,21 +90,22 @@ impl SocialMediaTool {
         let http_client = reqwest::Client::new();
 
         // Try to load Twitter credentials
-        let twitter_creds = if let (Ok(api_key), Ok(api_secret), Ok(access_token), Ok(access_secret)) = (
-            std::env::var("TWITTER_API_KEY"),
-            std::env::var("TWITTER_API_SECRET"),
-            std::env::var("TWITTER_ACCESS_TOKEN"),
-            std::env::var("TWITTER_ACCESS_SECRET"),
-        ) {
-            Some(TwitterCredentials {
-                api_key,
-                api_secret,
-                access_token,
-                access_secret,
-            })
-        } else {
-            None
-        };
+        let twitter_creds =
+            if let (Ok(api_key), Ok(api_secret), Ok(access_token), Ok(access_secret)) = (
+                std::env::var("TWITTER_API_KEY"),
+                std::env::var("TWITTER_API_SECRET"),
+                std::env::var("TWITTER_ACCESS_TOKEN"),
+                std::env::var("TWITTER_ACCESS_SECRET"),
+            ) {
+                Some(TwitterCredentials {
+                    api_key,
+                    api_secret,
+                    access_token,
+                    access_secret,
+                })
+            } else {
+                None
+            };
 
         // Try to load LinkedIn credentials
         let linkedin_creds = if let (Ok(client_id), Ok(client_secret), Ok(access_token)) = (
@@ -130,13 +131,9 @@ impl SocialMediaTool {
     }
 
     /// Draft a new post
-    fn draft_post(
-        &mut self,
-        platform: Platform,
-        content: &str,
-    ) -> anyhow::Result<SocialPost> {
-        let post_id = format!("post_{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
-        
+    fn draft_post(&mut self, platform: Platform, content: &str) -> anyhow::Result<SocialPost> {
+        let post_id = format!("post_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
         let post = SocialPost {
             id: post_id.clone(),
             platform: match platform {
@@ -160,26 +157,27 @@ impl SocialMediaTool {
         post_id: &str,
         scheduled_at: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<SocialPost> {
-        let post = self.drafts.get_mut(post_id)
-            .ok_or_else(|| anyhow::anyhow!("Post not found: {}", post_id))?;
-        
+        let post = self
+            .drafts
+            .get_mut(post_id)
+            .ok_or_else(|| anyhow::anyhow!("Post not found: {post_id}"))?;
+
         post.scheduled_at = Some(scheduled_at);
         post.status = PostStatus::Scheduled;
-        
+
         Ok(post.clone())
     }
 
     /// Publish a post immediately
-    async fn publish_post(
-        &self,
-        post_id: &str,
-    ) -> anyhow::Result<SocialPost> {
+    async fn publish_post(&self, post_id: &str) -> anyhow::Result<SocialPost> {
         // This would call the actual API in production
         // For now, simulate success
-        let mut post = self.drafts.get(post_id)
-            .ok_or_else(|| anyhow::anyhow!("Post not found: {}", post_id))?
+        let mut post = self
+            .drafts
+            .get(post_id)
+            .ok_or_else(|| anyhow::anyhow!("Post not found: {post_id}"))?
             .clone();
-        
+
         match post.platform.as_str() {
             "twitter" => {
                 if self.twitter_creds.is_none() {
@@ -205,36 +203,37 @@ impl SocialMediaTool {
             }
             _ => return Err(anyhow::anyhow!("Unknown platform: {}", post.platform)),
         }
-        
+
         Ok(post)
     }
 
     /// List all scheduled posts
     fn list_scheduled(&self) -> Vec<&SocialPost> {
-        self.drafts.values()
+        self.drafts
+            .values()
             .filter(|p| matches!(p.status, PostStatus::Scheduled))
             .collect()
     }
 
     /// List all drafts
     fn list_drafts(&self) -> Vec<&SocialPost> {
-        self.drafts.values()
+        self.drafts
+            .values()
             .filter(|p| matches!(p.status, PostStatus::Draft))
             .collect()
     }
 
     /// Get analytics for a published post
-    async fn get_analytics(
-        &self,
-        post_id: &str,
-    ) -> anyhow::Result<EngagementMetrics> {
-        let post = self.drafts.get(post_id)
-            .ok_or_else(|| anyhow::anyhow!("Post not found: {}", post_id))?;
-        
+    async fn get_analytics(&self, post_id: &str) -> anyhow::Result<EngagementMetrics> {
+        let post = self
+            .drafts
+            .get(post_id)
+            .ok_or_else(|| anyhow::anyhow!("Post not found: {post_id}"))?;
+
         if !matches!(post.status, PostStatus::Published) {
             return Err(anyhow::anyhow!("Post is not published yet"));
         }
-        
+
         // In production: fetch from API
         // For now, return simulated data
         Ok(EngagementMetrics {
@@ -248,11 +247,11 @@ impl SocialMediaTool {
 
 #[async_trait]
 impl Tool for SocialMediaTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "social_media"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         r#"Social media tool for posting and managing content on Twitter/X and LinkedIn.
 
 Supports drafting, scheduling, publishing, and analytics.
@@ -277,10 +276,7 @@ Environment Variables Required:
 - LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, LINKEDIN_ACCESS_TOKEN"#
     }
 
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let command = params
             .get("command")
             .and_then(|c| c.as_str())
@@ -419,8 +415,7 @@ Environment Variables Required:
             }
 
             _ => Err(anyhow::anyhow!(
-                "Unknown command: {}. Use 'draft_post', 'schedule_post', 'publish', 'list_scheduled', 'list_drafts', or 'get_analytics'",
-                command
+                "Unknown command: {command}. Use 'draft_post', 'schedule_post', 'publish', 'list_scheduled', 'list_drafts', or 'get_analytics'"
             )),
         }
     }

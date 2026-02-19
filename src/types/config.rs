@@ -161,6 +161,7 @@ impl PekobotConfig {
     }
 
     /// Create default config with data directory
+    #[must_use] 
     pub fn with_data_dir(data_dir: PathBuf) -> Self {
         Self {
             storage: StorageConfig {
@@ -191,7 +192,7 @@ mod tests {
         let config = PekobotConfig::default();
         let toml = toml::to_string(&config).unwrap();
         let parsed: PekobotConfig = toml::from_str(&toml).unwrap();
-        
+
         assert_eq!(parsed.app_name, config.app_name);
         assert_eq!(parsed.network.port, config.network.port);
     }

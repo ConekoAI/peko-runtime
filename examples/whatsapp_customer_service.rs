@@ -1,7 +1,7 @@
 //! WhatsApp Customer Service Agent Example
 //!
 //! This example demonstrates how to build a customer service agent for WhatsApp.
-//! 
+//!
 //! ## Prerequisites
 //!
 //! 1. WhatsApp Business Account via Meta for Developers
@@ -54,12 +54,12 @@ use pekobot::agent::Agent;
 use pekobot::channels::whatsapp::WhatsAppChannel;
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
-use pekobot::types::provider::{ProviderConfig, ProviderType, ModelConfig};
+use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 /// Shared application state
 struct AppState {
@@ -77,18 +77,17 @@ async fn main() -> anyhow::Result<()> {
     info!("");
 
     // Initialize WhatsApp channel from environment
-    let whatsapp = WhatsAppChannel::from_env()
-        .map_err(|e| {
-            eprintln!("❌ Failed to initialize WhatsApp: {}", e);
-            eprintln!("");
-            eprintln!("Make sure you have set these environment variables:");
-            eprintln!("  - WHATSAPP_ACCESS_TOKEN");
-            eprintln!("  - WHATSAPP_PHONE_NUMBER_ID");
-            eprintln!("  - WHATSAPP_VERIFY_TOKEN");
-            eprintln!("");
-            eprintln!("See .env.example for details.");
-            e
-        })?;
+    let whatsapp = WhatsAppChannel::from_env().map_err(|e| {
+        eprintln!("❌ Failed to initialize WhatsApp: {}", e);
+        eprintln!("");
+        eprintln!("Make sure you have set these environment variables:");
+        eprintln!("  - WHATSAPP_ACCESS_TOKEN");
+        eprintln!("  - WHATSAPP_PHONE_NUMBER_ID");
+        eprintln!("  - WHATSAPP_VERIFY_TOKEN");
+        eprintln!("");
+        eprintln!("See .env.example for details.");
+        e
+    })?;
 
     info!("✅ WhatsApp channel initialized");
 
@@ -104,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build router
     let app = Router::new()
-        .route("/webhook", get(verify_webhook))  // For Meta webhook verification
+        .route("/webhook", get(verify_webhook)) // For Meta webhook verification
         .route("/webhook", post(handle_message)) // For receiving messages
         .route("/health", get(health_check))
         .with_state(state);
@@ -140,7 +139,7 @@ async fn verify_webhook(
     let challenge = params.get("hub.challenge").cloned().unwrap_or_default();
 
     let whatsapp = state.whatsapp.lock().await;
-    
+
     if mode == "subscribe" && token == whatsapp.verify_token() {
         info!("✅ Webhook verified by Meta");
         (StatusCode::OK, challenge)
@@ -171,7 +170,8 @@ async fn handle_message(
 
         let response = if should_escalate {
             warn!("🚨 Escalation triggered for message");
-            "I'm connecting you with a team member who can help with this. Please hold...".to_string()
+            "I'm connecting you with a team member who can help with this. Please hold..."
+                .to_string()
         } else {
             // Generate AI response
             let agent = state.agent.lock().await;
@@ -179,7 +179,8 @@ async fn handle_message(
                 Ok(resp) => resp,
                 Err(e) => {
                     error!("❌ AI response failed: {}", e);
-                    "I'm having trouble right now. Let me get a team member to help you.".to_string()
+                    "I'm having trouble right now. Let me get a team member to help you."
+                        .to_string()
                 }
             }
         };
@@ -205,14 +206,23 @@ async fn health_check() -> impl IntoResponse {
 /// Check if message should be escalated to human
 fn check_escalation(message: &str) -> bool {
     let lower = message.to_lowercase();
-    
+
     // Escalation triggers
     let triggers = [
-        "refund", "money back", "chargeback",
-        "lawsuit", "lawyer", "legal",
-        "manager", "supervisor", "human",
-        "angry", "terrible", "worst",
-        "cancel subscription", "close account",
+        "refund",
+        "money back",
+        "chargeback",
+        "lawsuit",
+        "lawyer",
+        "legal",
+        "manager",
+        "supervisor",
+        "human",
+        "angry",
+        "terrible",
+        "worst",
+        "cancel subscription",
+        "close account",
     ];
 
     triggers.iter().any(|t| lower.contains(t))
@@ -224,7 +234,8 @@ async fn create_customer_service_agent() -> anyhow::Result<Agent> {
         name: "customer-service-bot".to_string(),
         description: Some("Friendly customer service representative".to_string()),
         capabilities: vec![AgentCapability::Text, AgentCapability::ToolUse],
-        system_prompt: Some(r#"
+        system_prompt: Some(
+            r#"
 You are a helpful customer service representative for a small retail business.
 
 Your personality:
@@ -249,7 +260,9 @@ When to escalate (don't try to handle these):
 If escalating, say: "I'm connecting you with a team member who can help with this."
 
 Remember: It's better to escalate than give wrong information about money or legal matters.
-"#.to_string()),
+"#
+            .to_string(),
+        ),
         metadata: {
             let mut m = HashMap::new();
             m.insert("department".to_string(), "customer_service".to_string());

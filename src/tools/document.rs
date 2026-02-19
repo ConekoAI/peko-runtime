@@ -107,6 +107,7 @@ pub struct DocumentTool {
 
 impl DocumentTool {
     /// Create new document tool with default config
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             ocr_config: OcrConfig::default(),
@@ -114,18 +115,17 @@ impl DocumentTool {
     }
 
     /// Create with custom OCR config
+    #[must_use] 
     pub fn with_ocr_config(mut self, config: OcrConfig) -> Self {
         self.ocr_config = config;
         self
     }
 
     /// Extract text from PDF
-    fn extract_pdf_text(&self,
-        file_path: &str,
-    ) -> anyhow::Result<ExtractionResult> {
+    fn extract_pdf_text(&self, file_path: &str) -> anyhow::Result<ExtractionResult> {
         // Check if file exists
         if !std::path::Path::new(file_path).exists() {
-            return Err(anyhow::anyhow!("File not found: {}", file_path));
+            return Err(anyhow::anyhow!("File not found: {file_path}"));
         }
 
         // Try to extract using external pdftotext if available
@@ -150,7 +150,7 @@ impl DocumentTool {
         let pages: Vec<PageContent> = text
             .split("\n\n") // Double newline often indicates page breaks
             .enumerate()
-            .filter(|(i, content)| !content.trim().is_empty())
+            .filter(|(_i, content)| !content.trim().is_empty())
             .map(|(i, content)| PageContent {
                 page_number: i + 1,
                 text: content.trim().to_string(),
@@ -174,43 +174,32 @@ impl DocumentTool {
     }
 
     /// Extract text from image using OCR
-    fn ocr_image(&self,
-        image_path: &str,
-    ) -> anyhow::Result<String> {
+    fn ocr_image(&self, image_path: &str) -> anyhow::Result<String> {
         // Check if file exists
         if !std::path::Path::new(image_path).exists() {
-            return Err(anyhow::anyhow!("Image file not found: {}", image_path));
+            return Err(anyhow::anyhow!("Image file not found: {image_path}"));
         }
 
         // Try to use tesseract if available
         let output = std::process::Command::new("tesseract")
-            .args([
-                image_path,
-                "stdout",
-                "-l",
-                &self.ocr_config.language,
-            ])
+            .args([image_path, "stdout", "-l", &self.ocr_config.language])
             .output();
 
         match output {
             Ok(result) if result.status.success() => {
                 Ok(String::from_utf8_lossy(&result.stdout).trim().to_string())
             }
-            _ => {
-                Err(anyhow::anyhow!(
-                    "OCR failed. Install tesseract-ocr and language packs. \
+            _ => Err(anyhow::anyhow!(
+                "OCR failed. Install tesseract-ocr and language packs. \
                      Ubuntu/Debian: sudo apt-get install tesseract-ocr tesseract-ocr-eng"
-                ))
-            }
+            )),
         }
     }
 
     /// Parse invoice/receipt from extracted text
-    fn parse_invoice(&self,
-        text: &str,
-    ) -> Invoice {
+    fn parse_invoice(&self, text: &str) -> Invoice {
         let lines: Vec<&str> = text.lines().collect();
-        
+
         let mut invoice = Invoice {
             vendor: None,
             invoice_number: None,
@@ -224,33 +213,35 @@ impl DocumentTool {
         // Simple heuristics for invoice parsing
         for line in &lines {
             let line_lower = line.to_lowercase();
-            
+
             // Look for total amount patterns
             if line_lower.contains("total") && !line_lower.contains("sub") {
                 if let Some(amount) = self.extract_amount(line) {
                     invoice.total_amount = Some(amount);
                 }
             }
-            
+
             // Look for invoice number
-            if line_lower.contains("invoice") && line_lower.contains("#") {
+            if line_lower.contains("invoice") && line_lower.contains('#') {
                 if let Some(num) = self.extract_invoice_number(line) {
                     invoice.invoice_number = Some(num);
                 }
             }
-            
+
             // Look for date
             if line_lower.contains("date") {
                 if let Some(date) = self.extract_date(line) {
                     invoice.date = Some(date);
                 }
             }
-            
+
             // Look for vendor (usually at top of invoice)
-            if invoice.vendor.is_none() && !line.trim().is_empty() 
-               && !line_lower.starts_with("invoice")
-               && !line_lower.starts_with("date")
-               && !line_lower.starts_with("total") {
+            if invoice.vendor.is_none()
+                && !line.trim().is_empty()
+                && !line_lower.starts_with("invoice")
+                && !line_lower.starts_with("date")
+                && !line_lower.starts_with("total")
+            {
                 invoice.vendor = Some(line.trim().to_string());
             }
         }
@@ -259,33 +250,23 @@ impl DocumentTool {
     }
 
     /// Extract amount from text line
-    fn extract_amount(&self,
-        line: &str,
-    ) -> Option<f64> {
+    fn extract_amount(&self, line: &str) -> Option<f64> {
         // Look for currency patterns: $100.00, 100.00 USD, etc.
         let re = regex::Regex::new(r"[\$€£]?\s*([0-9,]+\.\d{2})").ok()?;
-        
+
         re.captures(line)
             .and_then(|cap| cap.get(1))
-            .and_then(|m| {
-                m.as_str()
-                    .replace(",", "")
-                    .parse::<f64>()
-                    .ok()
-            })
+            .and_then(|m| m.as_str().replace(',', "").parse::<f64>().ok())
     }
 
     /// Extract invoice number
-    fn extract_invoice_number(
-        &self,
-        line: &str,
-    ) -> Option<String> {
+    fn extract_invoice_number(&self, line: &str) -> Option<String> {
         // Look for patterns like "Invoice #12345", "INV-12345", or "INV-ABC-123"
         let patterns = [
-            r"[#:]\s*([A-Z0-9\-]+)",  // Invoice #12345 or Invoice: ABC-123
-            r"INV-([A-Z0-9\-]+)",      // INV-ABC-123
+            r"[#:]\s*([A-Z0-9\-]+)", // Invoice #12345 or Invoice: ABC-123
+            r"INV-([A-Z0-9\-]+)",    // INV-ABC-123
         ];
-        
+
         for pattern in &patterns {
             if let Ok(re) = regex::Regex::new(pattern) {
                 if let Some(cap) = re.captures(line) {
@@ -295,21 +276,19 @@ impl DocumentTool {
                 }
             }
         }
-        
+
         None
     }
 
     /// Extract date from line
-    fn extract_date(&self,
-        line: &str,
-    ) -> Option<String> {
+    fn extract_date(&self, line: &str) -> Option<String> {
         // Look for common date patterns: MM/DD/YYYY, YYYY-MM-DD, etc.
         let patterns = [
             r"(\d{1,2}/\d{1,2}/\d{2,4})",
             r"(\d{4}-\d{2}-\d{2})",
             r"(\d{1,2}-\d{1,2}-\d{2,4})",
         ];
-        
+
         for pattern in &patterns {
             if let Ok(re) = regex::Regex::new(pattern) {
                 if let Some(cap) = re.captures(line) {
@@ -323,45 +302,46 @@ impl DocumentTool {
     }
 
     /// Generate markdown report from extracted data
-    fn generate_report(&self,
+    fn generate_report(
+        &self,
         title: &str,
         content: &str,
         metadata: HashMap<String, String>,
     ) -> String {
-        let mut report = format!("# {}\n\n", title);
-        
+        let mut report = format!("# {title}\n\n");
+
         // Add metadata section
         if !metadata.is_empty() {
             report.push_str("## Metadata\n\n");
             for (key, value) in &metadata {
-                report.push_str(&format!("- **{}**: {}\n", key, value));
+                report.push_str(&format!("- **{key}**: {value}\n"));
             }
             report.push('\n');
         }
-        
+
         // Add content
         report.push_str("## Content\n\n");
         report.push_str(content);
         report.push('\n');
-        
+
         // Add footer
         report.push_str("\n---\n\n");
         report.push_str(&format!(
             "*Generated by Pekobot Document Tool on {}*\n",
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
         ));
-        
+
         report
     }
 }
 
 #[async_trait]
 impl Tool for DocumentTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "document"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         r#"Document processing tool for PDFs, images, and text extraction.
 
 Supports PDF text extraction, OCR for scanned documents, and invoice parsing.
@@ -387,10 +367,7 @@ Prerequisites:
   macOS: brew install tesseract"#
     }
 
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let command = params
             .get("command")
             .and_then(|c| c.as_str())
@@ -485,8 +462,7 @@ Prerequisites:
             }
 
             _ => Err(anyhow::anyhow!(
-                "Unknown command: {}. Use 'extract_text', 'ocr', 'parse_invoice', or 'generate_report'",
-                command
+                "Unknown command: {command}. Use 'extract_text', 'ocr', 'parse_invoice', or 'generate_report'"
             )),
         }
     }

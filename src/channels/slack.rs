@@ -3,7 +3,7 @@
 //! Uses Slack Web API for sending messages and polling for receiving.
 
 use super::Channel;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::VecDeque;
 use tracing::{debug, error, info, warn};
@@ -24,7 +24,7 @@ impl SlackConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let bot_token = std::env::var("SLACK_BOT_TOKEN")
             .map_err(|_| anyhow::anyhow!("SLACK_BOT_TOKEN not set"))?;
-        
+
         Ok(Self {
             bot_token,
             channel_id: std::env::var("SLACK_CHANNEL_ID").ok(),
@@ -63,7 +63,10 @@ impl SlackChannel {
         if self.config.allowed_users.is_empty() {
             return true; // Allow all if no restrictions
         }
-        self.config.allowed_users.iter().any(|u| u == "*" || u == user_id)
+        self.config
+            .allowed_users
+            .iter()
+            .any(|u| u == "*" || u == user_id)
     }
 
     /// Get bot's own user ID
@@ -110,15 +113,18 @@ impl SlackChannel {
         if !status.is_success() {
             let error = response.text().await.unwrap_or_default();
             error!("Slack API error: {} - {}", status, error);
-            return Err(anyhow::anyhow!("Slack API error: {} - {}", status, error));
+            return Err(anyhow::anyhow!("Slack API error: {status} - {error}"));
         }
 
         // Check Slack's own error response
         let result: serde_json::Value = response.json().await?;
-        if let Some(ok) = result.get("ok").and_then(|v| v.as_bool()) {
+        if let Some(ok) = result.get("ok").and_then(serde_json::Value::as_bool) {
             if !ok {
-                let error = result.get("error").and_then(|e| e.as_str()).unwrap_or("unknown");
-                return Err(anyhow::anyhow!("Slack API error: {}", error));
+                let error = result
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow::anyhow!("Slack API error: {error}"));
             }
         }
 
@@ -142,11 +148,14 @@ impl SlackChannel {
             .await?;
 
         let result: serde_json::Value = response.json().await?;
-        
-        if let Some(ok) = result.get("ok").and_then(|v| v.as_bool()) {
+
+        if let Some(ok) = result.get("ok").and_then(serde_json::Value::as_bool) {
             if !ok {
-                let error = result.get("error").and_then(|e| e.as_str()).unwrap_or("unknown");
-                return Err(anyhow::anyhow!("Slack API error: {}", error));
+                let error = result
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow::anyhow!("Slack API error: {error}"));
             }
         }
 
@@ -160,7 +169,7 @@ impl SlackChannel {
                     if user == bot_id {
                         continue;
                     }
-                    
+
                     // Check if user is allowed
                     if !self.is_user_allowed(user) {
                         continue;
@@ -179,7 +188,7 @@ impl SlackChannel {
 
 #[async_trait]
 impl Channel for SlackChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "slack"
     }
 

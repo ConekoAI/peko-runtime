@@ -1,6 +1,5 @@
 //! Agentic loop - core execution engine with tool calling
 
-use crate::a2a::message::{A2AMessage, MessageType, Payload, IntentPayload};
 use crate::agent::Agent;
 use crate::providers::Provider;
 use crate::tools::Tool;
@@ -18,11 +17,7 @@ pub struct AgenticLoop {
 
 impl AgenticLoop {
     /// Create a new agentic loop
-    pub fn new(
-        agent: Agent,
-        provider: Box<dyn Provider>,
-        tools: Vec<Box<dyn Tool>>,
-    ) -> Self {
+    pub fn new(agent: Agent, provider: Box<dyn Provider>, tools: Vec<Box<dyn Tool>>) -> Self {
         Self {
             agent,
             provider,
@@ -38,11 +33,9 @@ impl AgenticLoop {
     }
 
     /// Run the agentic loop with a user prompt
-    pub async fn run(&mut self,
-        prompt: &str,
-    ) -> Result<AgenticResult> {
+    pub async fn run(&mut self, prompt: &str) -> Result<AgenticResult> {
         info!("Starting agentic loop for agent: {}", self.agent.name());
-        
+
         let mut iteration = 0;
         let mut context = vec![
             json!({
@@ -68,10 +61,13 @@ impl AgenticLoop {
             }
 
             debug!("Iteration {}: Calling provider", iteration);
-            
+
             // Call the LLM
-            let response = self.provider.complete(&self.format_messages(&context)
-            ).await.context("Failed to get completion from provider")?;
+            let response = self
+                .provider
+                .complete(&self.format_messages(&context))
+                .await
+                .context("Failed to get completion from provider")?;
 
             debug!("Provider response: {}", response);
 
@@ -80,7 +76,7 @@ impl AgenticLoop {
                 // Execute tool
                 info!("Executing tool: {}", tool_call.name);
                 let tool_result = self.execute_tool(&tool_call).await;
-                
+
                 // Add tool call and result to context
                 context.push(json!({
                     "role": "assistant",
@@ -111,12 +107,14 @@ impl AgenticLoop {
 
     /// Build system prompt with available tools
     fn build_system_prompt(&self) -> String {
-        let tool_descriptions: Vec<String> = self.tools
+        let tool_descriptions: Vec<String> = self
+            .tools
             .iter()
             .map(|t| format!("- {}: {}", t.name(), t.description()))
             .collect();
 
-        format!(r#"You are an autonomous agent. You have access to the following tools:
+        format!(
+            r#"You are an autonomous agent. You have access to the following tools:
 
 {}
 
@@ -132,23 +130,22 @@ Think step by step. Use tools when needed. Always end with FINAL_ANSWER."#,
     }
 
     /// Format context messages for the provider
-    fn format_messages(&self,
-        context: &[serde_json::Value],
-    ) -> String {
+    fn format_messages(&self, context: &[serde_json::Value]) -> String {
         context
             .iter()
-            .map(|m| format!("{}: {}", 
-                m.get("role").and_then(|r| r.as_str()).unwrap_or("unknown"),
-                m.get("content").and_then(|c| c.as_str()).unwrap_or("")
-            ))
+            .map(|m| {
+                format!(
+                    "{}: {}",
+                    m.get("role").and_then(|r| r.as_str()).unwrap_or("unknown"),
+                    m.get("content").and_then(|c| c.as_str()).unwrap_or("")
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n\n")
     }
 
     /// Parse a tool call from LLM response
-    fn parse_tool_call(&self,
-        response: &str,
-    ) -> Option<ToolCall> {
+    fn parse_tool_call(&self, response: &str) -> Option<ToolCall> {
         if let Some(start) = response.find("TOOL_CALL:") {
             let json_str = &response[start + "TOOL_CALL:".len()..];
             if let Ok(call) = serde_json::from_str::<ToolCall>(json_str.trim()) {
@@ -159,22 +156,17 @@ Think step by step. Use tools when needed. Always end with FINAL_ANSWER."#,
     }
 
     /// Check if response is a final answer
-    fn is_final_answer(&self,
-        response: &str,
-    ) -> bool {
+    fn is_final_answer(&self, response: &str) -> bool {
         response.contains("FINAL_ANSWER:")
     }
 
     /// Execute a tool
-    async fn execute_tool(
-        &self,
-        call: &ToolCall,
-    ) -> String {
+    async fn execute_tool(&self, call: &ToolCall) -> String {
         for tool in &self.tools {
             if tool.name() == call.name {
                 match tool.execute(call.parameters.clone()).await {
                     Ok(result) => return serde_json::to_string(&result).unwrap_or_default(),
-                    Err(e) => return format!("Error: {}", e),
+                    Err(e) => return format!("Error: {e}"),
                 }
             }
         }
@@ -224,14 +216,11 @@ struct MockProvider;
 
 #[async_trait::async_trait]
 impl Provider for MockProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mock"
     }
 
-    async fn complete(
-        &self,
-        _prompt: &str,
-    ) -> Result<String> {
+    async fn complete(&self, _prompt: &str) -> Result<String> {
         Ok("FINAL_ANSWER: test".to_string())
     }
 
@@ -242,6 +231,6 @@ impl Provider for MockProvider {
         _model: &str,
         _temperature: f64,
     ) -> Result<String> {
-        Ok(format!("FINAL_ANSWER: {}", message))
+        Ok(format!("FINAL_ANSWER: {message}"))
     }
 }

@@ -101,10 +101,11 @@ pub struct ConekoAdapter {
 
 impl ConekoAdapter {
     /// Create a disabled adapter
+    #[must_use] 
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            endpoint: "".to_string(),
+            endpoint: String::new(),
             auth_token: None,
             poll_interval_ms: 5000,
         }
@@ -121,22 +122,23 @@ impl ConekoAdapter {
     }
 
     /// Create from configuration
+    #[must_use] 
     pub fn from_config(config: &ConekoConfig) -> Self {
         if config.enabled {
-            Self::enabled(&config.endpoint,
-                config.auth_token.as_deref()
-            )
+            Self::enabled(&config.endpoint, config.auth_token.as_deref())
         } else {
             Self::disabled()
         }
     }
 
     /// Check if Coneko is enabled
+    #[must_use] 
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
     /// Get the endpoint URL
+    #[must_use] 
     pub fn endpoint(&self) -> Option<&str> {
         if self.enabled {
             Some(&self.endpoint)
@@ -146,11 +148,13 @@ impl ConekoAdapter {
     }
 
     /// Get auth token
+    #[must_use] 
     pub fn auth_token(&self) -> Option<&str> {
         self.auth_token.as_deref()
     }
 
     /// Get poll interval
+    #[must_use] 
     pub fn poll_interval_ms(&self) -> u64 {
         self.poll_interval_ms
     }
@@ -169,6 +173,7 @@ pub struct ConekoService {
 
 impl ConekoService {
     /// Create a new Coneko service
+    #[must_use] 
     pub fn new(
         adapter: ConekoAdapter,
         did: String,
@@ -190,7 +195,8 @@ impl ConekoService {
     }
 
     /// Start the service (register and begin polling)
-    pub async fn start(&self,
+    pub async fn start(
+        &self,
         message_handler: impl Fn(A2AMessage) + Send + Sync + 'static,
     ) -> anyhow::Result<()> {
         if !self.adapter.is_enabled() {
@@ -216,9 +222,7 @@ impl ConekoService {
         let interval = self.adapter.poll_interval_ms();
 
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(
-                std::time::Duration::from_millis(interval)
-            );
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(interval));
 
             loop {
                 ticker.tick().await;
@@ -241,8 +245,7 @@ impl ConekoService {
     }
 
     /// Stop the service (unregister)
-    pub async fn stop(&self,
-    ) -> anyhow::Result<()> {
+    pub async fn stop(&self) -> anyhow::Result<()> {
         if !self.adapter.is_enabled() {
             return Ok(());
         }
@@ -253,10 +256,7 @@ impl ConekoService {
     }
 
     /// Send a message through Coneko
-    pub async fn send_message(
-        &self,
-        message: &A2AMessage,
-    ) -> anyhow::Result<String> {
+    pub async fn send_message(&self, message: &A2AMessage) -> anyhow::Result<String> {
         self.adapter.send_message(message).await
     }
 

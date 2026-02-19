@@ -11,7 +11,7 @@ fn load_api_key() -> Option<String> {
     if let Ok(key) = std::env::var("MOONSHOT_API_KEY") {
         return Some(key);
     }
-    
+
     // Try OpenClaw auth profiles
     let home = std::env::var("HOME").ok()?;
     let path = std::path::PathBuf::from(home)
@@ -32,8 +32,8 @@ fn load_api_key() -> Option<String> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let api_key = load_api_key()
-        .expect("API key not found. Set KIMI_API_KEY or check auth-profiles.json");
+    let api_key =
+        load_api_key().expect("API key not found. Set KIMI_API_KEY or check auth-profiles.json");
 
     println!("Testing Kimi API...");
     println!("API Key: {}...", &api_key[..20.min(api_key.len())]);
@@ -61,11 +61,11 @@ async fn main() -> anyhow::Result<()> {
     println!("Status: {}", status);
 
     let text = response.text().await?;
-    
+
     if status.is_success() {
         let result: serde_json::Value = serde_json::from_str(&text)?;
         println!("Response JSON: {}", serde_json::to_string_pretty(&result)?);
-        
+
         if let Some(content) = result
             .get("choices")
             .and_then(|c| c.get(0))

@@ -270,10 +270,7 @@ impl ExpenseTool {
     }
 
     /// Parse receipt from image file
-    pub async fn parse_receipt(
-        &self,
-        image_path: &str,
-    ) -> anyhow::Result<ParsedReceipt> {
+    pub async fn parse_receipt(&self, image_path: &str) -> anyhow::Result<ParsedReceipt> {
         // In production, would:
         // 1. Use Tesseract OCR (from DocumentTool)
         // 2. Or call Google Vision API / AWS Textract
@@ -281,10 +278,12 @@ impl ExpenseTool {
 
         // For now, simulate with mock data based on filename
         let mock_expense = self.create_mock_expense_from_path(image_path);
-        
+
         Ok(ParsedReceipt {
-            raw_text: format!("Receipt from {} with total ${:.2}", 
-                mock_expense.merchant, mock_expense.total_amount),
+            raw_text: format!(
+                "Receipt from {} with total ${:.2}",
+                mock_expense.merchant, mock_expense.total_amount
+            ),
             confidence: 0.85,
             extracted_expense: Some(mock_expense),
             warnings: vec![],
@@ -292,10 +291,7 @@ impl ExpenseTool {
     }
 
     /// Extract expense from raw text (OCR output)
-    pub fn extract_from_text(
-        &self,
-        text: &str,
-    ) -> anyhow::Result<Option<Expense>> {
+    pub fn extract_from_text(&self, text: &str) -> anyhow::Result<Option<Expense>> {
         // Try to extract:
         // - Merchant name (first line or after "Thank you from")
         // - Date (various formats)
@@ -313,13 +309,18 @@ impl ExpenseTool {
         }
 
         let category = self.categorize_merchant(merchant.as_ref().unwrap());
-        let tax_category = self.config.expense_categories
+        let tax_category = self
+            .config
+            .expense_categories
             .iter()
             .find(|c| c.id == category)
             .and_then(|c| c.default_tax_category.clone());
 
         Ok(Some(Expense {
-            id: format!("EXP-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase()),
+            id: format!(
+                "EXP-{}",
+                uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
+            ),
             merchant: merchant.unwrap(),
             date: date.unwrap_or_else(|| chrono::Local::now().naive_local().date()),
             total_amount: total.unwrap(),
@@ -342,7 +343,7 @@ impl ExpenseTool {
     /// Auto-categorize expense based on merchant
     fn categorize_merchant(&self, merchant: &str) -> String {
         let merchant_lower = merchant.to_lowercase();
-        
+
         for category in &self.config.expense_categories {
             for keyword in &category.keywords {
                 if merchant_lower.contains(keyword) {
@@ -352,17 +353,19 @@ impl ExpenseTool {
         }
 
         // Check for known merchants
-        if merchant_lower.contains("starbucks") 
+        if merchant_lower.contains("starbucks")
             || merchant_lower.contains("mcdonald")
             || merchant_lower.contains("restaurant")
-            || merchant_lower.contains("cafe") {
+            || merchant_lower.contains("cafe")
+        {
             return "meals".to_string();
         }
 
-        if merchant_lower.contains("uber") 
+        if merchant_lower.contains("uber")
             || merchant_lower.contains("lyft")
             || merchant_lower.contains("airline")
-            || merchant_lower.contains("hotel") {
+            || merchant_lower.contains("hotel")
+        {
             return "travel".to_string();
         }
 
@@ -370,15 +373,16 @@ impl ExpenseTool {
     }
 
     /// Categorize an expense manually
-    pub fn categorize_expense(
-        &self,
-        expense: &mut Expense,
-        category: &str,
-    ) -> anyhow::Result<()> {
+    pub fn categorize_expense(&self, expense: &mut Expense, category: &str) -> anyhow::Result<()> {
         expense.category = category.to_string();
-        
+
         // Update tax category based on new category
-        if let Some(cat) = self.config.expense_categories.iter().find(|c| c.id == category) {
+        if let Some(cat) = self
+            .config
+            .expense_categories
+            .iter()
+            .find(|c| c.id == category)
+        {
             expense.tax_category = cat.default_tax_category.clone();
         }
 
@@ -386,6 +390,7 @@ impl ExpenseTool {
     }
 
     /// Generate expense report for date range
+    #[must_use] 
     pub fn generate_report(
         &self,
         title: &str,
@@ -393,7 +398,8 @@ impl ExpenseTool {
         end_date: chrono::NaiveDate,
         expenses: Vec<Expense>,
     ) -> ExpenseReport {
-        let filtered: Vec<_> = expenses.into_iter()
+        let filtered: Vec<_> = expenses
+            .into_iter()
             .filter(|e| e.date >= start_date && e.date <= end_date)
             .collect();
 
@@ -406,21 +412,27 @@ impl ExpenseTool {
 
         for expense in &filtered {
             // Update category summary
-            let entry = by_category.entry(expense.category.clone()).or_insert_with(|| {
-                CategorySummary {
+            let entry = by_category
+                .entry(expense.category.clone())
+                .or_insert_with(|| CategorySummary {
                     category: expense.category.clone(),
                     count: 0,
                     total: 0.0,
                     tax_deductible_amount: 0.0,
-                }
-            });
+                });
             entry.count += 1;
             entry.total += expense.total_amount;
 
             // Calculate tax deductible amount
             if let Some(ref tax_cat_code) = expense.tax_category {
-                if let Some(tax_cat) = self.config.tax_categories.iter().find(|t| t.code == *tax_cat_code) {
-                    entry.tax_deductible_amount += expense.total_amount * (tax_cat.deductible_percent as f64 / 100.0);
+                if let Some(tax_cat) = self
+                    .config
+                    .tax_categories
+                    .iter()
+                    .find(|t| t.code == *tax_cat_code)
+                {
+                    entry.tax_deductible_amount +=
+                        expense.total_amount * (f64::from(tax_cat.deductible_percent) / 100.0);
                 }
             }
 
@@ -429,7 +441,10 @@ impl ExpenseTool {
         }
 
         ExpenseReport {
-            id: format!("RPT-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase()),
+            id: format!(
+                "RPT-{}",
+                uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
+            ),
             title: title.to_string(),
             start_date,
             end_date,
@@ -446,10 +461,9 @@ impl ExpenseTool {
     }
 
     /// Export report to CSV
-    pub fn export_csv(&self,
-        report: &ExpenseReport,
-    ) -> anyhow::Result<String> {
-        let mut csv = String::from("Date,Merchant,Category,Total,Tax,Payment Method,Status,Notes\n");
+    pub fn export_csv(&self, report: &ExpenseReport) -> anyhow::Result<String> {
+        let mut csv =
+            String::from("Date,Merchant,Category,Total,Tax,Payment Method,Status,Notes\n");
 
         for expense in &report.expenses {
             csv.push_str(&format!(
@@ -469,9 +483,8 @@ impl ExpenseTool {
     }
 
     /// Export report summary
-    pub fn export_summary(&self,
-        report: &ExpenseReport,
-    ) -> String {
+    #[must_use] 
+    pub fn export_summary(&self, report: &ExpenseReport) -> String {
         let mut output = format!(
             "EXPENSE REPORT: {}\nPeriod: {} to {}\nGenerated: {}\n\n",
             report.title,
@@ -482,13 +495,11 @@ impl ExpenseTool {
 
         output.push_str(&format!(
             "Total Expenses: {}\nTotal Amount: ${:.2}\nTotal Tax: ${:.2}\n\n",
-            report.summary.total_expenses,
-            report.summary.total_amount,
-            report.summary.total_tax
+            report.summary.total_expenses, report.summary.total_amount, report.summary.total_tax
         ));
 
         output.push_str("BY CATEGORY:\n");
-        for (_, summary) in &report.summary.by_category {
+        for summary in report.summary.by_category.values() {
             output.push_str(&format!(
                 "  {}: {} items, ${:.2} (${:.2} deductible)\n",
                 summary.category, summary.count, summary.total, summary.tax_deductible_amount
@@ -499,7 +510,7 @@ impl ExpenseTool {
         let mut merchants: Vec<_> = report.summary.by_merchant.iter().collect();
         merchants.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
         for (merchant, total) in merchants.iter().take(10) {
-            output.push_str(&format!("  {}: ${:.2}\n", merchant, total));
+            output.push_str(&format!("  {merchant}: ${total:.2}\n"));
         }
 
         output
@@ -508,11 +519,15 @@ impl ExpenseTool {
     // Helper methods for text extraction
     fn extract_merchant(&self, text: &str) -> Option<String> {
         // Try to find merchant name (usually first non-empty line or after "Thank you")
-        let lines: Vec<_> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-        lines.first().map(|s| s.to_string())
+        let lines: Vec<_> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        lines.first().map(std::string::ToString::to_string)
     }
 
-    fn extract_date(&self, text: &str) -> Option<chrono::NaiveDate> {
+    fn extract_date(&self, _text: &str) -> Option<chrono::NaiveDate> {
         // Look for date patterns (MM/DD/YYYY, MM-DD-YYYY, etc.)
         // Simplified: return today for now
         Some(chrono::Local::now().naive_local().date())
@@ -525,11 +540,11 @@ impl ExpenseTool {
             if line_lower.contains("total") {
                 // Try to extract dollar amount
                 if let Some(dollar_idx) = line.find('$') {
-                    let amount_str: String = line[dollar_idx+1..]
+                    let amount_str: String = line[dollar_idx + 1..]
                         .chars()
-                        .take_while(|c| c.is_digit(10) || *c == '.' || *c == ',')
+                        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
                         .collect();
-                    return amount_str.replace(",", "").parse().ok();
+                    return amount_str.replace(',', "").parse().ok();
                 }
             }
         }
@@ -542,11 +557,11 @@ impl ExpenseTool {
             let line_lower = line.to_lowercase();
             if line_lower.contains("tax") && !line_lower.contains("total") {
                 if let Some(dollar_idx) = line.find('$') {
-                    let amount_str: String = line[dollar_idx+1..]
+                    let amount_str: String = line[dollar_idx + 1..]
                         .chars()
-                        .take_while(|c| c.is_digit(10) || *c == '.' || *c == ',')
+                        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
                         .collect();
-                    return amount_str.replace(",", "").parse().ok();
+                    return amount_str.replace(',', "").parse().ok();
                 }
             }
         }
@@ -559,11 +574,11 @@ impl ExpenseTool {
             let line_lower = line.to_lowercase();
             if line_lower.contains("tip") || line_lower.contains("gratuity") {
                 if let Some(dollar_idx) = line.find('$') {
-                    let amount_str: String = line[dollar_idx+1..]
+                    let amount_str: String = line[dollar_idx + 1..]
                         .chars()
-                        .take_while(|c| c.is_digit(10) || *c == '.' || *c == ',')
+                        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
                         .collect();
-                    return amount_str.replace(",", "").parse().ok();
+                    return amount_str.replace(',', "").parse().ok();
                 }
             }
         }
@@ -586,14 +601,15 @@ impl ExpenseTool {
     }
 
     // Create mock expense for demo purposes
-    fn create_mock_expense_from_path(&self,
-        path: &str,
-    ) -> Expense {
+    fn create_mock_expense_from_path(&self, path: &str) -> Expense {
         let path_lower = path.to_lowercase();
-        
+
         if path_lower.contains("starbucks") {
             Expense {
-                id: format!("EXP-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase()),
+                id: format!(
+                    "EXP-{}",
+                    uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
+                ),
                 merchant: "Starbucks".to_string(),
                 date: chrono::Local::now().naive_local().date(),
                 total_amount: 8.47,
@@ -628,7 +644,10 @@ impl ExpenseTool {
             }
         } else if path_lower.contains("uber") {
             Expense {
-                id: format!("EXP-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase()),
+                id: format!(
+                    "EXP-{}",
+                    uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
+                ),
                 merchant: "Uber".to_string(),
                 date: chrono::Local::now().naive_local().date(),
                 total_amount: 24.50,
@@ -639,15 +658,13 @@ impl ExpenseTool {
                 category: "travel".to_string(),
                 tax_category: Some("travel".to_string()),
                 payment_method: Some("Visa".to_string()),
-                items: vec![
-                    ExpenseItem {
-                        description: "UberX ride to airport".to_string(),
-                        quantity: 1.0,
-                        unit_price: 22.00,
-                        total_price: 22.00,
-                        category: None,
-                    },
-                ],
+                items: vec![ExpenseItem {
+                    description: "UberX ride to airport".to_string(),
+                    quantity: 1.0,
+                    unit_price: 22.00,
+                    total_price: 22.00,
+                    category: None,
+                }],
                 notes: Some("Client meeting travel".to_string()),
                 receipt_image_path: Some(path.to_string()),
                 status: ExpenseStatus::PendingReview,
@@ -656,7 +673,10 @@ impl ExpenseTool {
             }
         } else {
             Expense {
-                id: format!("EXP-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase()),
+                id: format!(
+                    "EXP-{}",
+                    uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
+                ),
                 merchant: "Office Depot".to_string(),
                 date: chrono::Local::now().naive_local().date(),
                 total_amount: 45.67,
@@ -667,15 +687,13 @@ impl ExpenseTool {
                 category: "office".to_string(),
                 tax_category: Some("office".to_string()),
                 payment_method: Some("Credit Card".to_string()),
-                items: vec![
-                    ExpenseItem {
-                        description: "Printer paper (5 reams)".to_string(),
-                        quantity: 5.0,
-                        unit_price: 8.40,
-                        total_price: 42.00,
-                        category: None,
-                    },
-                ],
+                items: vec![ExpenseItem {
+                    description: "Printer paper (5 reams)".to_string(),
+                    quantity: 5.0,
+                    unit_price: 8.40,
+                    total_price: 42.00,
+                    category: None,
+                }],
                 notes: None,
                 receipt_image_path: Some(path.to_string()),
                 status: ExpenseStatus::PendingReview,

@@ -4,7 +4,6 @@
 //! source assessment, and report generation.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 /// Research tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,32 +238,29 @@ impl ResearchTool {
     }
 
     /// Extract content from a URL
-    pub async fn extract_content(
-        &self,
-        url: &str,
-    ) -> anyhow::Result<ExtractedContent> {
+    pub async fn extract_content(&self, url: &str) -> anyhow::Result<ExtractedContent> {
         // Fetch the page
         let response = self.http_client.get(url).send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Failed to fetch URL: {}", response.status());
         }
 
         let html = response.text().await?;
-        
+
         // Parse content
         let title = self.extract_title(&html);
         let content = self.extract_main_content(&html);
         let author = self.extract_author(&html);
         let published_date = self.extract_date(&html);
-        
+
         // Generate summary and key points
         let summary = self.generate_summary(&content);
         let key_points = self.extract_key_points(&content);
-        
+
         // Assess credibility
         let credibility = self.assess_credibility(url, &html, &content).await?;
-        
+
         let word_count = content.split_whitespace().count() as u32;
         let reading_time = (word_count / 200).max(1); // ~200 WPM
 
@@ -291,13 +287,13 @@ impl ResearchTool {
         content: &str,
     ) -> anyhow::Result<CredibilityAssessment> {
         let domain = self.extract_domain(url);
-        
+
         // Calculate various factors
         let domain_authority = self.assess_domain_authority(&domain);
         let transparency = self.assess_transparency(html);
         let citation_quality = self.assess_citations(content);
         let bias = self.assess_bias(content);
-        
+
         // Check for known fact-checking
         let fact_checking = if self.is_fact_checked_source(&domain) {
             0.9
@@ -344,6 +340,7 @@ impl ResearchTool {
     }
 
     /// Generate citation for a source
+    #[must_use] 
     pub fn generate_citation(
         &self,
         content: &ExtractedContent,
@@ -354,13 +351,12 @@ impl ResearchTool {
 
         let formatted = match style {
             CitationStyle::Apa => {
-                let author = content.author.as_ref()
-                    .map(|a| format!("{}, ", a.split_whitespace().last().unwrap_or(a)))
-                    .unwrap_or_else(|| "Unknown Author. ".to_string());
-                
-                let date = content.published_date
-                    .map(|d| format!("({}). ", d.format("%Y")))
-                    .unwrap_or_else(|| "(n.d.). ".to_string());
+                let author = content
+                    .author
+                    .as_ref().map_or_else(|| "Unknown Author. ".to_string(), |a| format!("{}, ", a.split_whitespace().last().unwrap_or(a)));
+
+                let date = content
+                    .published_date.map_or_else(|| "(n.d.). ".to_string(), |d| format!("({}). ", d.format("%Y")));
 
                 format!(
                     "{}{}{}. Retrieved {}, from {}",
@@ -372,10 +368,10 @@ impl ResearchTool {
                 )
             }
             CitationStyle::Mla => {
-                let author = content.author.as_ref()
-                    .map(|a| format!("{} ", a))
-                    .unwrap_or_else(|| "\"Unknown Author.\" ".to_string());
-                
+                let author = content
+                    .author
+                    .as_ref().map_or_else(|| "\"Unknown Author.\" ".to_string(), |a| format!("{a} "));
+
                 format!(
                     "\"{}\" {}. Web. {}. <{}>",
                     content.title,
@@ -413,7 +409,7 @@ impl ResearchTool {
         query: &str,
         title: Option<&str>,
     ) -> anyhow::Result<ResearchReport> {
-        println!("🔍 Starting research on: {}", query);
+        println!("🔍 Starting research on: {query}");
 
         // Step 1: Search
         println!("  Searching...");
@@ -448,7 +444,10 @@ impl ResearchTool {
         let executive_summary = self.generate_executive_summary(query, &findings, &sources);
 
         Ok(ResearchReport {
-            id: format!("RPT-{}", uuid::Uuid::new_v4().to_string()[..8].to_uppercase()),
+            id: format!(
+                "RPT-{}",
+                uuid::Uuid::new_v4().to_string()[..8].to_uppercase()
+            ),
             query: query.to_string(),
             title: title.unwrap_or(query).to_string(),
             executive_summary,
@@ -468,11 +467,8 @@ impl ResearchTool {
     }
 
     /// Export report to specified format
-    pub fn export_report(
-        &self,
-        report: &ResearchReport,
-        format: OutputFormat,
-    ) -> String {
+    #[must_use] 
+    pub fn export_report(&self, report: &ResearchReport, format: OutputFormat) -> String {
         match format {
             OutputFormat::Markdown => self.export_markdown(report),
             OutputFormat::Html => self.export_html(report),
@@ -489,13 +485,11 @@ impl ResearchTool {
     ) -> anyhow::Result<Vec<SearchResult>> {
         let url = "https://api.search.brave.com/res/v1/web/search";
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .get(url)
             .header("X-Subscription-Token", &self.config.api_key)
-            .query(&[
-                ("q", query),
-                ("count", &params.num_results.to_string()),
-            ])
+            .query(&[("q", query), ("count", &params.num_results.to_string())])
             .send()
             .await?;
 
@@ -504,16 +498,14 @@ impl ResearchTool {
         }
 
         // Parse response (simplified)
-        let results: Vec<SearchResult> = vec![
-            SearchResult {
-                position: 1,
-                title: "Example Search Result".to_string(),
-                url: "https://example.com/article".to_string(),
-                snippet: "This is a sample search result for demonstration purposes.".to_string(),
-                published_date: None,
-                source: "example.com".to_string(),
-            },
-        ];
+        let results: Vec<SearchResult> = vec![SearchResult {
+            position: 1,
+            title: "Example Search Result".to_string(),
+            url: "https://example.com/article".to_string(),
+            snippet: "This is a sample search result for demonstration purposes.".to_string(),
+            published_date: None,
+            source: "example.com".to_string(),
+        }];
 
         Ok(results)
     }
@@ -559,22 +551,23 @@ impl ResearchTool {
         // Simple regex extraction
         let re = regex::Regex::new(r"<title>(.*?)</title>").unwrap();
         re.captures(html)
-            .and_then(|cap| cap.get(1))
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_else(|| "Untitled".to_string())
+            .and_then(|cap| cap.get(1)).map_or_else(|| "Untitled".to_string(), |m| m.as_str().trim().to_string())
     }
 
     fn extract_main_content(&self, html: &str) -> String {
         // Remove scripts and styles
-        let cleaned = regex::Regex::new(r"<script[^>]*>[ -]*?</script>").unwrap()
+        let cleaned = regex::Regex::new(r"<script[^>]*>[ -]*?</script>")
+            .unwrap()
             .replace_all(html, "");
-        let cleaned = regex::Regex::new(r"<style[^>]*>[ -]*?</style>").unwrap()
+        let cleaned = regex::Regex::new(r"<style[^>]*>[ -]*?</style>")
+            .unwrap()
             .replace_all(&cleaned, "");
-        
+
         // Extract text from common content areas
-        let text = regex::Regex::new(r"<[^>]+>").unwrap()
+        let text = regex::Regex::new(r"<[^>]+>")
+            .unwrap()
             .replace_all(&cleaned, " ");
-        
+
         // Clean up whitespace
         text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
@@ -585,7 +578,7 @@ impl ResearchTool {
             r#"<meta[^>]*name=["']author["'][^>]*content=["']([^"']+)["']"#,
             r"by\s+([A-Z][a-z]+\s+[A-Z][a-z]+)",
         ];
-        
+
         for pattern in &patterns {
             if let Ok(re) = regex::Regex::new(pattern) {
                 if let Some(cap) = re.captures(html) {
@@ -604,7 +597,7 @@ impl ResearchTool {
             r#"<meta[^>]*property=["']article:published_time["'][^>]*content=["']([^"']+)["']"#,
             r#"<meta[^>]*name=["']date["'][^>]*content=["']([^"']+)["']"#,
         ];
-        
+
         for pattern in &patterns {
             if let Ok(re) = regex::Regex::new(pattern) {
                 if let Some(cap) = re.captures(html) {
@@ -622,36 +615,49 @@ impl ResearchTool {
     fn generate_summary(&self, content: &str) -> String {
         // Take first few sentences as summary
         let sentences: Vec<_> = content.split('.').collect();
-        sentences.iter().take(3).map(|s| s.trim()).collect::<Vec<_>>().join(". ") + "."
+        sentences
+            .iter()
+            .take(3)
+            .map(|s| s.trim())
+            .collect::<Vec<_>>()
+            .join(". ")
+            + "."
     }
 
     fn extract_key_points(&self, content: &str) -> Vec<String> {
         let mut points = Vec::new();
-        
+
         // Look for list items or numbered points
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("•") || trimmed.starts_with("-") || 
-               (trimmed.len() > 10 && trimmed.chars().next().unwrap().is_numeric()) {
-                points.push(trimmed.trim_start_matches(|c: char| !c.is_alphanumeric()).to_string());
+            if trimmed.starts_with("•")
+                || trimmed.starts_with('-')
+                || (trimmed.len() > 10 && trimmed.chars().next().unwrap().is_numeric())
+            {
+                points.push(
+                    trimmed
+                        .trim_start_matches(|c: char| !c.is_alphanumeric())
+                        .to_string(),
+                );
             }
             if points.len() >= 5 {
                 break;
             }
         }
-        
+
         points
     }
 
-    fn classify_source_type(&self,
-        url: &str,
-    ) -> SourceType {
+    fn classify_source_type(&self, url: &str) -> SourceType {
         let url_lower = url.to_lowercase();
-        
+
         if url_lower.contains(".edu") || url_lower.contains("arxiv") {
             SourceType::Academic
-        } else if url_lower.contains("news") || url_lower.contains("bbc") || 
-                  url_lower.contains("cnn") || url_lower.contains("reuters") {
+        } else if url_lower.contains("news")
+            || url_lower.contains("bbc")
+            || url_lower.contains("cnn")
+            || url_lower.contains("reuters")
+        {
             SourceType::News
         } else if url_lower.contains("gov") {
             SourceType::Government
@@ -671,16 +677,29 @@ impl ResearchTool {
     // Credibility assessment helpers
     fn assess_domain_authority(&self, domain: &str) -> f32 {
         let high_authority = [
-            "edu", "gov", "harvard", "mit", "stanford", "nature", "science",
-            "reuters", "ap.org", "bbc", "economist",
+            "edu",
+            "gov",
+            "harvard",
+            "mit",
+            "stanford",
+            "nature",
+            "science",
+            "reuters",
+            "ap.org",
+            "bbc",
+            "economist",
         ];
-        
+
         let medium_authority = [
-            "wikipedia", "forbes", "nytimes", "washingtonpost", "guardian",
+            "wikipedia",
+            "forbes",
+            "nytimes",
+            "washingtonpost",
+            "guardian",
         ];
-        
+
         let domain_lower = domain.to_lowercase();
-        
+
         if high_authority.iter().any(|d| domain_lower.contains(d)) {
             0.9
         } else if medium_authority.iter().any(|d| domain_lower.contains(d)) {
@@ -695,31 +714,45 @@ impl ResearchTool {
         let has_about = html_lower.contains("about us") || html_lower.contains("about page");
         let has_contact = html_lower.contains("contact") || html_lower.contains("email");
         let has_author = html_lower.contains("author") || html_lower.contains("written by");
+
         
-        let score = (has_about as u8 + has_contact as u8 + has_author as u8) as f32 / 3.0;
-        score
+        f32::from(u8::from(has_about) + u8::from(has_contact) + u8::from(has_author)) / 3.0
     }
 
     fn assess_citations(&self, content: &str) -> f32 {
-        let citation_indicators = ["according to", "cited in", "referenced", "source:", "study by"];
+        let citation_indicators = [
+            "according to",
+            "cited in",
+            "referenced",
+            "source:",
+            "study by",
+        ];
         let content_lower = content.to_lowercase();
-        
-        let count = citation_indicators.iter()
+
+        let count = citation_indicators
+            .iter()
             .filter(|ind| content_lower.contains(*ind))
             .count();
-        
+
         (count as f32 / citation_indicators.len() as f32).min(1.0)
     }
 
     fn assess_bias(&self, content: &str) -> BiasLevel {
         // Simple heuristic: check for loaded language
-        let loaded_words = ["clearly", "obviously", "undoubtedly", "everyone knows", "fake"];
+        let loaded_words = [
+            "clearly",
+            "obviously",
+            "undoubtedly",
+            "everyone knows",
+            "fake",
+        ];
         let content_lower = content.to_lowercase();
-        
-        let loaded_count = loaded_words.iter()
+
+        let loaded_count = loaded_words
+            .iter()
             .filter(|w| content_lower.contains(*w))
             .count();
-        
+
         match loaded_count {
             0 => BiasLevel::Minimal,
             1..=2 => BiasLevel::Low,
@@ -731,27 +764,27 @@ impl ResearchTool {
 
     fn is_fact_checked_source(&self, domain: &str) -> bool {
         let fact_checkers = [
-            "snopes", "factcheck", "politifact", "reuters/fact-check",
-            "apnews.com/factcheck", "bbc.com/news/fact-check",
+            "snopes",
+            "factcheck",
+            "politifact",
+            "reuters/fact-check",
+            "apnews.com/factcheck",
+            "bbc.com/news/fact-check",
         ];
-        
+
         fact_checkers.iter().any(|fc| domain.contains(fc))
     }
 
     fn extract_domain(&self, url: &str) -> String {
         url.replace("https://", "")
-           .replace("http://", "")
-           .split('/')
-           .next()
-           .unwrap_or(url)
-           .to_string()
+            .replace("http://", "")
+            .split('/')
+            .next()
+            .unwrap_or(url)
+            .to_string()
     }
 
-    fn compile_findings(
-        &self,
-        query: &str,
-        sources: &[ExtractedContent],
-    ) -> Vec<Finding> {
+    fn compile_findings(&self, query: &str, sources: &[ExtractedContent]) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         // Create a finding for the main topic
@@ -784,9 +817,9 @@ impl ResearchTool {
         findings: &[Finding],
         sources: &[ExtractedContent],
     ) -> String {
-        let avg_credibility = sources.iter().map(|s| s.credibility_score).sum::<f32>() 
-            / sources.len() as f32;
-        
+        let avg_credibility =
+            sources.iter().map(|s| s.credibility_score).sum::<f32>() / sources.len() as f32;
+
         let high_cred_sources = sources.iter().filter(|s| s.credibility_score > 0.7).count();
 
         format!(
@@ -802,12 +835,13 @@ impl ResearchTool {
         )
     }
 
-    fn export_markdown(&self,
-        report: &ResearchReport,
-    ) -> String {
+    fn export_markdown(&self, report: &ResearchReport) -> String {
         let mut md = format!("# {}\n\n", report.title);
-        md.push_str(&format!("*Generated: {}*\n\n", report.generated_at.format("%Y-%m-%d %H:%M UTC")));
-        
+        md.push_str(&format!(
+            "*Generated: {}*\n\n",
+            report.generated_at.format("%Y-%m-%d %H:%M UTC")
+        ));
+
         md.push_str("## Executive Summary\n\n");
         md.push_str(&report.executive_summary);
         md.push_str("\n\n");
@@ -824,7 +858,7 @@ impl ResearchTool {
                 for source in &finding.supporting_sources {
                     md.push_str(&format!("- [{}]({})\n", source.title, source.url));
                 }
-                md.push_str("\n");
+                md.push('\n');
             }
         }
 
@@ -832,7 +866,10 @@ impl ResearchTool {
         for (i, source) in report.sources.iter().enumerate() {
             md.push_str(&format!("{}. **{}**\n", i + 1, source.title));
             md.push_str(&format!("   - URL: {}\n", source.url));
-            md.push_str(&format!("   - Credibility: {:.0}%\n", source.credibility_score * 100.0));
+            md.push_str(&format!(
+                "   - Credibility: {:.0}%\n",
+                source.credibility_score * 100.0
+            ));
             md.push_str(&format!("   - Type: {:?}\n\n", source.source_type));
         }
 
@@ -843,24 +880,23 @@ impl ResearchTool {
 
         md.push_str("## Limitations\n\n");
         for limitation in &report.limitations {
-            md.push_str(&format!("- {}\n", limitation));
+            md.push_str(&format!("- {limitation}\n"));
         }
 
         md
     }
 
-    fn export_html(&self,
-        report: &ResearchReport,
-    ) -> String {
+    fn export_html(&self, report: &ResearchReport) -> String {
         // Convert markdown to basic HTML
         let md = self.export_markdown(report);
-        format!("<html><body><pre>{}</pre></body></html>", md)
+        format!("<html><body><pre>{md}</pre></body></html>")
     }
 
-    fn export_text(&self,
-        report: &ResearchReport,
-    ) -> String {
-        self.export_markdown(report).replace("# ", "").replace("## ", "").replace("### ", "")
+    fn export_text(&self, report: &ResearchReport) -> String {
+        self.export_markdown(report)
+            .replace("# ", "")
+            .replace("## ", "")
+            .replace("### ", "")
     }
 }
 
@@ -905,7 +941,7 @@ mod tests {
         };
 
         let tool = ResearchTool::new(config).unwrap();
-        
+
         let content = ExtractedContent {
             url: "https://example.com/article".to_string(),
             title: "Test Article".to_string(),

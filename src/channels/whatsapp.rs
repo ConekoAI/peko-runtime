@@ -1,20 +1,20 @@
-//! WhatsApp channel implementation
+//! `WhatsApp` channel implementation
 //!
-//! Uses WhatsApp Business Cloud API for sending messages.
+//! Uses `WhatsApp` Business Cloud API for sending messages.
 //! Receiving messages requires webhook setup (simplified for now).
 
 use super::Channel;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::VecDeque;
 use tracing::{debug, error, info, warn};
 
-/// WhatsApp channel configuration
+/// `WhatsApp` channel configuration
 #[derive(Debug, Clone)]
 pub struct WhatsAppConfig {
-    /// WhatsApp Business API access token
+    /// `WhatsApp` Business API access token
     pub access_token: String,
-    /// WhatsApp phone number ID
+    /// `WhatsApp` phone number ID
     pub phone_number_id: String,
     /// Webhook verify token (for receiving)
     pub verify_token: String,
@@ -31,7 +31,7 @@ impl WhatsAppConfig {
             .map_err(|_| anyhow::anyhow!("WHATSAPP_PHONE_NUMBER_ID not set"))?;
         let verify_token = std::env::var("WHATSAPP_VERIFY_TOKEN")
             .map_err(|_| anyhow::anyhow!("WHATSAPP_VERIFY_TOKEN not set"))?;
-        
+
         Ok(Self {
             access_token,
             phone_number_id,
@@ -41,7 +41,7 @@ impl WhatsAppConfig {
     }
 }
 
-/// WhatsApp channel for bot communication
+/// `WhatsApp` channel for bot communication
 pub struct WhatsAppChannel {
     config: WhatsAppConfig,
     client: reqwest::Client,
@@ -50,7 +50,7 @@ pub struct WhatsAppChannel {
 }
 
 impl WhatsAppChannel {
-    /// Create new WhatsApp channel
+    /// Create new `WhatsApp` channel
     pub fn new(config: WhatsAppConfig) -> Self {
         info!("WhatsApp channel initialized");
         Self {
@@ -75,12 +75,16 @@ impl WhatsAppChannel {
         let normalized = if phone.starts_with('+') {
             phone.to_string()
         } else {
-            format!("+{}", phone)
+            format!("+{phone}")
         };
-        self.config.allowed_numbers.iter().any(|n| n == "*" || n == &normalized)
+        self.config
+            .allowed_numbers
+            .iter()
+            .any(|n| n == "*" || n == &normalized)
     }
 
     /// Get the verify token for webhook verification
+    #[must_use] 
     pub fn verify_token(&self) -> &str {
         &self.config.verify_token
     }
@@ -91,12 +95,12 @@ impl WhatsAppChannel {
         let to = if phone_number.starts_with('+') {
             phone_number.to_string()
         } else {
-            format!("+{}", phone_number)
+            format!("+{phone_number}")
         };
 
         // Check if number is allowed
         if !self.is_number_allowed(&to) {
-            return Err(anyhow::anyhow!("Phone number not in allowlist: {}", to));
+            return Err(anyhow::anyhow!("Phone number not in allowlist: {to}"));
         }
 
         let url = format!(
@@ -117,7 +121,10 @@ impl WhatsAppChannel {
         let response = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.config.access_token))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.config.access_token),
+            )
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
@@ -127,13 +134,15 @@ impl WhatsAppChannel {
         if !status.is_success() {
             let error = response.text().await.unwrap_or_default();
             error!("WhatsApp API error: {} - {}", status, error);
-            return Err(anyhow::anyhow!("WhatsApp API error: {} - {}", status, error));
+            return Err(anyhow::anyhow!(
+                "WhatsApp API error: {status} - {error}"
+            ));
         }
 
         // Check for API-level errors
         let result: serde_json::Value = response.json().await?;
         if let Some(error) = result.get("error") {
-            return Err(anyhow::anyhow!("WhatsApp API error: {:?}", error));
+            return Err(anyhow::anyhow!("WhatsApp API error: {error:?}"));
         }
 
         debug!("Sent message to WhatsApp number {}", to);
@@ -141,12 +150,9 @@ impl WhatsAppChannel {
     }
 
     /// Parse incoming webhook payload (simplified)
-    /// 
+    ///
     /// In a full implementation, this would be called by your webhook handler
-    pub fn parse_webhook_payload(
-        &mut self,
-        payload: &serde_json::Value,
-    ) -> Vec<String> {
+    pub fn parse_webhook_payload(&mut self, payload: &serde_json::Value) -> Vec<String> {
         let mut messages = Vec::new();
 
         // WhatsApp Cloud API webhook structure
@@ -184,7 +190,11 @@ impl WhatsAppChannel {
                     self.last_recipient = Some(from.to_string());
 
                     // Extract text content
-                    if let Some(text) = msg.get("text").and_then(|t| t.get("body")).and_then(|b| b.as_str()) {
+                    if let Some(text) = msg
+                        .get("text")
+                        .and_then(|t| t.get("body"))
+                        .and_then(|b| b.as_str())
+                    {
                         messages.push(text.to_string());
                     }
                 }
@@ -197,7 +207,7 @@ impl WhatsAppChannel {
 
 #[async_trait]
 impl Channel for WhatsAppChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "whatsapp"
     }
 

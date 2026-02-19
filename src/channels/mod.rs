@@ -7,7 +7,7 @@
 //! - Discord: Discord Bot API integration
 //! - Slack: Slack Web API integration
 //! - Matrix: Matrix Client-Server API integration
-//! - WhatsApp: WhatsApp Business Cloud API integration
+//! - `WhatsApp`: `WhatsApp` Business Cloud API integration
 
 pub mod cli;
 pub mod discord;

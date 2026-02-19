@@ -22,13 +22,13 @@
 //! 3. Run: cargo run --example document_processor
 
 use pekobot::agent::Agent;
-use pekobot::channels::cli::{CliChannel, run_interactive_loop};
+use pekobot::channels::cli::{run_interactive_loop, CliChannel};
 use pekobot::tools::document::DocumentTool;
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
-use pekobot::types::provider::{ProviderConfig, ProviderType, ModelConfig};
+use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use std::collections::HashMap;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -68,12 +68,20 @@ fn check_dependencies() {
     let mut missing = vec![];
 
     // Check for pdftotext
-    if std::process::Command::new("pdftotext").arg("-v").output().is_err() {
+    if std::process::Command::new("pdftotext")
+        .arg("-v")
+        .output()
+        .is_err()
+    {
         missing.push("poppler-utils (pdftotext)");
     }
 
     // Check for tesseract
-    if std::process::Command::new("tesseract").arg("--version").output().is_err() {
+    if std::process::Command::new("tesseract")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         missing.push("tesseract-ocr");
     }
 
@@ -84,7 +92,9 @@ fn check_dependencies() {
         }
         warn!("");
         warn!("Some features may not work. Install with:");
-        warn!("   Ubuntu/Debian: sudo apt-get install poppler-utils tesseract-ocr tesseract-ocr-eng");
+        warn!(
+            "   Ubuntu/Debian: sudo apt-get install poppler-utils tesseract-ocr tesseract-ocr-eng"
+        );
         warn!("   macOS: brew install poppler tesseract");
         warn!("");
     } else {
@@ -98,7 +108,8 @@ async fn create_document_processor_agent() -> anyhow::Result<Agent> {
         name: "document-processor".to_string(),
         description: Some("AI document analysis and processing assistant".to_string()),
         capabilities: vec![AgentCapability::Text, AgentCapability::ToolUse],
-        system_prompt: Some(r#"
+        system_prompt: Some(
+            r#"
 You are an AI document processing assistant for a freelance data analyst.
 
 Your capabilities:
@@ -120,7 +131,9 @@ For invoices specifically:
 - Note payment terms if present
 
 Always be thorough but concise. If the document is unclear or OCR fails, say so.
-"#.to_string()),
+"#
+            .to_string(),
+        ),
         metadata: {
             let mut m = HashMap::new();
             m.insert("role".to_string(), "document_processor".to_string());
@@ -237,12 +250,18 @@ async fn process_document(
     info!("📄 Processing document: {}", file_path);
 
     // Extract text using document tool
-    let extraction = document_tool.execute(serde_json::json!({
-        "command": "extract_text",
-        "file_path": file_path
-    })).await?;
+    let extraction = document_tool
+        .execute(serde_json::json!({
+            "command": "extract_text",
+            "file_path": file_path
+        }))
+        .await?;
 
-    if !extraction.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+    if !extraction
+        .get("success")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
+    {
         println!("❌ Failed to extract text from document");
         return Ok(());
     }
@@ -289,26 +308,26 @@ Document content:
 }
 
 /// Process OCR on an image
-async fn process_ocr(
-    document_tool: &DocumentTool,
-    image_path: &str,
-) -> anyhow::Result<()> {
+async fn process_ocr(document_tool: &DocumentTool, image_path: &str) -> anyhow::Result<()> {
     info!("🔍 Running OCR on: {}", image_path);
 
-    let result = document_tool.execute(serde_json::json!({
-        "command": "ocr",
-        "image_path": image_path
-    })).await?;
+    let result = document_tool
+        .execute(serde_json::json!({
+            "command": "ocr",
+            "image_path": image_path
+        }))
+        .await?;
 
-    if !result.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+    if !result
+        .get("success")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
+    {
         println!("❌ OCR failed. Make sure tesseract is installed.");
         return Ok(());
     }
 
-    let text = result
-        .get("text")
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
+    let text = result.get("text").and_then(|t| t.as_str()).unwrap_or("");
 
     let char_count = result
         .get("character_count")
@@ -330,12 +349,18 @@ async fn process_invoice(
     info!("🧾 Processing invoice: {}", file_path);
 
     // First extract text
-    let extraction = document_tool.execute(serde_json::json!({
-        "command": "extract_text",
-        "file_path": file_path
-    })).await?;
+    let extraction = document_tool
+        .execute(serde_json::json!({
+            "command": "extract_text",
+            "file_path": file_path
+        }))
+        .await?;
 
-    if !extraction.get("success").and_then(|s| s.as_bool()).unwrap_or(false) {
+    if !extraction
+        .get("success")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false)
+    {
         println!("❌ Failed to extract text from invoice");
         return Ok(());
     }
@@ -346,10 +371,12 @@ async fn process_invoice(
         .unwrap_or("");
 
     // Parse invoice structure
-    let parsed = document_tool.execute(serde_json::json!({
-        "command": "parse_invoice",
-        "text": text
-    })).await?;
+    let parsed = document_tool
+        .execute(serde_json::json!({
+            "command": "parse_invoice",
+            "text": text
+        }))
+        .await?;
 
     println!("\n🧾 Invoice Analysis\n");
 
@@ -364,7 +391,10 @@ async fn process_invoice(
             println!("Date: {}", date);
         }
         if let Some(total) = invoice.get("total_amount").and_then(|t| t.as_f64()) {
-            let currency = invoice.get("currency").and_then(|c| c.as_str()).unwrap_or("USD");
+            let currency = invoice
+                .get("currency")
+                .and_then(|c| c.as_str())
+                .unwrap_or("USD");
             println!("Total: {:.2} {}", total, currency);
         }
     }
@@ -396,7 +426,8 @@ Invoice text:
 
 /// Print help text
 fn print_help() {
-    println!(r#"
+    println!(
+        r#"
 📄 Document Processor Commands:
 
   process <file.pdf>    - Extract and analyze a PDF document
@@ -419,5 +450,6 @@ The agent will:
 Prerequisites:
 - poppler-utils (pdftotext) for PDF processing
 - tesseract-ocr for image OCR
-"#);
+"#
+    );
 }

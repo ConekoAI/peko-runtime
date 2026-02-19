@@ -1,5 +1,5 @@
 //! Kimi Code Stress Test
-//! 
+//!
 //! Comprehensive stress test for Kimi Code provider
 
 use std::env;
@@ -11,9 +11,10 @@ async fn main() {
     println!("========================\n");
 
     // Load API key from auth profiles
-    let auth_file = std::fs::read_to_string(
-        format!("{}/.openclaw/agents/main/agent/auth-profiles.json", env::var("HOME").unwrap_or_default())
-    );
+    let auth_file = std::fs::read_to_string(format!(
+        "{}/.openclaw/agents/main/agent/auth-profiles.json",
+        env::var("HOME").unwrap_or_default()
+    ));
 
     let api_key = match auth_file {
         Ok(content) => {
@@ -52,10 +53,16 @@ async fn main() {
     let failed = results.len() - passed;
     println!("✅ Passed: {}/{}", passed, results.len());
     println!("❌ Failed: {}/{}", failed, results.len());
-    
+
     for (i, (passed, name, duration)) in results.iter().enumerate() {
         let status = if *passed { "✅" } else { "❌" };
-        println!("{} Test {}: {} ({:.2}s)", status, i + 1, name, duration.as_secs_f64());
+        println!(
+            "{} Test {}: {} ({:.2}s)",
+            status,
+            i + 1,
+            name,
+            duration.as_secs_f64()
+        );
     }
 
     if failed > 0 {
@@ -66,7 +73,7 @@ async fn main() {
 async fn test_basic_response(api_key: &str) -> (bool, &'static str, std::time::Duration) {
     let start = Instant::now();
     println!("📡 Test 1: Basic Response");
-    
+
     let client = reqwest::Client::new();
     let response = client
         .post("https://api.kimi.com/coding/v1/messages")
@@ -99,7 +106,7 @@ async fn test_basic_response(api_key: &str) -> (bool, &'static str, std::time::D
 async fn test_tool_calling(api_key: &str) -> (bool, &'static str, std::time::Duration) {
     let start = Instant::now();
     println!("📡 Test 2: Tool Calling");
-    
+
     let client = reqwest::Client::new();
     let response = client
         .post("https://api.kimi.com/coding/v1/messages")
@@ -141,7 +148,7 @@ async fn test_tool_calling(api_key: &str) -> (bool, &'static str, std::time::Dur
 async fn test_reasoning(api_key: &str) -> (bool, &'static str, std::time::Duration) {
     let start = Instant::now();
     println!("📡 Test 3: Reasoning");
-    
+
     let client = reqwest::Client::new();
     let response = client
         .post("https://api.kimi.com/coding/v1/messages")
@@ -160,8 +167,10 @@ async fn test_reasoning(api_key: &str) -> (bool, &'static str, std::time::Durati
         Ok(resp) if resp.status().is_success() => {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Some(text) = json["content"][0]["text"].as_str() {
-                    let has_reasoning = text.to_lowercase().contains("120") || text.to_lowercase().contains("speed");
-                    println!("   {} Reasoning: {}", 
+                    let has_reasoning = text.to_lowercase().contains("120")
+                        || text.to_lowercase().contains("speed");
+                    println!(
+                        "   {} Reasoning: {}",
                         if has_reasoning { "✅" } else { "⚠️" },
                         text.chars().take(100).collect::<String>()
                     );
@@ -178,9 +187,9 @@ async fn test_reasoning(api_key: &str) -> (bool, &'static str, std::time::Durati
 async fn test_multi_turn(api_key: &str) -> (bool, &'static str, std::time::Duration) {
     let start = Instant::now();
     println!("📡 Test 4: Multi-turn Conversation");
-    
+
     let client = reqwest::Client::new();
-    
+
     // First turn
     let response1 = client
         .post("https://api.kimi.com/coding/v1/messages")
@@ -222,7 +231,8 @@ async fn test_multi_turn(api_key: &str) -> (bool, &'static str, std::time::Durat
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 if let Some(text) = json["content"][0]["text"].as_str() {
                     let remembers = text.to_lowercase().contains("pekobot");
-                    println!("   {} Remembers name: {}", 
+                    println!(
+                        "   {} Remembers name: {}",
                         if remembers { "✅" } else { "⚠️" },
                         text.chars().take(80).collect::<String>()
                     );
@@ -239,10 +249,10 @@ async fn test_multi_turn(api_key: &str) -> (bool, &'static str, std::time::Durat
 async fn test_concurrent_requests(api_key: &str) -> (bool, &'static str, std::time::Duration) {
     let start = Instant::now();
     println!("📡 Test 5: Concurrent Requests (3 parallel)");
-    
+
     let client = reqwest::Client::new();
     let mut handles = vec![];
-    
+
     for i in 0..3 {
         let client = client.clone();
         let api_key = api_key.to_string();
@@ -262,7 +272,7 @@ async fn test_concurrent_requests(api_key: &str) -> (bool, &'static str, std::ti
         });
         handles.push(handle);
     }
-    
+
     let mut success_count = 0;
     for handle in handles {
         if let Ok(Ok(resp)) = handle.await {
@@ -271,9 +281,10 @@ async fn test_concurrent_requests(api_key: &str) -> (bool, &'static str, std::ti
             }
         }
     }
-    
+
     let all_passed = success_count == 3;
-    println!("   {} {}/3 requests succeeded", 
+    println!(
+        "   {} {}/3 requests succeeded",
         if all_passed { "✅" } else { "⚠️" },
         success_count
     );

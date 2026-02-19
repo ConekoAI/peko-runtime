@@ -1,9 +1,9 @@
 //! AWS Bedrock provider implementation
 //! Access to Claude, Llama, and other models via AWS
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
 
 use crate::providers::Provider;
 
@@ -18,11 +18,8 @@ pub struct BedrockProvider {
 
 impl BedrockProvider {
     /// Create new Bedrock provider
-    pub fn new(
-        access_key_id: String,
-        secret_access_key: String,
-        region: String,
-    ) -> Self {
+    #[must_use] 
+    pub fn new(access_key_id: String, secret_access_key: String, region: String) -> Self {
         Self {
             access_key_id,
             secret_access_key,
@@ -38,13 +35,13 @@ impl BedrockProvider {
             .context("AWS_ACCESS_KEY_ID environment variable not set")?;
         let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY")
             .context("AWS_SECRET_ACCESS_KEY environment variable not set")?;
-        let region = std::env::var("AWS_REGION")
-            .unwrap_or_else(|_| "us-east-1".to_string());
-        
+        let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+
         Ok(Self::new(access_key_id, secret_access_key, region))
     }
 
     /// Set model
+    #[must_use] 
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self
@@ -61,14 +58,11 @@ impl BedrockProvider {
 
 #[async_trait]
 impl Provider for BedrockProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "bedrock"
     }
 
-    async fn complete(
-        &self,
-        prompt: &str,
-    ) -> Result<String> {
+    async fn complete(&self, prompt: &str) -> Result<String> {
         self.chat_with_system(None, prompt, &self.model, 0.7).await
     }
 
@@ -82,7 +76,7 @@ impl Provider for BedrockProvider {
         // AWS Signature Version 4 signing required
         // For simplicity, this is a basic implementation
         // Full implementation would use aws-sigv4
-        
+
         let mut messages = Vec::new();
 
         if let Some(sys) = system_prompt {
@@ -125,7 +119,7 @@ impl Provider for BedrockProvider {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Bedrock API error ({}): {}", status, error_text);
+            anyhow::bail!("Bedrock API error ({status}): {error_text}");
         }
 
         let result: serde_json::Value = response
@@ -155,8 +149,9 @@ mod tests {
             "AKIA...".to_string(),
             "secret...".to_string(),
             "us-east-1".to_string(),
-        ).with_model("anthropic.claude-3-haiku-20240307-v1:0");
-        
+        )
+        .with_model("anthropic.claude-3-haiku-20240307-v1:0");
+
         assert_eq!(provider.name(), "bedrock");
     }
 }

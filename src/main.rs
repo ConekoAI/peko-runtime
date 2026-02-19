@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
 use pekobot::agent::Agent;
-use pekobot::channels::cli::{CliChannel, run_interactive_loop};
+use pekobot::channels::cli::{run_interactive_loop, CliChannel};
 use pekobot::coneko::{ConekoAdapter, ConekoConfig};
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
-use pekobot::types::provider::{ProviderConfig, ProviderType, ModelConfig};
+use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -131,12 +131,20 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Agent { config, name, provider, model, db, coneko, coneko_token } => {
+        Commands::Agent {
+            config,
+            name,
+            provider,
+            model,
+            db,
+            coneko,
+            coneko_token,
+        } => {
             info!("Starting Pekobot agent: {}", name);
-            
+
             // Clone coneko for later use
             let coneko_for_status = coneko.clone();
-            
+
             // Build config
             let agent_config = if let Some(config_path) = config {
                 info!("Loading config from: {}", config_path);
@@ -145,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
                 warn!("No config specified, using defaults");
                 build_default_config(&name, &provider, model, db, coneko, coneko_token)
             };
-            
+
             // Create and start agent
             match Agent::new(agent_config).await {
                 Ok(agent) => {
@@ -153,33 +161,36 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("❌ Failed to start agent: {}", e);
                         return Err(e);
                     }
-                    
+
                     println!("\n🐱 Agent '{}' started successfully!", name);
                     println!("   DID: {}", agent.identity.did);
                     println!("   State: {:?}", agent.state());
-                    
+
                     // Show Coneko status if enabled
                     if let Some(endpoint) = coneko_for_status {
                         println!("   Coneko: 🌐 Connected to {}", endpoint);
                     } else {
                         println!("   Coneko: ⚪ Disabled (use --coneko to enable)");
                     }
-                    
+
                     // Create CLI channel and run interactive loop
                     let mut channel = CliChannel::new(&name);
                     channel.print_banner();
-                    channel.print_system(&format!("Agent '{}' is ready! Type 'exit' or 'quit' to stop.", name));
-                    
+                    channel.print_system(&format!(
+                        "Agent '{}' is ready! Type 'exit' or 'quit' to stop.",
+                        name
+                    ));
+
                     // Run the interactive loop
                     if let Err(e) = run_interactive_loop(&mut channel, &name).await {
                         eprintln!("❌ Error in interactive loop: {}", e);
                     }
-                    
+
                     // Stop the agent
                     if let Err(e) = agent.stop().await {
                         eprintln!("❌ Error stopping agent: {}", e);
                     }
-                    
+
                     println!("\n👋 Agent '{}' stopped. Goodbye!", name);
                 }
                 Err(e) => {
@@ -214,12 +225,13 @@ async fn main() -> anyhow::Result<()> {
         Commands::Onboard => {
             println!("🐱 Pekobot Onboarding");
             println!("\nWelcome! Let's set up your first agent.\n");
-            
+
             // Interactive setup
             let name = prompt("Agent name [peko]: ").unwrap_or_else(|| "peko".to_string());
-            let provider = prompt("Provider (openai/anthropic/ollama) [openai]: ").unwrap_or_else(|| "openai".to_string());
+            let provider = prompt("Provider (openai/anthropic/ollama) [openai]: ")
+                .unwrap_or_else(|| "openai".to_string());
             let coneko = prompt("Coneko endpoint (optional): ");
-            
+
             println!("\n✅ Configuration complete!");
             println!("   Name: {}", name);
             println!("   Provider: {}", provider);
@@ -228,14 +240,17 @@ async fn main() -> anyhow::Result<()> {
             }
             println!("\nStart your agent with:");
             if let Some(endpoint) = coneko {
-                println!("   pekobot agent --name {} --provider {} --coneko {}", name, provider, endpoint);
+                println!(
+                    "   pekobot agent --name {} --provider {} --coneko {}",
+                    name, provider, endpoint
+                );
             } else {
                 println!("   pekobot agent --name {} --provider {}", name, provider);
             }
         }
         Commands::Send { endpoint, message } => {
             println!("🌐 Sending message to {}...", endpoint);
-            
+
             // Simple HTTP POST
             let client = reqwest::Client::new();
             match client
@@ -260,102 +275,114 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Coneko(coneko_cmd) => {
-            match coneko_cmd {
-                ConekoCommands::Status { endpoint } => {
-                    println!("🌐 Checking Coneko status at {}...", endpoint);
-                    
-                    let adapter = ConekoAdapter::enabled(&endpoint, None);
-                    match adapter.health_check().await {
-                        Ok(true) => {
-                            println!("✅ Coneko server is healthy");
-                        }
-                        Ok(false) => {
-                            println!("❌ Coneko server is unreachable");
-                        }
-                        Err(e) => {
-                            println!("❌ Error checking Coneko: {}", e);
-                        }
+        Commands::Coneko(coneko_cmd) => match coneko_cmd {
+            ConekoCommands::Status { endpoint } => {
+                println!("🌐 Checking Coneko status at {}...", endpoint);
+
+                let adapter = ConekoAdapter::enabled(&endpoint, None);
+                match adapter.health_check().await {
+                    Ok(true) => {
+                        println!("✅ Coneko server is healthy");
                     }
-                }
-                ConekoCommands::Register { endpoint, did, name, agent_endpoint, capabilities, token } => {
-                    println!("🌐 Registering agent with Coneko...");
-                    println!("   DID: {}", did);
-                    println!("   Name: {}", name);
-                    println!("   Endpoint: {}", agent_endpoint);
-                    
-                    let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
-                    
-                    let caps = capabilities
-                        .into_iter()
-                        .map(|c| AgentCapability {
-                            name: c,
-                            version: "1.0".to_string(),
-                            description: None,
-                            parameters: None,
-                            required_auth: None,
-                            estimated_cost: None,
-                            estimated_duration: None,
-                        })
-                        .collect();
-                    
-                    match adapter.register_agent(&did, &name, &agent_endpoint, caps, "local", "default"
-                    ).await {
-                        Ok(()) => {
-                            println!("✅ Agent registered successfully!");
-                        }
-                        Err(e) => {
-                            println!("❌ Registration failed: {}", e);
-                        }
+                    Ok(false) => {
+                        println!("❌ Coneko server is unreachable");
                     }
-                }
-                ConekoCommands::Unregister { endpoint, did, token } => {
-                    println!("🌐 Unregistering agent from Coneko...");
-                    println!("   DID: {}", did);
-                    
-                    let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
-                    
-                    match adapter.unregister_agent(&did).await {
-                        Ok(()) => {
-                            println!("✅ Agent unregistered successfully!");
-                        }
-                        Err(e) => {
-                            println!("❌ Unregistration failed: {}", e);
-                        }
-                    }
-                }
-                ConekoCommands::Discover { endpoint, capability, token } => {
-                    println!("🌐 Discovering agents on Coneko...");
-                    
-                    let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
-                    
-                    let caps = capability.map(|c| vec![c]);
-                    
-                    match adapter.discover_agents(caps, None, None).await {
-                        Ok(agents) => {
-                            if agents.is_empty() {
-                                println!("ℹ️  No agents found");
-                            } else {
-                                println!("✅ Found {} agent(s):", agents.len());
-                                for agent in agents {
-                                    println!("   - {} ({})", agent.name, agent.did);
-                                    let caps: Vec<String> = agent
-                                        .capabilities
-                                        .iter()
-                                        .map(|c| c.name.clone())
-                                        .collect();
-                                    println!("     Capabilities: {}", caps.join(", "));
-                                    println!("     Endpoint: {}", agent.endpoint);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            println!("❌ Discovery failed: {}", e);
-                        }
+                    Err(e) => {
+                        println!("❌ Error checking Coneko: {}", e);
                     }
                 }
             }
-        }
+            ConekoCommands::Register {
+                endpoint,
+                did,
+                name,
+                agent_endpoint,
+                capabilities,
+                token,
+            } => {
+                println!("🌐 Registering agent with Coneko...");
+                println!("   DID: {}", did);
+                println!("   Name: {}", name);
+                println!("   Endpoint: {}", agent_endpoint);
+
+                let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
+
+                let caps = capabilities
+                    .into_iter()
+                    .map(|c| AgentCapability {
+                        name: c,
+                        version: "1.0".to_string(),
+                        description: None,
+                        parameters: None,
+                        required_auth: None,
+                        estimated_cost: None,
+                        estimated_duration: None,
+                    })
+                    .collect();
+
+                match adapter
+                    .register_agent(&did, &name, &agent_endpoint, caps, "local", "default")
+                    .await
+                {
+                    Ok(()) => {
+                        println!("✅ Agent registered successfully!");
+                    }
+                    Err(e) => {
+                        println!("❌ Registration failed: {}", e);
+                    }
+                }
+            }
+            ConekoCommands::Unregister {
+                endpoint,
+                did,
+                token,
+            } => {
+                println!("🌐 Unregistering agent from Coneko...");
+                println!("   DID: {}", did);
+
+                let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
+
+                match adapter.unregister_agent(&did).await {
+                    Ok(()) => {
+                        println!("✅ Agent unregistered successfully!");
+                    }
+                    Err(e) => {
+                        println!("❌ Unregistration failed: {}", e);
+                    }
+                }
+            }
+            ConekoCommands::Discover {
+                endpoint,
+                capability,
+                token,
+            } => {
+                println!("🌐 Discovering agents on Coneko...");
+
+                let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
+
+                let caps = capability.map(|c| vec![c]);
+
+                match adapter.discover_agents(caps, None, None).await {
+                    Ok(agents) => {
+                        if agents.is_empty() {
+                            println!("ℹ️  No agents found");
+                        } else {
+                            println!("✅ Found {} agent(s):", agents.len());
+                            for agent in agents {
+                                println!("   - {} ({})", agent.name, agent.did);
+                                let caps: Vec<String> =
+                                    agent.capabilities.iter().map(|c| c.name.clone()).collect();
+                                println!("     Capabilities: {}", caps.join(", "));
+                                println!("     Endpoint: {}", agent.endpoint);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ Discovery failed: {}", e);
+                    }
+                }
+            }
+        },
     }
 
     Ok(())
@@ -376,7 +403,7 @@ fn build_default_config(
         "ollama" => ProviderType::Ollama,
         _ => ProviderType::OpenAI,
     };
-    
+
     let model = model.unwrap_or_else(|| match provider_type {
         ProviderType::OpenAI => "gpt-4o-mini".to_string(),
         ProviderType::Anthropic => "claude-3-haiku".to_string(),
@@ -392,7 +419,7 @@ fn build_default_config(
         poll_interval_ms: 5000,
         auto_register: true,
     });
-    
+
     AgentConfig {
         name: name.to_string(),
         description: Some(format!("Pekobot agent: {}", name)),
@@ -425,14 +452,17 @@ fn build_default_config(
             default_model: model.clone(),
             models: {
                 let mut m = HashMap::new();
-                m.insert(model.clone(), ModelConfig {
-                    name: model,
-                    max_tokens: 2048,
-                    temperature: 0.7,
-                    top_p: 1.0,
-                    presence_penalty: 0.0,
-                    frequency_penalty: 0.0,
-                });
+                m.insert(
+                    model.clone(),
+                    ModelConfig {
+                        name: model,
+                        max_tokens: 2048,
+                        temperature: 0.7,
+                        top_p: 1.0,
+                        presence_penalty: 0.0,
+                        frequency_penalty: 0.0,
+                    },
+                );
                 m
             },
             timeout_seconds: 30,
@@ -460,13 +490,13 @@ fn build_default_config(
 /// Simple prompt helper
 fn prompt(message: &str) -> Option<String> {
     use std::io::{self, Write};
-    
+
     print!("{}", message);
     io::stdout().flush().ok()?;
-    
+
     let mut input = String::new();
     io::stdin().read_line(&mut input).ok()?;
-    
+
     let trimmed = input.trim();
     if trimmed.is_empty() {
         None

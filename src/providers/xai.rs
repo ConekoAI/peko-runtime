@@ -1,9 +1,9 @@
 //! xAI (Grok) provider implementation
 //! Elon Musk's AI company
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
 
 use crate::providers::Provider;
 
@@ -16,6 +16,7 @@ pub struct XaiProvider {
 
 impl XaiProvider {
     /// Create new xAI provider from API key
+    #[must_use] 
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
@@ -26,12 +27,13 @@ impl XaiProvider {
 
     /// Create from environment variable
     pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("XAI_API_KEY")
-            .context("XAI_API_KEY environment variable not set")?;
+        let api_key =
+            std::env::var("XAI_API_KEY").context("XAI_API_KEY environment variable not set")?;
         Ok(Self::new(api_key))
     }
 
     /// Set model
+    #[must_use] 
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self
@@ -40,14 +42,11 @@ impl XaiProvider {
 
 #[async_trait]
 impl Provider for XaiProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "xai"
     }
 
-    async fn complete(
-        &self,
-        prompt: &str,
-    ) -> Result<String> {
+    async fn complete(&self, prompt: &str) -> Result<String> {
         self.chat_with_system(None, prompt, &self.model, 0.7).await
     }
 
@@ -92,7 +91,7 @@ impl Provider for XaiProvider {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("xAI API error ({}): {}", status, error_text);
+            anyhow::bail!("xAI API error ({status}): {error_text}");
         }
 
         let result: serde_json::Value = response
@@ -118,9 +117,8 @@ mod tests {
 
     #[test]
     fn test_xai_provider_creation() {
-        let provider = XaiProvider::new("test-key".to_string())
-            .with_model("grok-2");
-        
+        let provider = XaiProvider::new("test-key".to_string()).with_model("grok-2");
+
         assert_eq!(provider.name(), "xai");
     }
 }

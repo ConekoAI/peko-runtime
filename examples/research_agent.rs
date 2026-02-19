@@ -10,7 +10,7 @@ use clap::Parser;
 use std::io::{self, Write};
 
 use pekobot::tools::research::{
-    ResearchConfig, ResearchTool, SearchProvider, SearchParams, OutputFormat, CitationStyle,
+    CitationStyle, OutputFormat, ResearchConfig, ResearchTool, SearchParams, SearchProvider,
 };
 
 #[derive(Parser)]
@@ -84,9 +84,10 @@ async fn main() -> anyhow::Result<()> {
     // Conduct research
     println!("Starting research... This may take a few moments.\n");
 
-    match tool.research(&query,
-        Some(&format!("Research Report: {}", query))
-    ).await {
+    match tool
+        .research(&query, Some(&format!("Research Report: {}", query)))
+        .await
+    {
         Ok(report) => {
             println!("✅ Research complete!\n");
             println!("=".repeat(60));
@@ -104,14 +105,17 @@ async fn main() -> anyhow::Result<()> {
             if !report.findings.is_empty() {
                 println!("🔍 KEY FINDINGS");
                 println!("-".repeat(40));
-                
+
                 for (i, finding) in report.findings.iter().enumerate() {
                     println!("\n{}. {}", i + 1, finding.topic);
                     println!("   {}", finding.summary);
                     println!("   Confidence: {:.0}%", finding.confidence * 100.0);
-                    
+
                     if !finding.supporting_sources.is_empty() {
-                        println!("   Supporting sources: {}", finding.supporting_sources.len());
+                        println!(
+                            "   Supporting sources: {}",
+                            finding.supporting_sources.len()
+                        );
                     }
                 }
                 println!();
@@ -121,13 +125,18 @@ async fn main() -> anyhow::Result<()> {
             println!("📚 SOURCES ANALYZED");
             println!("-".repeat(40));
             println!("Total sources: {}", report.sources.len());
-            
-            let avg_credibility: f32 = report.sources.iter()
+
+            let avg_credibility: f32 = report
+                .sources
+                .iter()
                 .map(|s| s.credibility_score)
-                .sum::<f32>() / report.sources.len() as f32;
+                .sum::<f32>()
+                / report.sources.len() as f32;
             println!("Average credibility: {:.0}%", avg_credibility * 100.0);
 
-            let high_cred = report.sources.iter()
+            let high_cred = report
+                .sources
+                .iter()
                 .filter(|s| s.credibility_score > 0.7)
                 .count();
             println!("High credibility sources: {}", high_cred);
@@ -143,14 +152,15 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     "🔴"
                 };
-                
+
                 println!("  {} {}. {}", cred_icon, i + 1, source.title);
-                println!("     Credibility: {:.0}% | Type: {:?}",
+                println!(
+                    "     Credibility: {:.0}% | Type: {:?}",
                     source.credibility_score * 100.0,
                     source.source_type
                 );
                 println!("     URL: {}", source.url);
-                
+
                 if !source.key_points.is_empty() {
                     println!("     Key points:");
                     for point in source.key_points.iter().take(3) {
@@ -163,19 +173,22 @@ async fn main() -> anyhow::Result<()> {
             // Export report
             println!("💾 EXPORTING REPORT");
             println!("-".repeat(40));
-            
-            let output = tool.export_report(&report,
+
+            let output = tool.export_report(
+                &report,
                 match args.format.as_str() {
                     "html" => OutputFormat::Html,
                     "text" => OutputFormat::PlainText,
                     "json" => OutputFormat::Json,
                     _ => OutputFormat::Markdown,
-                }
+                },
             );
 
-            let filename = format!("research_report_{}.md", 
-                chrono::Local::now().format("%Y%m%d_%H%M%S"));
-            
+            let filename = format!(
+                "research_report_{}.md",
+                chrono::Local::now().format("%Y%m%d_%H%M%S")
+            );
+
             match std::fs::write(&filename, &output) {
                 Ok(_) => println!("✅ Report saved to: {}", filename),
                 Err(e) => println!("⚠️  Could not save file: {}", e),

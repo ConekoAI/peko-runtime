@@ -162,17 +162,17 @@ impl ReputationClient {
         recalculate: bool,
     ) -> anyhow::Result<Option<ReputationScore>> {
         let mut url = format!("{}/reputation/scores/{}", self.config.endpoint, agent_did);
-        
+
         if recalculate {
             url.push_str("?recalculate=true");
         }
 
         let response = self.http_client.get(&url).send().await?;
-        
+
         if response.status() == 404 {
             return Ok(None);
         }
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Reputation query failed: {}", response.status());
         }
@@ -182,17 +182,14 @@ impl ReputationClient {
     }
 
     /// Force recalculation of reputation score
-    pub async fn calculate_score(
-        &self,
-        agent_did: &str,
-    ) -> anyhow::Result<ReputationScore> {
+    pub async fn calculate_score(&self, agent_did: &str) -> anyhow::Result<ReputationScore> {
         let url = format!(
             "{}/reputation/scores/{}/calculate",
             self.config.endpoint, agent_did
         );
 
         let response = self.http_client.post(&url).send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Score calculation failed: {}", response.status());
         }
@@ -211,21 +208,17 @@ impl ReputationClient {
         task_id: Option<&str>,
     ) -> anyhow::Result<Rating> {
         let url = format!("{}/reputation/ratings", self.config.endpoint);
-        
+
         let body = SubmitRatingRequest {
             target_agent_did: target_did.to_string(),
             source_agent_did: source_did.to_string(),
             rating,
-            review: review.map(|s| s.to_string()),
-            task_id: task_id.map(|s| s.to_string()),
+            review: review.map(std::string::ToString::to_string),
+            task_id: task_id.map(std::string::ToString::to_string),
         };
-        
-        let response = self.http_client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await?;
-        
+
+        let response = self.http_client.post(&url).json(&body).send().await?;
+
         if !response.status().is_success() {
             anyhow::bail!("Failed to submit rating: {}", response.status());
         }
@@ -235,14 +228,11 @@ impl ReputationClient {
     }
 
     /// Get ratings for an agent
-    pub async fn get_ratings(
-        &self,
-        agent_did: &str,
-    ) -> anyhow::Result<Vec<Rating>> {
+    pub async fn get_ratings(&self, agent_did: &str) -> anyhow::Result<Vec<Rating>> {
         let url = format!("{}/reputation/ratings/{}", self.config.endpoint, agent_did);
-        
+
         let response = self.http_client.get(&url).send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Failed to get ratings: {}", response.status());
         }
@@ -257,13 +247,9 @@ impl ReputationClient {
         query: &ReputationQuery,
     ) -> anyhow::Result<Vec<ReputationScore>> {
         let url = format!("{}/reputation/query", self.config.endpoint);
-        
-        let response = self.http_client
-            .post(&url)
-            .json(query)
-            .send()
-            .await?;
-        
+
+        let response = self.http_client.post(&url).json(query).send().await?;
+
         if !response.status().is_success() {
             anyhow::bail!("Query failed: {}", response.status());
         }
@@ -273,17 +259,14 @@ impl ReputationClient {
     }
 
     /// Get top agents by reputation (leaderboard)
-    pub async fn get_leaderboard(
-        &self,
-        limit: u32,
-    ) -> anyhow::Result<Vec<LeaderboardEntry>> {
+    pub async fn get_leaderboard(&self, limit: u32) -> anyhow::Result<Vec<LeaderboardEntry>> {
         let url = format!(
             "{}/reputation/leaderboard?limit={}",
             self.config.endpoint, limit
         );
-        
+
         let response = self.http_client.get(&url).send().await?;
-        
+
         if !response.status().is_success() {
             anyhow::bail!("Failed to get leaderboard: {}", response.status());
         }
@@ -293,11 +276,7 @@ impl ReputationClient {
     }
 
     /// Check if agent meets minimum reputation threshold
-    pub async fn check_reputation(
-        &self,
-        agent_did: &str,
-        min_score: f64,
-    ) -> anyhow::Result<bool> {
+    pub async fn check_reputation(&self, agent_did: &str, min_score: f64) -> anyhow::Result<bool> {
         match self.get_score(agent_did, false).await? {
             Some(score) => Ok(score.overall_score >= min_score),
             None => Ok(false),

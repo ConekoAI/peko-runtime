@@ -3,13 +3,19 @@
 //! Tests for boundary conditions, error handling, and unusual inputs.
 
 use pekobot::{
-    agent::{Agent, Orchestrator},
     a2a::{
-        message::{A2AMessage, AcceptPayload, ContractPayload, IntentPayload, MessageType, Payload, Price, QuotePayload, TaskStatus},
+        message::{
+            A2AMessage, AcceptPayload, ContractPayload, IntentPayload, MessageType, Payload, Price,
+            QuotePayload, TaskStatus,
+        },
         registry::create_registry,
     },
+    agent::{Agent, Orchestrator},
     config::Config,
-    identity::{did::{DIDScope, Identity}, keys::KeyPair},
+    identity::{
+        did::{DIDScope, Identity},
+        keys::KeyPair,
+    },
 };
 use serde_json::json;
 
@@ -282,9 +288,7 @@ fn test_config_builder_chaining() {
 
 #[tokio::test]
 async fn test_agent_memory_with_unicode() {
-    let config = Config::agent("unicode-memory")
-        .with_memory(true)
-        .build();
+    let config = Config::agent("unicode-memory").with_memory(true).build();
 
     let agent = Agent::new(config).await.unwrap();
     agent.start().await.unwrap();
@@ -303,15 +307,14 @@ async fn test_agent_memory_with_unicode() {
 
 #[tokio::test]
 async fn test_agent_memory_with_special_chars() {
-    let config = Config::agent("special-memory")
-        .with_memory(true)
-        .build();
+    let config = Config::agent("special-memory").with_memory(true).build();
 
     let agent = Agent::new(config).await.unwrap();
     agent.start().await.unwrap();
 
     // Content with special characters that might break SQL
-    let special_content = "'; DROP TABLE memory_entries; -- \" OR 1=1; <script>alert('xss')</script>";
+    let special_content =
+        "'; DROP TABLE memory_entries; -- \" OR 1=1; <script>alert('xss')</script>";
     let result = agent.store_memory(special_content, None);
     assert!(result.is_ok());
 
@@ -324,9 +327,7 @@ async fn test_agent_memory_with_special_chars() {
 
 #[tokio::test]
 async fn test_agent_memory_with_large_content() {
-    let config = Config::agent("large-memory")
-        .with_memory(true)
-        .build();
+    let config = Config::agent("large-memory").with_memory(true).build();
 
     let agent = Agent::new(config).await.unwrap();
     agent.start().await.unwrap();
@@ -387,7 +388,9 @@ async fn test_orchestrator_find_nonexistent() {
     let orchestrator = Orchestrator::with_registry(registry);
 
     // Find non-existent agent
-    let result = orchestrator.find_by_did("did:pekobot:local:nonexistent").await;
+    let result = orchestrator
+        .find_by_did("did:pekobot:local:nonexistent")
+        .await;
     assert!(result.is_none());
 
     let result = orchestrator.find_by_name("nonexistent").await;
@@ -435,18 +438,15 @@ async fn test_concurrent_agent_creation() {
 
 #[tokio::test]
 async fn test_concurrent_memory_operations() {
-    let config = Config::agent("concurrent-mem")
-        .with_memory(true)
-        .build();
+    let config = Config::agent("concurrent-mem").with_memory(true).build();
 
     let agent = Agent::new(config).await.unwrap();
 
     // Spawn multiple store operations
     let mut handles = vec![];
     for i in 0..20 {
-        let handle = tokio::task::spawn_blocking(move || {
-            agent.store_memory(&format!("Memory {}", i), None)
-        });
+        let handle =
+            tokio::task::spawn_blocking(move || agent.store_memory(&format!("Memory {}", i), None));
         handles.push(handle);
     }
 

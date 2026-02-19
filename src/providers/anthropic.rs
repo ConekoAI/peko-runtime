@@ -36,7 +36,7 @@ impl AnthropicConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
-        
+
         Ok(Self {
             api_key,
             ..Default::default()
@@ -61,7 +61,10 @@ impl AnthropicProvider {
             .timeout(Duration::from_secs(config.timeout_seconds))
             .build()?;
 
-        info!("Anthropic provider initialized with model: {}", config.model);
+        info!(
+            "Anthropic provider initialized with model: {}",
+            config.model
+        );
 
         Ok(Self { config, client })
     }
@@ -74,12 +77,18 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl Provider for AnthropicProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "anthropic"
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
-        self.chat_with_system(None, prompt, &self.config.model, self.config.temperature as f64).await
+        self.chat_with_system(
+            None,
+            prompt,
+            &self.config.model,
+            f64::from(self.config.temperature),
+        )
+        .await
     }
 
     async fn chat_with_system(
@@ -90,7 +99,7 @@ impl Provider for AnthropicProvider {
         temperature: f64,
     ) -> anyhow::Result<String> {
         let mut messages: Vec<Message> = Vec::new();
-        
+
         // Add system message if provided
         if let Some(system) = system_prompt {
             messages.push(Message {
@@ -98,7 +107,7 @@ impl Provider for AnthropicProvider {
                 content: system.to_string(),
             });
         }
-        
+
         // Add user message
         messages.push(Message {
             role: "user".to_string(),
@@ -128,7 +137,9 @@ impl Provider for AnthropicProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("Anthropic API error: {} - {}", status, error_text);
-            return Err(anyhow::anyhow!("Anthropic API error: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!(
+                "Anthropic API error: {status} - {error_text}"
+            ));
         }
 
         let completion: MessagesResponse = response.json().await?;
@@ -142,8 +153,7 @@ impl Provider for AnthropicProvider {
 
         debug!(
             "Received response from Anthropic: input_tokens={}, output_tokens={}",
-            completion.usage.input_tokens,
-            completion.usage.output_tokens
+            completion.usage.input_tokens, completion.usage.output_tokens
         );
 
         Ok(content)

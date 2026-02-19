@@ -3,7 +3,7 @@
 //! Demonstrates how to set up multiple agents that can communicate
 //! using the A2A protocol and work together on tasks.
 
-use pekobot::{agent::Orchestrator, a2a::registry::create_registry, Agent, Config};
+use pekobot::{a2a::registry::create_registry, agent::Orchestrator, Agent, Config};
 use std::time::Duration;
 
 #[tokio::main]
@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Simulate a workflow
     println!("🎬 Simulating multi-agent workflow:\n");
-    
+
     let workflow_steps = vec![
         ("task-planner", "Break down: How to make coffee"),
         ("research-agent", "What are the best coffee beans?"),

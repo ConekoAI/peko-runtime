@@ -5,7 +5,7 @@ pub mod loop_;
 pub use loop_::{AgenticLoop, AgenticResult, ToolCall};
 
 use crate::a2a::{A2AFlowHandler, A2AProtocol, SharedRegistry};
-use crate::identity::{storage::KeyStorage, did::DIDScope, Identity};
+use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::memory::sqlite::SqliteMemory;
 use crate::providers::{OpenAIConfig, OpenAIProvider, Provider};
 use crate::types::agent::{AgentConfig, AgentState};
@@ -35,10 +35,10 @@ impl Agent {
 
         // Load or create identity
         let identity = Self::load_or_create_identity(&config).await?;
-        
+
         // Initialize memory if configured
         let memory = Self::init_memory(&config, &identity).await?;
-        
+
         // Initialize provider if configured
         let provider = Self::init_provider(&config).await?;
 
@@ -51,21 +51,31 @@ impl Agent {
         };
 
         agent.set_state(AgentState::Idle);
-        info!("Agent {} initialized with DID: {}", agent.config.name, agent.identity.did);
+        info!(
+            "Agent {} initialized with DID: {}",
+            agent.config.name, agent.identity.did
+        );
 
         Ok(agent)
     }
 
     /// Start the agent
     pub async fn start(&self) -> Result<()> {
-        info!("Starting agent: {} ({})", self.config.name, self.identity.did);
-        
+        info!(
+            "Starting agent: {} ({})",
+            self.config.name, self.identity.did
+        );
+
         self.set_state(AgentState::Idle);
-        
+
         // Store startup message in memory
         if let Some(memory) = &self.memory {
             let _ = memory.store(
-                &format!("Agent {} started at {}", self.config.name, chrono::Utc::now()),
+                &format!(
+                    "Agent {} started at {}",
+                    self.config.name,
+                    chrono::Utc::now()
+                ),
                 Some(serde_json::json!({
                     "event": "startup",
                     "agent_name": self.config.name,
@@ -81,11 +91,15 @@ impl Agent {
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping agent: {}", self.config.name);
         self.set_state(AgentState::ShuttingDown);
-        
+
         // Store shutdown message in memory
         if let Some(memory) = &self.memory {
             let _ = memory.store(
-                &format!("Agent {} stopped at {}", self.config.name, chrono::Utc::now()),
+                &format!(
+                    "Agent {} stopped at {}",
+                    self.config.name,
+                    chrono::Utc::now()
+                ),
                 Some(serde_json::json!({
                     "event": "shutdown",
                     "agent_name": self.config.name,
@@ -104,18 +118,24 @@ impl Agent {
     /// Set state
     fn set_state(&self, state: AgentState) {
         let mut current = self.state.write().unwrap();
-        debug!("Agent {} state: {:?} -> {:?}", self.config.name, *current, state);
+        debug!(
+            "Agent {} state: {:?} -> {:?}",
+            self.config.name, *current, state
+        );
         *current = state;
     }
 
     /// Execute a task with the LLM provider
     pub async fn execute(&self, prompt: &str) -> Result<String> {
         if self.state() != AgentState::Idle {
-            return Err(anyhow::anyhow!("Agent is not idle (current state: {:?})", self.state()));
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
         }
 
         self.set_state(AgentState::Busy);
-        
+
         // Store the prompt in memory
         if let Some(memory) = &self.memory {
             let _ = memory.store(
@@ -127,33 +147,30 @@ impl Agent {
             );
         }
 
-        let result = match &self.provider {
-            Some(provider) => {
-                debug!("Executing prompt with provider: {}", provider.name());
-                match provider.complete(prompt).await {
-                    Ok(response) => {
-                        // Store the response in memory
-                        if let Some(memory) = &self.memory {
-                            let _ = memory.store(
-                                &response,
-                                Some(serde_json::json!({
-                                    "type": "response",
-                                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                                })),
-                            );
-                        }
-                        Ok(response)
+        let result = if let Some(provider) = &self.provider {
+            debug!("Executing prompt with provider: {}", provider.name());
+            match provider.complete(prompt).await {
+                Ok(response) => {
+                    // Store the response in memory
+                    if let Some(memory) = &self.memory {
+                        let _ = memory.store(
+                            &response,
+                            Some(serde_json::json!({
+                                "type": "response",
+                                "timestamp": chrono::Utc::now().to_rfc3339(),
+                            })),
+                        );
                     }
-                    Err(e) => {
-                        error!("Provider error: {}", e);
-                        Err(e)
-                    }
+                    Ok(response)
+                }
+                Err(e) => {
+                    error!("Provider error: {}", e);
+                    Err(e)
                 }
             }
-            None => {
-                warn!("No provider configured, returning echo response");
-                Ok(format!("Echo: {}", prompt))
-            }
+        } else {
+            warn!("No provider configured, returning echo response");
+            Ok(format!("Echo: {prompt}"))
         };
 
         self.set_state(AgentState::Idle);
@@ -161,34 +178,45 @@ impl Agent {
     }
 
     /// Search memory
-    pub fn search_memory(&self, query: &str, limit: usize) -> Result<Vec<crate::types::memory::MemoryEntry>> {
+    pub fn search_memory(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::types::memory::MemoryEntry>> {
         // Convert from sqlite MemoryEntry to types MemoryEntry
         match &self.memory {
             Some(memory) => {
                 let entries = memory.search(query, limit)?;
                 // Map to the correct type
-                Ok(entries.into_iter().map(|e| crate::types::memory::MemoryEntry {
-                    id: e.id,
-                    agent_did: self.did().to_string(),
-                    scope: crate::types::memory::MemoryScope::Agent,
-                    memory_type: "search_result".to_string(),
-                    content: serde_json::json!({"content": e.content}),
-                    embedding: None,
-                    created_at: e.timestamp,
-                    updated_at: e.timestamp,
-                    expires_at: None,
-                    importance: 0.5,
-                    thread_id: None,
-                    tags: vec![],
-                    source: "sqlite".to_string(),
-                }).collect())
+                Ok(entries
+                    .into_iter()
+                    .map(|e| crate::types::memory::MemoryEntry {
+                        id: e.id,
+                        agent_did: self.did().to_string(),
+                        scope: crate::types::memory::MemoryScope::Agent,
+                        memory_type: "search_result".to_string(),
+                        content: serde_json::json!({"content": e.content}),
+                        embedding: None,
+                        created_at: e.timestamp,
+                        updated_at: e.timestamp,
+                        expires_at: None,
+                        importance: 0.5,
+                        thread_id: None,
+                        tags: vec![],
+                        source: "sqlite".to_string(),
+                    })
+                    .collect())
             }
             None => Ok(vec![]),
         }
     }
 
     /// Store in memory
-    pub fn store_memory(&self, content: &str, metadata: Option<serde_json::Value>) -> Result<String> {
+    pub fn store_memory(
+        &self,
+        content: &str,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<String> {
         match &self.memory {
             Some(memory) => memory.store(content, metadata),
             None => Err(anyhow::anyhow!("Memory not initialized")),
@@ -242,7 +270,7 @@ impl Agent {
 
     async fn load_or_create_identity(config: &AgentConfig) -> Result<Identity> {
         let storage = KeyStorage::new()?;
-        
+
         let tenant = config.tenant.as_deref().unwrap_or("default");
         let identity_name = format!("{}-{}", tenant, config.name);
 
@@ -254,10 +282,7 @@ impl Agent {
 
         // Create new identity
         info!("Creating new identity for: {}", identity_name);
-        let identity = Identity::generate(
-            DIDScope::Local,
-            Some(tenant),
-        )?;
+        let identity = Identity::generate(DIDScope::Local, Some(tenant))?;
 
         storage.store(&identity)?;
         info!("Created and stored new identity: {}", identity.did);
@@ -265,7 +290,10 @@ impl Agent {
         Ok(identity)
     }
 
-    async fn init_memory(config: &AgentConfig, identity: &Identity) -> Result<Option<SqliteMemory>> {
+    async fn init_memory(
+        config: &AgentConfig,
+        identity: &Identity,
+    ) -> Result<Option<SqliteMemory>> {
         if let Some(memory_config) = &config.memory {
             let path = memory_config
                 .database_path
@@ -283,7 +311,7 @@ impl Agent {
                 tokio::fs::create_dir_all(parent).await?;
             }
 
-            let namespace = identity.did.replace(":", "_");
+            let namespace = identity.did.replace(':', "_");
             let memory = SqliteMemory::new(&path, &namespace)
                 .context("Failed to initialize SQLite memory")?;
 
@@ -296,33 +324,38 @@ impl Agent {
 
     async fn init_provider(config: &AgentConfig) -> Result<Option<Box<dyn Provider>>> {
         use crate::types::provider::ProviderType;
-        
-        match config.provider.provider_type {
-            ProviderType::OpenAI => {
-                let api_key = config.provider.get_api_key()?;
-                
-                let model_config = config.provider.default_model_config()
-                    .cloned()
-                    .unwrap_or_default();
 
-                let openai_config = OpenAIConfig {
-                    api_key,
-                    base_url: config.provider.base_url.clone()
-                        .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-                    model: model_config.name,
-                    max_tokens: model_config.max_tokens,
-                    temperature: model_config.temperature,
-                    timeout_seconds: config.provider.timeout_seconds,
-                };
+        if config.provider.provider_type == ProviderType::OpenAI {
+            let api_key = config.provider.get_api_key()?;
 
-                let provider = OpenAIProvider::new(openai_config)?;
-                Ok(Some(Box::new(provider)))
-            }
-            _ => {
-                // Other providers not yet implemented
-                warn!("Provider type not yet implemented: {:?}", config.provider.provider_type);
-                Ok(None)
-            }
+            let model_config = config
+                .provider
+                .default_model_config()
+                .cloned()
+                .unwrap_or_default();
+
+            let openai_config = OpenAIConfig {
+                api_key,
+                base_url: config
+                    .provider
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+                model: model_config.name,
+                max_tokens: model_config.max_tokens,
+                temperature: model_config.temperature,
+                timeout_seconds: config.provider.timeout_seconds,
+            };
+
+            let provider = OpenAIProvider::new(openai_config)?;
+            Ok(Some(Box::new(provider)))
+        } else {
+            // Other providers not yet implemented
+            warn!(
+                "Provider type not yet implemented: {:?}",
+                config.provider.provider_type
+            );
+            Ok(None)
         }
     }
 }
@@ -337,6 +370,7 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     /// Create a new orchestrator
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             protocol: None,
@@ -379,6 +413,7 @@ impl Orchestrator {
     }
 
     /// Get the registry
+    #[must_use] 
     pub fn registry(&self) -> Option<&SharedRegistry> {
         self.registry.as_ref()
     }
@@ -428,7 +463,7 @@ impl Orchestrator {
 
     /// Run the orchestrator with A2A message loop
     pub async fn run(&mut self) -> Result<()> {
-        if let (Some(protocol), Some(registry)) = (&mut self.protocol, &self.registry) {
+        if let (Some(protocol), Some(_registry)) = (&mut self.protocol, &self.registry) {
             use crate::a2a::registry::create_registry;
             // Create a dummy receiver - this is a simplified version
             // In production, you'd pass the actual receiver from create_registry
@@ -453,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn test_agent_creation() {
         use crate::types::provider::{ProviderConfig, ProviderType};
-        
+
         let config = AgentConfig {
             name: "test-agent".to_string(),
             provider: ProviderConfig {
@@ -482,10 +517,10 @@ mod tests {
     async fn test_orchestrator_with_registry() {
         use crate::a2a::registry::create_registry;
         use crate::types::provider::{ProviderConfig, ProviderType};
-        
+
         let (registry, _receiver) = create_registry();
         let mut orch = Orchestrator::with_registry(registry);
-        
+
         // Create and add a test agent
         let config = AgentConfig {
             name: "test-agent".to_string(),
@@ -495,10 +530,10 @@ mod tests {
             },
             ..Default::default()
         };
-        
+
         let agent = Agent::new(config).await.unwrap();
         orch.add_agent(agent).await.unwrap();
-        
+
         // Verify agent is registered
         let agents = orch.list_agents().await;
         assert_eq!(agents.len(), 1);

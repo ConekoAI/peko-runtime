@@ -1,5 +1,5 @@
 //! Kimi Code provider implementation
-//! 
+//!
 //! Kimi Code uses Anthropic Claude Code's backend, so it follows
 //! the Anthropic API format rather than the Moonshot API format.
 
@@ -43,8 +43,10 @@ impl KimiCodeConfig {
         let api_key = std::env::var("KIMI_API_KEY")
             .or_else(|_| std::env::var("KIMICODE_API_KEY"))
             .or_else(|_| std::env::var("MOONSHOT_API_KEY"))
-            .map_err(|_| anyhow::anyhow!("KIMI_API_KEY, KIMICODE_API_KEY, or MOONSHOT_API_KEY not set"))?;
-        
+            .map_err(|_| {
+                anyhow::anyhow!("KIMI_API_KEY, KIMICODE_API_KEY, or MOONSHOT_API_KEY not set")
+            })?;
+
         Ok(Self {
             api_key,
             ..Default::default()
@@ -53,7 +55,7 @@ impl KimiCodeConfig {
 }
 
 /// Kimi Code provider
-/// 
+///
 /// Note: Kimi Code uses Anthropic Claude Code's backend, so it follows
 /// the Anthropic API format (x-api-key header, /v1/messages endpoint).
 pub struct KimiCodeProvider {
@@ -72,7 +74,10 @@ impl KimiCodeProvider {
             .timeout(Duration::from_secs(config.timeout_seconds))
             .build()?;
 
-        info!("Kimi Code provider initialized with model: {}", config.model);
+        info!(
+            "Kimi Code provider initialized with model: {}",
+            config.model
+        );
 
         Ok(Self { config, client })
     }
@@ -85,7 +90,7 @@ impl KimiCodeProvider {
     /// Create with API key directly
     pub fn with_api_key(api_key: String) -> anyhow::Result<Self> {
         let config = KimiCodeConfig {
-            api_key,  // Use key as-is (do not strip prefix)
+            api_key, // Use key as-is (do not strip prefix)
             ..Default::default()
         };
         Self::new(config)
@@ -94,12 +99,18 @@ impl KimiCodeProvider {
 
 #[async_trait]
 impl Provider for KimiCodeProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "kimi-code"
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
-        self.chat_with_system(None, prompt, &self.config.model, self.config.temperature as f64).await
+        self.chat_with_system(
+            None,
+            prompt,
+            &self.config.model,
+            f64::from(self.config.temperature),
+        )
+        .await
     }
 
     async fn chat_with_system(
@@ -110,7 +121,7 @@ impl Provider for KimiCodeProvider {
         temperature: f64,
     ) -> anyhow::Result<String> {
         let mut messages: Vec<Message> = Vec::new();
-        
+
         // Add system message if provided
         if let Some(system) = system_prompt {
             messages.push(Message {
@@ -118,7 +129,7 @@ impl Provider for KimiCodeProvider {
                 content: system.to_string(),
             });
         }
-        
+
         // Add user message
         messages.push(Message {
             role: "user".to_string(),
@@ -149,7 +160,9 @@ impl Provider for KimiCodeProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("Kimi Code API error: {} - {}", status, error_text);
-            return Err(anyhow::anyhow!("Kimi Code API error: {} - {}", status, error_text));
+            return Err(anyhow::anyhow!(
+                "Kimi Code API error: {status} - {error_text}"
+            ));
         }
 
         let completion: MessagesResponse = response.json().await?;
@@ -163,8 +176,7 @@ impl Provider for KimiCodeProvider {
 
         debug!(
             "Received response from Kimi Code: input_tokens={}, output_tokens={}",
-            completion.usage.input_tokens,
-            completion.usage.output_tokens
+            completion.usage.input_tokens, completion.usage.output_tokens
         );
 
         Ok(content)
@@ -226,9 +238,10 @@ mod tests {
         // This will fail without API key - that's expected
         let result = KimiCodeProvider::from_env();
         // We expect an error if key is not set
-        if std::env::var("KIMI_API_KEY").is_err() 
+        if std::env::var("KIMI_API_KEY").is_err()
             && std::env::var("KIMICODE_API_KEY").is_err()
-            && std::env::var("MOONSHOT_API_KEY").is_err() {
+            && std::env::var("MOONSHOT_API_KEY").is_err()
+        {
             assert!(result.is_err());
         }
     }

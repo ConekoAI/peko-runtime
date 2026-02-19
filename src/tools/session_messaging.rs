@@ -1,5 +1,5 @@
 //! Simple Session-based Messaging Tool
-//! 
+//!
 //! Provides lightweight agent-to-agent communication without the full
 //! A2A protocol ceremony. For simple delegation and messaging.
 
@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::tools::Tool;
-use crate::coneko::AgentInfo;
 
 /// Simple session message
 #[derive(Debug, Clone)]
@@ -28,6 +27,7 @@ pub struct SessionRegistry {
 }
 
 impl SessionRegistry {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -47,7 +47,7 @@ impl SessionRegistry {
 
         // Notify subscriber if online
         drop(sessions); // Release lock before awaiting
-        
+
         let subscribers = self.subscribers.lock().await;
         if let Some(sender) = subscribers.get(&message.to) {
             let _ = sender.send(message).await;
@@ -85,17 +85,20 @@ pub struct SessionMessagingTool {
 
 impl SessionMessagingTool {
     pub fn new(registry: std::sync::Arc<SessionRegistry>, agent_did: String) -> Self {
-        Self { registry, agent_did }
+        Self {
+            registry,
+            agent_did,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for SessionMessagingTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "session_messaging"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         r#"Simple session-based messaging for agent-to-agent communication.
 
 Use this for:
@@ -117,10 +120,7 @@ TOOL_CALL: {"name": "session_messaging", "parameters": {"command": "send", "to":
 TOOL_CALL: {"name": "session_messaging", "parameters": {"command": "read", "limit": 10}}"#
     }
 
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let command = params
             .get("command")
             .and_then(|c| c.as_str())
@@ -168,11 +168,16 @@ TOOL_CALL: {"name": "session_messaging", "parameters": {"command": "read", "limi
             }
 
             "read" => {
-                let limit = params.get("limit").and_then(|l| l.as_u64()).unwrap_or(10);
+                let limit = params.get("limit").and_then(serde_json::Value::as_u64).unwrap_or(10);
                 let messages = self.registry.get_messages(&self.agent_did).await;
-                
+
                 // Get last N messages
-                let recent: Vec<_> = messages.iter().rev().take(limit as usize).cloned().collect();
+                let recent: Vec<_> = messages
+                    .iter()
+                    .rev()
+                    .take(limit as usize)
+                    .cloned()
+                    .collect();
 
                 Ok(json!({
                     "success": true,
@@ -186,7 +191,9 @@ TOOL_CALL: {"name": "session_messaging", "parameters": {"command": "read", "limi
                 }))
             }
 
-            _ => Err(anyhow::anyhow!("Unknown command: {}. Use 'list', 'send', or 'read'", command)),
+            _ => Err(anyhow::anyhow!(
+                "Unknown command: {command}. Use 'list', 'send', or 'read'"
+            )),
         }
     }
 }
@@ -198,11 +205,15 @@ mod tests {
     #[tokio::test]
     async fn test_session_registry() {
         let registry = std::sync::Arc::new(SessionRegistry::new());
-        
+
         // Register two agents
-        registry.register_session("did:pekobot:local:agent1".to_string()).await;
-        registry.register_session("did:pekobot:local:agent2".to_string()).await;
-        
+        registry
+            .register_session("did:pekobot:local:agent1".to_string())
+            .await;
+        registry
+            .register_session("did:pekobot:local:agent2".to_string())
+            .await;
+
         // Send message
         let msg = SessionMessage {
             from: "did:pekobot:local:agent1".to_string(),
@@ -210,14 +221,14 @@ mod tests {
             content: "Hello!".to_string(),
             timestamp: 1234567890,
         };
-        
+
         registry.send_message(msg.clone()).await.unwrap();
-        
+
         // Read messages
         let messages = registry.get_messages("did:pekobot:local:agent2").await;
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "Hello!");
-        
+
         // List sessions
         let sessions = registry.list_sessions().await;
         assert_eq!(sessions.len(), 2);
@@ -226,22 +237,30 @@ mod tests {
     #[tokio::test]
     async fn test_session_tool() {
         let registry = std::sync::Arc::new(SessionRegistry::new());
-        registry.register_session("did:pekobot:local:agent1".to_string()).await;
-        registry.register_session("did:pekobot:local:agent2".to_string()).await;
-        
-        let tool = SessionMessagingTool::new(registry.clone(), "did:pekobot:local:agent1".to_string());
-        
+        registry
+            .register_session("did:pekobot:local:agent1".to_string())
+            .await;
+        registry
+            .register_session("did:pekobot:local:agent2".to_string())
+            .await;
+
+        let tool =
+            SessionMessagingTool::new(registry.clone(), "did:pekobot:local:agent1".to_string());
+
         // Test list
         let result = tool.execute(json!({"command": "list"})).await.unwrap();
         assert!(result["success"].as_bool().unwrap());
-        
+
         // Test send
-        let result = tool.execute(json!({
-            "command": "send",
-            "to": "did:pekobot:local:agent2",
-            "message": "Test message"
-        })).await.unwrap();
-        
+        let result = tool
+            .execute(json!({
+                "command": "send",
+                "to": "did:pekobot:local:agent2",
+                "message": "Test message"
+            }))
+            .await
+            .unwrap();
+
         assert!(result["success"].as_bool().unwrap());
     }
 }

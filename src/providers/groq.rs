@@ -1,9 +1,9 @@
 //! Groq provider implementation
 //! Ultra-fast LLM inference API
 
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::json;
-use anyhow::{Context, Result};
 
 use crate::providers::Provider;
 
@@ -16,6 +16,7 @@ pub struct GroqProvider {
 
 impl GroqProvider {
     /// Create new Groq provider from API key
+    #[must_use] 
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
@@ -26,12 +27,13 @@ impl GroqProvider {
 
     /// Create from environment variable
     pub fn from_env() -> Result<Self> {
-        let api_key = std::env::var("GROQ_API_KEY")
-            .context("GROQ_API_KEY environment variable not set")?;
+        let api_key =
+            std::env::var("GROQ_API_KEY").context("GROQ_API_KEY environment variable not set")?;
         Ok(Self::new(api_key))
     }
 
     /// Set model
+    #[must_use] 
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self
@@ -40,14 +42,11 @@ impl GroqProvider {
 
 #[async_trait]
 impl Provider for GroqProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "groq"
     }
 
-    async fn complete(
-        &self,
-        prompt: &str,
-    ) -> Result<String> {
+    async fn complete(&self, prompt: &str) -> Result<String> {
         self.chat_with_system(None, prompt, &self.model, 0.7).await
     }
 
@@ -92,7 +91,7 @@ impl Provider for GroqProvider {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            anyhow::bail!("Groq API error ({}): {}", status, error_text);
+            anyhow::bail!("Groq API error ({status}): {error_text}");
         }
 
         let result: serde_json::Value = response
@@ -118,9 +117,8 @@ mod tests {
 
     #[test]
     fn test_groq_provider_creation() {
-        let provider = GroqProvider::new("test-key".to_string())
-            .with_model("llama-3.1-8b");
-        
+        let provider = GroqProvider::new("test-key".to_string()).with_model("llama-3.1-8b");
+
         assert_eq!(provider.name(), "groq");
     }
 }

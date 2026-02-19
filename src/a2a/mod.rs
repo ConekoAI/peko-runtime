@@ -13,4 +13,4 @@ pub use message::{
     VerificationPayload, A2A_VERSION,
 };
 pub use protocol::A2AProtocol;
-pub use registry::{AgentRegistry, ArcAgent, MessageBus, SharedRegistry, create_registry};
+pub use registry::{create_registry, AgentRegistry, ArcAgent, MessageBus, SharedRegistry};

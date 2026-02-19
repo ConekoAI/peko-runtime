@@ -28,11 +28,17 @@ async fn main() -> anyhow::Result<()> {
 
     // Example 1: Simple GET request
     println!("📡 Example 1: Fetching JSONPlaceholder API...");
-    match http_tool.get("https://jsonplaceholder.typicode.com/posts/1").await {
+    match http_tool
+        .get("https://jsonplaceholder.typicode.com/posts/1")
+        .await
+    {
         Ok(response) => {
             println!("   Status: {}", response.status);
-            println!("   Body (truncated): {}...\n", &response.body[..100.min(response.body.len())]);
-            
+            println!(
+                "   Body (truncated): {}...\n",
+                &response.body[..100.min(response.body.len())]
+            );
+
             // Store in agent memory
             let _ = agent.store_memory(
                 &format!("Fetched post: {}", &response.body[..50]),
@@ -51,8 +57,11 @@ async fn main() -> anyhow::Result<()> {
         ("Accept".to_string(), "application/json".to_string()),
         ("User-Agent".to_string(), "Pekobot/0.1.0".to_string()),
     ];
-    
-    match http_tool.get_with_headers("https://httpbin.org/get", headers).await {
+
+    match http_tool
+        .get_with_headers("https://httpbin.org/get", headers)
+        .await
+    {
         Ok(response) => {
             println!("   Status: {}", response.status);
             println!("   Response stored in memory\n");
@@ -68,10 +77,16 @@ async fn main() -> anyhow::Result<()> {
         "userId": 1,
     });
 
-    match http_tool.post_json("https://jsonplaceholder.typicode.com/posts", &body).await {
+    match http_tool
+        .post_json("https://jsonplaceholder.typicode.com/posts", &body)
+        .await
+    {
         Ok(response) => {
             println!("   Status: {}", response.status);
-            println!("   Created resource: {}\n", &response.body[..80.min(response.body.len())]);
+            println!(
+                "   Created resource: {}\n",
+                &response.body[..80.min(response.body.len())]
+            );
         }
         Err(e) => println!("   ❌ Error: {}\n", e),
     }

@@ -1,4 +1,4 @@
-//! SQLite memory backend
+//! `SQLite` memory backend
 
 use super::types::MemoryEntry;
 use anyhow::{Context, Result};
@@ -6,33 +6,33 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use tracing::{debug, info, warn};
 
-/// SQLite memory store
+/// `SQLite` memory store
 pub struct SqliteMemory {
     conn: Connection,
     namespace: String,
 }
 
 impl SqliteMemory {
-    /// Create a new SQLite memory store
+    /// Create a new `SQLite` memory store
     pub fn new<P: AsRef<Path>>(path: P, namespace: &str) -> Result<Self> {
-        let conn = Connection::open(path)
-            .context("Failed to open SQLite database")?;
-        
+        let conn = Connection::open(path).context("Failed to open SQLite database")?;
+
         let store = Self {
             conn,
             namespace: namespace.to_string(),
         };
-        
+
         store.initialize()?;
-        
+
         info!("SQLite memory initialized for namespace: {}", namespace);
         Ok(store)
     }
 
     /// Initialize database tables
     fn initialize(&self) -> Result<()> {
-        self.conn.execute_batch(
-            r#"
+        self.conn
+            .execute_batch(
+                r"
             CREATE TABLE IF NOT EXISTS memory_entries (
                 id TEXT PRIMARY KEY,
                 namespace TEXT NOT NULL,
@@ -54,8 +54,9 @@ impl SqliteMemory {
                 model TEXT,
                 FOREIGN KEY (entry_id) REFERENCES memory_entries(id) ON DELETE CASCADE
             );
-            "#,
-        ).context("Failed to initialize memory tables")?;
+            ",
+            )
+            .context("Failed to initialize memory tables")?;
 
         Ok(())
     }
@@ -66,14 +67,16 @@ impl SqliteMemory {
         let now = chrono::Utc::now().to_rfc3339();
         let metadata_json = metadata.map(|m| m.to_string());
 
-        self.conn.execute(
-            r#"
+        self.conn
+            .execute(
+                r"
             INSERT INTO memory_entries 
             (id, namespace, content, metadata, created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            "#,
-            params![id, self.namespace, content, metadata_json, now, now],
-        ).context("Failed to store memory entry")?;
+            ",
+                params![id, self.namespace, content, metadata_json, now, now],
+            )
+            .context("Failed to store memory entry")?;
 
         debug!("Stored memory entry: {}", id);
         Ok(id)
@@ -81,25 +84,24 @@ impl SqliteMemory {
 
     /// Retrieve a memory entry by ID
     pub fn get(&self, id: &str) -> Result<Option<MemoryEntry>> {
-        let row = self.conn
+        let row = self
+            .conn
             .query_row(
-                r#"
+                r"
                 SELECT id, content, metadata, created_at, access_count, last_accessed_at 
                 FROM memory_entries
                 WHERE id = ?1 AND namespace = ?2
-                "#,
+                ",
                 params![id, self.namespace],
                 |row| {
                     let metadata_json: Option<String> = row.get(2)?;
                     let metadata = metadata_json
-                        .map(|m| serde_json::from_str(&m).ok())
-                        .flatten();
+                        .and_then(|m| serde_json::from_str(&m).ok());
                     let last_accessed: Option<String> = row.get(5)?;
                     let last_accessed_at = last_accessed
-                        .map(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
-                        .flatten()
+                        .and_then(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
                         .map(|dt| dt.with_timezone(&chrono::Utc));
-                    
+
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -115,9 +117,9 @@ impl SqliteMemory {
         if let Some((id, content, metadata, created_at, access_count, last_accessed_at)) = row {
             // Update access stats
             let _ = self.update_access_stats(&id);
-            
+
             let timestamp = chrono::DateTime::parse_from_rfc3339(&created_at)
-                .map_err(|e| anyhow::anyhow!("Invalid timestamp: {}", e))?
+                .map_err(|e| anyhow::anyhow!("Invalid timestamp: {e}"))?
                 .with_timezone(&chrono::Utc);
 
             Ok(Some(MemoryEntry {
@@ -135,15 +137,15 @@ impl SqliteMemory {
 
     /// Search memory entries by content (simple substring search)
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>> {
-        let pattern = format!("%{}%", query);
+        let pattern = format!("%{query}%");
         let mut stmt = self.conn.prepare(
-            r#"
+            r"
             SELECT id, content, metadata, created_at, access_count, last_accessed_at 
             FROM memory_entries
             WHERE namespace = ?1 AND content LIKE ?2
             ORDER BY created_at DESC
             LIMIT ?3
-            "#,
+            ",
         )?;
 
         let entries = stmt
@@ -152,22 +154,22 @@ impl SqliteMemory {
                 let content: String = row.get(1)?;
                 let metadata_json: Option<String> = row.get(2)?;
                 let metadata = metadata_json
-                    .map(|m| serde_json::from_str(&m).ok())
-                    .flatten();
+                    .and_then(|m| serde_json::from_str(&m).ok());
                 let created_at: String = row.get(3)?;
                 let access_count: i64 = row.get(4)?;
                 let last_accessed: Option<String> = row.get(5)?;
                 let last_accessed_at = last_accessed
-                    .map(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
-                    .flatten()
+                    .and_then(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc));
-                
+
                 let timestamp = chrono::DateTime::parse_from_rfc3339(&created_at)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                        3,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    ))?
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?
                     .with_timezone(&chrono::Utc);
 
                 Ok(MemoryEntry {
@@ -188,13 +190,13 @@ impl SqliteMemory {
     /// Get recent memory entries
     pub fn recent(&self, limit: usize) -> Result<Vec<MemoryEntry>> {
         let mut stmt = self.conn.prepare(
-            r#"
+            r"
             SELECT id, content, metadata, created_at, access_count, last_accessed_at 
             FROM memory_entries
             WHERE namespace = ?1
             ORDER BY created_at DESC
             LIMIT ?2
-            "#,
+            ",
         )?;
 
         let entries = stmt
@@ -203,22 +205,22 @@ impl SqliteMemory {
                 let content: String = row.get(1)?;
                 let metadata_json: Option<String> = row.get(2)?;
                 let metadata = metadata_json
-                    .map(|m| serde_json::from_str(&m).ok())
-                    .flatten();
+                    .and_then(|m| serde_json::from_str(&m).ok());
                 let created_at: String = row.get(3)?;
                 let access_count: i64 = row.get(4)?;
                 let last_accessed: Option<String> = row.get(5)?;
                 let last_accessed_at = last_accessed
-                    .map(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
-                    .flatten()
+                    .and_then(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
                     .map(|dt| dt.with_timezone(&chrono::Utc));
-                
+
                 let timestamp = chrono::DateTime::parse_from_rfc3339(&created_at)
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                        3,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    ))?
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?
                     .with_timezone(&chrono::Utc);
 
                 Ok(MemoryEntry {
@@ -252,7 +254,10 @@ impl SqliteMemory {
             params![self.namespace],
         )?;
 
-        warn!("Cleared {} entries from namespace: {}", affected, self.namespace);
+        warn!(
+            "Cleared {} entries from namespace: {}",
+            affected, self.namespace
+        );
         Ok(affected)
     }
 
@@ -271,11 +276,11 @@ impl SqliteMemory {
     fn update_access_stats(&self, id: &str) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
-            r#"
+            r"
             UPDATE memory_entries 
             SET access_count = access_count + 1, last_accessed_at = ?1
             WHERE id = ?2
-            "#,
+            ",
             params![now, id],
         )?;
         Ok(())
@@ -297,7 +302,7 @@ mod tests {
     #[test]
     fn test_store_and_retrieve() {
         let (store, _temp) = create_test_store();
-        
+
         let id = store.store("Test content", None).unwrap();
         assert!(!id.is_empty());
 
@@ -308,7 +313,7 @@ mod tests {
     #[test]
     fn test_search() {
         let (store, _temp) = create_test_store();
-        
+
         store.store("Hello world", None).unwrap();
         store.store("Hello rust", None).unwrap();
         store.store("Goodbye world", None).unwrap();
@@ -320,7 +325,7 @@ mod tests {
     #[test]
     fn test_recent() {
         let (store, _temp) = create_test_store();
-        
+
         store.store("First", None).unwrap();
         store.store("Second", None).unwrap();
         store.store("Third", None).unwrap();
@@ -332,7 +337,7 @@ mod tests {
     #[test]
     fn test_delete() {
         let (store, _temp) = create_test_store();
-        
+
         let id = store.store("To delete", None).unwrap();
         assert!(store.get(&id).unwrap().is_some());
 
@@ -343,7 +348,7 @@ mod tests {
     #[test]
     fn test_count() {
         let (store, _temp) = create_test_store();
-        
+
         assert_eq!(store.count().unwrap(), 0);
         store.store("One", None).unwrap();
         store.store("Two", None).unwrap();
