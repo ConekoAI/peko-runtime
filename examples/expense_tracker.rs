@@ -174,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
                 &format!("Expense Report {} - {}", from_date, to_date),
                 from_date,
                 to_date,
-                expenses,
+                expenses.clone(),
             );
 
             println!("{}", tool.export_summary(&report));
@@ -192,7 +192,7 @@ async fn main() -> anyhow::Result<()> {
                 "Monthly Expense Export",
                 from_date,
                 to_date,
-                expenses,
+                expenses.clone(),
             );
 
             match tool.export_csv(&report) {
