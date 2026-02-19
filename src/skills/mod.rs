@@ -226,8 +226,7 @@ description = "Echo a message"
 kind = "shell"
 command = "echo"
 
-[prompts]
-messages = ["You are a helpful assistant."]
+prompts = ["You are a helpful assistant."]
 "#;
 
         let result = parse_skill_manifest(toml);

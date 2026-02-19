@@ -276,15 +276,27 @@ impl DocumentTool {
     }
 
     /// Extract invoice number
-    fn extract_invoice_number(&self,
+    fn extract_invoice_number(
+        &self,
         line: &str,
     ) -> Option<String> {
-        // Look for patterns like "Invoice #12345" or "INV-12345"
-        let re = regex::Regex::new(r"[#:]\s*([A-Z0-9\-]+)").ok()?;
+        // Look for patterns like "Invoice #12345", "INV-12345", or "INV-ABC-123"
+        let patterns = [
+            r"[#:]\s*([A-Z0-9\-]+)",  // Invoice #12345 or Invoice: ABC-123
+            r"INV-([A-Z0-9\-]+)",      // INV-ABC-123
+        ];
         
-        re.captures(line)
-            .and_then(|cap| cap.get(1))
-            .map(|m| m.as_str().trim().to_string())
+        for pattern in &patterns {
+            if let Ok(re) = regex::Regex::new(pattern) {
+                if let Some(cap) = re.captures(line) {
+                    if let Some(m) = cap.get(1) {
+                        return Some(m.as_str().trim().to_string());
+                    }
+                }
+            }
+        }
+        
+        None
     }
 
     /// Extract date from line

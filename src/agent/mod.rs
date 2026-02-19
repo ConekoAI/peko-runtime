@@ -452,8 +452,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_creation() {
+        use crate::types::provider::{ProviderConfig, ProviderType};
+        
         let config = AgentConfig {
             name: "test-agent".to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama, // Use Ollama which doesn't require API key
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -475,6 +481,7 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_with_registry() {
         use crate::a2a::registry::create_registry;
+        use crate::types::provider::{ProviderConfig, ProviderType};
         
         let (registry, _receiver) = create_registry();
         let mut orch = Orchestrator::with_registry(registry);
@@ -482,6 +489,10 @@ mod tests {
         // Create and add a test agent
         let config = AgentConfig {
             name: "test-agent".to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama, // Use Ollama which doesn't require API key
+                ..Default::default()
+            },
             ..Default::default()
         };
         

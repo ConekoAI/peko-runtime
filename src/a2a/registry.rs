@@ -220,12 +220,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry() {
+        use crate::types::provider::{ProviderConfig, ProviderType};
+        
         let (bus, _receiver) = MessageBus::new();
         let registry = AgentRegistry::new(bus);
 
         // Create a test agent
         let config = AgentConfig {
             name: "test-agent".to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama, // Use Ollama which doesn't require API key
+                ..Default::default()
+            },
             ..Default::default()
         };
 

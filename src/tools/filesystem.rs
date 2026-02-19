@@ -31,7 +31,13 @@ impl FileSystemTool {
     async fn read_file(&self, path: &str) -> Result<serde_json::Value> {
         // Apply security policy
         let resolved = self.policy.resolve_path(path)
-            .ok_or_else(|| anyhow::anyhow!("Path not allowed by security policy: {}", path))?;
+            .ok_or_else(|| {
+                if path.contains("..") {
+                    anyhow::anyhow!("Path traversal not allowed: {}", path)
+                } else {
+                    anyhow::anyhow!("Path not allowed by security policy: {}", path)
+                }
+            })?;
 
         let content = fs::read_to_string(&resolved)
             .await
@@ -223,8 +229,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_filesystem_write_and_read() {
-        let tool = FileSystemTool::new();
         let temp_dir = tempfile::tempdir().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,  // Allow absolute paths for tests
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
         let test_file = temp_dir.path().join("test.txt");
 
         // Write a file
@@ -253,8 +264,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_filesystem_exists() {
-        let tool = FileSystemTool::new();
         let temp_dir = tempfile::tempdir().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,  // Allow absolute paths for tests
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
         let test_file = temp_dir.path().join("test.txt");
 
         // Check non-existent file
@@ -280,8 +296,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_filesystem_list() {
-        let tool = FileSystemTool::new();
         let temp_dir = tempfile::tempdir().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,  // Allow absolute paths for tests
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
 
         // Create a test file
         fs::write(temp_dir.path().join("test.txt"), "test").await.unwrap();
@@ -300,8 +321,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_filesystem_delete() {
-        let tool = FileSystemTool::new();
         let temp_dir = tempfile::tempdir().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,  // Allow absolute paths for tests
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
         let test_file = temp_dir.path().join("test.txt");
 
         // Create the file
