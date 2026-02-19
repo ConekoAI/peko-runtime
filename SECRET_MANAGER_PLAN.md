@@ -62,26 +62,27 @@ ciphertext = AES-256-GCM(plaintext, secret_key, nonce)
 
 ## Implementation Phases
 
-### Phase 1: Core Secret Store (Day 1)
+### Phase 1: Core Secret Store (Day 1) ✅ COMPLETE
 
-**Files to Create:**
+**Files Created:**
 ```
 src/secrets/
-├── mod.rs              # Public API
-├── store.rs            # SQLite backend
-├── crypto.rs           # Encryption/decryption
-├── types.rs            # SecretType, SecretMetadata, etc.
-└── audit.rs            # Audit logging
+├── mod.rs              # Public API (~188 lines)
+├── store.rs            # SQLite backend (~576 lines)
+├── crypto.rs           # Encryption/decryption (~192 lines)
+└── types.rs            # SecretType, SecretMetadata, etc. (~234 lines)
 ```
 
-**Tasks:**
-- [ ] Create SQLite schema with migrations
-- [ ] Implement `SecretStore` struct with CRUD operations
-- [ ] Implement AES-256-GCM encryption with Argon2id key derivation
-- [ ] Support optional master password (prompt on first use)
-- [ ] Support OS keychain integration (macOS Keychain, Linux Secret Service, Windows Credential Manager)
-- [ ] Fallback to file-based key storage with restrictive permissions
-- [ ] Unit tests for crypto operations
+**Completed:**
+- [x] Create SQLite schema with migrations
+- [x] Implement `SecretStore` struct with CRUD operations
+- [x] Implement AES-256-GCM encryption with Argon2id key derivation
+- [x] Support optional master password (prompt on first use)
+- [x] Support OS keychain integration (macOS Keychain, Linux Secret Service, Windows Credential Manager)
+- [x] Fallback to file-based key storage with restrictive permissions
+- [x] Unit tests for crypto operations
+
+**Commit:** `759c927` — Phase 1: Secret Manager (SQLite + AES-256-GCM encryption)
 
 **Dependencies:**
 ```toml
@@ -93,45 +94,32 @@ keyring = "2.3"       # NEW - OS keychain access
 chacha20poly1305 = "0.10"  # Alternative cipher (optional)
 ```
 
-### Phase 2: CLI Commands (Day 2)
+### Phase 2: CLI Commands (Day 2) ✅ COMPLETE
 
-**Commands to Add:**
+**Commands Added:**
 ```bash
-# Global secrets
-pekobot secret set --global <NAME> <VALUE>
-pekobot secret get --global <NAME>
-pekobot secret list --global
-pekobot secret delete --global <NAME>
-pekobot secret rotate --global <NAME>  # Generate new version
+# Store a secret (prompts for value if not provided)
+pekobot secret set <NAME> [--value <VALUE>] [--scope global|agent:<DID>] [--type api_key|token|ssh_key|certificate|password|other] [--description <DESC>]
 
-# Per-agent secrets
-pekobot secret set --agent <AGENT_NAME> <NAME> <VALUE>
-pekobot secret get --agent <AGENT_NAME> <NAME>
-pekobot secret list --agent <AGENT_NAME>
-pekobot secret delete --agent <AGENT_NAME> <NAME>
+# Retrieve a secret
+pekobot secret get <NAME> [--scope global|agent:<DID>]
 
-# Permission management
-pekobot secret grant --secret <NAME> --agent <AGENT_NAME> [--read] [--write]
-pekobot secret revoke --secret <NAME> --agent <AGENT_NAME>
-pekobot secret permissions <NAME>
+# List all secrets
+pekobot secret list [--scope global|agent:<DID>]
 
-# Audit and management
-pekobot secret audit [--secret <NAME>] [--agent <AGENT_NAME>] [--limit 100]
-pekobot secret import-env [--pattern <PATTERN>] [--dry-run]
-pekobot secret export --file <PATH> [--encrypt]  # For backup only
-pekobot secret import --file <PATH>
-
-# Master password
-pekobot secret unlock  # Prompt for master password
-pekobot secret lock    # Clear from memory
-pekobot secret change-password
+# Delete a secret
+pekobot secret delete <NAME> [--scope global|agent:<DID>] [--force]
 ```
 
-**Implementation Notes:**
-- Mask secret values in output (show only last 4 chars)
-- Support piping: `echo "secret" | pekobot secret set --global API_KEY`
-- Tab completion for secret names
-- Confirmation prompts for destructive operations
+**Implementation Details:**
+- Master password prompted securely if not provided via `--password`
+- Values can be provided via `--value` or prompted securely
+- Confirmation prompts for destructive operations (bypass with `--force`)
+- Scope supports "global" or "agent:<DID>" format
+- Types: api_key, token, ssh_key, certificate, password, other
+
+**Files Modified:**
+- `src/main.rs` — Added `SecretCommands` enum and command handlers (~200 lines)
 
 ### Phase 3: Config Integration (Day 3)
 

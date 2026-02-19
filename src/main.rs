@@ -112,10 +112,68 @@ enum Commands {
     /// Coneko network commands
     #[command(subcommand)]
     Coneko(ConekoCommands),
+    /// Secret manager commands
+    #[command(subcommand)]
+    Secret(SecretCommands),
 }
 
 #[derive(Subcommand)]
-enum ConekoCommands {
+enum SecretCommands {
+    /// Store a new secret
+    Set {
+        /// Secret name
+        name: String,
+        /// Secret value (will prompt if not provided)
+        #[arg(short, long)]
+        value: Option<String>,
+        /// Secret type (api_key, token, ssh_key, certificate, password, other)
+        #[arg(short, long, default_value = "api_key")]
+        secret_type: String,
+        /// Scope: "global" or agent DID
+        #[arg(short, long, default_value = "global")]
+        scope: String,
+        /// Description
+        #[arg(short, long)]
+        description: Option<String>,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// Retrieve a secret value
+    Get {
+        /// Secret name
+        name: String,
+        /// Scope: "global" or agent DID
+        #[arg(short, long, default_value = "global")]
+        scope: String,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// List all secrets
+    List {
+        /// Filter by scope ("global" or agent DID)
+        #[arg(short, long)]
+        scope: Option<String>,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// Delete a secret
+    Delete {
+        /// Secret name
+        name: String,
+        /// Scope: "global" or agent DID
+        #[arg(short, long, default_value = "global")]
+        scope: String,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+        /// Skip confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+}
     /// Check Coneko server status
     Status {
         /// Coneko endpoint
@@ -547,6 +605,188 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         },
+        Commands::Secret(secret_cmd) => {
+            use pekobot::secrets::{SecretManager, SecretScope, SecretType};
+            
+            match secret_cmd {
+                SecretCommands::Set {
+                    name,
+                    value,
+                    secret_type,
+                    scope,
+                    description,
+                    password,
+                } => {
+                    // Get password if not provided
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    // Get value if not provided
+                    let value = match value {
+                        Some(v) => v,
+                        None => rpassword::prompt_password("Enter secret value: ")?,
+                    };
+                    
+                    // Parse scope
+                    let scope = if scope == "global" {
+                        SecretScope::Global
+                    } else {
+                        SecretScope::Agent { did: scope }
+                    };
+                    
+                    // Parse secret type
+                    let secret_type = match secret_type.to_lowercase().as_str() {
+                        "api_key" => SecretType::ApiKey,
+                        "token" => SecretType::Token,
+                        "ssh_key" => SecretType::SshKey,
+                        "certificate" => SecretType::Certificate,
+                        "password" => SecretType::Password,
+                        _ => SecretType::Other,
+                    };
+                    
+                    // Create metadata
+                    let metadata = description.map(|d| pekobot::secrets::SecretMetadata {
+                        description: Some(d),
+                        source_hint: None,
+                        expires_at: None,
+                        tags: Vec::new(),
+                    });
+                    
+                    // Open store and unlock
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    // Store secret
+                    match manager.set(&name, scope, &value, secret_type, metadata).await {
+                        Ok(entry) => {
+                            println!("✅ Secret '{}' stored successfully", entry.name);
+                            println!("   Type: {:?}", entry.secret_type);
+                            println!("   Scope: {:?}", entry.scope);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to store secret: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+                SecretCommands::Get { name, scope, password } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    let scope = if scope == "global" {
+                        SecretScope::Global
+                    } else {
+                        SecretScope::Agent { did: scope }
+                    };
+                    
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    match manager.get(&name, &scope).await {
+                        Ok(Some(value)) => {
+                            println!("{}", value);
+                        }
+                        Ok(None) => {
+                            eprintln!("❌ Secret '{}' not found", name);
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to retrieve secret: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+                SecretCommands::List { scope, password } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    let scope_filter = scope.map(|s| {
+                        if s == "global" {
+                            SecretScope::Global
+                        } else {
+                            SecretScope::Agent { did: s }
+                        }
+                    });
+                    
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    match manager.list(scope_filter).await {
+                        Ok(secrets) => {
+                            if secrets.is_empty() {
+                                println!("ℹ️  No secrets found");
+                            } else {
+                                println!("🔐 Secrets ({} found):", secrets.len());
+                                for secret in secrets {
+                                    let scope_str = match &secret.scope {
+                                        SecretScope::Global => "global".to_string(),
+                                        SecretScope::Agent { did } => format!("agent:{}", &did[..16.min(did.len())]),
+                                    };
+                                    println!("   {:20} {:12} {:20}", 
+                                        secret.name, 
+                                        format!("{:?}", secret.secret_type).to_lowercase(),
+                                        scope_str
+                                    );
+                                    if let Some(desc) = secret.metadata.description {
+                                        println!("                      {}", desc);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to list secrets: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+                SecretCommands::Delete { name, scope, password, force } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    let scope = if scope == "global" {
+                        SecretScope::Global
+                    } else {
+                        SecretScope::Agent { did: scope }
+                    };
+                    
+                    // Confirm deletion unless --force
+                    if !force {
+                        print!("Delete secret '{}' from {:?}? [y/N]: ", name, scope);
+                        std::io::Write::flush(&mut std::io::stdout())?;
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+                        if !input.trim().eq_ignore_ascii_case("y") {
+                            println!("Cancelled");
+                            return Ok(());
+                        }
+                    }
+                    
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    match manager.delete(&name, &scope).await {
+                        Ok(true) => {
+                            println!("✅ Secret '{}' deleted", name);
+                        }
+                        Ok(false) => {
+                            println!("ℹ️  Secret '{}' not found", name);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to delete secret: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Ok(())
