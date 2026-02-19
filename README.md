@@ -31,6 +31,7 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 - ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
 - ✅ **Cron/Heartbeat** — Scheduled task execution
 - ✅ **Coneko Adapter** — Optional network integration
+- ✅ **Portable Agents** — Export/import agents as `.agent` packages
 
 ## Quick Start
 
@@ -232,6 +233,38 @@ cargo build --release --no-default-features
 # Tools downloaded on first use
 pekobot agent --minimal --auto-install-tools
 ```
+
+## Portable Agents (Docker-like Packaging)
+
+Export agents as `.agent` packages and import them on other machines:
+
+```bash
+# Export an agent to a .agent package
+pekobot export --agent my-agent --output ./my-agent.agent
+
+# Export with encryption (recommended for sharing)
+pekobot export --agent my-agent --output ./my-agent.agent --encrypt
+
+# Import an agent
+pekobot import --file ./my-agent.agent --name imported-agent
+
+# Import with key rotation (new DID)
+pekobot import --file ./my-agent.agent --name imported-agent --rotate-keys
+
+# Inspect a package without importing
+pekobot inspect --file ./my-agent.agent
+```
+
+**Package Contents:**
+- Identity (DID document + encrypted keys)
+- Configuration (system prompts, capabilities)
+- Memory (SQLite database)
+- Skills (bundled TOML files)
+
+**Security:**
+- AES-256-GCM encryption with Argon2id key derivation
+- Ed25519 signatures for package integrity
+- Optional key rotation on import
 
 ## Development
 
