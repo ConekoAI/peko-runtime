@@ -197,6 +197,38 @@ impl Identity {
             .iter()
             .find(|vm| vm.id == method_id)
     }
+
+    /// Create an identity from a DID document and keypair (for import)
+    pub fn from_did_document_and_key(
+        document: DIDDocument,
+        key_export: crate::identity::keys::KeyPairExport,
+    ) -> anyhow::Result<Self> {
+        let keypair = KeyPair::import(&key_export)?;
+        let did = document.id.clone();
+        
+        Ok(Self {
+            did,
+            document,
+            keypair: Some(keypair),
+        })
+    }
+
+    /// Generate a new identity asynchronously
+    pub async fn new(
+        name: &str,
+        scope: DIDScope,
+    ) -> anyhow::Result<Self> {
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || {
+            Self::generate(scope, Some(&name))
+        }).await.map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+    }
+
+    /// Convert to DID document JSON
+    pub fn to_did_document(&self,
+    ) -> anyhow::Result<DIDDocument> {
+        Ok(self.document.clone())
+    }
 }
 
 #[cfg(test)]

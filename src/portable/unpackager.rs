@@ -1,0 +1,411 @@
+//! Unpackager for importing portable agent packages
+//!
+//! Extracts and imports .agent files into the local Pekobot runtime
+
+use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
+use crate::portable::{
+    crypto::{decrypt_with_passphrase, deserialize_encrypted},
+    manifest::AgentManifest,
+    validation::{validate_package, ValidationResult},
+};
+use crate::types::agent::AgentConfig;
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::Path;
+
+/// Import options
+#[derive(Debug, Clone)]
+pub struct ImportOptions {
+    /// New name for the imported agent (optional)
+    pub new_name: Option<String>,
+    /// Passphrase for decryption (if encrypted)
+    pub passphrase: Option<String>,
+    /// Rotate keys (generate new DID)
+    pub rotate_keys: bool,
+    /// Import memory database
+    pub import_memory: bool,
+    /// Skip validation (not recommended)
+    pub skip_validation: bool,
+    /// Force import even if DID exists
+    pub force: bool,
+}
+
+impl Default for ImportOptions {
+    fn default() -> Self {
+        Self {
+            new_name: None,
+            passphrase: None,
+            rotate_keys: false,
+            import_memory: true,
+            skip_validation: false,
+            force: false,
+        }
+    }
+}
+
+/// Import result
+#[derive(Debug, Clone)]
+pub struct ImportResult {
+    /// New agent name
+    pub name: String,
+    /// Agent DID
+    pub did: String,
+    /// Whether keys were rotated
+    pub keys_rotated: bool,
+    /// Path to imported memory database
+    pub memory_path: Option<std::path::PathBuf>,
+    /// Path to agent config
+    pub config_path: std::path::PathBuf,
+    /// Validation result
+    pub validation: ValidationResult,
+}
+
+/// Unpackager for importing .agent packages
+pub struct Unpackager {
+    /// Package file path
+    package_path: std::path::PathBuf,
+    /// Base directory for imported agents
+    base_dir: std::path::PathBuf,
+}
+
+impl Unpackager {
+    /// Create a new unpackager
+    pub fn new(package_path: impl AsRef<Path>) -> Self {
+        Self {
+            package_path: package_path.as_ref().to_path_buf(),
+            base_dir: dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("pekobot"),
+        }
+    }
+
+    /// Set custom base directory
+    pub fn with_base_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.base_dir = dir.as_ref().to_path_buf();
+        self
+    }
+
+    /// Inspect a package without importing
+    pub async fn inspect(&self,
+        passphrase: Option<&str>,
+    ) -> anyhow::Result<(AgentManifest, ValidationResult)> {
+        // Extract package
+        let files = self.extract_package().await?;
+
+        // Parse manifest
+        let manifest_bytes = files.get("manifest.toml")
+            .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml in package"))?;
+        let manifest_str = std::str::from_utf8(manifest_bytes)?;
+        let manifest = AgentManifest::from_toml(manifest_str)?;
+
+        // Validate
+        let validation = validate_package(&manifest, &files);
+
+        // Check if encrypted and we have passphrase
+        if manifest.identity.encrypted && passphrase.is_none() {
+            return Err(anyhow::anyhow!(
+                "Package is encrypted but no passphrase provided"
+            ));
+        }
+
+        Ok((manifest, validation))
+    }
+
+    /// Import the package
+    pub async fn import(&self,
+        options: ImportOptions,
+    ) -> anyhow::Result<ImportResult> {
+        // Extract package
+        let files = self.extract_package().await?;
+
+        // Parse manifest
+        let manifest = self.parse_manifest(&files)?;
+
+        // Validate unless skipped
+        let validation = if options.skip_validation {
+            ValidationResult::success()
+        } else {
+            validate_package(&manifest, &files)
+        };
+
+        if !validation.is_valid() && !options.force {
+            return Err(anyhow::anyhow!(
+                "Package validation failed. Use --force to import anyway.\n{}",
+                validation.error_report()
+            ));
+        }
+
+        // Determine agent name
+        let name = options.new_name.clone().unwrap_or_else(|| manifest.agent.name.clone());
+
+        // Import identity (decrypt if needed)
+        let identity = self.import_identity(
+        &files,
+        &manifest,
+        &options,
+        ).await?;
+
+        // Import configuration
+        let config = self.import_config(&files, &manifest, &name, &identity)?;
+
+        // Import memory
+        let memory_path = if options.import_memory {
+            Some(self.import_memory(&files, &identity, &manifest).await?)
+        } else {
+            None
+        };
+
+        // Import skills
+        self.import_skills(&files).await?;
+
+        // Save config
+        let config_path = self.save_config(&config, &name).await?;
+
+        Ok(ImportResult {
+            name,
+            did: identity.did,
+            keys_rotated: options.rotate_keys,
+            memory_path,
+            config_path,
+            validation,
+        })
+    }
+
+    /// Extract package to memory
+    async fn extract_package(
+        &self,
+    ) -> anyhow::Result<HashMap<String, Vec<u8>>> {
+        let file = std::fs::File::open(&self.package_path)?;
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(decoder);
+
+        let mut files = HashMap::new();
+
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?;
+            let path_str = path.to_string_lossy().to_string();
+
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)?;
+
+            files.insert(path_str, content);
+        }
+
+        Ok(files)
+    }
+
+    /// Parse manifest from files
+    fn parse_manifest(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+    ) -> anyhow::Result<AgentManifest> {
+        let manifest_bytes = files.get("manifest.toml")
+            .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml"))?;
+        let manifest_str = std::str::from_utf8(manifest_bytes)?;
+        AgentManifest::from_toml(manifest_str)
+    }
+
+    /// Import identity (decrypt keys if needed)
+    async fn import_identity(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        manifest: &AgentManifest,
+        options: &ImportOptions,
+    ) -> anyhow::Result<Identity> {
+        let did_doc_bytes = files.get("identity/did.json")
+            .ok_or_else(|| anyhow::anyhow!("Missing identity/did.json"))?;
+        let did_doc: crate::identity::DIDDocument = serde_json::from_slice(did_doc_bytes)?;
+
+        if options.rotate_keys {
+            // Generate new identity
+            let new_identity = Identity::new(&manifest.agent.name,
+                crate::identity::did::DIDScope::Local,
+            ).await?;
+
+            // Store new keys
+            let key_storage = KeyStorage::new()?;
+            key_storage.store_identity(&new_identity).await?;
+
+            Ok(new_identity)
+        } else {
+            // Import existing keys
+            let encrypted_keys = files.get("identity/keys.enc")
+                .ok_or_else(|| anyhow::anyhow!("Missing identity/keys.enc"))?;
+
+            let key_data = if manifest.identity.encrypted {
+                if let Some(passphrase) = &options.passphrase {
+                    let encrypted = deserialize_encrypted(encrypted_keys)?;
+                    decrypt_with_passphrase(&encrypted,
+                        passphrase,
+                    )?
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Keys are encrypted but no passphrase provided"
+                    ));
+                }
+            } else {
+                encrypted_keys.clone()
+            };
+
+            let key_export: KeyPairExport = serde_json::from_slice(&key_data)?;
+
+            // Reconstruct identity
+            let identity = Identity::from_did_document_and_key(did_doc, key_export)?;
+
+            // Check if DID already exists locally
+            let key_storage = KeyStorage::new()?;
+            if key_storage.exists(&identity.did) && !options.force {
+                return Err(anyhow::anyhow!(
+                    "DID {} already exists locally. Use --force to overwrite or --rotate-keys to generate new identity.",
+                    identity.did
+                ));
+            }
+
+            // Store identity
+            key_storage.store_identity(&identity).await?;
+
+            Ok(identity)
+        }
+    }
+
+    /// Import configuration
+    fn import_config(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        _manifest: &AgentManifest,
+        new_name: &str,
+        identity: &Identity,
+    ) -> anyhow::Result<AgentConfig> {
+        let config_bytes = files.get("config/agent.toml")
+            .ok_or_else(|| anyhow::anyhow!("Missing config/agent.toml"))?;
+        let config_str = std::str::from_utf8(config_bytes)?;
+        let mut config: AgentConfig = toml::from_str(config_str)?;
+
+        // Update runtime-specific fields
+        config.name = new_name.to_string();
+
+        // Set memory path
+        if let Some(memory) = &mut config.memory {
+            let memory_db_path = self.get_memory_path(&identity.did);
+            memory.database_path = Some(memory_db_path.to_string_lossy().to_string());
+        }
+
+        Ok(config)
+    }
+
+    /// Import memory database
+    async fn import_memory(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        identity: &Identity,
+        _manifest: &AgentManifest,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        let memory_path = self.get_memory_path(&identity.did);
+
+        // Ensure directory exists
+        if let Some(parent) = memory_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        if let Some(memory_data) = files.get("memory/memory.db") {
+            tokio::fs::write(&memory_path, memory_data).await?;
+        }
+
+        Ok(memory_path)
+    }
+
+    /// Import skills
+    async fn import_skills(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+    ) -> anyhow::Result<()> {
+        let skills_dir = self.base_dir.join("skills");
+        tokio::fs::create_dir_all(&skills_dir).await?;
+
+        for (path, content) in files {
+            if path.starts_with("config/skills/") {
+                let file_name = path.strip_prefix("config/skills/")
+                    .unwrap_or(path);
+                let dest_path = skills_dir.join(file_name);
+
+                if let Some(parent) = dest_path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+
+                tokio::fs::write(dest_path, content).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Save agent config
+    async fn save_config(
+        &self,
+        config: &AgentConfig,
+        name: &str,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        let agents_dir = self.base_dir.join("agents");
+        tokio::fs::create_dir_all(&agents_dir).await?;
+
+        let config_path = agents_dir.join(format!("{}.toml", name));
+        let config_toml = toml::to_string_pretty(config)?;
+
+        tokio::fs::write(&config_path, config_toml).await?;
+
+        Ok(config_path)
+    }
+
+    /// Get memory path for a DID
+    fn get_memory_path(&self,
+        did: &str,
+    ) -> std::path::PathBuf {
+        let data_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("pekobot")
+            .join("memory");
+
+        // Hash DID to create safe filename
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        did.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        data_dir.join(format!("{:x}.db", hash))
+    }
+}
+
+/// Convenience function to import an agent
+pub async fn import_agent(
+    package_path: impl AsRef<Path>,
+    options: ImportOptions,
+) -> anyhow::Result<ImportResult> {
+    let unpackager = Unpackager::new(package_path);
+    unpackager.import(options).await
+}
+
+/// Convenience function to inspect a package
+pub async fn inspect_agent(
+    package_path: impl AsRef<Path>,
+    passphrase: Option<&str>,
+) -> anyhow::Result<(AgentManifest, ValidationResult)> {
+    let unpackager = Unpackager::new(package_path);
+    unpackager.inspect(passphrase).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_import_options_default() {
+        let opts = ImportOptions::default();
+        assert!(!opts.rotate_keys);
+        assert!(opts.import_memory);
+        assert!(!opts.skip_validation);
+        assert!(!opts.force);
+    }
+}

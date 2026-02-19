@@ -209,6 +209,39 @@ impl KeyStorage {
     pub fn path(&self) -> &Path {
         &self.base_path
     }
+
+    /// Export keys for an identity (for portable packages)
+    pub fn export_keys(&self, did: &str) -> Result<crate::identity::keys::KeyPairExport> {
+        let identity = self.load(did)?;
+        let keypair = identity
+            .keypair
+            .as_ref()
+            .context("Identity has no keypair")?;
+        Ok(keypair.export())
+    }
+
+    /// Store identity asynchronously
+    pub async fn store_identity(&self, identity: &Identity) -> Result<()> {
+        // Use spawn_blocking for file operations
+        let identity = identity.clone();
+        let base_path = self.base_path.clone();
+        
+        tokio::task::spawn_blocking(move || {
+            let storage = KeyStorage::with_path(base_path)?;
+            storage.store(&identity)
+        }).await.map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+    }
+
+    /// Check if identity exists asynchronously
+    pub async fn exists_async(&self, did: &str) -> Result<bool> {
+        let did = did.to_string();
+        let base_path = self.base_path.clone();
+        
+        tokio::task::spawn_blocking(move || {
+            let storage = KeyStorage::with_path(base_path)?;
+            Ok::<_, anyhow::Error>(storage.exists(&did))
+        }).await.map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+    }
 }
 
 impl Default for KeyStorage {
