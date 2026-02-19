@@ -67,6 +67,7 @@ flate2 = "1.0"
 aes-gcm = "0.10"
 argon2 = "0.5"
 hex = "0.4"
+rpassword = "7.3"
 
 [dev-dependencies]
 tokio-test = "0.4"

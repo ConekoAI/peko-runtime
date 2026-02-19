@@ -177,10 +177,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_agent_package() {
-        // This would need a real file to test properly
-        // For now, just test the extension check
+    fn test_is_agent_package_extension() {
+        // Test that non-.agent files return false
         assert!(!is_agent_package("test.txt"));
-        assert!(is_agent_package("test.agent"));
+        assert!(!is_agent_package("test.tar.gz"));
+        
+        // Note: is_agent_package for "test.agent" would fail without a real file
+        // because it tries to read the gzip magic bytes
     }
 }

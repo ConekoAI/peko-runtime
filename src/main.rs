@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use pekobot::agent::Agent;
 use pekobot::channels::cli::{run_interactive_loop, CliChannel};
 use pekobot::coneko::{ConekoAdapter, ConekoConfig};
+use pekobot::identity::{Identity, storage::KeyStorage};
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
 use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -62,6 +63,51 @@ enum Commands {
         /// Message to send
         #[arg(short, long)]
         message: String,
+    },
+    /// Export an agent to a .agent package
+    Export {
+        /// Agent name or config file
+        #[arg(short, long)]
+        agent: String,
+        /// Output path for .agent file
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Encrypt the package with a passphrase
+        #[arg(long)]
+        encrypt: bool,
+        /// Rotate keys (generate new DID on import)
+        #[arg(long)]
+        rotate_keys: bool,
+        /// Include memory database
+        #[arg(long, default_value = "true")]
+        include_memory: bool,
+        /// Description for the package
+        #[arg(short, long)]
+        description: Option<String>,
+    },
+    /// Import an agent from a .agent package
+    Import {
+        /// Path to .agent file
+        #[arg(short, long)]
+        file: String,
+        /// New name for the imported agent
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Rotate keys (generate new DID)
+        #[arg(long)]
+        rotate_keys: bool,
+        /// Don't import memory
+        #[arg(long)]
+        no_memory: bool,
+        /// Force import even if DID exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Inspect a .agent package without importing
+    Inspect {
+        /// Path to .agent file
+        #[arg(short, long)]
+        file: String,
     },
     /// Coneko network commands
     #[command(subcommand)]
@@ -221,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
             println!("     - HTTP Channel: ✅ Ready");
             println!("     - Multi-Agent Orchestration: ✅ Ready");
             println!("     - Coneko Adapter: ✅ Ready");
+            println!("     - Portable Agents: ✅ Ready");
         }
         Commands::Onboard => {
             println!("🐱 Pekobot Onboarding");
@@ -272,6 +319,123 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     eprintln!("❌ Failed to send: {}", e);
+                }
+            }
+        }
+        Commands::Export {
+            agent,
+            output,
+            encrypt,
+            rotate_keys,
+            include_memory,
+            description,
+        } => {
+            println!("📦 Exporting agent '{}'...", agent);
+            
+            // Load agent configuration
+            let config_path = if agent.ends_with(".toml") {
+                std::path::PathBuf::from(&agent)
+            } else {
+                dirs::config_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("pekobot")
+                    .join("agents")
+                    .join(format!("{}.toml", agent))
+            };
+
+            let config: AgentConfig = if config_path.exists() {
+                let content = std::fs::read_to_string(&config_path)?;
+                toml::from_str(&content)?
+            } else {
+                eprintln!("❌ Agent config not found: {:?}", config_path);
+                return Err(anyhow::anyhow!("Agent not found"));
+            };
+
+            // Load identity
+            let identity = match load_identity_for_agent(&config.name).await {
+                Some(id) => id,
+                None => {
+                    eprintln!("❌ Failed to load identity for agent: {}", config.name);
+                    return Err(anyhow::anyhow!("Identity not found"));
+                }
+            };
+
+            // Determine memory path
+            let memory_path = config.memory.as_ref()
+                .and_then(|m| m.database_path.as_ref())
+                .map(|p| std::path::PathBuf::from(p));
+
+            // Build export options
+            let export_opts = pekobot::portable::ExportOptions {
+                encrypt,
+                passphrase: if encrypt {
+                    Some(rpassword::prompt_password("Enter passphrase: ")?)
+                } else {
+                    None
+                },
+                include_memory,
+                rotate_keys,
+                description,
+                output_path: output,
+            };
+
+            // Export
+            match pekobot::portable::export_agent(config, identity, memory_path, export_opts).await {
+                Ok(path) => {
+                    println!("✅ Agent exported to: {}", path.display());
+                }
+                Err(e) => {
+                    eprintln!("❌ Export failed: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Commands::Import {
+            file,
+            name,
+            rotate_keys,
+            no_memory,
+            force,
+        } => {
+            println!("📦 Importing agent from '{}'...", file);
+
+            let import_opts = pekobot::portable::ImportOptions {
+                new_name: name,
+                passphrase: None, // Will prompt if needed
+                rotate_keys,
+                import_memory: !no_memory,
+                skip_validation: false,
+                force,
+            };
+
+            match pekobot::portable::import_agent(&file, import_opts).await {
+                Ok(result) => {
+                    println!("✅ Agent imported successfully!");
+                    println!("   Name: {}", result.name);
+                    println!("   DID: {}", result.did);
+                    if result.keys_rotated {
+                        println!("   Keys: Rotated (new DID generated)");
+                    }
+                    if let Some(mem_path) = result.memory_path {
+                        println!("   Memory: {}", mem_path.display());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Import failed: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Commands::Inspect { file } => {
+            println!("🔍 Inspecting package: {}", file);
+
+            match pekobot::portable::get_package_info(&file).await {
+                Ok(info) => {
+                    println!("\n{}", info.format());
+                }
+                Err(e) => {
+                    eprintln!("❌ Inspection failed: {}", e);
+                    return Err(e);
                 }
             }
         }
@@ -485,6 +649,37 @@ fn build_default_config(
         default_timeout_seconds: 300,
         coneko: coneko_config,
     }
+}
+
+/// Load identity for an agent by name
+async fn load_identity_for_agent(name: &str) -> Option<Identity> {
+    // Try to load from agent config first
+    let config_path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("pekobot")
+        .join("agents")
+        .join(format!("{}.toml", name));
+
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
+            // Try to find identity by checking common DIDs
+            let storage = KeyStorage::new().ok()?;
+            
+            // List all identities and find one that matches the agent name
+            if let Ok(identities) = storage.list_identities() {
+                for did in identities {
+                    // Simple heuristic: check if DID contains agent name
+                    if did.to_lowercase().contains(&name.to_lowercase()) {
+                        if let Ok(identity) = storage.load(&did) {
+                            return Some(identity);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
 }
 
 /// Simple prompt helper
