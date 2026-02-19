@@ -121,31 +121,39 @@ pekobot secret delete <NAME> [--scope global|agent:<DID>] [--force]
 **Files Modified:**
 - `src/main.rs` — Added `SecretCommands` enum and command handlers (~200 lines)
 
-### Phase 3: Config Integration (Day 3)
+### Phase 3: Config Integration (Day 3) ✅ COMPLETE
 
-**Config Syntax:**
+**Features Implemented:**
+- **SecretResolver** — Handles `${secret:NAME}` and `${secret.agent:DID:NAME}` syntax
+- **Environment variable support** — `${env:VARNAME}` syntax for consistency
+- **ProviderConfig integration** — `get_api_key_resolved()` method resolves secrets at runtime
+- **Error handling** — Clear error messages when secrets are missing, with helpful hints
+
+**Syntax Supported:**
 ```toml
 [provider]
 provider_type = "openai"
-# Old way (still supported but warned):
-# api_key = "sk-xxx"
-# New way:
-api_key = "${secret:OPENAI_API_KEY}"  # Global secret
-# OR
-api_key = "${secret.agent:my-agent:OPENAI_KEY}"  # Per-agent secret
-
-[tools.calendar]
-provider = "google"
-credentials = "${secret:GOOGLE_CREDENTIALS_JSON}"
+api_key = "${secret:OPENAI_API_KEY}"              # Global secret
+api_key = "${secret.agent:did:pekobot:local:my-agent:OPENAI_KEY}"  # Per-agent secret
+api_key = "${env:OPENAI_API_KEY}"                 # Environment variable
 ```
 
-**Implementation:**
-- [ ] Create `SecretResolver` that handles `${secret:...}` syntax
-- [ ] Resolve at config load time or runtime?
-  - **Decision:** Runtime resolution — don't store resolved values in memory longer than needed
-- [ ] Error handling for missing secrets (clear error message suggesting `pekobot secret set`)
-- [ ] Cache resolved secrets in memory with TTL (5 minutes)? Or resolve on each use?
-  - **Decision:** Resolve on each use for security, but cache decryption key
+**Files Created/Modified:**
+- `src/secrets/resolver.rs` — SecretResolver with regex-based parsing (~290 lines)
+- `src/secrets/mod.rs` — Export SecretResolver
+- `src/types/provider.rs` — Added `get_api_key_resolved()` and `has_secret_reference()` methods
+
+**Usage:**
+```rust
+use pekobot::secrets::SecretResolver;
+use pekobot::types::provider::ProviderConfig;
+
+let resolver = SecretResolver::new().await?;
+resolver.unlock("password").await?;
+
+let config = ProviderConfig::default();
+let api_key = config.get_api_key_resolved(&resolver).await?;
+```
 
 ### Phase 4: Per-Agent Access Control (Day 4)
 

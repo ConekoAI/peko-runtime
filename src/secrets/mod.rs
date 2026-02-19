@@ -34,9 +34,11 @@
 //! ```
 
 pub mod crypto;
+pub mod resolver;
 pub mod store;
 pub mod types;
 
+pub use resolver::{ResolveSecrets, SecretResolver};
 pub use types::{
     AuditEntry, AuditEvent, SecretAccessControl, SecretEntry, SecretMetadata,
     SecretPermission, SecretScope, SecretType,

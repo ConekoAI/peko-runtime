@@ -294,6 +294,69 @@ impl ProviderConfig {
         )
     }
 
+    /// Get API key with secret resolution support
+    ///
+    /// This method checks if the api_key is a secret reference (e.g., `${secret:OPENAI_API_KEY}`)
+    /// and resolves it using the provided secret resolver.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use pekobot::secrets::SecretResolver;
+    /// use pekobot::types::provider::ProviderConfig;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let config = ProviderConfig::default();
+    /// let resolver = SecretResolver::new().await?;
+    /// resolver.unlock("password").await?;
+    ///
+    /// let api_key = config.get_api_key_resolved(&resolver).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_api_key_resolved(
+        &self,
+        resolver: &crate::secrets::SecretResolver,
+    ) -> anyhow::Result<String> {
+        // First check if we have a direct api_key that might be a secret reference
+        if let Some(key) = &self.api_key {
+            // Check if it's a secret reference
+            if key.starts_with("${secret:") || key.starts_with("${env:") {
+                return resolver.resolve(key).await;
+            }
+            // Plain value, return as-is
+            return Ok(key.clone());
+        }
+
+        // Fall back to environment variable
+        if let Some(env_var) = &self.api_key_env {
+            if let Ok(key) = std::env::var(env_var) {
+                // Also check if the env var value is a secret reference
+                if key.starts_with("${secret:") || key.starts_with("${env:") {
+                    return resolver.resolve(&key).await;
+                }
+                return Ok(key);
+            }
+        }
+
+        anyhow::bail!(
+            "API key not found. Set '{}' environment variable, provide api_key in config, \
+             or store it with: pekobot secret set OPENAI_API_KEY",
+            self.api_key_env.as_deref().unwrap_or("API_KEY")
+        )
+    }
+
+    /// Check if the API key configuration contains secret references
+    #[must_use]
+    pub fn has_secret_reference(&self) -> bool {
+        if let Some(key) = &self.api_key {
+            if key.starts_with("${secret:") || key.starts_with("${env:") {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Get model configuration
     #[must_use] 
     pub fn get_model_config(&self, model_name: &str) -> Option<&ModelConfig> {
