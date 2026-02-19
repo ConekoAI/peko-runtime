@@ -69,6 +69,11 @@ argon2 = "0.5"
 hex = "0.4"
 rpassword = "7.3"
 
+# Secret manager dependencies
+hkdf = "0.12"
+keyring = "2.3"
+secrecy = "0.10"
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.10"

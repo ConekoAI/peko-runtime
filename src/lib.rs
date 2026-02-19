@@ -26,6 +26,7 @@ pub mod identity;
 pub mod memory;
 pub mod portable;
 pub mod providers;
+pub mod secrets;
 pub mod security;
 pub mod skills;
 pub mod tool_registry;
