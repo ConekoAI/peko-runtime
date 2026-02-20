@@ -192,36 +192,54 @@ pekobot secret permissions <NAME>
 - Failed access attempts are logged to audit log
 - Owner of agent-scoped secrets always has write access
 
-### Phase 5: Audit Logging (Day 5)
+### Phase 5: Audit Logging (Day 5) ✅ COMPLETE
 
-**Events to Log:**
-- Secret created
-- Secret accessed (read)
-- Secret modified (write)
-- Secret deleted
-- Permission changed
-- Master password unlock/lock
-- Failed access attempts (wrong password, unauthorized agent)
+**Features Implemented:**
+- **Audit log queries** — Filter by secret, agent, event type, with limit
+- **Statistics** — Success rate, total events, access denied count
+- **Export** — CSV export for compliance/archiving
+- **All events tracked:**
+  - `SECRET_CREATED` — Secret stored
+  - `SECRET_ACCESSED` — Secret read
+  - `SECRET_UPDATED` — Secret modified
+  - `SECRET_DELETED` — Secret removed
+  - `PERMISSION_GRANTED` — Access granted
+  - `PERMISSION_REVOKED` — Access revoked
+  - `STORE_UNLOCKED` — Master password unlock
+  - `STORE_LOCKED` — Store locked
+  - `ACCESS_DENIED` — Failed permission check
 
-**Log Format:**
-```json
-{
-  "timestamp": "2026-02-19T10:00:00Z",
-  "event": "SECRET_ACCESS",
-  "secret_name": "OPENAI_API_KEY",
-  "secret_scope": "GLOBAL",
-  "agent_did": "did:pekobot:local:my-agent:abc123",
-  "action": "READ",
-  "success": true,
-  "source_ip": null,
-  "session_id": "uuid"
-}
+**New CLI Commands:**
+```bash
+# View audit log (latest 50 entries)
+pekobot secret audit
+
+# Filter by secret
+pekobot secret audit --secret OPENAI_API_KEY
+
+# Filter by agent
+pekobot secret audit --agent did:pekobot:local:my-agent
+
+# Filter by event type
+pekobot secret audit --event ACCESS_DENIED
+
+# Show statistics
+pekobot secret audit --stats
+
+# Export to CSV
+pekobot secret audit --export audit.csv
 ```
 
+**Files Modified:**
+- `src/secrets/store.rs` — Added `query_audit_log()`, `get_audit_stats()`, `export_audit_log()` (~150 lines)
+- `src/secrets/types.rs` — Added `AuditStats` struct
+- `src/secrets/mod.rs` — Exposed audit methods
+- `src/main.rs` — Added `audit` subcommand (~100 lines)
+
 **Retention:**
-- Keep last 10,000 events by default
-- Configurable retention policy
-- Export to file: `pekobot secret audit --export --since "7 days ago"`
+- Append-only log (SQLite)
+- Query up to 100,000 entries
+- CSV export for external archival
 
 ### Phase 6: Migration & Polish (Day 6)
 

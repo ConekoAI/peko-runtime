@@ -694,6 +694,156 @@ impl SecretStore {
 
         Ok(())
     }
+
+    /// Query audit log entries
+    pub fn query_audit_log(
+        &self,
+        secret_name: Option<&str>,
+        secret_scope: Option<&SecretScope>,
+        agent_did: Option<&str>,
+        event_type: Option<AuditEvent>,
+        limit: usize,
+    ) -> Result<Vec<AuditEntry>> {
+        let mut conditions = vec!["1=1"];
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![];
+
+        if let Some(name) = secret_name {
+            conditions.push("secret_name = ?");
+            params.push(&name);
+        }
+
+        if let Some(scope) = secret_scope {
+            let scope_str = scope.as_str();
+            conditions.push("secret_scope = ?");
+            params.push(&scope_str);
+        }
+
+        if let Some(did) = agent_did {
+            conditions.push("agent_did = ?");
+            params.push(&did);
+        }
+
+        if let Some(event) = event_type {
+            let event_str = event.to_string();
+            conditions.push("event = ?");
+            params.push(&event_str);
+        }
+
+        let sql = format!(
+            "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+             FROM secret_audit_log
+             WHERE {}
+             ORDER BY timestamp DESC
+             LIMIT {}",
+            conditions.join(" AND "),
+            limit
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+
+        let entries = stmt
+            .query_map(params.as_slice(), |row| {
+                let event_str: String = row.get(2)?;
+                let event = match event_str.as_str() {
+                    "SECRET_CREATED" => AuditEvent::SecretCreated,
+                    "SECRET_ACCESSED" => AuditEvent::SecretAccessed,
+                    "SECRET_UPDATED" => AuditEvent::SecretUpdated,
+                    "SECRET_DELETED" => AuditEvent::SecretDeleted,
+                    "PERMISSION_GRANTED" => AuditEvent::PermissionGranted,
+                    "PERMISSION_REVOKED" => AuditEvent::PermissionRevoked,
+                    "STORE_UNLOCKED" => AuditEvent::StoreUnlocked,
+                    "STORE_LOCKED" => AuditEvent::StoreLocked,
+                    "PASSWORD_CHANGED" => AuditEvent::PasswordChanged,
+                    "ACCESS_DENIED" => AuditEvent::AccessDenied,
+                    _ => AuditEvent::AccessDenied, // Default fallback
+                };
+
+                Ok(AuditEntry {
+                    id: row.get(0)?,
+                    timestamp: row.get(1)?,
+                    event,
+                    secret_name: row.get(3)?,
+                    secret_scope: row.get(4)?,
+                    agent_did: row.get(5)?,
+                    success: row.get::<i32, _>(6)? != 0,
+                    error: row.get(7)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(entries)
+    }
+
+    /// Get audit log statistics
+    pub fn get_audit_stats(&self,
+        since: Option<&str>, // ISO 8601 timestamp
+    ) -> Result<AuditStats> {
+        let since_clause = since.map(|s| format!("WHERE timestamp >= '{}'", s)).unwrap_or_default();
+
+        let total: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM secret_audit_log {}", since_clause),
+            [],
+            |row| row.get(0),
+        )?;
+
+        let successful: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM secret_audit_log {} AND success = 1", since_clause),
+            [],
+            |row| row.get(0),
+        )?;
+
+        let failed: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM secret_audit_log {} AND success = 0", since_clause),
+            [],
+            |row| row.get(0),
+        )?;
+
+        let access_denied: i64 = self.conn.query_row(
+            &format!("SELECT COUNT(*) FROM secret_audit_log {} AND event = 'ACCESS_DENIED'", since_clause),
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(AuditStats {
+            total: total as usize,
+            successful: successful as usize,
+            failed: failed as usize,
+            access_denied: access_denied as usize,
+        })
+    }
+
+    /// Export audit log to a file
+    pub fn export_audit_log(
+        &self,
+        path: impl AsRef<std::path::Path>,
+        since: Option<&str>,
+    ) -> Result<usize> {
+        let entries = self.query_audit_log(None, None, None, None, 100_000)?;
+        
+        let file = std::fs::File::create(path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        
+        use std::io::Write;
+        
+        writeln!(&mut writer, "id,timestamp,event,secret_name,secret_scope,agent_did,success,error")?;
+        
+        for entry in &entries {
+            writeln!(
+                &mut writer,
+                "{},{},{},{},{},{},{},{}",
+                entry.id,
+                entry.timestamp,
+                entry.event,
+                entry.secret_name,
+                entry.secret_scope,
+                entry.agent_did.as_deref().unwrap_or(""),
+                entry.success,
+                entry.error.as_deref().unwrap_or("")
+            )?;
+        }
+        
+        Ok(entries.len())
+    }
 }
 
 #[cfg(test)]

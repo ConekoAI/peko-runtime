@@ -40,7 +40,7 @@ pub mod types;
 
 pub use resolver::{ResolveSecrets, SecretResolver};
 pub use types::{
-    AuditEntry, AuditEvent, SecretAccessControl, SecretEntry, SecretMetadata,
+    AuditEntry, AuditEvent, AuditStats, SecretAccessControl, SecretEntry, SecretMetadata,
     SecretPermission, SecretScope, SecretType,
 };
 
@@ -232,6 +232,32 @@ impl SecretManager {
         agent_did: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
         self.store.get_with_permission(name, scope, agent_did)
+    }
+
+    /// Query audit log entries
+    pub async fn query_audit_log(
+        &self,
+        secret_name: Option<&str>,
+        secret_scope: Option<&SecretScope>,
+        agent_did: Option<&str>,
+        event_type: Option<AuditEvent>,
+        limit: usize,
+    ) -> anyhow::Result<Vec<AuditEntry>> {
+        self.store.query_audit_log(secret_name, secret_scope, agent_did, event_type, limit)
+    }
+
+    /// Get audit log statistics
+    pub async fn get_audit_stats(&self, since: Option<&str>) -> anyhow::Result<AuditStats> {
+        self.store.get_audit_stats(since)
+    }
+
+    /// Export audit log to a file
+    pub async fn export_audit_log(
+        &self,
+        path: impl AsRef<std::path::Path>,
+        since: Option<&str>,
+    ) -> anyhow::Result<usize> {
+        self.store.export_audit_log(path, since)
     }
 
     /// Get the store path

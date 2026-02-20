@@ -162,7 +162,30 @@ pub struct AuditEntry {
     pub error: Option<String>,
 }
 
-/// Audit event types
+/// Audit statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditStats {
+    /// Total number of audit events
+    pub total: usize,
+    /// Number of successful operations
+    pub successful: usize,
+    /// Number of failed operations
+    pub failed: usize,
+    /// Number of access denied events
+    pub access_denied: usize,
+}
+
+impl AuditStats {
+    /// Calculate success rate as percentage
+    #[must_use]
+    pub fn success_rate(&self) -> f64 {
+        if self.total == 0 {
+            100.0
+        } else {
+            (self.successful as f64 / self.total as f64) * 100.0
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditEvent {

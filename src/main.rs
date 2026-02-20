@@ -3,7 +3,7 @@ use pekobot::agent::Agent;
 use pekobot::channels::cli::{run_interactive_loop, CliChannel};
 use pekobot::coneko::{ConekoAdapter, ConekoConfig};
 use pekobot::identity::{Identity, storage::KeyStorage};
-use pekobot::secrets::{SecretManager, SecretPermission, SecretScope, SecretType};
+use pekobot::secrets::{AuditEvent as SecretAuditEvent, SecretManager, SecretPermission, SecretScope, SecretType};
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
 use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -214,6 +214,30 @@ enum SecretCommands {
         /// Scope: "global" or agent DID
         #[arg(short, long, default_value = "global")]
         scope: String,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// View audit log
+    Audit {
+        /// Filter by secret name
+        #[arg(short, long)]
+        secret: Option<String>,
+        /// Filter by agent DID
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Filter by event type
+        #[arg(short, long)]
+        event: Option<String>,
+        /// Number of entries to show
+        #[arg(short, long, default_value = "50")]
+        limit: usize,
+        /// Show statistics only
+        #[arg(long)]
+        stats: bool,
+        /// Export to file (CSV format)
+        #[arg(short, long)]
+        export: Option<String>,
         /// Master password (will prompt if not provided)
         #[arg(short, long)]
         password: Option<String>,
@@ -927,6 +951,103 @@ async fn main() -> anyhow::Result<()> {
                         }
                         Err(e) => {
                             eprintln!("❌ Failed to get permissions: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+                SecretCommands::Audit { secret, agent, event, limit, stats, export, password } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    // Handle export first
+                    if let Some(export_path) = export {
+                        match manager.export_audit_log(&export_path, None).await {
+                            Ok(count) => {
+                                println!("✅ Exported {} audit entries to {}", count, export_path);
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Failed to export audit log: {}", e);
+                                return Err(e);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    
+                    // Show stats if requested
+                    if stats {
+                        match manager.get_audit_stats(None).await {
+                            Ok(stats) => {
+                                println!("📊 Audit Log Statistics");
+                                println!("   Total events:      {}", stats.total);
+                                println!("   Successful:        {} ({:.1}%)", stats.successful, stats.success_rate());
+                                println!("   Failed:            {}", stats.failed);
+                                println!("   Access denied:     {}", stats.access_denied);
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Failed to get audit stats: {}", e);
+                                return Err(e);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    
+                    // Parse event type filter
+                    let event_type = event.map(|e| {
+                        match e.to_uppercase().as_str() {
+                            "CREATED" => SecretAuditEvent::SecretCreated,
+                            "ACCESSED" => SecretAuditEvent::SecretAccessed,
+                            "UPDATED" => SecretAuditEvent::SecretUpdated,
+                            "DELETED" => SecretAuditEvent::SecretDeleted,
+                            "GRANTED" => SecretAuditEvent::PermissionGranted,
+                            "REVOKED" => SecretAuditEvent::PermissionRevoked,
+                            "UNLOCKED" => SecretAuditEvent::StoreUnlocked,
+                            "LOCKED" => SecretAuditEvent::StoreLocked,
+                            "DENIED" => SecretAuditEvent::AccessDenied,
+                            _ => SecretAuditEvent::AccessDenied,
+                        }
+                    });
+                    
+                    // Query audit log
+                    match manager.query_audit_log(secret.as_deref(), None, agent.as_deref(), event_type, limit).await {
+                        Ok(entries) => {
+                            if entries.is_empty() {
+                                println!("ℹ️  No audit entries found");
+                            } else {
+                                println!("📋 Audit Log ({} entries):", entries.len());
+                                println!("   {:20} {:16} {:20} {:12} {}", 
+                                    "Timestamp", "Event", "Secret", "Status", "Agent"
+                                );
+                                println!("   {}", "-".repeat(80));
+                                
+                                for entry in entries {
+                                    let ts = &entry.timestamp[..16.min(entry.timestamp.len())]; // Truncate to date+time
+                                    let event_short = format!("{:?}", entry.event).to_uppercase();
+                                    let event_short = &event_short[..16.min(event_short.len())];
+                                    let status = if entry.success { "✓" } else { "✗" };
+                                    let agent_short = entry.agent_did.as_deref().unwrap_or("-");
+                                    let agent_short = &agent_short[..12.min(agent_short.len())];
+                                    
+                                    println!("   {:20} {:16} {:20} {:12} {}",
+                                        ts,
+                                        event_short,
+                                        entry.secret_name,
+                                        status,
+                                        agent_short
+                                    );
+                                    
+                                    if let Some(error) = &entry.error {
+                                        println!("                      Error: {}", error);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to query audit log: {}", e);
                             return Err(e);
                         }
                     }
