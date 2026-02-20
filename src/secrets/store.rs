@@ -374,6 +374,256 @@ impl SecretStore {
         Ok(deleted)
     }
 
+    /// Check if an agent has permission to access a secret
+    ///
+    /// Returns the permission level for the given agent. If no specific permission
+    /// is set, returns `None` for global secrets (meaning default policy applies)
+    /// or `Some(None)` for agent-scoped secrets (meaning only the owner can access).
+    pub fn check_permission(
+        &self,
+        secret_name: &str,
+        secret_scope: &SecretScope,
+        agent_did: Option<&str>,
+    ) -> Result<SecretPermission> {
+        let scope_str = secret_scope.as_str();
+
+        // Get secret ID
+        let secret_id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM secrets WHERE name = ?1 AND scope = ?2",
+                params![secret_name, scope_str],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let secret_id = match secret_id {
+            Some(id) => id,
+            None => return Ok(SecretPermission::None), // Secret doesn't exist
+        };
+
+        // Check for agent-specific permission
+        if let Some(did) = agent_did {
+            let permission: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT permission FROM secret_permissions 
+                     WHERE secret_id = ?1 AND (agent_did = ?2 OR agent_did IS NULL)
+                     ORDER BY agent_did DESC LIMIT 1",
+                    params![secret_id, did],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            if let Some(p) = permission {
+                return Ok(match p.as_str() {
+                    "read" => SecretPermission::Read,
+                    "write" => SecretPermission::Write,
+                    _ => SecretPermission::None,
+                });
+            }
+        }
+
+        // Check for default permission (agent_did IS NULL)
+        let default_permission: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT permission FROM secret_permissions 
+                 WHERE secret_id = ?1 AND agent_did IS NULL",
+                params![secret_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(p) = default_permission {
+            return Ok(match p.as_str() {
+                "read" => SecretPermission::Read,
+                "write" => SecretPermission::Write,
+                _ => SecretPermission::None,
+            });
+        }
+
+        // No explicit permission set - apply default policy
+        // For global secrets, default is Read (backward compatible)
+        // For agent-scoped secrets, only the agent owner has access
+        match secret_scope {
+            SecretScope::Global => Ok(SecretPermission::Read),
+            SecretScope::Agent { did } => {
+                if agent_did == Some(did.as_str()) {
+                    Ok(SecretPermission::Write) // Owner has full access
+                } else {
+                    Ok(SecretPermission::None)
+                }
+            }
+        }
+    }
+
+    /// Grant permission to an agent for a secret
+    pub fn grant_permission(
+        &self,
+        secret_name: &str,
+        secret_scope: &SecretScope,
+        agent_did: Option<&str>, // None = default permission for all agents
+        permission: SecretPermission,
+    ) -> Result<SecretAccessControl> {
+        let scope_str = secret_scope.as_str();
+
+        // Get secret ID
+        let secret_id: String = self
+            .conn
+            .query_row(
+                "SELECT id FROM secrets WHERE name = ?1 AND scope = ?2",
+                params![secret_name, scope_str],
+                |row| row.get(0),
+            )
+            .context("Secret not found")?;
+
+        let permission_str = match permission {
+            SecretPermission::Read => "read",
+            SecretPermission::Write => "write",
+            SecretPermission::None => "none",
+        };
+
+        let id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Upsert permission
+        self.conn.execute(
+            "INSERT INTO secret_permissions (id, secret_id, agent_did, permission, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(secret_id, agent_did) DO UPDATE SET
+                permission = excluded.permission",
+            params![id, secret_id, agent_did, permission_str, now],
+        )?;
+
+        self.log_audit(
+            AuditEvent::PermissionGranted,
+            secret_name,
+            &scope_str,
+            agent_did,
+            true,
+            None,
+        )?;
+
+        Ok(SecretAccessControl {
+            secret_id,
+            agent_did: agent_did.map(String::from),
+            permission,
+        })
+    }
+
+    /// Revoke permission from an agent for a secret
+    pub fn revoke_permission(
+        &self,
+        secret_name: &str,
+        secret_scope: &SecretScope,
+        agent_did: Option<&str>, // None = remove default permission
+    ) -> Result<bool> {
+        let scope_str = secret_scope.as_str();
+
+        // Get secret ID
+        let secret_id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM secrets WHERE name = ?1 AND scope = ?2",
+                params![secret_name, scope_str],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let secret_id = match secret_id {
+            Some(id) => id,
+            None => return Ok(false), // Secret doesn't exist
+        };
+
+        let rows_deleted = self.conn.execute(
+            "DELETE FROM secret_permissions 
+             WHERE secret_id = ?1 AND agent_did IS ?2",
+            params![secret_id, agent_did],
+        )?;
+
+        let revoked = rows_deleted > 0;
+
+        if revoked {
+            self.log_audit(
+                AuditEvent::PermissionRevoked,
+                secret_name,
+                &scope_str,
+                agent_did,
+                true,
+                None,
+            )?;
+        }
+
+        Ok(revoked)
+    }
+
+    /// Get permissions for a secret
+    pub fn get_permissions(
+        &self,
+        secret_name: &str,
+        secret_scope: &SecretScope,
+    ) -> Result<Vec<SecretAccessControl>> {
+        let scope_str = secret_scope.as_str();
+
+        let mut stmt = self.conn.prepare(
+            "SELECT p.secret_id, p.agent_did, p.permission
+             FROM secret_permissions p
+             JOIN secrets s ON p.secret_id = s.id
+             WHERE s.name = ?1 AND s.scope = ?2
+             ORDER BY p.agent_did NULLS FIRST",
+        )?;
+
+        let permissions = stmt
+            .query_map(params![secret_name, scope_str], |row| {
+                let permission_str: String = row.get(2)?;
+                let permission = match permission_str.as_str() {
+                    "read" => SecretPermission::Read,
+                    "write" => SecretPermission::Write,
+                    _ => SecretPermission::None,
+                };
+
+                Ok(SecretAccessControl {
+                    secret_id: row.get(0)?,
+                    agent_did: row.get(1)?,
+                    permission,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(permissions)
+    }
+
+    /// Get a secret's decrypted value with permission check
+    pub fn get_with_permission(
+        &self,
+        name: &str,
+        scope: &SecretScope,
+        agent_did: Option<&str>,
+    ) -> Result<Option<String>> {
+        // Check permission
+        let permission = self.check_permission(name, scope, agent_did)?;
+
+        if permission == SecretPermission::None {
+            self.log_audit(
+                AuditEvent::AccessDenied,
+                name,
+                &scope.as_str(),
+                agent_did,
+                false,
+                Some("Permission denied"),
+            )?;
+            anyhow::bail!(
+                "Access denied: agent '{}' does not have permission to read secret '{}'",
+                agent_did.unwrap_or("(none)"),
+                name
+            );
+        }
+
+        // Get the secret value
+        self.get(name, scope)
+    }
+
     /// Helper to convert a database row to SecretEntry
     fn row_to_secret_entry(&self,
         row: &rusqlite::Row,

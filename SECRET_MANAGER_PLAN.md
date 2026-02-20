@@ -155,31 +155,42 @@ let config = ProviderConfig::default();
 let api_key = config.get_api_key_resolved(&resolver).await?;
 ```
 
-### Phase 4: Per-Agent Access Control (Day 4)
+### Phase 4: Per-Agent Access Control (Day 4) ✅ COMPLETE
 
-**Features:**
-- [ ] Default: Agents can read global secrets (backward compatible)
-- [ ] Explicit deny: Block specific agents from specific secrets
-- [ ] Explicit grant: Allow agents to access only specific secrets
-- [ ] Permission modes:
-  - `none` — No access (explicit deny)
-  - `read` — Can read secret value
-  - `write` — Can update/delete secret (rarely used)
+**Features Implemented:**
+- **Permission system** with `none`, `read`, `write` levels
+- **Default policies:** Global secrets default to `read` for all agents (backward compatible)
+- **Explicit grants/revokes** for fine-grained access control
+- **Agent-scoped secrets** automatically restrict to owner
 
-**Config:**
-```toml
-[secrets]
-access_mode = "explicit"  # or "default-global" for backward compatibility
+**New CLI Commands:**
+```bash
+# Grant permission to an agent
+pekobot secret grant --secret <NAME> --agent <DID> --permission read
 
-[[secrets.grants]]
-secret = "SHOPIFY_TOKEN"
-agent = "shopify-bot"
-permissions = ["read"]
+# Revoke permission
+pekobot secret revoke --secret <NAME> --agent <DID>
 
-[[secrets.denies]]
-secret = "OPENAI_API_KEY"
-agent = "untrusted-bot"
+# List permissions for a secret
+pekobot secret permissions <NAME>
 ```
+
+**Permission Model:**
+| Scenario | Default | Can Override |
+|----------|---------|--------------|
+| Global secret, no explicit permission | Read for all agents | Yes - grant none to deny |
+| Agent-scoped secret | Write for owner only | Yes - grant read to others |
+| Explicit permission set | Uses explicit value | Yes - revoke to reset |
+
+**Files Modified:**
+- `src/secrets/store.rs` — Added `check_permission()`, `grant_permission()`, `revoke_permission()`, `get_permissions()` (~200 lines)
+- `src/secrets/mod.rs` — Exposed permission methods in SecretManager
+- `src/main.rs` — Added `grant`, `revoke`, `permissions` subcommands (~100 lines)
+
+**Security:**
+- Permission checks happen before secret retrieval
+- Failed access attempts are logged to audit log
+- Owner of agent-scoped secrets always has write access
 
 ### Phase 5: Audit Logging (Day 5)
 

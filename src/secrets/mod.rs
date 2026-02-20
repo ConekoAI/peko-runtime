@@ -184,6 +184,56 @@ impl SecretManager {
         self.store.delete(name, scope)
     }
 
+    /// Check if an agent has permission to access a secret
+    pub async fn check_permission(
+        &self,
+        secret_name: &str,
+        secret_scope: &SecretScope,
+        agent_did: Option<&str>,
+    ) -> anyhow::Result<SecretPermission> {
+        self.store.check_permission(secret_name, secret_scope, agent_did)
+    }
+
+    /// Grant permission to an agent for a secret
+    pub async fn grant_permission(
+        &self,
+        secret_name: &str,
+        secret_scope: &SecretScope,
+        agent_did: Option<&str>,
+        permission: SecretPermission,
+    ) -> anyhow::Result<SecretAccessControl> {
+        self.store.grant_permission(secret_name, secret_scope, agent_did, permission)
+    }
+
+    /// Revoke permission from an agent for a secret
+    pub async fn revoke_permission(
+        &self,
+        secret_name: &str,
+        secret_scope: &SecretScope,
+        agent_did: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        self.store.revoke_permission(secret_name, secret_scope, agent_did)
+    }
+
+    /// Get permissions for a secret
+    pub async fn get_permissions(
+        &self,
+        secret_name: &str,
+        secret_scope: &SecretScope,
+    ) -> anyhow::Result<Vec<SecretAccessControl>> {
+        self.store.get_permissions(secret_name, secret_scope)
+    }
+
+    /// Get a secret value with permission check
+    pub async fn get_with_permission(
+        &self,
+        name: &str,
+        scope: &SecretScope,
+        agent_did: Option<&str>,
+    ) -> anyhow::Result<Option<String>> {
+        self.store.get_with_permission(name, scope, agent_did)
+    }
+
     /// Get the store path
     #[must_use]
     pub fn path(&self) -> &std::path::Path {

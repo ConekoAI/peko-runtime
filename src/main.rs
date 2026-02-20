@@ -3,6 +3,7 @@ use pekobot::agent::Agent;
 use pekobot::channels::cli::{run_interactive_loop, CliChannel};
 use pekobot::coneko::{ConekoAdapter, ConekoConfig};
 use pekobot::identity::{Identity, storage::KeyStorage};
+use pekobot::secrets::{SecretManager, SecretPermission, SecretScope, SecretType};
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
 use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -172,6 +173,50 @@ enum SecretCommands {
         /// Skip confirmation
         #[arg(short, long)]
         force: bool,
+    },
+    /// Grant permission to an agent for a secret
+    Grant {
+        /// Secret name
+        #[arg(short, long)]
+        secret: String,
+        /// Agent DID (omit for default permission)
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Permission level: read, write, none
+        #[arg(short, long, default_value = "read")]
+        permission: String,
+        /// Scope: "global" or agent DID
+        #[arg(short, long, default_value = "global")]
+        scope: String,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// Revoke permission from an agent for a secret
+    Revoke {
+        /// Secret name
+        #[arg(short, long)]
+        secret: String,
+        /// Agent DID (omit for default permission)
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Scope: "global" or agent DID
+        #[arg(short, long, default_value = "global")]
+        scope: String,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// List permissions for a secret
+    Permissions {
+        /// Secret name
+        name: String,
+        /// Scope: "global" or agent DID
+        #[arg(short, long, default_value = "global")]
+        scope: String,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
     },
 }
     /// Check Coneko server status
@@ -606,8 +651,6 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Secret(secret_cmd) => {
-            use pekobot::secrets::{SecretManager, SecretScope, SecretType};
-            
             match secret_cmd {
                 SecretCommands::Set {
                     name,
@@ -781,6 +824,109 @@ async fn main() -> anyhow::Result<()> {
                         }
                         Err(e) => {
                             eprintln!("❌ Failed to delete secret: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+                SecretCommands::Grant { secret, agent, permission, scope, password } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    let scope = if scope == "global" {
+                        SecretScope::Global
+                    } else {
+                        SecretScope::Agent { did: scope }
+                    };
+                    
+                    let permission = match permission.to_lowercase().as_str() {
+                        "read" => SecretPermission::Read,
+                        "write" => SecretPermission::Write,
+                        "none" => SecretPermission::None,
+                        _ => {
+                            eprintln!("❌ Invalid permission: {}. Use 'read', 'write', or 'none'", permission);
+                            return Ok(());
+                        }
+                    };
+                    
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    match manager.grant_permission(&secret, &scope, agent.as_deref(), permission).await {
+                        Ok(_) => {
+                            let agent_str = agent.as_deref().unwrap_or("(default)");
+                            println!("✅ Permission granted: {} can {:?} {}", agent_str, permission, secret);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to grant permission: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+                SecretCommands::Revoke { secret, agent, scope, password } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    let scope = if scope == "global" {
+                        SecretScope::Global
+                    } else {
+                        SecretScope::Agent { did: scope }
+                    };
+                    
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    match manager.revoke_permission(&secret, &scope, agent.as_deref()).await {
+                        Ok(true) => {
+                            let agent_str = agent.as_deref().unwrap_or("(default)");
+                            println!("✅ Permission revoked for {} on {}", agent_str, secret);
+                        }
+                        Ok(false) => {
+                            println!("ℹ️  No permission found to revoke");
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to revoke permission: {}", e);
+                            return Err(e);
+                        }
+                    }
+                }
+                SecretCommands::Permissions { name, scope, password } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    let scope = if scope == "global" {
+                        SecretScope::Global
+                    } else {
+                        SecretScope::Agent { did: scope }
+                    };
+                    
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    match manager.get_permissions(&name, &scope).await {
+                        Ok(permissions) => {
+                            if permissions.is_empty() {
+                                println!("ℹ️  No explicit permissions set for '{}'", name);
+                                println!("   Default policy applies:");
+                                match scope {
+                                    SecretScope::Global => println!("   - All agents: read"),
+                                    SecretScope::Agent { did } => println!("   - Only {}: write", did),
+                                }
+                            } else {
+                                println!("🔐 Permissions for '{}':", name);
+                                for perm in permissions {
+                                    let agent_str = perm.agent_did.as_deref().unwrap_or("(default)");
+                                    println!("   {:30} {:?}", agent_str, perm.permission);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to get permissions: {}", e);
                             return Err(e);
                         }
                     }
