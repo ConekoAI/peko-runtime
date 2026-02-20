@@ -1364,7 +1364,7 @@ async fn main() -> anyhow::Result<()> {
                     println!("Please manually move secrets to the secret store:");
                     println!("   pekobot secret set <NAME> --value <VALUE>");
                     println!(
-                        "\nThen update your config files to use: api_key = \"${secret:NAME}\""
+                        "\nThen update your config files to use: api_key = \" ${{secret:NAME}} \""
                     );
                 }
             }
