@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     // Store some test data in memory
     {
         use pekobot::memory::sqlite::SqliteMemory;
-        let memory = SqliteMemory::new(Some(&memory_path), "test-agent").await?;
+        let memory = SqliteMemory::new(&memory_path, "test-agent")?;
 
         memory
             .store(

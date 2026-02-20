@@ -78,6 +78,9 @@ secrecy = "0.10"
 tokio-test = "0.4"
 tempfile = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["fs"] }
 
 [[bin]]
 name = "pekobot"
