@@ -6,7 +6,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
-use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::{Argon2, Params};
 use hkdf::Hkdf;
 use rand::RngCore;
 use secrecy::{ExposeSecret, SecretBox, SecretString};

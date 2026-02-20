@@ -3,7 +3,7 @@
 use crate::secrets::{
     crypto::{EncryptedSecret, MasterKey},
     types::{
-        AuditEntry, AuditEvent, SecretAccessControl, SecretEntry, SecretMetadata,
+        AuditEntry, AuditEvent, AuditStats, SecretAccessControl, SecretEntry, SecretMetadata,
         SecretPermission, SecretScope, SecretType,
     },
 };
@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use secrecy::ExposeSecret;
 use std::path::Path;
-use tracing::{debug, info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 /// Secret store for managing encrypted secrets
@@ -704,74 +704,197 @@ impl SecretStore {
         event_type: Option<AuditEvent>,
         limit: usize,
     ) -> Result<Vec<AuditEntry>> {
-        let mut conditions = vec!["1=1"];
-        let mut params: Vec<&dyn rusqlite::ToSql> = vec![];
-
-        if let Some(name) = secret_name {
-            conditions.push("secret_name = ?");
-            params.push(&name);
-        }
-
-        if let Some(scope) = secret_scope {
-            let scope_str = scope.as_str();
-            conditions.push("secret_scope = ?");
-            params.push(&scope_str);
-        }
-
-        if let Some(did) = agent_did {
-            conditions.push("agent_did = ?");
-            params.push(&did);
-        }
-
-        if let Some(event) = event_type {
-            let event_str = event.to_string();
-            conditions.push("event = ?");
-            params.push(&event_str);
-        }
-
-        let sql = format!(
-            "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
-             FROM secret_audit_log
-             WHERE {}
-             ORDER BY timestamp DESC
-             LIMIT {}",
-            conditions.join(" AND "),
-            limit
-        );
-
-        let mut stmt = self.conn.prepare(&sql)?;
-
-        let entries = stmt
-            .query_map(params.as_slice(), |row| {
-                let event_str: String = row.get(2)?;
-                let event = match event_str.as_str() {
-                    "SECRET_CREATED" => AuditEvent::SecretCreated,
-                    "SECRET_ACCESSED" => AuditEvent::SecretAccessed,
-                    "SECRET_UPDATED" => AuditEvent::SecretUpdated,
-                    "SECRET_DELETED" => AuditEvent::SecretDeleted,
-                    "PERMISSION_GRANTED" => AuditEvent::PermissionGranted,
-                    "PERMISSION_REVOKED" => AuditEvent::PermissionRevoked,
-                    "STORE_UNLOCKED" => AuditEvent::StoreUnlocked,
-                    "STORE_LOCKED" => AuditEvent::StoreLocked,
-                    "PASSWORD_CHANGED" => AuditEvent::PasswordChanged,
-                    "ACCESS_DENIED" => AuditEvent::AccessDenied,
-                    _ => AuditEvent::AccessDenied, // Default fallback
-                };
-
-                Ok(AuditEntry {
-                    id: row.get(0)?,
-                    timestamp: row.get(1)?,
-                    event,
-                    secret_name: row.get(3)?,
-                    secret_scope: row.get(4)?,
-                    agent_did: row.get(5)?,
-                    success: row.get::<i32, _>(6)? != 0,
-                    error: row.get(7)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        // Use owned values to avoid lifetime issues
+        let scope_str = secret_scope.map(|s| s.as_str());
+        let event_str = event_type.map(|e| e.to_string());
+        
+        // Build the query based on which filters are present
+        let entries = match (secret_name, scope_str, agent_did, event_str.as_deref()) {
+            (Some(name), Some(scope), Some(did), Some(event)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_name = ?1 AND secret_scope = ?2 AND agent_did = ?3 AND event = ?4
+                     ORDER BY timestamp DESC LIMIT ?5"
+                )?;
+                self.query_audit_entries(&mut stmt, params![name, scope, did, event, limit as i64])?
+            }
+            (Some(name), Some(scope), Some(did), None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_name = ?1 AND secret_scope = ?2 AND agent_did = ?3
+                     ORDER BY timestamp DESC LIMIT ?4"
+                )?;
+                self.query_audit_entries(&mut stmt, params![name, scope, did, limit as i64])?
+            }
+            (Some(name), Some(scope), None, Some(event)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_name = ?1 AND secret_scope = ?2 AND event = ?3
+                     ORDER BY timestamp DESC LIMIT ?4"
+                )?;
+                self.query_audit_entries(&mut stmt, params![name, scope, event, limit as i64])?
+            }
+            (Some(name), None, Some(did), Some(event)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_name = ?1 AND agent_did = ?2 AND event = ?3
+                     ORDER BY timestamp DESC LIMIT ?4"
+                )?;
+                self.query_audit_entries(&mut stmt, params![name, did, event, limit as i64])?
+            }
+            (None, Some(scope), Some(did), Some(event)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_scope = ?1 AND agent_did = ?2 AND event = ?3
+                     ORDER BY timestamp DESC LIMIT ?4"
+                )?;
+                self.query_audit_entries(&mut stmt, params![scope, did, event, limit as i64])?
+            }
+            (Some(name), Some(scope), None, None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_name = ?1 AND secret_scope = ?2
+                     ORDER BY timestamp DESC LIMIT ?3"
+                )?;
+                self.query_audit_entries(&mut stmt, params![name, scope, limit as i64])?
+            }
+            (Some(name), None, Some(did), None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_name = ?1 AND agent_did = ?2
+                     ORDER BY timestamp DESC LIMIT ?3"
+                )?;
+                self.query_audit_entries(&mut stmt, params![name, did, limit as i64])?
+            }
+            (Some(name), None, None, Some(event)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_name = ?1 AND event = ?2
+                     ORDER BY timestamp DESC LIMIT ?3"
+                )?;
+                self.query_audit_entries(&mut stmt, params![name, event, limit as i64])?
+            }
+            (None, Some(scope), Some(did), None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_scope = ?1 AND agent_did = ?2
+                     ORDER BY timestamp DESC LIMIT ?3"
+                )?;
+                self.query_audit_entries(&mut stmt, params![scope, did, limit as i64])?
+            }
+            (None, Some(scope), None, Some(event)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_scope = ?1 AND event = ?2
+                     ORDER BY timestamp DESC LIMIT ?3"
+                )?;
+                self.query_audit_entries(&mut stmt, params![scope, event, limit as i64])?
+            }
+            (None, None, Some(did), Some(event)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE agent_did = ?1 AND event = ?2
+                     ORDER BY timestamp DESC LIMIT ?3"
+                )?;
+                self.query_audit_entries(&mut stmt, params![did, event, limit as i64])?
+            }
+            (Some(name), None, None, None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_name = ?1
+                     ORDER BY timestamp DESC LIMIT ?2"
+                )?;
+                self.query_audit_entries(&mut stmt, params![name, limit as i64])?
+            }
+            (None, Some(scope), None, None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE secret_scope = ?1
+                     ORDER BY timestamp DESC LIMIT ?2"
+                )?;
+                self.query_audit_entries(&mut stmt, params![scope, limit as i64])?
+            }
+            (None, None, Some(did), None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE agent_did = ?1
+                     ORDER BY timestamp DESC LIMIT ?2"
+                )?;
+                self.query_audit_entries(&mut stmt, params![did, limit as i64])?
+            }
+            (None, None, None, Some(event)) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     WHERE event = ?1
+                     ORDER BY timestamp DESC LIMIT ?2"
+                )?;
+                self.query_audit_entries(&mut stmt, params![event, limit as i64])?
+            }
+            (None, None, None, None) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, timestamp, event, secret_name, secret_scope, agent_did, success, error
+                     FROM secret_audit_log 
+                     ORDER BY timestamp DESC LIMIT ?1"
+                )?;
+                self.query_audit_entries(&mut stmt, params![limit as i64])?
+            }
+        };
 
         Ok(entries)
+    }
+
+    /// Helper to query audit entries from a prepared statement
+    fn query_audit_entries(
+        &self,
+        stmt: &mut rusqlite::Statement,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<AuditEntry>> {
+        stmt.query_map(params, |row| {
+            let event_str: String = row.get(2)?;
+            let event = match event_str.as_str() {
+                "SECRET_CREATED" => AuditEvent::SecretCreated,
+                "SECRET_ACCESSED" => AuditEvent::SecretAccessed,
+                "SECRET_UPDATED" => AuditEvent::SecretUpdated,
+                "SECRET_DELETED" => AuditEvent::SecretDeleted,
+                "PERMISSION_GRANTED" => AuditEvent::PermissionGranted,
+                "PERMISSION_REVOKED" => AuditEvent::PermissionRevoked,
+                "STORE_UNLOCKED" => AuditEvent::StoreUnlocked,
+                "STORE_LOCKED" => AuditEvent::StoreLocked,
+                "PASSWORD_CHANGED" => AuditEvent::PasswordChanged,
+                "ACCESS_DENIED" => AuditEvent::AccessDenied,
+                _ => AuditEvent::AccessDenied,
+            };
+
+            let success_val: i32 = row.get(6)?;
+
+            Ok(AuditEntry {
+                id: row.get(0)?,
+                timestamp: row.get(1)?,
+                event,
+                secret_name: row.get(3)?,
+                secret_scope: row.get(4)?,
+                agent_did: row.get(5)?,
+                success: success_val != 0,
+                error: row.get(7)?,
+            })
+        })
+        .and_then(|iter| iter.collect::<std::result::Result<Vec<_>, _>>())
+        .map_err(|e| e.into())
     }
 
     /// Get audit log statistics

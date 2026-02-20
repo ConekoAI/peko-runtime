@@ -45,9 +45,8 @@ pub use types::{
 };
 
 use crate::secrets::store::SecretStore;
-use secrecy::SecretString;
 use std::path::PathBuf;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// High-level secret manager interface
 pub struct SecretManager {
@@ -270,7 +269,6 @@ impl SecretManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secrecy::ExposeSecret;
 
     #[tokio::test]
     async fn test_secret_manager_workflow() {
