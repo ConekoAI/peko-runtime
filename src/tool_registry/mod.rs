@@ -1,11 +1,13 @@
 //! Pekohub Tool Registry
 //!
-//! Local and remote tool management for Pekobot.
-//! Phase 1: Local filesystem loading
-//! Phase 2: Remote registry with HTTP download
+//! Multi-backend tool management for Pekobot.
+//! Supports: Pekohub (cloud/self-hosted), local filesystem, source builds, embedded packages.
 
 mod remote;
 pub use remote::*;
+
+mod unified;
+pub use unified::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
