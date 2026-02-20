@@ -266,6 +266,90 @@ pekobot inspect --file ./my-agent.agent
 - Ed25519 signatures for package integrity
 - Optional key rotation on import
 
+## Secret Manager (Secure Credential Storage)
+
+Pekobot includes a built-in secret manager for securely storing API keys, tokens, and credentials with AES-256-GCM encryption.
+
+### Quick Start
+
+```bash
+# Store a secret (you'll be prompted for the value)
+pekobot secret set OPENAI_API_KEY --type api_key
+
+# Retrieve a secret
+pekobot secret get OPENAI_API_KEY
+
+# List all secrets
+pekobot secret list
+```
+
+### Using Secrets in Config
+
+Reference secrets in your agent config files:
+
+```toml
+[provider]
+provider_type = "openai"
+api_key = "${secret:OPENAI_API_KEY}"  # Resolved at runtime
+
+# Or per-agent secret
+api_key = "${secret.agent:did:pekobot:local:my-agent:OPENAI_KEY}"
+```
+
+### Access Control
+
+Control which agents can access which secrets:
+
+```bash
+# Grant read access to an agent
+pekobot secret grant --secret OPENAI_API_KEY \
+  --agent did:pekobot:local:shopify-bot \
+  --permission read
+
+# Revoke access
+pekobot secret revoke --secret OPENAI_API_KEY \
+  --agent did:pekobot:local:shopify-bot
+
+# List permissions
+pekobot secret permissions OPENAI_API_KEY
+```
+
+### Audit Logging
+
+Track all secret access:
+
+```bash
+# View recent audit entries
+pekobot secret audit
+
+# Show statistics
+pekobot secret audit --stats
+
+# Export to CSV
+pekobot secret audit --export audit.csv
+```
+
+### Migration
+
+Import from environment variables:
+
+```bash
+# Import all env vars matching a pattern
+pekobot secret import-env --pattern "OPENAI.*"
+
+# Preview without importing
+pekobot secret import-env --pattern ".*_API_KEY" --dry-run
+```
+
+### Security Features
+
+- **Encryption:** AES-256-GCM with per-secret keys derived via HKDF
+- **Password Hashing:** Argon2id (64MB memory, 3 iterations)
+- **Storage:** SQLite database at `~/.config/pekobot/secrets.db`
+- **Permissions:** Fine-grained access control per agent
+- **Audit:** Complete access logging with export
+- **Memory Safety:** Secrets cleared from memory after use
+
 ## Development
 
 ```bash

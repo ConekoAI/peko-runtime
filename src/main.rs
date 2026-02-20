@@ -242,6 +242,39 @@ enum SecretCommands {
         #[arg(short, long)]
         password: Option<String>,
     },
+    /// Import secrets from environment variables
+    ImportEnv {
+        /// Pattern to match env var names (regex)
+        #[arg(short, long, default_value = ".*")]
+        pattern: String,
+        /// Prefix to add to secret names
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Remove prefix from env var names
+        #[arg(long)]
+        remove_prefix: Option<String>,
+        /// Secret type for imported secrets
+        #[arg(short, long, default_value = "api_key")]
+        secret_type: String,
+        /// Dry run - show what would be imported
+        #[arg(long)]
+        dry_run: bool,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+    /// Scan config files for plain-text secrets and migrate them
+    Migrate {
+        /// Path to config file or directory
+        #[arg(short, long, default_value = ".")]
+        path: String,
+        /// Dry run - show what would be migrated
+        #[arg(long)]
+        dry_run: bool,
+        /// Master password (will prompt if not provided)
+        #[arg(short, long)]
+        password: Option<String>,
+    },
 }
     /// Check Coneko server status
     Status {
@@ -1051,6 +1084,174 @@ async fn main() -> anyhow::Result<()> {
                             return Err(e);
                         }
                     }
+                }
+                SecretCommands::ImportEnv { pattern, prefix, remove_prefix, secret_type, dry_run, password } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    // Compile regex pattern
+                    let regex = match regex::Regex::new(&pattern) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("❌ Invalid pattern: {}", e);
+                            return Ok(());
+                        }
+                    };
+                    
+                    // Find matching env vars
+                    let mut matches = Vec::new();
+                    for (key, value) in std::env::vars() {
+                        if regex.is_match(&key) && !value.is_empty() {
+                            // Determine secret name
+                            let mut name = key.clone();
+                            if let Some(ref prefix_to_remove) = remove_prefix {
+                                if name.starts_with(prefix_to_remove) {
+                                    name = name[prefix_to_remove.len()..].to_string();
+                                }
+                            }
+                            if let Some(ref prefix_to_add) = prefix {
+                                name = format!("{}{}", prefix_to_add, name);
+                            }
+                            
+                            // Clean up name (replace invalid chars)
+                            let name = name.replace(|c: char| !c.is_alphanumeric() && c != '_', "_");
+                            
+                            matches.push((name, key, value));
+                        }
+                    }
+                    
+                    if matches.is_empty() {
+                        println!("ℹ️  No environment variables matched pattern '{}'", pattern);
+                        return Ok(());
+                    }
+                    
+                    println!("📥 Found {} environment variables matching pattern '{}'", matches.len(), pattern);
+                    
+                    // Parse secret type
+                    let secret_type = match secret_type.to_lowercase().as_str() {
+                        "api_key" => SecretType::ApiKey,
+                        "token" => SecretType::Token,
+                        "ssh_key" => SecretType::SshKey,
+                        "certificate" => SecretType::Certificate,
+                        "password" => SecretType::Password,
+                        _ => SecretType::Other,
+                    };
+                    
+                    if dry_run {
+                        println!("\n📝 Would import (dry run):");
+                        for (name, original, _) in &matches {
+                            println!("   {} -> {} (from {})", original, name, secret_type);
+                        }
+                        println!("\nRun without --dry-run to import.");
+                        return Ok(());
+                    }
+                    
+                    // Import secrets
+                    let mut manager = SecretManager::new().await?;
+                    manager.unlock(&password).await?;
+                    
+                    let mut imported = 0;
+                    let mut failed = 0;
+                    
+                    for (name, original, value) in matches {
+                        match manager.set(&name, SecretScope::Global, &value, secret_type, None).await {
+                            Ok(_) => {
+                                println!("✅ Imported: {} -> {}", original, name);
+                                imported += 1;
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Failed to import {}: {}", original, e);
+                                failed += 1;
+                            }
+                        }
+                    }
+                    
+                    println!("\n📊 Import complete: {} imported, {} failed", imported, failed);
+                }
+                SecretCommands::Migrate { path, dry_run, password } => {
+                    let password = match password {
+                        Some(p) => p,
+                        None => rpassword::prompt_password("Enter master password: ")?,
+                    };
+                    
+                    // Find config files
+                    let path = std::path::PathBuf::from(path);
+                    let config_files = if path.is_file() {
+                        vec![path]
+                    } else {
+                        std::fs::read_dir(&path)?
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.path().extension().map(|e| e == "toml").unwrap_or(false))
+                            .map(|e| e.path())
+                            .collect::<Vec<_>>()
+                    };
+                    
+                    if config_files.is_empty() {
+                        println!("ℹ️  No config files found in {}", path.display());
+                        return Ok(());
+                    }
+                    
+                    println!("🔍 Scanning {} config file(s) for secrets...", config_files.len());
+                    
+                    // Common secret patterns
+                    let secret_patterns = [
+                        ("api_key", regex::Regex::new(r"api_key\s*=\s*\"([^\"]+)\"").unwrap()),
+                        ("api_key_env", regex::Regex::new(r"api_key_env\s*=\s*\"([^\"]+)\"").unwrap()),
+                    ];
+                    
+                    let mut found_secrets = Vec::new();
+                    
+                    for file in &config_files {
+                        let content = match std::fs::read_to_string(file) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        
+                        for (secret_type, pattern) in &secret_patterns {
+                            for cap in pattern.captures_iter(&content) {
+                                if let Some(matched) = cap.get(1) {
+                                    let value = matched.as_str();
+                                    // Skip if it's already a secret reference
+                                    if !value.starts_with("${") && !value.starts_with("sk-") {
+                                        found_secrets.push((
+                                            file.display().to_string(),
+                                            secret_type.to_string(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    if found_secrets.is_empty() {
+                        println!("ℹ️  No plain-text secrets found in config files.");
+                        return Ok(());
+                    }
+                    
+                    println!("\n⚠️  Found {} potential secrets in config files:", found_secrets.len());
+                    for (file, secret_type, value) in &found_secrets {
+                        let masked = if value.len() > 8 {
+                            format!("{}...{}", &value[..4], &value[value.len()-4..])
+                        } else {
+                            "***".to_string()
+                        };
+                        println!("   {} [{}]: {}", file, secret_type, masked);
+                    }
+                    
+                    if dry_run {
+                        println!("\n📝 Dry run - no changes made.");
+                        println!("Run without --dry-run to migrate these to the secret store.");
+                        return Ok(());
+                    }
+                    
+                    // TODO: Implement actual migration (interactive or automatic)
+                    println!("\n⚠️  Migration not yet fully implemented.");
+                    println!("Please manually move secrets to the secret store:");
+                    println!("   pekobot secret set <NAME> --value <VALUE>");
+                    println!("\nThen update your config files to use: api_key = \"${secret:NAME}\"");
                 }
             }
         }
