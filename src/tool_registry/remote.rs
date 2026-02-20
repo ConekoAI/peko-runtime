@@ -4,9 +4,88 @@
 //! Downloads tools on-demand with signature verification.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::tool_registry::{InstalledTool, ToolManifest};
+use crate::tool_registry::{BinaryUrls, InstalledTool, ToolCapabilities, ToolManifest, ToolMetadata};
+
+/// Pekohub API manifest response format
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PekohubManifest {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub author: String,
+    pub capabilities: Vec<String>,
+    pub platforms: HashMap<String, PekohubPlatform>,
+    pub signature: String,
+    pub rating: Option<f64>,
+    pub download_count: Option<u64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PekohubPlatform {
+    pub url: String,
+    pub checksum: String,
+    pub size: u64,
+}
+
+impl PekohubManifest {
+    /// Convert Pekohub manifest to internal ToolManifest format
+    pub fn to_tool_manifest(self) -> ToolManifest {
+        let mut binaries = BinaryUrls {
+            linux_x64: None,
+            linux_arm64: None,
+            macos_x64: None,
+            macos_arm64: None,
+            windows_x64: None,
+        };
+
+        for (platform, info) in self.platforms {
+            let url = format!("{}{}", "https://tools.coneko.ai", info.url);
+            match platform.as_str() {
+                "linux-x64" => binaries.linux_x64 = Some(url),
+                "linux-arm64" => binaries.linux_arm64 = Some(url),
+                "macos-x64" => binaries.macos_x64 = Some(url),
+                "macos-arm64" => binaries.macos_arm64 = Some(url),
+                "windows-x64" => binaries.windows_x64 = Some(url),
+                _ => {}
+            }
+        }
+
+        ToolManifest {
+            tool: ToolMetadata {
+                name: self.name,
+                version: self.version,
+                description: self.description,
+                author: Some(self.author),
+                license: Some("MIT".to_string()),
+                homepage: None,
+                repository: None,
+                category: Some("tool".to_string()),
+                keywords: None,
+            },
+            capabilities: ToolCapabilities {
+                provides: self.capabilities,
+                permissions: None,
+            },
+            binaries: if binaries.linux_x64.is_some() 
+                || binaries.linux_arm64.is_some()
+                || binaries.macos_x64.is_some()
+                || binaries.macos_arm64.is_some()
+                || binaries.windows_x64.is_some() {
+                Some(binaries)
+            } else {
+                None
+            },
+            dependencies: None,
+            install: None,
+            security: None,
+        }
+    }
+}
 
 /// Remote registry configuration
 #[derive(Debug, Clone)]
@@ -159,8 +238,9 @@ impl RemoteRegistryClient {
             anyhow::bail!("Failed to fetch manifest: {}", response.status());
         }
 
-        let manifest: ToolManifest = response.json().await?;
-        Ok(manifest)
+        // Parse as Pekohub format and convert
+        let pekohub_manifest: PekohubManifest = response.json().await?;
+        Ok(pekohub_manifest.to_tool_manifest())
     }
 
     /// Download and install tool from registry
