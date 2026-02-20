@@ -79,7 +79,7 @@ impl RegistryBackend {
                     format!("Pekohub ({})", url)
                 }
             }
-            RegistryBackend::Local { path } => format!("Local ({)", path.display()),
+            RegistryBackend::Local { path } => format!("Local ({})", path.display()),
             RegistryBackend::Source { .. } => "Source (Build on-demand)".to_string(),
             RegistryBackend::Embedded { .. } => "Embedded (Agent Package)".to_string(),
         }
@@ -524,7 +524,7 @@ impl UnifiedToolRegistry {
 }
 
 /// Tool information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ToolInfo {
     pub name: String,
     pub version: String,
