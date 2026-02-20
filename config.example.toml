@@ -1,0 +1,112 @@
+[agent]
+name = "default"
+description = "Default Pekobot agent"
+
+[provider]
+# Default provider - can be overridden per-agent
+type = "ollama"
+model = "llama2"
+# api_key = "${secret:OPENAI_API_KEY}"  # For OpenAI
+
+[memory]
+type = "sqlite"
+path = "~/.local/share/pekobot/memory.db"
+
+# ============================================
+# TOOL REGISTRY CONFIGURATION
+# ============================================
+# Choose your registry backend:
+# - "pekohub": Cloud registry (default, easiest)
+# - "local": Filesystem registry (air-gapped)
+# - "source": Build from source (developers)
+# - Multi-registry: Multiple fallbacks
+
+[tools.registry]
+# DEFAULT: Use public Pekohub (no setup required)
+# Tools downloaded from https://tools.coneko.ai
+type = "pekohub"
+url = "https://tools.coneko.ai"
+
+# UNCOMMENT FOR SELF-HOSTED:
+# type = "pekohub"
+# url = "https://tools.mycompany.com"
+# api_key = "${secret:PEKOHUB_API_KEY}"
+
+# UNCOMMENT FOR OFFLINE MODE:
+# type = "local"
+# path = "~/.local/share/pekobot/tools"
+
+# UNCOMMENT FOR SOURCE BUILDS:
+# type = "source"
+# source_path = "~/src/pekohub-tools"
+# build_cache = "~/.cache/pekobot/tool-builds"
+
+# Advanced: Multi-registry with fallback
+# [[tools.registry.fallbacks]]
+# type = "pekohub"
+# url = "https://tools.coneko.ai"
+#
+# [[tools.registry.fallbacks]]
+# type = "local"
+# path = "~/.local/share/pekobot/tools"
+
+[tools]
+# Core tools (always bundled)
+core = ["http", "filesystem", "cron", "memory"]
+
+# On-demand tools (downloaded from registry when needed)
+# Remove tools you don't need to save space
+on_demand = [
+    "social_media",
+    "calendar",
+    "email",
+    "document",
+    "expense",
+    "inventory",
+    "research",
+]
+
+# Cache settings
+cache_dir = "~/.cache/pekobot/tools"
+cache_ttl_hours = 168  # 1 week
+
+# Security
+verify_signatures = true
+allow_source_builds = true
+
+[channels]
+# Enable/disable communication channels
+# discord = { enabled = true, token = "${secret:DISCORD_TOKEN}" }
+# telegram = { enabled = true, token = "${secret:TELEGRAM_TOKEN}" }
+# slack = { enabled = true, token = "${secret:SLACK_TOKEN}" }
+# smtp = { enabled = true, host = "smtp.gmail.com", port = 587 }
+
+[security]
+# Sandboxing level for external tools
+# - "strict": Maximum isolation (recommended)
+# - "standard": Balanced security/performance
+# - "permissive": Minimal restrictions (development only)
+sandbox_level = "standard"
+
+# ============================================
+# CONEKO NETWORK (Optional)
+# ============================================
+# Connect to Coneko multi-agent network
+
+# [coneko]
+# enabled = false
+# server_url = "https://coneko.example.com"
+# agent_did = "did:key:z6Mk..."
+
+# ============================================
+# LOGGING & DEBUG
+# ============================================
+
+[log]
+level = "info"  # error, warn, info, debug, trace
+format = "pretty"  # pretty, json, compact
+
+[debug]
+# Enable for troubleshooting
+show_tool_calls = false
+show_memory_operations = false
