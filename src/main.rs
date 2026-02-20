@@ -1271,7 +1271,7 @@ async fn main() -> anyhow::Result<()> {
                     // Find config files
                     let path = std::path::PathBuf::from(path);
                     let config_files = if path.is_file() {
-                        vec![path]
+                        vec![path.clone()]
                     } else {
                         std::fs::read_dir(&path)?
                             .filter_map(|e| e.ok())
