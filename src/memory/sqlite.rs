@@ -95,8 +95,7 @@ impl SqliteMemory {
                 params![id, self.namespace],
                 |row| {
                     let metadata_json: Option<String> = row.get(2)?;
-                    let metadata = metadata_json
-                        .and_then(|m| serde_json::from_str(&m).ok());
+                    let metadata = metadata_json.and_then(|m| serde_json::from_str(&m).ok());
                     let last_accessed: Option<String> = row.get(5)?;
                     let last_accessed_at = last_accessed
                         .and_then(|la| chrono::DateTime::parse_from_rfc3339(&la).ok())
@@ -153,8 +152,7 @@ impl SqliteMemory {
                 let id: String = row.get(0)?;
                 let content: String = row.get(1)?;
                 let metadata_json: Option<String> = row.get(2)?;
-                let metadata = metadata_json
-                    .and_then(|m| serde_json::from_str(&m).ok());
+                let metadata = metadata_json.and_then(|m| serde_json::from_str(&m).ok());
                 let created_at: String = row.get(3)?;
                 let access_count: i64 = row.get(4)?;
                 let last_accessed: Option<String> = row.get(5)?;
@@ -204,8 +202,7 @@ impl SqliteMemory {
                 let id: String = row.get(0)?;
                 let content: String = row.get(1)?;
                 let metadata_json: Option<String> = row.get(2)?;
-                let metadata = metadata_json
-                    .and_then(|m| serde_json::from_str(&m).ok());
+                let metadata = metadata_json.and_then(|m| serde_json::from_str(&m).ok());
                 let created_at: String = row.get(3)?;
                 let access_count: i64 = row.get(4)?;
                 let last_accessed: Option<String> = row.get(5)?;

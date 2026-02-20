@@ -35,7 +35,7 @@ pub struct HeartbeatEngine {
 
 impl HeartbeatEngine {
     /// Create a new heartbeat engine
-    #[must_use] 
+    #[must_use]
     pub fn new(config: HeartbeatConfig) -> Self {
         Self { config }
     }
@@ -87,7 +87,7 @@ impl HeartbeatEngine {
     }
 
     /// Parse tasks from HEARTBEAT.md (lines starting with `- `)
-    #[must_use] 
+    #[must_use]
     pub fn parse_tasks(content: &str) -> Vec<String> {
         content
             .lines()

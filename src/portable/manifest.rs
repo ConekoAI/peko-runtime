@@ -126,7 +126,7 @@ impl AgentManifest {
     ) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         let name = name.into();
-        
+
         Self {
             agent: AgentMetadata {
                 name: name.clone(),
@@ -173,7 +173,8 @@ impl AgentManifest {
 
     /// Serialize to TOML string
     pub fn to_toml(&self) -> anyhow::Result<String> {
-        toml::to_string_pretty(self).map_err(|e| anyhow::anyhow!("Failed to serialize manifest: {}", e))
+        toml::to_string_pretty(self)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize manifest: {}", e))
     }
 
     /// Deserialize from TOML string
@@ -183,7 +184,7 @@ impl AgentManifest {
 
     /// Compute checksum for a file
     pub fn compute_checksum(data: &[u8]) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(data);
         format!("sha256:{:x}", hasher.finalize())

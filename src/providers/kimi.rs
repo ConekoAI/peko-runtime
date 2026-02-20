@@ -25,7 +25,7 @@ impl KimiProvider {
     }
 
     /// Create new Kimi provider with API key
-    #[must_use] 
+    #[must_use]
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
@@ -36,7 +36,7 @@ impl KimiProvider {
     }
 
     /// Set model
-    #[must_use] 
+    #[must_use]
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self

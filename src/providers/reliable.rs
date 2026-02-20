@@ -21,7 +21,7 @@ impl ReliableProvider {
     /// * `providers` - Vector of (name, provider) tuples, tried in order
     /// * `max_retries` - Maximum retries per provider before falling back
     /// * `base_backoff_ms` - Initial backoff in milliseconds (minimum 50)
-    #[must_use] 
+    #[must_use]
     pub fn new(
         providers: Vec<(String, Box<dyn Provider>)>,
         max_retries: u32,
@@ -35,7 +35,7 @@ impl ReliableProvider {
     }
 
     /// Create with sensible defaults (3 retries, 100ms base backoff)
-    #[must_use] 
+    #[must_use]
     pub fn with_defaults(providers: Vec<(String, Box<dyn Provider>)>) -> Self {
         Self::new(providers, 3, 100)
     }

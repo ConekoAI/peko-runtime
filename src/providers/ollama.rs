@@ -35,7 +35,7 @@ impl Default for OllamaConfig {
 
 impl OllamaConfig {
     /// Create config with custom base URL
-    #[must_use] 
+    #[must_use]
     pub fn with_host(base_url: &str) -> Self {
         Self {
             base_url: base_url.to_string(),
@@ -44,7 +44,7 @@ impl OllamaConfig {
     }
 
     /// Create config with model
-    #[must_use] 
+    #[must_use]
     pub fn with_model(model: &str) -> Self {
         Self {
             model: model.to_string(),
@@ -172,9 +172,7 @@ impl Provider for OllamaProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("Ollama API error: {} - {}", status, error_text);
-            return Err(anyhow::anyhow!(
-                "Ollama API error: {status} - {error_text}"
-            ));
+            return Err(anyhow::anyhow!("Ollama API error: {status} - {error_text}"));
         }
 
         let completion: GenerateResponse = response.json().await?;

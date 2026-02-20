@@ -55,12 +55,12 @@ use std::path::Path;
 /// Check if a file is a valid .agent package (quick check)
 pub fn is_agent_package(path: impl AsRef<Path>) -> bool {
     let path = path.as_ref();
-    
+
     // Check extension
     if path.extension().and_then(|e| e.to_str()) != Some("agent") {
         return false;
     }
-    
+
     // Try to open and check magic bytes (gzip)
     if let Ok(file) = std::fs::File::open(path) {
         let mut header = [0u8; 2];
@@ -69,16 +69,14 @@ pub fn is_agent_package(path: impl AsRef<Path>) -> bool {
             return header == [0x1f, 0x8b];
         }
     }
-    
+
     false
 }
 
 /// Get package info without full extraction
-pub async fn get_package_info(
-    path: impl AsRef<Path>,
-) -> anyhow::Result<PackageInfo> {
+pub async fn get_package_info(path: impl AsRef<Path>) -> anyhow::Result<PackageInfo> {
     let (manifest, validation) = inspect_agent(path, None).await?;
-    
+
     Ok(PackageInfo {
         name: manifest.agent.name,
         version: manifest.agent.version,
@@ -131,43 +129,50 @@ impl PackageInfo {
     /// Format as human-readable string
     pub fn format(&self) -> String {
         let mut output = String::new();
-        
+
         output.push_str(&format!("📦 {} v{}\n", self.name, self.version));
         if let Some(desc) = &self.description {
             output.push_str(&format!("   {}\n", desc));
         }
-        
+
         output.push_str(&format!("\n🆔 DID: {}\n", self.did));
         output.push_str(&format!("📅 Created: {}\n", self.created_at));
-        output.push_str(&format!("🔧 Format: {} (Pekobot {})\n", 
-            self.export_format, 
-            self.pekobot_version
+        output.push_str(&format!(
+            "🔧 Format: {} (Pekobot {})\n",
+            self.export_format, self.pekobot_version
         ));
-        
+
         if self.encrypted {
             output.push_str("🔒 Encrypted: Yes\n");
         }
-        
-        output.push_str(&format!("\n⚡ Capabilities ({}):\n", self.capabilities.len()));
+
+        output.push_str(&format!(
+            "\n⚡ Capabilities ({}):\n",
+            self.capabilities.len()
+        ));
         for cap in &self.capabilities {
             output.push_str(&format!("   - {}\n", cap));
         }
-        
+
         if !self.required_tools.is_empty() {
-            output.push_str(&format!("\n🛠️  Required Tools ({}):\n", self.required_tools.len()));
+            output.push_str(&format!(
+                "\n🛠️  Required Tools ({}):\n",
+                self.required_tools.len()
+            ));
             for tool in &self.required_tools {
                 output.push_str(&format!("   - {}\n", tool));
             }
         }
-        
+
         if self.valid {
             output.push_str("\n✅ Validation: Passed");
         } else {
-            output.push_str(&format!("\n❌ Validation: {} errors, {} warnings",
+            output.push_str(&format!(
+                "\n❌ Validation: {} errors, {} warnings",
                 self.errors, self.warnings
             ));
         }
-        
+
         output
     }
 }
@@ -181,7 +186,7 @@ mod tests {
         // Test that non-.agent files return false
         assert!(!is_agent_package("test.txt"));
         assert!(!is_agent_package("test.tar.gz"));
-        
+
         // Note: is_agent_package for "test.agent" would fail without a real file
         // because it tries to read the gzip magic bytes
     }

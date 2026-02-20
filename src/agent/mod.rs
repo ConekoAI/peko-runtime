@@ -370,7 +370,7 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     /// Create a new orchestrator
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             protocol: None,
@@ -413,7 +413,7 @@ impl Orchestrator {
     }
 
     /// Get the registry
-    #[must_use] 
+    #[must_use]
     pub fn registry(&self) -> Option<&SharedRegistry> {
         self.registry.as_ref()
     }

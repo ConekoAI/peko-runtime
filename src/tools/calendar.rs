@@ -68,7 +68,7 @@ pub struct CalendarTool {
 
 impl CalendarTool {
     /// Create new calendar tool
-    #[must_use] 
+    #[must_use]
     pub fn new(provider: CalendarProvider, credentials: CalendarCredentials) -> Self {
         Self {
             provider,
@@ -99,7 +99,7 @@ impl CalendarTool {
     }
 
     /// Set calendar ID (default is "primary")
-    #[must_use] 
+    #[must_use]
     pub fn with_calendar_id(mut self, id: String) -> Self {
         self.calendar_id = id;
         self
@@ -149,7 +149,8 @@ impl CalendarTool {
                     self.credentials.access_token = token.to_string();
                 }
 
-                if let Some(expires_in) = data.get("expires_in").and_then(serde_json::Value::as_i64) {
+                if let Some(expires_in) = data.get("expires_in").and_then(serde_json::Value::as_i64)
+                {
                     self.credentials.token_expires_at =
                         Some(chrono::Utc::now() + chrono::Duration::seconds(expires_in));
                 }

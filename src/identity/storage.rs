@@ -177,7 +177,7 @@ impl KeyStorage {
     }
 
     /// Check if an identity exists
-    #[must_use] 
+    #[must_use]
     pub fn exists(&self, did: &str) -> bool {
         self.identity_path(did).exists()
     }
@@ -205,7 +205,7 @@ impl KeyStorage {
     }
 
     /// Get the base storage path
-    #[must_use] 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.base_path
     }
@@ -225,22 +225,26 @@ impl KeyStorage {
         // Use spawn_blocking for file operations
         let identity = identity.clone();
         let base_path = self.base_path.clone();
-        
+
         tokio::task::spawn_blocking(move || {
             let storage = KeyStorage::with_path(base_path)?;
             storage.store(&identity)
-        }).await.map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
     }
 
     /// Check if identity exists asynchronously
     pub async fn exists_async(&self, did: &str) -> Result<bool> {
         let did = did.to_string();
         let base_path = self.base_path.clone();
-        
+
         tokio::task::spawn_blocking(move || {
             let storage = KeyStorage::with_path(base_path)?;
             Ok::<_, anyhow::Error>(storage.exists(&did))
-        }).await.map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
     }
 }
 

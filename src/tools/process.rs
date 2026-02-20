@@ -18,7 +18,7 @@ pub struct ProcessTool {
 
 impl ProcessTool {
     /// Create a new process tool with default settings
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             default_timeout_secs: 30,
@@ -27,7 +27,7 @@ impl ProcessTool {
     }
 
     /// Create with custom timeout
-    #[must_use] 
+    #[must_use]
     pub fn with_timeout(timeout_secs: u64) -> Self {
         Self {
             default_timeout_secs: timeout_secs,
@@ -36,7 +36,7 @@ impl ProcessTool {
     }
 
     /// Create with shell support enabled
-    #[must_use] 
+    #[must_use]
     pub fn with_shell() -> Self {
         Self {
             default_timeout_secs: 30,

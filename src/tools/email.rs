@@ -640,9 +640,7 @@ impl EmailTool {
     }
 
     async fn get_gmail_email(&self, email_id: &str) -> anyhow::Result<Option<Email>> {
-        let url = format!(
-            "https://www.googleapis.com/gmail/v1/users/me/messages/{email_id}"
-        );
+        let url = format!("https://www.googleapis.com/gmail/v1/users/me/messages/{email_id}");
 
         let response = self
             .http_client
@@ -665,10 +663,7 @@ impl EmailTool {
 
     async fn send_gmail_email(&self, _email: &Email) -> anyhow::Result<String> {
         // Would call Gmail API send endpoint
-        Ok(format!(
-            "msg_{}",
-            &uuid::Uuid::new_v4().to_string()[..8]
-        ))
+        Ok(format!("msg_{}", &uuid::Uuid::new_v4().to_string()[..8]))
     }
 
     async fn modify_gmail_label(
@@ -696,10 +691,7 @@ impl EmailTool {
     }
 
     async fn send_outlook_email(&self, _email: &Email) -> anyhow::Result<String> {
-        Ok(format!(
-            "msg_{}",
-            &uuid::Uuid::new_v4().to_string()[..8]
-        ))
+        Ok(format!("msg_{}", &uuid::Uuid::new_v4().to_string()[..8]))
     }
 
     // Helper to create mock emails
@@ -711,10 +703,7 @@ impl EmailTool {
 
         Email {
             id: format!("msg_{}", &uuid::Uuid::new_v4().to_string()[..8]),
-            thread_id: format!(
-                "thread_{}",
-                &uuid::Uuid::new_v4().to_string()[..8]
-            ),
+            thread_id: format!("thread_{}", &uuid::Uuid::new_v4().to_string()[..8]),
             subject: subject.to_string(),
             from: EmailAddress {
                 name: Some("John Doe".to_string()),
@@ -726,9 +715,7 @@ impl EmailTool {
             }],
             cc: vec![],
             bcc: vec![],
-            body_text: format!(
-                "This is a sample {category} email body for testing purposes."
-            ),
+            body_text: format!("This is a sample {category} email body for testing purposes."),
             body_html: None,
             timestamp: chrono::Utc::now() - chrono::Duration::hours(if is_urgent { 1 } else { 24 }),
             labels: vec![category.to_string(), "inbox".to_string()],

@@ -46,7 +46,7 @@ pub struct TelegramChannel {
 
 impl TelegramChannel {
     /// Create a new Telegram channel
-    #[must_use] 
+    #[must_use]
     pub fn new(config: TelegramConfig) -> Self {
         let (message_tx, message_rx) = mpsc::channel(100);
         let (chat_id_tx, chat_id_rx) = mpsc::channel(100);

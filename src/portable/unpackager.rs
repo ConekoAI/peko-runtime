@@ -86,14 +86,16 @@ impl Unpackager {
     }
 
     /// Inspect a package without importing
-    pub async fn inspect(&self,
+    pub async fn inspect(
+        &self,
         passphrase: Option<&str>,
     ) -> anyhow::Result<(AgentManifest, ValidationResult)> {
         // Extract package
         let files = self.extract_package().await?;
 
         // Parse manifest
-        let manifest_bytes = files.get("manifest.toml")
+        let manifest_bytes = files
+            .get("manifest.toml")
             .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml in package"))?;
         let manifest_str = std::str::from_utf8(manifest_bytes)?;
         let manifest = AgentManifest::from_toml(manifest_str)?;
@@ -112,9 +114,7 @@ impl Unpackager {
     }
 
     /// Import the package
-    pub async fn import(&self,
-        options: ImportOptions,
-    ) -> anyhow::Result<ImportResult> {
+    pub async fn import(&self, options: ImportOptions) -> anyhow::Result<ImportResult> {
         // Extract package
         let files = self.extract_package().await?;
 
@@ -136,14 +136,13 @@ impl Unpackager {
         }
 
         // Determine agent name
-        let name = options.new_name.clone().unwrap_or_else(|| manifest.agent.name.clone());
+        let name = options
+            .new_name
+            .clone()
+            .unwrap_or_else(|| manifest.agent.name.clone());
 
         // Import identity (decrypt if needed)
-        let identity = self.import_identity(
-        &files,
-        &manifest,
-        &options,
-        ).await?;
+        let identity = self.import_identity(&files, &manifest, &options).await?;
 
         // Import configuration
         let config = self.import_config(&files, &manifest, &name, &identity)?;
@@ -172,9 +171,7 @@ impl Unpackager {
     }
 
     /// Extract package to memory
-    async fn extract_package(
-        &self,
-    ) -> anyhow::Result<HashMap<String, Vec<u8>>> {
+    async fn extract_package(&self) -> anyhow::Result<HashMap<String, Vec<u8>>> {
         let file = std::fs::File::open(&self.package_path)?;
         let decoder = flate2::read::GzDecoder::new(file);
         let mut archive = tar::Archive::new(decoder);
@@ -196,11 +193,9 @@ impl Unpackager {
     }
 
     /// Parse manifest from files
-    fn parse_manifest(
-        &self,
-        files: &HashMap<String, Vec<u8>>,
-    ) -> anyhow::Result<AgentManifest> {
-        let manifest_bytes = files.get("manifest.toml")
+    fn parse_manifest(&self, files: &HashMap<String, Vec<u8>>) -> anyhow::Result<AgentManifest> {
+        let manifest_bytes = files
+            .get("manifest.toml")
             .ok_or_else(|| anyhow::anyhow!("Missing manifest.toml"))?;
         let manifest_str = std::str::from_utf8(manifest_bytes)?;
         AgentManifest::from_toml(manifest_str)
@@ -213,15 +208,15 @@ impl Unpackager {
         manifest: &AgentManifest,
         options: &ImportOptions,
     ) -> anyhow::Result<Identity> {
-        let did_doc_bytes = files.get("identity/did.json")
+        let did_doc_bytes = files
+            .get("identity/did.json")
             .ok_or_else(|| anyhow::anyhow!("Missing identity/did.json"))?;
         let did_doc: crate::identity::DIDDocument = serde_json::from_slice(did_doc_bytes)?;
 
         if options.rotate_keys {
             // Generate new identity
-            let new_identity = Identity::new(&manifest.agent.name,
-                crate::identity::did::DIDScope::Local,
-            ).await?;
+            let new_identity =
+                Identity::new(&manifest.agent.name, crate::identity::did::DIDScope::Local).await?;
 
             // Store new keys
             let key_storage = KeyStorage::new()?;
@@ -230,15 +225,14 @@ impl Unpackager {
             Ok(new_identity)
         } else {
             // Import existing keys
-            let encrypted_keys = files.get("identity/keys.enc")
+            let encrypted_keys = files
+                .get("identity/keys.enc")
                 .ok_or_else(|| anyhow::anyhow!("Missing identity/keys.enc"))?;
 
             let key_data = if manifest.identity.encrypted {
                 if let Some(passphrase) = &options.passphrase {
                     let encrypted = deserialize_encrypted(encrypted_keys)?;
-                    decrypt_with_passphrase(&encrypted,
-                        passphrase,
-                    )?
+                    decrypt_with_passphrase(&encrypted, passphrase)?
                 } else {
                     return Err(anyhow::anyhow!(
                         "Keys are encrypted but no passphrase provided"
@@ -277,7 +271,8 @@ impl Unpackager {
         new_name: &str,
         identity: &Identity,
     ) -> anyhow::Result<AgentConfig> {
-        let config_bytes = files.get("config/agent.toml")
+        let config_bytes = files
+            .get("config/agent.toml")
             .ok_or_else(|| anyhow::anyhow!("Missing config/agent.toml"))?;
         let config_str = std::str::from_utf8(config_bytes)?;
         let mut config: AgentConfig = toml::from_str(config_str)?;
@@ -316,17 +311,13 @@ impl Unpackager {
     }
 
     /// Import skills
-    async fn import_skills(
-        &self,
-        files: &HashMap<String, Vec<u8>>,
-    ) -> anyhow::Result<()> {
+    async fn import_skills(&self, files: &HashMap<String, Vec<u8>>) -> anyhow::Result<()> {
         let skills_dir = self.base_dir.join("skills");
         tokio::fs::create_dir_all(&skills_dir).await?;
 
         for (path, content) in files {
             if path.starts_with("config/skills/") {
-                let file_name = path.strip_prefix("config/skills/")
-                    .unwrap_or(path);
+                let file_name = path.strip_prefix("config/skills/").unwrap_or(path);
                 let dest_path = skills_dir.join(file_name);
 
                 if let Some(parent) = dest_path.parent() {
@@ -358,9 +349,7 @@ impl Unpackager {
     }
 
     /// Get memory path for a DID
-    fn get_memory_path(&self,
-        did: &str,
-    ) -> std::path::PathBuf {
+    fn get_memory_path(&self, did: &str) -> std::path::PathBuf {
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("pekobot")

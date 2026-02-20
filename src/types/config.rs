@@ -161,7 +161,7 @@ impl PekobotConfig {
     }
 
     /// Create default config with data directory
-    #[must_use] 
+    #[must_use]
     pub fn with_data_dir(data_dir: PathBuf) -> Self {
         Self {
             storage: StorageConfig {

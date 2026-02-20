@@ -34,7 +34,13 @@ pub const SALT_LENGTH: usize = 32;
 pub const NONCE_LENGTH: usize = 12;
 
 /// Derive encryption key from passphrase using Argon2id
-pub fn derive_key(passphrase: &str, salt: &[u8], memory_cost: u32, time_cost: u32, parallelism: u32) -> anyhow::Result<Vec<u8>> {
+pub fn derive_key(
+    passphrase: &str,
+    salt: &[u8],
+    memory_cost: u32,
+    time_cost: u32,
+    parallelism: u32,
+) -> anyhow::Result<Vec<u8>> {
     let argon2 = Argon2::new(
         argon2::Algorithm::Argon2id,
         argon2::Version::V0x13,
@@ -43,7 +49,8 @@ pub fn derive_key(passphrase: &str, salt: &[u8], memory_cost: u32, time_cost: u3
     );
 
     let mut key = vec![0u8; 32]; // 256 bits for AES-256
-    argon2.hash_password_into(passphrase.as_bytes(), salt, &mut key)
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut key)
         .map_err(|e| anyhow::anyhow!("Argon2 hashing failed: {:?}", e))?;
 
     Ok(key)
@@ -56,7 +63,13 @@ pub fn encrypt_with_passphrase(
     plaintext: &[u8],
     passphrase: &str,
 ) -> anyhow::Result<EncryptedData> {
-    encrypt_with_params(plaintext, passphrase, DEFAULT_MEMORY_COST, DEFAULT_TIME_COST, DEFAULT_PARALLELISM)
+    encrypt_with_params(
+        plaintext,
+        passphrase,
+        DEFAULT_MEMORY_COST,
+        DEFAULT_TIME_COST,
+        DEFAULT_PARALLELISM,
+    )
 }
 
 /// Encrypt data with custom Argon2 parameters
@@ -124,7 +137,7 @@ pub fn decrypt_with_passphrase(
 
 /// Serialize encrypted data to bytes for storage
 pub fn serialize_encrypted(data: &EncryptedData) -> Vec<u8> {
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize)]
     struct SerializedEncryptedData {
@@ -150,7 +163,7 @@ pub fn serialize_encrypted(data: &EncryptedData) -> Vec<u8> {
 
 /// Deserialize encrypted data from bytes
 pub fn deserialize_encrypted(bytes: &[u8]) -> anyhow::Result<EncryptedData> {
-    use serde::{Serialize, Deserialize};
+    use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize)]
     struct SerializedEncryptedData {
@@ -219,12 +232,11 @@ mod tests {
         let passphrase = "test";
 
         let encrypted = encrypt_with_params(
-            plaintext,
-            passphrase,
-            32768, // 32 MB
+            plaintext, passphrase, 32768, // 32 MB
             2,     // 2 iterations
             2,     // 2 threads
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(encrypted.memory_cost, 32768);
         assert_eq!(encrypted.time_cost, 2);

@@ -179,7 +179,7 @@ impl Identity {
     }
 
     /// Get the DID string
-    #[must_use] 
+    #[must_use]
     pub fn did(&self) -> &str {
         &self.did
     }
@@ -190,7 +190,7 @@ impl Identity {
     }
 
     /// Resolve verification method by ID
-    #[must_use] 
+    #[must_use]
     pub fn resolve_verification_method(&self, method_id: &str) -> Option<&VerificationMethod> {
         self.document
             .verification_method
@@ -205,7 +205,7 @@ impl Identity {
     ) -> anyhow::Result<Self> {
         let keypair = KeyPair::import(&key_export)?;
         let did = document.id.clone();
-        
+
         Ok(Self {
             did,
             document,
@@ -214,19 +214,15 @@ impl Identity {
     }
 
     /// Generate a new identity asynchronously
-    pub async fn new(
-        name: &str,
-        scope: DIDScope,
-    ) -> anyhow::Result<Self> {
+    pub async fn new(name: &str, scope: DIDScope) -> anyhow::Result<Self> {
         let name = name.to_string();
-        tokio::task::spawn_blocking(move || {
-            Self::generate(scope, Some(&name))
-        }).await.map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+        tokio::task::spawn_blocking(move || Self::generate(scope, Some(&name)))
+            .await
+            .map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
     }
 
     /// Convert to DID document JSON
-    pub fn to_did_document(&self,
-    ) -> anyhow::Result<DIDDocument> {
+    pub fn to_did_document(&self) -> anyhow::Result<DIDDocument> {
         Ok(self.document.clone())
     }
 }

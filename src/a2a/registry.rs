@@ -16,7 +16,7 @@ pub struct MessageBus {
 
 impl MessageBus {
     /// Create a new message bus
-    #[must_use] 
+    #[must_use]
     pub fn new() -> (Self, mpsc::Receiver<A2AMessage>) {
         let (sender, receiver) = mpsc::channel(100);
         (Self { sender }, receiver)
@@ -53,7 +53,7 @@ pub type ArcAgent = std::sync::Arc<tokio::sync::Mutex<Agent>>;
 
 impl AgentRegistry {
     /// Create a new agent registry
-    #[must_use] 
+    #[must_use]
     pub fn new(message_bus: MessageBus) -> Self {
         Self {
             agents: RwLock::new(HashMap::new()),
@@ -214,7 +214,7 @@ impl AgentRegistry {
 pub type SharedRegistry = std::sync::Arc<AgentRegistry>;
 
 /// Create a new shared registry with message bus
-#[must_use] 
+#[must_use]
 pub fn create_registry() -> (SharedRegistry, mpsc::Receiver<A2AMessage>) {
     let (bus, receiver) = MessageBus::new();
     let registry = std::sync::Arc::new(AgentRegistry::new(bus));

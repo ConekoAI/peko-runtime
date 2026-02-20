@@ -30,7 +30,10 @@ async fn test_secret_manager_full_workflow() {
 
     // Unlock with master password
     manager.unlock("test-master-password").await.unwrap();
-    assert!(manager.is_unlocked(), "Store should be unlocked after unlock()");
+    assert!(
+        manager.is_unlocked(),
+        "Store should be unlocked after unlock()"
+    );
 
     println!("   ✅ Store created and unlocked successfully");
 
@@ -153,11 +156,7 @@ async fn test_secret_manager_full_workflow() {
 
     // Revoke permission
     let revoked = manager
-        .revoke_permission(
-            "OPENAI_API_KEY",
-            &SecretScope::Global,
-            Some(other_agent),
-        )
+        .revoke_permission("OPENAI_API_KEY", &SecretScope::Global, Some(other_agent))
         .await
         .unwrap();
     assert!(revoked);
@@ -198,11 +197,7 @@ async fn test_secret_manager_full_workflow() {
 
     // Try to access with denied permission
     let result = manager
-        .get_with_permission(
-            "OPENAI_API_KEY",
-            &SecretScope::Global,
-            Some("some-agent"),
-        )
+        .get_with_permission("OPENAI_API_KEY", &SecretScope::Global, Some("some-agent"))
         .await;
     assert!(result.is_err(), "Should fail with permission denied");
     println!("   ✅ Access correctly denied");
@@ -252,19 +247,32 @@ async fn test_secret_manager_full_workflow() {
         .iter()
         .filter(|e| e.event == AuditEvent::SecretCreated)
         .collect();
-    assert_eq!(created_events.len(), 2, "Should have 2 SECRET_CREATED events");
+    assert_eq!(
+        created_events.len(),
+        2,
+        "Should have 2 SECRET_CREATED events"
+    );
     println!("   ✅ Found {} SECRET_CREATED events", created_events.len());
 
     let grant_events: Vec<_> = audit_entries
         .iter()
         .filter(|e| e.event == AuditEvent::PermissionGranted)
         .collect();
-    assert!(!grant_events.is_empty(), "Should have PERMISSION_GRANTED events");
-    println!("   ✅ Found {} PERMISSION_GRANTED events", grant_events.len());
+    assert!(
+        !grant_events.is_empty(),
+        "Should have PERMISSION_GRANTED events"
+    );
+    println!(
+        "   ✅ Found {} PERMISSION_GRANTED events",
+        grant_events.len()
+    );
 
     // Get audit stats
     let stats = manager.get_audit_stats(None).await.unwrap();
-    println!("   ✅ Audit stats: {} total, {} successful", stats.total, stats.successful);
+    println!(
+        "   ✅ Audit stats: {} total, {} successful",
+        stats.total, stats.successful
+    );
     assert!(stats.total >= 4);
     assert!(stats.successful >= 4);
 
@@ -350,10 +358,19 @@ async fn test_secret_manager_full_workflow() {
 
     // Check audit log for update event
     let audit_entries = manager
-        .query_audit_log(Some("OPENAI_API_KEY"), None, None, Some(AuditEvent::SecretUpdated), 10)
+        .query_audit_log(
+            Some("OPENAI_API_KEY"),
+            None,
+            None,
+            Some(AuditEvent::SecretUpdated),
+            10,
+        )
         .await
         .unwrap();
-    assert!(!audit_entries.is_empty(), "Should have SECRET_UPDATED event");
+    assert!(
+        !audit_entries.is_empty(),
+        "Should have SECRET_UPDATED event"
+    );
     println!("   ✅ SECRET_UPDATED event logged");
 
     // =================================================================
@@ -379,10 +396,19 @@ async fn test_secret_manager_full_workflow() {
 
     // Check audit log for delete event
     let audit_entries = manager
-        .query_audit_log(Some("OPENAI_API_KEY"), None, None, Some(AuditEvent::SecretDeleted), 10)
+        .query_audit_log(
+            Some("OPENAI_API_KEY"),
+            None,
+            None,
+            Some(AuditEvent::SecretDeleted),
+            10,
+        )
         .await
         .unwrap();
-    assert!(!audit_entries.is_empty(), "Should have SECRET_DELETED event");
+    assert!(
+        !audit_entries.is_empty(),
+        "Should have SECRET_DELETED event"
+    );
     println!("   ✅ SECRET_DELETED event logged");
 
     // =================================================================
@@ -449,9 +475,15 @@ async fn test_secret_manager_concurrent_access() {
         m.unlock("password").await.unwrap();
 
         // Store initial secret
-        m.set("TEST_KEY", SecretScope::Global, "initial", SecretType::ApiKey, None)
-            .await
-            .unwrap();
+        m.set(
+            "TEST_KEY",
+            SecretScope::Global,
+            "initial",
+            SecretType::ApiKey,
+            None,
+        )
+        .await
+        .unwrap();
     }
 
     // Spawn multiple concurrent reads

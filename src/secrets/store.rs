@@ -24,14 +24,14 @@ impl SecretStore {
     /// Open or create a secret store at the given path
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path).context("Failed to open secret store database")?;
-        
+
         let store = Self {
             conn,
             master_key: None,
         };
 
         store.initialize()?;
-        
+
         info!("Secret store initialized");
         Ok(store)
     }
@@ -40,7 +40,7 @@ impl SecretStore {
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().context("Failed to create in-memory database")?;
-        
+
         let store = Self {
             conn,
             master_key: None,
@@ -52,8 +52,9 @@ impl SecretStore {
 
     /// Initialize database tables
     fn initialize(&self) -> Result<()> {
-        self.conn.execute_batch(
-            r#"
+        self.conn
+            .execute_batch(
+                r#"
             -- Secrets table
             CREATE TABLE IF NOT EXISTS secrets (
                 id TEXT PRIMARY KEY,
@@ -101,16 +102,14 @@ impl SecretStore {
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON secret_audit_log(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_secret ON secret_audit_log(secret_name);
             "#,
-        ).context("Failed to initialize secret store schema")?;
+            )
+            .context("Failed to initialize secret store schema")?;
 
         Ok(())
     }
 
     /// Unlock the store with a master password
-    pub fn unlock(&mut self,
-        password: &str,
-        salt: &[u8],
-    ) -> Result<()> {
+    pub fn unlock(&mut self, password: &str, salt: &[u8]) -> Result<()> {
         self.master_key = Some(MasterKey::from_password(password, salt)?);
         info!("Secret store unlocked");
         Ok(())
@@ -185,7 +184,14 @@ impl SecretStore {
                 ],
             )?;
 
-            self.log_audit(AuditEvent::SecretUpdated, name, &scope_str, None, true, None)?;
+            self.log_audit(
+                AuditEvent::SecretUpdated,
+                name,
+                &scope_str,
+                None,
+                true,
+                None,
+            )?;
 
             // Get updated entry
             self.get_entry(name, scope)?
@@ -211,7 +217,14 @@ impl SecretStore {
                 ],
             )?;
 
-            self.log_audit(AuditEvent::SecretCreated, name, &scope_str, None, true, None)?;
+            self.log_audit(
+                AuditEvent::SecretCreated,
+                name,
+                &scope_str,
+                None,
+                true,
+                None,
+            )?;
 
             Ok(SecretEntry {
                 id,
@@ -227,11 +240,7 @@ impl SecretStore {
     }
 
     /// Get a secret's decrypted value
-    pub fn get(
-        &self,
-        name: &str,
-        scope: &SecretScope,
-    ) -> Result<Option<String>> {
+    pub fn get(&self, name: &str, scope: &SecretScope) -> Result<Option<String>> {
         let master_key = self
             .master_key
             .as_ref()
@@ -259,7 +268,14 @@ impl SecretStore {
                 let decrypted = master_key.decrypt(&encrypted, name, &scope_str)?;
                 let value = decrypted.expose_secret().to_string();
 
-                self.log_audit(AuditEvent::SecretAccessed, name, &scope_str, None, true, None)?;
+                self.log_audit(
+                    AuditEvent::SecretAccessed,
+                    name,
+                    &scope_str,
+                    None,
+                    true,
+                    None,
+                )?;
 
                 Ok(Some(value))
             }
@@ -268,11 +284,7 @@ impl SecretStore {
     }
 
     /// Get a secret entry (without value)
-    pub fn get_entry(
-        &self,
-        name: &str,
-        scope: &SecretScope,
-    ) -> Result<Option<SecretEntry>> {
+    pub fn get_entry(&self, name: &str, scope: &SecretScope) -> Result<Option<SecretEntry>> {
         let scope_str = scope.as_str();
 
         self.conn
@@ -286,7 +298,10 @@ impl SecretStore {
                         SecretScope::Global
                     } else if scope_str.starts_with("agent:") {
                         SecretScope::Agent {
-                            did: scope_str.strip_prefix("agent:").unwrap_or(&scope_str).to_string(),
+                            did: scope_str
+                                .strip_prefix("agent:")
+                                .unwrap_or(&scope_str)
+                                .to_string(),
                         }
                     } else {
                         SecretScope::Global
@@ -322,10 +337,7 @@ impl SecretStore {
     }
 
     /// List secrets (without values)
-    pub fn list(
-        &self,
-        scope: Option<&SecretScope>,
-    ) -> Result<Vec<SecretEntry>> {
+    pub fn list(&self, scope: Option<&SecretScope>) -> Result<Vec<SecretEntry>> {
         let mut stmt = if let Some(s) = scope {
             self.conn.prepare(
                 "SELECT id, name, scope, secret_type, metadata, version, created_at, updated_at 
@@ -339,25 +351,18 @@ impl SecretStore {
         };
 
         let rows = if let Some(s) = scope {
-            stmt.query_map(params![s.as_str()], |row| {
-                self.row_to_secret_entry(row)
-            })?
-            .collect::<Result<Vec<_>, _>>()
+            stmt.query_map(params![s.as_str()], |row| self.row_to_secret_entry(row))?
+                .collect::<Result<Vec<_>, _>>()
         } else {
-            stmt.query_map([], |row| {
-                self.row_to_secret_entry(row)
-            })?
-            .collect::<Result<Vec<_>, _>>()
+            stmt.query_map([], |row| self.row_to_secret_entry(row))?
+                .collect::<Result<Vec<_>, _>>()
         };
 
         Ok(rows?)
     }
 
     /// Delete a secret
-    pub fn delete(&self,
-        name: &str,
-        scope: &SecretScope,
-    ) -> Result<bool> {
+    pub fn delete(&self, name: &str, scope: &SecretScope) -> Result<bool> {
         let scope_str = scope.as_str();
 
         let rows_deleted = self.conn.execute(
@@ -368,7 +373,14 @@ impl SecretStore {
         let deleted = rows_deleted > 0;
 
         if deleted {
-            self.log_audit(AuditEvent::SecretDeleted, name, &scope_str, None, true, None)?;
+            self.log_audit(
+                AuditEvent::SecretDeleted,
+                name,
+                &scope_str,
+                None,
+                true,
+                None,
+            )?;
         }
 
         Ok(deleted)
@@ -625,15 +637,16 @@ impl SecretStore {
     }
 
     /// Helper to convert a database row to SecretEntry
-    fn row_to_secret_entry(&self,
-        row: &rusqlite::Row,
-    ) -> rusqlite::Result<SecretEntry> {
+    fn row_to_secret_entry(&self, row: &rusqlite::Row) -> rusqlite::Result<SecretEntry> {
         let scope_str: String = row.get(2)?;
         let scope = if scope_str == "global" {
             SecretScope::Global
         } else if scope_str.starts_with("agent:") {
             SecretScope::Agent {
-                did: scope_str.strip_prefix("agent:").unwrap_or(&scope_str).to_string(),
+                did: scope_str
+                    .strip_prefix("agent:")
+                    .unwrap_or(&scope_str)
+                    .to_string(),
             }
         } else {
             SecretScope::Global
@@ -707,7 +720,7 @@ impl SecretStore {
         // Use owned values to avoid lifetime issues
         let scope_str = secret_scope.map(|s| s.as_str());
         let event_str = event_type.map(|e| e.to_string());
-        
+
         // Build the query based on which filters are present
         let entries = match (secret_name, scope_str, agent_did, event_str.as_deref()) {
             (Some(name), Some(scope), Some(did), Some(event)) => {
@@ -898,10 +911,13 @@ impl SecretStore {
     }
 
     /// Get audit log statistics
-    pub fn get_audit_stats(&self,
+    pub fn get_audit_stats(
+        &self,
         since: Option<&str>, // ISO 8601 timestamp
     ) -> Result<AuditStats> {
-        let since_clause = since.map(|s| format!("WHERE timestamp >= '{}'", s)).unwrap_or_default();
+        let since_clause = since
+            .map(|s| format!("WHERE timestamp >= '{}'", s))
+            .unwrap_or_default();
 
         let total: i64 = self.conn.query_row(
             &format!("SELECT COUNT(*) FROM secret_audit_log {}", since_clause),
@@ -910,19 +926,28 @@ impl SecretStore {
         )?;
 
         let successful: i64 = self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM secret_audit_log {} AND success = 1", since_clause),
+            &format!(
+                "SELECT COUNT(*) FROM secret_audit_log {} AND success = 1",
+                since_clause
+            ),
             [],
             |row| row.get(0),
         )?;
 
         let failed: i64 = self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM secret_audit_log {} AND success = 0", since_clause),
+            &format!(
+                "SELECT COUNT(*) FROM secret_audit_log {} AND success = 0",
+                since_clause
+            ),
             [],
             |row| row.get(0),
         )?;
 
         let access_denied: i64 = self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM secret_audit_log {} AND event = 'ACCESS_DENIED'", since_clause),
+            &format!(
+                "SELECT COUNT(*) FROM secret_audit_log {} AND event = 'ACCESS_DENIED'",
+                since_clause
+            ),
             [],
             |row| row.get(0),
         )?;
@@ -942,14 +967,17 @@ impl SecretStore {
         since: Option<&str>,
     ) -> Result<usize> {
         let entries = self.query_audit_log(None, None, None, None, 100_000)?;
-        
+
         let file = std::fs::File::create(path)?;
         let mut writer = std::io::BufWriter::new(file);
-        
+
         use std::io::Write;
-        
-        writeln!(&mut writer, "id,timestamp,event,secret_name,secret_scope,agent_did,success,error")?;
-        
+
+        writeln!(
+            &mut writer,
+            "id,timestamp,event,secret_name,secret_scope,agent_did,success,error"
+        )?;
+
         for entry in &entries {
             writeln!(
                 &mut writer,
@@ -964,7 +992,7 @@ impl SecretStore {
                 entry.error.as_deref().unwrap_or("")
             )?;
         }
-        
+
         Ok(entries.len())
     }
 }
@@ -976,19 +1004,21 @@ mod tests {
     #[test]
     fn test_store_and_get() {
         let mut store = SecretStore::open_in_memory().unwrap();
-        
+
         // Unlock with master password
         let salt = vec![0u8; 32];
         store.unlock("master-password", &salt).unwrap();
 
         // Store a secret
-        let entry = store.set(
-            "OPENAI_KEY",
-            &SecretScope::Global,
-            "sk-test123",
-            SecretType::ApiKey,
-            None,
-        ).unwrap();
+        let entry = store
+            .set(
+                "OPENAI_KEY",
+                &SecretScope::Global,
+                "sk-test123",
+                SecretType::ApiKey,
+                None,
+            )
+            .unwrap();
 
         assert_eq!(entry.name, "OPENAI_KEY");
         assert_eq!(entry.scope, SecretScope::Global);
@@ -1005,8 +1035,24 @@ mod tests {
         let salt = vec![0u8; 32];
         store.unlock("password", &salt).unwrap();
 
-        store.set("KEY1", &SecretScope::Global, "value1", SecretType::ApiKey, None).unwrap();
-        store.set("KEY2", &SecretScope::Global, "value2", SecretType::Token, None).unwrap();
+        store
+            .set(
+                "KEY1",
+                &SecretScope::Global,
+                "value1",
+                SecretType::ApiKey,
+                None,
+            )
+            .unwrap();
+        store
+            .set(
+                "KEY2",
+                &SecretScope::Global,
+                "value2",
+                SecretType::Token,
+                None,
+            )
+            .unwrap();
 
         let secrets = store.list(Some(&SecretScope::Global)).unwrap();
         assert_eq!(secrets.len(), 2);
@@ -1018,8 +1064,16 @@ mod tests {
         let salt = vec![0u8; 32];
         store.unlock("password", &salt).unwrap();
 
-        store.set("TO_DELETE", &SecretScope::Global, "value", SecretType::ApiKey, None).unwrap();
-        
+        store
+            .set(
+                "TO_DELETE",
+                &SecretScope::Global,
+                "value",
+                SecretType::ApiKey,
+                None,
+            )
+            .unwrap();
+
         let deleted = store.delete("TO_DELETE", &SecretScope::Global).unwrap();
         assert!(deleted);
 

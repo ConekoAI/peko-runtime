@@ -62,7 +62,7 @@ pub struct CloudflareTunnel {
 
 impl CloudflareTunnel {
     /// Create new Cloudflare tunnel
-    #[must_use] 
+    #[must_use]
     pub fn new(token: String) -> Self {
         Self {
             token,
@@ -166,7 +166,7 @@ pub struct NgrokTunnel {
 
 impl NgrokTunnel {
     /// Create new ngrok tunnel
-    #[must_use] 
+    #[must_use]
     pub fn new(auth_token: String, domain: Option<String>) -> Self {
         Self {
             auth_token,
@@ -270,7 +270,7 @@ pub struct TailscaleTunnel {
 
 impl TailscaleTunnel {
     /// Create new Tailscale tunnel
-    #[must_use] 
+    #[must_use]
     pub fn new(funnel: bool, hostname: Option<String>) -> Self {
         Self {
             funnel,
@@ -372,7 +372,7 @@ pub enum TunnelConfig {
 }
 
 /// Create tunnel from config
-#[must_use] 
+#[must_use]
 pub fn create_tunnel(config: &TunnelConfig) -> Option<Box<dyn Tunnel>> {
     match config {
         TunnelConfig::None => None,
@@ -394,7 +394,7 @@ pub struct TunnelManager {
 
 impl TunnelManager {
     /// Create new tunnel manager
-    #[must_use] 
+    #[must_use]
     pub fn new(config: &TunnelConfig) -> Self {
         Self {
             tunnel: create_tunnel(config),
@@ -422,7 +422,7 @@ impl TunnelManager {
     }
 
     /// Get public URL
-    #[must_use] 
+    #[must_use]
     pub fn public_url(&self) -> Option<String> {
         self.tunnel.as_ref().and_then(|t| t.public_url())
     }

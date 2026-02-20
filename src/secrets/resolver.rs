@@ -42,7 +42,7 @@ impl SecretResolver {
     /// Create a new secret resolver with the default secret store
     pub async fn new() -> anyhow::Result<Self> {
         let manager = SecretManager::new().await?;
-        
+
         Ok(Self {
             manager: Arc::new(Mutex::new(manager)),
             secret_regex: Regex::new(r"\$\{secret:(?:(agent):([^:]+):)?([^}]+)\}").unwrap(),
@@ -53,7 +53,7 @@ impl SecretResolver {
     /// Create a new secret resolver with a specific store path
     pub fn open(path: impl Into<std::path::PathBuf>) -> anyhow::Result<Self> {
         let manager = SecretManager::open(path)?;
-        
+
         Ok(Self {
             manager: Arc::new(Mutex::new(manager)),
             secret_regex: Regex::new(r"\$\{secret:(?:(agent):([^:]+):)?([^}]+)\}").unwrap(),
@@ -90,7 +90,7 @@ impl SecretResolver {
     pub async fn resolve(&self, value: &str) -> anyhow::Result<String> {
         // First resolve env variables
         let value = self.resolve_env(value)?;
-        
+
         // Then resolve secrets
         self.resolve_secrets(&value).await
     }
@@ -98,11 +98,11 @@ impl SecretResolver {
     /// Resolve environment variable references
     fn resolve_env(&self, value: &str) -> anyhow::Result<String> {
         let mut result = value.to_string();
-        
+
         for cap in self.env_regex.captures_iter(value) {
             let var_name = &cap[1];
             let full_match = cap.get(0).unwrap().as_str();
-            
+
             match std::env::var(var_name) {
                 Ok(var_value) => {
                     result = result.replace(full_match, &var_value);
@@ -116,29 +116,31 @@ impl SecretResolver {
                 }
             }
         }
-        
+
         Ok(result)
     }
 
     /// Resolve secret references
     async fn resolve_secrets(&self, value: &str) -> anyhow::Result<String> {
         let mut result = value.to_string();
-        
+
         for cap in self.secret_regex.captures_iter(value) {
             let full_match = cap.get(0).unwrap().as_str();
-            
+
             // Determine scope
             let scope = if cap.get(1).is_some() {
                 // Agent scope: ${secret.agent:DID:NAME}
                 let did = cap.get(2).unwrap().as_str();
-                SecretScope::Agent { did: did.to_string() }
+                SecretScope::Agent {
+                    did: did.to_string(),
+                }
             } else {
                 // Global scope: ${secret:NAME}
                 SecretScope::Global
             };
-            
+
             let name = cap.get(3).unwrap().as_str();
-            
+
             // Look up secret
             let manager = self.manager.lock().await;
             match manager.get(name, &scope).await {
@@ -170,7 +172,7 @@ impl SecretResolver {
                 }
             }
         }
-        
+
         Ok(result)
     }
 
@@ -180,18 +182,20 @@ impl SecretResolver {
     /// and returns just the secret value.
     pub async fn resolve_one(&self, reference: &str) -> anyhow::Result<String> {
         let trimmed = reference.trim();
-        
+
         // Check if it's a secret reference
         if let Some(cap) = self.secret_regex.captures(trimmed) {
             let scope = if cap.get(1).is_some() {
                 let did = cap.get(2).unwrap().as_str();
-                SecretScope::Agent { did: did.to_string() }
+                SecretScope::Agent {
+                    did: did.to_string(),
+                }
             } else {
                 SecretScope::Global
             };
-            
+
             let name = cap.get(3).unwrap().as_str();
-            
+
             let manager = self.manager.lock().await;
             match manager.get(name, &scope).await {
                 Ok(Some(value)) => Ok(value),
@@ -214,12 +218,8 @@ impl SecretResolver {
         } else if let Some(cap) = self.env_regex.captures(trimmed) {
             // Environment variable
             let var_name = &cap[1];
-            std::env::var(var_name).map_err(|_| {
-                anyhow::anyhow!(
-                    "Environment variable '{}' not found",
-                    var_name
-                )
-            })
+            std::env::var(var_name)
+                .map_err(|_| anyhow::anyhow!("Environment variable '{}' not found", var_name))
         } else {
             // Not a reference, return as-is
             Ok(reference.to_string())
@@ -242,12 +242,12 @@ mod tests {
     async fn test_resolve_env() {
         // Set test env var
         std::env::set_var("TEST_VAR", "test_value");
-        
+
         let resolver = SecretResolver::open(tempdir().unwrap().path().join("test.db")).unwrap();
         let result = resolver.resolve_env("Value: ${env:TEST_VAR}").unwrap();
-        
+
         assert_eq!(result, "Value: test_value");
-        
+
         // Clean up
         std::env::remove_var("TEST_VAR");
     }
@@ -256,14 +256,14 @@ mod tests {
     async fn test_resolve_missing_env() {
         let resolver = SecretResolver::open(tempdir().unwrap().path().join("test.db")).unwrap();
         let result = resolver.resolve_env("Value: ${env:DEFINITELY_NOT_SET}");
-        
+
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_contains_secrets() {
         let resolver = SecretResolver::open(tempdir().unwrap().path().join("test.db")).unwrap();
-        
+
         assert!(resolver.contains_secrets("${secret:API_KEY}"));
         assert!(resolver.contains_secrets("Bearer ${secret:TOKEN}"));
         assert!(!resolver.contains_secrets("plain text"));

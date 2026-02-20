@@ -15,7 +15,7 @@ pub struct FileSystemTool {
 
 impl FileSystemTool {
     /// Create a new file system tool with default security policy
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             policy: SecurityPolicy::default(),

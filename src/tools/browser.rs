@@ -89,7 +89,7 @@ pub enum BrowserAction {
 
 impl BrowserTool {
     /// Create a new browser tool
-    #[must_use] 
+    #[must_use]
     pub fn new(allowed_domains: Vec<String>, session_name: Option<String>) -> Self {
         Self {
             allowed_domains: normalize_domains(allowed_domains),

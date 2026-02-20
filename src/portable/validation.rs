@@ -23,7 +23,11 @@ pub enum ValidationError {
     /// File missing from package
     MissingFile(String),
     /// Checksum mismatch
-    ChecksumMismatch { file: String, expected: String, actual: String },
+    ChecksumMismatch {
+        file: String,
+        expected: String,
+        actual: String,
+    },
     /// Invalid signature
     InvalidSignature(String),
     /// DID resolution failed
@@ -150,11 +154,7 @@ pub fn validate_package(
     }
 
     // Validate required files exist
-    let required_files = vec![
-        "manifest.toml",
-        "identity/did.json",
-        "config/agent.toml",
-    ];
+    let required_files = vec!["manifest.toml", "identity/did.json", "config/agent.toml"];
 
     for file in &required_files {
         if !files.contains_key(*file) {
@@ -206,17 +206,27 @@ pub fn validate_package(
 pub fn quick_validate(files: &std::collections::HashMap<String, Vec<u8>>) -> ValidationResult {
     let manifest_bytes = match files.get("manifest.toml") {
         Some(bytes) => bytes,
-        None => return ValidationResult::failure(ValidationError::MissingFile("manifest.toml".to_string())),
+        None => {
+            return ValidationResult::failure(ValidationError::MissingFile(
+                "manifest.toml".to_string(),
+            ))
+        }
     };
 
     let manifest_str = match std::str::from_utf8(manifest_bytes) {
         Ok(s) => s,
-        Err(_) => return ValidationResult::failure(ValidationError::InvalidManifest("Not valid UTF-8".to_string())),
+        Err(_) => {
+            return ValidationResult::failure(ValidationError::InvalidManifest(
+                "Not valid UTF-8".to_string(),
+            ))
+        }
     };
 
     let manifest = match AgentManifest::from_toml(manifest_str) {
         Ok(m) => m,
-        Err(e) => return ValidationResult::failure(ValidationError::InvalidManifest(e.to_string())),
+        Err(e) => {
+            return ValidationResult::failure(ValidationError::InvalidManifest(e.to_string()))
+        }
     };
 
     validate_package(&manifest, files)
@@ -257,7 +267,10 @@ mod tests {
 
         let result = validate_package(&manifest, &files);
         assert!(!result.is_valid());
-        assert!(result.errors.iter().any(|e| matches!(e, ValidationError::MissingFile(_))));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::MissingFile(_))));
     }
 
     #[test]
@@ -270,7 +283,10 @@ mod tests {
 
         let result = validate_package(&manifest, &files);
         assert!(!result.is_valid());
-        assert!(result.errors.iter().any(|e| matches!(e, ValidationError::ChecksumMismatch { .. })));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::ChecksumMismatch { .. })));
     }
 
     #[test]
@@ -285,7 +301,10 @@ mod tests {
 
         let result = validate_package(&manifest, &files);
         assert!(result.is_valid()); // Still valid, just warning
-        assert!(result.warnings.iter().any(|w| matches!(w, ValidationWarning::UnknownFile(_))));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| matches!(w, ValidationWarning::UnknownFile(_))));
     }
 
     #[test]
@@ -296,6 +315,9 @@ mod tests {
 
         let result = validate_package(&manifest, &files);
         assert!(!result.is_valid());
-        assert!(result.errors.iter().any(|e| matches!(e, ValidationError::UnsupportedFormatVersion { .. })));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| matches!(e, ValidationError::UnsupportedFormatVersion { .. })));
     }
 }

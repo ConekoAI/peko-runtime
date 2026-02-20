@@ -84,7 +84,7 @@ impl WhatsAppChannel {
     }
 
     /// Get the verify token for webhook verification
-    #[must_use] 
+    #[must_use]
     pub fn verify_token(&self) -> &str {
         &self.config.verify_token
     }
@@ -134,9 +134,7 @@ impl WhatsAppChannel {
         if !status.is_success() {
             let error = response.text().await.unwrap_or_default();
             error!("WhatsApp API error: {} - {}", status, error);
-            return Err(anyhow::anyhow!(
-                "WhatsApp API error: {status} - {error}"
-            ));
+            return Err(anyhow::anyhow!("WhatsApp API error: {status} - {error}"));
         }
 
         // Check for API-level errors

@@ -259,7 +259,7 @@ impl A2AProtocol {
     }
 
     /// Get the registry
-    #[must_use] 
+    #[must_use]
     pub fn registry(&self) -> &SharedRegistry {
         &self.registry
     }

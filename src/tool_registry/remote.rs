@@ -278,16 +278,13 @@ impl RemoteRegistryClient {
             manifest.security.as_ref().and_then(|s| s.checksum.clone())
         {
             if checksum != *expected_checksum {
-                anyhow::bail!(
-                    "Checksum mismatch! Expected: {expected_checksum}, Got: {checksum}"
-                );
+                anyhow::bail!("Checksum mismatch! Expected: {expected_checksum}, Got: {checksum}");
             }
             println!("    ✓ Checksum verified");
         }
 
         // Verify Ed25519 signature if available
-        if let Some(_expected_sig) = manifest.security.as_ref().and_then(|s| s.signature.clone())
-        {
+        if let Some(_expected_sig) = manifest.security.as_ref().and_then(|s| s.signature.clone()) {
             // In production, would verify Ed25519 signature
             // For now, just check it's present
             println!("    ✓ Signature present (verification skipped in demo)");

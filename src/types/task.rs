@@ -98,7 +98,7 @@ impl std::fmt::Display for TaskState {
 
 impl TaskState {
     /// Check if task is active (not terminal)
-    #[must_use] 
+    #[must_use]
     pub fn is_active(&self) -> bool {
         matches!(
             self,
@@ -112,7 +112,7 @@ impl TaskState {
     }
 
     /// Check if task is terminal (completed, failed, cancelled)
-    #[must_use] 
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -121,7 +121,7 @@ impl TaskState {
     }
 
     /// Check if task can be cancelled
-    #[must_use] 
+    #[must_use]
     pub fn can_cancel(&self) -> bool {
         matches!(
             self,
@@ -149,7 +149,6 @@ pub enum TaskPriority {
     /// Critical - interrupt other tasks
     Critical = 5,
 }
-
 
 impl std::fmt::Display for TaskPriority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -252,7 +251,7 @@ pub struct TaskQuery {
 
 impl Task {
     /// Create a new task
-    #[must_use] 
+    #[must_use]
     pub fn new(task_type: &str, requested_by: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -281,56 +280,56 @@ impl Task {
     }
 
     /// Set description
-    #[must_use] 
+    #[must_use]
     pub fn with_description(mut self, desc: &str) -> Self {
         self.description = Some(desc.to_string());
         self
     }
 
     /// Set parameters
-    #[must_use] 
+    #[must_use]
     pub fn with_parameters(mut self, params: serde_json::Value) -> Self {
         self.parameters = params;
         self
     }
 
     /// Set priority
-    #[must_use] 
+    #[must_use]
     pub fn with_priority(mut self, priority: TaskPriority) -> Self {
         self.priority = priority;
         self
     }
 
     /// Set assigned agent
-    #[must_use] 
+    #[must_use]
     pub fn assign_to(mut self, agent_did: &str) -> Self {
         self.assigned_to = Some(agent_did.to_string());
         self
     }
 
     /// Set deadline
-    #[must_use] 
+    #[must_use]
     pub fn with_deadline(mut self, deadline: DateTime<Utc>) -> Self {
         self.deadline = Some(deadline);
         self
     }
 
     /// Set parent task
-    #[must_use] 
+    #[must_use]
     pub fn with_parent(mut self, parent_id: &str) -> Self {
         self.parent_id = Some(parent_id.to_string());
         self
     }
 
     /// Set tags
-    #[must_use] 
+    #[must_use]
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
 
     /// Set timeout
-    #[must_use] 
+    #[must_use]
     pub fn with_timeout(mut self, seconds: u64) -> Self {
         self.timeout_seconds = seconds;
         self
@@ -369,7 +368,7 @@ impl Task {
     }
 
     /// Check if task is overdue
-    #[must_use] 
+    #[must_use]
     pub fn is_overdue(&self) -> bool {
         match self.deadline {
             Some(deadline) => !self.state.is_terminal() && Utc::now() > deadline,
@@ -378,7 +377,7 @@ impl Task {
     }
 
     /// Get execution duration (if started)
-    #[must_use] 
+    #[must_use]
     pub fn execution_duration(&self) -> Option<chrono::Duration> {
         match (self.started_at, self.completed_at) {
             (Some(start), Some(end)) => Some(end - start),

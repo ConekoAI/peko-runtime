@@ -20,7 +20,7 @@ pub struct OpenAICompatibleConfig {
 
 impl OpenAICompatibleConfig {
     /// Create a Groq configuration
-    #[must_use] 
+    #[must_use]
     pub fn groq(api_key: &str, model: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
@@ -33,7 +33,7 @@ impl OpenAICompatibleConfig {
     }
 
     /// Create a Together AI configuration
-    #[must_use] 
+    #[must_use]
     pub fn together(api_key: &str, model: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
@@ -46,7 +46,7 @@ impl OpenAICompatibleConfig {
     }
 
     /// Create a Fireworks AI configuration
-    #[must_use] 
+    #[must_use]
     pub fn fireworks(api_key: &str, model: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
@@ -224,7 +224,8 @@ impl Provider for OpenAICompatibleProvider {
         let content = completion
             .choices
             .into_iter()
-            .next().map(|c| c.message.content)
+            .next()
+            .map(|c| c.message.content)
             .unwrap_or_default();
 
         debug!(

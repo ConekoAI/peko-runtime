@@ -135,7 +135,10 @@ pub struct ToolRegistryConfig {
 
 impl Default for ToolRegistryConfig {
     fn default() -> Self {
-        let cache_dir = dirs::cache_dir().map_or_else(|| PathBuf::from("/tmp/pekobot-tools"), |d| d.join("pekobot").join("tools"));
+        let cache_dir = dirs::cache_dir().map_or_else(
+            || PathBuf::from("/tmp/pekobot-tools"),
+            |d| d.join("pekobot").join("tools"),
+        );
 
         Self {
             cache_dir,
@@ -236,13 +239,13 @@ impl ToolRegistry {
     }
 
     /// List all installed tools
-    #[must_use] 
+    #[must_use]
     pub fn list_installed(&self) -> Vec<&InstalledTool> {
         self.installed_tools.values().collect()
     }
 
     /// Get installed tool by name
-    #[must_use] 
+    #[must_use]
     pub fn get_tool(&self, name: &str) -> Option<&InstalledTool> {
         self.installed_tools.get(name)
     }
@@ -267,7 +270,7 @@ impl ToolRegistry {
     }
 
     /// Find tools by capability
-    #[must_use] 
+    #[must_use]
     pub fn find_by_capability(&self, capability: &str) -> Vec<&InstalledTool> {
         self.installed_tools
             .values()

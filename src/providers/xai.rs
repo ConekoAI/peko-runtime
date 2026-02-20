@@ -16,7 +16,7 @@ pub struct XaiProvider {
 
 impl XaiProvider {
     /// Create new xAI provider from API key
-    #[must_use] 
+    #[must_use]
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
@@ -33,7 +33,7 @@ impl XaiProvider {
     }
 
     /// Set model
-    #[must_use] 
+    #[must_use]
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self

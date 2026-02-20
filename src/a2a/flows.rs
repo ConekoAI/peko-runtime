@@ -162,7 +162,9 @@ impl A2AFlowHandler {
         );
 
         // Find the pending quote
-        let quote_state = if let Some(state) = self.pending_quotes.remove(&accept.quote_id) { state } else {
+        let quote_state = if let Some(state) = self.pending_quotes.remove(&accept.quote_id) {
+            state
+        } else {
             warn!("Quote {} not found or already processed", accept.quote_id);
             return FlowResult::Error("Quote not found".to_string());
         };
@@ -246,12 +248,16 @@ impl A2AFlowHandler {
         // TODO: Calculate actual pricing based on intent
         // For now, use a simple heuristic
         let base_price = 50.0;
-        let complexity_multiplier =
-            if intent.parameters.as_object().map_or(0, serde_json::Map::len) > 3 {
-                1.5
-            } else {
-                1.0
-            };
+        let complexity_multiplier = if intent
+            .parameters
+            .as_object()
+            .map_or(0, serde_json::Map::len)
+            > 3
+        {
+            1.5
+        } else {
+            1.0
+        };
 
         let amount = base_price * complexity_multiplier;
 
@@ -320,13 +326,13 @@ impl A2AFlowHandler {
     }
 
     /// Get pending quotes
-    #[must_use] 
+    #[must_use]
     pub fn pending_quotes(&self) -> &std::collections::HashMap<String, QuoteState> {
         &self.pending_quotes
     }
 
     /// Get active contracts
-    #[must_use] 
+    #[must_use]
     pub fn active_contracts(&self) -> &std::collections::HashMap<String, ContractState> {
         &self.active_contracts
     }

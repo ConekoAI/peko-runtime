@@ -36,7 +36,7 @@ pub struct DidResolver {
 
 impl DidResolver {
     /// Create a new resolver with local storage only
-    #[must_use] 
+    #[must_use]
     pub fn local(storage: KeyStorage) -> Self {
         Self {
             local_storage: Some(storage),
@@ -47,7 +47,7 @@ impl DidResolver {
     }
 
     /// Create a resolver with network capability
-    #[must_use] 
+    #[must_use]
     pub fn with_coneko(storage: KeyStorage, endpoint: String) -> Self {
         Self {
             local_storage: Some(storage),
@@ -58,7 +58,7 @@ impl DidResolver {
     }
 
     /// Create a read-only resolver (for verifying others' DIDs)
-    #[must_use] 
+    #[must_use]
     pub fn readonly() -> Self {
         Self {
             local_storage: None,

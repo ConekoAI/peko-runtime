@@ -107,7 +107,7 @@ pub struct DocumentTool {
 
 impl DocumentTool {
     /// Create new document tool with default config
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             ocr_config: OcrConfig::default(),
@@ -115,7 +115,7 @@ impl DocumentTool {
     }
 
     /// Create with custom OCR config
-    #[must_use] 
+    #[must_use]
     pub fn with_ocr_config(mut self, config: OcrConfig) -> Self {
         self.ocr_config = config;
         self

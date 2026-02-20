@@ -1,9 +1,7 @@
 //! Integration tests for portable agent module
 
-use pekobot::identity::{storage::KeyStorage, Identity, did::DIDScope};
-use pekobot::portable::{
-    export_agent, import_agent, ExportOptions, ImportOptions,
-};
+use pekobot::identity::{did::DIDScope, storage::KeyStorage, Identity};
+use pekobot::portable::{export_agent, import_agent, ExportOptions, ImportOptions};
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
 use pekobot::types::provider::{ProviderConfig, ProviderType};
@@ -15,17 +13,15 @@ fn create_test_config(name: &str) -> AgentConfig {
         name: name.to_string(),
         description: Some("Test agent".to_string()),
         tenant: None,
-        capabilities: vec![
-            AgentCapability {
-                name: "test_capability".to_string(),
-                version: "1.0".to_string(),
-                description: Some("Test capability".to_string()),
-                parameters: None,
-                required_auth: None,
-                estimated_cost: None,
-                estimated_duration: None,
-            },
-        ],
+        capabilities: vec![AgentCapability {
+            name: "test_capability".to_string(),
+            version: "1.0".to_string(),
+            description: Some("Test capability".to_string()),
+            parameters: None,
+            required_auth: None,
+            estimated_cost: None,
+            estimated_duration: None,
+        }],
         provider: ProviderConfig {
             provider_type: ProviderType::Ollama,
             api_key: None,
@@ -64,7 +60,7 @@ async fn test_export_import_roundtrip() {
     let config = create_test_config("roundtrip-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
     let original_did = identity.did.clone();
-    
+
     // Store identity first (required for export)
     let key_storage = KeyStorage::new().unwrap();
     key_storage.store(&identity).unwrap();
@@ -110,7 +106,7 @@ async fn test_export_with_encryption() {
     let config = create_test_config("encrypted-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
     let original_did = identity.did.clone();
-    
+
     // Store identity first
     let key_storage = KeyStorage::new().unwrap();
     key_storage.store(&identity).unwrap();
@@ -126,7 +122,11 @@ async fn test_export_with_encryption() {
     };
 
     let result = export_agent(config, identity, None, export_opts).await;
-    assert!(result.is_ok(), "Encrypted export failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Encrypted export failed: {:?}",
+        result.err()
+    );
 
     // Import with correct passphrase
     let import_opts = ImportOptions {
@@ -139,7 +139,11 @@ async fn test_export_with_encryption() {
     };
 
     let result = import_agent(&package_path, import_opts).await;
-    assert!(result.is_ok(), "Import with passphrase failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Import with passphrase failed: {:?}",
+        result.err()
+    );
 
     let import_result = result.unwrap();
     assert_eq!(import_result.did, original_did);
@@ -153,7 +157,7 @@ async fn test_import_with_key_rotation() {
     let config = create_test_config("rotation-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
     let original_did = identity.did.clone();
-    
+
     // Store identity first
     let key_storage = KeyStorage::new().unwrap();
     key_storage.store(&identity).unwrap();
@@ -168,7 +172,9 @@ async fn test_import_with_key_rotation() {
         output_path: Some(package_path.to_string_lossy().to_string()),
     };
 
-    export_agent(config, identity, None, export_opts).await.unwrap();
+    export_agent(config, identity, None, export_opts)
+        .await
+        .unwrap();
 
     // Import with key rotation
     let import_opts = ImportOptions {
@@ -181,11 +187,18 @@ async fn test_import_with_key_rotation() {
     };
 
     let result = import_agent(&package_path, import_opts).await;
-    assert!(result.is_ok(), "Import with rotation failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Import with rotation failed: {:?}",
+        result.err()
+    );
 
     let import_result = result.unwrap();
     assert!(import_result.keys_rotated, "Keys should be rotated");
-    assert_ne!(import_result.did, original_did, "DID should be different after rotation");
+    assert_ne!(
+        import_result.did, original_did,
+        "DID should be different after rotation"
+    );
     assert_eq!(import_result.name, "rotated-agent");
 }
 
@@ -196,7 +209,7 @@ async fn test_package_inspection() {
 
     let config = create_test_config("inspect-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
-    
+
     // Store identity first
     let key_storage = KeyStorage::new().unwrap();
     key_storage.store(&identity).unwrap();
@@ -211,11 +224,15 @@ async fn test_package_inspection() {
         output_path: Some(package_path.to_string_lossy().to_string()),
     };
 
-    export_agent(config.clone(), identity, None, export_opts).await.unwrap();
+    export_agent(config.clone(), identity, None, export_opts)
+        .await
+        .unwrap();
 
     // Inspect package
-    let info = pekobot::portable::get_package_info(&package_path).await.unwrap();
-    
+    let info = pekobot::portable::get_package_info(&package_path)
+        .await
+        .unwrap();
+
     assert_eq!(info.name, "inspect-test");
     assert_eq!(info.description, Some("Test description".to_string()));
     assert!(!info.encrypted);
@@ -233,7 +250,7 @@ async fn test_export_import_with_memory() {
     // Create agent with memory
     let config = create_test_config("memory-test");
     let identity = Identity::new("test", DIDScope::Local).await.unwrap();
-    
+
     // Store identity first
     let key_storage = KeyStorage::new().unwrap();
     key_storage.store(&identity).unwrap();
@@ -241,14 +258,13 @@ async fn test_export_import_with_memory() {
     // Create and populate memory
     {
         use pekobot::memory::sqlite::SqliteMemory;
-        
+
         // SqliteMemory::new is NOT async
         let memory = SqliteMemory::new(&memory_path, "memory-test").unwrap();
 
-        memory.store(
-            "Test memory entry",
-            Some(serde_json::json!({"test": true})),
-        ).unwrap();
+        memory
+            .store("Test memory entry", Some(serde_json::json!({"test": true})))
+            .unwrap();
     }
 
     // Export with memory
@@ -261,7 +277,9 @@ async fn test_export_import_with_memory() {
         output_path: Some(package_path.to_string_lossy().to_string()),
     };
 
-    export_agent(config, identity, Some(memory_path.clone()), export_opts).await.unwrap();
+    export_agent(config, identity, Some(memory_path.clone()), export_opts)
+        .await
+        .unwrap();
 
     // Import with memory
     let import_opts = ImportOptions {
@@ -275,10 +293,13 @@ async fn test_export_import_with_memory() {
 
     let result = import_agent(&package_path, import_opts).await;
     assert!(result.is_ok());
-    
+
     let import_result = result.unwrap();
-    assert!(import_result.memory_path.is_some(), "Memory path should be set");
-    
+    assert!(
+        import_result.memory_path.is_some(),
+        "Memory path should be set"
+    );
+
     // Verify memory file exists
     let mem_path = import_result.memory_path.unwrap();
     assert!(mem_path.exists(), "Memory database should exist");
@@ -289,7 +310,7 @@ fn test_agent_package_file_detection() {
     // Test extension-based detection
     assert!(!pekobot::portable::is_agent_package("test.txt"));
     assert!(!pekobot::portable::is_agent_package("test.tar.gz"));
-    
+
     // Note: File existence and magic byte checks require actual files
     // These are tested in the integration tests above
 }

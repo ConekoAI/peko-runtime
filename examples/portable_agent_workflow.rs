@@ -8,9 +8,7 @@
 
 use pekobot::agent::Agent;
 use pekobot::identity::Identity;
-use pekobot::portable::{
-    export_agent, import_agent, ExportOptions, ImportOptions,
-};
+use pekobot::portable::{export_agent, import_agent, ExportOptions, ImportOptions};
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
 use pekobot::types::provider::{ProviderConfig, ProviderType};
@@ -25,30 +23,29 @@ async fn main() -> anyhow::Result<()> {
     let config = create_test_config();
     let identity = Identity::new("test-agent", pekobot::identity::did::DIDScope::Local).await?;
     let did = identity.did.clone();
-    
+
     println!("   Created agent: {}", config.name);
     println!("   DID: {}", did);
 
     // Step 2: Create a temporary memory database
     let temp_dir = tempfile::tempdir()?;
     let memory_path = temp_dir.path().join("memory.db");
-    
+
     // Store some test data in memory
     {
         use pekobot::memory::sqlite::SqliteMemory;
-        let memory = SqliteMemory::new(
-            Some(&memory_path),
-            "test-agent",
-        ).await?;
-        
-        memory.store(
-            "Hello, I am a test agent!",
-            Some(serde_json::json!({
-                "test": true,
-                "created": chrono::Utc::now().to_rfc3339(),
-            })),
-        ).await?;
-        
+        let memory = SqliteMemory::new(Some(&memory_path), "test-agent").await?;
+
+        memory
+            .store(
+                "Hello, I am a test agent!",
+                Some(serde_json::json!({
+                    "test": true,
+                    "created": chrono::Utc::now().to_rfc3339(),
+                })),
+            )
+            .await?;
+
         println!("   Stored test memory entry");
     }
 
@@ -63,15 +60,14 @@ async fn main() -> anyhow::Result<()> {
         output_path: Some("./test-agent-export.agent".to_string()),
     };
 
-    let package_path = export_agent(
-        config.clone(),
-        identity,
-        Some(memory_path),
-        export_opts,
-    ).await?;
+    let package_path =
+        export_agent(config.clone(), identity, Some(memory_path), export_opts).await?;
 
     println!("   ✅ Exported to: {}", package_path.display());
-    println!("   Package size: {} bytes", std::fs::metadata(&package_path)?.len());
+    println!(
+        "   Package size: {} bytes",
+        std::fs::metadata(&package_path)?.len()
+    );
 
     // Step 4: Inspect the package
     println!("\nStep 3: Inspecting package...");
@@ -89,9 +85,7 @@ async fn main() -> anyhow::Result<()> {
         force: false,
     };
 
-    let result = import_agent(&package_path,
-        import_opts,
-    ).await?;
+    let result = import_agent(&package_path, import_opts).await?;
 
     println!("   ✅ Import successful!");
     println!("   New name: {}", result.name);
@@ -107,10 +101,16 @@ async fn main() -> anyhow::Result<()> {
         let content = std::fs::read_to_string(&result.config_path)?;
         toml::from_str(&content)?
     };
-    
-    assert_eq!(imported_config.capabilities.len(), config.capabilities.len());
-    println!("   ✅ Capabilities match: {}", imported_config.capabilities.len());
-    
+
+    assert_eq!(
+        imported_config.capabilities.len(),
+        config.capabilities.len()
+    );
+    println!(
+        "   ✅ Capabilities match: {}",
+        imported_config.capabilities.len()
+    );
+
     assert_eq!(imported_config.name, "imported-test-agent");
     println!("   ✅ Name updated correctly");
 

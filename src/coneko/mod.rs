@@ -101,7 +101,7 @@ pub struct ConekoAdapter {
 
 impl ConekoAdapter {
     /// Create a disabled adapter
-    #[must_use] 
+    #[must_use]
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -122,7 +122,7 @@ impl ConekoAdapter {
     }
 
     /// Create from configuration
-    #[must_use] 
+    #[must_use]
     pub fn from_config(config: &ConekoConfig) -> Self {
         if config.enabled {
             Self::enabled(&config.endpoint, config.auth_token.as_deref())
@@ -132,13 +132,13 @@ impl ConekoAdapter {
     }
 
     /// Check if Coneko is enabled
-    #[must_use] 
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
     /// Get the endpoint URL
-    #[must_use] 
+    #[must_use]
     pub fn endpoint(&self) -> Option<&str> {
         if self.enabled {
             Some(&self.endpoint)
@@ -148,13 +148,13 @@ impl ConekoAdapter {
     }
 
     /// Get auth token
-    #[must_use] 
+    #[must_use]
     pub fn auth_token(&self) -> Option<&str> {
         self.auth_token.as_deref()
     }
 
     /// Get poll interval
-    #[must_use] 
+    #[must_use]
     pub fn poll_interval_ms(&self) -> u64 {
         self.poll_interval_ms
     }
@@ -173,7 +173,7 @@ pub struct ConekoService {
 
 impl ConekoService {
     /// Create a new Coneko service
-    #[must_use] 
+    #[must_use]
     pub fn new(
         adapter: ConekoAdapter,
         did: String,

@@ -160,7 +160,7 @@ pub struct MemoryStats {
 
 impl MemoryEntry {
     /// Create a new memory entry
-    #[must_use] 
+    #[must_use]
     pub fn new(
         agent_did: &str,
         scope: MemoryScope,
@@ -186,35 +186,35 @@ impl MemoryEntry {
     }
 
     /// Set expiration
-    #[must_use] 
+    #[must_use]
     pub fn with_expiration(mut self, seconds: i64) -> Self {
         self.expires_at = Some(Utc::now() + chrono::Duration::seconds(seconds));
         self
     }
 
     /// Set importance
-    #[must_use] 
+    #[must_use]
     pub fn with_importance(mut self, importance: f32) -> Self {
         self.importance = importance.clamp(0.0, 1.0);
         self
     }
 
     /// Set tags
-    #[must_use] 
+    #[must_use]
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
 
     /// Set thread ID
-    #[must_use] 
+    #[must_use]
     pub fn with_thread(mut self, thread_id: &str) -> Self {
         self.thread_id = Some(thread_id.to_string());
         self
     }
 
     /// Check if entry is expired
-    #[must_use] 
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         match self.expires_at {
             Some(exp) => exp < Utc::now(),

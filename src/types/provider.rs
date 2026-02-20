@@ -127,7 +127,7 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     /// Create a system message
-    #[must_use] 
+    #[must_use]
     pub fn system(content: &str) -> Self {
         Self {
             role: "system".to_string(),
@@ -139,7 +139,7 @@ impl ChatMessage {
     }
 
     /// Create a user message
-    #[must_use] 
+    #[must_use]
     pub fn user(content: &str) -> Self {
         Self {
             role: "user".to_string(),
@@ -151,7 +151,7 @@ impl ChatMessage {
     }
 
     /// Create an assistant message
-    #[must_use] 
+    #[must_use]
     pub fn assistant(content: &str) -> Self {
         Self {
             role: "assistant".to_string(),
@@ -163,7 +163,7 @@ impl ChatMessage {
     }
 
     /// Create a tool message
-    #[must_use] 
+    #[must_use]
     pub fn tool(content: &str, tool_call_id: &str) -> Self {
         Self {
             role: "tool".to_string(),
@@ -358,19 +358,19 @@ impl ProviderConfig {
     }
 
     /// Get model configuration
-    #[must_use] 
+    #[must_use]
     pub fn get_model_config(&self, model_name: &str) -> Option<&ModelConfig> {
         self.models.get(model_name)
     }
 
     /// Get default model configuration
-    #[must_use] 
+    #[must_use]
     pub fn default_model_config(&self) -> Option<&ModelConfig> {
         self.get_model_config(&self.default_model)
     }
 
     /// Create `OpenAI` config
-    #[must_use] 
+    #[must_use]
     pub fn openai(api_key: &str, model: &str) -> Self {
         let mut config = Self::default();
         config.provider_type = ProviderType::OpenAI;
@@ -387,7 +387,7 @@ impl ProviderConfig {
     }
 
     /// Create Ollama config
-    #[must_use] 
+    #[must_use]
     pub fn ollama(base_url: &str, model: &str) -> Self {
         let mut config = Self::default();
         config.provider_type = ProviderType::Ollama;

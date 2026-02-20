@@ -64,9 +64,9 @@ impl SecretManager {
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("pekobot");
-        
+
         std::fs::create_dir_all(&data_dir)?;
-        
+
         let path = data_dir.join("secrets.db");
         let store = SecretStore::open(&path)?;
 
@@ -102,13 +102,11 @@ impl SecretManager {
     /// Unlock the store with a master password
     ///
     /// If this is the first time and no salt exists, generates a new salt.
-    pub async fn unlock(&mut self,
-        password: &str,
-    ) -> anyhow::Result<()> {
+    pub async fn unlock(&mut self, password: &str) -> anyhow::Result<()> {
         // For now, use a fixed salt stored alongside the database
         // In production, this should be stored in the OS keychain or derived from a unique device identifier
         let salt_path = self.path.with_extension("salt");
-        
+
         let salt = if salt_path.exists() {
             std::fs::read(&salt_path)?
         } else {
@@ -127,7 +125,7 @@ impl SecretManager {
 
         self.store.unlock(password, &salt)?;
         info!("Secret store unlocked");
-        
+
         Ok(())
     }
 
@@ -149,11 +147,7 @@ impl SecretManager {
     }
 
     /// Get a secret value
-    pub async fn get(
-        &self,
-        name: &str,
-        scope: &SecretScope,
-    ) -> anyhow::Result<Option<String>> {
+    pub async fn get(&self, name: &str, scope: &SecretScope) -> anyhow::Result<Option<String>> {
         self.store.get(name, scope)
     }
 
@@ -167,19 +161,12 @@ impl SecretManager {
     }
 
     /// List secrets
-    pub async fn list(
-        &self,
-        scope: Option<SecretScope>,
-    ) -> anyhow::Result<Vec<SecretEntry>> {
+    pub async fn list(&self, scope: Option<SecretScope>) -> anyhow::Result<Vec<SecretEntry>> {
         self.store.list(scope.as_ref())
     }
 
     /// Delete a secret
-    pub async fn delete(
-        &self,
-        name: &str,
-        scope: &SecretScope,
-    ) -> anyhow::Result<bool> {
+    pub async fn delete(&self, name: &str, scope: &SecretScope) -> anyhow::Result<bool> {
         self.store.delete(name, scope)
     }
 
@@ -190,7 +177,8 @@ impl SecretManager {
         secret_scope: &SecretScope,
         agent_did: Option<&str>,
     ) -> anyhow::Result<SecretPermission> {
-        self.store.check_permission(secret_name, secret_scope, agent_did)
+        self.store
+            .check_permission(secret_name, secret_scope, agent_did)
     }
 
     /// Grant permission to an agent for a secret
@@ -201,7 +189,8 @@ impl SecretManager {
         agent_did: Option<&str>,
         permission: SecretPermission,
     ) -> anyhow::Result<SecretAccessControl> {
-        self.store.grant_permission(secret_name, secret_scope, agent_did, permission)
+        self.store
+            .grant_permission(secret_name, secret_scope, agent_did, permission)
     }
 
     /// Revoke permission from an agent for a secret
@@ -211,7 +200,8 @@ impl SecretManager {
         secret_scope: &SecretScope,
         agent_did: Option<&str>,
     ) -> anyhow::Result<bool> {
-        self.store.revoke_permission(secret_name, secret_scope, agent_did)
+        self.store
+            .revoke_permission(secret_name, secret_scope, agent_did)
     }
 
     /// Get permissions for a secret
@@ -242,7 +232,8 @@ impl SecretManager {
         event_type: Option<AuditEvent>,
         limit: usize,
     ) -> anyhow::Result<Vec<AuditEntry>> {
-        self.store.query_audit_log(secret_name, secret_scope, agent_did, event_type, limit)
+        self.store
+            .query_audit_log(secret_name, secret_scope, agent_did, event_type, limit)
     }
 
     /// Get audit log statistics
@@ -278,7 +269,7 @@ mod tests {
 
         // Create manager
         let mut manager = SecretManager::open(&store_path).unwrap();
-        
+
         // Should be locked initially
         assert!(!manager.is_unlocked());
 
@@ -287,19 +278,25 @@ mod tests {
         assert!(manager.is_unlocked());
 
         // Store a secret
-        let entry = manager.set(
-            "TEST_API_KEY",
-            SecretScope::Global,
-            "sk-test12345",
-            SecretType::ApiKey,
-            None,
-        ).await.unwrap();
+        let entry = manager
+            .set(
+                "TEST_API_KEY",
+                SecretScope::Global,
+                "sk-test12345",
+                SecretType::ApiKey,
+                None,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(entry.name, "TEST_API_KEY");
         assert_eq!(entry.secret_type, SecretType::ApiKey);
 
         // Retrieve
-        let value = manager.get("TEST_API_KEY", &SecretScope::Global).await.unwrap();
+        let value = manager
+            .get("TEST_API_KEY", &SecretScope::Global)
+            .await
+            .unwrap();
         assert_eq!(value, Some("sk-test12345".to_string()));
 
         // Lock

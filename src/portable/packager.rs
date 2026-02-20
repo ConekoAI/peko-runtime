@@ -75,9 +75,7 @@ impl Packager {
     }
 
     /// Export the agent to a .agent package
-    pub async fn export(&self,
-        options: ExportOptions,
-    ) -> anyhow::Result<std::path::PathBuf> {
+    pub async fn export(&self, options: ExportOptions) -> anyhow::Result<std::path::PathBuf> {
         let mut manifest = AgentManifest::new(
             &self.config.name,
             "1.0.0", // Package version
@@ -95,14 +93,16 @@ impl Packager {
         let mut files: HashMap<String, Vec<u8>> = HashMap::new();
 
         // 1. Export identity
-        self.export_identity(&mut files, &mut manifest, &options).await?;
+        self.export_identity(&mut files, &mut manifest, &options)
+            .await?;
 
         // 2. Export configuration
         self.export_config(&mut files, &mut manifest)?;
 
         // 3. Export memory (if included)
         if options.include_memory {
-            self.export_memory(&mut files, &mut manifest, &options).await?;
+            self.export_memory(&mut files, &mut manifest, &options)
+                .await?;
         }
 
         // 4. Export skills
@@ -142,10 +142,8 @@ impl Packager {
 
         let key_data = if options.encrypt {
             if let Some(passphrase) = &options.passphrase {
-                let encrypted = encrypt_with_passphrase(
-                    &serde_json::to_vec(&key_export)?,
-                    passphrase,
-                )?;
+                let encrypted =
+                    encrypt_with_passphrase(&serde_json::to_vec(&key_export)?, passphrase)?;
 
                 // Update manifest with encryption info
                 let kdf_params: HashMap<String, String> = [
@@ -159,7 +157,9 @@ impl Packager {
 
                 serialize_encrypted(&encrypted)
             } else {
-                return Err(anyhow::anyhow!("Encryption enabled but no passphrase provided"));
+                return Err(anyhow::anyhow!(
+                    "Encryption enabled but no passphrase provided"
+                ));
             }
         } else {
             serde_json::to_vec(&key_export)?
@@ -242,14 +242,18 @@ impl Packager {
     }
 
     /// Build capabilities list
-    fn build_capabilities(&self,
-        manifest: &mut AgentManifest,
-    ) {
-        let names: Vec<String> = self.config.capabilities.iter()
+    fn build_capabilities(&self, manifest: &mut AgentManifest) {
+        let names: Vec<String> = self
+            .config
+            .capabilities
+            .iter()
             .map(|c| c.name.clone())
             .collect();
 
-        let versions: HashMap<String, String> = self.config.capabilities.iter()
+        let versions: HashMap<String, String> = self
+            .config
+            .capabilities
+            .iter()
             .map(|c| (c.name.clone(), c.version.clone()))
             .collect();
 
@@ -258,10 +262,7 @@ impl Packager {
     }
 
     /// Sign the manifest
-    fn sign_manifest(
-        &self,
-        manifest: &mut AgentManifest,
-    ) -> anyhow::Result<()> {
+    fn sign_manifest(&self, manifest: &mut AgentManifest) -> anyhow::Result<()> {
         // Create manifest without signature for signing
         let manifest_for_signing = AgentManifest {
             signatures: crate::portable::manifest::Signatures {
@@ -276,14 +277,18 @@ impl Packager {
         // Sign with agent's DID key
         let key_storage = KeyStorage::new()?;
         let identity = key_storage.load(&self.identity.did)?;
-        let keypair = identity.keypair.as_ref().ok_or_else(|| anyhow::anyhow!("No keypair"))?;
+        let keypair = identity
+            .keypair
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No keypair"))?;
 
         use ed25519_dalek::Signer as _;
         let signature = keypair.sign(manifest_toml.as_bytes());
 
         // Use standard base64 encoding (URL-safe without padding)
         use base64::Engine;
-        manifest.signatures.manifest = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
+        manifest.signatures.manifest =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
         manifest.signatures.algorithm = "ed25519".to_string();
 
         Ok(())
@@ -325,8 +330,7 @@ impl Packager {
     }
 
     /// Make config portable (remove runtime-specific paths)
-    fn make_portable_config(&self,
-    ) -> AgentConfig {
+    fn make_portable_config(&self) -> AgentConfig {
         let mut portable = self.config.clone();
 
         // Remove sensitive data (API keys should be set on import)
@@ -345,8 +349,7 @@ impl Packager {
     }
 
     /// Export prompts/personality
-    fn export_prompts(&self,
-    ) -> String {
+    fn export_prompts(&self) -> String {
         // Simple prompts export - can be extended
         let prompts = serde_json::json!({
             "system_prompt": format!("You are {}, a helpful AI assistant.", self.config.name),

@@ -15,7 +15,7 @@ pub struct KeyPair {
 
 impl KeyPair {
     /// Generate a new random keypair
-    #[must_use] 
+    #[must_use]
     pub fn generate() -> Self {
         // Generate random bytes for secret key
         let mut secret_key_bytes = [0u8; 32];
@@ -30,7 +30,7 @@ impl KeyPair {
     }
 
     /// Sign a message
-    #[must_use] 
+    #[must_use]
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.signing_key.sign(message)
     }
@@ -43,19 +43,19 @@ impl KeyPair {
     }
 
     /// Get public key as bytes
-    #[must_use] 
+    #[must_use]
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.verifying_key.to_bytes()
     }
 
     /// Get private key as bytes
-    #[must_use] 
+    #[must_use]
     pub fn private_key_bytes(&self) -> [u8; 32] {
         self.signing_key.to_bytes()
     }
 
     /// Export keypair to base64-encoded strings
-    #[must_use] 
+    #[must_use]
     pub fn export(&self) -> KeyPairExport {
         KeyPairExport {
             public_key: BASE64.encode(self.public_key_bytes()),
@@ -120,7 +120,7 @@ impl PublicKey {
     }
 
     /// Get as bytes
-    #[must_use] 
+    #[must_use]
     pub fn to_bytes(&self) -> [u8; 32] {
         self.0.to_bytes()
     }

@@ -74,9 +74,7 @@ impl DiscordChannel {
 
     /// Send message to a specific channel
     async fn send_to_channel(&self, channel_id: &str, message: &str) -> Result<()> {
-        let url = format!(
-            "https://discord.com/api/v10/channels/{channel_id}/messages"
-        );
+        let url = format!("https://discord.com/api/v10/channels/{channel_id}/messages");
         let body = serde_json::json!({ "content": message });
 
         let response = self

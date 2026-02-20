@@ -390,7 +390,7 @@ impl ExpenseTool {
     }
 
     /// Generate expense report for date range
-    #[must_use] 
+    #[must_use]
     pub fn generate_report(
         &self,
         title: &str,
@@ -483,7 +483,7 @@ impl ExpenseTool {
     }
 
     /// Export report summary
-    #[must_use] 
+    #[must_use]
     pub fn export_summary(&self, report: &ExpenseReport) -> String {
         let mut output = format!(
             "EXPENSE REPORT: {}\nPeriod: {} to {}\nGenerated: {}\n\n",

@@ -27,7 +27,7 @@ pub struct SessionRegistry {
 }
 
 impl SessionRegistry {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -168,7 +168,10 @@ TOOL_CALL: {"name": "session_messaging", "parameters": {"command": "read", "limi
             }
 
             "read" => {
-                let limit = params.get("limit").and_then(serde_json::Value::as_u64).unwrap_or(10);
+                let limit = params
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(10);
                 let messages = self.registry.get_messages(&self.agent_did).await;
 
                 // Get last N messages

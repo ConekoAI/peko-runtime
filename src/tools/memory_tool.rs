@@ -203,7 +203,7 @@ pub struct MemoryToolFactory;
 
 impl MemoryToolFactory {
     /// Create a memory tool if memory is available
-    #[must_use] 
+    #[must_use]
     pub fn create(
         memory: Option<Arc<Mutex<SqliteMemory>>>,
         agent_did: String,

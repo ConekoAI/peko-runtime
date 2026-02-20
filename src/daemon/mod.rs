@@ -157,7 +157,7 @@ fn spawn_state_writer(config: DaemonConfig) -> JoinHandle<()> {
 }
 
 /// Check if daemon is already running
-#[must_use] 
+#[must_use]
 pub fn is_daemon_running(state_file: &PathBuf) -> bool {
     if let Ok(content) = std::fs::read_to_string(state_file) {
         if let Ok(state) = serde_json::from_str::<DaemonState>(&content) {

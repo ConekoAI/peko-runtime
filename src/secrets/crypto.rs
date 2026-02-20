@@ -37,15 +37,17 @@ pub struct MasterKey {
 
 impl MasterKey {
     /// Create a new master key from a password using Argon2id
-    pub fn from_password(
-        password: &str,
-        salt: &[u8],
-    ) -> anyhow::Result<Self> {
+    pub fn from_password(password: &str, salt: &[u8]) -> anyhow::Result<Self> {
         let argon2 = Argon2::new(
             argon2::Algorithm::Argon2id,
             argon2::Version::V0x13,
-            argon2::Params::new(DEFAULT_MEMORY_COST, DEFAULT_TIME_COST, DEFAULT_PARALLELISM, None)
-                .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {}", e))?,
+            argon2::Params::new(
+                DEFAULT_MEMORY_COST,
+                DEFAULT_TIME_COST,
+                DEFAULT_PARALLELISM,
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {}", e))?,
         );
 
         let mut key = [0u8; 32];
@@ -59,17 +61,14 @@ impl MasterKey {
     }
 
     /// Derive a per-secret key from the master key
-    fn derive_secret_key(&self,
-        secret_name: &str,
-        scope: &str,
-    ) -> anyhow::Result<[u8; 32]> {
+    fn derive_secret_key(&self, secret_name: &str, scope: &str) -> anyhow::Result<[u8; 32]> {
         let hkdf = Hkdf::<Sha256>::new(None, self.key.expose_secret().as_slice());
         let info = format!("{}:{}", scope, secret_name);
-        
+
         let mut secret_key = [0u8; 32];
         hkdf.expand(info.as_bytes(), &mut secret_key)
             .map_err(|e| anyhow::anyhow!("HKDF expand failed: {}", e))?;
-        
+
         Ok(secret_key)
     }
 
@@ -165,9 +164,7 @@ mod tests {
         let salt = vec![0u8; SALT_LENGTH];
         let master_key = MasterKey::from_password("correct-password", &salt).unwrap();
 
-        let encrypted = master_key
-            .encrypt("secret", "KEY", "global")
-            .unwrap();
+        let encrypted = master_key.encrypt("secret", "KEY", "global").unwrap();
 
         // Try to decrypt with wrong password
         let wrong_key = MasterKey::from_password("wrong-password", &salt).unwrap();
@@ -181,11 +178,9 @@ mod tests {
         let master_key = MasterKey::from_password("password", &salt).unwrap();
 
         let plaintext = "secret";
-        
+
         // Encrypt with global scope
-        let encrypted_global = master_key
-            .encrypt(plaintext, "KEY", "global")
-            .unwrap();
+        let encrypted_global = master_key.encrypt(plaintext, "KEY", "global").unwrap();
 
         // Encrypt with agent scope
         let encrypted_agent = master_key

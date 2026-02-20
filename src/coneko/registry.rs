@@ -13,7 +13,7 @@ pub struct LocalRegistry {
 
 impl LocalRegistry {
     /// Create a new empty local registry
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             agents: HashMap::new(),
@@ -49,19 +49,19 @@ impl LocalRegistry {
     }
 
     /// Get all registered agents
-    #[must_use] 
+    #[must_use]
     pub fn list(&self) -> Vec<&AgentInfo> {
         self.agents.values().collect()
     }
 
     /// Find agent by DID
-    #[must_use] 
+    #[must_use]
     pub fn find_by_did(&self, did: &str) -> Option<&AgentInfo> {
         self.agents.get(did)
     }
 
     /// Find agents by capability
-    #[must_use] 
+    #[must_use]
     pub fn find_by_capability(&self, capability: &str) -> Vec<&AgentInfo> {
         self.agents
             .values()
@@ -70,7 +70,7 @@ impl LocalRegistry {
     }
 
     /// Find agents by multiple capabilities (ANY match)
-    #[must_use] 
+    #[must_use]
     pub fn find_by_any_capability(&self, capabilities: &[String]) -> Vec<&AgentInfo> {
         self.agents
             .values()
@@ -83,7 +83,7 @@ impl LocalRegistry {
     }
 
     /// Find agents by multiple capabilities (ALL match)
-    #[must_use] 
+    #[must_use]
     pub fn find_by_all_capabilities(&self, capabilities: &[String]) -> Vec<&AgentInfo> {
         self.agents
             .values()
@@ -97,13 +97,13 @@ impl LocalRegistry {
     }
 
     /// Find agents by scope
-    #[must_use] 
+    #[must_use]
     pub fn find_by_scope(&self, scope: &str) -> Vec<&AgentInfo> {
         self.agents.values().filter(|a| a.scope == scope).collect()
     }
 
     /// Find agents by tenant
-    #[must_use] 
+    #[must_use]
     pub fn find_by_tenant(&self, tenant: &str) -> Vec<&AgentInfo> {
         self.agents
             .values()
@@ -112,7 +112,7 @@ impl LocalRegistry {
     }
 
     /// Get agent count
-    #[must_use] 
+    #[must_use]
     pub fn count(&self) -> usize {
         self.agents.len()
     }
@@ -137,7 +137,7 @@ pub struct UnifiedRegistry {
 
 impl UnifiedRegistry {
     /// Create a new unified registry
-    #[must_use] 
+    #[must_use]
     pub fn new(coneko: Option<super::ConekoAdapter>) -> Self {
         Self {
             local: LocalRegistry::new(),
@@ -223,7 +223,7 @@ impl UnifiedRegistry {
     }
 
     /// Get local registry reference
-    #[must_use] 
+    #[must_use]
     pub fn local(&self) -> &LocalRegistry {
         &self.local
     }
@@ -234,9 +234,11 @@ impl UnifiedRegistry {
     }
 
     /// Check if Coneko is enabled
-    #[must_use] 
+    #[must_use]
     pub fn has_coneko(&self) -> bool {
-        self.coneko.as_ref().is_some_and(super::ConekoAdapter::is_enabled)
+        self.coneko
+            .as_ref()
+            .is_some_and(super::ConekoAdapter::is_enabled)
     }
 }
 

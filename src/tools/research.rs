@@ -340,7 +340,7 @@ impl ResearchTool {
     }
 
     /// Generate citation for a source
-    #[must_use] 
+    #[must_use]
     pub fn generate_citation(
         &self,
         content: &ExtractedContent,
@@ -351,12 +351,15 @@ impl ResearchTool {
 
         let formatted = match style {
             CitationStyle::Apa => {
-                let author = content
-                    .author
-                    .as_ref().map_or_else(|| "Unknown Author. ".to_string(), |a| format!("{}, ", a.split_whitespace().last().unwrap_or(a)));
+                let author = content.author.as_ref().map_or_else(
+                    || "Unknown Author. ".to_string(),
+                    |a| format!("{}, ", a.split_whitespace().last().unwrap_or(a)),
+                );
 
-                let date = content
-                    .published_date.map_or_else(|| "(n.d.). ".to_string(), |d| format!("({}). ", d.format("%Y")));
+                let date = content.published_date.map_or_else(
+                    || "(n.d.). ".to_string(),
+                    |d| format!("({}). ", d.format("%Y")),
+                );
 
                 format!(
                     "{}{}{}. Retrieved {}, from {}",
@@ -370,7 +373,8 @@ impl ResearchTool {
             CitationStyle::Mla => {
                 let author = content
                     .author
-                    .as_ref().map_or_else(|| "\"Unknown Author.\" ".to_string(), |a| format!("{a} "));
+                    .as_ref()
+                    .map_or_else(|| "\"Unknown Author.\" ".to_string(), |a| format!("{a} "));
 
                 format!(
                     "\"{}\" {}. Web. {}. <{}>",
@@ -467,7 +471,7 @@ impl ResearchTool {
     }
 
     /// Export report to specified format
-    #[must_use] 
+    #[must_use]
     pub fn export_report(&self, report: &ResearchReport, format: OutputFormat) -> String {
         match format {
             OutputFormat::Markdown => self.export_markdown(report),
@@ -551,7 +555,8 @@ impl ResearchTool {
         // Simple regex extraction
         let re = regex::Regex::new(r"<title>(.*?)</title>").unwrap();
         re.captures(html)
-            .and_then(|cap| cap.get(1)).map_or_else(|| "Untitled".to_string(), |m| m.as_str().trim().to_string())
+            .and_then(|cap| cap.get(1))
+            .map_or_else(|| "Untitled".to_string(), |m| m.as_str().trim().to_string())
     }
 
     fn extract_main_content(&self, html: &str) -> String {
@@ -715,7 +720,6 @@ impl ResearchTool {
         let has_contact = html_lower.contains("contact") || html_lower.contains("email");
         let has_author = html_lower.contains("author") || html_lower.contains("written by");
 
-        
         f32::from(u8::from(has_about) + u8::from(has_contact) + u8::from(has_author)) / 3.0
     }
 

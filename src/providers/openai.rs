@@ -98,8 +98,12 @@ impl Provider for OpenAIProvider {
     }
 
     async fn complete(&self, prompt: &str) -> anyhow::Result<String> {
-        self.chat(prompt, &self.config.model, f64::from(self.config.temperature))
-            .await
+        self.chat(
+            prompt,
+            &self.config.model,
+            f64::from(self.config.temperature),
+        )
+        .await
     }
 
     async fn chat_with_system(
@@ -131,9 +135,7 @@ impl Provider for OpenAIProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("OpenAI API error: {} - {}", status, error_text);
-            return Err(anyhow::anyhow!(
-                "OpenAI API error: {status} - {error_text}"
-            ));
+            return Err(anyhow::anyhow!("OpenAI API error: {status} - {error_text}"));
         }
 
         let completion: ChatCompletionResponse = response.json().await?;

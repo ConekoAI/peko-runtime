@@ -150,9 +150,8 @@ pub async fn run_interactive_loop<C: Channel + 'static>(
                     }
                     _ => {
                         // Echo back for now (would be processed by agent)
-                        let response = format!(
-                            "Received: '{trimmed}' (agent processing not yet implemented)"
-                        );
+                        let response =
+                            format!("Received: '{trimmed}' (agent processing not yet implemented)");
                         channel.send(&response).await?;
                     }
                 }

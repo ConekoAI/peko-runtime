@@ -152,19 +152,19 @@ impl SkillsRegistry {
     }
 
     /// Get a skill by name
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.get(name)
     }
 
     /// Get all loaded skills
-    #[must_use] 
+    #[must_use]
     pub fn list(&self) -> Vec<&Skill> {
         self.skills.values().collect()
     }
 
     /// Get skills by tag
-    #[must_use] 
+    #[must_use]
     pub fn find_by_tag(&self, tag: &str) -> Vec<&Skill> {
         self.skills
             .values()
@@ -173,7 +173,7 @@ impl SkillsRegistry {
     }
 
     /// Get all tools from all skills
-    #[must_use] 
+    #[must_use]
     pub fn all_tools(&self) -> Vec<(&str, &SkillTool)> {
         self.skills
             .values()
@@ -182,13 +182,13 @@ impl SkillsRegistry {
     }
 
     /// Check if a skill is loaded
-    #[must_use] 
+    #[must_use]
     pub fn has(&self, name: &str) -> bool {
         self.skills.contains_key(name)
     }
 
     /// Get the skills directory path
-    #[must_use] 
+    #[must_use]
     pub fn skills_dir(&self) -> &Path {
         &self.skills_dir
     }

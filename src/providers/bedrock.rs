@@ -18,7 +18,7 @@ pub struct BedrockProvider {
 
 impl BedrockProvider {
     /// Create new Bedrock provider
-    #[must_use] 
+    #[must_use]
     pub fn new(access_key_id: String, secret_access_key: String, region: String) -> Self {
         Self {
             access_key_id,
@@ -41,7 +41,7 @@ impl BedrockProvider {
     }
 
     /// Set model
-    #[must_use] 
+    #[must_use]
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self

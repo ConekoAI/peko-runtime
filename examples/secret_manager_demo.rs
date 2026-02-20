@@ -10,9 +10,7 @@
 //! Run with:
 //!   cargo run --example secret_manager_demo
 
-use pekobot::secrets::{
-    SecretManager, SecretPermission, SecretResolver, SecretScope, SecretType,
-};
+use pekobot::secrets::{SecretManager, SecretPermission, SecretResolver, SecretScope, SecretType};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -29,11 +27,25 @@ async fn main() -> anyhow::Result<()> {
 
     let mut manager = SecretManager::open(&store_path)?;
     println!("   Store path: {:?}", store_path);
-    println!("   Initial state: {}", if manager.is_unlocked() { "unlocked" } else { "locked" });
+    println!(
+        "   Initial state: {}",
+        if manager.is_unlocked() {
+            "unlocked"
+        } else {
+            "locked"
+        }
+    );
 
     // Unlock with master password
     manager.unlock("my-secure-master-password").await?;
-    println!("   After unlock: {}", if manager.is_unlocked() { "unlocked ✅" } else { "locked ❌" });
+    println!(
+        "   After unlock: {}",
+        if manager.is_unlocked() {
+            "unlocked ✅"
+        } else {
+            "locked ❌"
+        }
+    );
 
     // =================================================================
     // Step 2: Store Secrets
@@ -79,10 +91,11 @@ async fn main() -> anyhow::Result<()> {
     // =================================================================
     println!("\n3️⃣ Retrieving secrets...");
 
-    let api_key = manager
-        .get("OPENAI_API_KEY", &SecretScope::Global)
-        .await?;
-    println!("   OPENAI_API_KEY: {}", api_key.unwrap_or_else(|| "not found".to_string()));
+    let api_key = manager.get("OPENAI_API_KEY", &SecretScope::Global).await?;
+    println!(
+        "   OPENAI_API_KEY: {}",
+        api_key.unwrap_or_else(|| "not found".to_string())
+    );
 
     // =================================================================
     // Step 4: List All Secrets
@@ -158,7 +171,10 @@ async fn main() -> anyhow::Result<()> {
     println!("   Output: {}", resolved);
 
     // Resolve agent-scoped secret
-    let agent_config = format!("shopify_token = \"${{secret.agent:{}:SHOPIFY_TOKEN}}\"", shopify_agent);
+    let agent_config = format!(
+        "shopify_token = \"${{secret.agent:{}:SHOPIFY_TOKEN}}\"",
+        shopify_agent
+    );
     let resolved = resolver.resolve(&agent_config).await?;
     println!("   Input:  ...shopify_token = \"${{secret.agent:DID:SHOPIFY_TOKEN}}\"");
     println!("   Output: {}", resolved);
@@ -174,12 +190,14 @@ async fn main() -> anyhow::Result<()> {
     let stats = manager.get_audit_stats(None).await?;
     println!("   Audit stats:");
     println!("     Total events:   {}", stats.total);
-    println!("     Successful:     {} ({:.1}%)", stats.successful, stats.success_rate());
+    println!(
+        "     Successful:     {} ({:.1}%)",
+        stats.successful,
+        stats.success_rate()
+    );
     println!("     Failed:         {}", stats.failed);
 
-    let recent_events = manager
-        .query_audit_log(None, None, None, None, 5)
-        .await?;
+    let recent_events = manager.query_audit_log(None, None, None, None, 5).await?;
     println!("   Recent events (last 5):");
     for event in &recent_events {
         println!(
