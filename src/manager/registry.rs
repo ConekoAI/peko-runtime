@@ -1,15 +1,15 @@
-//! Local Registry - Agent metadata and discovery
+//! Local Registry - Agent metadata and discovery with capabilities
 
 use crate::manager::context::{AgentRegistryView, AgentSummary, CapabilityIndex};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Registry trait for agent discovery
 #[async_trait::async_trait(?Send)]
 pub trait Registry {
-    /// Register an agent (takes DID and name, not Arc<Agent> for Send safety)
+    /// Register an agent
     async fn register(
         &mut self,
         did: &str,
@@ -23,21 +23,13 @@ pub trait Registry {
     ) -> Result<()>;
 
     /// Get metadata by DID
-    async fn get(
-        &self,
-        did: &str,
-    ) -> Option<AgentMetadata>;
+    async fn get(&self, did: &str) -> Option<AgentMetadata>;
 
     /// Get metadata by name
-    async fn get_by_name(
-        &self,
-        name: &str,
-    ) -> Option<AgentMetadata>;
+    async fn get_by_name(&self, name: &str) -> Option<AgentMetadata>;
 
     /// List all agents
-    async fn list(
-        &self,
-    ) -> Vec<AgentMetadata>;
+    async fn list(&self) -> Vec<AgentMetadata>;
 
     /// Find by capability
     async fn find_by_capability(
@@ -61,13 +53,28 @@ pub struct AgentMetadata {
     pub registered_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Capability record
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityRecord {
+    /// Agent DID
+    pub agent_did: String,
+    /// Capability name
+    pub capability: String,
+    /// Version
+    pub version: String,
+    /// Metadata
+    pub metadata: serde_json::Value,
+}
+
 /// Local in-memory registry
 #[derive(Debug)]
 pub struct LocalRegistry {
     /// Metadata by DID
     metadata: HashMap<String, AgentMetadata>,
-    /// Capability index
-    capabilities: CapabilityIndex,
+    /// Capability index: capability -> DIDs
+    capability_index: HashMap<String, Vec<String>>,
+    /// Full capability records
+    capability_records: HashMap<String, Vec<CapabilityRecord>>,
     /// Name -> DID mapping
     name_index: HashMap<String, String>,
 }
@@ -88,14 +95,14 @@ impl LocalRegistry {
     pub fn new() -> Self {
         Self {
             metadata: HashMap::new(),
-            capabilities: CapabilityIndex::new(),
+            capability_index: HashMap::new(),
+            capability_records: HashMap::new(),
             name_index: HashMap::new(),
         }
     }
 
     /// Get a filtered view for an agent (doesn't include self)
-    pub fn get_view(
-        &self,
+    pub fn get_view(&self,
         self_did: &str,
     ) -> Result<AgentRegistryView> {
         let agents: Vec<AgentSummary> = self
@@ -116,25 +123,90 @@ impl LocalRegistry {
         })
     }
 
+    /// Register a capability for an agent
+    pub fn register_capability(
+        &mut self,
+        record: CapabilityRecord,
+    ) -> Result<()> {
+        let did = record.agent_did.clone();
+        let cap = record.capability.clone();
+
+        // Update agent metadata first (before cap is moved)
+        if let Some(meta) = self.metadata.get_mut(&did) {
+            if !meta.capabilities.contains(&cap) {
+                meta.capabilities.push(cap.clone());
+            }
+        }
+
+        // Add to capability index
+        self.capability_index
+            .entry(cap.clone())
+            .or_default()
+            .push(did.clone());
+
+        // Add to records (cap is moved here)
+        self.capability_records
+            .entry(cap.clone())
+            .or_default()
+            .push(record);
+
+        debug!("Registered capability {} for {}", cap, did);
+        Ok(())
+    }
+
+    /// Find agents by capability
+    pub fn find_by_capability(&self,
+        capability: &str,
+    ) -> Vec<String> {
+        self.capability_index
+            .get(capability)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get capability details
+    pub fn get_capability(&self,
+        capability: &str,
+    ) -> Vec<CapabilityRecord> {
+        self.capability_records
+            .get(capability)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// List all capabilities
+    pub fn list_capabilities(&self) -> Vec<String> {
+        self.capability_index.keys().cloned().collect()
+    }
+
     /// Update agent capabilities
     pub fn update_capabilities(
         &mut self,
         did: &str,
         capabilities: Vec<String>,
     ) -> Result<()> {
-        // Remove old capabilities
-        self.capabilities.unregister(did);
+        // Remove old capabilities from index
+        if let Some(meta) = self.metadata.get(did) {
+            for cap in &meta.capabilities {
+                if let Some(dids) = self.capability_index.get_mut(cap) {
+                    dids.retain(|d| d != did);
+                }
+            }
+        }
 
-        // Add new capabilities
-        let caps: Vec<String> = capabilities.clone();
-        self.capabilities.register(did, &caps);
+        // Add new capabilities to index
+        for cap in &capabilities {
+            self.capability_index
+                .entry(cap.clone())
+                .or_default()
+                .push(did.to_string());
+        }
 
         // Update metadata
         if let Some(meta) = self.metadata.get_mut(did) {
             meta.capabilities = capabilities;
         }
 
-        debug!("Updated capabilities for {}: {:?}", did, caps);
         Ok(())
     }
 }
@@ -150,16 +222,14 @@ impl Registry for LocalRegistry {
             return Err(anyhow!("Agent already registered: {}", did));
         }
 
-        // Create metadata
         let meta = AgentMetadata {
             did: did.to_string(),
             name: name.to_string(),
-            capabilities: vec![], // Would extract from config
+            capabilities: vec![],
             description: None,
             registered_at: chrono::Utc::now(),
         };
 
-        // Store
         self.metadata.insert(did.to_string(), meta);
         self.name_index.insert(name.to_string(), did.to_string());
 
@@ -173,32 +243,30 @@ impl Registry for LocalRegistry {
     ) -> Result<()> {
         if let Some(meta) = self.metadata.remove(did) {
             self.name_index.remove(&meta.name);
-            self.capabilities.unregister(did);
+            
+            // Remove from capability index
+            for cap in &meta.capabilities {
+                if let Some(dids) = self.capability_index.get_mut(cap) {
+                    dids.retain(|d| d != did);
+                }
+            }
         }
 
         info!("Unregistered agent: {} ({})", did, self.metadata.len());
         Ok(())
     }
 
-    async fn get(
-        &self,
-        did: &str,
-    ) -> Option<AgentMetadata> {
+    async fn get(&self, did: &str) -> Option<AgentMetadata> {
         self.metadata.get(did).cloned()
     }
 
-    async fn get_by_name(
-        &self,
-        name: &str,
-    ) -> Option<AgentMetadata> {
+    async fn get_by_name(&self, name: &str) -> Option<AgentMetadata> {
         self.name_index
             .get(name)
             .and_then(|did| self.metadata.get(did).cloned())
     }
 
-    async fn list(
-        &self,
-    ) -> Vec<AgentMetadata> {
+    async fn list(&self) -> Vec<AgentMetadata> {
         self.metadata.values().cloned().collect()
     }
 
@@ -206,7 +274,7 @@ impl Registry for LocalRegistry {
         &self,
         capability: &str,
     ) -> Vec<String> {
-        self.capabilities.find(capability)
+        self.find_by_capability(capability)
     }
 }
 

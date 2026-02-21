@@ -131,6 +131,19 @@ impl AgentHandle {
     }
 }
 
+/// Pool agent info - basic info from pool
+#[derive(Debug, Clone)]
+pub struct PoolAgentInfo {
+    /// Agent DID
+    pub did: String,
+    /// Agent name
+    pub name: String,
+    /// Current state
+    pub state: AgentState,
+    /// Uptime (seconds)
+    pub uptime_secs: u64,
+}
+
 impl AgentPool {
     /// Create new pool
     pub fn new() -> Self {
@@ -237,14 +250,12 @@ impl AgentPool {
     }
 
     /// List all agents
-    pub async fn list(&self,
-    ) -> Vec<super::AgentInfo> {
+    pub async fn list(&self) -> Vec<PoolAgentInfo> {
         self.agents.iter().map(|(did, entry)| {
-            super::AgentInfo {
+            PoolAgentInfo {
                 did: did.clone(),
                 name: entry.agent.name().to_string(),
                 state: AgentState::Idle, // Would get from lifecycle
-                capabilities: vec![], // Would get from registry
                 uptime_secs: entry.started_at.elapsed().as_secs(),
             }
         }).collect()
