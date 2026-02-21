@@ -45,13 +45,12 @@ impl Agent {
 
         let agent = Self {
             config,
-            state: Arc::new(RwLock::new(AgentState::Initializing)),
+            state: Arc::new(RwLock::new(AgentState::Idle)),
             identity,
             memory,
             provider,
         };
 
-        agent.set_state(AgentState::Idle);
         info!(
             "Agent {} initialized with DID: {}",
             agent.config.name, agent.identity.did
@@ -66,8 +65,6 @@ impl Agent {
             "Starting agent: {} ({})",
             self.config.name, self.identity.did
         );
-
-        self.set_state(AgentState::Idle);
 
         // Store startup message in memory
         if let Some(memory) = &self.memory {
@@ -91,7 +88,6 @@ impl Agent {
     /// Stop the agent
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping agent: {}", self.config.name);
-        self.set_state(AgentState::ShuttingDown);
 
         // Store shutdown message in memory
         if let Some(memory) = &self.memory {

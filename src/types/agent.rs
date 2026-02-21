@@ -94,38 +94,22 @@ pub struct CapabilityParameter {
     pub schema: Option<serde_json::Value>,
 }
 
-/// Agent runtime state
+/// Agent runtime state - simplified to Idle/Busy
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AgentState {
-    /// Agent is initializing
-    #[serde(rename = "initializing")]
-    Initializing,
-    /// Agent is idle and ready
+    /// Agent is idle and ready for work
     #[serde(rename = "idle")]
     Idle,
-    /// Agent is processing a task
+    /// Agent is busy processing a task
     #[serde(rename = "busy")]
     Busy,
-    /// Agent is paused
-    #[serde(rename = "paused")]
-    Paused,
-    /// Agent encountered an error
-    #[serde(rename = "error")]
-    Error,
-    /// Agent is shutting down
-    #[serde(rename = "shutting_down")]
-    ShuttingDown,
 }
 
 impl std::fmt::Display for AgentState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AgentState::Initializing => write!(f, "initializing"),
             AgentState::Idle => write!(f, "idle"),
             AgentState::Busy => write!(f, "busy"),
-            AgentState::Paused => write!(f, "paused"),
-            AgentState::Error => write!(f, "error"),
-            AgentState::ShuttingDown => write!(f, "shutting_down"),
         }
     }
 }
@@ -244,7 +228,6 @@ mod tests {
     fn test_agent_state_display() {
         assert_eq!(AgentState::Idle.to_string(), "idle");
         assert_eq!(AgentState::Busy.to_string(), "busy");
-        assert_eq!(AgentState::Error.to_string(), "error");
     }
 
     #[test]

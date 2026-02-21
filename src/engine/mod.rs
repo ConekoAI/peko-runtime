@@ -9,7 +9,7 @@ pub mod state;
 
 pub use loop_::{AgenticLoop, AgenticResult, ToolCall};
 pub use runner::{AgentRunner, RunConfig, RunResult};
-pub use state::{AgentState, StateMachine, StateTransition};
+pub use state::{AgentState, StateMachine};
 
 use crate::agent::Agent;
 use crate::providers::Provider;
@@ -66,7 +66,7 @@ impl Engine {
         config: Option<EngineConfig>,
     ) -> Self {
         let config = config.unwrap_or_default();
-        let state = Arc::new(RwLock::new(StateMachine::new(AgentState::Idle)));
+        let state = Arc::new(RwLock::new(StateMachine::new()));
 
         Self {
             agent,
@@ -79,8 +79,8 @@ impl Engine {
 
     /// Run the engine with a user prompt
     pub async fn run(&self, prompt: &str) -> Result<EngineResult> {
-        let mut state = self.state.write().await;
-        state.transition(AgentState::Running)?;
+        let state = self.state.write().await;
+        state.set_busy();
         drop(state);
 
         info!("Engine starting for agent: {}", self.agent.name());
@@ -94,12 +94,8 @@ impl Engine {
 
         let run_result = runner.run(prompt).await?;
 
-        let mut state = self.state.write().await;
-        if run_result.success {
-            state.transition(AgentState::Idle)?;
-        } else {
-            state.transition(AgentState::Error)?;
-        }
+        let state = self.state.write().await;
+        state.set_idle();
 
         Ok(EngineResult {
             success: run_result.success,
@@ -118,10 +114,9 @@ impl Engine {
 
     /// Stop the engine
     pub async fn stop(&self) -> Result<()> {
-        let mut state = self.state.write().await;
-        state.transition(AgentState::Stopping)?;
+        let state = self.state.write().await;
+        state.set_idle();
         warn!("Engine stopping for agent: {}", self.agent.name());
-        state.transition(AgentState::Idle)?;
         Ok(())
     }
 }

@@ -1,219 +1,81 @@
-//! Agent State Machine - Tracks and manages agent execution state
+//! Agent State Machine - Simple 2-state tracking
 
-use anyhow::{anyhow, Result};
-use std::fmt;
-use tracing::{debug, info};
+use anyhow::Result;
+use std::sync::atomic::{AtomicU8, Ordering};
+use tracing::debug;
 
-/// Possible states for an agent
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Simple agent state: Idle or Busy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
-    /// Idle, waiting for input
+    /// Waiting for work
     Idle,
-    /// Running a task
-    Running,
-    /// Paused (can resume)
-    Paused,
-    /// Stopping (graceful shutdown)
-    Stopping,
-    /// Error state
-    Error,
-    /// Completed a task
-    Completed,
+    /// Processing a request
+    Busy,
 }
 
-impl fmt::Display for AgentState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AgentState::Idle => write!(f, "idle"),
-            AgentState::Running => write!(f, "running"),
-            AgentState::Paused => write!(f, "paused"),
-            AgentState::Stopping => write!(f, "stopping"),
-            AgentState::Error => write!(f, "error"),
-            AgentState::Completed => write!(f, "completed"),
-        }
+impl AgentState {
+    /// Check if agent is busy
+    pub fn is_busy(self) -> bool {
+        matches!(self, AgentState::Busy)
+    }
+
+    /// Check if agent is idle
+    pub fn is_idle(self) -> bool {
+        matches!(self, AgentState::Idle)
     }
 }
 
-/// State transition definition
-#[derive(Debug, Clone)]
-pub struct StateTransition {
-    /// From state
-    pub from: AgentState,
-    /// To state
-    pub to: AgentState,
-    /// Timestamp
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    /// Optional reason
-    pub reason: Option<String>,
-}
-
-/// State machine for managing agent lifecycle
+/// Simple state machine using atomic for thread safety
 pub struct StateMachine {
-    /// Current state
-    current: AgentState,
-    /// State transition history
-    history: Vec<StateTransition>,
-    /// Maximum history size
-    max_history: usize,
+    /// Current state (0 = Idle, 1 = Busy)
+    state: AtomicU8,
 }
 
 impl StateMachine {
-    /// Create a new state machine with initial state
-    pub fn new(initial: AgentState) -> Self {
-        let mut sm = Self {
-            current: initial,
-            history: vec![],
-            max_history: 100,
-        };
-
-        // Record initial state
-        sm.history.push(StateTransition {
-            from: initial,
-            to: initial,
-            timestamp: chrono::Utc::now(),
-            reason: Some("Initial state".to_string()),
-        });
-
-        sm
+    /// Create new state machine starting in Idle
+    pub fn new() -> Self {
+        Self {
+            state: AtomicU8::new(0),
+        }
     }
 
     /// Get current state
     pub fn current(&self) -> AgentState {
-        self.current
+        match self.state.load(Ordering::Relaxed) {
+            1 => AgentState::Busy,
+            _ => AgentState::Idle,
+        }
     }
 
     /// Check if in a specific state
     pub fn is(&self, state: AgentState) -> bool {
-        self.current == state
+        self.current() == state
     }
 
-    /// Check if can transition to a state
-    pub fn can_transition(&self, to: AgentState) -> bool {
-        match (self.current, to) {
-            // Idle can go to running, or stay idle
-            (AgentState::Idle, AgentState::Running) => true,
-            (AgentState::Idle, AgentState::Idle) => true,
-
-            // Running can go to paused, completed, error, or stopping
-            (AgentState::Running, AgentState::Paused) => true,
-            (AgentState::Running, AgentState::Completed) => true,
-            (AgentState::Running, AgentState::Error) => true,
-            (AgentState::Running, AgentState::Stopping) => true,
-
-            // Paused can resume to running or stop
-            (AgentState::Paused, AgentState::Running) => true,
-            (AgentState::Paused, AgentState::Stopping) => true,
-
-            // Stopping can only go to idle
-            (AgentState::Stopping, AgentState::Idle) => true,
-            (AgentState::Stopping, AgentState::Error) => true,
-
-            // Error can go to idle (recovery)
-            (AgentState::Error, AgentState::Idle) => true,
-
-            // Completed can go to idle
-            (AgentState::Completed, AgentState::Idle) => true,
-
-            // Same state is always allowed (no-op)
-            (from, to) if from == to => true,
-
-            // Everything else is invalid
-            _ => false,
-        }
+    /// Transition to Idle
+    pub fn set_idle(&self) {
+        self.state.store(0, Ordering::Relaxed);
+        debug!("Agent state: Idle");
     }
 
-    /// Attempt a state transition
-    pub fn transition(&mut self, to: AgentState) -> Result<()> {
-        if !self.can_transition(to) {
-            return Err(anyhow!(
-                "Invalid state transition: {} -> {}",
-                self.current,
-                to
-            ));
-        }
-
-        let from = self.current;
-        self.current = to;
-
-        self.history.push(StateTransition {
-            from,
-            to,
-            timestamp: chrono::Utc::now(),
-            reason: None,
-        });
-
-        // Trim history if needed
-        if self.history.len() > self.max_history {
-            self.history.remove(0);
-        }
-
-        debug!("State transition: {} -> {}", from, to);
-        Ok(())
+    /// Transition to Busy
+    pub fn set_busy(&self) {
+        self.state.store(1, Ordering::Relaxed);
+        debug!("Agent state: Busy");
     }
 
-    /// Transition with reason
-    pub fn transition_with_reason(
-        &mut self,
-        to: AgentState,
-        reason: impl Into<String>,
-    ) -> Result<()> {
-        if !self.can_transition(to) {
-            return Err(anyhow!(
-                "Invalid state transition: {} -> {}",
-                self.current,
-                to
-            ));
-        }
-
-        let from = self.current;
-        self.current = to;
-        let reason_str = reason.into();
-
-        self.history.push(StateTransition {
-            from,
-            to,
-            timestamp: chrono::Utc::now(),
-            reason: Some(reason_str.clone()),
-        });
-
-        // Trim history if needed
-        if self.history.len() > self.max_history {
-            self.history.remove(0);
-        }
-
-        info!("State transition: {} -> {} ({})", from, to, reason_str);
-        Ok(())
-    }
-
-    /// Get transition history
-    pub fn history(&self) -> &[StateTransition] {
-        &self.history
-    }
-
-    /// Time in current state
-    pub fn time_in_current_state(&self) -> Option<chrono::Duration> {
-        self.history
-            .last()
-            .map(|t| chrono::Utc::now().signed_duration_since(t.timestamp))
-    }
-
-    /// Check if agent is active (running or paused)
-    pub fn is_active(&self) -> bool {
-        matches!(self.current, AgentState::Running | AgentState::Paused)
-    }
-
-    /// Check if agent can be stopped
-    pub fn can_stop(&self) -> bool {
-        matches!(
-            self.current,
-            AgentState::Running | AgentState::Paused | AgentState::Error
-        )
+    /// Try to acquire (Idle -> Busy)
+    /// Returns true if successful
+    pub fn try_acquire(&self) -> bool {
+        self.state
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
     }
 }
 
 impl Default for StateMachine {
     fn default() -> Self {
-        Self::new(AgentState::Idle)
+        Self::new()
     }
 }
 
@@ -222,49 +84,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_state_machine_transitions() {
-        let mut sm = StateMachine::new(AgentState::Idle);
-
-        // Idle -> Running is valid
-        assert!(sm.transition(AgentState::Running).is_ok());
-        assert_eq!(sm.current(), AgentState::Running);
-
-        // Running -> Idle is invalid (must go through completed/error/stopping)
-        assert!(sm.transition(AgentState::Idle).is_err());
-
-        // Running -> Completed is valid
-        assert!(sm.transition(AgentState::Completed).is_ok());
-        assert_eq!(sm.current(), AgentState::Completed);
-
-        // Completed -> Idle is valid
-        assert!(sm.transition(AgentState::Idle).is_ok());
-        assert_eq!(sm.current(), AgentState::Idle);
+    fn test_state_transitions() {
+        let sm = StateMachine::new();
+        
+        assert!(sm.is(AgentState::Idle));
+        assert!(!sm.is(AgentState::Busy));
+        
+        sm.set_busy();
+        assert!(sm.is(AgentState::Busy));
+        assert!(!sm.is(AgentState::Idle));
+        
+        sm.set_idle();
+        assert!(sm.is(AgentState::Idle));
     }
 
     #[test]
-    fn test_can_transition() {
-        let sm = StateMachine::new(AgentState::Idle);
-
-        assert!(sm.can_transition(AgentState::Running));
-        assert!(!sm.can_transition(AgentState::Completed)); // Can't skip running
-    }
-
-    #[test]
-    fn test_is_active() {
-        let mut sm = StateMachine::new(AgentState::Idle);
-        assert!(!sm.is_active());
-
-        sm.transition(AgentState::Running).unwrap();
-        assert!(sm.is_active());
-
-        sm.transition(AgentState::Paused).unwrap();
-        assert!(sm.is_active());
-
-        // Paused can only go to Running or Stopping
-        sm.transition(AgentState::Running).unwrap();
-        assert!(sm.is_active());
-
-        sm.transition(AgentState::Completed).unwrap();
-        assert!(!sm.is_active());
+    fn test_try_acquire() {
+        let sm = StateMachine::new();
+        
+        // First acquire should succeed
+        assert!(sm.try_acquire());
+        assert!(sm.is(AgentState::Busy));
+        
+        // Second acquire should fail (already busy)
+        assert!(!sm.try_acquire());
+        
+        // After releasing, can acquire again
+        sm.set_idle();
+        assert!(sm.try_acquire());
     }
 }

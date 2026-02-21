@@ -18,7 +18,7 @@ pub mod pool;
 pub mod registry;
 
 pub use context::{AgentContext, AgentRegistryView, CapabilityIndex};
-pub use lifecycle::{LifecycleManager, LifecycleState, LifecycleTransition};
+pub use lifecycle::LifecycleManager;
 pub use pool::{AgentHandle, AgentPool, PoolAgentInfo, PoolConfig};
 pub use registry::{CapabilityRecord, LocalRegistry, Registry, RegistryEvent};
 

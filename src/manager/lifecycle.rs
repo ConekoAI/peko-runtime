@@ -1,35 +1,16 @@
-//! Lifecycle Manager - Agent state transitions
+//! Lifecycle Manager - Simple agent state tracking
 
-use crate::engine::state::{AgentState, StateMachine};
-use anyhow::{anyhow, Result};
+use crate::engine::state::StateMachine;
+use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
-/// Manages agent lifecycle states
+/// Simple lifecycle manager - just tracks if agent is idle or busy
 pub struct LifecycleManager {
     /// State machines for each agent
     states: Arc<RwLock<HashMap<String, StateMachine>>>,
-}
-
-/// Simplified lifecycle states
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LifecycleState {
-    /// Created but not started
-    Created,
-    /// Starting up
-    Starting,
-    /// Running normally
-    Running,
-    /// Busy processing
-    Busy,
-    /// Stopping gracefully
-    Stopping,
-    /// Stopped
-    Stopped,
-    /// Error state
-    Error,
 }
 
 impl LifecycleManager {
@@ -40,106 +21,102 @@ impl LifecycleManager {
         }
     }
 
-    /// Register a new agent
-    pub async fn register(&self, did: &str) -> Result<()> {
+    /// Register a new agent (starts in Idle)
+    pub async fn register(&self,
+        did: &str,
+    ) -> Result<()> {
         let mut states = self.states.write().await;
-        states.insert(did.to_string(), StateMachine::new(AgentState::Idle));
-        debug!("Registered agent lifecycle: {}", did);
+        states.insert(did.to_string(), StateMachine::new());
+        debug!("Registered agent: {}", did);
         Ok(())
     }
 
-    /// Start an agent
-    pub async fn start(&self, did: &str) -> Result<()> {
-        let mut states = self.states.write().await;
-
-        if let Some(sm) = states.get_mut(did) {
-            match sm.transition_with_reason(AgentState::Running, "Starting agent") {
-                Ok(_) => {
-                    info!("Agent {} started", did);
-                    Ok(())
-                }
-                Err(e) => {
-                    warn!("Failed to start agent {}: {}", did, e);
-                    Err(e)
-                }
-            }
+    /// Start an agent (mark as idle)
+    pub async fn start(&self,
+        did: &str,
+    ) -> Result<()> {
+        let states = self.states.read().await;
+        
+        if let Some(sm) = states.get(did) {
+            sm.set_idle();
+            info!("Agent {} started", did);
+            Ok(())
         } else {
-            Err(anyhow!("Agent not registered: {}", did))
+            Err(anyhow::anyhow!("Agent not registered: {}", did))
         }
     }
 
     /// Mark agent as busy
-    pub async fn set_busy(&self, did: &str) -> Result<()> {
-        let mut states = self.states.write().await;
-
-        if let Some(sm) = states.get_mut(did) {
-            sm.transition(AgentState::Running)?;
+    pub async fn set_busy(&self,
+        did: &str,
+    ) -> Result<()> {
+        let states = self.states.read().await;
+        
+        if let Some(sm) = states.get(did) {
+            sm.set_busy();
         }
         Ok(())
     }
 
     /// Mark agent as idle
-    pub async fn set_idle(&self, did: &str) -> Result<()> {
-        let mut states = self.states.write().await;
-
-        if let Some(sm) = states.get_mut(did) {
-            sm.transition(AgentState::Idle)?;
-        }
-        Ok(())
-    }
-
-    /// Stop an agent
-    pub async fn stop(&self, did: &str) -> Result<()> {
-        let mut states = self.states.write().await;
-
-        if let Some(sm) = states.get_mut(did) {
-            match sm.transition_with_reason(AgentState::Stopping, "Stopping agent") {
-                Ok(_) => {
-                    // Then to idle (stopped)
-                    let _ = sm.transition(AgentState::Idle);
-                    info!("Agent {} stopped", did);
-                    Ok(())
-                }
-                Err(e) => {
-                    warn!("Failed to stop agent {}: {}", did, e);
-                    Err(e)
-                }
-            }
-        } else {
-            Err(anyhow!("Agent not registered: {}", did))
-        }
-    }
-
-    /// Mark agent as error
-    pub async fn set_error(&self, did: &str, error: &str) -> Result<()> {
-        let mut states = self.states.write().await;
-
-        if let Some(sm) = states.get_mut(did) {
-            sm.transition_with_reason(AgentState::Error, error)?;
-            error!("Agent {} entered error state: {}", did, error);
-        }
-        Ok(())
-    }
-
-    /// Get current state
-    pub async fn get_state(&self, did: &str) -> Option<AgentState> {
+    pub async fn set_idle(&self,
+        did: &str,
+    ) -> Result<()> {
         let states = self.states.read().await;
-        states.get(did).map(|sm| sm.current())
+        
+        if let Some(sm) = states.get(did) {
+            sm.set_idle();
+        }
+        Ok(())
     }
 
-    /// Check if agent is running
-    pub async fn is_running(&self, did: &str) -> bool {
-        matches!(
-            self.get_state(did).await,
-            Some(AgentState::Running | AgentState::Idle)
-        )
+    /// Stop an agent (mark as idle)
+    pub async fn stop(&self,
+        did: &str,
+    ) -> Result<()> {
+        let states = self.states.read().await;
+        
+        if let Some(sm) = states.get(did) {
+            sm.set_idle();
+            info!("Agent {} stopped", did);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Agent not registered: {}", did))
+        }
+    }
+
+    /// Check if agent is idle
+    pub async fn is_idle(&self,
+        did: &str,
+    ) -> bool {
+        let states = self.states.read().await;
+        states.get(did).map(|sm| sm.current().is_idle()).unwrap_or(false)
+    }
+
+    /// Check if agent is busy
+    pub async fn is_busy(&self,
+        did: &str,
+    ) -> bool {
+        let states = self.states.read().await;
+        states.get(did).map(|sm| sm.current().is_busy()).unwrap_or(false)
+    }
+
+    /// Try to acquire agent (Idle -> Busy)
+    /// Returns true if successful
+    pub async fn try_acquire(&self,
+        did: &str,
+    ) -> bool {
+        let states = self.states.read().await;
+        states.get(did).map(|sm| sm.try_acquire()).unwrap_or(false)
     }
 
     /// Unregister an agent
-    pub async fn unregister(&self, did: &str) {
+    pub async fn unregister(&self,
+        did: &str,
+    ) {
         let mut states = self.states.write().await;
         states.remove(did);
-        debug!("Unregistered agent lifecycle: {}", did);
+        debug!("Unregistered agent: {}", did);
     }
 }
 
@@ -147,17 +124,4 @@ impl Default for LifecycleManager {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// A lifecycle transition record
-#[derive(Debug, Clone)]
-pub struct LifecycleTransition {
-    /// Timestamp
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    /// From state
-    pub from: LifecycleState,
-    /// To state
-    pub to: LifecycleState,
-    /// Reason
-    pub reason: Option<String>,
 }
