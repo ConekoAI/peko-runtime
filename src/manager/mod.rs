@@ -27,11 +27,10 @@ use crate::engine::state::AgentState;
 use crate::identity::{storage::KeyStorage, Identity};
 use crate::portable::{ExportOptions, ImportOptions, Packager, Unpackager};
 use anyhow::Result;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Unified agent manager
 pub struct AgentManager {

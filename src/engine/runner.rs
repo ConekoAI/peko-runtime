@@ -1,14 +1,14 @@
 //! Agent Runner - High-level interface for running agents
 
 use crate::agent::Agent;
-use crate::engine::loop_::{AgenticLoop, AgenticResult};
+use crate::engine::loop_::AgenticLoop;
 use crate::engine::EngineConfig;
 use crate::providers::Provider;
 use crate::tools::Tool;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Configuration for running an agent
 #[derive(Debug, Clone)]

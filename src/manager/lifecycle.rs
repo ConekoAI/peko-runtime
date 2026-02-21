@@ -1,6 +1,6 @@
 //! Lifecycle Manager - Agent state transitions
 
-use crate::engine::state::{AgentState, StateMachine, StateTransition};
+use crate::engine::state::{AgentState, StateMachine};
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -131,7 +131,7 @@ impl LifecycleManager {
     pub async fn is_running(&self, did: &str) -> bool {
         matches!(
             self.get_state(did).await,
-            Some(AgentState::Running) | Some(AgentState::Idle)
+            Some(AgentState::Running | AgentState::Idle)
         )
     }
 

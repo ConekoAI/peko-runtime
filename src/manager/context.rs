@@ -48,7 +48,7 @@ impl AgentContext {
 
     /// Check if agent is available (running and not busy)
     pub fn is_agent_available(&self, did: &str) -> bool {
-        matches!(self.get_agent_state(did), Some("idle") | Some("running"))
+        matches!(self.get_agent_state(did), Some("idle" | "running"))
     }
 }
 
