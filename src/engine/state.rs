@@ -260,6 +260,10 @@ mod tests {
         sm.transition(AgentState::Paused).unwrap();
         assert!(sm.is_active());
 
+        // Paused can only go to Running or Stopping
+        sm.transition(AgentState::Running).unwrap();
+        assert!(sm.is_active());
+
         sm.transition(AgentState::Completed).unwrap();
         assert!(!sm.is_active());
     }
