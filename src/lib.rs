@@ -21,7 +21,6 @@ pub mod coneko;
 pub mod config;
 pub mod cron;
 pub mod daemon;
-pub mod heartbeat;
 pub mod identity;
 pub mod memory;
 pub mod portable;
