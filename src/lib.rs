@@ -25,6 +25,7 @@ pub mod engine;
 pub mod identity;
 pub mod manager;
 pub mod memory;
+pub mod observability;
 pub mod portable;
 pub mod providers;
 pub mod secrets;
