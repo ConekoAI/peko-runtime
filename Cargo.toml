@@ -7,6 +7,22 @@ description = "Lightweight multi-agent runtime with optional Coneko network"
 license = "MIT"
 repository = "https://github.com/coneko/pekobot"
 
+[features]
+default = []  # Start with minimal core, no bundled tools
+
+# On-demand tools (previously bundled)
+bundled-tools = ["calendar", "document", "email", "expense", "inventory", "research", "social_media"]
+calendar = []
+document = []
+email = []
+expense = []
+inventory = []
+research = []
+social_media = []
+
+# Full build (for development or air-gapped environments)
+full = ["bundled-tools"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
