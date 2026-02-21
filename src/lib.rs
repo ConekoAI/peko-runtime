@@ -23,6 +23,7 @@ pub mod cron;
 pub mod daemon;
 pub mod engine;
 pub mod identity;
+pub mod manager;
 pub mod memory;
 pub mod portable;
 pub mod providers;
