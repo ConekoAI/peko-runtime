@@ -15,7 +15,7 @@ use tracing::{info, warn};
 #[derive(Parser)]
 #[command(name = "pekobot")]
 #[command(version)]
-#[command(about = "Lightweight multi-agent runtime with optional Coneko network")]
+#[command(about = "Lightweight multi-agent runtime")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -354,7 +354,6 @@ async fn main() -> anyhow::Result<()> {
             println!("     - CLI Channel: ✅ Ready");
             println!("     - HTTP Channel: ✅ Ready");
             println!("     - Multi-Agent Orchestration: ✅ Ready");
-            println!("     - Coneko Adapter: ✅ Ready");
             println!("     - Portable Agents: ✅ Ready");
         }
         Commands::Onboard => {
@@ -365,23 +364,12 @@ async fn main() -> anyhow::Result<()> {
             let name = prompt("Agent name [peko]: ").unwrap_or_else(|| "peko".to_string());
             let provider = prompt("Provider (openai/anthropic/ollama) [openai]: ")
                 .unwrap_or_else(|| "openai".to_string());
-            let coneko = prompt("Coneko endpoint (optional): ");
 
             println!("\n✅ Configuration complete!");
             println!("   Name: {}", name);
             println!("   Provider: {}", provider);
-            if let Some(ref endpoint) = coneko {
-                println!("   Coneko: {}", endpoint);
-            }
             println!("\nStart your agent with:");
-            if let Some(endpoint) = coneko {
-                println!(
-                    "   pekobot agent --name {} --provider {} --coneko {}",
-                    name, provider, endpoint
-                );
-            } else {
-                println!("   pekobot agent --name {} --provider {}", name, provider);
-            }
+            println!("   pekobot agent --name {} --provider {}", name, provider);
         }
         Commands::Send { endpoint, message } => {
             println!("🌐 Sending message to {}...", endpoint);
