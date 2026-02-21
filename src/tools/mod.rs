@@ -11,7 +11,7 @@ pub mod process;
 pub mod session_messaging;
 pub mod traits;
 
-pub use agent_management::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool};
+pub use agent_management::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, ManagerCommand};
 pub use browser::BrowserTool;
 pub use filesystem::FileSystemTool;
 pub use http::{HttpMethod, HttpTool};
