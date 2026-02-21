@@ -2,6 +2,7 @@
 //!
 //! Core tools only. On-demand tools are downloaded from Pekohub or installed locally.
 
+pub mod agent_management;
 pub mod browser;
 pub mod filesystem;
 pub mod http;
@@ -10,6 +11,7 @@ pub mod process;
 pub mod session_messaging;
 pub mod traits;
 
+pub use agent_management::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool};
 pub use browser::BrowserTool;
 pub use filesystem::FileSystemTool;
 pub use http::{HttpMethod, HttpTool};

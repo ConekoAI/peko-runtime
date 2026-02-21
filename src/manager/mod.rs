@@ -414,8 +414,9 @@ impl AgentManager {
 
     /// Broadcast message to all agents
     pub async fn broadcast(&self, message: &str) -> Result<()> {
+        let message = message.to_string();
         let pool = self.pool.read().await;
-        pool.broadcast(message).await
+        pool.broadcast(&message).await
     }
 
     /// Send message to specific agent
@@ -448,5 +449,32 @@ impl AgentManager {
     /// Get data directory
     pub fn data_dir(&self) -> &PathBuf {
         &self.data_dir
+    }
+
+    /// Create agent communication tools
+    /// 
+    /// Returns tools that allow agents to:
+    /// - Query info about other agents (agent_info)
+    /// - Spawn subagents (agent_spawn)
+    /// - Broadcast messages (agent_broadcast)
+    /// 
+    /// Note: session_messaging is separate and needs a shared SessionRegistry
+    pub fn create_communication_tools(
+        &self,
+        _agent_did: &str,
+    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+        use crate::tools::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool};
+        use tokio::sync::mpsc;
+
+        // Create channel for manager commands
+        // Note: In a full implementation, the manager would run a command loop
+        // For now, this is a placeholder that shows the architecture
+        let (tx, _rx) = mpsc::channel(100);
+
+        vec![
+            Arc::new(AgentInfoTool::new(tx.clone())),
+            Arc::new(AgentSpawnTool::new(tx.clone())),
+            Arc::new(AgentBroadcastTool::new(tx)),
+        ]
     }
 }
