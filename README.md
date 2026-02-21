@@ -33,6 +33,62 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 - ✅ **Coneko Adapter** — Optional network integration
 - ✅ **Portable Agents** — Export/import agents as `.agent` packages
 
+## Tool Architecture
+
+Pekobot uses a **minimal core + on-demand tools** architecture:
+
+### Default Build (Minimal Core ~2-3MB)
+```bash
+cargo build --release
+# Core runtime only - tools downloaded on-demand from Pekohub
+```
+
+### With All Tools Bundled (~8MB)
+```bash
+cargo build --release --features full
+# Legacy behavior - all tools included in binary
+```
+
+### On-Demand Tools (Recommended)
+Configure Pekobot to download tools automatically:
+
+```toml
+# ~/.config/pekobot/config.toml
+[tools]
+core = ["http", "filesystem", "cron", "memory"]
+on_demand = ["calendar", "email", "social_media"]
+
+[tools.registry]
+type = "pekohub"
+url = "https://tools.coneko.ai"
+```
+
+Tools are downloaded on first use and cached locally.
+
+### Air-Gapped / Offline Use
+Install tools locally without internet:
+
+```bash
+git clone https://github.com/coneko/tool_bundle
+cd tool_bundle
+cargo build --release
+./install.sh  # Installs to ~/.local/share/pekobot/tools/
+```
+
+### Available Tools
+
+| Tool | Description | Size |
+|------|-------------|------|
+| `calendar` | Google/Outlook integration | ~120KB |
+| `document` | PDF/OCR processing | ~200KB |
+| `email` | Gmail/Outlook email | ~100KB |
+| `expense` | Receipt tracking | ~80KB |
+| `inventory` | Shopify/WooCommerce | ~90KB |
+| `research` | Web search | ~110KB |
+| `social_media` | Twitter/X, LinkedIn | ~150KB |
+
+---
+
 ## Quick Start
 
 ### Prerequisites
