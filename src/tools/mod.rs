@@ -1,5 +1,5 @@
 //! Tools for agents
-//! 
+//!
 //! Core tools only. On-demand tools are downloaded from Pekohub or installed locally.
 
 pub mod browser;

@@ -54,7 +54,10 @@ struct AgentEntry {
 #[derive(Debug)]
 pub enum PoolMessage {
     /// Execute a task
-    Execute { prompt: String, respond_to: mpsc::Sender<Result<String>> },
+    Execute {
+        prompt: String,
+        respond_to: mpsc::Sender<Result<String>>,
+    },
     /// Stop the agent
     Stop,
     /// Ping (health check)
@@ -84,48 +87,46 @@ impl AgentHandle {
     }
 
     /// Start the agent
-    pub async fn start(&self,
-    ) -> Result<()> {
+    pub async fn start(&self) -> Result<()> {
         // In a real implementation, this would spawn the agent task
         info!("Starting agent: {}", self.did);
         Ok(())
     }
 
     /// Stop the agent
-    pub async fn stop(&self,
-    ) -> Result<()> {
-        self.channel.send(PoolMessage::Stop).await
+    pub async fn stop(&self) -> Result<()> {
+        self.channel
+            .send(PoolMessage::Stop)
+            .await
             .map_err(|e| anyhow!("Failed to stop agent: {}", e))
     }
 
     /// Execute a prompt
-    pub async fn execute(&self,
-        prompt: &str,
-    ) -> Result<String> {
+    pub async fn execute(&self, prompt: &str) -> Result<String> {
         let (tx, mut rx) = mpsc::channel(1);
 
-        self.channel.send(PoolMessage::Execute {
-            prompt: prompt.to_string(),
-            respond_to: tx,
-        }).await
+        self.channel
+            .send(PoolMessage::Execute {
+                prompt: prompt.to_string(),
+                respond_to: tx,
+            })
+            .await
             .map_err(|e| anyhow!("Failed to send execute: {}", e))?;
 
-        rx.recv().await
+        rx.recv()
+            .await
             .ok_or_else(|| anyhow!("No response from agent"))?
     }
 
     /// Send a message
-    pub async fn send(&self,
-        _message: &str,
-    ) -> Result<()> {
+    pub async fn send(&self, _message: &str) -> Result<()> {
         // For now, just log
         debug!("Message to {}: {}", self.did, _message);
         Ok(())
     }
 
     /// Check if agent is alive
-    pub async fn is_alive(&self,
-    ) -> bool {
+    pub async fn is_alive(&self) -> bool {
         // Send ping and check response
         self.channel.send(PoolMessage::Ping).await.is_ok()
     }
@@ -164,10 +165,7 @@ impl AgentPool {
     }
 
     /// Add agent to pool
-    pub async fn add(
-        &mut self,
-        agent: Arc<Agent>,
-    ) -> Result<AgentHandle> {
+    pub async fn add(&mut self, agent: Arc<Agent>) -> Result<AgentHandle> {
         let did = agent.did().to_string();
         let name = agent.name().to_string();
 
@@ -183,18 +181,25 @@ impl AgentPool {
         let (tx, rx) = mpsc::channel(100);
 
         // Store agent
-        self.agents.insert(did.clone(), AgentEntry {
-            agent,
-            started_at: Instant::now(),
-            last_activity: Instant::now(),
-        });
+        self.agents.insert(
+            did.clone(),
+            AgentEntry {
+                agent,
+                started_at: Instant::now(),
+                last_activity: Instant::now(),
+            },
+        );
         self.channels.insert(did.clone(), tx.clone());
 
         // Spawn agent task (simplified)
         // In full implementation, this would spawn a tokio task
         // that runs the agent loop
 
-        info!("Added agent to pool: {} (total: {})", did, self.agents.len());
+        info!(
+            "Added agent to pool: {} (total: {})",
+            did,
+            self.agents.len()
+        );
 
         Ok(AgentHandle {
             did,
@@ -204,22 +209,16 @@ impl AgentPool {
     }
 
     /// Get agent by DID
-    pub async fn get(&self,
-        did: &str,
-    ) -> Option<AgentHandle> {
-        self.agents.get(did).map(|entry| {
-            AgentHandle {
-                did: did.to_string(),
-                name: entry.agent.name().to_string(),
-                channel: self.channels.get(did).cloned().unwrap(),
-            }
+    pub async fn get(&self, did: &str) -> Option<AgentHandle> {
+        self.agents.get(did).map(|entry| AgentHandle {
+            did: did.to_string(),
+            name: entry.agent.name().to_string(),
+            channel: self.channels.get(did).cloned().unwrap(),
         })
     }
 
     /// Get agent by name
-    pub async fn get_by_name(&self,
-        name: &str,
-    ) -> Option<AgentHandle> {
+    pub async fn get_by_name(&self, name: &str) -> Option<AgentHandle> {
         for (did, entry) in &self.agents {
             if entry.agent.name() == name {
                 return Some(AgentHandle {
@@ -233,12 +232,11 @@ impl AgentPool {
     }
 
     /// Stop an agent
-    pub async fn stop(
-        &mut self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn stop(&mut self, did: &str) -> Result<()> {
         if let Some(channel) = self.channels.get(did) {
-            channel.send(PoolMessage::Stop).await
+            channel
+                .send(PoolMessage::Stop)
+                .await
                 .map_err(|e| anyhow!("Failed to stop: {}", e))?;
         }
 
@@ -251,29 +249,29 @@ impl AgentPool {
 
     /// List all agents
     pub async fn list(&self) -> Vec<PoolAgentInfo> {
-        self.agents.iter().map(|(did, entry)| {
-            PoolAgentInfo {
-                did: did.clone(),
-                name: entry.agent.name().to_string(),
-                state: AgentState::Idle, // Would get from lifecycle
-                uptime_secs: entry.started_at.elapsed().as_secs(),
-            }
-        }).collect()
+        self.agents
+            .iter()
+            .map(|(did, entry)| {
+                PoolAgentInfo {
+                    did: did.clone(),
+                    name: entry.agent.name().to_string(),
+                    state: AgentState::Idle, // Would get from lifecycle
+                    uptime_secs: entry.started_at.elapsed().as_secs(),
+                }
+            })
+            .collect()
     }
 
     /// Get agent states
-    pub async fn get_states(&self,
-    ) -> HashMap<String, String> {
-        self.agents.iter()
+    pub async fn get_states(&self) -> HashMap<String, String> {
+        self.agents
+            .iter()
             .map(|(did, _)| (did.clone(), "idle".to_string()))
             .collect()
     }
 
     /// Broadcast message to all agents
-    pub async fn broadcast(
-        &self,
-        message: &str,
-    ) -> Result<()> {
+    pub async fn broadcast(&self, message: &str) -> Result<()> {
         for (did, channel) in &self.channels {
             if let Err(e) = channel.send(PoolMessage::Ping).await {
                 warn!("Failed to broadcast to {}: {}", did, e);

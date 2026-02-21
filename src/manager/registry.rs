@@ -10,17 +10,10 @@ use tracing::{debug, info};
 #[async_trait::async_trait(?Send)]
 pub trait Registry {
     /// Register an agent
-    async fn register(
-        &mut self,
-        did: &str,
-        name: &str,
-    ) -> Result<()>;
+    async fn register(&mut self, did: &str, name: &str) -> Result<()>;
 
     /// Unregister an agent
-    async fn unregister(
-        &mut self,
-        did: &str,
-    ) -> Result<()>;
+    async fn unregister(&mut self, did: &str) -> Result<()>;
 
     /// Get metadata by DID
     async fn get(&self, did: &str) -> Option<AgentMetadata>;
@@ -32,10 +25,7 @@ pub trait Registry {
     async fn list(&self) -> Vec<AgentMetadata>;
 
     /// Find by capability
-    async fn find_by_capability(
-        &self,
-        capability: &str,
-    ) -> Vec<String>;
+    async fn find_by_capability(&self, capability: &str) -> Vec<String>;
 }
 
 /// Agent metadata stored in registry
@@ -87,7 +77,10 @@ pub enum RegistryEvent {
     /// Agent unregistered
     Unregistered { did: String },
     /// Capabilities updated
-    CapabilitiesUpdated { did: String, capabilities: Vec<String> },
+    CapabilitiesUpdated {
+        did: String,
+        capabilities: Vec<String>,
+    },
 }
 
 impl LocalRegistry {
@@ -102,9 +95,7 @@ impl LocalRegistry {
     }
 
     /// Get a filtered view for an agent (doesn't include self)
-    pub fn get_view(&self,
-        self_did: &str,
-    ) -> Result<AgentRegistryView> {
+    pub fn get_view(&self, self_did: &str) -> Result<AgentRegistryView> {
         let agents: Vec<AgentSummary> = self
             .metadata
             .iter()
@@ -124,10 +115,7 @@ impl LocalRegistry {
     }
 
     /// Register a capability for an agent
-    pub fn register_capability(
-        &mut self,
-        record: CapabilityRecord,
-    ) -> Result<()> {
+    pub fn register_capability(&mut self, record: CapabilityRecord) -> Result<()> {
         let did = record.agent_did.clone();
         let cap = record.capability.clone();
 
@@ -155,9 +143,7 @@ impl LocalRegistry {
     }
 
     /// Find agents by capability
-    pub fn find_by_capability(&self,
-        capability: &str,
-    ) -> Vec<String> {
+    pub fn find_by_capability(&self, capability: &str) -> Vec<String> {
         self.capability_index
             .get(capability)
             .cloned()
@@ -165,9 +151,7 @@ impl LocalRegistry {
     }
 
     /// Get capability details
-    pub fn get_capability(&self,
-        capability: &str,
-    ) -> Vec<CapabilityRecord> {
+    pub fn get_capability(&self, capability: &str) -> Vec<CapabilityRecord> {
         self.capability_records
             .get(capability)
             .cloned()
@@ -180,11 +164,7 @@ impl LocalRegistry {
     }
 
     /// Update agent capabilities
-    pub fn update_capabilities(
-        &mut self,
-        did: &str,
-        capabilities: Vec<String>,
-    ) -> Result<()> {
+    pub fn update_capabilities(&mut self, did: &str, capabilities: Vec<String>) -> Result<()> {
         // Remove old capabilities from index
         if let Some(meta) = self.metadata.get(did) {
             for cap in &meta.capabilities {
@@ -213,11 +193,7 @@ impl LocalRegistry {
 
 #[async_trait::async_trait(?Send)]
 impl Registry for LocalRegistry {
-    async fn register(
-        &mut self,
-        did: &str,
-        name: &str,
-    ) -> Result<()> {
+    async fn register(&mut self, did: &str, name: &str) -> Result<()> {
         if self.metadata.contains_key(did) {
             return Err(anyhow!("Agent already registered: {}", did));
         }
@@ -237,13 +213,10 @@ impl Registry for LocalRegistry {
         Ok(())
     }
 
-    async fn unregister(
-        &mut self,
-        did: &str,
-    ) -> Result<()> {
+    async fn unregister(&mut self, did: &str) -> Result<()> {
         if let Some(meta) = self.metadata.remove(did) {
             self.name_index.remove(&meta.name);
-            
+
             // Remove from capability index
             for cap in &meta.capabilities {
                 if let Some(dids) = self.capability_index.get_mut(cap) {
@@ -270,10 +243,7 @@ impl Registry for LocalRegistry {
         self.metadata.values().cloned().collect()
     }
 
-    async fn find_by_capability(
-        &self,
-        capability: &str,
-    ) -> Vec<String> {
+    async fn find_by_capability(&self, capability: &str) -> Vec<String> {
         self.find_by_capability(capability)
     }
 }

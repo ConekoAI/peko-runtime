@@ -41,24 +41,15 @@ impl LifecycleManager {
     }
 
     /// Register a new agent
-    pub async fn register(
-        &self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn register(&self, did: &str) -> Result<()> {
         let mut states = self.states.write().await;
-        states.insert(
-            did.to_string(),
-            StateMachine::new(AgentState::Idle),
-        );
+        states.insert(did.to_string(), StateMachine::new(AgentState::Idle));
         debug!("Registered agent lifecycle: {}", did);
         Ok(())
     }
 
     /// Start an agent
-    pub async fn start(
-        &self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn start(&self, did: &str) -> Result<()> {
         let mut states = self.states.write().await;
 
         if let Some(sm) = states.get_mut(did) {
@@ -78,10 +69,7 @@ impl LifecycleManager {
     }
 
     /// Mark agent as busy
-    pub async fn set_busy(
-        &self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn set_busy(&self, did: &str) -> Result<()> {
         let mut states = self.states.write().await;
 
         if let Some(sm) = states.get_mut(did) {
@@ -91,10 +79,7 @@ impl LifecycleManager {
     }
 
     /// Mark agent as idle
-    pub async fn set_idle(
-        &self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn set_idle(&self, did: &str) -> Result<()> {
         let mut states = self.states.write().await;
 
         if let Some(sm) = states.get_mut(did) {
@@ -104,10 +89,7 @@ impl LifecycleManager {
     }
 
     /// Stop an agent
-    pub async fn stop(
-        &self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn stop(&self, did: &str) -> Result<()> {
         let mut states = self.states.write().await;
 
         if let Some(sm) = states.get_mut(did) {
@@ -129,11 +111,7 @@ impl LifecycleManager {
     }
 
     /// Mark agent as error
-    pub async fn set_error(
-        &self,
-        did: &str,
-        error: &str,
-    ) -> Result<()> {
+    pub async fn set_error(&self, did: &str, error: &str) -> Result<()> {
         let mut states = self.states.write().await;
 
         if let Some(sm) = states.get_mut(did) {
@@ -144,19 +122,13 @@ impl LifecycleManager {
     }
 
     /// Get current state
-    pub async fn get_state(
-        &self,
-        did: &str,
-    ) -> Option<AgentState> {
+    pub async fn get_state(&self, did: &str) -> Option<AgentState> {
         let states = self.states.read().await;
         states.get(did).map(|sm| sm.current())
     }
 
     /// Check if agent is running
-    pub async fn is_running(
-        &self,
-        did: &str,
-    ) -> bool {
+    pub async fn is_running(&self, did: &str) -> bool {
         matches!(
             self.get_state(did).await,
             Some(AgentState::Running) | Some(AgentState::Idle)
@@ -164,10 +136,7 @@ impl LifecycleManager {
     }
 
     /// Unregister an agent
-    pub async fn unregister(
-        &self,
-        did: &str,
-    ) {
+    pub async fn unregister(&self, did: &str) {
         let mut states = self.states.write().await;
         states.remove(did);
         debug!("Unregistered agent lifecycle: {}", did);

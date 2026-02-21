@@ -61,7 +61,10 @@ pub enum ManagerEvent {
     /// Agent crashed
     AgentCrashed { did: String, error: String },
     /// Agent registered (discovered)
-    AgentDiscovered { did: String, capabilities: Vec<String> },
+    AgentDiscovered {
+        did: String,
+        capabilities: Vec<String>,
+    },
     /// Context updated
     ContextUpdated { did: String },
     /// Agent exported
@@ -102,11 +105,11 @@ impl AgentManager {
     /// Create a new agent manager
     pub async fn new() -> Result<(Self, mpsc::Receiver<ManagerEvent>)> {
         let (events_tx, events_rx) = mpsc::channel(100);
-        
+
         let data_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("pekobot");
-        
+
         std::fs::create_dir_all(&data_dir)?;
 
         let pool = Arc::new(RwLock::new(AgentPool::new()));
@@ -130,7 +133,7 @@ impl AgentManager {
     /// Create with custom data directory
     pub async fn with_data_dir(data_dir: PathBuf) -> Result<(Self, mpsc::Receiver<ManagerEvent>)> {
         let (events_tx, events_rx) = mpsc::channel(100);
-        
+
         std::fs::create_dir_all(&data_dir)?;
 
         let pool = Arc::new(RwLock::new(AgentPool::new()));
@@ -152,10 +155,7 @@ impl AgentManager {
     }
 
     /// Spawn a new agent (create + start)
-    pub async fn spawn(
-        &self,
-        config: crate::types::agent::AgentConfig,
-    ) -> Result<AgentHandle> {
+    pub async fn spawn(&self, config: crate::types::agent::AgentConfig) -> Result<AgentHandle> {
         info!("Spawning agent: {}", config.name);
 
         // Create agent
@@ -193,7 +193,10 @@ impl AgentManager {
         handle.start().await?;
 
         // Emit event
-        let _ = self.events.send(ManagerEvent::AgentSpawned { did, name }).await;
+        let _ = self
+            .events
+            .send(ManagerEvent::AgentSpawned { did, name })
+            .await;
 
         Ok(handle)
     }
@@ -209,9 +212,12 @@ impl AgentManager {
             pool.stop(did).await?;
         }
 
-        let _ = self.events.send(ManagerEvent::AgentStopped {
-            did: did.to_string(),
-        }).await;
+        let _ = self
+            .events
+            .send(ManagerEvent::AgentStopped {
+                did: did.to_string(),
+            })
+            .await;
 
         Ok(())
     }
@@ -232,7 +238,7 @@ impl AgentManager {
     pub async fn list(&self) -> Vec<AgentInfo> {
         let pool = self.pool.read().await;
         let basic_list = pool.list().await;
-        
+
         // Enhance with identity info
         let mut infos = vec![];
         for info in basic_list {
@@ -241,13 +247,15 @@ impl AgentManager {
                 scope: "local".to_string(),
                 created_at: None,
             };
-            
+
             // Get capabilities from registry
             let reg = self.registry.read().await;
-            let capabilities = reg.get(&info.did).await
+            let capabilities = reg
+                .get(&info.did)
+                .await
                 .map(|m| m.capabilities)
                 .unwrap_or_default();
-            
+
             infos.push(AgentInfo {
                 did: info.did,
                 name: info.name,
@@ -257,15 +265,12 @@ impl AgentManager {
                 identity_info,
             });
         }
-        
+
         infos
     }
 
     /// Get agents by capability
-    pub async fn find_by_capability(
-        &self,
-        capability: &str,
-    ) -> Vec<AgentHandle> {
+    pub async fn find_by_capability(&self, capability: &str) -> Vec<AgentHandle> {
         let reg = self.registry.read().await;
         let dids = reg.find_by_capability(capability);
         drop(reg);
@@ -295,38 +300,37 @@ impl AgentManager {
     }
 
     /// Export an agent to a .agent package
-    pub async fn export_agent(
-        &self,
-        did: &str,
-        options: ExportOptions,
-    ) -> Result<PathBuf> {
+    pub async fn export_agent(&self, did: &str, options: ExportOptions) -> Result<PathBuf> {
         info!("Exporting agent: {}", did);
 
-        let agent = self.get(did).await
+        let agent = self
+            .get(did)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", did))?;
 
         // Get agent's config and identity
         // For now, we need to reconstruct these from the agent
         // In a real implementation, we'd store these references
-        
+
         // Create packager with the agent's info
         // Note: This is a simplified version - in practice we'd need
         // to properly extract config and identity from the agent
         let config = crate::types::agent::AgentConfig::default();
         let identity = self.get_or_create_identity(&agent.name(), None).await?;
-        
+
         let packager = Packager::new(
-            config,
-            identity,
-            None, // memory_path
+            config, identity, None, // memory_path
         );
-        
+
         let path = packager.export(options).await?;
 
-        let _ = self.events.send(ManagerEvent::AgentExported {
-            did: did.to_string(),
-            path: path.clone(),
-        }).await;
+        let _ = self
+            .events
+            .send(ManagerEvent::AgentExported {
+                did: did.to_string(),
+                path: path.clone(),
+            })
+            .await;
 
         Ok(path)
     }
@@ -339,11 +343,10 @@ impl AgentManager {
     ) -> Result<AgentHandle> {
         info!("Importing agent from: {}", file_path);
 
-        let unpackager = Unpackager::new(file_path)
-            .with_base_dir(&self.data_dir);
-        
+        let unpackager = Unpackager::new(file_path).with_base_dir(&self.data_dir);
+
         let result = unpackager.import(options).await?;
-        
+
         let did = result.did;
         let name = result.name;
 
@@ -357,13 +360,15 @@ impl AgentManager {
         // We just need to add it to our pool
         // For now, this is a simplified version
 
-        let _ = self.events.send(ManagerEvent::AgentImported {
-            did,
-            name,
-        }).await;
+        let _ = self
+            .events
+            .send(ManagerEvent::AgentImported { did, name })
+            .await;
 
         // Return a handle - in practice we'd need to get the actual agent
-        Err(anyhow::anyhow!("Import creates agent directly - needs integration"))
+        Err(anyhow::anyhow!(
+            "Import creates agent directly - needs integration"
+        ))
     }
 
     /// Get or create identity for an agent
@@ -373,7 +378,7 @@ impl AgentManager {
         tenant: Option<&str>,
     ) -> Result<Identity> {
         let storage = self.identity_storage.read().await;
-        
+
         let tenant = tenant.unwrap_or("default");
         let identity_name = format!("{}-{}", tenant, name);
 
@@ -386,12 +391,9 @@ impl AgentManager {
         // Create new
         drop(storage);
         let mut storage = self.identity_storage.write().await;
-        
+
         info!("Creating new identity for: {}", identity_name);
-        let identity = Identity::generate(
-            crate::identity::did::DIDScope::Local,
-            Some(tenant),
-        )?;
+        let identity = Identity::generate(crate::identity::did::DIDScope::Local, Some(tenant))?;
 
         storage.store(&identity)?;
         info!("Created and stored new identity: {}", identity.did);

@@ -57,10 +57,7 @@ impl AuditLogger {
     }
 
     /// Log an event
-    pub async fn log(
-        &mut self,
-        event: AuditEvent,
-    ) -> Result<()> {
+    pub async fn log(&mut self, event: AuditEvent) -> Result<()> {
         // In production, write to persistent storage (SQLite, file, etc.)
         // For now, keep in memory buffer
 
@@ -73,24 +70,12 @@ impl AuditLogger {
     }
 
     /// Get recent entries
-    pub async fn get_entries(
-        &self,
-        limit: usize,
-    ) -> Vec<AuditEvent> {
-        self.buffer
-            .iter()
-            .rev()
-            .take(limit)
-            .cloned()
-            .collect()
+    pub async fn get_entries(&self, limit: usize) -> Vec<AuditEvent> {
+        self.buffer.iter().rev().take(limit).cloned().collect()
     }
 
     /// Get entries by agent
-    pub async fn get_by_agent(
-        &self,
-        did: &str,
-        limit: usize,
-    ) -> Vec<AuditEvent> {
+    pub async fn get_by_agent(&self, did: &str, limit: usize) -> Vec<AuditEvent> {
         self.buffer
             .iter()
             .filter(|e| e.agent_did.as_deref() == Some(did))
@@ -101,10 +86,7 @@ impl AuditLogger {
     }
 
     /// Get security events
-    pub async fn get_security_events(
-        &self,
-        limit: usize,
-    ) -> Vec<AuditEvent> {
+    pub async fn get_security_events(&self, limit: usize) -> Vec<AuditEvent> {
         self.buffer
             .iter()
             .filter(|e| e.severity == AuditSeverity::Security)
@@ -115,8 +97,7 @@ impl AuditLogger {
     }
 
     /// Clear buffer
-    pub fn clear(&mut self,
-    ) {
+    pub fn clear(&mut self) {
         self.buffer.clear();
     }
 
@@ -144,14 +125,17 @@ mod tests {
     async fn test_audit_log() {
         let mut logger = AuditLogger::new();
 
-        logger.log(AuditEvent {
-            timestamp: chrono::Utc::now(),
-            component: "test".to_string(),
-            event_type: "agent_spawn".to_string(),
-            agent_did: Some("did:1".to_string()),
-            details: serde_json::json!({}),
-            severity: AuditSeverity::Info,
-        }).await.unwrap();
+        logger
+            .log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                component: "test".to_string(),
+                event_type: "agent_spawn".to_string(),
+                agent_did: Some("did:1".to_string()),
+                details: serde_json::json!({}),
+                severity: AuditSeverity::Info,
+            })
+            .await
+            .unwrap();
 
         assert_eq!(logger.len(), 1);
 

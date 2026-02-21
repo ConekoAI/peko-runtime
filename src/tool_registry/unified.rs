@@ -140,9 +140,7 @@ impl MultiRegistryConfig {
                 url: url.clone(),
                 api_key: None,
             },
-            fallbacks: vec![
-                RegistryBackend::local_only(),
-            ],
+            fallbacks: vec![RegistryBackend::local_only()],
             cache_dir: dirs::cache_dir()
                 .unwrap_or_else(|| PathBuf::from(".cache"))
                 .join("pekobot/tools"),
@@ -187,7 +185,10 @@ impl UnifiedToolRegistry {
         }
 
         // 2. Try primary registry
-        match self.try_load_from_backend(&self.config.primary, tool_name, version).await {
+        match self
+            .try_load_from_backend(&self.config.primary, tool_name, version)
+            .await
+        {
             Ok(path) => return Ok(path),
             Err(e) => {
                 tracing::warn!("Primary registry failed: {}", e);
@@ -196,7 +197,10 @@ impl UnifiedToolRegistry {
 
         // 3. Try fallbacks
         for backend in &self.config.fallbacks {
-            match self.try_load_from_backend(backend, tool_name, version).await {
+            match self
+                .try_load_from_backend(backend, tool_name, version)
+                .await
+            {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     tracing::warn!("Fallback registry failed: {}", e);
@@ -231,16 +235,20 @@ impl UnifiedToolRegistry {
     ) -> anyhow::Result<PathBuf> {
         match backend {
             RegistryBackend::Pekohub { url, api_key } => {
-                self.load_from_pekohub(url, api_key.as_deref(), tool_name, version).await
+                self.load_from_pekohub(url, api_key.as_deref(), tool_name, version)
+                    .await
             }
-            RegistryBackend::Local { path } => {
-                self.load_from_local(path, tool_name, version).await
-            }
-            RegistryBackend::Source { source_path, build_cache } => {
-                self.build_from_source_path(source_path, build_cache, tool_name).await
+            RegistryBackend::Local { path } => self.load_from_local(path, tool_name, version).await,
+            RegistryBackend::Source {
+                source_path,
+                build_cache,
+            } => {
+                self.build_from_source_path(source_path, build_cache, tool_name)
+                    .await
             }
             RegistryBackend::Embedded { package_path } => {
-                self.load_from_embedded(package_path, tool_name, version).await
+                self.load_from_embedded(package_path, tool_name, version)
+                    .await
             }
         }
     }
@@ -254,7 +262,10 @@ impl UnifiedToolRegistry {
         version: Option<&str>,
     ) -> anyhow::Result<PathBuf> {
         let version_str = version.unwrap_or("latest");
-        let manifest_url = format!("{}/api/v1/tools/{}/{}/manifest", base_url, tool_name, version_str);
+        let manifest_url = format!(
+            "{}/api/v1/tools/{}/{}/manifest",
+            base_url, tool_name, version_str
+        );
 
         let mut request = self.http_client.get(&manifest_url);
         if let Some(key) = api_key {
@@ -267,18 +278,21 @@ impl UnifiedToolRegistry {
         }
 
         let manifest: serde_json::Value = response.json().await?;
-        let platforms = manifest.get("platforms")
+        let platforms = manifest
+            .get("platforms")
             .ok_or_else(|| anyhow::anyhow!("No platforms in manifest"))?
             .as_object()
             .ok_or_else(|| anyhow::anyhow!("Invalid platforms"))?;
 
         // Find platform for current system
         let current_platform = detect_platform();
-        let platform_info = platforms.get(&current_platform)
-            .or_else(|| platforms.get("linux-x64"))  // Fallback
+        let platform_info = platforms
+            .get(&current_platform)
+            .or_else(|| platforms.get("linux-x64")) // Fallback
             .ok_or_else(|| anyhow::anyhow!("No binary for platform: {}", current_platform))?;
 
-        let download_path = platform_info.get("url")
+        let download_path = platform_info
+            .get("url")
             .and_then(|u| u.as_str())
             .ok_or_else(|| anyhow::anyhow!("No download URL"))?;
 
@@ -289,7 +303,9 @@ impl UnifiedToolRegistry {
         };
 
         // Download binary
-        let binary_data = self.http_client.get(&full_url)
+        let binary_data = self
+            .http_client
+            .get(&full_url)
             .send()
             .await?
             .bytes()
@@ -297,7 +313,7 @@ impl UnifiedToolRegistry {
 
         // Cache and return path
         let cache_path = self.save_to_cache(tool_name, version, &binary_data).await?;
-        
+
         // Make executable on Unix
         #[cfg(unix)]
         {
@@ -319,7 +335,7 @@ impl UnifiedToolRegistry {
     ) -> anyhow::Result<PathBuf> {
         let version_str = version.unwrap_or("latest");
         let platform = detect_platform();
-        
+
         let tool_path = base_path
             .join(tool_name)
             .join(version_str)
@@ -337,9 +353,10 @@ impl UnifiedToolRegistry {
         let source_path = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(format!("pekobot/tool-sources/{}", tool_name));
-        
+
         let build_cache = self.config.cache_dir.join("builds");
-        self.build_from_source_path(&source_path, &build_cache, tool_name).await
+        self.build_from_source_path(&source_path, &build_cache, tool_name)
+            .await
     }
 
     /// Build from specific source path
@@ -379,10 +396,8 @@ impl UnifiedToolRegistry {
         }
 
         // Copy to cache
-        let built_binary = source_path
-            .join("target/release")
-            .join(tool_name);
-        
+        let built_binary = source_path.join("target/release").join(tool_name);
+
         let cache_path = build_cache.join(tool_name);
         std::fs::create_dir_all(&build_cache)?;
         std::fs::copy(&built_binary, &cache_path)?;
@@ -401,9 +416,9 @@ impl UnifiedToolRegistry {
         let tools_dir = package_path.join("tools");
         let platform = detect_platform();
         let binary_name = format!("{}-{}", tool_name, platform);
-        
+
         let tool_path = tools_dir.join(&binary_name);
-        
+
         if tool_path.exists() {
             Ok(tool_path)
         } else {
@@ -419,7 +434,9 @@ impl UnifiedToolRegistry {
     ) -> anyhow::Result<Option<PathBuf>> {
         let version_str = version.unwrap_or("latest");
         let platform = detect_platform();
-        let cache_path = self.config.cache_dir
+        let cache_path = self
+            .config
+            .cache_dir
             .join(tool_name)
             .join(version_str)
             .join(format!("{}-{}", tool_name, platform));
@@ -441,15 +458,13 @@ impl UnifiedToolRegistry {
     ) -> anyhow::Result<PathBuf> {
         let version_str = version.unwrap_or("latest");
         let platform = detect_platform();
-        let cache_dir = self.config.cache_dir
-            .join(tool_name)
-            .join(version_str);
-        
+        let cache_dir = self.config.cache_dir.join(tool_name).join(version_str);
+
         std::fs::create_dir_all(&cache_dir)?;
-        
+
         let cache_path = cache_dir.join(format!("{}-{}", tool_name, platform));
         tokio::fs::write(&cache_path, data).await?;
-        
+
         tracing::info!("Cached: {}", cache_path.display());
         Ok(cache_path)
     }
@@ -488,8 +503,9 @@ impl UnifiedToolRegistry {
 
                 let response = request.send().await?;
                 let data: serde_json::Value = response.json().await?;
-                
-                let tools: Vec<ToolInfo> = data.get("tools")
+
+                let tools: Vec<ToolInfo> = data
+                    .get("tools")
                     .and_then(|t| t.as_array())
                     .map(|arr| {
                         arr.iter()

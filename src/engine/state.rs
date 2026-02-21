@@ -192,9 +192,9 @@ impl StateMachine {
 
     /// Time in current state
     pub fn time_in_current_state(&self) -> Option<chrono::Duration> {
-        self.history.last().map(|t| {
-            chrono::Utc::now().signed_duration_since(t.timestamp)
-        })
+        self.history
+            .last()
+            .map(|t| chrono::Utc::now().signed_duration_since(t.timestamp))
     }
 
     /// Check if agent is active (running or paused)

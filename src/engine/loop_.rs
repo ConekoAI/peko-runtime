@@ -19,11 +19,7 @@ pub struct AgenticLoop {
 
 impl AgenticLoop {
     /// Create a new agentic loop
-    pub fn new(
-        agent: Arc<Agent>,
-        provider: Arc<dyn Provider>,
-        tools: Vec<Arc<dyn Tool>>,
-    ) -> Self {
+    pub fn new(agent: Arc<Agent>, provider: Arc<dyn Provider>, tools: Vec<Arc<dyn Tool>>) -> Self {
         Self {
             agent,
             provider,

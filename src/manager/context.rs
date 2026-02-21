@@ -28,9 +28,7 @@ impl AgentContext {
     }
 
     /// Find agents with a specific capability
-    pub fn find_by_capability(&self,
-        capability: &str,
-    ) -> Vec<&AgentSummary> {
+    pub fn find_by_capability(&self, capability: &str) -> Vec<&AgentSummary> {
         self.registry_view
             .agents
             .iter()
@@ -39,27 +37,18 @@ impl AgentContext {
     }
 
     /// Get agent by DID
-    pub fn get_agent(&self,
-        did: &str,
-    ) -> Option<&AgentSummary> {
+    pub fn get_agent(&self, did: &str) -> Option<&AgentSummary> {
         self.registry_view.agents.iter().find(|a| a.did == did)
     }
 
     /// Get agent state
-    pub fn get_agent_state(&self,
-        did: &str,
-    ) -> Option<&str> {
+    pub fn get_agent_state(&self, did: &str) -> Option<&str> {
         self.agent_states.get(did).map(|s| s.as_str())
     }
 
     /// Check if agent is available (running and not busy)
-    pub fn is_agent_available(&self,
-        did: &str,
-    ) -> bool {
-        matches!(
-            self.get_agent_state(did),
-            Some("idle") | Some("running")
-        )
+    pub fn is_agent_available(&self, did: &str) -> bool {
+        matches!(self.get_agent_state(did), Some("idle") | Some("running"))
     }
 }
 
@@ -101,11 +90,7 @@ impl CapabilityIndex {
     }
 
     /// Register agent capabilities
-    pub fn register(
-        &mut self,
-        did: &str,
-        capabilities: &[String],
-    ) {
+    pub fn register(&mut self, did: &str, capabilities: &[String]) {
         for cap in capabilities {
             self.index
                 .entry(cap.clone())
@@ -115,10 +100,7 @@ impl CapabilityIndex {
     }
 
     /// Unregister agent
-    pub fn unregister(
-        &mut self,
-        did: &str,
-    ) {
+    pub fn unregister(&mut self, did: &str) {
         for (_, dids) in self.index.iter_mut() {
             dids.retain(|d| d != did);
         }
@@ -126,10 +108,7 @@ impl CapabilityIndex {
 
     /// Find agents by capability
     pub fn find(&self, capability: &str) -> Vec<String> {
-        self.index
-            .get(capability)
-            .cloned()
-            .unwrap_or_default()
+        self.index.get(capability).cloned().unwrap_or_default()
     }
 
     /// Get all capabilities
@@ -173,7 +152,8 @@ mod tests {
             description: None,
         });
 
-        ctx.agent_states.insert("did:1".to_string(), "idle".to_string());
+        ctx.agent_states
+            .insert("did:1".to_string(), "idle".to_string());
 
         let searchers = ctx.find_by_capability("search");
         assert_eq!(searchers.len(), 1);

@@ -32,7 +32,10 @@ async fn test_secret_manager_basic_workflow() {
     assert_eq!(entry.secret_type, SecretType::ApiKey);
 
     // Retrieve
-    let value = manager.get("TEST_API_KEY", &SecretScope::Global).await.unwrap();
+    let value = manager
+        .get("TEST_API_KEY", &SecretScope::Global)
+        .await
+        .unwrap();
     assert_eq!(value, Some("sk-test12345".to_string()));
 
     // Lock
@@ -88,11 +91,23 @@ async fn test_secret_manager_list() {
     manager.unlock("password").await.unwrap();
 
     manager
-        .set("KEY1", SecretScope::Global, "value1", SecretType::ApiKey, None)
+        .set(
+            "KEY1",
+            SecretScope::Global,
+            "value1",
+            SecretType::ApiKey,
+            None,
+        )
         .await
         .unwrap();
     manager
-        .set("KEY2", SecretScope::Global, "value2", SecretType::Token, None)
+        .set(
+            "KEY2",
+            SecretScope::Global,
+            "value2",
+            SecretType::Token,
+            None,
+        )
         .await
         .unwrap();
 
@@ -109,14 +124,26 @@ async fn test_secret_manager_delete() {
     manager.unlock("password").await.unwrap();
 
     manager
-        .set("TO_DELETE", SecretScope::Global, "value", SecretType::ApiKey, None)
+        .set(
+            "TO_DELETE",
+            SecretScope::Global,
+            "value",
+            SecretType::ApiKey,
+            None,
+        )
         .await
         .unwrap();
 
-    let deleted = manager.delete("TO_DELETE", &SecretScope::Global).await.unwrap();
+    let deleted = manager
+        .delete("TO_DELETE", &SecretScope::Global)
+        .await
+        .unwrap();
     assert!(deleted);
 
-    let not_found = manager.get("TO_DELETE", &SecretScope::Global).await.unwrap();
+    let not_found = manager
+        .get("TO_DELETE", &SecretScope::Global)
+        .await
+        .unwrap();
     assert_eq!(not_found, None);
 }
 
@@ -129,7 +156,13 @@ async fn test_secret_manager_permissions() {
     manager.unlock("password").await.unwrap();
 
     manager
-        .set("SECRET", SecretScope::Global, "value", SecretType::ApiKey, None)
+        .set(
+            "SECRET",
+            SecretScope::Global,
+            "value",
+            SecretType::ApiKey,
+            None,
+        )
         .await
         .unwrap();
 
@@ -174,11 +207,20 @@ async fn test_secret_manager_audit_log() {
     manager.unlock("password").await.unwrap();
 
     manager
-        .set("AUDIT_TEST", SecretScope::Global, "value", SecretType::ApiKey, None)
+        .set(
+            "AUDIT_TEST",
+            SecretScope::Global,
+            "value",
+            SecretType::ApiKey,
+            None,
+        )
         .await
         .unwrap();
 
-    let value = manager.get("AUDIT_TEST", &SecretScope::Global).await.unwrap();
+    let value = manager
+        .get("AUDIT_TEST", &SecretScope::Global)
+        .await
+        .unwrap();
     assert!(value.is_some());
 
     // Query audit log
@@ -205,7 +247,13 @@ async fn test_secret_resolver_basic() {
     manager.unlock("password").await.unwrap();
 
     manager
-        .set("RESOLVE_KEY", SecretScope::Global, "resolved-value", SecretType::ApiKey, None)
+        .set(
+            "RESOLVE_KEY",
+            SecretScope::Global,
+            "resolved-value",
+            SecretType::ApiKey,
+            None,
+        )
         .await
         .unwrap();
 
@@ -232,17 +280,32 @@ async fn test_secret_manager_update() {
     manager.unlock("password").await.unwrap();
 
     let entry = manager
-        .set("UPDATE_KEY", SecretScope::Global, "v1", SecretType::ApiKey, None)
+        .set(
+            "UPDATE_KEY",
+            SecretScope::Global,
+            "v1",
+            SecretType::ApiKey,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(entry.version, 1);
 
     let updated = manager
-        .set("UPDATE_KEY", SecretScope::Global, "v2", SecretType::ApiKey, None)
+        .set(
+            "UPDATE_KEY",
+            SecretScope::Global,
+            "v2",
+            SecretType::ApiKey,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(updated.version, 2);
 
-    let value = manager.get("UPDATE_KEY", &SecretScope::Global).await.unwrap();
+    let value = manager
+        .get("UPDATE_KEY", &SecretScope::Global)
+        .await
+        .unwrap();
     assert_eq!(value, Some("v2".to_string()));
 }

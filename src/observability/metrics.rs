@@ -47,11 +47,7 @@ impl MetricsCollector {
     }
 
     /// Increment counter
-    pub fn counter(
-        &mut self,
-        name: &str,
-        value: u64,
-    ) {
+    pub fn counter(&mut self, name: &str, value: u64) {
         self.counters
             .entry(name.to_string())
             .or_insert_with(|| AtomicU64::new(0))
@@ -59,12 +55,9 @@ impl MetricsCollector {
     }
 
     /// Record histogram value
-    pub fn histogram(
-        &mut self,
-        name: &str,
-        value: u64,
-    ) {
-        let values = self.histograms
+    pub fn histogram(&mut self, name: &str, value: u64) {
+        let values = self
+            .histograms
             .entry(name.to_string())
             .or_insert_with(Vec::new);
 
@@ -77,11 +70,7 @@ impl MetricsCollector {
     }
 
     /// Set gauge value
-    pub fn gauge(
-        &mut self,
-        name: &str,
-        value: u64,
-    ) {
+    pub fn gauge(&mut self, name: &str, value: u64) {
         self.gauges
             .entry(name.to_string())
             .or_insert_with(|| AtomicU64::new(0))
@@ -89,9 +78,7 @@ impl MetricsCollector {
     }
 
     /// Get counter value
-    pub fn get_counter(&self,
-        name: &str,
-    ) -> u64 {
+    pub fn get_counter(&self, name: &str) -> u64 {
         self.counters
             .get(name)
             .map(|c| c.load(Ordering::Relaxed))
@@ -99,10 +86,7 @@ impl MetricsCollector {
     }
 
     /// Get histogram stats
-    pub fn get_histogram_stats(
-        &self,
-        name: &str,
-    ) -> Option<HistogramStats> {
+    pub fn get_histogram_stats(&self, name: &str) -> Option<HistogramStats> {
         let values = self.histograms.get(name)?;
 
         if values.is_empty() {
@@ -133,9 +117,7 @@ impl MetricsCollector {
     }
 
     /// Get gauge value
-    pub fn get_gauge(&self,
-        name: &str,
-    ) -> u64 {
+    pub fn get_gauge(&self, name: &str) -> u64 {
         self.gauges
             .get(name)
             .map(|g| g.load(Ordering::Relaxed))
@@ -143,23 +125,23 @@ impl MetricsCollector {
     }
 
     /// Get all metrics snapshot
-    pub async fn snapshot(&self,
-    ) -> serde_json::Value {
-        let counters: HashMap<String, u64> = self.counters
+    pub async fn snapshot(&self) -> serde_json::Value {
+        let counters: HashMap<String, u64> = self
+            .counters
             .iter()
             .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
             .collect();
 
-        let gauges: HashMap<String, u64> = self.gauges
+        let gauges: HashMap<String, u64> = self
+            .gauges
             .iter()
             .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
             .collect();
 
-        let histograms: HashMap<String, HistogramStats> = self.histograms
+        let histograms: HashMap<String, HistogramStats> = self
+            .histograms
             .keys()
-            .filter_map(|k| {
-                self.get_histogram_stats(k).map(|s| (k.clone(), s))
-            })
+            .filter_map(|k| self.get_histogram_stats(k).map(|s| (k.clone(), s)))
             .collect();
 
         serde_json::json!({
@@ -198,15 +180,12 @@ impl Counter {
     }
 
     /// Increment
-    pub fn inc(&self,
-    ) {
+    pub fn inc(&self) {
         self.value.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Add value
-    pub fn add(&self,
-        value: u64,
-    ) {
+    pub fn add(&self, value: u64) {
         self.value.fetch_add(value, Ordering::Relaxed);
     }
 
@@ -226,9 +205,7 @@ impl Gauge {
     }
 
     /// Set value
-    pub fn set(&self,
-        value: u64,
-    ) {
+    pub fn set(&self, value: u64) {
         self.value.store(value, Ordering::Relaxed);
     }
 
@@ -249,9 +226,7 @@ impl Histogram {
     }
 
     /// Record value
-    pub fn record(&mut self,
-        value: u64,
-    ) {
+    pub fn record(&mut self, value: u64) {
         self.values.push(value);
         if self.values.len() > self.max_samples {
             self.values.remove(0);

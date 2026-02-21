@@ -63,11 +63,7 @@ impl Tracer {
     }
 
     /// Start a new span
-    pub fn start_span(
-        &self,
-        name: &str,
-        parent_id: Option<&str>,
-    ) -> TraceSpan {
+    pub fn start_span(&self, name: &str, parent_id: Option<&str>) -> TraceSpan {
         let id = format!("span-{}", self.counter.fetch_add(1, Ordering::Relaxed));
 
         TraceSpan {
@@ -83,9 +79,7 @@ impl Tracer {
     }
 
     /// End a span
-    pub fn end_span(&self,
-        span: &mut TraceSpan,
-    ) {
+    pub fn end_span(&self, span: &mut TraceSpan) {
         span.ended_at = Some(chrono::Utc::now());
         span.duration_ms = Some(
             span.ended_at
@@ -97,8 +91,7 @@ impl Tracer {
     }
 
     /// Create root context
-    pub fn create_root_context(&self,
-    ) -> TraceContext {
+    pub fn create_root_context(&self) -> TraceContext {
         TraceContext {
             trace_id: format!("trace-{}", self.counter.fetch_add(1, Ordering::Relaxed)),
             span_id: format!("span-{}", self.counter.fetch_add(1, Ordering::Relaxed)),
@@ -107,10 +100,7 @@ impl Tracer {
     }
 
     /// Create child context
-    pub fn create_child_context(
-        &self,
-        parent: &TraceContext,
-    ) -> TraceContext {
+    pub fn create_child_context(&self, parent: &TraceContext) -> TraceContext {
         TraceContext {
             trace_id: parent.trace_id.clone(),
             span_id: format!("span-{}", self.counter.fetch_add(1, Ordering::Relaxed)),
@@ -127,26 +117,17 @@ impl Default for Tracer {
 
 impl TraceSpan {
     /// Set attribute
-    pub fn set_attr(
-        &mut self,
-        key: &str,
-        value: impl Into<serde_json::Value>,
-    ) {
+    pub fn set_attr(&mut self, key: &str, value: impl Into<serde_json::Value>) {
         self.attributes.insert(key.to_string(), value.into());
     }
 
     /// Get attribute
-    pub fn get_attr(&self,
-        key: &str,
-    ) -> Option<&serde_json::Value> {
+    pub fn get_attr(&self, key: &str) -> Option<&serde_json::Value> {
         self.attributes.get(key)
     }
 
     /// Mark as error
-    pub fn set_error(
-        &mut self,
-        error: &str,
-    ) {
+    pub fn set_error(&mut self, error: &str) {
         self.attributes.insert("error".to_string(), error.into());
         self.status = SpanStatus::Error;
     }

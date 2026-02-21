@@ -107,12 +107,8 @@ impl AgentRunner {
         };
 
         // Create the agentic loop
-        let loop_ = AgenticLoop::new(
-            self.agent.clone(),
-            self.provider.clone(),
-            tools,
-        )
-        .with_max_iterations(self.config.max_iterations);
+        let loop_ = AgenticLoop::new(self.agent.clone(), self.provider.clone(), tools)
+            .with_max_iterations(self.config.max_iterations);
 
         // Run with timeout
         let timeout_duration = Duration::from_secs(
@@ -147,11 +143,7 @@ impl AgentRunner {
 
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-        let tool_calls: Vec<String> = result
-            .tool_calls
-            .iter()
-            .map(|tc| tc.name.clone())
-            .collect();
+        let tool_calls: Vec<String> = result.tool_calls.iter().map(|tc| tc.name.clone()).collect();
 
         info!(
             "AgentRunner completed: success={}, iterations={}, tools={}, time={}ms",
@@ -172,10 +164,7 @@ impl AgentRunner {
     }
 
     /// Run with streaming (placeholder for future implementation)
-    pub async fn run_streaming(
-        &self,
-        _prompt: &str,
-    ) -> Result<RunResult> {
+    pub async fn run_streaming(&self, _prompt: &str) -> Result<RunResult> {
         // TODO: Implement streaming support
         warn!("Streaming not yet implemented, falling back to regular run");
         self.run(_prompt).await

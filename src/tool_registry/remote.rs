@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::tool_registry::{BinaryUrls, InstalledTool, ToolCapabilities, ToolManifest, ToolMetadata};
+use crate::tool_registry::{
+    BinaryUrls, InstalledTool, ToolCapabilities, ToolManifest, ToolMetadata,
+};
 
 /// Pekohub API manifest response format
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,11 +73,12 @@ impl PekohubManifest {
                 provides: self.capabilities,
                 permissions: None,
             },
-            binaries: if binaries.linux_x64.is_some() 
+            binaries: if binaries.linux_x64.is_some()
                 || binaries.linux_arm64.is_some()
                 || binaries.macos_x64.is_some()
                 || binaries.macos_arm64.is_some()
-                || binaries.windows_x64.is_some() {
+                || binaries.windows_x64.is_some()
+            {
                 Some(binaries)
             } else {
                 None
