@@ -1,8 +1,10 @@
 //! Agent management module
+//!
+//! Note: The agentic loop has been moved to `engine::loop_`.
+//! This module re-exports for backward compatibility.
 
-pub mod loop_;
-
-pub use loop_::{AgenticLoop, AgenticResult, ToolCall};
+// Re-export from engine for backward compatibility
+pub use crate::engine::loop_::{AgenticLoop, AgenticResult, ToolCall};
 
 use crate::a2a::{A2AFlowHandler, A2AProtocol, SharedRegistry};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};

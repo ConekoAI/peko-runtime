@@ -21,6 +21,7 @@ pub mod coneko;
 pub mod config;
 pub mod cron;
 pub mod daemon;
+pub mod engine;
 pub mod identity;
 pub mod memory;
 pub mod portable;

@@ -4,20 +4,26 @@ use crate::agent::Agent;
 use crate::providers::Provider;
 use crate::tools::Tool;
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 /// The main agentic loop that runs an agent with tool calling
 pub struct AgenticLoop {
-    agent: Agent,
-    provider: Box<dyn Provider>,
-    tools: Vec<Box<dyn Tool>>,
+    agent: Arc<Agent>,
+    provider: Arc<dyn Provider>,
+    tools: Vec<Arc<dyn Tool>>,
     max_iterations: usize,
 }
 
 impl AgenticLoop {
     /// Create a new agentic loop
-    pub fn new(agent: Agent, provider: Box<dyn Provider>, tools: Vec<Box<dyn Tool>>) -> Self {
+    pub fn new(
+        agent: Arc<Agent>,
+        provider: Arc<dyn Provider>,
+        tools: Vec<Arc<dyn Tool>>,
+    ) -> Self {
         Self {
             agent,
             provider,
@@ -33,7 +39,7 @@ impl AgenticLoop {
     }
 
     /// Run the agentic loop with a user prompt
-    pub async fn run(&mut self, prompt: &str) -> Result<AgenticResult> {
+    pub async fn run(&self, prompt: &str) -> Result<AgenticResult> {
         info!("Starting agentic loop for agent: {}", self.agent.name());
 
         let mut iteration = 0;
@@ -48,6 +54,8 @@ impl AgenticLoop {
             }),
         ];
 
+        let mut tool_calls_made: Vec<ToolCall> = vec![];
+
         loop {
             iteration += 1;
             if iteration > self.max_iterations {
@@ -55,7 +63,7 @@ impl AgenticLoop {
                 return Ok(AgenticResult {
                     success: false,
                     final_answer: "Max iterations reached".to_string(),
-                    tool_calls: vec![],
+                    tool_calls: tool_calls_made,
                     iterations: iteration,
                 });
             }
@@ -76,6 +84,7 @@ impl AgenticLoop {
                 // Execute tool
                 info!("Executing tool: {}", tool_call.name);
                 let tool_result = self.execute_tool(&tool_call).await;
+                tool_calls_made.push(tool_call);
 
                 // Add tool call and result to context
                 context.push(json!({
@@ -89,10 +98,11 @@ impl AgenticLoop {
             } else if self.is_final_answer(&response) {
                 // Final answer reached
                 info!("Final answer received after {} iterations", iteration);
+                let answer = self.extract_final_answer(&response);
                 return Ok(AgenticResult {
                     success: true,
-                    final_answer: response,
-                    tool_calls: vec![],
+                    final_answer: answer,
+                    tool_calls: tool_calls_made,
                     iterations: iteration,
                 });
             } else {
@@ -160,6 +170,15 @@ Think step by step. Use tools when needed. Always end with FINAL_ANSWER."#,
         response.contains("FINAL_ANSWER:")
     }
 
+    /// Extract final answer from response
+    fn extract_final_answer(&self, response: &str) -> String {
+        if let Some(start) = response.find("FINAL_ANSWER:") {
+            response[start + "FINAL_ANSWER:".len()..].trim().to_string()
+        } else {
+            response.to_string()
+        }
+    }
+
     /// Execute a tool
     async fn execute_tool(&self, call: &ToolCall) -> String {
         for tool in &self.tools {
@@ -175,18 +194,24 @@ Think step by step. Use tools when needed. Always end with FINAL_ANSWER."#,
 }
 
 /// Result of running the agentic loop
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AgenticResult {
+    /// Whether execution succeeded
     pub success: bool,
+    /// Final answer from the agent
     pub final_answer: String,
+    /// Tool calls made during execution
     pub tool_calls: Vec<ToolCall>,
+    /// Number of iterations
     pub iterations: usize,
 }
 
 /// A tool call parsed from LLM response
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ToolCall {
+    /// Tool name
     pub name: String,
+    /// Tool parameters
     pub parameters: serde_json::Value,
 }
 
@@ -195,42 +220,12 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "Needs refactoring for async Agent::new"]
     fn test_parse_tool_call() {
-        // Test would require async runtime setup
-        // let loop_ = AgenticLoop::new(...)
+        // Note: Would need async runtime and mock setup for full test
     }
 
     #[test]
-    #[ignore = "Needs refactoring for async Agent::new"]
     fn test_is_final_answer() {
-        // Test would require async runtime setup
-        // let loop_ = AgenticLoop::new(...)
-        // assert!(loop_.is_final_answer("FINAL_ANSWER: The answer is 42"));
-        // assert!(!loop_.is_final_answer("Let me think about this..."));
-    }
-}
-
-// Mock provider for tests
-struct MockProvider;
-
-#[async_trait::async_trait]
-impl Provider for MockProvider {
-    fn name(&self) -> &'static str {
-        "mock"
-    }
-
-    async fn complete(&self, _prompt: &str) -> Result<String> {
-        Ok("FINAL_ANSWER: test".to_string())
-    }
-
-    async fn chat_with_system(
-        &self,
-        _system_prompt: Option<&str>,
-        message: &str,
-        _model: &str,
-        _temperature: f64,
-    ) -> Result<String> {
-        Ok(format!("FINAL_ANSWER: {message}"))
+        // Note: Would need async runtime and mock setup for full test
     }
 }
