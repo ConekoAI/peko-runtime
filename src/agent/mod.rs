@@ -6,7 +6,6 @@
 // Re-export from engine for backward compatibility
 pub use crate::engine::loop_::{AgenticLoop, AgenticResult, ToolCall};
 
-use crate::a2a::{A2AFlowHandler, A2AProtocol, SharedRegistry};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::memory::sqlite::SqliteMemory;
 use crate::providers::{OpenAIConfig, OpenAIProvider, Provider};
@@ -185,11 +184,9 @@ impl Agent {
         query: &str,
         limit: usize,
     ) -> Result<Vec<crate::types::memory::MemoryEntry>> {
-        // Convert from sqlite MemoryEntry to types MemoryEntry
         match &self.memory {
             Some(memory) => {
                 let entries = memory.search(query, limit)?;
-                // Map to the correct type
                 Ok(entries
                     .into_iter()
                     .map(|e| crate::types::memory::MemoryEntry {
@@ -223,39 +220,6 @@ impl Agent {
             Some(memory) => memory.store(content, metadata),
             None => Err(anyhow::anyhow!("Memory not initialized")),
         }
-    }
-
-    /// Create a flow handler for this agent
-    pub fn create_flow_handler(&self) -> A2AFlowHandler {
-        A2AFlowHandler::new(self.did())
-    }
-
-    /// Handle an incoming A2A message
-    pub async fn handle_a2a_message(
-        &mut self,
-        message: &crate::a2a::A2AMessage,
-    ) -> Result<Option<crate::a2a::A2AMessage>> {
-        info!(
-            "Agent {} handling A2A message: {:?}",
-            self.name(),
-            message.message_type
-        );
-
-        // Store the message in memory
-        if let Some(memory) = &self.memory {
-            let _ = memory.store(
-                &format!("A2A message received: {:?}", message.message_type),
-                Some(serde_json::json!({
-                    "sender": message.sender.did,
-                    "message_type": format!("{:?}", message.message_type),
-                    "message_id": message.message_id,
-                    "thread_id": message.thread_id,
-                })),
-            );
-        }
-
-        // For now, just acknowledge
-        Ok(None)
     }
 
     /// Get agent DID
@@ -352,133 +316,12 @@ impl Agent {
             let provider = OpenAIProvider::new(openai_config)?;
             Ok(Some(Box::new(provider)))
         } else {
-            // Other providers not yet implemented
             warn!(
                 "Provider type not yet implemented: {:?}",
                 config.provider.provider_type
             );
             Ok(None)
         }
-    }
-}
-
-/// Multi-agent orchestrator with A2A support
-pub struct Orchestrator {
-    /// A2A Protocol handler
-    protocol: Option<A2AProtocol>,
-    /// Shared registry reference
-    registry: Option<SharedRegistry>,
-}
-
-impl Orchestrator {
-    /// Create a new orchestrator
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            protocol: None,
-            registry: None,
-        }
-    }
-
-    /// Create an orchestrator with A2A registry
-    pub fn with_registry(registry: SharedRegistry) -> Self {
-        let protocol = A2AProtocol::new(registry.clone());
-        Self {
-            protocol: Some(protocol),
-            registry: Some(registry),
-        }
-    }
-
-    /// Add an agent to the orchestrator
-    pub async fn add_agent(&mut self, agent: Agent) -> Result<()> {
-        info!("Adding agent to orchestrator: {}", agent.name());
-
-        let did = agent.did().to_string();
-        let flow_handler = agent.create_flow_handler();
-
-        // Register in registry if available
-        if let Some(registry) = &self.registry {
-            registry.register(agent).await?;
-        }
-
-        // Register flow handler if protocol is available
-        if let Some(protocol) = &mut self.protocol {
-            protocol.register_agent_handler(&did, flow_handler);
-        }
-
-        Ok(())
-    }
-
-    /// Get the A2A protocol handler
-    pub fn protocol(&mut self) -> Option<&mut A2AProtocol> {
-        self.protocol.as_mut()
-    }
-
-    /// Get the registry
-    #[must_use]
-    pub fn registry(&self) -> Option<&SharedRegistry> {
-        self.registry.as_ref()
-    }
-
-    /// Start all agents
-    pub async fn start_all(&self) -> Result<()> {
-        if let Some(registry) = &self.registry {
-            registry.start_all().await?;
-        }
-        Ok(())
-    }
-
-    /// Stop all agents
-    pub async fn stop_all(&self) -> Result<()> {
-        if let Some(registry) = &self.registry {
-            registry.stop_all().await?;
-        }
-        Ok(())
-    }
-
-    /// List all registered agents
-    pub async fn list_agents(&self) -> Vec<(String, String)> {
-        if let Some(registry) = &self.registry {
-            registry.list_agents().await
-        } else {
-            vec![]
-        }
-    }
-
-    /// Find agent by DID
-    pub async fn find_by_did(&self, did: &str) -> Option<crate::a2a::ArcAgent> {
-        if let Some(registry) = &self.registry {
-            registry.get_by_did(did).await
-        } else {
-            None
-        }
-    }
-
-    /// Find agent by name
-    pub async fn find_by_name(&self, name: &str) -> Option<crate::a2a::ArcAgent> {
-        if let Some(registry) = &self.registry {
-            registry.get_by_name(name).await
-        } else {
-            None
-        }
-    }
-
-    /// Run the orchestrator with A2A message loop
-    pub async fn run(&mut self) -> Result<()> {
-        if let (Some(protocol), Some(_registry)) = (&mut self.protocol, &self.registry) {
-            use crate::a2a::registry::create_registry;
-            // Create a dummy receiver - this is a simplified version
-            // In production, you'd pass the actual receiver from create_registry
-            let (_, receiver) = create_registry();
-            protocol.run(receiver).await?;
-        }
-        Ok(())
-    }
-}
-
-impl Default for Orchestrator {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -494,7 +337,7 @@ mod tests {
         let config = AgentConfig {
             name: "test-agent".to_string(),
             provider: ProviderConfig {
-                provider_type: ProviderType::Ollama, // Use Ollama which doesn't require API key
+                provider_type: ProviderType::Ollama,
                 ..Default::default()
             },
             ..Default::default()
@@ -506,39 +349,5 @@ mod tests {
         let agent = agent.unwrap();
         assert_eq!(agent.name(), "test-agent");
         assert!(agent.did().starts_with("did:pekobot:"));
-    }
-
-    #[test]
-    fn test_orchestrator() {
-        let orch = Orchestrator::new();
-        // Orchestrator without registry has no agents
-        assert!(orch.registry().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_orchestrator_with_registry() {
-        use crate::a2a::registry::create_registry;
-        use crate::types::provider::{ProviderConfig, ProviderType};
-
-        let (registry, _receiver) = create_registry();
-        let mut orch = Orchestrator::with_registry(registry);
-
-        // Create and add a test agent
-        let config = AgentConfig {
-            name: "test-agent".to_string(),
-            provider: ProviderConfig {
-                provider_type: ProviderType::Ollama, // Use Ollama which doesn't require API key
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let agent = Agent::new(config).await.unwrap();
-        orch.add_agent(agent).await.unwrap();
-
-        // Verify agent is registered
-        let agents = orch.list_agents().await;
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].1, "test-agent");
     }
 }

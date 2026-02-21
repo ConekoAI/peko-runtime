@@ -13,11 +13,9 @@
 
 #![warn(clippy::all, clippy::pedantic)]
 
-pub mod a2a;
 pub mod agent;
 pub mod capability_registry;
 pub mod channels;
-pub mod coneko;
 pub mod config;
 pub mod cron;
 pub mod daemon;

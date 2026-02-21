@@ -2,7 +2,6 @@
 //!
 //! Resolves DIDs to their DID documents. Supports:
 //! - Local storage resolution (for identities we control)
-//! - Network resolution via Coneko (optional)
 //! - Caching for performance
 
 use anyhow::{Context, Result};
@@ -30,8 +29,6 @@ pub struct DidResolver {
     cache: Arc<RwLock<HashMap<String, CacheEntry>>>,
     /// Cache TTL (default: 1 hour)
     cache_ttl: Duration,
-    /// Optional Coneko endpoint for network resolution
-    coneko_endpoint: Option<String>,
 }
 
 impl DidResolver {
@@ -42,18 +39,6 @@ impl DidResolver {
             local_storage: Some(storage),
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_ttl: Duration::from_secs(3600), // 1 hour
-            coneko_endpoint: None,
-        }
-    }
-
-    /// Create a resolver with network capability
-    #[must_use]
-    pub fn with_coneko(storage: KeyStorage, endpoint: String) -> Self {
-        Self {
-            local_storage: Some(storage),
-            cache: Arc::new(RwLock::new(HashMap::new())),
-            cache_ttl: Duration::from_secs(3600),
-            coneko_endpoint: Some(endpoint),
         }
     }
 
@@ -64,7 +49,6 @@ impl DidResolver {
             local_storage: None,
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_ttl: Duration::from_secs(3600),
-            coneko_endpoint: None,
         }
     }
 
@@ -81,14 +65,6 @@ impl DidResolver {
             if storage.exists(did) {
                 let identity = storage.load(did)?;
                 let doc = identity.document.clone();
-                self.cache_document(did.to_string(), doc.clone()).await;
-                return Ok(doc);
-            }
-        }
-
-        // Try network resolution if available
-        if let Some(ref endpoint) = self.coneko_endpoint {
-            if let Ok(doc) = self.resolve_from_network(did, endpoint).await {
                 self.cache_document(did.to_string(), doc.clone()).await;
                 return Ok(doc);
             }
@@ -132,32 +108,6 @@ impl DidResolver {
                 expires_at: Instant::now() + self.cache_ttl,
             },
         );
-    }
-
-    /// Resolve from Coneko network
-    async fn resolve_from_network(&self, did: &str, endpoint: &str) -> Result<DIDDocument> {
-        let url = format!("{endpoint}/api/v1/did/resolve?did={did}");
-
-        debug!("Resolving DID from network: {}", did);
-
-        let client = reqwest::Client::new();
-        let response = client
-            .get(&url)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .context("Failed to contact Coneko endpoint")?;
-
-        if !response.status().is_success() {
-            anyhow::bail!("DID not found on network: {did}");
-        }
-
-        let document: DIDDocument = response
-            .json()
-            .await
-            .context("Failed to parse DID document from network")?;
-
-        Ok(document)
     }
 
     /// Verify a DID is valid and resolvable

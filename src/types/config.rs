@@ -14,8 +14,6 @@ pub struct PekobotConfig {
     pub network: NetworkConfig,
     /// Logging configuration
     pub logging: LogConfig,
-    /// Coneko network integration (optional)
-    pub coneko: Option<ConekoConfig>,
 }
 
 impl Default for PekobotConfig {
@@ -25,7 +23,6 @@ impl Default for PekobotConfig {
             storage: StorageConfig::default(),
             network: NetworkConfig::default(),
             logging: LogConfig::default(),
-            coneko: None,
         }
     }
 }
@@ -114,33 +111,6 @@ impl Default for LogConfig {
             format: "pretty".to_string(),
             log_file: None,
             log_stdout: true,
-        }
-    }
-}
-
-/// Coneko network configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConekoConfig {
-    /// Enable Coneko integration
-    pub enabled: bool,
-    /// Coneko server URL
-    pub server_url: String,
-    /// Authentication token
-    pub auth_token: Option<String>,
-    /// Auto-register on startup
-    pub auto_register: bool,
-    /// Heartbeat interval (seconds)
-    pub heartbeat_interval_seconds: u64,
-}
-
-impl Default for ConekoConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            server_url: "https://coneko.ai".to_string(),
-            auth_token: None,
-            auto_register: false,
-            heartbeat_interval_seconds: 300,
         }
     }
 }

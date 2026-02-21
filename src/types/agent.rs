@@ -1,6 +1,5 @@
 //! Agent configuration and state types
 
-use crate::coneko::ConekoConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -29,8 +28,6 @@ pub struct AgentConfig {
     pub approval_threshold: Option<f64>,
     /// Default timeout for tasks (seconds)
     pub default_timeout_seconds: u64,
-    /// Coneko network configuration (optional)
-    pub coneko: Option<ConekoConfig>,
 }
 
 impl Default for AgentConfig {
@@ -47,7 +44,6 @@ impl Default for AgentConfig {
             auto_accept_trusted: false,
             approval_threshold: Some(100.0),
             default_timeout_seconds: 300,
-            coneko: None,
         }
     }
 }

@@ -342,9 +342,6 @@ impl Packager {
             memory.database_path = None; // Will be set on import
         }
 
-        // Remove Coneko-specific config (can be reconfigured on import)
-        portable.coneko = None;
-
         portable
     }
 

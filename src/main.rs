@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 use pekobot::agent::Agent;
 use pekobot::channels::cli::{run_interactive_loop, CliChannel};
-use pekobot::coneko::{ConekoAdapter, ConekoConfig};
 use pekobot::identity::{storage::KeyStorage, Identity};
 use pekobot::secrets::{
     AuditEvent as SecretAuditEvent, SecretManager, SecretPermission, SecretScope, SecretType,
@@ -41,12 +40,6 @@ enum Commands {
         /// Database path for memory
         #[arg(long)]
         db: Option<String>,
-        /// Coneko endpoint (enables network mode)
-        #[arg(long, env = "CONEKO_ENDPOINT")]
-        coneko: Option<String>,
-        /// Coneko auth token
-        #[arg(long, env = "CONEKO_TOKEN")]
-        coneko_token: Option<String>,
     },
     /// Run multi-agent orchestrator
     Orchestrate {
@@ -112,9 +105,6 @@ enum Commands {
         #[arg(short, long)]
         file: String,
     },
-    /// Coneko network commands
-    #[command(subcommand)]
-    Coneko(ConekoCommands),
     /// Secret manager commands
     #[command(subcommand)]
     Secret(SecretCommands),
@@ -279,61 +269,6 @@ enum SecretCommands {
     },
 }
 
-#[derive(Subcommand)]
-enum ConekoCommands {
-    /// Check Coneko server status
-    Status {
-        /// Coneko endpoint
-        #[arg(short, long, env = "CONEKO_ENDPOINT")]
-        endpoint: String,
-    },
-    /// Register an agent with Coneko
-    Register {
-        /// Coneko endpoint
-        #[arg(short, long, env = "CONEKO_ENDPOINT")]
-        endpoint: String,
-        /// Agent DID
-        #[arg(short, long)]
-        did: String,
-        /// Agent name
-        #[arg(short, long)]
-        name: String,
-        /// Agent endpoint (where the agent receives messages)
-        #[arg(short, long)]
-        agent_endpoint: String,
-        /// Capabilities (comma-separated)
-        #[arg(short, long, value_delimiter = ',')]
-        capabilities: Vec<String>,
-        /// Coneko auth token
-        #[arg(long, env = "CONEKO_TOKEN")]
-        token: Option<String>,
-    },
-    /// Unregister an agent from Coneko
-    Unregister {
-        /// Coneko endpoint
-        #[arg(short, long, env = "CONEKO_ENDPOINT")]
-        endpoint: String,
-        /// Agent DID
-        #[arg(short, long)]
-        did: String,
-        /// Coneko auth token
-        #[arg(long, env = "CONEKO_TOKEN")]
-        token: Option<String>,
-    },
-    /// Discover agents on Coneko
-    Discover {
-        /// Coneko endpoint
-        #[arg(short, long, env = "CONEKO_ENDPOINT")]
-        endpoint: String,
-        /// Filter by capability
-        #[arg(short, long)]
-        capability: Option<String>,
-        /// Coneko auth token
-        #[arg(long, env = "CONEKO_TOKEN")]
-        token: Option<String>,
-    },
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
@@ -348,21 +283,16 @@ async fn main() -> anyhow::Result<()> {
             provider,
             model,
             db,
-            coneko,
-            coneko_token,
         } => {
             info!("Starting Pekobot agent: {}", name);
-
-            // Clone coneko for later use
-            let coneko_for_status = coneko.clone();
 
             // Build config
             let agent_config = if let Some(config_path) = config {
                 info!("Loading config from: {}", config_path);
-                build_default_config(&name, &provider, model, db, coneko, coneko_token)
+                build_default_config(&name, &provider, model, db)
             } else {
                 warn!("No config specified, using defaults");
-                build_default_config(&name, &provider, model, db, coneko, coneko_token)
+                build_default_config(&name, &provider, model, db)
             };
 
             // Create and start agent
@@ -376,13 +306,6 @@ async fn main() -> anyhow::Result<()> {
                     println!("\n🐱 Agent '{}' started successfully!", name);
                     println!("   DID: {}", agent.identity.did);
                     println!("   State: {:?}", agent.state());
-
-                    // Show Coneko status if enabled
-                    if let Some(endpoint) = coneko_for_status {
-                        println!("   Coneko: 🌐 Connected to {}", endpoint);
-                    } else {
-                        println!("   Coneko: ⚪ Disabled (use --coneko to enable)");
-                    }
 
                     // Create CLI channel and run interactive loop
                     let mut channel = CliChannel::new(&name);
@@ -607,114 +530,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Coneko(coneko_cmd) => match coneko_cmd {
-            ConekoCommands::Status { endpoint } => {
-                println!("🌐 Checking Coneko status at {}...", endpoint);
-
-                let adapter = ConekoAdapter::enabled(&endpoint, None);
-                match adapter.health_check().await {
-                    Ok(true) => {
-                        println!("✅ Coneko server is healthy");
-                    }
-                    Ok(false) => {
-                        println!("❌ Coneko server is unreachable");
-                    }
-                    Err(e) => {
-                        println!("❌ Error checking Coneko: {}", e);
-                    }
-                }
-            }
-            ConekoCommands::Register {
-                endpoint,
-                did,
-                name,
-                agent_endpoint,
-                capabilities,
-                token,
-            } => {
-                println!("🌐 Registering agent with Coneko...");
-                println!("   DID: {}", did);
-                println!("   Name: {}", name);
-                println!("   Endpoint: {}", agent_endpoint);
-
-                let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
-
-                let caps = capabilities
-                    .into_iter()
-                    .map(|c| AgentCapability {
-                        name: c,
-                        version: "1.0".to_string(),
-                        description: None,
-                        parameters: None,
-                        required_auth: None,
-                        estimated_cost: None,
-                        estimated_duration: None,
-                    })
-                    .collect();
-
-                match adapter
-                    .register_agent(&did, &name, &agent_endpoint, caps, "local", "default")
-                    .await
-                {
-                    Ok(()) => {
-                        println!("✅ Agent registered successfully!");
-                    }
-                    Err(e) => {
-                        println!("❌ Registration failed: {}", e);
-                    }
-                }
-            }
-            ConekoCommands::Unregister {
-                endpoint,
-                did,
-                token,
-            } => {
-                println!("🌐 Unregistering agent from Coneko...");
-                println!("   DID: {}", did);
-
-                let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
-
-                match adapter.unregister_agent(&did).await {
-                    Ok(()) => {
-                        println!("✅ Agent unregistered successfully!");
-                    }
-                    Err(e) => {
-                        println!("❌ Unregistration failed: {}", e);
-                    }
-                }
-            }
-            ConekoCommands::Discover {
-                endpoint,
-                capability,
-                token,
-            } => {
-                println!("🌐 Discovering agents on Coneko...");
-
-                let adapter = ConekoAdapter::enabled(&endpoint, token.as_deref());
-
-                let caps = capability.map(|c| vec![c]);
-
-                match adapter.discover_agents(caps, None, None).await {
-                    Ok(agents) => {
-                        if agents.is_empty() {
-                            println!("ℹ️  No agents found");
-                        } else {
-                            println!("✅ Found {} agent(s):", agents.len());
-                            for agent in agents {
-                                println!("   - {} ({})", agent.name, agent.did);
-                                let caps: Vec<String> =
-                                    agent.capabilities.iter().map(|c| c.name.clone()).collect();
-                                println!("     Capabilities: {}", caps.join(", "));
-                                println!("     Endpoint: {}", agent.endpoint);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!("❌ Discovery failed: {}", e);
-                    }
-                }
-            }
-        },
         Commands::Secret(secret_cmd) => {
             match secret_cmd {
                 SecretCommands::Set {
@@ -1380,8 +1195,6 @@ fn build_default_config(
     provider: &str,
     model: Option<String>,
     db_path: Option<String>,
-    coneko: Option<String>,
-    coneko_token: Option<String>,
 ) -> AgentConfig {
     let provider_type = match provider.to_lowercase().as_str() {
         "openai" => ProviderType::OpenAI,
@@ -1395,15 +1208,6 @@ fn build_default_config(
         ProviderType::Anthropic => "claude-3-haiku".to_string(),
         ProviderType::Ollama => "llama3".to_string(),
         ProviderType::OpenAICompatible => "gpt-4o-mini".to_string(),
-    });
-
-    // Build Coneko config if endpoint provided
-    let coneko_config = coneko.map(|endpoint| ConekoConfig {
-        enabled: true,
-        endpoint,
-        auth_token: coneko_token,
-        poll_interval_ms: 5000,
-        auto_register: true,
     });
 
     AgentConfig {
@@ -1469,7 +1273,6 @@ fn build_default_config(
         auto_accept_trusted: false,
         approval_threshold: Some(100.0),
         default_timeout_seconds: 300,
-        coneko: coneko_config,
     }
 }
 
