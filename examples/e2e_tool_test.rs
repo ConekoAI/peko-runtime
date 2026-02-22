@@ -13,6 +13,8 @@ use pekobot::providers::KimiProvider;
 use pekobot::tools::FileSystemTool;
 use pekobot::security::SecurityPolicy;
 use pekobot::types::agent::AgentConfig;
+use pekobot::types::provider::{ProviderConfig, ProviderType};
+use std::error::Error;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -86,6 +88,10 @@ async fn main() -> anyhow::Result<()> {
     let agent_config = AgentConfig {
         name: "test-agent".to_string(),
         description: Some("Agent for testing tool calling".to_string()),
+        provider: ProviderConfig {
+            provider_type: ProviderType::Ollama, // Skip provider init - we pass our own
+            ..Default::default()
+        },
         ..Default::default()
     };
     let agent = Arc::new(Agent::new(agent_config).await?);
@@ -105,7 +111,14 @@ async fn main() -> anyhow::Result<()> {
             println!("Final answer:\n{}\n", result.final_answer);
         }
         Err(e) => {
-            println!("\n❌ Test 1 FAILED: {}\n", e);
+            println!("\n❌ Test 1 FAILED: {}", e);
+            println!("Error chain:");
+            let mut current = e.source();
+            while let Some(source) = current {
+                println!("  → {}", source);
+                current = source.source();
+            }
+            println!();
         }
     }
     
@@ -116,6 +129,10 @@ async fn main() -> anyhow::Result<()> {
     let agent_config2 = AgentConfig {
         name: "test-agent-2".to_string(),
         description: Some("Agent for testing file reading".to_string()),
+        provider: ProviderConfig {
+            provider_type: ProviderType::Ollama,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let agent2 = Arc::new(Agent::new(agent_config2).await?);
@@ -150,6 +167,10 @@ async fn main() -> anyhow::Result<()> {
     let agent_config3 = AgentConfig {
         name: "test-agent-3".to_string(),
         description: Some("Agent for multi-step tasks".to_string()),
+        provider: ProviderConfig {
+            provider_type: ProviderType::Ollama,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let agent3 = Arc::new(Agent::new(agent_config3).await?);
