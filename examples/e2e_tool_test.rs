@@ -9,7 +9,7 @@
 //! Run with: cargo run --example e2e_tool_test
 
 use pekobot::agent::{Agent, AgenticLoop};
-use pekobot::providers::KimiProvider;
+use pekobot::providers::KimiCodeProvider;
 use pekobot::tools::FileSystemTool;
 use pekobot::security::SecurityPolicy;
 use pekobot::types::agent::AgentConfig;
@@ -73,9 +73,9 @@ async fn main() -> anyhow::Result<()> {
     let api_key = load_kimi_api_key()?;
     println!("✓ API key loaded\n");
     
-    // Create provider
-    let provider = Arc::new(KimiProvider::new(api_key).with_model("kimi-k2.5"));
-    println!("✓ Kimi provider initialized (model: kimi-k2.5)\n");
+    // Create provider (Kimi Code uses Anthropic API format)
+    let provider = Arc::new(KimiCodeProvider::with_api_key(api_key)?);
+    println!("✓ Kimi Code provider initialized\n");
     
     // Create filesystem tool
     let fs_tool = Arc::new(create_fs_tool());
