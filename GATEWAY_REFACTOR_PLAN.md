@@ -528,5 +528,63 @@ pekobot migrate --from 0.1.0 --to 0.2.0
 
 ---
 
+## Phase Completion Notes
+
+### Phase 1: Interface Design ✅ COMPLETE
+
+**Delivered:**
+- `src/gateway/types.rs` - Complete message/entity type system
+- `src/gateway/error.rs` - Comprehensive error types with context
+- `src/gateway/interface.rs` - `GatewayPlugin` trait + `GatewayFactory`
+- `src/gateway/config.rs` - Configuration with rate limiting, retry, filters
+- `src/gateway/mod.rs` - Module documentation and exports
+
+**Key Design Decisions:**
+- Async trait methods for all gateway operations
+- Default trait implementations for optional features (returns `NotSupported`)
+- Plugin manifest format (`gateway.toml`) matching tool bundle pattern
+- API versioning (v1.0.0) for compatibility checking
+- Message filtering built into config layer
+
+### Phase 2: Discord Extraction ✅ COMPLETE
+
+**Delivered:**
+- `gateway-interface/` - Shared crate separating core from plugins
+- `gateways/discord/` - First plugin implementation
+  - Implements `GatewayPlugin` trait for Discord
+  - FFI exports: `create_gateway_factory()`, `destroy_gateway_factory()`
+  - `gateway.toml` manifest for Pekohub integration
+  - README with configuration guide
+
+**Architecture Insight:**
+The shared `gateway-interface` crate solves the circular dependency problem:
+- Core depends on `gateway-interface` (for trait definitions)
+- Plugins depend on `gateway-interface` (for trait implementations)
+- No direct core↔plugin dependency at compile time
+- Dynamic loading bridges them at runtime
+
+**Implementation Pattern:**
+```rust
+// Plugin implements trait
+gateway-interface = "0.1"
+
+pub struct DiscordGateway;
+#[async_trait]
+impl GatewayPlugin for DiscordGateway { ... }
+
+// FFI export for dynamic loading
+#[no_mangle]
+pub extern "C" fn create_gateway_factory() 
+    -> *mut dyn GatewayFactory { ... }
+```
+
+**What's Next:**
+- Phase 3: Registry & Loader (dynamic loading from `.gateway` files)
+- Phase 4: Core Integration (replace built-in channels)
+- Phase 5: Extract remaining 6 gateways (WhatsApp, Telegram, etc.)
+
+---
+
 *Drafted: 2026-02-23*
+*Updated: 2026-02-23*
 *Branch: feature/gateway-plugin-architecture*
