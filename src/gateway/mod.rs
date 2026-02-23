@@ -1,0 +1,80 @@
+//! Gateway plugin system
+//!
+//! This module provides a unified interface for messaging platform integration.
+//! All channels (Discord, WhatsApp, etc.) are implemented as plugins that
+//! implement the `GatewayPlugin` trait.
+//!
+//! # Architecture
+//!
+//! ```
+//! ┌─────────────────────────────────────────┐
+//! │           Pekobot Core                  │
+//! │  ┌─────────────────────────────────┐    │
+//! │  │      GatewayManager             │    │
+//! │  │  ┌───────────────────────────┐  │    │
+//! │  │  │   GatewayRegistry         │  │    │
+//! │  │  │  ┌─────────────────────┐  │  │    │
+//! │  │  │  │ GatewayPlugin trait │  │  │    │
+//! │  │  │  └─────────────────────┘  │  │    │
+//! │  │  └───────────────────────────┘  │    │
+//! │  └─────────────────────────────────┘    │
+//! └──────────────────┬──────────────────────┘
+//!                    │ loads
+//! ┌──────────────────▼──────────────────────┐
+//! │         Gateway Plugins (.gateway)      │
+//! │  ┌──────────┐ ┌──────────┐ ┌─────────┐ │
+//! │  │ discord  │ │ whatsapp │ │  slack  │ │
+//! │  └──────────┘ └──────────┘ └─────────┘ │
+//! └─────────────────────────────────────────┘
+//! ```
+//!
+//! # Usage
+//!
+//! ## Loading a gateway
+//!
+//! ```rust,no_run
+//! use pekobot::gateway::{GatewayRegistry, GatewayConfig};
+//!
+//! # async fn example() {
+//! let mut registry = GatewayRegistry::new();
+//!
+//! // Load from Pekohub or local cache
+//! registry.load("discord").await.unwrap();
+//!
+//! // Create and initialize instance
+//! let config = GatewayConfig {
+//!     name: "my-bot".to_string(),
+//!     plugin: "discord".to_string(),
+//!     config: std::collections::HashMap::new(),
+//!     enabled: true,
+//!     ..Default::default()
+//! };
+//! # }
+//! ```
+
+pub mod config;
+pub mod error;
+pub mod interface;
+pub mod types;
+
+// Re-export commonly used types
+pub use config::{
+    FilterAction, FilterCondition, FilterRule, GatewayConfig, GatewayInfo, GatewaysConfig,
+    PluginManifest, RateLimitConfig, RetryConfig,
+};
+pub use error::{GatewayError, GatewayResult, RegistryError, RegistryResult};
+pub use interface::{GatewayFactory, GatewayPlugin, GATEWAY_API_VERSION};
+pub use types::{
+    Attachment, Channel, ChannelId, ChannelType, ContentType, EntityInfo, EntityRef,
+    GatewayCapabilities, GatewayId, GatewayMetadata, IncomingMessage, MessageContent, MessageId,
+    MessageStream, OutgoingMessage, Reaction, Target, User, UserId,
+};
+
+// These will be implemented in Phase 2/3
+// pub mod loader;
+// pub mod manager;
+// pub mod registry;
+
+// Re-export manager types when implemented
+// pub use manager::GatewayManager;
+// pub use registry::GatewayRegistry;

@@ -20,6 +20,7 @@ pub mod config;
 pub mod cron;
 pub mod daemon;
 pub mod engine;
+pub mod gateway;
 pub mod identity;
 pub mod manager;
 pub mod memory;
