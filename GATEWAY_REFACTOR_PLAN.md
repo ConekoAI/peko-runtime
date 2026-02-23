@@ -644,3 +644,68 @@ registry.update("discord").await?;
 *Drafted: 2026-02-23*
 *Updated: 2026-02-23*
 *Branch: feature/gateway-plugin-architecture*
+
+
+### Phase 4: Core Integration ✅ COMPLETE
+
+**Delivered:**
+- `src/gateway/manager.rs` - GatewayManager for coordinating gateway instances
+  - Manages multiple concurrent gateway connections
+  - Routes messages between agent system and gateways
+  - Event-driven architecture (connect/disconnect/message/error)
+  - `adapter` module for backward compatibility with old `Channel` trait
+
+- `src/main.rs` - CLI commands for gateway management
+  - `gateway list` - Show installed plugins
+  - `gateway available` - List from Pekohub
+  - `gateway install <name>` - Download and install
+  - `gateway uninstall <name>` - Remove plugin
+  - `gateway update [name]` - Update to latest
+  - `gateway info <name>` - Show plugin details
+  - `gateway start --config <file>` - Start instance
+  - `gateway stop <instance>` - Stop instance
+  - `gateway instances` - List active instances
+  - `gateway test <instance>` - Test connection
+
+**Integration Points:**
+```rust
+// Initialize manager
+let manager = GatewayManager::new(config).await?;
+
+// Load from config
+manager.init_from_config(&config).await?;
+
+// Send message
+manager.send_text(
+    "discord-1",
+    Target::Channel(ChannelId("general".to_string())),
+    "Hello!"
+).await?;
+
+// Receive events
+while let Some(event) = manager.next_event().await {
+    match event {
+        GatewayEvent::Message { message, .. } => {
+            // Process incoming message
+        }
+        // ...
+    }
+}
+```
+
+**Architecture:**
+- CLI channel remains built-in (local terminal interface, not a messaging gateway)
+- Discord, Slack, WhatsApp, etc. moved to plugin system
+- GatewayManager handles multiple concurrent connections
+- Each gateway instance runs in its own async task
+
+**What's Next:**
+- Phase 5: Extract remaining 6 gateways (WhatsApp, Telegram, Slack, Signal, IRC, Google Chat)
+- Phase 6: Pekohub publishing endpoint for gateway plugins
+- Phase 7: Migration tool and documentation
+
+---
+
+*Drafted: 2026-02-23*
+*Updated: 2026-02-23*
+*Branch: feature/gateway-plugin-architecture*
