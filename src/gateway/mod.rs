@@ -52,25 +52,26 @@
 //! # }
 //! ```
 
-pub mod config;
-pub mod error;
-pub mod interface;
-pub mod types;
+// Re-export from gateway-interface crate
+pub use gateway_interface::{
+    error, interface, types, async_trait, GatewayCapabilities, GatewayError,
+    GatewayFactory, GatewayId, GatewayMetadata, GatewayPlugin, GatewayResult, Target,
+    MessageId, ChannelId, UserId, EntityRef, EntityInfo, IncomingMessage, OutgoingMessage,
+    MessageContent, MessageStream, ContentType, Attachment, User, Channel, ChannelType,
+    GATEWAY_API_VERSION,
+};
 
-// Re-export commonly used types
+// Local modules
+pub mod config;
+
+// Re-export config types
 pub use config::{
     FilterAction, FilterCondition, FilterRule, GatewayConfig, GatewayInfo, GatewaysConfig,
-    PluginManifest, RateLimitConfig, RetryConfig,
-};
-pub use error::{GatewayError, GatewayResult, RegistryError, RegistryResult};
-pub use interface::{GatewayFactory, GatewayPlugin, GATEWAY_API_VERSION};
-pub use types::{
-    Attachment, Channel, ChannelId, ChannelType, ContentType, EntityInfo, EntityRef,
-    GatewayCapabilities, GatewayId, GatewayMetadata, IncomingMessage, MessageContent, MessageId,
-    MessageStream, OutgoingMessage, Reaction, Target, User, UserId,
+    PluginManifest, RateLimitConfig, RetryConfig, BinaryDownloads, ConfigSchema, ConfigField,
+    PluginInfo,
 };
 
-// These will be implemented in Phase 2/3
+// These will be implemented in Phase 3
 // pub mod loader;
 // pub mod manager;
 // pub mod registry;
