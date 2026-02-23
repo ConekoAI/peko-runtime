@@ -63,6 +63,8 @@ pub use gateway_interface::{
 
 // Local modules
 pub mod config;
+pub mod loader;
+pub mod registry;
 
 // Re-export config types
 pub use config::{
@@ -71,11 +73,11 @@ pub use config::{
     PluginInfo,
 };
 
-// These will be implemented in Phase 3
-// pub mod loader;
-// pub mod manager;
-// pub mod registry;
+// Re-export loader types
+pub use loader::{PluginHandle, PluginLoader, platform};
 
-// Re-export manager types when implemented
-// pub use manager::GatewayManager;
-// pub use registry::GatewayRegistry;
+// Re-export registry types
+pub use registry::GatewayRegistry;
+
+// These will be implemented in Phase 4
+// pub mod manager;

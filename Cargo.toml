@@ -45,6 +45,9 @@ thiserror = "1.0"
 async-trait = "0.1"
 futures = "0.3"
 
+# Dynamic library loading for gateway plugins
+libloading = "0.8"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 cron = "0.12"
