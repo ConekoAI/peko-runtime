@@ -108,6 +108,9 @@ enum Commands {
     /// Secret manager commands
     #[command(subcommand)]
     Secret(SecretCommands),
+    /// Gateway plugin commands
+    #[command(subcommand)]
+    Gateway(GatewayCommands),
 }
 
 #[derive(Subcommand)]
@@ -266,6 +269,58 @@ enum SecretCommands {
         /// Master password (will prompt if not provided)
         #[arg(short, long)]
         password: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum GatewayCommands {
+    /// List installed gateway plugins
+    List,
+    /// List available gateway plugins from Pekohub
+    Available,
+    /// Install a gateway plugin
+    Install {
+        /// Gateway plugin name (e.g., discord, whatsapp)
+        name: String,
+        /// Specific version to install
+        #[arg(short, long)]
+        version: Option<String>,
+    },
+    /// Uninstall a gateway plugin
+    Uninstall {
+        /// Gateway plugin name
+        name: String,
+        /// Skip confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Update a gateway plugin to the latest version
+    Update {
+        /// Gateway plugin name (omit for all)
+        name: Option<String>,
+    },
+    /// Show gateway plugin information
+    Info {
+        /// Gateway plugin name
+        name: String,
+    },
+    /// Start a gateway instance
+    Start {
+        /// Gateway configuration file
+        #[arg(short, long)]
+        config: String,
+    },
+    /// Stop a gateway instance
+    Stop {
+        /// Instance ID
+        instance_id: String,
+    },
+    /// List active gateway instances
+    Instances,
+    /// Test gateway connection
+    Test {
+        /// Instance ID
+        instance_id: String,
     },
 }
 
@@ -1169,6 +1224,190 @@ async fn main() -> anyhow::Result<()> {
                     println!(
                         "\nThen update your config files to use: api_key = \" ${{secret:NAME}} \""
                     );
+                }
+            }
+        }
+        Commands::Gateway(gateway_cmd) => {
+            use pekobot::gateway::{GatewayManager, GatewaysConfig};
+            use std::sync::Arc;
+
+            let config = GatewaysConfig::default();
+            let manager = Arc::new(GatewayManager::new(config).await?);
+
+            match gateway_cmd {
+                GatewayCommands::List => {
+                    println!("🌐 Installed Gateway Plugins");
+                    println!("   (Use 'pekobot gateway available' to see installable plugins)");
+                    println!();
+                    
+                    let plugins = manager.registry().list_loaded().await;
+                    if plugins.is_empty() {
+                        println!("   No gateway plugins installed.");
+                        println!("   Install one with: pekobot gateway install <name>");
+                    } else {
+                        for plugin in plugins {
+                            println!("   📦 {} v{}", plugin.name, plugin.version);
+                            println!("      {}", plugin.description);
+                        }
+                    }
+                }
+                GatewayCommands::Available => {
+                    println!("🔍 Checking Pekohub for available gateways...");
+                    
+                    match manager.registry().list_available().await {
+                        Ok(plugins) => {
+                            println!("\n📦 Available Gateway Plugins:");
+                            for plugin in plugins {
+                                let status = if plugin.installed {
+                                    "✅ installed"
+                                } else {
+                                    "⬜ not installed"
+                                };
+                                println!("   {} {} v{} - {}", 
+                                    plugin.name, 
+                                    status,
+                                    plugin.version,
+                                    plugin.description
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to fetch available plugins: {}", e);
+                            println!("   Make sure you have an internet connection.");
+                        }
+                    }
+                }
+                GatewayCommands::Install { name, version } => {
+                    println!("📥 Installing gateway plugin: {}", name);
+                    if let Some(v) = version {
+                        println!("   Version: {}", v);
+                    }
+                    
+                    match manager.registry().load(&name).await {
+                        Ok(_) => {
+                            println!("✅ Gateway plugin '{}' installed successfully!", name);
+                            println!("   Use 'pekobot gateway start --config <file>' to run it.");
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to install '{}': {}", name, e);
+                        }
+                    }
+                }
+                GatewayCommands::Uninstall { name, force } => {
+                    println!("🗑️  Uninstalling gateway plugin: {}", name);
+                    
+                    if !force {
+                        print!("   Are you sure? This cannot be undone [y/N]: ");
+                        use std::io::{self, Write};
+                        io::stdout().flush().ok();
+                        let mut input = String::new();
+                        io::stdin().read_line(&mut input).ok();
+                        if !input.trim().eq_ignore_ascii_case("y") {
+                            println!("   Cancelled.");
+                            return Ok(());
+                        }
+                    }
+                    
+                    match manager.registry().unload(&name).await {
+                        Ok(_) => {
+                            println!("✅ Gateway plugin '{}' uninstalled.", name);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to uninstall '{}': {}", name, e);
+                        }
+                    }
+                }
+                GatewayCommands::Update { name } => {
+                    if let Some(plugin_name) = name {
+                        println!("🔄 Updating gateway plugin: {}", plugin_name);
+                        match manager.registry().update(&plugin_name).await {
+                            Ok(updated) => {
+                                if updated {
+                                    println!("✅ Updated '{}' to latest version.", plugin_name);
+                                } else {
+                                    println!("ℹ️  '{}' is already up to date.", plugin_name);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Failed to update '{}': {}", plugin_name, e);
+                            }
+                        }
+                    } else {
+                        println!("🔄 Updating all gateway plugins...");
+                        let plugins = manager.registry().list_loaded().await;
+                        for plugin in plugins {
+                            print!("   Checking {}...", plugin.name);
+                            match manager.registry().update(&plugin.name).await {
+                                Ok(updated) => {
+                                    if updated {
+                                        println!(" updated!");
+                                    } else {
+                                        println!(" already up to date");
+                                    }
+                                }
+                                Err(e) => {
+                                    println!(" error: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+                GatewayCommands::Info { name } => {
+                    match manager.registry().get_metadata(&name).await {
+                        Some(info) => {
+                            println!("📦 Gateway Plugin: {}", info.name);
+                            println!("   Version: {}", info.version);
+                            println!("   Description: {}", info.description);
+                            println!("   Author: {}", info.author);
+                            if info.installed {
+                                println!("   Status: ✅ Installed");
+                            } else {
+                                println!("   Status: ⬜ Not installed");
+                            }
+                        }
+                        None => {
+                            println!("ℹ️  Gateway plugin '{}' not found.", name);
+                            println!("   Use 'pekobot gateway list' to see installed plugins.");
+                        }
+                    }
+                }
+                GatewayCommands::Start { config } => {
+                    println!("🚀 Starting gateway from config: {}", config);
+                    println!("   (Not yet fully implemented)");
+                }
+                GatewayCommands::Stop { instance_id } => {
+                    println!("🛑 Stopping gateway instance: {}", instance_id);
+                    match manager.stop_gateway(&instance_id).await {
+                        Ok(_) => println!("✅ Gateway instance stopped."),
+                        Err(e) => eprintln!("❌ Failed to stop: {}", e),
+                    }
+                }
+                GatewayCommands::Instances => {
+                    println!("🌐 Active Gateway Instances");
+                    let instances = manager.list_instances().await;
+                    if instances.is_empty() {
+                        println!("   No active instances.");
+                    } else {
+                        for instance in instances {
+                            println!("   📡 {} ({} - {})", 
+                                instance.id, 
+                                instance.gateway,
+                                instance.name
+                            );
+                        }
+                    }
+                }
+                GatewayCommands::Test { instance_id } => {
+                    println!("🧪 Testing gateway instance: {}", instance_id);
+                    match manager.get_instance(&instance_id).await {
+                        Some(_) => {
+                            println!("✅ Instance '{}' is active.", instance_id);
+                            // TODO: Send test message
+                        }
+                        None => {
+                            println!("❌ Instance '{}' not found.", instance_id);
+                        }
+                    }
                 }
             }
         }

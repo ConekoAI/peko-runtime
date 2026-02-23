@@ -45,6 +45,9 @@ thiserror = "1.0"
 async-trait = "0.1"
 futures = "0.3"
 
+# Dynamic library loading for gateway plugins
+libloading = "0.8"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 cron = "0.12"
@@ -73,6 +76,9 @@ rpassword = "7.3"
 hkdf = "0.12"
 keyring = "2.3"
 secrecy = "0.10"
+
+# Gateway plugin interface (local path during development)
+gateway-interface = { path = "gateway-interface" }
 
 [dev-dependencies]
 tokio-test = "0.4"
