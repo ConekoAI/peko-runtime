@@ -54,15 +54,19 @@
 
 // Re-export from gateway-interface crate
 pub use gateway_interface::{
-    error, interface, types, async_trait, GatewayCapabilities, GatewayError,
+    error as gateway_error, interface, types, async_trait, GatewayCapabilities, GatewayError,
     GatewayFactory, GatewayId, GatewayMetadata, GatewayPlugin, GatewayResult, Target,
     MessageId, ChannelId, UserId, EntityRef, EntityInfo, IncomingMessage, OutgoingMessage,
     MessageContent, MessageStream, ContentType, Attachment, User, Channel, ChannelType,
     GATEWAY_API_VERSION,
 };
 
+// Re-export local error types
+pub use error::{RegistryError, RegistryResult};
+
 // Local modules
 pub mod config;
+pub mod error;
 pub mod loader;
 pub mod manager;
 pub mod registry;

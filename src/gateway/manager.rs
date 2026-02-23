@@ -43,9 +43,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::gateway::config::{GatewayConfig, GatewaysConfig};
 use crate::gateway::error::{GatewayError, GatewayResult};
-use crate::gateway::interface::{GatewayPlugin, IncomingMessage, MessageContent, Target};
+use crate::gateway::interface::GatewayPlugin;
 use crate::gateway::registry::GatewayRegistry;
-use crate::gateway::types::{ChannelId, GatewayId, MessageId, UserId};
+use crate::gateway::types::{ChannelId, GatewayId, IncomingMessage, MessageContent, MessageId, Target, UserId};
 
 /// Event from a gateway
 #[derive(Debug, Clone)]
@@ -367,7 +367,7 @@ pub mod adapter {
             self.manager.send_text(
                 &self.instance_id,
                 target,
-                message
+                message.to_string()
             ).await.map_err(|e| anyhow::anyhow!("{}", e))?;
 
             Ok(())

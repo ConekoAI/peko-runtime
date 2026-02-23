@@ -16,9 +16,10 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::gateway::config::{GatewayInfo, PluginManifest};
-use crate::gateway::error::{GatewayError, GatewayResult, RegistryError, RegistryResult};
+use crate::gateway::error::{GatewayError, GatewayResult};
 use crate::gateway::interface::{GatewayFactory, GatewayPlugin, GATEWAY_API_VERSION};
 use crate::gateway::loader::{platform, PluginHandle, PluginLoader};
+use crate::gateway::{RegistryError, RegistryResult};
 
 /// Registry for gateway plugins
 pub struct GatewayRegistry {
@@ -39,13 +40,14 @@ pub struct GatewayRegistry {
 impl GatewayRegistry {
     /// Create a new registry
     pub fn new(cache_dir: impl Into<PathBuf>, pekohub_url: impl Into<String>) -> Self {
+        let cache_dir = cache_dir.into();
         Self {
-            loader: PluginLoader::new(cache_dir),
+            loader: PluginLoader::new(cache_dir.clone()),
             pekohub_client: reqwest::Client::new(),
             pekohub_url: pekohub_url.into(),
             loaded: RwLock::new(HashMap::new()),
             instances: RwLock::new(HashMap::new()),
-            cache_dir: cache_dir.into(),
+            cache_dir,
         }
     }
 
@@ -429,8 +431,8 @@ impl GatewayRegistry {
         let latest_version = &manifest.plugin.version;
 
         // Check if update needed
-        if let Some(current) = current_version {
-            if &current == latest_version {
+        if let Some(ref current) = current_version {
+            if current == latest_version {
                 debug!("Gateway plugin '{}' is up to date", name);
                 return Ok(false);
             }

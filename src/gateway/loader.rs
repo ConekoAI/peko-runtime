@@ -10,8 +10,9 @@ use libloading::{Library, Symbol};
 use tracing::{debug, error, info, warn};
 
 use crate::gateway::config::PluginManifest;
-use crate::gateway::error::{GatewayError, GatewayResult, RegistryError, RegistryResult};
+use crate::gateway::error::{GatewayError, GatewayResult};
 use crate::gateway::interface::{GatewayFactory, GATEWAY_API_VERSION};
+use crate::gateway::{RegistryError, RegistryResult};
 
 /// Handle to a loaded gateway plugin
 pub struct PluginHandle {
@@ -98,7 +99,7 @@ impl PluginLoader {
 
         // Create the factory
         // SAFETY: The symbol is valid as long as library is loaded
-        let factory = unsafe {
+        let factory: Box<dyn gateway_interface::GatewayFactory> = unsafe {
             let raw = create_factory();
             if raw.is_null() {
                 return Err(RegistryError::CacheError {
