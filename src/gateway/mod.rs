@@ -64,20 +64,21 @@ pub use gateway_interface::{
 // Local modules
 pub mod config;
 pub mod loader;
+pub mod manager;
 pub mod registry;
 
 // Re-export config types
 pub use config::{
-    FilterAction, FilterCondition, FilterRule, GatewayConfig, GatewayInfo, GatewaysConfig,
-    PluginManifest, RateLimitConfig, RetryConfig, BinaryDownloads, ConfigSchema, ConfigField,
-    PluginInfo,
+    BinaryDownloads, ConfigField, ConfigSchema, FilterAction, FilterCondition, FilterRule,
+    GatewayConfig, GatewayInfo, GatewaysConfig, PluginInfo, PluginManifest, RateLimitConfig,
+    RetryConfig,
 };
 
 // Re-export loader types
-pub use loader::{PluginHandle, PluginLoader, platform};
+pub use loader::{platform, PluginHandle, PluginLoader};
 
 // Re-export registry types
 pub use registry::GatewayRegistry;
 
-// These will be implemented in Phase 4
-// pub mod manager;
+// Re-export manager types
+pub use manager::{GatewayEvent, GatewayManager, InstanceHandle};
