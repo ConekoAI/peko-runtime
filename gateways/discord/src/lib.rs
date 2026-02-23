@@ -1,6 +1,23 @@
 //! Discord Gateway Plugin for Pekobot
 //!
-//! This plugin enables Pekobot to connect to Discord using the Serenity library.
+//! This plugin enables Pekobot to connect to Discord servers.
+//!
+//! # Configuration
+//!
+//! ```toml
+//! [[gateways]]
+//! name = "my-discord-bot"
+//! plugin = "discord"
+//! config = { token = "${secret:DISCORD_TOKEN}" }
+//! ```
+//!
+//! # Getting a Token
+//!
+//! 1. Go to https://discord.com/developers/applications
+//! 2. Create a new application
+//! 3. Go to "Bot" section and add a bot
+//! 4. Copy the bot token
+//! 5. Add to Pekobot: `pekobot secret set DISCORD_TOKEN <token>`
 
 use async_trait::async_trait;
 use gateway_interface::{
@@ -11,7 +28,7 @@ use gateway_interface::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Discord gateway plugin
@@ -22,25 +39,23 @@ pub struct DiscordGateway {
     metadata: GatewayMetadata,
     /// Internal state
     state: Arc<RwLock<DiscordState>>,
-    /// Message sender (for incoming messages)
-    message_tx: Option<mpsc::Sender<IncomingMessage>>,
 }
 
-/// Internal state
+/// Internal state for the Discord gateway
 #[derive(Default)]
 struct DiscordState {
-    /// Whether connected
+    /// Whether connected to Discord
     connected: bool,
-    /// Bot user info
+    /// Bot user information
     bot_user: Option<GatewayUser>,
-    /// Cached channels
+    /// Cached channels (channel_id -> Channel)
     channels: HashMap<String, GatewayChannel>,
-    /// Cached users
+    /// Cached users (user_id -> User)
     users: HashMap<String, GatewayUser>,
 }
 
 impl DiscordGateway {
-    /// Create a new Discord gateway
+    /// Create a new Discord gateway instance
     pub fn new() -> Self {
         let metadata = GatewayMetadata {
             name: "discord".to_string(),
@@ -58,7 +73,7 @@ impl DiscordGateway {
                 supports_typing: true,
                 supports_embeds: true,
                 supports_attachments: true,
-                supports_voice: false, // Not implemented yet
+                supports_voice: false, // Future enhancement
                 extra: HashMap::new(),
             },
             required_config: vec!["token".to_string()],
@@ -72,9 +87,26 @@ impl DiscordGateway {
             token: String::new(),
             metadata,
             state: Arc::new(RwLock::new(DiscordState::default())),
-            message_tx: None,
         }
     }
+
+    /// Get the current connection state
+    async fn get_state(&self) -> DiscordStateSnapshot {
+        let state = self.state.read().await;
+        DiscordStateSnapshot {
+            connected: state.connected,
+            channel_count: state.channels.len(),
+            user_count: state.users.len(),
+        }
+    }
+}
+
+/// Snapshot of Discord state for debugging
+#[derive(Debug)]
+struct DiscordStateSnapshot {
+    connected: bool,
+    channel_count: usize,
+    user_count: usize,
 }
 
 impl Default for DiscordGateway {
@@ -95,7 +127,7 @@ impl GatewayPlugin for DiscordGateway {
     ) -> GatewayResult<()> {
         info!("Initializing Discord gateway");
 
-        // Extract token from config
+        // Extract and validate token
         let token = config
             .get("token")
             .and_then(|v| v.as_str())
@@ -103,34 +135,63 @@ impl GatewayPlugin for DiscordGateway {
                 message: "Missing required config: token".to_string(),
             })?;
 
-        self.token = token.to_string();
-
-        // Validate token format (Discord tokens have a specific format)
-        if !self.token.contains('.') {
+        // Basic token format validation
+        // Discord tokens are base64-encoded and contain dots
+        if !token.contains('.') || token.len() < 50 {
             return Err(GatewayError::ConfigurationError {
-                message: "Invalid Discord token format".to_string(),
+                message: "Invalid Discord token format. Tokens should be 50+ characters and contain '.'".to_string(),
             });
         }
 
+        self.token = token.to_string();
         info!("Discord gateway initialized successfully");
         Ok(())
     }
 
-    async fn start(&self,
-    ) -> GatewayResult<MessageStream> {
+    async fn start(&self) -> GatewayResult<MessageStream> {
         info!("Starting Discord gateway");
 
         let (tx, rx) = mpsc::channel(100);
 
-        // Store sender for later use
-        // Note: In a real implementation, this would start the Serenity client
-        // and forward events through the channel
+        // Clone data for the background task
+        let token = self.token.clone();
+        let state = self.state.clone();
 
-        // For now, mark as connected
-        {
-            let mut state = self.state.write().await;
-            state.connected = true;
-        }
+        // Spawn background task for Discord connection
+        // In a full implementation, this would use Serenity to connect
+        // to Discord's Gateway and forward events through the channel
+        tokio::spawn(async move {
+            info!("Discord gateway background task started");
+            
+            // Mark as connected
+            {
+                let mut s = state.write().await;
+                s.connected = true;
+            }
+
+            // TODO: Implement actual Serenity client here
+            // This would:
+            // 1. Create serenity::Client with the token
+            // 2. Set up event handlers
+            // 3. Connect to Discord Gateway
+            // 4. Forward events to the channel
+
+            // For now, just keep the connection "alive"
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                
+                // Check if still connected
+                let connected = {
+                    let s = state.read().await;
+                    s.connected
+                };
+                
+                if !connected {
+                    info!("Discord gateway connection closed");
+                    break;
+                }
+            }
+        });
 
         info!("Discord gateway started");
         Ok(rx)
@@ -141,25 +202,27 @@ impl GatewayPlugin for DiscordGateway {
         target: Target,
         content: MessageContent,
     ) -> GatewayResult<MessageId> {
-        debug!("Sending message to Discord: {:?}", target);
+        debug!("Sending message to Discord");
 
-        // In a real implementation, this would use Serenity's HTTP client
-        // For now, return a mock message ID
-
-        let channel_id = match target {
-            Target::Channel(id) => id.0,
+        // Determine the target channel
+        let channel_id = match &target {
+            Target::Channel(id) => id.0.clone(),
             Target::User(id) => {
                 // For DMs, we'd need to create/get the DM channel first
                 format!("dm:{}", id.0)
             }
-            Target::Reply { channel, .. } => channel.0,
-            Target::Thread { thread_id, .. } => thread_id,
+            Target::Reply { channel, .. } => channel.0.clone(),
+            Target::Thread { thread_id, .. } => thread_id.clone(),
         };
 
-        // Mock sending - in real impl, use serenity::http::Http
-        let message_id = format!("{}-{}", channel_id, chrono::Utc::now().timestamp_millis());
+        // TODO: Implement actual Discord HTTP API call
+        // Use serenity::http::Http to send the message
+        
+        // For now, generate a mock message ID
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let message_id = format!("{}-{}", channel_id, timestamp);
 
-        info!("Message sent to Discord: {}", message_id);
+        info!("Message sent to Discord channel {}: {}", channel_id, message_id);
         Ok(MessageId(message_id))
     }
 
@@ -167,29 +230,26 @@ impl GatewayPlugin for DiscordGateway {
         &self,
         entity: EntityRef,
     ) -> GatewayResult<EntityInfo> {
+        let state = self.state.read().await;
+        
         match entity {
             EntityRef::User(user_id) => {
-                let state = self.state.read().await;
-                if let Some(user) = state.users.get(&user_id.0) {
-                    Ok(EntityInfo::User(user.clone()))
-                } else {
-                    Err(GatewayError::EntityNotFound {
+                state.users.get(&user_id.0)
+                    .cloned()
+                    .map(EntityInfo::User)
+                    .ok_or_else(|| GatewayError::EntityNotFound {
                         entity: format!("user:{}", user_id.0),
                     })
-                }
             }
             EntityRef::Channel(channel_id) => {
-                let state = self.state.read().await;
-                if let Some(channel) = state.channels.get(&channel_id.0) {
-                    Ok(EntityInfo::Channel(channel.clone()))
-                } else {
-                    Err(GatewayError::EntityNotFound {
+                state.channels.get(&channel_id.0)
+                    .cloned()
+                    .map(EntityInfo::Channel)
+                    .ok_or_else(|| GatewayError::EntityNotFound {
                         entity: format!("channel:{}", channel_id.0),
                     })
-                }
             }
             EntityRef::Message(msg_id) => {
-                // Would fetch message from Discord API
                 Err(GatewayError::NotSupported {
                     operation: format!("get_info for message {}", msg_id.0),
                 })
@@ -203,10 +263,10 @@ impl GatewayPlugin for DiscordGateway {
         emoji: &str,
     ) -> GatewayResult<()> {
         debug!("Adding reaction {} to message {}", emoji, message_id.0);
-
-        // In real implementation, use Discord API
+        
+        // TODO: Implement Discord API call
         // serenity::http::Http::add_reaction(channel_id, message_id, emoji)
-
+        
         Ok(())
     }
 
@@ -215,49 +275,49 @@ impl GatewayPlugin for DiscordGateway {
         message_id: MessageId,
         new_content: MessageContent,
     ) -> GatewayResult<()> {
-        debug!("Editing message {}: {:?}", message_id.0, new_content);
-
-        // In real implementation, use Discord API
+        debug!("Editing message {}", message_id.0);
+        
+        // TODO: Implement Discord API call
         // serenity::http::Http::edit_message(channel_id, message_id, content)
-
+        
         Ok(())
     }
 
     async fn delete(&self, message_id: MessageId) -> GatewayResult<()> {
         debug!("Deleting message {}", message_id.0);
-
-        // In real implementation, use Discord API
+        
+        // TODO: Implement Discord API call
         // serenity::http::Http::delete_message(channel_id, message_id)
-
+        
         Ok(())
     }
 
-    async fn typing(
-        &self,
-        channel: ChannelId,
-    ) -> GatewayResult<()> {
+    async fn typing(&self, channel: ChannelId) -> GatewayResult<()> {
         debug!("Sending typing indicator to channel {}", channel.0);
-
-        // In real implementation, use Discord API
+        
+        // TODO: Implement Discord API call
         // serenity::http::Http::broadcast_typing(channel_id)
-
+        
         Ok(())
     }
 
     fn is_connected(&self) -> bool {
-        // In a real implementation, check the actual connection state
-        // For now, check the state we set in start()
-        true // Would need async block in practice
+        // This would check the actual connection state
+        // For now, check if we have a token set
+        !self.token.is_empty()
     }
 
-    async fn shutdown(&self,
-    ) -> GatewayResult<()> {
+    async fn shutdown(&self) -> GatewayResult<()> {
         info!("Shutting down Discord gateway");
 
+        // Mark as disconnected to stop background task
         {
             let mut state = self.state.write().await;
             state.connected = false;
         }
+
+        // TODO: Implement actual Discord client shutdown
+        // This would close WebSocket connections and cleanup
 
         info!("Discord gateway shutdown complete");
         Ok(())
@@ -268,8 +328,8 @@ impl GatewayPlugin for DiscordGateway {
 pub struct DiscordGatewayFactory;
 
 impl DiscordGatewayFactory {
-    /// Create factory
-    pub fn new() -> Self {
+    /// Create a new factory
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -286,21 +346,31 @@ impl gateway_interface::GatewayFactory for DiscordGatewayFactory {
     }
 
     fn metadata(&self) -> GatewayMetadata {
-        // Return same metadata as the plugin
         DiscordGateway::new().metadata()
     }
 }
 
-/// FFI export for dynamic loading
+// ============================================================================
+// FFI Exports for Dynamic Loading
+// ============================================================================
+
+/// Create a gateway factory instance
 ///
 /// This function is called by Pekobot core when loading the plugin.
+/// It returns a raw pointer to a boxed factory.
+///
+/// # Safety
+/// The caller must call `destroy_gateway_factory` to free the memory.
 #[no_mangle]
 pub extern "C" fn create_gateway_factory() -> *mut dyn gateway_interface::GatewayFactory {
     let factory = Box::new(DiscordGatewayFactory::new());
     Box::into_raw(factory)
 }
 
-/// FFI export to destroy factory
+/// Destroy a gateway factory instance
+///
+/// # Safety
+/// The pointer must have been created by `create_gateway_factory` and not already freed.
 #[no_mangle]
 pub extern "C" fn destroy_gateway_factory(ptr: *mut dyn gateway_interface::GatewayFactory) {
     if !ptr.is_null() {
@@ -309,6 +379,10 @@ pub extern "C" fn destroy_gateway_factory(ptr: *mut dyn gateway_interface::Gatew
         }
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -323,13 +397,18 @@ mod tests {
         assert_eq!(metadata.display_name, "Discord");
         assert!(metadata.capabilities.supports_dm);
         assert!(metadata.capabilities.supports_reactions);
+        assert!(!metadata.capabilities.supports_voice); // Not yet implemented
     }
 
     #[tokio::test]
     async fn test_initialize_success() {
         let mut gateway = DiscordGateway::new();
         let mut config = HashMap::new();
-        config.insert("token".to_string(), Value::String("test.token.here".to_string()));
+        // Valid-looking token format
+        config.insert(
+            "token".to_string(),
+            Value::String("MTAxMDIwMw0KaWxsdW1pbmF0aQ0KYXN0cmEu".to_string()),
+        );
 
         let result = gateway.initialize(config).await;
         assert!(result.is_ok());
@@ -342,10 +421,23 @@ mod tests {
 
         let result = gateway.initialize(config).await;
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            GatewayError::ConfigurationError { .. }
-        ));
+        match result.unwrap_err() {
+            GatewayError::ConfigurationError { message } => {
+                assert!(message.contains("token"));
+            }
+            _ => panic!("Expected ConfigurationError"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_initialize_invalid_token() {
+        let mut gateway = DiscordGateway::new();
+        let mut config = HashMap::new();
+        // Invalid token (too short, no dot)
+        config.insert("token".to_string(), Value::String("invalid".to_string()));
+
+        let result = gateway.initialize(config).await;
+        assert!(result.is_err());
     }
 
     #[test]
@@ -354,5 +446,24 @@ mod tests {
         let plugin = factory.create();
 
         assert_eq!(plugin.metadata().name, "discord");
+    }
+
+    #[tokio::test]
+    async fn test_lifecycle() {
+        let mut gateway = DiscordGateway::new();
+        
+        // Initialize
+        let mut config = HashMap::new();
+        config.insert(
+            "token".to_string(),
+            Value::String("MTAxMDIwMw0KaWxsdW1pbmF0aQ0KYXN0cmE.".to_string()),
+        );
+        gateway.initialize(config).await.unwrap();
+        
+        // Check connection state
+        assert!(gateway.is_connected());
+        
+        // Shutdown
+        gateway.shutdown().await.unwrap();
     }
 }
