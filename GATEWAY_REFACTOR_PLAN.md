@@ -583,6 +583,62 @@ pub extern "C" fn create_gateway_factory()
 - Phase 4: Core Integration (replace built-in channels)
 - Phase 5: Extract remaining 6 gateways (WhatsApp, Telegram, etc.)
 
+### Phase 3: Registry & Loader ✅ COMPLETE
+
+**Delivered:**
+- `src/gateway/loader.rs` - Dynamic library loading via `libloading`
+  - `PluginHandle` - Manages loaded library lifetime
+  - `PluginLoader` - Loads `.so`/`.dylib`/`.dll` files
+  - Platform detection (`linux_x64`, `macos_arm`, etc.)
+  - FFI symbol resolution (`create_gateway_factory`)
+  - API version validation on load
+
+- `src/gateway/registry.rs` - Plugin lifecycle management
+  - `GatewayRegistry` - Central registry for plugins
+  - Download from Pekohub with platform selection
+  - Local caching in `~/.pekobot/gateways/`
+  - Version management and updates
+  - Instance creation from loaded factories
+
+**Key Capabilities:**
+```rust
+// Install from Pekohub
+registry.load("discord").await?;
+
+// Create instance with config
+let instance = registry
+    .create_instance("discord", config)
+    .await?;
+
+// Start receiving messages
+let stream = instance.start().await?;
+
+// Update to latest version
+registry.update("discord").await?;
+```
+
+**Security Features:**
+- API version compatibility checking before load
+- Platform-specific binary selection
+- File permissions set on download (Unix: 755)
+- Pekohub signature verification (placeholder for integration)
+
+**Cache Structure:**
+```
+~/.pekobot/gateways/
+├── discord_0.1.0_linux_x64.gateway.so
+├── whatsapp_0.1.0_linux_x64.gateway.so
+└── manifests/
+    ├── discord.toml
+    └── whatsapp.toml
+```
+
+**What's Next:**
+- Phase 4: Core Integration (replace built-in `channels/` module)
+- Phase 5: Extract remaining 6 gateways
+- Phase 6: Pekohub gateway publishing endpoint
+- Phase 7: Migration tool and polish
+
 ---
 
 *Drafted: 2026-02-23*
