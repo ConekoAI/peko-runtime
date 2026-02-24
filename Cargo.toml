@@ -51,6 +51,7 @@ libloading = "0.8"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.8"
 cron = "0.12"
 
 # UUID

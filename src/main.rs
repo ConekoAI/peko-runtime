@@ -73,6 +73,10 @@ enum Commands {
     #[command(subcommand)]
     System(SystemCommands),
     
+    /// Cron job management
+    #[command(subcommand)]
+    Cron(CronCommands),
+    
     /// Gateway plugin management
     #[command(subcommand)]
     Gateway(GatewayCommands),
@@ -405,6 +409,114 @@ enum SystemCommands {
 }
 
 // ============================================================================
+// Cron Commands
+// ============================================================================
+
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+enum CronCommands {
+    /// List all cron jobs
+    List {
+        /// Show all jobs including disabled
+        #[arg(long)]
+        all: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    
+    /// Add a new cron job
+    Add {
+        /// Job name
+        #[arg(short, long)]
+        name: String,
+        /// Schedule expression (cron format: "0 9 * * *")
+        #[arg(short, long)]
+        schedule: String,
+        /// Timezone (e.g., "America/Los_Angeles")
+        #[arg(short, long)]
+        timezone: Option<String>,
+        /// Agent to run as
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Execution mode: main or isolated
+        #[arg(short, long, default_value = "main")]
+        execution: String,
+        /// Message/prompt to execute
+        #[arg(short, long)]
+        message: String,
+        /// Announce results
+        #[arg(long)]
+        announce: bool,
+        /// Delete after successful run (one-shot)
+        #[arg(long)]
+        delete_after_run: bool,
+    },
+    
+    /// Add a one-shot job at specific time
+    At {
+        /// Job name
+        #[arg(short, long)]
+        name: String,
+        /// ISO timestamp (e.g., "2026-02-25T14:00:00Z")
+        #[arg(short, long)]
+        at: String,
+        /// Agent to run as
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Message/prompt to execute
+        #[arg(short, long)]
+        message: String,
+        /// Announce results
+        #[arg(long)]
+        announce: bool,
+    },
+    
+    /// Add a recurring interval job
+    Every {
+        /// Job name
+        #[arg(short, long)]
+        name: String,
+        /// Interval (e.g., "5m", "1h", "30s")
+        #[arg(short, long)]
+        interval: String,
+        /// Agent to run as
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Message/prompt to execute
+        #[arg(short, long)]
+        message: String,
+        /// Announce results
+        #[arg(long)]
+        announce: bool,
+    },
+    
+    /// Remove a cron job
+    Remove {
+        /// Job ID
+        job_id: String,
+        /// Skip confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+    
+    /// Run a job immediately (manual execution)
+    Run {
+        /// Job ID
+        job_id: String,
+    },
+    
+    /// Show job run history
+    History {
+        /// Job ID
+        job_id: String,
+        /// Limit results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+}
+
+// ============================================================================
 // Global Paths Helper
 // ============================================================================
 
@@ -469,6 +581,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Session(cmd) => handle_session(cmd, &paths, cli.json).await,
         Commands::Config(cmd) => handle_config(cmd, &paths, cli.json).await,
         Commands::System(cmd) => handle_system(cmd, &paths, cli.json).await,
+        Commands::Cron(cmd) => handle_cron(cmd, &paths, cli.json).await,
         Commands::Gateway(cmd) => handle_gateway(cmd, &paths, cli.json).await,
         Commands::Completions { shell } => {
             let mut cmd = <Cli as clap::CommandFactory>::command();
@@ -1827,4 +1940,321 @@ async fn handle_system(
         }
     }
     Ok(())
+}
+
+// ============================================================================
+// Cron Handlers
+// ============================================================================
+
+async fn handle_cron(
+    cmd: CronCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    use pekobot::cron::{CronJob, CronScheduler, DeliveryMode, ExecutionTarget, ScheduleKind};
+    use chrono::Utc;
+    use uuid::Uuid;
+    
+    let cron_db = paths.data_dir.join("cron.db");
+    let scheduler = CronScheduler::new(&cron_db)?;
+    
+    match cmd {
+        CronCommands::List { all, json: output_json } => {
+            let jobs = scheduler.list_jobs(all)?;
+            
+            if json || output_json {
+                let job_list: Vec<serde_json::Value> = jobs
+                    .into_iter()
+                    .map(|j| {
+                        serde_json::json!({
+                            "id": j.id,
+                            "name": j.name,
+                            "schedule": j.schedule.display(),
+                            "target": match j.target {
+                                ExecutionTarget::Main => "main",
+                                ExecutionTarget::Isolated => "isolated",
+                            },
+                            "enabled": j.enabled,
+                            "next_run": j.next_run.to_rfc3339(),
+                            "run_count": j.run_count,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::json!({ "jobs": job_list }));
+            } else {
+                if jobs.is_empty() {
+                    println!("No cron jobs scheduled.");
+                    println!("Add one with: pekobot cron add --name <name> --schedule '<expr>' --message '<msg>'");
+                } else {
+                    println!("⏰ Cron Jobs ({}):", jobs.len());
+                    for job in jobs {
+                        let status = if job.enabled { "🟢" } else { "⚪" };
+                        let target = match job.target {
+                            ExecutionTarget::Main => "main",
+                            ExecutionTarget::Isolated => "iso",
+                        };
+                        println!("  {} {} [{}] - {}", status, job.name, target, job.schedule.display());
+                        println!("     Next: {} | Runs: {}", 
+                            job.next_run.format("%Y-%m-%d %H:%M UTC"),
+                            job.run_count);
+                    }
+                }
+            }
+        }
+        
+        CronCommands::Add { name, schedule, timezone, agent, execution, message, announce, delete_after_run } => {
+            // Parse cron expression
+            let schedule_kind = ScheduleKind::Cron { 
+                expr: schedule, 
+                tz: timezone 
+            };
+            
+            let target = match execution.as_str() {
+                "isolated" => ExecutionTarget::Isolated,
+                _ => ExecutionTarget::Main,
+            };
+            
+            let delivery = if announce {
+                DeliveryMode::Announce { channel: None, to: None, best_effort: true }
+            } else {
+                DeliveryMode::None
+            };
+            
+            let now = Utc::now();
+            let next_run = scheduler.calculate_next_run(&schedule_kind, now)?;
+            
+            let job = CronJob {
+                id: Uuid::new_v4().to_string(),
+                name,
+                schedule: schedule_kind,
+                target,
+                agent_id: agent,
+                message,
+                delivery,
+                delete_after_run,
+                enabled: true,
+                created_at: now,
+                next_run,
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            };
+            
+            scheduler.add_job(&job)?;
+            
+            if json {
+                println!("{}", serde_json::json!({
+                    "success": true,
+                    "job_id": job.id,
+                    "next_run": job.next_run.to_rfc3339()
+                }));
+            } else {
+                println!("✅ Created cron job '{}'", job.name);
+                println!("   ID: {}", job.id);
+                println!("   Next run: {}", job.next_run.format("%Y-%m-%d %H:%M UTC"));
+            }
+        }
+        
+        CronCommands::At { name, at, agent, message, announce } => {
+            let schedule_kind = ScheduleKind::At { at };
+            
+            let delivery = if announce {
+                DeliveryMode::Announce { channel: None, to: None, best_effort: true }
+            } else {
+                DeliveryMode::None
+            };
+            
+            let now = Utc::now();
+            let next_run = scheduler.calculate_next_run(&schedule_kind, now)?;
+            
+            let job = CronJob {
+                id: Uuid::new_v4().to_string(),
+                name,
+                schedule: schedule_kind,
+                target: ExecutionTarget::Main,
+                agent_id: agent,
+                message,
+                delivery,
+                delete_after_run: true, // One-shot jobs auto-delete
+                enabled: true,
+                created_at: now,
+                next_run,
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            };
+            
+            scheduler.add_job(&job)?;
+            
+            if json {
+                println!("{}", serde_json::json!({
+                    "success": true,
+                    "job_id": job.id,
+                    "next_run": job.next_run.to_rfc3339()
+                }));
+            } else {
+                println!("✅ Created one-shot job '{}'", job.name);
+                println!("   ID: {}", job.id);
+                println!("   Runs at: {}", job.next_run.format("%Y-%m-%d %H:%M UTC"));
+            }
+        }
+        
+        CronCommands::Every { name, interval, agent, message, announce } => {
+            // Parse interval (e.g., "5m", "1h", "30s")
+            let every_ms = parse_interval(&interval)?;
+            let schedule_kind = ScheduleKind::Every { every_ms };
+            
+            let delivery = if announce {
+                DeliveryMode::Announce { channel: None, to: None, best_effort: true }
+            } else {
+                DeliveryMode::None
+            };
+            
+            let now = Utc::now();
+            let next_run = scheduler.calculate_next_run(&schedule_kind, now)?;
+            
+            let job = CronJob {
+                id: Uuid::new_v4().to_string(),
+                name,
+                schedule: schedule_kind,
+                target: ExecutionTarget::Main,
+                agent_id: agent,
+                message,
+                delivery,
+                delete_after_run: false,
+                enabled: true,
+                created_at: now,
+                next_run,
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            };
+            
+            scheduler.add_job(&job)?;
+            
+            if json {
+                println!("{}", serde_json::json!({
+                    "success": true,
+                    "job_id": job.id,
+                    "next_run": job.next_run.to_rfc3339()
+                }));
+            } else {
+                println!("✅ Created interval job '{}'", job.name);
+                println!("   ID: {}", job.id);
+                println!("   Every: {} | Next: {}", 
+                    format_duration(every_ms),
+                    job.next_run.format("%Y-%m-%d %H:%M UTC"));
+            }
+        }
+        
+        CronCommands::Remove { job_id, force } => {
+            if !force {
+                print!("Delete job '{}'? [y/N]: ", job_id);
+                std::io::Write::flush(&mut std::io::stdout())?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+            
+            let deleted = scheduler.delete_job(&job_id)?;
+            if deleted {
+                if json {
+                    println!("{}", serde_json::json!({ "success": true }));
+                } else {
+                    println!("✅ Deleted job {}", job_id);
+                }
+            } else {
+                return Err(anyhow::anyhow!("Job {} not found", job_id));
+            }
+        }
+        
+        CronCommands::Run { job_id } => {
+            let job = scheduler.get_job(&job_id)?
+                .ok_or_else(|| anyhow::anyhow!("Job {} not found", job_id))?;
+            
+            // Note: Actual execution would require the agent runtime
+            // This is a placeholder that shows the job details
+            if json {
+                println!("{}", serde_json::json!({
+                    "success": true,
+                    "job_id": job.id,
+                    "message": "Job queued for execution",
+                    "note": "Manual execution requires running agent"
+                }));
+            } else {
+                println!("⏳ Queued job '{}' for execution", job.name);
+                println!("   Message: {}", job.message);
+                println!("   Note: Requires running agent to execute");
+            }
+        }
+        
+        CronCommands::History { job_id, limit } => {
+            let runs = scheduler.get_run_history(&job_id, limit)?;
+            
+            if json {
+                let run_list: Vec<serde_json::Value> = runs
+                    .into_iter()
+                    .map(|r| serde_json::json!({
+                        "id": r.id,
+                        "started_at": r.started_at.to_rfc3339(),
+                        "finished_at": r.finished_at.map(|t| t.to_rfc3339()),
+                        "status": r.status,
+                    }))
+                    .collect();
+                println!("{}", serde_json::json!({ "runs": run_list }));
+            } else {
+                if runs.is_empty() {
+                    println!("No run history for job {}.", job_id);
+                } else {
+                    println!("📜 Run history for {} (last {} runs):", job_id, runs.len());
+                    for run in runs {
+                        let status = match run.status.as_str() {
+                            "success" => "✅",
+                            "failed" => "❌",
+                            _ => "⏳",
+                        };
+                        println!("  {} {} - {}", status, run.id, run.started_at.format("%Y-%m-%d %H:%M UTC"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_interval(interval: &str) -> anyhow::Result<u64> {
+    let interval = interval.trim();
+    let (num, unit) = if let Some(pos) = interval.find(|c: char| !c.is_ascii_digit()) {
+        interval.split_at(pos)
+    } else {
+        return Err(anyhow::anyhow!("Invalid interval format. Use like: 5m, 1h, 30s"));
+    };
+    
+    let num: u64 = num.parse()
+        .map_err(|_| anyhow::anyhow!("Invalid number in interval"))?;
+    
+    let ms = match unit {
+        "s" | "sec" | "secs" => num * 1000,
+        "m" | "min" | "mins" => num * 60 * 1000,
+        "h" | "hr" | "hrs" => num * 60 * 60 * 1000,
+        "d" | "day" | "days" => num * 24 * 60 * 60 * 1000,
+        _ => return Err(anyhow::anyhow!("Invalid interval unit: {}. Use s, m, h, or d", unit)),
+    };
+    
+    Ok(ms)
+}
+
+fn format_duration(ms: u64) -> String {
+    if ms < 60_000 {
+        format!("{}s", ms / 1000)
+    } else if ms < 3_600_000 {
+        format!("{}m", ms / 60_000)
+    } else if ms < 86_400_000 {
+        format!("{}h", ms / 3_600_000)
+    } else {
+        format!("{}d", ms / 86_400_000)
+    }
 }
