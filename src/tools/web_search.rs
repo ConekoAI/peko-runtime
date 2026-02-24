@@ -195,7 +195,7 @@ impl WebSearchTool {
 
         let count = args.count.unwrap_or(self.config.max_results).min(20).max(1);
 
-        let mut url = Url::parse("https://api.brb.lt/v1/search")
+        let mut url = Url::parse("https://api.search.brave.com/res/v1/web/search")
             .map_err(|e| format!("Invalid URL: {}", e))?;
 
         url.query_pairs_mut()
