@@ -137,35 +137,193 @@ cargo build --release
 ./target/release/pekobot --version
 ```
 
-### CLI Commands
+### CLI Reference
+
+Pekobot uses a hierarchical command structure (`pekobot <noun> <verb>`):
+
+#### Global Flags
+```bash
+--config-dir <PATH>     # Override config directory (env: PEKOBOT_CONFIG_DIR)
+--data-dir <PATH>       # Override data directory (env: PEKOBOT_DATA_DIR)
+--cache-dir <PATH>      # Override cache directory (env: PEKOBOT_CACHE_DIR)
+--json                  # Output results as JSON
+-q, --quiet             # Suppress non-error output
+-v, -vv                 # Verbose logging (repeat for more)
+-V, --version           # Show version
+```
+
+#### Agent Management
+```bash
+# Create an agent from template
+pekobot agent create <NAME> --template <minimal|coding|research|full> --provider <openai|anthropic|ollama>
+
+# List all configured agents
+pekobot agent list [--long]
+
+# Show agent details
+pekobot agent show <NAME>
+
+# Run an agent interactively
+pekobot agent start --name <NAME>
+pekobot agent start --config <PATH>
+
+# Delete an agent
+pekobot agent delete <NAME> [--purge] [--force]
+
+# Export to .agent package
+pekobot agent export --name <NAME> [--output <PATH>] [--encrypt]
+
+# Import from .agent package
+pekobot agent import --file <PATH> [--name <NEW_NAME>]
+
+# Inspect package without importing
+pekobot agent inspect <FILE>
+```
+
+#### Tool Management
+```bash
+# List installed tools
+pekobot tool list [--long]
+
+# Search Pekohub registry
+pekobot tool search <QUERY> [--limit <N>]
+
+# Install a tool
+pekobot tool install <NAME> [--version <VER>] [--force]
+
+# Uninstall a tool
+pekobot tool uninstall <NAME> [--force]
+
+# Show tool information
+pekobot tool info <NAME>
+```
+
+#### Session Management
+```bash
+# List active sessions
+pekobot session list [--all] [--agent <NAME>]
+
+# Show session details
+pekobot session show <ID> [--history]
+
+# Send message to a session
+pekobot session send <ID> <MESSAGE>
+
+# Terminate a session
+pekobot session kill <ID> [--force]
+```
+
+#### Configuration Management
+```bash
+# Validate a config file
+pekobot config validate [FILE]
+
+# Generate a new config file
+pekobot config init --output <FILE> --template <minimal|coding|research|full>
+
+# Show default values
+pekobot config defaults [--json]
+
+# Show config paths
+pekobot config path [--json]
+
+# Get/set config values (placeholder)
+pekobot config get <KEY> [--file <PATH>]
+pekobot config set <KEY> <VALUE> [--file <PATH>]
+```
+
+#### System Commands
+```bash
+# Show system status
+pekobot system status [--resources]
+
+# Show system info
+pekobot system info [--json]
+
+# Run health check
+pekobot system doctor [--fix]
+
+# Clean up cache/logs
+pekobot system clean [--tools] [--logs] [--all]
+
+# Check for updates
+pekobot system update [--check]
+```
+
+#### Gateway Management
+```bash
+# List installed gateways
+pekobot gateway list
+
+# Search available gateways
+pekobot gateway search [QUERY]
+
+# Install a gateway
+pekobot gateway install <NAME> [--version <VER>]
+
+# Show gateway info
+pekobot gateway info <NAME>
+```
+
+#### Shell Completions
+```bash
+# Generate shell completions
+pekobot completions bash    > /etc/bash_completion.d/pekobot
+pekobot completions zsh     > /usr/local/share/zsh/site-functions/_pekobot
+pekobot completions fish    > ~/.config/fish/completions/pekobot.fish
+pekobot completions powershell  # For PowerShell
+```
+
+### Legacy Commands
+
+The following commands are deprecated and will be removed:
 
 ```bash
-# Agent management
-pekobot agent [OPTIONS]
-  --name <NAME>           Agent name
-  --memory                Enable SQLite memory
-  --provider <TYPE>       LLM provider (openai)
-  --model <MODEL>         Model name
-  --coneko <URL>          Coneko server URL
-  --coneko-token <TOKEN>  Coneko auth token
+# Agent (deprecated - use 'pekobot agent start')
+pekobot agent --name <NAME>
 
-# Orchestrator
-pekobot orchestrate [OPTIONS]
-  --config <FILE>         Configuration file
+# Orchestrate (deprecated)
+pekobot orchestrate --config <FILE>
 
-# Coneko integration
-pekobot coneko status --endpoint <URL>
-pekobot coneko register --did <DID> --name <NAME> --agent-endpoint <URL>
-pekobot coneko discover --endpoint <URL> [--capability <CAP>]
+# Export/Import (deprecated - use 'pekobot agent export/import')
+pekobot export --agent <NAME>
+pekobot import --file <FILE>
+pekobot inspect --file <FILE>
 
-# Identity
-pekobot identity create --name <NAME> [--scope local|tenant|global]
-pekobot identity list
-pekobot identity resolve <DID>
+# Secret management (deprecated - use plain text or env vars)
+pekobot secret set <NAME>
+pekobot secret get <NAME>
+pekobot secret list
+```
 
-# Utilities
-pekobot --version
-pekobot --help
+### Shell Completion Installation
+
+Enable tab completion for your shell:
+
+**Bash:**
+```bash
+pekobot completions bash | sudo tee /etc/bash_completion.d/pekobot > /dev/null
+# Or for user-local:
+pekobot completions bash >> ~/.bash_completion
+```
+
+**Zsh:**
+```bash
+pekobot completions zsh | sudo tee /usr/local/share/zsh/site-functions/_pekobot > /dev/null
+# Or for Oh-My-Zsh:
+pekobot completions zsh > ~/.oh-my-zsh/completions/_pekobot
+```
+
+**Fish:**
+```bash
+pekobot completions fish > ~/.config/fish/completions/pekobot.fish
+```
+
+**PowerShell:**
+```powershell
+pekobot completions powershell | Out-String | Invoke-Expression
+# Or save to profile:
+pekobot completions powershell >> $PROFILE
 ```
 
 ## Configuration
@@ -258,6 +416,32 @@ pekobot/
 | 6 | ✅ | Channels (CLI + HTTP) |
 | 7 | ✅ | Coneko adapter |
 | 8 | ✅ | Polish (docs, examples, tests, Docker) |
+| 9 | ✅ | **CLI Redesign** — Hierarchical commands, shell completions |
+
+### CLI Redesign (2026-02-24)
+
+The CLI has been completely redesigned with a hierarchical command structure:
+
+**Before (flat):**
+```bash
+pekobot agent --name my-agent
+pekobot export --agent my-agent
+pekobot tool search calendar
+```
+
+**After (hierarchical):**
+```bash
+pekobot agent start --name my-agent
+pekobot agent export --name my-agent
+pekobot tool search calendar
+```
+
+**New Features:**
+- ✅ 7 command groups: agent, tool, session, config, system, gateway, completions
+- ✅ 30+ subcommands
+- ✅ Global flags: `--json`, `--quiet`, `-v`, `--config-dir`
+- ✅ Shell completions for bash, zsh, fish, powershell, elvish
+- ✅ Environment variable overrides
 
 ## Tool Registry (Pekohub)
 
@@ -296,20 +480,26 @@ Export agents as `.agent` packages and import them on other machines:
 
 ```bash
 # Export an agent to a .agent package
-pekobot export --agent my-agent --output ./my-agent.agent
+pekobot agent export --name my-agent --output ./my-agent.agent
 
 # Export with encryption (recommended for sharing)
-pekobot export --agent my-agent --output ./my-agent.agent --encrypt
+pekobot agent export --name my-agent --output ./my-agent.agent --encrypt
 
 # Import an agent
-pekobot import --file ./my-agent.agent --name imported-agent
+pekobot agent import --file ./my-agent.agent --name imported-agent
 
 # Import with key rotation (new DID)
-pekobot import --file ./my-agent.agent --name imported-agent --rotate-keys
+pekobot agent import --file ./my-agent.agent --name imported-agent
 
 # Inspect a package without importing
-pekobot inspect --file ./my-agent.agent
+pekobot agent inspect ./my-agent.agent
 ```
+
+**Note:** There is a known issue where exporting by name may fail. As a workaround, provide the config file path directly:
+```bash
+pekobot agent export --agent ~/.config/pekobot/agents/my-agent.toml --output ./my-agent.agent
+```
+See [ISSUES.md](./ISSUES.md) for details.
 
 **Package Contents:**
 - Identity (DID document + encrypted keys)

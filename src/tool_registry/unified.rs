@@ -176,6 +176,12 @@ impl UnifiedToolRegistry {
         })
     }
 
+    /// Get the cache directory path
+    #[must_use]
+    pub fn get_cache_dir(&self) -> &std::path::Path {
+        &self.config.cache_dir
+    }
+
     /// Load tool from any available backend
     pub async fn load_tool(
         &self,

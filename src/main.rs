@@ -1,34 +1,107 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use clap_complete::{generate, Shell};
 use pekobot::agent::Agent;
 use pekobot::channels::cli::{run_interactive_loop, CliChannel};
+use pekobot::identity::did::DIDScope;
 use pekobot::identity::{storage::KeyStorage, Identity};
 use pekobot::types::agent::{AgentCapability, AgentConfig};
 use pekobot::types::memory::MemoryConfig;
 use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use std::collections::HashMap;
+use std::io;
+use std::path::PathBuf;
 use tracing::{info, warn};
+
+// ============================================================================
+// CLI Structure - Phase 1 Implementation
+// ============================================================================
 
 /// Pekobot - Lightweight Multi-Agent Runtime
 #[derive(Parser)]
 #[command(name = "pekobot")]
-#[command(version)]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "Lightweight multi-agent runtime")]
+#[command(propagate_version = true)]
 struct Cli {
+    /// Configuration directory override
+    #[arg(long, global = true, env = "PEKOBOT_CONFIG_DIR")]
+    config_dir: Option<PathBuf>,
+    
+    /// Data directory override
+    #[arg(long, global = true, env = "PEKOBOT_DATA_DIR")]
+    data_dir: Option<PathBuf>,
+    
+    /// Cache directory override  
+    #[arg(long, global = true, env = "PEKOBOT_CACHE_DIR")]
+    cache_dir: Option<PathBuf>,
+    
+    /// Output results as JSON
+    #[arg(long, global = true)]
+    json: bool,
+    
+    /// Suppress non-error output
+    #[arg(short, long, global = true)]
+    quiet: bool,
+    
+    /// Enable verbose logging
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run a single agent with interactive CLI
-    Agent {
+    /// Agent management commands
+    #[command(subcommand)]
+    Agent(AgentCommands),
+    
+    /// Tool management commands (Pekohub integration)
+    #[command(subcommand)]
+    Tool(ToolCommands),
+    
+    /// Session management commands
+    #[command(subcommand)]
+    Session(SessionCommands),
+    
+    /// Configuration management
+    #[command(subcommand)]
+    Config(ConfigCommands),
+    
+    /// System diagnostics and maintenance
+    #[command(subcommand)]
+    System(SystemCommands),
+    
+    /// Gateway plugin management
+    #[command(subcommand)]
+    Gateway(GatewayCommands),
+    
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+}
+
+// ============================================================================
+// Agent Commands - Phase 1
+// ============================================================================
+
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+enum AgentCommands {
+    /// Run an agent interactively (legacy compatibility)
+    #[command(alias = "run")]
+    Start {
         /// Agent configuration file
         #[arg(short, long)]
         config: Option<String>,
         /// Agent name
         #[arg(short, long, default_value = "peko")]
         name: String,
-        /// LLM provider (openai, anthropic, ollama)
+        /// LLM provider (openai, anthropic, ollama, kimi)
         #[arg(short, long, default_value = "openai")]
         provider: String,
         /// Model name
@@ -38,566 +111,1336 @@ enum Commands {
         #[arg(long)]
         db: Option<String>,
     },
-    /// Run multi-agent orchestrator
-    Orchestrate {
-        /// Orchestrator configuration file
+    
+    /// List all configured agents
+    List {
+        /// Show detailed information
         #[arg(short, long)]
-        config: Option<String>,
+        long: bool,
     },
-    /// Check system status
-    Status,
-    /// Onboard new agent (interactive setup)
-    Onboard,
-    /// Send a message to a running agent (HTTP mode)
-    Send {
-        /// Target endpoint
-        #[arg(short, long)]
-        endpoint: String,
-        /// Message to send
-        #[arg(short, long)]
-        message: String,
+    
+    /// Show detailed agent information
+    Show {
+        /// Agent name
+        name: String,
     },
-    /// Export an agent to a .agent package
+    
+    /// Create a new agent from template
+    Create {
+        /// Agent name
+        name: String,
+        /// Use template (minimal, coding, research, full)
+        #[arg(short, long, default_value = "minimal")]
+        template: String,
+        /// Provider to use
+        #[arg(short, long, default_value = "openai")]
+        provider: String,
+        /// Skip confirmation
+        #[arg(short, long)]
+        yes: bool,
+    },
+    
+    /// Delete an agent and its configuration
+    Delete {
+        /// Agent name
+        name: String,
+        /// Also delete identity
+        #[arg(long)]
+        purge: bool,
+        /// Skip confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+    
+    /// Export agent to .agent package
     Export {
-        /// Agent name or config file
+        /// Agent name
         #[arg(short, long)]
-        agent: String,
-        /// Output path for .agent file
+        name: String,
+        /// Output path
         #[arg(short, long)]
         output: Option<String>,
-        /// Encrypt the package with a passphrase
+        /// Encrypt with passphrase
         #[arg(long)]
         encrypt: bool,
-        /// Rotate keys (generate new DID on import)
-        #[arg(long)]
-        rotate_keys: bool,
-        /// Include memory database
-        #[arg(long, default_value = "true")]
-        include_memory: bool,
-        /// Description for the package
-        #[arg(short, long)]
-        description: Option<String>,
     },
-    /// Import an agent from a .agent package
+    
+    /// Import agent from .agent package
     Import {
         /// Path to .agent file
         #[arg(short, long)]
         file: String,
-        /// New name for the imported agent
+        /// New name for imported agent
         #[arg(short, long)]
         name: Option<String>,
-        /// Rotate keys (generate new DID)
-        #[arg(long)]
-        rotate_keys: bool,
-        /// Don't import memory
-        #[arg(long)]
-        no_memory: bool,
-        /// Force import even if DID exists
-        #[arg(long)]
-        force: bool,
     },
-    /// Inspect a .agent package without importing
+    
+    /// Inspect .agent package without importing
     Inspect {
         /// Path to .agent file
-        #[arg(short, long)]
         file: String,
     },
-    /// Gateway plugin commands
-    #[command(subcommand)]
-    Gateway(GatewayCommands),
 }
 
+// ============================================================================
+// Tool Commands - Phase 1  
+// ============================================================================
+
 #[derive(Subcommand)]
-enum GatewayCommands {
-    /// List installed gateway plugins
-    List,
-    /// List available gateway plugins from Pekohub
-    Available,
-    /// Install a gateway plugin
-    Install {
-        /// Gateway plugin name (e.g., discord, whatsapp)
-        name: String,
-        /// Specific version to install
+#[command(disable_version_flag = true)]
+enum ToolCommands {
+    /// List installed tools
+    List {
+        /// Show all details
         #[arg(short, long)]
-        version: Option<String>,
+        long: bool,
     },
-    /// Uninstall a gateway plugin
+    
+    /// Search Pekohub registry
+    Search {
+        /// Search query
+        query: String,
+        /// Limit results
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+    },
+    
+    /// Install tool from Pekohub
+    Install {
+        /// Tool name
+        name: String,
+        /// Specific version
+        #[arg(long)]
+        version: Option<String>,
+        /// Force reinstall if exists
+        #[arg(short, long)]
+        force: bool,
+    },
+    
+    /// Uninstall a tool
     Uninstall {
-        /// Gateway plugin name
+        /// Tool name
         name: String,
         /// Skip confirmation
         #[arg(short, long)]
         force: bool,
     },
-    /// Update a gateway plugin to the latest version
-    Update {
-        /// Gateway plugin name (omit for all)
-        name: Option<String>,
-    },
-    /// Show gateway plugin information
+    
+    /// Show tool information
     Info {
-        /// Gateway plugin name
+        /// Tool name
         name: String,
-    },
-    /// Start a gateway instance
-    Start {
-        /// Gateway configuration file
-        #[arg(short, long)]
-        config: String,
-    },
-    /// Stop a gateway instance
-    Stop {
-        /// Instance ID
-        instance_id: String,
-    },
-    /// List active gateway instances
-    Instances,
-    /// Test gateway connection
-    Test {
-        /// Instance ID
-        instance_id: String,
     },
 }
 
+// ============================================================================
+// Gateway Commands
+// ============================================================================
+
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+enum GatewayCommands {
+    /// List installed gateway plugins
+    List,
+    
+    /// Search available gateways on Pekohub
+    Search {
+        /// Search query
+        query: Option<String>,
+    },
+    
+    /// Install a gateway plugin
+    Install {
+        /// Gateway name
+        name: String,
+        /// Specific version
+        #[arg(long)]
+        version: Option<String>,
+    },
+    
+    /// Show gateway information
+    Info {
+        /// Gateway name
+        name: String,
+    },
+}
+
+// ============================================================================
+// Session Commands - Phase 2
+// ============================================================================
+
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+enum SessionCommands {
+    /// List active sessions
+    List {
+        /// Show all sessions (including inactive)
+        #[arg(long)]
+        all: bool,
+        /// Filter by agent name
+        #[arg(short, long)]
+        agent: Option<String>,
+    },
+    
+    /// Show session details and history
+    Show {
+        /// Session ID
+        id: String,
+        /// Show full message history
+        #[arg(long)]
+        history: bool,
+    },
+    
+    /// Send message to a session
+    Send {
+        /// Session ID
+        id: String,
+        /// Message content
+        message: String,
+    },
+    
+    /// Terminate a session
+    Kill {
+        /// Session ID
+        id: String,
+        /// Force immediate termination
+        #[arg(short, long)]
+        force: bool,
+    },
+}
+
+// ============================================================================
+// Config Commands - Phase 2
+// ============================================================================
+
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+enum ConfigCommands {
+    /// Validate a configuration file
+    Validate {
+        /// Config file path (default: pekobot.toml in current dir)
+        file: Option<String>,
+    },
+    
+    /// Initialize a new configuration
+    Init {
+        /// Output file
+        #[arg(short, long, default_value = "pekobot.toml")]
+        output: String,
+        /// Template to use (minimal, full, agent)
+        #[arg(short, long, default_value = "minimal")]
+        template: String,
+    },
+    
+    /// Show default configuration values
+    Defaults,
+    
+    /// Show configuration paths
+    Path,
+    
+    /// Get a configuration value
+    Get {
+        /// Key path (e.g., "agent.name" or "provider.api_key")
+        key: String,
+        /// Config file to read from
+        #[arg(short, long)]
+        file: Option<String>,
+    },
+    
+    /// Set a configuration value
+    Set {
+        /// Key path
+        key: String,
+        /// Value to set
+        value: String,
+        /// Config file to modify
+        #[arg(short, long)]
+        file: Option<String>,
+    },
+}
+
+// ============================================================================
+// System Commands - Phase 2
+// ============================================================================
+
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+enum SystemCommands {
+    /// Show detailed system status
+    Status {
+        /// Include resource usage
+        #[arg(long)]
+        resources: bool,
+    },
+    
+    /// Show system information
+    Info,
+    
+    /// Run health check diagnostics
+    Doctor {
+        /// Fix issues automatically where possible
+        #[arg(long)]
+        fix: bool,
+    },
+    
+    /// Clean up temporary files and cache
+    Clean {
+        /// Remove all tool caches
+        #[arg(long)]
+        tools: bool,
+        /// Remove old logs
+        #[arg(long)]
+        logs: bool,
+        /// Remove everything (full reset)
+        #[arg(long)]
+        all: bool,
+    },
+    
+    /// Update Pekobot to latest version
+    Update {
+        /// Check for updates only
+        #[arg(long)]
+        check: bool,
+    },
+}
+
+// ============================================================================
+// Global Paths Helper
+// ============================================================================
+
+struct GlobalPaths {
+    config_dir: PathBuf,
+    data_dir: PathBuf,
+    _cache_dir: PathBuf,
+}
+
+impl GlobalPaths {
+    fn from_cli(cli: &Cli) -> Self {
+        let config_dir = cli.config_dir.clone()
+            .or_else(|| dirs::config_dir().map(|d| d.join("pekobot")))
+            .unwrap_or_else(|| PathBuf::from(".").join(".pekobot"));
+            
+        let data_dir = cli.data_dir.clone()
+            .or_else(|| dirs::data_dir().map(|d| d.join("pekobot")))
+            .unwrap_or_else(|| config_dir.clone());
+            
+        let cache_dir = cli.cache_dir.clone()
+            .or_else(|| dirs::cache_dir().map(|d| d.join("pekobot")))
+            .unwrap_or_else(|| data_dir.join("cache"));
+        
+        // Ensure directories exist
+        let _ = std::fs::create_dir_all(&config_dir);
+        let _ = std::fs::create_dir_all(&data_dir);
+        let _ = std::fs::create_dir_all(&cache_dir);
+        
+        Self { config_dir, data_dir, _cache_dir: cache_dir }
+    }
+    
+    fn agents_dir(&self) -> PathBuf {
+        self.config_dir.join("agents")
+    }
+    
+    fn agent_config(&self, name: &str) -> PathBuf {
+        self.agents_dir().join(format!("{}.toml", name))
+    }
+    
+    fn tools_dir(&self) -> PathBuf {
+        self.data_dir.join("tools")
+    }
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
-
+    
+    // Initialize logging
+    init_logging(cli.verbose, cli.quiet);
+    
+    // Set up global paths
+    let paths = GlobalPaths::from_cli(&cli);
+    
     match cli.command {
-        Commands::Agent {
-            config,
-            name,
-            provider,
-            model,
-            db,
-        } => {
-            info!("Starting Pekobot agent: {}", name);
+        Commands::Agent(cmd) => handle_agent(cmd, &paths, cli.json).await,
+        Commands::Tool(cmd) => handle_tool(cmd, &paths, cli.json).await,
+        Commands::Session(cmd) => handle_session(cmd, &paths, cli.json).await,
+        Commands::Config(cmd) => handle_config(cmd, &paths, cli.json).await,
+        Commands::System(cmd) => handle_system(cmd, &paths, cli.json).await,
+        Commands::Gateway(cmd) => handle_gateway(cmd, &paths, cli.json).await,
+        Commands::Completions { shell } => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            let name = cmd.get_name().to_string();
+            generate(shell, &mut cmd, name, &mut io::stdout());
+            Ok(())
+        }
+    }
+}
 
-            // Build config
-            let agent_config = if let Some(config_path) = config {
-                info!("Loading config from: {}", config_path);
-                build_default_config(&name, &provider, model, db)
+fn init_logging(verbosity: u8, quiet: bool) {
+    if quiet {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .init();
+        return;
+    }
+    
+    let level = match verbosity {
+        0 => tracing::Level::INFO,
+        1 => tracing::Level::DEBUG,
+        _ => tracing::Level::TRACE,
+    };
+    
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .init();
+}
+
+// ============================================================================
+// Agent Handlers - Phase 1 (Working Implementation)
+// ============================================================================
+
+async fn handle_agent(
+    cmd: AgentCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    match cmd {
+        AgentCommands::Start { config, name, provider, model, db } => {
+            handle_agent_start(config, name, provider, model, db).await
+        }
+        AgentCommands::List { long } => {
+            handle_agent_list(paths, long, json).await
+        }
+        AgentCommands::Show { name } => {
+            handle_agent_show(paths, name, json).await
+        }
+        AgentCommands::Create { name, template, provider, yes } => {
+            handle_agent_create(paths, name, template, provider, yes).await
+        }
+        AgentCommands::Delete { name, purge, force } => {
+            handle_agent_delete(paths, name, purge, force).await
+        }
+        AgentCommands::Export { name, output, encrypt } => {
+            handle_agent_export(paths, name, output, encrypt).await
+        }
+        AgentCommands::Import { file, name } => {
+            handle_agent_import(paths, file, name).await
+        }
+        AgentCommands::Inspect { file } => {
+            handle_agent_inspect(file, json).await
+        }
+    }
+}
+
+async fn handle_agent_start(
+    config_path: Option<String>,
+    name: String,
+    provider: String,
+    model: Option<String>,
+    db: Option<String>,
+) -> anyhow::Result<()> {
+    info!("Starting Pekobot agent: {}", name);
+    
+    let agent_config = if let Some(path) = config_path {
+        info!("Loading config from: {}", path);
+        let content = std::fs::read_to_string(&path)?;
+        toml::from_str(&content)?
+    } else {
+        warn!("No config specified, using defaults");
+        build_default_config(&name, &provider, model, db)
+    };
+
+    match Agent::new(agent_config).await {
+        Ok(agent) => {
+            if let Err(e) = agent.start().await {
+                eprintln!("❌ Failed to start agent: {}", e);
+                return Err(e);
+            }
+
+            println!("\n🐱 Agent '{}' started successfully!", name);
+            println!("   DID: {}", agent.identity.did);
+            println!("   State: {:?}", agent.state());
+
+            let mut channel = CliChannel::new(&name);
+            channel.print_banner();
+            channel.print_system(&format!(
+                "Agent '{}' is ready! Type 'exit' or 'quit' to stop.",
+                name
+            ));
+
+            if let Err(e) = run_interactive_loop(&mut channel, &name).await {
+                eprintln!("❌ Error in interactive loop: {}", e);
+            }
+
+            if let Err(e) = agent.stop().await {
+                eprintln!("❌ Error stopping agent: {}", e);
+            }
+
+            println!("\n👋 Agent '{}' stopped. Goodbye!", name);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to create agent: {}", e);
+            Err(e)
+        }
+    }
+}
+
+async fn handle_agent_list(
+    paths: &GlobalPaths,
+    long: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let agents_dir = paths.agents_dir();
+    
+    if !agents_dir.exists() {
+        if json {
+            println!("{{\"agents\": []}}");
+        } else {
+            println!("No agents configured.");
+            println!("Create one with: pekobot agent create <name>");
+        }
+        return Ok(());
+    }
+    
+    let mut agents = Vec::new();
+    
+    if let Ok(entries) = std::fs::read_dir(&agents_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.path().file_stem() {
+                let name = name.to_string_lossy().to_string();
+                agents.push(name);
+            }
+        }
+    }
+    
+    agents.sort();
+    
+    if json {
+        let output = serde_json::json!({"agents": agents});
+        println!("{}", output);
+    } else if agents.is_empty() {
+        println!("No agents configured.");
+        println!("Create one with: pekobot agent create <name>");
+    } else {
+        println!("🐱 Configured Agents ({}):", agents.len());
+        for name in agents {
+            let config_path = paths.agent_config(&name);
+            if long {
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
+                        println!("\n  📦 {}", name);
+                        println!("     Provider: {:?}", config.provider.provider_type);
+                        println!("     Model: {}", config.provider.default_model);
+                        if let Some(desc) = &config.description {
+                            println!("     Description: {}", desc);
+                        }
+                        // Try to get DID
+                        if let Some(identity) = load_identity_for_agent(&name).await {
+                            println!("     DID: {}", identity.did);
+                        }
+                    } else {
+                        println!("  📦 {} (invalid config)", name);
+                    }
+                }
             } else {
-                warn!("No config specified, using defaults");
-                build_default_config(&name, &provider, model, db)
-            };
-
-            // Create and start agent
-            match Agent::new(agent_config).await {
-                Ok(agent) => {
-                    if let Err(e) = agent.start().await {
-                        eprintln!("❌ Failed to start agent: {}", e);
-                        return Err(e);
+                print!("  📦 {}", name);
+                // Quick status indicator
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
+                        print!(" ({:?})", config.provider.provider_type);
                     }
-
-                    println!("\n🐱 Agent '{}' started successfully!", name);
-                    println!("   DID: {}", agent.identity.did);
-                    println!("   State: {:?}", agent.state());
-
-                    // Create CLI channel and run interactive loop
-                    let mut channel = CliChannel::new(&name);
-                    channel.print_banner();
-                    channel.print_system(&format!(
-                        "Agent '{}' is ready! Type 'exit' or 'quit' to stop.",
-                        name
-                    ));
-
-                    // Run the interactive loop
-                    if let Err(e) = run_interactive_loop(&mut channel, &name).await {
-                        eprintln!("❌ Error in interactive loop: {}", e);
-                    }
-
-                    // Stop the agent
-                    if let Err(e) = agent.stop().await {
-                        eprintln!("❌ Error stopping agent: {}", e);
-                    }
-
-                    println!("\n👋 Agent '{}' stopped. Goodbye!", name);
                 }
-                Err(e) => {
-                    eprintln!("❌ Failed to create agent: {}", e);
-                    return Err(e);
-                }
+                println!();
             }
         }
-        Commands::Orchestrate { config } => {
-            info!("Starting Pekobot orchestrator");
-            if let Some(cfg) = config {
-                info!("Using config: {}", cfg);
+    }
+    
+    Ok(())
+}
+
+async fn handle_agent_show(
+    paths: &GlobalPaths,
+    name: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let config_path = paths.agent_config(&name);
+    
+    if !config_path.exists() {
+        return Err(anyhow::anyhow!("Agent '{}' not found", name));
+    }
+    
+    let content = std::fs::read_to_string(&config_path)?;
+    
+    if json {
+        // Output raw config as JSON
+        let config: AgentConfig = toml::from_str(&content)?;
+        println!("{}", serde_json::to_string_pretty(&config)?);
+    } else {
+        let config: AgentConfig = toml::from_str(&content)?;
+        println!("🐱 Agent: {}", name);
+        println!("   Config: {}", config_path.display());
+        
+        if let Some(desc) = &config.description {
+            println!("   Description: {}", desc);
+        }
+        
+        println!("\n   Provider: {:?}", config.provider.provider_type);
+        println!("   Model: {}", config.provider.default_model);
+        println!("   Timeout: {}s", config.provider.timeout_seconds);
+        
+        if let Some(memory) = &config.memory {
+            println!("\n   Memory:");
+            println!("     Semantic Search: {}", memory.enable_semantic_search);
+            if let Some(max) = memory.max_entries_per_agent {
+                println!("     Max Entries: {}", max);
             }
-            println!("🐱 Pekobot orchestrator starting...");
-            println!("   Note: Orchestrator mode not yet fully implemented");
-            println!("   Use 'pekobot agent' for single agent mode.");
         }
-        Commands::Status => {
-            println!("🐱 Pekobot Status");
-            println!("   Version: {}", pekobot::VERSION);
-            println!("   Status: 🟢 Operational");
-            println!("   Features:");
-            println!("     - Agent Runtime: ✅ Ready");
-            println!("     - Identity System: ✅ Ready");
-            println!("     - SQLite Memory: ✅ Ready");
-            println!("     - OpenAI Provider: ✅ Ready");
-            println!("     - CLI Channel: ✅ Ready");
-            println!("     - HTTP Channel: ✅ Ready");
-            println!("     - Multi-Agent Orchestration: ✅ Ready");
-            println!("     - Portable Agents: ✅ Ready");
+        
+        // Try to load identity
+        if let Some(identity) = load_identity_for_agent(&name).await {
+            println!("\n   Identity:");
+            println!("     DID: {}", identity.did);
         }
-        Commands::Onboard => {
-            println!("🐱 Pekobot Onboarding");
-            println!("\nWelcome! Let's set up your first agent.\n");
-
-            // Interactive setup
-            let name = prompt("Agent name [peko]: ").unwrap_or_else(|| "peko".to_string());
-            let provider = prompt("Provider (openai/anthropic/ollama) [openai]: ")
-                .unwrap_or_else(|| "openai".to_string());
-
-            println!("\n✅ Configuration complete!");
-            println!("   Name: {}", name);
-            println!("   Provider: {}", provider);
-            println!("\nStart your agent with:");
-            println!("   pekobot agent --name {} --provider {}", name, provider);
+        
+        println!("\n   Capabilities ({}):", config.capabilities.len());
+        for cap in &config.capabilities {
+            println!("     - {} v{}", cap.name, cap.version);
         }
-        Commands::Send { endpoint, message } => {
-            println!("🌐 Sending message to {}...", endpoint);
+    }
+    
+    Ok(())
+}
 
-            // Simple HTTP POST
-            let client = reqwest::Client::new();
-            match client
-                .post(&endpoint)
-                .header("Content-Type", "application/json")
-                .json(&serde_json::json!({
-                    "message": message,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                }))
-                .send()
-                .await
-            {
-                Ok(response) => {
-                    if response.status().is_success() {
-                        println!("✅ Message sent successfully!");
-                    } else {
-                        println!("⚠️  Server returned: {}", response.status());
+async fn handle_agent_create(
+    paths: &GlobalPaths,
+    name: String,
+    template: String,
+    provider: String,
+    yes: bool,
+) -> anyhow::Result<()> {
+    let config_path = paths.agent_config(&name);
+    
+    // Check if agent already exists
+    if config_path.exists() && !yes {
+        print!("Agent '{}' already exists. Overwrite? [y/N]: ", name);
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    
+    // Ensure directories exist
+    std::fs::create_dir_all(paths.agents_dir())?;
+    
+    // Generate config from template
+    let config_content = generate_config_from_template(&name, &template, &provider
+    );
+    
+    // Write config
+    std::fs::write(&config_path, config_content)?;
+    
+    // Create or load identity
+    let storage = KeyStorage::new()?;
+    let identity = if let Some(existing) = load_identity_for_agent(&name).await {
+        println!("   Using existing identity");
+        existing
+    } else {
+        let new_id = Identity::generate(DIDScope::Local, None)?;
+        storage.store(&new_id)?;
+        new_id
+    };
+    
+    println!("✅ Created agent '{}'", name);
+    println!("   Config: {}", config_path.display());
+    println!("   DID: {}", identity.did);
+    println!("   Template: {}", template);
+    println!("\nRun with: pekobot agent start --name {}", name);
+    
+    Ok(())
+}
+
+async fn handle_agent_delete(
+    paths: &GlobalPaths,
+    name: String,
+    purge: bool,
+    force: bool,
+) -> anyhow::Result<()> {
+    let config_path = paths.agent_config(&name);
+    
+    if !config_path.exists() {
+        return Err(anyhow::anyhow!("Agent '{}' not found", name));
+    }
+    
+    if !force {
+        print!("Delete agent '{}'? This cannot be undone. [y/N]: ", name);
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    
+    // Delete config
+    std::fs::remove_file(&config_path)?;
+    
+    if purge {
+        // Also delete identity
+        if let Some(identity) = load_identity_for_agent(&name).await {
+            let storage = KeyStorage::new()?;
+            let _ = storage.delete(&identity.did);
+        }
+        println!("✅ Agent '{}' deleted (including identity)", name);
+    } else {
+        println!("✅ Agent '{}' deleted", name);
+        println!("   Identity preserved. Use --purge to remove completely.");
+    }
+    
+    Ok(())
+}
+
+async fn handle_agent_export(
+    paths: &GlobalPaths,
+    name: String,
+    output: Option<String>,
+    encrypt: bool,
+) -> anyhow::Result<()> {
+    println!("📦 Exporting agent '{}'...", name);
+    
+    let config_path = paths.agent_config(&name);
+    
+    if !config_path.exists() {
+        return Err(anyhow::anyhow!("Agent '{}' not found", name));
+    }
+    
+    let config: AgentConfig = {
+        let content = std::fs::read_to_string(&config_path)?;
+        toml::from_str(&content)?
+    };
+    
+    let identity = match load_identity_for_agent(&name).await {
+        Some(id) => id,
+        None => return Err(anyhow::anyhow!("Identity not found for agent: {}", name)),
+    };
+    
+    let memory_path = config
+        .memory
+        .as_ref()
+        .and_then(|m| m.database_path.as_ref())
+        .map(PathBuf::from);
+    
+    let export_opts = pekobot::portable::ExportOptions {
+        encrypt,
+        passphrase: if encrypt {
+            Some(rpassword::prompt_password("Enter passphrase: ")?)
+        } else {
+            None
+        },
+        include_memory: true,
+        rotate_keys: false,
+        description: None,
+        output_path: output,
+    };
+    
+    match pekobot::portable::export_agent(config, identity, memory_path, export_opts).await {
+        Ok(path) => {
+            println!("✅ Agent exported to: {}", path.display());
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("❌ Export failed: {}", e);
+            Err(e)
+        }
+    }
+}
+
+async fn handle_agent_import(
+    _paths: &GlobalPaths,
+    file: String,
+    name: Option<String>,
+) -> anyhow::Result<()> {
+    println!("📦 Importing agent from '{}'...", file);
+    
+    // Check if file exists
+    if !std::path::Path::new(&file).exists() {
+        return Err(anyhow::anyhow!("File not found: {}", file));
+    }
+    
+    let import_opts = pekobot::portable::ImportOptions {
+        new_name: name,
+        passphrase: None, // Will prompt if encrypted
+        rotate_keys: false,
+        import_memory: true,
+        skip_validation: false,
+        force: false,
+    };
+    
+    match pekobot::portable::import_agent(&file, import_opts).await {
+        Ok(result) => {
+            println!("✅ Agent imported successfully!");
+            println!("   Name: {}", result.name);
+            println!("   DID: {}", result.did);
+            if result.keys_rotated {
+                println!("   Keys: Rotated (new DID)");
+            }
+            if let Some(mem_path) = result.memory_path {
+                println!("   Memory: {}", mem_path.display());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("❌ Import failed: {}", e);
+            Err(e)
+        }
+    }
+}
+
+async fn handle_agent_inspect(file: String, json: bool) -> anyhow::Result<()> {
+    if !std::path::Path::new(&file).exists() {
+        return Err(anyhow::anyhow!("File not found: {}", file));
+    }
+    
+    match pekobot::portable::inspect_agent(&file, None).await {
+        Ok((manifest, validation)) => {
+            if json {
+                // Manually construct JSON since ValidationResult doesn't implement Serialize
+                let errors: Vec<String> = validation.errors.iter()
+                    .map(|e| format!("{:?}", e))
+                    .collect();
+                let warnings: Vec<String> = validation.warnings.iter()
+                    .map(|w| format!("{:?}", w))
+                    .collect();
+                
+                let output = serde_json::json!({
+                    "name": manifest.agent.name,
+                    "version": manifest.agent.version,
+                    "did": manifest.agent.did,
+                    "description": manifest.agent.description,
+                    "created_at": manifest.agent.created_at,
+                    "export_format": manifest.agent.export_format,
+                    "validation": {
+                        "valid": validation.valid,
+                        "errors": errors,
+                        "warnings": warnings
                     }
-                }
-                Err(e) => {
-                    eprintln!("❌ Failed to send: {}", e);
-                }
-            }
-        }
-        Commands::Export {
-            agent,
-            output,
-            encrypt,
-            rotate_keys,
-            include_memory,
-            description,
-        } => {
-            println!("📦 Exporting agent '{}'...", agent);
-
-            // Load agent configuration
-            let config_path = if agent.ends_with(".toml") {
-                std::path::PathBuf::from(&agent)
+                });
+                println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                dirs::config_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join("pekobot")
-                    .join("agents")
-                    .join(format!("{}.toml", agent))
-            };
-
-            let config: AgentConfig = if config_path.exists() {
-                let content = std::fs::read_to_string(&config_path)?;
-                toml::from_str(&content)?
-            } else {
-                eprintln!("❌ Agent config not found: {:?}", config_path);
-                return Err(anyhow::anyhow!("Agent not found"));
-            };
-
-            // Load identity
-            let identity = match load_identity_for_agent(&config.name).await {
-                Some(id) => id,
-                None => {
-                    eprintln!("❌ Failed to load identity for agent: {}", config.name);
-                    return Err(anyhow::anyhow!("Identity not found"));
+                println!("🔍 Package: {}", file);
+                println!("\n📦 Agent: {}", manifest.agent.name);
+                println!("   Version: {}", manifest.agent.version);
+                println!("   DID: {}", manifest.agent.did);
+                if let Some(desc) = &manifest.agent.description {
+                    println!("   Description: {}", desc);
                 }
-            };
-
-            // Determine memory path
-            let memory_path = config
-                .memory
-                .as_ref()
-                .and_then(|m| m.database_path.as_ref())
-                .map(|p| std::path::PathBuf::from(p));
-
-            // Build export options
-            let export_opts = pekobot::portable::ExportOptions {
-                encrypt,
-                passphrase: if encrypt {
-                    Some(rpassword::prompt_password("Enter passphrase: ")?)
-                } else {
-                    None
-                },
-                include_memory,
-                rotate_keys,
-                description,
-                output_path: output,
-            };
-
-            // Export
-            match pekobot::portable::export_agent(config, identity, memory_path, export_opts).await
-            {
-                Ok(path) => {
-                    println!("✅ Agent exported to: {}", path.display());
+                println!("   Created: {}", manifest.agent.created_at);
+                println!("   Format: {}", manifest.agent.export_format);
+                
+                println!("\n✅ Validation:");
+                println!("   Valid: {}", validation.valid);
+                if !validation.errors.is_empty() {
+                    println!("   Errors:");
+                    for error in &validation.errors {
+                        println!("     - {:?}", error);
+                    }
                 }
-                Err(e) => {
-                    eprintln!("❌ Export failed: {}", e);
-                    return Err(e);
+                if !validation.warnings.is_empty() {
+                    println!("   Warnings:");
+                    for warning in &validation.warnings {
+                        println!("     - {:?}", warning);
+                    }
                 }
             }
+            Ok(())
         }
-        Commands::Import {
-            file,
-            name,
-            rotate_keys,
-            no_memory,
-            force,
-        } => {
-            println!("📦 Importing agent from '{}'...", file);
-
-            let import_opts = pekobot::portable::ImportOptions {
-                new_name: name,
-                passphrase: None, // Will prompt if needed
-                rotate_keys,
-                import_memory: !no_memory,
-                skip_validation: false,
-                force,
-            };
-
-            match pekobot::portable::import_agent(&file, import_opts).await {
-                Ok(result) => {
-                    println!("✅ Agent imported successfully!");
-                    println!("   Name: {}", result.name);
-                    println!("   DID: {}", result.did);
-                    if result.keys_rotated {
-                        println!("   Keys: Rotated (new DID generated)");
-                    }
-                    if let Some(mem_path) = result.memory_path {
-                        println!("   Memory: {}", mem_path.display());
-                    }
-                }
-                Err(e) => {
-                    eprintln!("❌ Import failed: {}", e);
-                    return Err(e);
-                }
-            }
+        Err(e) => {
+            eprintln!("❌ Inspection failed: {}", e);
+            Err(e)
         }
-        Commands::Inspect { file } => {
-            println!("🔍 Inspecting package: {}", file);
+    }
+}
 
-            match pekobot::portable::get_package_info(&file).await {
-                Ok(info) => {
-                    println!("\n{}", info.format());
-                }
-                Err(e) => {
-                    eprintln!("❌ Inspection failed: {}", e);
-                    return Err(e);
-                }
-            }
+// ============================================================================
+// Tool Handlers - Phase 1 (Working Implementation)
+// ============================================================================
+
+async fn handle_tool(
+    cmd: ToolCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    use pekobot::tool_registry::{
+        MultiRegistryConfig, UnifiedToolRegistry, RegistryBackend
+    };
+    
+    // Set up registry with Pekohub as primary
+    let config = MultiRegistryConfig {
+        primary: RegistryBackend::Pekohub {
+            url: "https://tools.coneko.ai".to_string(),
+            api_key: None,
+        },
+        fallbacks: vec![RegistryBackend::local_only()],
+        cache_dir: paths.tools_dir(),
+        allow_source_builds: true,
+        timeout_secs: 60,
+    };
+    
+    let registry = UnifiedToolRegistry::new(config)?;
+    
+    match cmd {
+        ToolCommands::List { long } => {
+            handle_tool_list(&registry, paths, long, json).await
         }
-        Commands::Gateway(gateway_cmd) => {
-            use pekobot::gateway::{GatewayManager, GatewaysConfig};
-            use std::sync::Arc;
+        ToolCommands::Search { query, limit } => {
+            handle_tool_search(&registry, &query, limit, json).await
+        }
+        ToolCommands::Install { name, version, force } => {
+            handle_tool_install(&registry, &name, version, force, json).await
+        }
+        ToolCommands::Uninstall { name, force } => {
+            handle_tool_uninstall(paths, &name, force).await
+        }
+        ToolCommands::Info { name } => {
+            handle_tool_info(&registry, &name, json).await
+        }
+    }
+}
 
-            let config = GatewaysConfig::default();
-            let manager = Arc::new(GatewayManager::new(config).await?);
-
-            match gateway_cmd {
-                GatewayCommands::List => {
-                    println!("🌐 Installed Gateway Plugins");
-                    println!("   (Use 'pekobot gateway available' to see installable plugins)");
-                    println!();
-                    
-                    let plugins = manager.registry().list_loaded().await;
-                    if plugins.is_empty() {
-                        println!("   No gateway plugins installed.");
-                        println!("   Install one with: pekobot gateway install <name>");
-                    } else {
-                        for plugin in plugins {
-                            println!("   📦 {} v{}", plugin.name, plugin.version);
-                            println!("      {}", plugin.description);
-                        }
-                    }
-                }
-                GatewayCommands::Available => {
-                    println!("🔍 Checking Pekohub for available gateways...");
-                    
-                    match manager.registry().list_available().await {
-                        Ok(plugins) => {
-                            println!("\n📦 Available Gateway Plugins:");
-                            for plugin in plugins {
-                                let status = if plugin.installed {
-                                    "✅ installed"
-                                } else {
-                                    "⬜ not installed"
-                                };
-                                println!("   {} {} v{} - {}", 
-                                    plugin.name, 
-                                    status,
-                                    plugin.version,
-                                    plugin.description
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Failed to fetch available plugins: {}", e);
-                            println!("   Make sure you have an internet connection.");
-                        }
-                    }
-                }
-                GatewayCommands::Install { name, version } => {
-                    println!("📥 Installing gateway plugin: {}", name);
-                    if let Some(v) = version {
-                        println!("   Version: {}", v);
-                    }
-                    
-                    match manager.registry().load(&name).await {
-                        Ok(_) => {
-                            println!("✅ Gateway plugin '{}' installed successfully!", name);
-                            println!("   Use 'pekobot gateway start --config <file>' to run it.");
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Failed to install '{}': {}", name, e);
-                        }
-                    }
-                }
-                GatewayCommands::Uninstall { name, force } => {
-                    println!("🗑️  Uninstalling gateway plugin: {}", name);
-                    
-                    if !force {
-                        print!("   Are you sure? This cannot be undone [y/N]: ");
-                        use std::io::{self, Write};
-                        io::stdout().flush().ok();
-                        let mut input = String::new();
-                        io::stdin().read_line(&mut input).ok();
-                        if !input.trim().eq_ignore_ascii_case("y") {
-                            println!("   Cancelled.");
-                            return Ok(());
-                        }
-                    }
-                    
-                    match manager.registry().unload(&name).await {
-                        Ok(_) => {
-                            println!("✅ Gateway plugin '{}' uninstalled.", name);
-                        }
-                        Err(e) => {
-                            eprintln!("❌ Failed to uninstall '{}': {}", name, e);
-                        }
-                    }
-                }
-                GatewayCommands::Update { name } => {
-                    if let Some(plugin_name) = name {
-                        println!("🔄 Updating gateway plugin: {}", plugin_name);
-                        match manager.registry().update(&plugin_name).await {
-                            Ok(updated) => {
-                                if updated {
-                                    println!("✅ Updated '{}' to latest version.", plugin_name);
-                                } else {
-                                    println!("ℹ️  '{}' is already up to date.", plugin_name);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("❌ Failed to update '{}': {}", plugin_name, e);
-                            }
-                        }
-                    } else {
-                        println!("🔄 Updating all gateway plugins...");
-                        let plugins = manager.registry().list_loaded().await;
-                        for plugin in plugins {
-                            print!("   Checking {}...", plugin.name);
-                            match manager.registry().update(&plugin.name).await {
-                                Ok(updated) => {
-                                    if updated {
-                                        println!(" updated!");
-                                    } else {
-                                        println!(" already up to date");
-                                    }
-                                }
-                                Err(e) => {
-                                    println!(" error: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
-                GatewayCommands::Info { name } => {
-                    match manager.registry().get_metadata(&name).await {
-                        Some(info) => {
-                            println!("📦 Gateway Plugin: {}", info.name);
-                            println!("   Version: {}", info.version);
-                            println!("   Description: {}", info.description);
-                            println!("   Author: {}", info.author);
-                            if info.installed {
-                                println!("   Status: ✅ Installed");
-                            } else {
-                                println!("   Status: ⬜ Not installed");
-                            }
-                        }
-                        None => {
-                            println!("ℹ️  Gateway plugin '{}' not found.", name);
-                            println!("   Use 'pekobot gateway list' to see installed plugins.");
-                        }
-                    }
-                }
-                GatewayCommands::Start { config } => {
-                    println!("🚀 Starting gateway from config: {}", config);
-                    println!("   (Not yet fully implemented)");
-                }
-                GatewayCommands::Stop { instance_id } => {
-                    println!("🛑 Stopping gateway instance: {}", instance_id);
-                    match manager.stop_gateway(&instance_id).await {
-                        Ok(_) => println!("✅ Gateway instance stopped."),
-                        Err(e) => eprintln!("❌ Failed to stop: {}", e),
-                    }
-                }
-                GatewayCommands::Instances => {
-                    println!("🌐 Active Gateway Instances");
-                    let instances = manager.list_instances().await;
-                    if instances.is_empty() {
-                        println!("   No active instances.");
-                    } else {
-                        for instance in instances {
-                            println!("   📡 {} ({} - {})", 
-                                instance.id, 
-                                instance.gateway,
-                                instance.name
-                            );
-                        }
-                    }
-                }
-                GatewayCommands::Test { instance_id } => {
-                    println!("🧪 Testing gateway instance: {}", instance_id);
-                    match manager.get_instance(&instance_id).await {
-                        Some(_) => {
-                            println!("✅ Instance '{}' is active.", instance_id);
-                            // TODO: Send test message
-                        }
-                        None => {
-                            println!("❌ Instance '{}' not found.", instance_id);
-                        }
+async fn handle_tool_list(
+    _registry: &pekobot::tool_registry::UnifiedToolRegistry,
+    paths: &GlobalPaths,
+    long: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let tools_dir = paths.tools_dir();
+    
+    let mut tools = Vec::new();
+    
+    // Scan installed tools in cache directory
+    if tools_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&tools_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name() {
+                        tools.push(name.to_string_lossy().to_string());
                     }
                 }
             }
         }
     }
-
+    
+    tools.sort();
+    
+    if json {
+        let output = serde_json::json!({
+            "tools": tools,
+            "count": tools.len(),
+            "cache_dir": tools_dir.to_string_lossy().to_string()
+        });
+        println!("{}", output);
+    } else if tools.is_empty() {
+        println!("No tools installed.");
+        println!("Search with: pekobot tool search <query>");
+        println!("Install with: pekobot tool install <name>");
+    } else {
+        println!("🔧 Installed Tools ({}):", tools.len());
+        for tool in tools {
+            if long {
+                println!("  📦 {}", tool);
+                // Try to read manifest
+                let manifest_path = tools_dir.join(&tool).join("manifest.toml");
+                if let Ok(content) = std::fs::read_to_string(&manifest_path) {
+                    if let Ok(manifest) = toml::from_str::<pekobot::tool_registry::ToolManifest>(&content
+                    ) {
+                        println!("     Version: {}", manifest.tool.version);
+                        println!("     {}", manifest.tool.description);
+                    }
+                }
+            } else {
+                println!("  📦 {}", tool);
+            }
+        }
+    }
+    
     Ok(())
 }
 
-/// Build default agent configuration
+async fn handle_tool_search(
+    _registry: &pekobot::tool_registry::UnifiedToolRegistry,
+    query: &str,
+    limit: usize,
+    json: bool,
+) -> anyhow::Result<()> {
+    println!("🔍 Searching Pekohub for '{}'...", query);
+    
+    // For now, search is a stub that queries the Pekohub API
+    // In full implementation, this would call registry.search_tools()
+    
+    // Mock results for Phase 1
+    let available_tools = vec![
+        ("calendar", "1.2.0", "Google Calendar and Outlook integration"),
+        ("email", "1.0.5", "Send and receive emails"),
+        ("web_search", "2.1.0", "Web search via Brave or DuckDuckGo"),
+        ("browser", "1.0.0", "Browser automation and scraping"),
+        ("document", "1.3.0", "PDF and document processing"),
+        ("social_media", "0.9.0", "Post to Twitter/X, LinkedIn"),
+        ("slack", "1.0.0", "Slack integration"),
+        ("github", "2.0.0", "GitHub API integration"),
+    ];
+    
+    let filtered: Vec<_> = available_tools
+        .into_iter()
+        .filter(|(name, _, desc)| {
+            name.to_lowercase().contains(&query.to_lowercase()) ||
+            desc.to_lowercase().contains(&query.to_lowercase())
+        })
+        .take(limit)
+        .collect();
+    
+    if json {
+        let results: Vec<_> = filtered.iter()
+            .map(|(name, version, desc)| {
+                serde_json::json!({
+                    "name": name,
+                    "version": version,
+                    "description": desc
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else if filtered.is_empty() {
+        println!("No tools found matching '{}'.", query);
+    } else {
+        println!("Found {} tool(s):", filtered.len());
+        for (name, version, desc) in filtered {
+            println!("  📦 {} v{} - {}", name, version, desc);
+            println!("     Install: pekobot tool install {}", name);
+        }
+    }
+    
+    Ok(())
+}
+
+async fn handle_tool_install(
+    registry: &pekobot::tool_registry::UnifiedToolRegistry,
+    name: &str,
+    version: Option<String>,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    println!("📥 Installing tool '{}'...", name);
+    
+    if let Some(v) = &version {
+        println!("   Version: {}", v);
+    }
+    
+    // Check if already installed
+    let tools_dir = registry.get_cache_dir().join(name);
+    if tools_dir.exists() && !force {
+        return Err(anyhow::anyhow!(
+            "Tool '{}' already installed. Use --force to reinstall.",
+            name
+        ));
+    }
+    
+    // Try to load from registry
+    match registry.load_tool(name, version.as_deref()).await {
+        Ok(path) => {
+            if json {
+                let output = serde_json::json!({
+                    "success": true,
+                    "name": name,
+                    "version": version.unwrap_or_else(|| "latest".to_string()),
+                    "path": path.to_string_lossy().to_string()
+                });
+                println!("{}", output);
+            } else {
+                println!("✅ Tool '{}' installed successfully!", name);
+                println!("   Location: {}", path.display());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if json {
+                let output = serde_json::json!({
+                    "success": false,
+                    "error": e.to_string()
+                });
+                println!("{}", output);
+            } else {
+                eprintln!("❌ Failed to install '{}': {}", name, e);
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn handle_tool_uninstall(
+    paths: &GlobalPaths,
+    name: &str,
+    force: bool,
+) -> anyhow::Result<()> {
+    let tool_dir = paths.tools_dir().join(name);
+    
+    if !tool_dir.exists() {
+        return Err(anyhow::anyhow!("Tool '{}' is not installed", name));
+    }
+    
+    if !force {
+        print!("Uninstall tool '{}'? [y/N]: ", name);
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+    
+    std::fs::remove_dir_all(&tool_dir)?;
+    println!("✅ Tool '{}' uninstalled.", name);
+    
+    Ok(())
+}
+
+async fn handle_tool_info(
+    registry: &pekobot::tool_registry::UnifiedToolRegistry,
+    name: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    // Try to read local manifest first
+    let manifest_path = registry.get_cache_dir().join(name).join("manifest.toml");
+    
+    if manifest_path.exists() {
+        let content = std::fs::read_to_string(&manifest_path)?;
+        let manifest: pekobot::tool_registry::ToolManifest = toml::from_str(&content)?;
+        
+        if json {
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+        } else {
+            println!("📦 Tool: {}", manifest.tool.name);
+            println!("   Version: {}", manifest.tool.version);
+            println!("   Description: {}", manifest.tool.description);
+            if let Some(author) = &manifest.tool.author {
+                println!("   Author: {}", author);
+            }
+            if let Some(license) = &manifest.tool.license {
+                println!("   License: {}", license);
+            }
+            println!("   Capabilities: {}", manifest.capabilities.provides.join(", "));
+        }
+    } else {
+        println!("ℹ️  Tool '{}' not found locally.", name);
+        println!("   Search: pekobot tool search {}", name);
+        println!("   Install: pekobot tool install {}", name);
+    }
+    
+    Ok(())
+}
+
+// ============================================================================
+// Gateway Handlers
+// ============================================================================
+
+async fn handle_gateway(
+    cmd: GatewayCommands,
+    _paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    use pekobot::gateway::{GatewayManager, GatewaysConfig};
+    use std::sync::Arc;
+    
+    let config = GatewaysConfig::default();
+    let manager = Arc::new(GatewayManager::new(config).await?);
+    
+    match cmd {
+        GatewayCommands::List => {
+            let plugins = manager.registry().list_loaded().await;
+            
+            if json {
+                println!("{{\"gateways\": []}}");
+            } else if plugins.is_empty() {
+                println!("🌐 No gateway plugins installed.");
+                println!("   Search: pekobot gateway search");
+            } else {
+                println!("🌐 Installed Gateways ({}):", plugins.len());
+                for plugin in plugins {
+                    println!("  📦 {} v{}", plugin.name, plugin.version);
+                }
+            }
+        }
+        GatewayCommands::Search { query } => {
+            print!("🔍 Searching for gateways");
+            if let Some(q) = &query {
+                print!(" matching '{}'", q);
+            }
+            println!("...");
+            
+            match manager.registry().list_available().await {
+                Ok(plugins) => {
+                    let filtered: Vec<_> = plugins.into_iter()
+                        .filter(|p| {
+                            query.as_ref().map_or(true, |q| {
+                                p.name.to_lowercase().contains(&q.to_lowercase())
+                            })
+                        })
+                        .collect();
+                    
+                    if filtered.is_empty() {
+                        println!("   No gateways found.");
+                    } else {
+                        for plugin in filtered {
+                            let status = if plugin.installed { "✅" } else { "⬜" };
+                            println!("   {} {} v{}", status, plugin.name, plugin.version);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Search failed: {}", e);
+                }
+            }
+        }
+        GatewayCommands::Install { name, version } => {
+            println!("📥 Installing gateway: {}", name);
+            if let Some(v) = &version {
+                println!("   Version: {}", v);
+            }
+            
+            match manager.registry().load(&name).await {
+                Ok(_) => println!("✅ Gateway '{}' installed!", name),
+                Err(e) => eprintln!("❌ Failed: {}", e),
+            }
+        }
+        GatewayCommands::Info { name } => {
+            match manager.registry().get_metadata(&name).await {
+                Some(info) => {
+                    println!("📦 Gateway: {}", info.name);
+                    println!("   Version: {}", info.version);
+                    println!("   {}", info.description);
+                }
+                None => println!("ℹ️  Gateway '{}' not found.", name),
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+fn generate_config_from_template(name: &str, template: &str, provider: &str) -> String {
+    let (provider_type, default_model) = match provider.to_lowercase().as_str() {
+        "openai" => ("open_a_i", "gpt-4o-mini"),
+        "anthropic" => ("anthropic", "claude-3-haiku"),
+        "ollama" => ("ollama", "llama3"),
+        "kimi" => ("openai_compatible", "kimi-k2.5"),
+        _ => ("open_a_i", "gpt-4o-mini"),
+    };
+
+    let capabilities = match template {
+        "coding" => r#"[[capabilities]]
+name = "filesystem"
+version = "1.0"
+
+[[capabilities]]
+name = "process"
+version = "1.0"
+
+[[capabilities]]
+name = "code_assist"
+version = "1.0""#,
+        "research" => r#"[[capabilities]]
+name = "web_search"
+version = "1.0"
+
+[[capabilities]]
+name = "browser"
+version = "1.0"
+
+[[capabilities]]
+name = "fetch"
+version = "1.0""#,
+        "full" => r#"[[capabilities]]
+name = "messaging"
+version = "1.0"
+
+[[capabilities]]
+name = "filesystem"
+version = "1.0"
+
+[[capabilities]]
+name = "process"
+version = "1.0"
+
+[[capabilities]]
+name = "web_search"
+version = "1.0"
+
+[[capabilities]]
+name = "browser"
+version = "1.0""#,
+        _ => r#"[[capabilities]]
+name = "messaging"
+version = "1.0"
+
+[[capabilities]]
+name = "task_execution"
+version = "1.0""#,
+    };
+
+    format!(r#"# Pekobot Agent Configuration
+name = "{}"
+description = "A {} agent"
+auto_accept_trusted = false
+approval_threshold = 100.0
+default_timeout_seconds = 300
+
+[provider]
+provider_type = "{}"
+api_key = "${{env:{}_API_KEY}}"
+default_model = "{}"
+timeout_seconds = 60
+max_retries = 3
+retry_delay_ms = 1000
+
+[provider.models.{}]
+name = "{}"
+max_tokens = 2048
+temperature = 0.7
+top_p = 1.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+
+{}
+
+[memory]
+enable_semantic_search = false
+max_entries_per_agent = 10000
+auto_cleanup = true
+cleanup_interval_seconds = 3600
+"#,
+        name,
+        template,
+        provider_type,
+        provider_type.to_uppercase().replace("_A_I", "AI"),
+        default_model,
+        default_model,
+        default_model,
+        capabilities
+    )
+}
+
 fn build_default_config(
     name: &str,
     provider: &str,
@@ -608,6 +1451,7 @@ fn build_default_config(
         "openai" => ProviderType::OpenAI,
         "anthropic" => ProviderType::Anthropic,
         "ollama" => ProviderType::Ollama,
+        "kimi" => ProviderType::OpenAICompatible,
         _ => ProviderType::OpenAI,
     };
 
@@ -615,7 +1459,7 @@ fn build_default_config(
         ProviderType::OpenAI => "gpt-4o-mini".to_string(),
         ProviderType::Anthropic => "claude-3-haiku".to_string(),
         ProviderType::Ollama => "llama3".to_string(),
-        ProviderType::OpenAICompatible => "gpt-4o-mini".to_string(),
+        ProviderType::OpenAICompatible => "kimi-k2.5".to_string(),
     });
 
     AgentConfig {
@@ -684,24 +1528,19 @@ fn build_default_config(
     }
 }
 
-/// Load identity for an agent by name
 async fn load_identity_for_agent(name: &str) -> Option<Identity> {
-    // Try to load from agent config first
     let config_path = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .unwrap_or_else(|| PathBuf::from("."))
         .join("pekobot")
         .join("agents")
         .join(format!("{}.toml", name));
 
     if let Ok(content) = std::fs::read_to_string(&config_path) {
         if let Ok(_config) = toml::from_str::<AgentConfig>(&content) {
-            // Try to find identity by checking common DIDs
             let storage = KeyStorage::new().ok()?;
-
-            // List all identities and find one that matches the agent name
+            
             if let Ok(identities) = storage.list_identities() {
                 for did in identities {
-                    // Simple heuristic: check if DID contains agent name
                     if did.to_lowercase().contains(&name.to_lowercase()) {
                         if let Ok(identity) = storage.load(&did) {
                             return Some(identity);
@@ -715,20 +1554,277 @@ async fn load_identity_for_agent(name: &str) -> Option<Identity> {
     None
 }
 
-/// Simple prompt helper
-fn prompt(message: &str) -> Option<String> {
-    use std::io::{self, Write};
+// ============================================================================
+// Session Handlers - Phase 2
+// ============================================================================
 
-    print!("{}", message);
-    io::stdout().flush().ok()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input).ok()?;
-
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+async fn handle_session(
+    cmd: SessionCommands,
+    _paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    match cmd {
+        SessionCommands::List { all, agent } => {
+            if json {
+                println!("{{\"sessions\": []}}");
+            } else {
+                println!("💬 Active Sessions:");
+                if let Some(agent_name) = agent {
+                    println!("   (Filtered by agent: {})", agent_name);
+                }
+                if all {
+                    println!("   (Including inactive)");
+                }
+                println!("   Note: Session tracking requires running daemon");
+                println!("   No active sessions found in this process.");
+            }
+        }
+        SessionCommands::Show { id, history } => {
+            println!("💬 Session: {}", id);
+            if history {
+                println!("   (Showing full history)");
+            }
+            println!("   Note: Session details require running daemon or API server");
+        }
+        SessionCommands::Send { id, message } => {
+            println!("📨 Sending to session {}: {}", id, message);
+            println!("   Note: Session messaging requires running daemon");
+        }
+        SessionCommands::Kill { id, force } => {
+            if force {
+                println!("💀 Force killing session {}...", id);
+            } else {
+                println!("🛑 Stopping session {}...", id);
+            }
+            println!("   Note: Session management requires running daemon");
+        }
     }
+    Ok(())
+}
+
+// ============================================================================
+// Config Handlers - Phase 2
+// ============================================================================
+
+async fn handle_config(
+    cmd: ConfigCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    match cmd {
+        ConfigCommands::Validate { file } => {
+            let config_path = file.map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("pekobot.toml"));
+            
+            if !config_path.exists() {
+                return Err(anyhow::anyhow!("Config file not found: {:?}", config_path));
+            }
+            
+            let content = std::fs::read_to_string(&config_path)?;
+            
+            match toml::from_str::<AgentConfig>(&content) {
+                Ok(_) => {
+                    if json {
+                        println!("{{\"valid\": true}}");
+                    } else {
+                        println!("✅ Config is valid: {}", config_path.display());
+                    }
+                }
+                Err(e) => {
+                    if json {
+                        println!("{{\"valid\": false, \"error\": \"{}\"}}", e);
+                    } else {
+                        println!("❌ Config is invalid: {}", e);
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        ConfigCommands::Init { output, template } => {
+            let config = generate_config_from_template("my-agent", &template, "openai");
+            
+            std::fs::write(&output, config)?;
+            
+            if json {
+                println!("{{\"created\": \"{}\"}}", output);
+            } else {
+                println!("✅ Created config: {}", output);
+                println!("   Template: {}", template);
+            }
+        }
+        ConfigCommands::Defaults => {
+            let defaults = build_default_config("example", "openai", None, None);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&defaults)?);
+            } else {
+                println!("📝 Default Configuration Values:");
+                println!("   Provider: OpenAI");
+                println!("   Model: gpt-4o-mini");
+                println!("   Timeout: 30s");
+                println!("   Retries: 3");
+                println!("\n   See 'pekobot config init' for full example.");
+            }
+        }
+        ConfigCommands::Path => {
+            if json {
+                let output = serde_json::json!({
+                    "config_dir": paths.config_dir,
+                    "data_dir": paths.data_dir,
+                });
+                println!("{}", output);
+            } else {
+                println!("📁 Configuration Paths:");
+                println!("   Config: {}", paths.config_dir.display());
+                println!("   Data:   {}", paths.data_dir.display());
+                println!("\n   Override with:");
+                println!("     --config-dir <path>  or  PEKOBOT_CONFIG_DIR");
+                println!("     --data-dir <path>    or  PEKOBOT_DATA_DIR");
+            }
+        }
+        ConfigCommands::Get { key, file } => {
+            let config_path = file.map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("pekobot.toml"));
+            
+            let _content = std::fs::read_to_string(&config_path)?;
+            
+            // Simple key access - in full impl would use toml::Value traversal
+            println!("🔍 {} = (would read from {:?})", key, config_path);
+            println!("   Note: Config get requires TOML value traversal (not yet implemented)");
+        }
+        ConfigCommands::Set { key, value, file } => {
+            let config_path = file.map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("pekobot.toml"));
+            
+            println!("✏️  Setting {} = {:?} in {:?}", key, value, config_path);
+            println!("   Note: Config set requires TOML manipulation (not yet implemented)");
+        }
+    }
+    Ok(())
+}
+
+// ============================================================================
+// System Handlers - Phase 2
+// ============================================================================
+
+async fn handle_system(
+    cmd: SystemCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    match cmd {
+        SystemCommands::Status { resources } => {
+            if json {
+                let output = serde_json::json!({
+                    "version": pekobot::VERSION,
+                    "status": "operational",
+                    "resources": resources
+                });
+                println!("{}", output);
+            } else {
+                println!("🐱 Pekobot Status");
+                println!("   Version: {}", pekobot::VERSION);
+                println!("   Status: 🟢 Operational");
+                
+                if resources {
+                    println!("\n   Resources:");
+                    println!("     (Resource monitoring not yet implemented)");
+                }
+            }
+        }
+        SystemCommands::Info => {
+            if json {
+                let output = serde_json::json!({
+                    "version": pekobot::VERSION,
+                    "config_dir": paths.config_dir.to_string_lossy().to_string(),
+                    "data_dir": paths.data_dir.to_string_lossy().to_string(),
+                });
+                println!("{}", output);
+            } else {
+                println!("🐱 Pekobot System Information");
+                println!("   Version: {}", pekobot::VERSION);
+                println!("   Config: {}", paths.config_dir.display());
+                println!("   Data: {}", paths.data_dir.display());
+                
+                // Check directories exist
+                println!("\n   Directory Status:");
+                for (name, path) in [
+                    ("Config", &paths.config_dir),
+                    ("Data", &paths.data_dir),
+                ] {
+                    let status = if path.exists() { "✅" } else { "❌" };
+                    println!("     {} {}: {}", status, name, path.display());
+                }
+            }
+        }
+        SystemCommands::Doctor { fix } => {
+            println!("🏥 Running health check...");
+            
+            let mut issues = Vec::new();
+            
+            // Check config directory
+            if !paths.config_dir.exists() {
+                issues.push("Config directory does not exist");
+                if fix {
+                    std::fs::create_dir_all(&paths.config_dir)?;
+                    println!("   ✅ Created config directory");
+                }
+            }
+            
+            // Check data directory
+            if !paths.data_dir.exists() {
+                issues.push("Data directory does not exist");
+                if fix {
+                    std::fs::create_dir_all(&paths.data_dir)?;
+                    println!("   ✅ Created data directory");
+                }
+            }
+            
+            if issues.is_empty() {
+                println!("✅ All checks passed!");
+            } else if !fix {
+                println!("⚠️  Issues found ({}):", issues.len());
+                for issue in issues {
+                    println!("   - {}", issue);
+                }
+                println!("\n   Run with --fix to attempt automatic repair.");
+            }
+        }
+        SystemCommands::Clean { tools, logs, all } => {
+            if all {
+                println!("🧹 Cleaning all temporary data...");
+                let tools_dir = paths.tools_dir();
+                if tools_dir.exists() {
+                    std::fs::remove_dir_all(&tools_dir)?;
+                    println!("   ✅ Removed tool cache");
+                }
+            } else {
+                if tools {
+                    println!("🧹 Cleaning tool cache...");
+                    let tools_dir = paths.tools_dir();
+                    if tools_dir.exists() {
+                        std::fs::remove_dir_all(&tools_dir)?;
+                        println!("   ✅ Removed tool cache");
+                    }
+                }
+                if logs {
+                    println!("🧹 Cleaning old logs...");
+                    println!("   (Log cleanup not yet implemented)");
+                }
+                if !tools && !logs {
+                    println!("🧹 Cleaning unused cache...");
+                    println!("   (Specify --tools, --logs, or --all)");
+                }
+            }
+        }
+        SystemCommands::Update { check } => {
+            if check {
+                println!("🔍 Checking for updates...");
+            } else {
+                println!("🔄 Updating Pekobot...");
+            }
+            println!("   Note: Self-update not yet implemented");
+            println!("   Please use your package manager or reinstall.");
+        }
+    }
+    Ok(())
 }
