@@ -5,6 +5,7 @@
 pub mod agent_management;
 pub mod apply_patch;
 pub mod browser;
+pub mod fetch;
 pub mod filesystem;
 pub mod http;
 pub mod memory_tool;
@@ -16,6 +17,7 @@ pub mod web_search;
 pub use agent_management::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, ManagerCommand};
 pub use apply_patch::{ApplyPatchConfig, ApplyPatchTool};
 pub use browser::BrowserTool;
+pub use fetch::{FetchConfig, FetchTool};
 pub use filesystem::FileSystemTool;
 pub use http::{HttpMethod, HttpTool};
 pub use memory_tool::{MemoryTool, MemoryToolFactory};
