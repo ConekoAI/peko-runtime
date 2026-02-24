@@ -6,7 +6,7 @@
 //!
 //! Pekobot uses a minimal core (~500KB-1MB) with on-demand loaded plugins:
 //!
-//! - **Core**: Agent runtime, state machine, tool registry, secret manager
+//! - **Core**: Agent runtime, state machine, tool registry
 //! - **Gateways**: Pluggable messaging platform adapters (Discord, etc.)
 //! - **Tools**: On-demand tool plugins (same system as gateways)
 //!
@@ -63,7 +63,6 @@ pub mod memory;
 pub mod observability;
 pub mod portable;
 pub mod providers;
-pub mod secrets;
 pub mod security;
 pub mod skills;
 pub mod tool_registry;
