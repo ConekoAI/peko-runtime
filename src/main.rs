@@ -459,7 +459,7 @@ enum CronCommands {
         #[arg(short, long)]
         name: String,
         /// ISO timestamp (e.g., "2026-02-25T14:00:00Z")
-        #[arg(short, long)]
+        #[arg(long)]
         at: String,
         /// Agent to run as
         #[arg(short, long)]
