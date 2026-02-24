@@ -7,9 +7,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::tools::traits::Tool;
 
@@ -22,7 +21,7 @@ pub struct ApplyPatchConfig {
     /// Restrict to workspace only
     #[serde(default = "default_true")]
     pub workspace_only: bool,
-    /// Allow file deletion (empty new_content)
+    /// Allow file deletion (empty `new_content`)
     #[serde(default = "default_false")]
     pub allow_deletion: bool,
     /// Create backup files (.bak)
@@ -81,13 +80,13 @@ pub struct ApplyPatchArgs {
 /// Single file patch
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FilePatch {
-    /// File path (relative to working_dir or absolute)
+    /// File path (relative to `working_dir` or absolute)
     pub path: String,
     /// Old content to match (exact match required)
     /// Empty string means create new file
     pub old_content: String,
     /// New content to replace with
-    /// Empty string means delete file (if allow_deletion is true)
+    /// Empty string means delete file (if `allow_deletion` is true)
     pub new_content: String,
 }
 
@@ -291,8 +290,7 @@ impl ApplyPatchTool {
 
                 return Err(match diff_pos {
                     Some(pos) => anyhow::anyhow!(
-                        "Content mismatch at position {}. Expected content does not match file.",
-                        pos
+                        "Content mismatch at position {pos}. Expected content does not match file."
                     ),
                     None => anyhow::anyhow!(
                         "Content length mismatch. File has {} chars, expected {} chars.",
@@ -340,11 +338,11 @@ impl ApplyPatchTool {
 
 #[async_trait]
 impl Tool for ApplyPatchTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "apply_patch"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Apply structured patches to files atomically"
     }
 
@@ -353,7 +351,7 @@ impl Tool for ApplyPatchTool {
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         let args: ApplyPatchArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         // Validate patches
         if args.patches.is_empty() {

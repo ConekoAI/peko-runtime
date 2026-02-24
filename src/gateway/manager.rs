@@ -1,6 +1,6 @@
 //! Gateway manager
 //!
-//! The GatewayManager is the central coordinator for all gateway connections.
+//! The `GatewayManager` is the central coordinator for all gateway connections.
 //! It manages gateway instances, routes messages between agents and gateways,
 //! and handles lifecycle events.
 //!
@@ -39,13 +39,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use crate::gateway::config::{GatewayConfig, GatewaysConfig};
 use crate::gateway::error::{GatewayError, GatewayResult};
 use crate::gateway::interface::GatewayPlugin;
 use crate::gateway::registry::GatewayRegistry;
-use crate::gateway::types::{ChannelId, GatewayId, IncomingMessage, MessageContent, MessageId, Target, UserId};
+use crate::gateway::types::{IncomingMessage, MessageContent, MessageId, Target};
 
 /// Event from a gateway
 #[derive(Debug, Clone)]
@@ -157,7 +157,7 @@ impl GatewayManager {
 
         // Create instance
         let instance_id = format!("{}-{}", config.plugin, config.name);
-        let mut instance = self.registry
+        let instance = self.registry
             .create_instance(&config.plugin,
                 config.config.clone()
             )
@@ -325,12 +325,12 @@ impl GatewayManager {
 ///
 /// This allows gradual migration from channels to gateways.
 pub mod adapter {
-    use super::*;
+    use super::{Arc, GatewayManager, Target};
     use crate::channels::Channel;
     use anyhow::Result;
     use async_trait::async_trait;
 
-    /// Adapter from GatewayPlugin to Channel trait
+    /// Adapter from `GatewayPlugin` to Channel trait
     pub struct GatewayChannelAdapter {
         manager: Arc<GatewayManager>,
         instance_id: String,
@@ -368,7 +368,7 @@ pub mod adapter {
                 &self.instance_id,
                 target,
                 message.to_string()
-            ).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+            ).await.map_err(|e| anyhow::anyhow!("{e}"))?;
 
             Ok(())
         }

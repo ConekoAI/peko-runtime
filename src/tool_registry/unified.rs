@@ -17,7 +17,7 @@ use std::path::PathBuf;
 pub enum RegistryBackend {
     /// Pekohub HTTP API (our cloud instance or self-hosted)
     Pekohub {
-        /// Base URL (e.g., https://tools.coneko.ai or http://localhost:8787)
+        /// Base URL (e.g., <https://tools.coneko.ai> or <http://localhost:8787>)
         url: String,
         /// Optional API key for private registries
         api_key: Option<String>,
@@ -53,6 +53,7 @@ impl Default for RegistryBackend {
 
 impl RegistryBackend {
     /// Create local-only registry (no cloud)
+    #[must_use] 
     pub fn local_only() -> Self {
         RegistryBackend::Local {
             path: dirs::data_local_dir()
@@ -70,13 +71,14 @@ impl RegistryBackend {
     }
 
     /// Get display name for this backend
+    #[must_use] 
     pub fn display_name(&self) -> String {
         match self {
             RegistryBackend::Pekohub { url, .. } => {
                 if url.contains("coneko.ai") {
                     "Pekohub (Official)".to_string()
                 } else {
-                    format!("Pekohub ({})", url)
+                    format!("Pekohub ({url})")
                 }
             }
             RegistryBackend::Local { path } => format!("Local ({})", path.display()),
@@ -120,6 +122,7 @@ impl Default for MultiRegistryConfig {
 
 impl MultiRegistryConfig {
     /// Create configuration for air-gapped/offline use
+    #[must_use] 
     pub fn offline_mode() -> Self {
         Self {
             primary: RegistryBackend::local_only(),
@@ -263,13 +266,12 @@ impl UnifiedToolRegistry {
     ) -> anyhow::Result<PathBuf> {
         let version_str = version.unwrap_or("latest");
         let manifest_url = format!(
-            "{}/api/v1/tools/{}/{}/manifest",
-            base_url, tool_name, version_str
+            "{base_url}/api/v1/tools/{tool_name}/{version_str}/manifest"
         );
 
         let mut request = self.http_client.get(&manifest_url);
         if let Some(key) = api_key {
-            request = request.header("Authorization", format!("Bearer {}", key));
+            request = request.header("Authorization", format!("Bearer {key}"));
         }
 
         let response = request.send().await?;
@@ -289,7 +291,7 @@ impl UnifiedToolRegistry {
         let platform_info = platforms
             .get(&current_platform)
             .or_else(|| platforms.get("linux-x64")) // Fallback
-            .ok_or_else(|| anyhow::anyhow!("No binary for platform: {}", current_platform))?;
+            .ok_or_else(|| anyhow::anyhow!("No binary for platform: {current_platform}"))?;
 
         let download_path = platform_info
             .get("url")
@@ -299,7 +301,7 @@ impl UnifiedToolRegistry {
         let full_url = if download_path.starts_with("http") {
             download_path.to_string()
         } else {
-            format!("{}{}", base_url, download_path)
+            format!("{base_url}{download_path}")
         };
 
         // Download binary
@@ -339,7 +341,7 @@ impl UnifiedToolRegistry {
         let tool_path = base_path
             .join(tool_name)
             .join(version_str)
-            .join(format!("{}-{}", tool_name, platform));
+            .join(format!("{tool_name}-{platform}"));
 
         if tool_path.exists() {
             Ok(tool_path)
@@ -352,7 +354,7 @@ impl UnifiedToolRegistry {
     async fn build_from_source(&self, tool_name: &str) -> anyhow::Result<PathBuf> {
         let source_path = dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(format!("pekobot/tool-sources/{}", tool_name));
+            .join(format!("pekobot/tool-sources/{tool_name}"));
 
         let build_cache = self.config.cache_dir.join("builds");
         self.build_from_source_path(&source_path, &build_cache, tool_name)
@@ -392,14 +394,14 @@ impl UnifiedToolRegistry {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Build failed: {}", stderr);
+            anyhow::bail!("Build failed: {stderr}");
         }
 
         // Copy to cache
         let built_binary = source_path.join("target/release").join(tool_name);
 
         let cache_path = build_cache.join(tool_name);
-        std::fs::create_dir_all(&build_cache)?;
+        std::fs::create_dir_all(build_cache)?;
         std::fs::copy(&built_binary, &cache_path)?;
 
         tracing::info!("Built and cached: {}", cache_path.display());
@@ -415,14 +417,14 @@ impl UnifiedToolRegistry {
     ) -> anyhow::Result<PathBuf> {
         let tools_dir = package_path.join("tools");
         let platform = detect_platform();
-        let binary_name = format!("{}-{}", tool_name, platform);
+        let binary_name = format!("{tool_name}-{platform}");
 
         let tool_path = tools_dir.join(&binary_name);
 
         if tool_path.exists() {
             Ok(tool_path)
         } else {
-            anyhow::bail!("Tool not found in package: {}", binary_name)
+            anyhow::bail!("Tool not found in package: {binary_name}")
         }
     }
 
@@ -439,7 +441,7 @@ impl UnifiedToolRegistry {
             .cache_dir
             .join(tool_name)
             .join(version_str)
-            .join(format!("{}-{}", tool_name, platform));
+            .join(format!("{tool_name}-{platform}"));
 
         if cache_path.exists() {
             tracing::debug!("Found in cache: {}", cache_path.display());
@@ -462,7 +464,7 @@ impl UnifiedToolRegistry {
 
         std::fs::create_dir_all(&cache_dir)?;
 
-        let cache_path = cache_dir.join(format!("{}-{}", tool_name, platform));
+        let cache_path = cache_dir.join(format!("{tool_name}-{platform}"));
         tokio::fs::write(&cache_path, data).await?;
 
         tracing::info!("Cached: {}", cache_path.display());
@@ -496,9 +498,9 @@ impl UnifiedToolRegistry {
     async fn list_from_backend(&self, backend: &RegistryBackend) -> anyhow::Result<Vec<ToolInfo>> {
         match backend {
             RegistryBackend::Pekohub { url, api_key } => {
-                let mut request = self.http_client.get(format!("{}/api/v1/tools", url));
+                let mut request = self.http_client.get(format!("{url}/api/v1/tools"));
                 if let Some(key) = api_key {
-                    request = request.header("Authorization", format!("Bearer {}", key));
+                    request = request.header("Authorization", format!("Bearer {key}"));
                 }
 
                 let response = request.send().await?;
@@ -569,7 +571,7 @@ fn detect_platform() -> String {
         "unknown"
     };
 
-    format!("{}-{}", os, arch)
+    format!("{os}-{arch}")
 }
 
 #[cfg(test)]

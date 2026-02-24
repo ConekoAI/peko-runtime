@@ -16,7 +16,6 @@ pub use tracer::{TraceContext, TraceSpan, Tracer};
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
 
 /// Unified observability hub
 pub struct Observability {
@@ -55,7 +54,7 @@ impl Observability {
                 timestamp: chrono::Utc::now(),
                 component: self.component.clone(),
                 event_type: event_type.to_string(),
-                agent_did: agent_did.map(|s| s.to_string()),
+                agent_did: agent_did.map(std::string::ToString::to_string),
                 details,
                 severity: AuditSeverity::Info,
             })
@@ -75,7 +74,7 @@ impl Observability {
                 timestamp: chrono::Utc::now(),
                 component: self.component.clone(),
                 event_type: event_type.to_string(),
-                agent_did: agent_did.map(|s| s.to_string()),
+                agent_did: agent_did.map(std::string::ToString::to_string),
                 details,
                 severity: AuditSeverity::Security,
             })
@@ -127,6 +126,7 @@ pub enum HealthStatus {
 }
 
 impl HealthStatus {
+    #[must_use] 
     pub fn is_healthy(&self) -> bool {
         matches!(self, HealthStatus::Healthy)
     }

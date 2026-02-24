@@ -174,15 +174,16 @@ impl AgentManifest {
     /// Serialize to TOML string
     pub fn to_toml(&self) -> anyhow::Result<String> {
         toml::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize manifest: {}", e))
+            .map_err(|e| anyhow::anyhow!("Failed to serialize manifest: {e}"))
     }
 
     /// Deserialize from TOML string
     pub fn from_toml(toml_str: &str) -> anyhow::Result<Self> {
-        toml::from_str(toml_str).map_err(|e| anyhow::anyhow!("Failed to parse manifest: {}", e))
+        toml::from_str(toml_str).map_err(|e| anyhow::anyhow!("Failed to parse manifest: {e}"))
     }
 
     /// Compute checksum for a file
+    #[must_use] 
     pub fn compute_checksum(data: &[u8]) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -191,6 +192,7 @@ impl AgentManifest {
     }
 
     /// Verify a file against its checksum
+    #[must_use] 
     pub fn verify_checksum(data: &[u8], expected: &str) -> bool {
         let computed = Self::compute_checksum(data);
         computed == expected

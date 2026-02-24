@@ -85,6 +85,7 @@ pub enum RegistryEvent {
 
 impl LocalRegistry {
     /// Create new registry
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             metadata: HashMap::new(),
@@ -143,6 +144,7 @@ impl LocalRegistry {
     }
 
     /// Find agents by capability
+    #[must_use] 
     pub fn find_by_capability(&self, capability: &str) -> Vec<String> {
         self.capability_index
             .get(capability)
@@ -151,6 +153,7 @@ impl LocalRegistry {
     }
 
     /// Get capability details
+    #[must_use] 
     pub fn get_capability(&self, capability: &str) -> Vec<CapabilityRecord> {
         self.capability_records
             .get(capability)
@@ -159,6 +162,7 @@ impl LocalRegistry {
     }
 
     /// List all capabilities
+    #[must_use] 
     pub fn list_capabilities(&self) -> Vec<String> {
         self.capability_index.keys().cloned().collect()
     }
@@ -195,7 +199,7 @@ impl LocalRegistry {
 impl Registry for LocalRegistry {
     async fn register(&mut self, did: &str, name: &str) -> Result<()> {
         if self.metadata.contains_key(did) {
-            return Err(anyhow!("Agent already registered: {}", did));
+            return Err(anyhow!("Agent already registered: {did}"));
         }
 
         let meta = AgentMetadata {

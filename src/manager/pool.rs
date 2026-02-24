@@ -77,11 +77,13 @@ pub struct AgentHandle {
 
 impl AgentHandle {
     /// Get DID
+    #[must_use] 
     pub fn did(&self) -> &str {
         &self.did
     }
 
     /// Get name
+    #[must_use] 
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -98,7 +100,7 @@ impl AgentHandle {
         self.channel
             .send(PoolMessage::Stop)
             .await
-            .map_err(|e| anyhow!("Failed to stop agent: {}", e))
+            .map_err(|e| anyhow!("Failed to stop agent: {e}"))
     }
 
     /// Execute a prompt
@@ -111,7 +113,7 @@ impl AgentHandle {
                 respond_to: tx,
             })
             .await
-            .map_err(|e| anyhow!("Failed to send execute: {}", e))?;
+            .map_err(|e| anyhow!("Failed to send execute: {e}"))?;
 
         rx.recv()
             .await
@@ -147,6 +149,7 @@ pub struct PoolAgentInfo {
 
 impl AgentPool {
     /// Create new pool
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             config: PoolConfig::default(),
@@ -156,6 +159,7 @@ impl AgentPool {
     }
 
     /// Create with config
+    #[must_use] 
     pub fn with_config(config: PoolConfig) -> Self {
         Self {
             config,
@@ -174,11 +178,11 @@ impl AgentPool {
         }
 
         if self.agents.contains_key(&did) {
-            return Err(anyhow!("Agent already in pool: {}", did));
+            return Err(anyhow!("Agent already in pool: {did}"));
         }
 
         // Create channel
-        let (tx, rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::channel(100);
 
         // Store agent
         self.agents.insert(
@@ -237,7 +241,7 @@ impl AgentPool {
             channel
                 .send(PoolMessage::Stop)
                 .await
-                .map_err(|e| anyhow!("Failed to stop: {}", e))?;
+                .map_err(|e| anyhow!("Failed to stop: {e}"))?;
         }
 
         self.agents.remove(did);
@@ -264,9 +268,7 @@ impl AgentPool {
 
     /// Get agent states
     pub async fn get_states(&self) -> HashMap<String, String> {
-        self.agents
-            .iter()
-            .map(|(did, _)| (did.clone(), "idle".to_string()))
+        self.agents.keys().map(|did| (did.clone(), "idle".to_string()))
             .collect()
     }
 
@@ -282,11 +284,13 @@ impl AgentPool {
     }
 
     /// Get pool size
+    #[must_use] 
     pub fn size(&self) -> usize {
         self.agents.len()
     }
 
     /// Check if pool is full
+    #[must_use] 
     pub fn is_full(&self) -> bool {
         self.agents.len() >= self.config.max_agents
     }

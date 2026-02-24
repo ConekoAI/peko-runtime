@@ -55,6 +55,7 @@ pub struct Packager {
 
 impl Packager {
     /// Create a new packager
+    #[must_use] 
     pub fn new(
         config: AgentConfig,
         identity: Identity,
@@ -226,10 +227,10 @@ impl Packager {
 
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
-                    if path.extension().map(|e| e == "toml").unwrap_or(false) {
+                    if path.extension().is_some_and(|e| e == "toml") {
                         let content = tokio::fs::read(&path).await?;
                         let file_name = path.file_name().unwrap().to_string_lossy();
-                        let package_path = format!("config/skills/{}", file_name);
+                        let package_path = format!("config/skills/{file_name}");
 
                         files.insert(package_path.clone(), content);
                         manifest.add_file(&package_path, &files[&package_path]);

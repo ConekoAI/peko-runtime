@@ -79,6 +79,7 @@ impl SecretResolver {
     }
 
     /// Check if a value contains secret references
+    #[must_use] 
     pub fn contains_secrets(&self, value: &str) -> bool {
         self.secret_regex.is_match(value)
     }
@@ -109,9 +110,7 @@ impl SecretResolver {
                 }
                 Err(_) => {
                     anyhow::bail!(
-                        "Environment variable '{}' not found (referenced in '{}')",
-                        var_name,
-                        full_match
+                        "Environment variable '{var_name}' not found (referenced in '{full_match}')"
                     );
                 }
             }
@@ -150,24 +149,17 @@ impl SecretResolver {
                 Ok(None) => {
                     let scope_str = match &scope {
                         SecretScope::Global => "global".to_string(),
-                        SecretScope::Agent { did } => format!("agent:{}", did),
+                        SecretScope::Agent { did } => format!("agent:{did}"),
                     };
                     anyhow::bail!(
-                        "Secret '{}' not found in scope '{}' (referenced in '{}'). \
-                         Set it with: pekobot secret set {} --scope {}",
-                        name,
-                        scope_str,
-                        full_match,
-                        name,
-                        scope_str
+                        "Secret '{name}' not found in scope '{scope_str}' (referenced in '{full_match}'). \
+                         Set it with: pekobot secret set {name} --scope {scope_str}"
                     );
                 }
                 Err(e) => {
                     anyhow::bail!(
-                        "Failed to resolve secret '{}': {}. \
-                         Is the secret store unlocked?",
-                        name,
-                        e
+                        "Failed to resolve secret '{name}': {e}. \
+                         Is the secret store unlocked?"
                     );
                 }
             }
@@ -202,15 +194,11 @@ impl SecretResolver {
                 Ok(None) => {
                     let scope_str = match &scope {
                         SecretScope::Global => "global".to_string(),
-                        SecretScope::Agent { did } => format!("agent:{}", did),
+                        SecretScope::Agent { did } => format!("agent:{did}"),
                     };
                     anyhow::bail!(
-                        "Secret '{}' not found in scope '{}'. \
-                         Set it with: pekobot secret set {} --scope {}",
-                        name,
-                        scope_str,
-                        name,
-                        scope_str
+                        "Secret '{name}' not found in scope '{scope_str}'. \
+                         Set it with: pekobot secret set {name} --scope {scope_str}"
                     );
                 }
                 Err(e) => Err(e),
@@ -219,7 +207,7 @@ impl SecretResolver {
             // Environment variable
             let var_name = &cap[1];
             std::env::var(var_name)
-                .map_err(|_| anyhow::anyhow!("Environment variable '{}' not found", var_name))
+                .map_err(|_| anyhow::anyhow!("Environment variable '{var_name}' not found"))
         } else {
             // Not a reference, return as-is
             Ok(reference.to_string())

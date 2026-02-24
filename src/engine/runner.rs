@@ -171,7 +171,7 @@ impl AgentRunner {
     }
 }
 
-/// Builder for AgentRunner
+/// Builder for `AgentRunner`
 pub struct AgentRunnerBuilder {
     agent: Option<Arc<Agent>>,
     provider: Option<Arc<dyn Provider>>,
@@ -181,6 +181,7 @@ pub struct AgentRunnerBuilder {
 
 impl AgentRunnerBuilder {
     /// Create a new builder
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             agent: None,
@@ -209,24 +210,28 @@ impl AgentRunnerBuilder {
     }
 
     /// Add multiple tools
+    #[must_use] 
     pub fn tools(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
         self.tools = tools;
         self
     }
 
     /// Set max iterations
+    #[must_use] 
     pub fn max_iterations(mut self, max: usize) -> Self {
         self.config.max_iterations = max;
         self
     }
 
     /// Set timeout
+    #[must_use] 
     pub fn timeout_secs(mut self, secs: u64) -> Self {
         self.config.provider_timeout_secs = secs;
         self
     }
 
     /// Disable tools
+    #[must_use] 
     pub fn disable_tools(mut self) -> Self {
         self.config.enable_tools = false;
         self

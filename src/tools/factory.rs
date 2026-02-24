@@ -6,7 +6,7 @@
 use crate::security::SecurityPolicy;
 use crate::tools::{
     ApplyPatchConfig, ApplyPatchTool, BrowserTool, FetchConfig, FetchTool,
-    FileSystemTool, HttpTool, MemoryToolFactory, ProcessTool, SessionStatusTool,
+    FileSystemTool, HttpTool, ProcessTool, SessionStatusTool,
     SessionsHistoryTool, SessionsListTool, WebSearchConfig, WebSearchTool,
 };
 use std::path::PathBuf;
@@ -68,6 +68,7 @@ pub struct ToolFactory;
 
 impl ToolFactory {
     /// Create all essential tools based on configuration
+    #[must_use] 
     pub fn create_tools(config: &ToolFactoryConfig) -> Vec<Arc<dyn crate::tools::Tool>> {
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
 
@@ -145,6 +146,7 @@ impl ToolFactory {
     }
 
     /// Create minimal tools (filesystem + process only)
+    #[must_use] 
     pub fn create_minimal_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
             workspace_dir,
@@ -160,7 +162,8 @@ impl ToolFactory {
         Self::create_tools(&config)
     }
 
-    /// Create coding tools (filesystem + apply_patch + process + web_search)
+    /// Create coding tools (filesystem + `apply_patch` + process + `web_search`)
+    #[must_use] 
     pub fn create_coding_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
             workspace_dir,
@@ -173,6 +176,7 @@ impl ToolFactory {
     }
 
     /// Create full toolset
+    #[must_use] 
     pub fn create_full_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
             workspace_dir,

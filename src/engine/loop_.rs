@@ -29,6 +29,7 @@ impl AgenticLoop {
     }
 
     /// Set maximum iterations for the loop
+    #[must_use] 
     pub fn with_max_iterations(mut self, max: usize) -> Self {
         self.max_iterations = max;
         self

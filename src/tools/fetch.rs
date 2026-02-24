@@ -70,18 +70,15 @@ fn default_user_agent() -> String {
 /// Extraction mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ExtractMode {
     /// Convert HTML to markdown
+    #[default]
     Markdown,
     /// Plain text extraction
     Text,
 }
 
-impl Default for ExtractMode {
-    fn default() -> Self {
-        ExtractMode::Markdown
-    }
-}
 
 /// Fetch arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +128,7 @@ pub struct FetchTool {
 
 impl FetchTool {
     /// Create a new fetch tool
+    #[must_use] 
     pub fn new(config: FetchConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
@@ -193,45 +191,42 @@ impl FetchTool {
         let host = parsed.host_str().unwrap_or("");
         let scheme = parsed.scheme();
 
-        let robots_url = format!("{}://{}/robots.txt", scheme, host);
+        let robots_url = format!("{scheme}://{host}/robots.txt");
 
         // Try to fetch robots.txt
-        match self.client.get(&robots_url).send().await {
-            Ok(response) => {
-                if response.status().is_success() {
-                    if let Ok(text) = response.text().await {
-                        // Simple check: look for Disallow entries
-                        // This is a basic implementation - a full robots.txt parser would be more complex
-                        let path = parsed.path();
-                        for line in text.lines() {
-                            let line = line.trim();
-                            if line.starts_with("User-agent:") {
-                                // Check if this applies to us (User-agent: * or contains our name)
-                                let ua = line
-                                    .strip_prefix("User-agent:")
-                                    .unwrap_or("")
-                                    .trim();
-                                if ua == "*" || ua.to_lowercase().contains("pekobot") {
-                                    // Continue checking Disallow lines
-                                }
+        if let Ok(response) = self.client.get(&robots_url).send().await {
+            if response.status().is_success() {
+                if let Ok(text) = response.text().await {
+                    // Simple check: look for Disallow entries
+                    // This is a basic implementation - a full robots.txt parser would be more complex
+                    let path = parsed.path();
+                    for line in text.lines() {
+                        let line = line.trim();
+                        if line.starts_with("User-agent:") {
+                            // Check if this applies to us (User-agent: * or contains our name)
+                            let ua = line
+                                .strip_prefix("User-agent:")
+                                .unwrap_or("")
+                                .trim();
+                            if ua == "*" || ua.to_lowercase().contains("pekobot") {
+                                // Continue checking Disallow lines
                             }
-                            if line.starts_with("Disallow:") {
-                                let disallow = line
-                                    .strip_prefix("Disallow:")
-                                    .unwrap_or("")
-                                    .trim();
-                                if path.starts_with(disallow) && !disallow.is_empty() {
-                                    debug!("robots.txt disallows: {}", path);
-                                    return Ok(false);
-                                }
+                        }
+                        if line.starts_with("Disallow:") {
+                            let disallow = line
+                                .strip_prefix("Disallow:")
+                                .unwrap_or("")
+                                .trim();
+                            if path.starts_with(disallow) && !disallow.is_empty() {
+                                debug!("robots.txt disallows: {}", path);
+                                return Ok(false);
                             }
                         }
                     }
                 }
             }
-            Err(_) => {
-                // If we can't fetch robots.txt, assume allowed
-            }
+        } else {
+            // If we can't fetch robots.txt, assume allowed
         }
 
         Ok(true)
@@ -389,7 +384,7 @@ impl FetchTool {
                             let quote = rest.chars().next().unwrap_or('"');
                             if quote == '"' || quote == '\'' {
                                 if let Some(href_end) = rest[1..].find(quote) {
-                                    let href = &rest[1..=href_end];
+                                    let _href = &rest[1..=href_end];
                                     result.push('[');
                                     // Link text will be added after closing </a>
                                 }
@@ -453,7 +448,7 @@ impl FetchTool {
             .get(&args.url)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Request failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Request failed: {e}"))?;
 
         let status_code = response.status().as_u16();
         let final_url = response.url().to_string();
@@ -476,7 +471,7 @@ impl FetchTool {
         let body = response
             .text()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to read body: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to read body: {e}"))?;
 
         // Extract content based on mode
         let (title, content) = if content_type.contains("text/html") {
@@ -512,11 +507,11 @@ impl FetchTool {
 
 #[async_trait]
 impl Tool for FetchTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "fetch"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Fetch web pages and extract content as markdown or text"
     }
 
@@ -525,7 +520,7 @@ impl Tool for FetchTool {
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         let args: FetchArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         // Validate URL
         if args.url.is_empty() {

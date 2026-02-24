@@ -1,8 +1,8 @@
 //! Agent Management Tools
 //!
 //! Tools for agents to interact with other agents.
-//! Note: agent_spawn, agent_info, agent_broadcast require ManagerCommand channel
-//! which needs to be properly integrated with AgentManager's event loop.
+//! Note: `agent_spawn`, `agent_info`, `agent_broadcast` require `ManagerCommand` channel
+//! which needs to be properly integrated with `AgentManager`'s event loop.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -56,12 +56,13 @@ pub struct AgentsListResult {
     pub allow_any: bool,
 }
 
-/// Tool for listing available agents (OpenClaw compatible)
+/// Tool for listing available agents (`OpenClaw` compatible)
 pub struct AgentsListTool {
     command_tx: mpsc::Sender<ManagerCommand>,
 }
 
 impl AgentsListTool {
+    #[must_use] 
     pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
         Self { command_tx }
     }
@@ -69,11 +70,11 @@ impl AgentsListTool {
 
 #[async_trait]
 impl Tool for AgentsListTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "agents_list"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List agent IDs that can be targeted with sessions_spawn"
     }
 
@@ -84,7 +85,7 @@ impl Tool for AgentsListTool {
         self.command_tx
             .send(ManagerCommand::ListAgents { respond_to: tx })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
 
         let agents: Vec<crate::manager::AgentInfo> = rx
             .recv()
@@ -118,6 +119,7 @@ pub struct AgentInfoTool {
 }
 
 impl AgentInfoTool {
+    #[must_use] 
     pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
         Self { command_tx }
     }
@@ -125,11 +127,11 @@ impl AgentInfoTool {
 
 #[async_trait]
 impl Tool for AgentInfoTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "agent_info"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         r#"Query detailed information about a specific agent.
 
 Parameters:
@@ -152,7 +154,7 @@ Example:
         self.command_tx
             .send(ManagerCommand::ListAgents { respond_to: tx })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
 
         let agents: Vec<crate::manager::AgentInfo> = rx
             .recv()
@@ -163,7 +165,7 @@ Example:
         let agent = agents
             .into_iter()
             .find(|a| a.did == agent_id)
-            .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_id}"))?;
 
         Ok(json!({
             "success": true,
@@ -188,6 +190,7 @@ pub struct AgentSpawnTool {
 }
 
 impl AgentSpawnTool {
+    #[must_use] 
     pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
         Self { command_tx }
     }
@@ -195,11 +198,11 @@ impl AgentSpawnTool {
 
 #[async_trait]
 impl Tool for AgentSpawnTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "agent_spawn"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         r#"Spawn a new subagent.
 
 Parameters:
@@ -254,7 +257,7 @@ Example:
         self.command_tx
             .send(ManagerCommand::Spawn { config, respond_to: tx })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
         let handle = rx
             .recv()
             .await
@@ -278,6 +281,7 @@ pub struct AgentBroadcastTool {
 }
 
 impl AgentBroadcastTool {
+    #[must_use] 
     pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
         Self { command_tx }
     }
@@ -285,11 +289,11 @@ impl AgentBroadcastTool {
 
 #[async_trait]
 impl Tool for AgentBroadcastTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "agent_broadcast"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         r#"Broadcast a message to all agents.
 
 Example:
@@ -310,7 +314,7 @@ Example:
         self.command_tx
             .send(ManagerCommand::Broadcast { message, respond_to: tx })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
         rx.recv()
             .await
             .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))??;

@@ -45,13 +45,13 @@ pub fn derive_key(
         argon2::Algorithm::Argon2id,
         argon2::Version::V0x13,
         argon2::Params::new(memory_cost, time_cost, parallelism, None)
-            .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {}", e))?,
+            .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {e}"))?,
     );
 
     let mut key = vec![0u8; 32]; // 256 bits for AES-256
     argon2
         .hash_password_into(passphrase.as_bytes(), salt, &mut key)
-        .map_err(|e| anyhow::anyhow!("Argon2 hashing failed: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Argon2 hashing failed: {e:?}"))?;
 
     Ok(key)
 }
@@ -97,7 +97,7 @@ pub fn encrypt_with_params(
     let cipher = Aes256Gcm::new(key);
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
-        .map_err(|e| anyhow::anyhow!("Encryption failed: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Encryption failed: {e:?}"))?;
 
     Ok(EncryptedData {
         salt,
@@ -130,12 +130,13 @@ pub fn decrypt_with_passphrase(
 
     let plaintext = cipher
         .decrypt(nonce, encrypted.ciphertext.as_ref())
-        .map_err(|e| anyhow::anyhow!("Decryption failed (wrong passphrase?): {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("Decryption failed (wrong passphrase?): {e:?}"))?;
 
     Ok(plaintext)
 }
 
 /// Serialize encrypted data to bytes for storage
+#[must_use] 
 pub fn serialize_encrypted(data: &EncryptedData) -> Vec<u8> {
     use serde::{Deserialize, Serialize};
 

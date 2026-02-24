@@ -28,6 +28,7 @@ impl AgentContext {
     }
 
     /// Find agents with a specific capability
+    #[must_use] 
     pub fn find_by_capability(&self, capability: &str) -> Vec<&AgentSummary> {
         self.registry_view
             .agents
@@ -37,16 +38,19 @@ impl AgentContext {
     }
 
     /// Get agent by DID
+    #[must_use] 
     pub fn get_agent(&self, did: &str) -> Option<&AgentSummary> {
         self.registry_view.agents.iter().find(|a| a.did == did)
     }
 
     /// Get agent state
+    #[must_use] 
     pub fn get_agent_state(&self, did: &str) -> Option<&str> {
-        self.agent_states.get(did).map(|s| s.as_str())
+        self.agent_states.get(did).map(std::string::String::as_str)
     }
 
     /// Check if agent is available (running and not busy)
+    #[must_use] 
     pub fn is_agent_available(&self, did: &str) -> bool {
         matches!(self.get_agent_state(did), Some("idle" | "running"))
     }
@@ -83,6 +87,7 @@ pub struct CapabilityIndex {
 
 impl CapabilityIndex {
     /// Create empty index
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             index: HashMap::new(),
@@ -101,17 +106,19 @@ impl CapabilityIndex {
 
     /// Unregister agent
     pub fn unregister(&mut self, did: &str) {
-        for (_, dids) in self.index.iter_mut() {
+        for (_, dids) in &mut self.index {
             dids.retain(|d| d != did);
         }
     }
 
     /// Find agents by capability
+    #[must_use] 
     pub fn find(&self, capability: &str) -> Vec<String> {
         self.index.get(capability).cloned().unwrap_or_default()
     }
 
     /// Get all capabilities
+    #[must_use] 
     pub fn capabilities(&self) -> Vec<&String> {
         self.index.keys().collect()
     }

@@ -41,6 +41,7 @@ pub enum AuditSeverity {
 
 impl AuditLogger {
     /// Create new audit logger
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             buffer: VecDeque::with_capacity(1000),
@@ -49,6 +50,7 @@ impl AuditLogger {
     }
 
     /// Create with custom buffer size
+    #[must_use] 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             buffer: VecDeque::with_capacity(capacity),
@@ -102,10 +104,12 @@ impl AuditLogger {
     }
 
     /// Current buffer size
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
 
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }

@@ -6,7 +6,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
-use argon2::{Argon2, Params};
+use argon2::Argon2;
 use hkdf::Hkdf;
 use rand::RngCore;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
@@ -47,13 +47,13 @@ impl MasterKey {
                 DEFAULT_PARALLELISM,
                 None,
             )
-            .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {}", e))?,
+            .map_err(|e| anyhow::anyhow!("Invalid Argon2 params: {e}"))?,
         );
 
         let mut key = [0u8; 32];
         argon2
             .hash_password_into(password.as_bytes(), salt, &mut key)
-            .map_err(|e| anyhow::anyhow!("Argon2 hashing failed: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Argon2 hashing failed: {e:?}"))?;
 
         Ok(Self {
             key: SecretBox::new(Box::new(key)),
@@ -63,11 +63,11 @@ impl MasterKey {
     /// Derive a per-secret key from the master key
     fn derive_secret_key(&self, secret_name: &str, scope: &str) -> anyhow::Result<[u8; 32]> {
         let hkdf = Hkdf::<Sha256>::new(None, self.key.expose_secret().as_slice());
-        let info = format!("{}:{}", scope, secret_name);
+        let info = format!("{scope}:{secret_name}");
 
         let mut secret_key = [0u8; 32];
         hkdf.expand(info.as_bytes(), &mut secret_key)
-            .map_err(|e| anyhow::anyhow!("HKDF expand failed: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("HKDF expand failed: {e}"))?;
 
         Ok(secret_key)
     }
@@ -92,7 +92,7 @@ impl MasterKey {
         let cipher = Aes256Gcm::new(key);
         let ciphertext = cipher
             .encrypt(nonce, plaintext.as_bytes())
-            .map_err(|e| anyhow::anyhow!("Encryption failed: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Encryption failed: {e:?}"))?;
 
         // Generate random salt for this encryption
         let mut salt = vec![0u8; SALT_LENGTH];
@@ -122,13 +122,14 @@ impl MasterKey {
 
         let plaintext = cipher
             .decrypt(nonce, encrypted.ciphertext.as_ref())
-            .map_err(|e| anyhow::anyhow!("Decryption failed (wrong password?): {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Decryption failed (wrong password?): {e:?}"))?;
 
         Ok(SecretString::from(String::from_utf8(plaintext)?))
     }
 }
 
 /// Generate a random master key (for OS keychain storage)
+#[must_use] 
 pub fn generate_random_master_key() -> [u8; 32] {
     let mut key = [0u8; 32];
     OsRng.fill_bytes(&mut key);

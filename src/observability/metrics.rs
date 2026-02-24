@@ -37,6 +37,7 @@ pub struct Gauge {
 
 impl MetricsCollector {
     /// Create new collector
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             counters: HashMap::new(),
@@ -59,7 +60,7 @@ impl MetricsCollector {
         let values = self
             .histograms
             .entry(name.to_string())
-            .or_insert_with(Vec::new);
+            .or_default();
 
         values.push(value);
 
@@ -78,14 +79,15 @@ impl MetricsCollector {
     }
 
     /// Get counter value
+    #[must_use] 
     pub fn get_counter(&self, name: &str) -> u64 {
         self.counters
             .get(name)
-            .map(|c| c.load(Ordering::Relaxed))
-            .unwrap_or(0)
+            .map_or(0, |c| c.load(Ordering::Relaxed))
     }
 
     /// Get histogram stats
+    #[must_use] 
     pub fn get_histogram_stats(&self, name: &str) -> Option<HistogramStats> {
         let values = self.histograms.get(name)?;
 
@@ -117,11 +119,11 @@ impl MetricsCollector {
     }
 
     /// Get gauge value
+    #[must_use] 
     pub fn get_gauge(&self, name: &str) -> u64 {
         self.gauges
             .get(name)
-            .map(|g| g.load(Ordering::Relaxed))
-            .unwrap_or(0)
+            .map_or(0, |g| g.load(Ordering::Relaxed))
     }
 
     /// Get all metrics snapshot

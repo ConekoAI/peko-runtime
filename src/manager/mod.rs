@@ -310,7 +310,7 @@ impl AgentManager {
         let agent = self
             .get(did)
             .await
-            .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", did))?;
+            .ok_or_else(|| anyhow::anyhow!("Agent not found: {did}"))?;
 
         // Get agent's config and identity
         // For now, we need to reconstruct these from the agent
@@ -320,7 +320,7 @@ impl AgentManager {
         // Note: This is a simplified version - in practice we'd need
         // to properly extract config and identity from the agent
         let config = crate::types::agent::AgentConfig::default();
-        let identity = self.get_or_create_identity(&agent.name(), None).await?;
+        let identity = self.get_or_create_identity(agent.name(), None).await?;
 
         let packager = Packager::new(
             config, identity, None, // memory_path
@@ -384,7 +384,7 @@ impl AgentManager {
         let storage = self.identity_storage.read().await;
 
         let tenant = tenant.unwrap_or("default");
-        let identity_name = format!("{}-{}", tenant, name);
+        let identity_name = format!("{tenant}-{name}");
 
         // Try to load existing
         if let Ok(identity) = storage.load(&identity_name) {
@@ -394,7 +394,7 @@ impl AgentManager {
 
         // Create new
         drop(storage);
-        let mut storage = self.identity_storage.write().await;
+        let storage = self.identity_storage.write().await;
 
         info!("Creating new identity for: {}", identity_name);
         let identity = Identity::generate(crate::identity::did::DIDScope::Local, Some(tenant))?;
@@ -429,7 +429,7 @@ impl AgentManager {
         if let Some(handle) = self.get(target_did).await {
             handle.send(message).await
         } else {
-            Err(anyhow::anyhow!("Agent not found: {}", target_did))
+            Err(anyhow::anyhow!("Agent not found: {target_did}"))
         }
     }
 
@@ -452,6 +452,7 @@ impl AgentManager {
     }
 
     /// Get data directory
+    #[must_use] 
     pub fn data_dir(&self) -> &PathBuf {
         &self.data_dir
     }
@@ -459,12 +460,13 @@ impl AgentManager {
     /// Create agent communication tools
     /// 
     /// Returns tools that allow agents to:
-    /// - Query info about other agents (agent_info)
-    /// - Spawn subagents (agent_spawn)
-    /// - Broadcast messages (agent_broadcast)
-    /// - List available agents (agents_list)
+    /// - Query info about other agents (`agent_info`)
+    /// - Spawn subagents (`agent_spawn`)
+    /// - Broadcast messages (`agent_broadcast`)
+    /// - List available agents (`agents_list`)
     /// 
-    /// Note: session_messaging is separate and needs a shared SessionRegistry
+    /// Note: `session_messaging` is separate and needs a shared `SessionRegistry`
+    #[must_use] 
     pub fn create_communication_tools(
         &self,
         agent_did: &str,
@@ -501,12 +503,13 @@ impl AgentManager {
     /// - Web search, Apply patch, Process tools
     /// - Session introspection tools (list, history, status)
     /// - Communication tools (spawn, broadcast, messaging)
+    #[must_use] 
     pub fn create_all_tools(
         &self,
         agent_did: &str,
     ) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{ToolFactory, ToolFactoryConfig};
-        use std::sync::Arc;
+        
 
         // Create essential tools using factory
         let factory_config = ToolFactoryConfig {
@@ -522,13 +525,14 @@ impl AgentManager {
     }
 
     /// Create tools with custom configuration
+    #[must_use] 
     pub fn create_tools_with_config(
         &self,
         agent_did: &str,
         config: crate::tools::ToolFactoryConfig,
     ) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::ToolFactory;
-        use std::sync::Arc;
+        
 
         let mut tools = ToolFactory::create_tools(&config);
         tools.extend(self.create_communication_tools(agent_did));
@@ -539,9 +543,9 @@ impl AgentManager {
 /// Command handler loop - processes commands from agent tools
 /// 
 /// This runs in a separate task and handles:
-/// - Listing agents (for agent_info tool)
-/// - Spawning agents (for agent_spawn tool)  
-/// - Broadcasting messages (for agent_broadcast tool)
+/// - Listing agents (for `agent_info` tool)
+/// - Spawning agents (for `agent_spawn` tool)  
+/// - Broadcasting messages (for `agent_broadcast` tool)
 async fn command_handler_loop(
     pool: Arc<RwLock<AgentPool>>,
     _registry: Arc<RwLock<LocalRegistry>>,

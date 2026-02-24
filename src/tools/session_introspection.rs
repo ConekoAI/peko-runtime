@@ -175,6 +175,7 @@ pub struct SessionsListTool {
 }
 
 impl SessionsListTool {
+    #[must_use] 
     pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
         Self { registry }
     }
@@ -182,11 +183,11 @@ impl SessionsListTool {
 
 #[async_trait]
 impl Tool for SessionsListTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "sessions_list"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "List active sessions with optional filtering"
     }
 
@@ -195,7 +196,7 @@ impl Tool for SessionsListTool {
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         let args: SessionsListArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         debug!(
             "Listing sessions: kinds={:?}, limit={}, active_minutes={:?}",
@@ -219,6 +220,7 @@ pub struct SessionsHistoryTool {
 }
 
 impl SessionsHistoryTool {
+    #[must_use] 
     pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
         Self { registry }
     }
@@ -226,11 +228,11 @@ impl SessionsHistoryTool {
 
 #[async_trait]
 impl Tool for SessionsHistoryTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "sessions_history"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Get message history for a specific session"
     }
 
@@ -239,7 +241,7 @@ impl Tool for SessionsHistoryTool {
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         let args: SessionsHistoryArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         if args.session_key.is_empty() {
             return Err(anyhow::anyhow!("session_key is required"));
@@ -272,6 +274,7 @@ pub struct SessionStatusTool {
 }
 
 impl SessionStatusTool {
+    #[must_use] 
     pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
         Self { registry }
     }
@@ -279,11 +282,11 @@ impl SessionStatusTool {
 
 #[async_trait]
 impl Tool for SessionStatusTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "session_status"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Get status and usage information for a session"
     }
 
@@ -292,7 +295,7 @@ impl Tool for SessionStatusTool {
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         let args: SessionStatusArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         // Use provided session key or default to current
         let session_key = args
@@ -316,6 +319,7 @@ pub struct InMemorySessionRegistry {
 }
 
 impl InMemorySessionRegistry {
+    #[must_use] 
     pub fn new(current_session: String) -> Self {
         Self {
             current_session,
@@ -350,7 +354,7 @@ impl SessionRegistry for InMemorySessionRegistry {
         _limit: usize,
         _active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
-        let sessions = self.sessions.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let sessions = self.sessions.lock().map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
         Ok(sessions.values().cloned().collect())
     }
 
@@ -360,17 +364,17 @@ impl SessionRegistry for InMemorySessionRegistry {
         limit: usize,
         _include_tools: bool,
     ) -> anyhow::Result<Vec<HistoryMessage>> {
-        let histories = self.histories.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let histories = self.histories.lock().map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
         let history = histories.get(session_key).cloned().unwrap_or_default();
         Ok(history.into_iter().take(limit).collect())
     }
 
     fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult> {
-        let statuses = self.statuses.lock().map_err(|e| anyhow::anyhow!("Lock error: {}", e))?;
+        let statuses = self.statuses.lock().map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
         statuses
             .get(session_key)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_key))
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))
     }
 
     fn current_session_key(&self) -> String {

@@ -340,7 +340,7 @@ impl Unpackager {
         let agents_dir = self.base_dir.join("agents");
         tokio::fs::create_dir_all(&agents_dir).await?;
 
-        let config_path = agents_dir.join(format!("{}.toml", name));
+        let config_path = agents_dir.join(format!("{name}.toml"));
         let config_toml = toml::to_string_pretty(config)?;
 
         tokio::fs::write(&config_path, config_toml).await?;
@@ -363,7 +363,7 @@ impl Unpackager {
         did.hash(&mut hasher);
         let hash = hasher.finish();
 
-        data_dir.join(format!("{:x}.db", hash))
+        data_dir.join(format!("{hash:x}.db"))
     }
 }
 

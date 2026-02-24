@@ -4,13 +4,11 @@
 //! It uses `libloading` for cross-platform dynamic library loading.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use libloading::{Library, Symbol};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use crate::gateway::config::PluginManifest;
-use crate::gateway::error::{GatewayError, GatewayResult};
 use crate::gateway::interface::{GatewayFactory, GATEWAY_API_VERSION};
 use crate::gateway::{RegistryError, RegistryResult};
 
@@ -29,16 +27,19 @@ pub struct PluginHandle {
 
 impl PluginHandle {
     /// Get the factory
+    #[must_use] 
     pub fn factory(&self) -> &dyn GatewayFactory {
         self.factory.as_ref()
     }
 
     /// Get the manifest
+    #[must_use] 
     pub fn manifest(&self) -> &PluginManifest {
         &self.manifest
     }
 
     /// Get the plugin path
+    #[must_use] 
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -81,7 +82,7 @@ impl PluginLoader {
         let library = unsafe {
             Library::new(path).map_err(|e| RegistryError::CacheError {
                 name: manifest.plugin.name.clone(),
-                message: format!("Failed to load library: {}", e),
+                message: format!("Failed to load library: {e}"),
             })?
         };
 
@@ -93,7 +94,7 @@ impl PluginLoader {
                 .get(b"create_gateway_factory")
                 .map_err(|e| RegistryError::InvalidManifest {
                     name: manifest.plugin.name.clone(),
-                    message: format!("Missing create_gateway_factory symbol: {}", e),
+                    message: format!("Missing create_gateway_factory symbol: {e}"),
                 })?
         };
 
@@ -116,8 +117,7 @@ impl PluginLoader {
             return Err(RegistryError::InvalidManifest {
                 name: manifest.plugin.name.clone(),
                 message: format!(
-                    "API version mismatch: expected {}, got {}",
-                    GATEWAY_API_VERSION, api_version
+                    "API version mismatch: expected {GATEWAY_API_VERSION}, got {api_version}"
                 ),
             });
         }
@@ -136,11 +136,13 @@ impl PluginLoader {
     }
 
     /// Get the cache directory path
+    #[must_use] 
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }
 
     /// Get the path where a plugin would be cached
+    #[must_use] 
     pub fn get_cache_path(&self,
         name: &str,
         version: &str,
@@ -156,6 +158,7 @@ impl PluginLoader {
     }
 
     /// Check if a plugin is cached
+    #[must_use] 
     pub fn is_cached(&self,
         name: &str,
         version: &str,
@@ -186,13 +189,15 @@ impl Drop for PluginLoader {
 /// Platform detection utilities
 pub mod platform {
     /// Get the current platform identifier
+    #[must_use] 
     pub fn current() -> String {
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
-        format!("{}_{}", os, arch)
+        format!("{os}_{arch}")
     }
 
     /// Check if a platform is supported
+    #[must_use] 
     pub fn is_supported(platform: &str) -> bool {
         matches!(
             platform,
@@ -205,6 +210,7 @@ pub mod platform {
     }
 
     /// Map Rust target triple to Pekohub platform string
+    #[must_use] 
     pub fn map_target(target: &str) -> Option<&'static str> {
         match target {
             "x86_64-unknown-linux-gnu" => Some("linux_x64"),

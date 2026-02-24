@@ -218,7 +218,7 @@ impl Identity {
         let name = name.to_string();
         tokio::task::spawn_blocking(move || Self::generate(scope, Some(&name)))
             .await
-            .map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Task failed: {e}"))?
     }
 
     /// Convert to DID document JSON

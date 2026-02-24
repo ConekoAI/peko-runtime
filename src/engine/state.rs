@@ -1,6 +1,5 @@
 //! Agent State Machine - Simple 2-state tracking
 
-use anyhow::Result;
 use std::sync::atomic::{AtomicU8, Ordering};
 use tracing::debug;
 
@@ -15,11 +14,13 @@ pub enum AgentState {
 
 impl AgentState {
     /// Check if agent is busy
+    #[must_use] 
     pub fn is_busy(self) -> bool {
         matches!(self, AgentState::Busy)
     }
 
     /// Check if agent is idle
+    #[must_use] 
     pub fn is_idle(self) -> bool {
         matches!(self, AgentState::Idle)
     }
@@ -33,6 +34,7 @@ pub struct StateMachine {
 
 impl StateMachine {
     /// Create new state machine starting in Idle
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             state: AtomicU8::new(0),

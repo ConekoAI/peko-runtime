@@ -296,7 +296,7 @@ impl ProviderConfig {
 
     /// Get API key with secret resolution support
     ///
-    /// This method checks if the api_key is a secret reference (e.g., `${secret:OPENAI_API_KEY}`)
+    /// This method checks if the `api_key` is a secret reference (e.g., `${secret:OPENAI_API_KEY}`)
     /// and resolves it using the provided secret resolver.
     ///
     /// # Example

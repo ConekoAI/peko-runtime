@@ -15,6 +15,7 @@ pub struct LifecycleManager {
 
 impl LifecycleManager {
     /// Create new lifecycle manager
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             states: Arc::new(RwLock::new(HashMap::new())),
@@ -42,7 +43,7 @@ impl LifecycleManager {
             info!("Agent {} started", did);
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Agent not registered: {}", did))
+            Err(anyhow::anyhow!("Agent not registered: {did}"))
         }
     }
 
@@ -81,7 +82,7 @@ impl LifecycleManager {
             info!("Agent {} stopped", did);
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Agent not registered: {}", did))
+            Err(anyhow::anyhow!("Agent not registered: {did}"))
         }
     }
 
@@ -90,7 +91,7 @@ impl LifecycleManager {
         did: &str,
     ) -> bool {
         let states = self.states.read().await;
-        states.get(did).map(|sm| sm.current().is_idle()).unwrap_or(false)
+        states.get(did).is_some_and(|sm| sm.current().is_idle())
     }
 
     /// Check if agent is busy
@@ -98,7 +99,7 @@ impl LifecycleManager {
         did: &str,
     ) -> bool {
         let states = self.states.read().await;
-        states.get(did).map(|sm| sm.current().is_busy()).unwrap_or(false)
+        states.get(did).is_some_and(|sm| sm.current().is_busy())
     }
 
     /// Try to acquire agent (Idle -> Busy)
@@ -107,7 +108,7 @@ impl LifecycleManager {
         did: &str,
     ) -> bool {
         let states = self.states.read().await;
-        states.get(did).map(|sm| sm.try_acquire()).unwrap_or(false)
+        states.get(did).is_some_and(super::super::engine::state::StateMachine::try_acquire)
     }
 
     /// Unregister an agent

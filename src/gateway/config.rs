@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::gateway::types::GatewayMetadata;
 
 /// Configuration for a gateway instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,19 +274,19 @@ pub struct PluginInfo {
 /// Binary download URLs by platform
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinaryDownloads {
-    /// Linux x86_64
+    /// Linux `x86_64`
     #[serde(rename = "linux_x64")]
     pub linux_x64: String,
     /// Linux ARM64
     #[serde(rename = "linux_arm64")]
     pub linux_arm64: Option<String>,
-    /// macOS x86_64
+    /// macOS `x86_64`
     #[serde(rename = "macos_x64")]
     pub macos_x64: Option<String>,
     /// macOS ARM64 (Apple Silicon)
     #[serde(rename = "macos_arm")]
     pub macos_arm: Option<String>,
-    /// Windows x86_64
+    /// Windows `x86_64`
     #[serde(rename = "windows_x64")]
     pub windows_x64: Option<String>,
 }

@@ -1,4 +1,4 @@
-//! Secret store backed by SQLite
+//! Secret store backed by `SQLite`
 
 use crate::secrets::{
     crypto::{EncryptedSecret, MasterKey},
@@ -54,7 +54,7 @@ impl SecretStore {
     fn initialize(&self) -> Result<()> {
         self.conn
             .execute_batch(
-                r#"
+                r"
             -- Secrets table
             CREATE TABLE IF NOT EXISTS secrets (
                 id TEXT PRIMARY KEY,
@@ -101,7 +101,7 @@ impl SecretStore {
 
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON secret_audit_log(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_secret ON secret_audit_log(secret_name);
-            "#,
+            ",
             )
             .context("Failed to initialize secret store schema")?;
 
@@ -333,12 +333,12 @@ impl SecretStore {
                 },
             )
             .optional()
-            .map_err(|e| e.into())
+            .map_err(std::convert::Into::into)
     }
 
     /// List secrets (without values)
     pub fn list(&self, scope: Option<&SecretScope>) -> Result<Vec<SecretEntry>> {
-        let mut stmt = if let Some(s) = scope {
+        let mut stmt = if let Some(_s) = scope {
             self.conn.prepare(
                 "SELECT id, name, scope, secret_type, metadata, version, created_at, updated_at 
                  FROM secrets WHERE scope = ?1 ORDER BY name",
@@ -636,7 +636,7 @@ impl SecretStore {
         self.get(name, scope)
     }
 
-    /// Helper to convert a database row to SecretEntry
+    /// Helper to convert a database row to `SecretEntry`
     fn row_to_secret_entry(&self, row: &rusqlite::Row) -> rusqlite::Result<SecretEntry> {
         let scope_str: String = row.get(2)?;
         let scope = if scope_str == "global" {
@@ -700,7 +700,7 @@ impl SecretStore {
                 secret_name,
                 secret_scope,
                 agent_did,
-                success as i32,
+                i32::from(success),
                 error
             ],
         )?;
@@ -718,7 +718,7 @@ impl SecretStore {
         limit: usize,
     ) -> Result<Vec<AuditEntry>> {
         // Use owned values to avoid lifetime issues
-        let scope_str = secret_scope.map(|s| s.as_str());
+        let scope_str = secret_scope.map(super::types::SecretScope::as_str);
         let event_str = event_type.map(|e| e.to_string());
 
         // Build the query based on which filters are present
@@ -907,7 +907,7 @@ impl SecretStore {
             })
         })
         .and_then(|iter| iter.collect::<std::result::Result<Vec<_>, _>>())
-        .map_err(|e| e.into())
+        .map_err(std::convert::Into::into)
     }
 
     /// Get audit log statistics
@@ -916,19 +916,18 @@ impl SecretStore {
         since: Option<&str>, // ISO 8601 timestamp
     ) -> Result<AuditStats> {
         let since_clause = since
-            .map(|s| format!("WHERE timestamp >= '{}'", s))
+            .map(|s| format!("WHERE timestamp >= '{s}'"))
             .unwrap_or_default();
 
         let total: i64 = self.conn.query_row(
-            &format!("SELECT COUNT(*) FROM secret_audit_log {}", since_clause),
+            &format!("SELECT COUNT(*) FROM secret_audit_log {since_clause}"),
             [],
             |row| row.get(0),
         )?;
 
         let successful: i64 = self.conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM secret_audit_log {} AND success = 1",
-                since_clause
+                "SELECT COUNT(*) FROM secret_audit_log {since_clause} AND success = 1"
             ),
             [],
             |row| row.get(0),
@@ -936,8 +935,7 @@ impl SecretStore {
 
         let failed: i64 = self.conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM secret_audit_log {} AND success = 0",
-                since_clause
+                "SELECT COUNT(*) FROM secret_audit_log {since_clause} AND success = 0"
             ),
             [],
             |row| row.get(0),
@@ -945,8 +943,7 @@ impl SecretStore {
 
         let access_denied: i64 = self.conn.query_row(
             &format!(
-                "SELECT COUNT(*) FROM secret_audit_log {} AND event = 'ACCESS_DENIED'",
-                since_clause
+                "SELECT COUNT(*) FROM secret_audit_log {since_clause} AND event = 'ACCESS_DENIED'"
             ),
             [],
             |row| row.get(0),
@@ -964,7 +961,7 @@ impl SecretStore {
     pub fn export_audit_log(
         &self,
         path: impl AsRef<std::path::Path>,
-        since: Option<&str>,
+        _since: Option<&str>,
     ) -> Result<usize> {
         let entries = self.query_audit_log(None, None, None, None, 100_000)?;
 

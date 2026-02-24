@@ -1,6 +1,6 @@
 //! Web search tool
 //!
-//! Provides web search capabilities using Brave Search or DuckDuckGo.
+//! Provides web search capabilities using Brave Search or `DuckDuckGo`.
 //! Results are cached for 15 minutes to reduce API calls.
 
 use async_trait::async_trait;
@@ -15,18 +15,15 @@ use crate::tools::traits::Tool;
 /// Search provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SearchProvider {
     /// Brave Search API (requires API key)
     Brave,
-    /// DuckDuckGo (no API key needed, uses HTML scraping)
+    /// `DuckDuckGo` (no API key needed, uses HTML scraping)
+    #[default]
     DuckDuckGo,
 }
 
-impl Default for SearchProvider {
-    fn default() -> Self {
-        SearchProvider::DuckDuckGo
-    }
-}
 
 /// Web search tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +125,7 @@ pub struct WebSearchTool {
 
 impl WebSearchTool {
     /// Create a new web search tool
+    #[must_use] 
     pub fn new(config: WebSearchConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -196,7 +194,7 @@ impl WebSearchTool {
         let count = args.count.unwrap_or(self.config.max_results).min(20).max(1);
 
         let mut url = Url::parse("https://api.search.brave.com/res/v1/web/search")
-            .map_err(|e| format!("Invalid URL: {}", e))?;
+            .map_err(|e| format!("Invalid URL: {e}"))?;
 
         url.query_pairs_mut()
             .append_pair("q", &args.query)
@@ -214,7 +212,7 @@ impl WebSearchTool {
             .header("X-Subscription-Token", api_key)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(|e| format!("Request failed: {e}"))?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -222,13 +220,13 @@ impl WebSearchTool {
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(format!("Brave API error {}: {}", status, text));
+            return Err(format!("Brave API error {status}: {text}"));
         }
 
         let brave_response: BraveResponse = response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
+            .map_err(|e| format!("Failed to parse response: {e}"))?;
 
         let results: Vec<SearchResult> = brave_response
             .web
@@ -254,13 +252,13 @@ impl WebSearchTool {
         })
     }
 
-    /// Perform search with DuckDuckGo (HTML scraping)
+    /// Perform search with `DuckDuckGo` (HTML scraping)
     async fn search_ddg(&self, args: &SearchArgs) -> Result<SearchResponse, String> {
         let count = args.count.unwrap_or(self.config.max_results).min(20).max(1);
 
         // DuckDuckGo HTML interface
         let mut url = Url::parse("https://html.duckduckgo.com/html/")
-            .map_err(|e| format!("Invalid URL: {}", e))?;
+            .map_err(|e| format!("Invalid URL: {e}"))?;
 
         url.query_pairs_mut().append_pair("q", &args.query);
 
@@ -278,7 +276,7 @@ impl WebSearchTool {
             )
             .send()
             .await
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .map_err(|e| format!("Request failed: {e}"))?;
 
         if !response.status().is_success() {
             return Err(format!("DDG returned status: {}", response.status()));
@@ -287,7 +285,7 @@ impl WebSearchTool {
         let html = response
             .text()
             .await
-            .map_err(|e| format!("Failed to read response: {}", e))?;
+            .map_err(|e| format!("Failed to read response: {e}"))?;
 
         let results = parse_ddg_results(&html, count as usize)?;
 
@@ -304,7 +302,7 @@ impl WebSearchTool {
 fn extract_domain(url: &str) -> Option<String> {
     Url::parse(url)
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .and_then(|u| u.host_str().map(std::string::ToString::to_string))
 }
 
 /// Brave API response structure
@@ -330,7 +328,7 @@ struct BraveResult {
     age: Option<String>,
 }
 
-/// Parse DuckDuckGo HTML results
+/// Parse `DuckDuckGo` HTML results
 /// This is fragile - DDG may change their HTML structure
 fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
     use scraper::{Html, Selector};
@@ -372,7 +370,7 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
                 .select(&Selector::parse("a.result__a, a[href]").unwrap())
                 .next()
                 .and_then(|e| e.value().attr("href"))
-                .map(|u| u.to_string());
+                .map(std::string::ToString::to_string);
 
             // Try to extract snippet
             let snippet = element
@@ -432,11 +430,11 @@ fn extract_ddg_redirect(redirect_url: &str) -> Option<String> {
 
 #[async_trait]
 impl Tool for WebSearchTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "web_search"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Search the web using Brave Search or DuckDuckGo"
     }
 
@@ -444,7 +442,7 @@ impl Tool for WebSearchTool {
         args: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
         let args: SearchArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         if args.query.is_empty() {
             return Err(anyhow::anyhow!("Query cannot be empty"));
@@ -470,7 +468,7 @@ impl Tool for WebSearchTool {
                 self.store_cache(cache_key, response.clone());
                 Ok(serde_json::to_value(response)?)
             }
-            Err(e) => Err(anyhow::anyhow!("Search failed: {}", e)),
+            Err(e) => Err(anyhow::anyhow!("Search failed: {e}")),
         }
     }
 }

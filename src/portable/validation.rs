@@ -55,6 +55,7 @@ pub enum ValidationWarning {
 
 impl ValidationResult {
     /// Create a new successful validation result
+    #[must_use] 
     pub fn success() -> Self {
         Self {
             valid: true,
@@ -64,6 +65,7 @@ impl ValidationResult {
     }
 
     /// Create a new failed validation result
+    #[must_use] 
     pub fn failure(error: ValidationError) -> Self {
         Self {
             valid: false,
@@ -84,25 +86,27 @@ impl ValidationResult {
     }
 
     /// Check if validation passed
+    #[must_use] 
     pub fn is_valid(&self) -> bool {
         self.valid && self.errors.is_empty()
     }
 
     /// Get formatted error report
+    #[must_use] 
     pub fn error_report(&self) -> String {
         let mut report = String::new();
 
         if !self.errors.is_empty() {
             report.push_str("Validation Errors:\n");
             for error in &self.errors {
-                report.push_str(&format!("  ❌ {:?}\n", error));
+                report.push_str(&format!("  ❌ {error:?}\n"));
             }
         }
 
         if !self.warnings.is_empty() {
             report.push_str("Warnings:\n");
             for warning in &self.warnings {
-                report.push_str(&format!("  ⚠️  {:?}\n", warning));
+                report.push_str(&format!("  ⚠️  {warning:?}\n"));
             }
         }
 
@@ -119,6 +123,7 @@ impl ValidationResult {
 /// # Arguments
 /// * `manifest` - The parsed manifest
 /// * `files` - Map of file paths to their contents
+#[must_use] 
 pub fn validate_package(
     manifest: &AgentManifest,
     files: &std::collections::HashMap<String, Vec<u8>>,
@@ -159,7 +164,7 @@ pub fn validate_package(
     for file in &required_files {
         if !files.contains_key(*file) {
             result.add_error(ValidationError::MissingFile(file.to_string()));
-        } else if files.get(*file).map(|f| f.is_empty()).unwrap_or(true) {
+        } else if files.get(*file).map_or(true, std::vec::Vec::is_empty) {
             result.add_error(ValidationError::EmptyFile(file.to_string()));
         }
     }
@@ -203,6 +208,7 @@ pub fn validate_package(
 }
 
 /// Quick validation without signature verification
+#[must_use] 
 pub fn quick_validate(files: &std::collections::HashMap<String, Vec<u8>>) -> ValidationResult {
     let manifest_bytes = match files.get("manifest.toml") {
         Some(bytes) => bytes,

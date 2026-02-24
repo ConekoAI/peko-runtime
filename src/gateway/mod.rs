@@ -1,7 +1,7 @@
 //! Gateway plugin system
 //!
 //! This module provides a unified interface for messaging platform integration.
-//! All channels (Discord, WhatsApp, etc.) are implemented as plugins that
+//! All channels (Discord, `WhatsApp`, etc.) are implemented as plugins that
 //! implement the `GatewayPlugin` trait.
 //!
 //! # Architecture

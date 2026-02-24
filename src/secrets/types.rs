@@ -7,7 +7,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretType {
-    /// API key (e.g., OpenAI, Stripe)
+    /// API key (e.g., `OpenAI`, Stripe)
     ApiKey,
     /// OAuth token or access token
     Token,
@@ -58,6 +58,7 @@ impl SecretScope {
     }
 
     /// Get the scope as a string for storage
+    #[must_use] 
     pub fn as_str(&self) -> String {
         match self {
             SecretScope::Global => "global".to_string(),
@@ -68,6 +69,7 @@ impl SecretScope {
 
 /// Metadata for a secret
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct SecretMetadata {
     /// Human-readable description
     pub description: Option<String>,
@@ -79,16 +81,6 @@ pub struct SecretMetadata {
     pub tags: Vec<String>,
 }
 
-impl Default for SecretMetadata {
-    fn default() -> Self {
-        Self {
-            description: None,
-            source_hint: None,
-            expires_at: None,
-            tags: Vec::new(),
-        }
-    }
-}
 
 /// A secret entry (without the actual value)
 #[derive(Debug, Clone, Serialize, Deserialize)]

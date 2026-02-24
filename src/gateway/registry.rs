@@ -8,16 +8,15 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::fs;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use crate::gateway::config::{GatewayInfo, PluginManifest};
 use crate::gateway::error::{GatewayError, GatewayResult};
-use crate::gateway::interface::{GatewayFactory, GatewayPlugin, GATEWAY_API_VERSION};
+use crate::gateway::interface::{GatewayFactory, GatewayPlugin};
 use crate::gateway::loader::{platform, PluginHandle, PluginLoader};
 use crate::gateway::{RegistryError, RegistryResult};
 
@@ -305,7 +304,7 @@ impl GatewayRegistry {
 
         // Determine platform
         let platform = platform::current();
-        let platform_key = platform.replace("-", "_");
+        let platform_key = platform.replace('-', "_");
 
         // Get download URL from manifest
         let url = match platform_key.as_str() {
@@ -351,8 +350,7 @@ impl GatewayRegistry {
         if !response.status().is_success() {
             return Err(RegistryError::DownloadFailed {
                 name: name.to_string(),
-                source: Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                source: Box::new(std::io::Error::other(
                     format!("HTTP {}", response.status())
                 )),
             });

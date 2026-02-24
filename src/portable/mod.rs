@@ -13,7 +13,7 @@
 //! - `config/agent.toml` - Agent configuration
 //! - `config/prompts.toml` - System prompts
 //! - `config/skills/*.toml` - Bundled skills
-//! - `memory/memory.db` - SQLite memory database
+//! - `memory/memory.db` - `SQLite` memory database
 //!
 //! ## Example
 //!
@@ -127,12 +127,13 @@ pub struct PackageInfo {
 
 impl PackageInfo {
     /// Format as human-readable string
+    #[must_use] 
     pub fn format(&self) -> String {
         let mut output = String::new();
 
         output.push_str(&format!("📦 {} v{}\n", self.name, self.version));
         if let Some(desc) = &self.description {
-            output.push_str(&format!("   {}\n", desc));
+            output.push_str(&format!("   {desc}\n"));
         }
 
         output.push_str(&format!("\n🆔 DID: {}\n", self.did));
@@ -151,7 +152,7 @@ impl PackageInfo {
             self.capabilities.len()
         ));
         for cap in &self.capabilities {
-            output.push_str(&format!("   - {}\n", cap));
+            output.push_str(&format!("   - {cap}\n"));
         }
 
         if !self.required_tools.is_empty() {
@@ -160,7 +161,7 @@ impl PackageInfo {
                 self.required_tools.len()
             ));
             for tool in &self.required_tools {
-                output.push_str(&format!("   - {}\n", tool));
+                output.push_str(&format!("   - {tool}\n"));
             }
         }
 

@@ -231,7 +231,7 @@ impl KeyStorage {
             storage.store(&identity)
         })
         .await
-        .map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+        .map_err(|e| anyhow::anyhow!("Task failed: {e}"))?
     }
 
     /// Check if identity exists asynchronously
@@ -244,7 +244,7 @@ impl KeyStorage {
             Ok::<_, anyhow::Error>(storage.exists(&did))
         })
         .await
-        .map_err(|e| anyhow::anyhow!("Task failed: {}", e))?
+        .map_err(|e| anyhow::anyhow!("Task failed: {e}"))?
     }
 }
 
