@@ -694,7 +694,7 @@ async fn load_identity_for_agent(name: &str) -> Option<Identity> {
         .join(format!("{}.toml", name));
 
     if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
+        if let Ok(_config) = toml::from_str::<AgentConfig>(&content) {
             // Try to find identity by checking common DIDs
             let storage = KeyStorage::new().ok()?;
 
