@@ -5,6 +5,7 @@
 //! which needs to be properly integrated with AgentManager's event loop.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -29,6 +30,88 @@ pub enum ManagerCommand {
     },
 }
 
+/// Agent list entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentListEntry {
+    /// Agent ID
+    pub id: String,
+    /// Agent name
+    pub name: String,
+    /// Current state
+    pub state: String,
+    /// Capabilities
+    pub capabilities: Vec<String>,
+    /// Uptime in seconds
+    pub uptime_secs: u64,
+}
+
+/// List agents result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentsListResult {
+    /// Available agents
+    pub agents: Vec<AgentListEntry>,
+    /// Total count
+    pub total: usize,
+    /// Whether any agent can be targeted
+    pub allow_any: bool,
+}
+
+/// Tool for listing available agents (OpenClaw compatible)
+pub struct AgentsListTool {
+    command_tx: mpsc::Sender<ManagerCommand>,
+}
+
+impl AgentsListTool {
+    pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
+        Self { command_tx }
+    }
+}
+
+#[async_trait]
+impl Tool for AgentsListTool {
+    fn name(&self) -> &str {
+        "agents_list"
+    }
+
+    fn description(&self) -> &str {
+        "List agent IDs that can be targeted with sessions_spawn"
+    }
+
+    async fn execute(&self,
+        _params: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let (tx, mut rx) = mpsc::channel(1);
+        self.command_tx
+            .send(ManagerCommand::ListAgents { respond_to: tx })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+
+        let agents: Vec<crate::manager::AgentInfo> = rx
+            .recv()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))?;
+
+        let entries: Vec<AgentListEntry> = agents
+            .into_iter()
+            .map(|a| AgentListEntry {
+                id: a.did.clone(),
+                name: a.name,
+                state: format!("{:?}", a.state),
+                capabilities: a.capabilities,
+                uptime_secs: a.uptime_secs,
+            })
+            .collect();
+
+        let result = AgentsListResult {
+            total: entries.len(),
+            allow_any: true,
+            agents: entries,
+        };
+
+        Ok(serde_json::to_value(result)?)
+    }
+}
+
 /// Tool for agents to query information about other agents
 pub struct AgentInfoTool {
     command_tx: mpsc::Sender<ManagerCommand>,
@@ -42,51 +125,60 @@ impl AgentInfoTool {
 
 #[async_trait]
 impl Tool for AgentInfoTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "agent_info"
     }
 
-    fn description(&self) -> &'static str {
-        r#"Query information about agents in the system.
+    fn description(&self) -> &str {
+        r#"Query detailed information about a specific agent.
 
-Commands:
-- list: List all agents with their status
+Parameters:
+- agent_id: DID of the agent to query (required)
 
 Example:
-TOOL_CALL: {"name": "agent_info", "parameters": {"command": "list"}}"#
+{"agent_id": "did:peko:abc123"}"#
     }
 
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let command = params
-            .get("command")
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let agent_id = params
+            .get("agent_id")
             .and_then(|c| c.as_str())
-            .unwrap_or("list");
+            .ok_or_else(|| anyhow::anyhow!("Missing 'agent_id' parameter"))?;
 
-        match command {
-            "list" => {
-                let (tx, mut rx) = mpsc::channel(1);
-                self.command_tx.send(ManagerCommand::ListAgents { respond_to: tx }).await?;
-                let agents: Vec<crate::manager::AgentInfo> = rx.recv().await
-                    .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))?;
-                
-                Ok(json!({
-                    "success": true,
-                    "agents": agents.iter().map(|a| json!({
-                        "did": a.did,
-                        "name": a.name,
-                        "state": format!("{:?}", a.state),
-                        "capabilities": a.capabilities,
-                        "uptime_secs": a.uptime_secs
-                    })).collect::<Vec<_>>(),
-                    "count": agents.len()
-                }))
+        let (tx, mut rx) = mpsc::channel(1);
+        self.command_tx
+            .send(ManagerCommand::ListAgents { respond_to: tx })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+
+        let agents: Vec<crate::manager::AgentInfo> = rx
+            .recv()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))?;
+
+        // Find the specific agent
+        let agent = agents
+            .into_iter()
+            .find(|a| a.did == agent_id)
+            .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_id))?;
+
+        Ok(json!({
+            "success": true,
+            "agent": {
+                "did": agent.did,
+                "name": agent.name,
+                "state": format!("{:?}", agent.state),
+                "capabilities": agent.capabilities,
+                "uptime_secs": agent.uptime_secs,
+                "identity": {
+                    "did": agent.identity_info.did,
+                    "scope": format!("{:?}", agent.identity_info.scope)
+                }
             }
-
-            _ => Err(anyhow::anyhow!(
-                "Unknown command: {}. Use 'list'",
-                command
-            ))
-        }
+        }))
     }
 }
 
@@ -103,11 +195,11 @@ impl AgentSpawnTool {
 
 #[async_trait]
 impl Tool for AgentSpawnTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "agent_spawn"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         r#"Spawn a new subagent.
 
 Parameters:
@@ -116,20 +208,20 @@ Parameters:
 - prompt: Initial task for the agent (required)
 
 Example:
-TOOL_CALL: {"name": "agent_spawn", "parameters": {"name": "ResearchAgent", "prompt": "Research Rust", "capabilities": ["web_search"]}}"#
+{"name": "ResearchAgent", "prompt": "Research Rust", "capabilities": ["web_search"]}"#
     }
 
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
         let name = params
             .get("name")
             .and_then(|n| n.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'name' parameter"))?
             .to_string();
 
-        let _prompt = params
-            .get("prompt")
-            .and_then(|p| p.as_str())
-            .unwrap_or("");
+        let _prompt = params.get("prompt").and_then(|p| p.as_str()).unwrap_or("");
 
         let capabilities = params
             .get("capabilities")
@@ -143,8 +235,9 @@ TOOL_CALL: {"name": "agent_spawn", "parameters": {"name": "ResearchAgent", "prom
 
         let config = crate::types::agent::AgentConfig {
             name: name.clone(),
-            capabilities: capabilities.iter().map(|c| {
-                crate::types::agent::AgentCapability {
+            capabilities: capabilities
+                .iter()
+                .map(|c| crate::types::agent::AgentCapability {
                     name: c.clone(),
                     version: "1.0".to_string(),
                     description: None,
@@ -152,14 +245,19 @@ TOOL_CALL: {"name": "agent_spawn", "parameters": {"name": "ResearchAgent", "prom
                     estimated_duration: None,
                     parameters: None,
                     required_auth: None,
-                }
-            }).collect(),
+                })
+                .collect(),
             ..Default::default()
         };
 
         let (tx, mut rx) = mpsc::channel(1);
-        self.command_tx.send(ManagerCommand::Spawn { config, respond_to: tx }).await?;
-        let handle = rx.recv().await
+        self.command_tx
+            .send(ManagerCommand::Spawn { config, respond_to: tx })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+        let handle = rx
+            .recv()
+            .await
             .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))??;
         let did = handle.did().to_string();
 
@@ -187,18 +285,21 @@ impl AgentBroadcastTool {
 
 #[async_trait]
 impl Tool for AgentBroadcastTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "agent_broadcast"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         r#"Broadcast a message to all agents.
 
 Example:
-TOOL_CALL: {"name": "agent_broadcast", "parameters": {"message": "System shutdown in 5 min"}}"#
+{"message": "System shutdown in 5 min"}"#
     }
 
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
         let message = params
             .get("message")
             .and_then(|m| m.as_str())
@@ -206,8 +307,12 @@ TOOL_CALL: {"name": "agent_broadcast", "parameters": {"message": "System shutdow
             .to_string();
 
         let (tx, mut rx) = mpsc::channel(1);
-        self.command_tx.send(ManagerCommand::Broadcast { message, respond_to: tx }).await?;
-        rx.recv().await
+        self.command_tx
+            .send(ManagerCommand::Broadcast { message, respond_to: tx })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+        rx.recv()
+            .await
             .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))??;
 
         Ok(json!({

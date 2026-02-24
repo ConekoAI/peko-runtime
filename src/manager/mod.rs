@@ -462,16 +462,20 @@ impl AgentManager {
     /// - Query info about other agents (agent_info)
     /// - Spawn subagents (agent_spawn)
     /// - Broadcast messages (agent_broadcast)
+    /// - List available agents (agents_list)
     /// 
     /// Note: session_messaging is separate and needs a shared SessionRegistry
     pub fn create_communication_tools(
         &self,
         agent_did: &str,
     ) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::tools::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, SessionMessagingTool, SessionRegistry};
+        use crate::tools::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, AgentsListTool, SessionMessagingTool, SessionRegistry};
         use std::sync::Arc;
 
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = vec![];
+
+        // Agents list tool
+        tools.push(Arc::new(AgentsListTool::new(self.command_tx.clone())));
 
         // Agent info tool
         tools.push(Arc::new(AgentInfoTool::new(self.command_tx.clone())));

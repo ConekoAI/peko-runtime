@@ -16,7 +16,7 @@ pub mod session_messaging;
 pub mod traits;
 pub mod web_search;
 
-pub use agent_management::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, ManagerCommand};
+pub use agent_management::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, AgentsListTool, ManagerCommand};
 pub use apply_patch::{ApplyPatchConfig, ApplyPatchTool};
 pub use browser::BrowserTool;
 pub use factory::{ToolFactory, ToolFactoryConfig};
