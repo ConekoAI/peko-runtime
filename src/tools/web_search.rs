@@ -8,10 +8,9 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, warn};
 
 use crate::tools::traits::Tool;
-use crate::types::agent::ToolResult;
 
 /// Search provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -235,12 +234,15 @@ impl WebSearchTool {
             .web
             .results
             .into_iter()
-            .map(|r| SearchResult {
-                title: r.title,
-                url: r.url,
-                snippet: r.description,
-                source: extract_domain(&r.url),
-                published: r.age,
+            .map(|r| {
+                let url = r.url; // Extract first to avoid move issues
+                SearchResult {
+                    title: r.title,
+                    source: extract_domain(&url),
+                    url,
+                    snippet: r.description,
+                    published: r.age,
+                }
             })
             .collect();
 
@@ -355,7 +357,15 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
             let title = element
                 .select(&Selector::parse("h2, .result__title, .result__a").unwrap())
                 .next()
-                .and_then(|e| e.text().collect::<String>().trim().into());
+                .and_then(|e| {
+                    let text = e.text().collect::<String>();
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                });
 
             // Try to extract URL
             let url = element
@@ -368,7 +378,15 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
             let snippet = element
                 .select(&Selector::parse(".result__snippet, .result__body").unwrap())
                 .next()
-                .and_then(|e| e.text().collect::<String>().trim().into());
+                .and_then(|e| {
+                    let text = e.text().collect::<String>();
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
+                });
 
             if let (Some(title), Some(url)) = (title, url) {
                 // DDG uses redirects, extract actual URL
@@ -381,7 +399,7 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
 
                 results.push(SearchResult {
                     title,
-                    url: actual_url,
+                    url: actual_url.clone(),
                     snippet: snippet.unwrap_or_default(),
                     source: extract_domain(&actual_url),
                     published: None,
@@ -422,36 +440,14 @@ impl Tool for WebSearchTool {
         "Search the web using Brave Search or DuckDuckGo"
     }
 
-    fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query"
-                },
-                "count": {
-                    "type": "integer",
-                    "description": "Number of results (1-20)",
-                    "minimum": 1,
-                    "maximum": 20
-                },
-                "freshness": {
-                    "type": "string",
-                    "description": "Freshness filter: pd (past day), pw (past week), pm (past month), py (past year)",
-                    "enum": ["pd", "pw", "pm", "py"]
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolResult, String> {
+    async fn execute(&self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
         let args: SearchArgs = serde_json::from_value(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
 
         if args.query.is_empty() {
-            return Err("Query cannot be empty".to_string());
+            return Err(anyhow::anyhow!("Query cannot be empty"));
         }
 
         let count = args.count.unwrap_or(self.config.max_results).min(20).max(1);
@@ -459,11 +455,7 @@ impl Tool for WebSearchTool {
 
         // Check cache
         if let Some(cached) = self.check_cache(&cache_key) {
-            return Ok(ToolResult {
-                success: true,
-                data: serde_json::to_value(cached).unwrap(),
-                error: None,
-            });
+            return Ok(serde_json::to_value(cached)?);
         }
 
         // Perform search
@@ -476,18 +468,9 @@ impl Tool for WebSearchTool {
             Ok(response) => {
                 // Store in cache
                 self.store_cache(cache_key, response.clone());
-
-                Ok(ToolResult {
-                    success: true,
-                    data: serde_json::to_value(response).unwrap(),
-                    error: None,
-                })
+                Ok(serde_json::to_value(response)?)
             }
-            Err(e) => Ok(ToolResult {
-                success: false,
-                data: serde_json::Value::Null,
-                error: Some(e),
-            }),
+            Err(e) => Err(anyhow::anyhow!("Search failed: {}", e)),
         }
     }
 }
