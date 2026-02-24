@@ -41,6 +41,49 @@ pekobot agent export --agent ~/.config/pekobot/agents/test-coding.toml
 
 ---
 
+## Gateway Self-Management Tool
+
+**Status:** 🟡 Deferred - Architecture Decision Needed  
+**Component:** `gateway` tool (agent self-management)  
+**Impact:** Low - Different architecture makes this less critical
+
+### Context
+OpenClaw has a `gateway` tool that allows agents to:
+- Restart the Gateway daemon (`gateway restart`)
+- Modify Gateway config (`gateway config.apply/patch`)
+- Self-update (`gateway update.run`)
+
+This works because OpenClaw has a long-running Gateway process that agents run inside.
+
+### Why Deferred
+Pekobot has a different architecture:
+- **CLI-first**: Commands run and exit; no persistent Gateway process
+- **Config**: Per-agent TOML files, not centralized Gateway config
+- **Safety**: Self-restarting agents risk deadlocks and state loss
+
+### Use Cases Covered By Alternatives
+| OpenClaw Gateway Tool | Pekobot Alternative |
+|-----------------------|---------------------|
+| `gateway restart` | Stop/start agent process |
+| `gateway config.apply` | Edit TOML + restart agent |
+| `gateway update.run` | Package manager or `pekobot system update` |
+
+### Future Considerations
+If Pekobot adds a daemon mode (persistent agent process), this tool becomes relevant:
+```bash
+# Potential future commands
+pekobot system reload-config  # Reread config without restart
+pekobot system restart        # Restart agent daemon
+```
+
+### Decision
+Skip implementation until:
+1. Pekobot has a persistent daemon mode
+2. Clear use case emerges that isn't covered by CLI commands
+3. Safety concerns (circular restarts) are addressed
+
+---
+
 ## Other Known Limitations
 
 ### Session Commands
