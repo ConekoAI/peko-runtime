@@ -64,6 +64,9 @@ urlencoding = "2.1"
 # Pattern matching for document parsing
 regex = "1.10"
 
+# HTML parsing for web_search
+scraper = "0.19"
+
 # Portable agent dependencies
 tar = "0.4"
 flate2 = "1.0"

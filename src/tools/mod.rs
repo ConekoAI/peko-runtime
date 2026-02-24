@@ -10,6 +10,7 @@ pub mod memory_tool;
 pub mod process;
 pub mod session_messaging;
 pub mod traits;
+pub mod web_search;
 
 pub use agent_management::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, ManagerCommand};
 pub use browser::BrowserTool;
@@ -19,3 +20,4 @@ pub use memory_tool::{MemoryTool, MemoryToolFactory};
 pub use process::ProcessTool;
 pub use session_messaging::{SessionMessagingTool, SessionRegistry};
 pub use traits::Tool;
+pub use web_search::{WebSearchConfig, WebSearchTool, SearchProvider};
