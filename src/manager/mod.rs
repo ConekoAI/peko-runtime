@@ -489,6 +489,47 @@ impl AgentManager {
 
         tools
     }
+
+    /// Create all essential tools for an agent
+    /// 
+    /// This includes:
+    /// - Filesystem, HTTP, Fetch, Browser tools
+    /// - Web search, Apply patch, Process tools
+    /// - Session introspection tools (list, history, status)
+    /// - Communication tools (spawn, broadcast, messaging)
+    pub fn create_all_tools(
+        &self,
+        agent_did: &str,
+    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+        use crate::tools::{ToolFactory, ToolFactoryConfig};
+        use std::sync::Arc;
+
+        // Create essential tools using factory
+        let factory_config = ToolFactoryConfig {
+            workspace_dir: self.data_dir.clone(),
+            ..Default::default()
+        };
+        let mut tools = ToolFactory::create_tools(&factory_config);
+
+        // Add communication tools
+        tools.extend(self.create_communication_tools(agent_did));
+
+        tools
+    }
+
+    /// Create tools with custom configuration
+    pub fn create_tools_with_config(
+        &self,
+        agent_did: &str,
+        config: crate::tools::ToolFactoryConfig,
+    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+        use crate::tools::ToolFactory;
+        use std::sync::Arc;
+
+        let mut tools = ToolFactory::create_tools(&config);
+        tools.extend(self.create_communication_tools(agent_did));
+        tools
+    }
 }
 
 /// Command handler loop - processes commands from agent tools
