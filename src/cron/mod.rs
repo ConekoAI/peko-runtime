@@ -507,6 +507,7 @@ fn delivery_mode_str(delivery: &DeliveryMode) -> &'static str {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use uuid::Uuid;
 
     #[test]
     fn test_add_and_list_job() {

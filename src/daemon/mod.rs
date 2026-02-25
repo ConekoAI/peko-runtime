@@ -455,6 +455,7 @@ impl DaemonHandle {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use uuid::Uuid;
     
     #[tokio::test]
     async fn test_daemon_creation() {
