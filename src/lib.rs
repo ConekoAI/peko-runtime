@@ -65,6 +65,7 @@ pub mod observability;
 pub mod portable;
 pub mod providers;
 pub mod security;
+pub mod session;
 pub mod skills;
 pub mod tool_registry;
 pub mod tools;
