@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use clap_complete::{generate, Shell};
 use pekobot::agent::Agent;
 use pekobot::channels::cli::{run_interactive_loop, CliChannel};
@@ -10,7 +10,6 @@ use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
-use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
@@ -1996,7 +1995,6 @@ async fn handle_daemon(
     paths: &GlobalPaths,
     json: bool,
 ) -> anyhow::Result<()> {
-    use pekobot::daemon::{DaemonConfig, run_daemon};
     use std::time::Duration;
     
     let pid_file = paths.data_dir.join("daemon.pid");
