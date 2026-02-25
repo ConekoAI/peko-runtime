@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_api_key_prefix_stripping() {
-        let config = KimiCodeConfig {
+        let _config = KimiCodeConfig {
             api_key: "kimi-abc123".to_string(),
             ..Default::default()
         };
