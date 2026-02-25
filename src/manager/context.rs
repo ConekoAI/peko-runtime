@@ -106,7 +106,7 @@ impl CapabilityIndex {
 
     /// Unregister agent
     pub fn unregister(&mut self, did: &str) {
-        for (_, dids) in &mut self.index {
+        for dids in self.index.values_mut() {
             dids.retain(|d| d != did);
         }
     }

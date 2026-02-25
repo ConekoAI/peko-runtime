@@ -1,6 +1,6 @@
 //! Cron scheduler for periodic task execution
 //!
-//! Stores cron jobs in SQLite and provides scheduling functionality.
+//! Stores cron jobs in `SQLite` and provides scheduling functionality.
 //! Supports both main session (system event) and isolated execution modes.
 
 use anyhow::{Context, Result};
@@ -26,13 +26,14 @@ pub enum ScheduleKind {
 
 impl ScheduleKind {
     /// Get display name for the schedule
+    #[must_use] 
     pub fn display(&self) -> String {
         match self {
-            ScheduleKind::At { at } => format!("at {}", at),
+            ScheduleKind::At { at } => format!("at {at}"),
             ScheduleKind::Every { every_ms } => {
                 let secs = every_ms / 1000;
                 if secs < 60 {
-                    format!("every {}s", secs)
+                    format!("every {secs}s")
                 } else if secs < 3600 {
                     format!("every {}m", secs / 60)
                 } else {
@@ -41,9 +42,9 @@ impl ScheduleKind {
             }
             ScheduleKind::Cron { expr, tz } => {
                 if let Some(tz) = tz {
-                    format!("cron '{}' ({})", expr, tz)
+                    format!("cron '{expr}' ({tz})")
                 } else {
-                    format!("cron '{}'", expr)
+                    format!("cron '{expr}'")
                 }
             }
         }
@@ -53,24 +54,23 @@ impl ScheduleKind {
 /// Execution target for cron jobs
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ExecutionTarget {
     /// Run in main agent session (system event)
+    #[default]
     Main,
     /// Run in isolated session (dedicated agent turn)
     Isolated,
 }
 
-impl Default for ExecutionTarget {
-    fn default() -> Self {
-        ExecutionTarget::Main
-    }
-}
 
 /// Delivery configuration for job results
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DeliveryMode {
     /// No delivery, silent execution
+    #[default]
     None,
     /// Announce results to channel
     Announce {
@@ -80,11 +80,6 @@ pub enum DeliveryMode {
     },
 }
 
-impl Default for DeliveryMode {
-    fn default() -> Self {
-        DeliveryMode::None
-    }
-}
 
 /// A scheduled cron job
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,8 +203,8 @@ impl CronScheduler {
                 &job.message,
                 delivery_mode_str(&job.delivery),
                 delivery_data,
-                job.delete_after_run as i32,
-                job.enabled as i32,
+                i32::from(job.delete_after_run),
+                i32::from(job.enabled),
                 job.created_at.to_rfc3339(),
                 job.next_run.to_rfc3339(),
                 job.run_count as i32,
@@ -256,7 +251,7 @@ impl CronScheduler {
         };
 
         let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([], |row| parse_job_from_row(row))?;
+        let rows = stmt.query_map([], parse_job_from_row)?;
 
         let mut jobs = Vec::new();
         for row in rows {
@@ -277,7 +272,7 @@ impl CronScheduler {
              ORDER BY next_run ASC"
         )?;
 
-        let rows = stmt.query_map(params![now.to_rfc3339()], |row| parse_job_from_row(row))?;
+        let rows = stmt.query_map(params![now.to_rfc3339()], parse_job_from_row)?;
 
         let mut jobs = Vec::new();
         for row in rows {
@@ -313,7 +308,7 @@ impl CronScheduler {
         let conn = Connection::open(&self.db_path)?;
         let changed = conn.execute(
             "UPDATE cron_jobs SET enabled = ?1 WHERE id = ?2",
-            params![enabled as i32, job_id],
+            params![i32::from(enabled), job_id],
         )?;
         Ok(changed > 0)
     }
@@ -390,7 +385,7 @@ impl CronScheduler {
         match schedule {
             ScheduleKind::At { at } => {
                 let dt = DateTime::parse_from_rfc3339(at)
-                    .map_err(|e| anyhow::anyhow!("Invalid timestamp: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Invalid timestamp: {e}"))?;
                 Ok(dt.with_timezone(&Utc))
             }
             ScheduleKind::Every { every_ms } => {
@@ -398,23 +393,21 @@ impl CronScheduler {
             }
             ScheduleKind::Cron { expr, tz } => {
                 let schedule = Schedule::from_str(expr)
-                    .map_err(|e| anyhow::anyhow!("Invalid cron expression: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
                 
                 if let Some(tz_str) = tz {
                     let tz: chrono_tz::Tz = tz_str.parse()
-                        .map_err(|e| anyhow::anyhow!("Invalid timezone: {}", e))?;
+                        .map_err(|e| anyhow::anyhow!("Invalid timezone: {e}"))?;
                     let local_after = after.with_timezone(&tz);
                     if let Some(next) = schedule.after(&local_after).next() {
                         Ok(next.with_timezone(&Utc))
                     } else {
                         Err(anyhow::anyhow!("No next occurrence found"))
                     }
+                } else if let Some(next) = schedule.after(&after).next() {
+                    Ok(next)
                 } else {
-                    if let Some(next) = schedule.after(&after).next() {
-                        Ok(next)
-                    } else {
-                        Err(anyhow::anyhow!("No next occurrence found"))
-                    }
+                    Err(anyhow::anyhow!("No next occurrence found"))
                 }
             }
         }

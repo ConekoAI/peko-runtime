@@ -284,10 +284,10 @@ impl ProviderConfig {
         // First check if we have a direct api_key
         if let Some(key) = &self.api_key {
             // Check if it's an env reference
-            if key.starts_with("${env:") && key.ends_with("}") {
+            if key.starts_with("${env:") && key.ends_with('}') {
                 let env_var = &key[6..key.len()-1];
                 return std::env::var(env_var)
-                    .map_err(|_| anyhow::anyhow!("Environment variable '{}' not found", env_var));
+                    .map_err(|_| anyhow::anyhow!("Environment variable '{env_var}' not found"));
             }
             // Plain value, return as-is
             return Ok(key.clone());
@@ -297,8 +297,7 @@ impl ProviderConfig {
         if let Some(env_var) = &self.api_key_env {
             return std::env::var(env_var)
                 .map_err(|_| anyhow::anyhow!(
-                    "API key not found. Set '{}' environment variable or provide api_key in config",
-                    env_var
+                    "API key not found. Set '{env_var}' environment variable or provide api_key in config"
                 ));
         }
 

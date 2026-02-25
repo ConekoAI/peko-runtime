@@ -24,6 +24,7 @@ impl CronTool {
     }
 
     /// Get the scheduler (for engine use)
+    #[must_use] 
     pub fn scheduler(&self) -> Arc<CronScheduler> {
         self.scheduler.clone()
     }
@@ -31,11 +32,11 @@ impl CronTool {
 
 #[async_trait]
 impl Tool for CronTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "cron"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Manage scheduled cron jobs. Schedule one-time or recurring tasks."
     }
 
@@ -51,7 +52,7 @@ impl Tool for CronTool {
             "remove" => self.handle_remove(params).await,
             "run" => self.handle_run(params).await,
             "history" => self.handle_history(params).await,
-            _ => Err(anyhow::anyhow!("Unknown action: {}", action)),
+            _ => Err(anyhow::anyhow!("Unknown action: {action}")),
         }
     }
 }
@@ -170,7 +171,7 @@ impl CronTool {
                 "message": format!("Job {} removed", job_id)
             }))
         } else {
-            Err(anyhow::anyhow!("Job {} not found", job_id))
+            Err(anyhow::anyhow!("Job {job_id} not found"))
         }
     }
 
@@ -185,7 +186,7 @@ impl CronTool {
         // Get the job
         let job = self.scheduler
             .get_job(job_id)?
-            .ok_or_else(|| anyhow::anyhow!("Job {} not found", job_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
 
         // Note: Actual execution would be handled by the cron engine
         // This just returns info about the job
@@ -256,9 +257,9 @@ fn parse_schedule(schedule: &serde_json::Value) -> Result<ScheduleKind> {
             let expr = schedule["expr"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("schedule.expr is required for kind=cron"))?;
-            let tz = schedule["tz"].as_str().map(|s| s.to_string());
+            let tz = schedule["tz"].as_str().map(std::string::ToString::to_string);
             Ok(ScheduleKind::Cron { expr: expr.to_string(), tz })
         }
-        _ => Err(anyhow::anyhow!("Invalid schedule kind: {}", kind)),
+        _ => Err(anyhow::anyhow!("Invalid schedule kind: {kind}")),
     }
 }

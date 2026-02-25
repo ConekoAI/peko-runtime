@@ -36,13 +36,9 @@ pub struct DaemonConfig {
 
 impl Default for DaemonConfig {
     fn default() -> Self {
-        let config_dir = dirs::config_dir()
-            .map(|d| d.join("pekobot"))
-            .unwrap_or_else(|| PathBuf::from(".pekobot"));
+        let config_dir = dirs::config_dir().map_or_else(|| PathBuf::from(".pekobot"), |d| d.join("pekobot"));
         
-        let data_dir = dirs::data_dir()
-            .map(|d| d.join("pekobot"))
-            .unwrap_or_else(|| config_dir.clone());
+        let data_dir = dirs::data_dir().map_or_else(|| config_dir.clone(), |d| d.join("pekobot"));
         
         Self {
             cron_db_path: data_dir.join("cron.db"),
@@ -291,7 +287,7 @@ impl Daemon {
         info!("🔧 Isolated job: '{}'", job.message);
         
         // Load agent config if specified
-        let agent_config = if let Some(ref agent_id) = job.agent_id {
+        let _agent_config = if let Some(ref agent_id) = job.agent_id {
             self.load_agent_config(agent_id).await.ok()
         } else {
             None
@@ -372,7 +368,7 @@ impl Daemon {
     
     /// Load agent configuration by ID
     async fn load_agent_config(&self, agent_id: &str) -> Result<AgentConfig> {
-        let config_path = self.config.config_dir.join("agents").join(format!("{}.toml", agent_id));
+        let config_path = self.config.config_dir.join("agents").join(format!("{agent_id}.toml"));
         
         if !config_path.exists() {
             return Err(anyhow::anyhow!(
@@ -395,7 +391,7 @@ impl Daemon {
 
 /// Run the daemon with given configuration
 pub async fn run_daemon(config: DaemonConfig) -> Result<()> {
-    let (command_tx, command_rx) = mpsc::channel(100);
+    let (_command_tx, command_rx) = mpsc::channel(100);
     
     let daemon = Daemon::new(config, command_rx)?;
     

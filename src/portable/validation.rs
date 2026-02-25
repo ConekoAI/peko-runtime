@@ -164,7 +164,7 @@ pub fn validate_package(
     for file in &required_files {
         if !files.contains_key(*file) {
             result.add_error(ValidationError::MissingFile(file.to_string()));
-        } else if files.get(*file).map_or(true, std::vec::Vec::is_empty) {
+        } else if files.get(*file).is_none_or(std::vec::Vec::is_empty) {
             result.add_error(ValidationError::EmptyFile(file.to_string()));
         }
     }
