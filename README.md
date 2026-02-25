@@ -29,7 +29,7 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 - ✅ **Research Agent** — Web search with source assessment and citations
 - ✅ **HTTP Tools** — Built-in web request capabilities
 - ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
-- ✅ **Cron/Heartbeat** — Scheduled task execution
+- ✅ **Cron/Daemon** — Scheduled task execution with daemon mode
 - ✅ **Coneko Adapter** — Optional network integration
 - ✅ **Portable Agents** — Export/import agents as `.agent` packages
 
@@ -595,6 +595,150 @@ pekobot secret import-env --pattern ".*_API_KEY" --dry-run
 - **Permissions:** Fine-grained access control per agent
 - **Audit:** Complete access logging with export
 - **Memory Safety:** Secrets cleared from memory after use
+
+## Cron System & Daemon Mode
+
+Pekobot includes a full cron system for scheduling tasks with a daemon mode for automatic execution.
+
+### Managing Cron Jobs
+
+```bash
+# List all cron jobs
+pekobot cron list
+
+# Add a recurring cron job
+pekobot cron add \
+  --name "daily-report" \
+  --schedule "0 9 * * *" \
+  --timezone "America/New_York" \
+  --message "Generate daily sales report"
+
+# Add an interval-based job (every 5 minutes)
+pekobot cron every \
+  --name "heartbeat" \
+  --interval "5m" \
+  --message "Check system status"
+
+# Add a one-shot job at specific time
+pekobot cron at \
+  --name "reminder" \
+  --at "2026-03-01T09:00:00Z" \
+  --message "Meeting in 1 hour"
+
+# Remove a job
+pekobot cron remove --id <job-id>
+
+# View job history
+pekobot cron history --id <job-id>
+
+# Run a job immediately (manual trigger)
+pekobot cron run --id <job-id>
+```
+
+### Daemon Mode (Automatic Execution)
+
+The daemon is a long-running process that polls for due jobs and executes them automatically.
+
+```bash
+# Start the daemon (foreground mode)
+pekobot daemon start --foreground --interval 15
+
+# Check daemon status
+pekobot daemon status
+
+# Trigger immediate cron check
+pekobot daemon check
+
+# Stop the daemon gracefully
+pekobot daemon stop
+
+# Restart the daemon
+pekobot daemon restart --interval 30
+
+# Force kill if stuck
+pekobot daemon stop --force
+```
+
+### Schedule Types
+
+| Type | Example | Description |
+|------|---------|-------------|
+| `cron` | `"0 9 * * *"` | Standard cron expression |
+| `every` | `"5m"`, `"1h"`, `"30s"` | Recurring interval |
+| `at` | `"2026-03-01T09:00:00Z"` | One-shot at specific time |
+
+### Execution Modes
+
+**Main Session** (default):
+- Jobs are enqueued as system events
+- Processed on the next agent interaction
+- Lower latency, shared context
+
+**Isolated**:
+- Spawns a dedicated agent instance
+- Clean slate for each execution
+- Higher overhead but complete isolation
+
+```bash
+# Isolated execution
+pekobot cron add \
+  --name "isolated-task" \
+  --schedule "0 */6 * * *" \
+  --execution isolated \
+  --message "Run cleanup task"
+```
+
+### Announcements
+
+Get notified when jobs complete:
+
+```bash
+# Announce to default channel
+pekobot cron add \
+  --name "backup" \
+  --schedule "0 2 * * *" \
+  --message "Run database backup" \
+  --announce
+```
+
+### Storage
+
+- Jobs stored in SQLite at `~/.local/share/pekobot/cron.db`
+- Run history preserved for auditing
+- One-shot jobs auto-delete after successful execution
+- Jobs survive daemon restarts
+
+### Architecture
+
+```
+┌─────────────────────────────────────┐
+│         Pekobot Daemon              │
+│    (pekobot daemon start)           │
+│                                     │
+│  ┌─────────────────────────────┐   │
+│  │    Polling Loop (15s)       │   │
+│  └─────────────┬───────────────┘   │
+│                │                    │
+│                ▼                    │
+│  ┌─────────────────────────────┐   │
+│  │    Check Due Jobs           │   │
+│  │    (SQLite query)           │   │
+│  └─────────────┬───────────────┘   │
+│                │                    │
+│                ▼                    │
+│  ┌─────────────────────────────┐   │
+│  │    Execute Job              │   │
+│  │  ├─ Main: Enqueue event     │   │
+│  │  └─ Isolated: Spawn agent   │   │
+│  └─────────────┬───────────────┘   │
+│                │                    │
+│                ▼                    │
+│  ┌─────────────────────────────┐   │
+│  │    Record Result            │   │
+│  │    Update next_run          │   │
+│  └─────────────────────────────┘   │
+└─────────────────────────────────────┘
+```
 
 ## Development
 
