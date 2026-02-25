@@ -280,14 +280,14 @@ mod tests {
         let mut messages = vec![];
         
         // Add system message
-        messages.push(ChatMessage::system("You are a helpful assistant.".to_string()));
+        messages.push(ChatMessage::system("You are a helpful assistant."));
         
         // Add alternating user/assistant messages
         for i in 0..count {
             if i % 2 == 0 {
-                messages.push(ChatMessage::user(format!("User message {}", i)));
+                messages.push(ChatMessage::user(&format!("User message {}", i)));
             } else {
-                messages.push(ChatMessage::assistant(format!("Assistant response {}", i)));
+                messages.push(ChatMessage::assistant(&format!("Assistant response {}", i)));
             }
         }
         

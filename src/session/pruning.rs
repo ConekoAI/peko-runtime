@@ -54,7 +54,7 @@ impl Pruner {
 
     /// Check if pruning is needed based on token count
     pub fn should_prune(&self,
-        messages: &[ChatMessage],
+        _messages: &[ChatMessage],
         estimated_tokens: usize,
     ) -> bool {
         if !self.config.enabled {
@@ -79,7 +79,7 @@ impl Pruner {
         }
 
         let original_count = messages.len();
-        let mut pruned_count = 0;
+        let pruned_count = 0;
         let mut truncated_count = 0;
         let mut tokens_saved = 0;
 
@@ -212,9 +212,9 @@ mod tests {
 
     fn create_test_messages_with_tools() -> Vec<ChatMessage> {
         vec![
-            ChatMessage::system("You are a helper".to_string()),
-            ChatMessage::user("Do task 1".to_string()),
-            ChatMessage::assistant("[tool: do_something]".to_string()),
+            ChatMessage::system("You are a helper"),
+            ChatMessage::user("Do task 1"),
+            ChatMessage::assistant("[tool: do_something]"),
             ChatMessage {
                 role: "tool".to_string(),
                 content: "a".repeat(5000), // Long tool result
@@ -222,8 +222,8 @@ mod tests {
                 tool_call_id: Some("call_1".to_string()),
                 name: Some("do_something".to_string()),
             },
-            ChatMessage::user("Do task 2".to_string()),
-            ChatMessage::assistant("[tool: do_another]".to_string()),
+            ChatMessage::user("Do task 2"),
+            ChatMessage::assistant("[tool: do_another]"),
             ChatMessage {
                 role: "tool".to_string(),
                 content: "b".repeat(5000), // Long tool result
