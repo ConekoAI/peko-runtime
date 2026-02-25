@@ -1,57 +1,205 @@
 # Pekobot Documentation
 
-Welcome to the Pekobot documentation! This directory contains comprehensive guides, tutorials, and reference materials.
+Complete documentation for the Pekobot multi-agent runtime.
 
-## Quick Start
+## Getting Started
 
-New to Pekobot? Start here:
+- [README.md](../README.md) - Quick start and overview
+- [GETTING_STARTED.md](./GETTING_STARTED.md) - Detailed setup guide (if exists)
 
-1. **[Getting Started](GETTING_STARTED.md)** — Get up and running in 5 minutes
-2. **[User Guide](USERS_GUIDE.md)** — Comprehensive guide to using Pekobot
-3. **[Tutorial: Building Your First Agent](TUTORIAL_BUILDING_FIRST_AGENT.md)** — Step-by-step tutorial
+## Core Features
 
-## Reference
+### Cron System
+- [cron.md](./cron.md) - Scheduled task execution
+  - Schedule types (cron, every, at)
+  - Execution modes (main, isolated)
+  - CLI commands
+  - Database schema
+  - Best practices
 
-- **[CLI Reference](CLI_REFERENCE.md)** — Complete command-line documentation
-- **[API Documentation](../API.md)** — API reference (in repo root)
-- **[Architecture](ARCHITECTURE.md)** — How Pekobot works internally
+### Daemon Mode
+- [daemon.md](./daemon.md) - Long-running execution engine
+  - Architecture
+  - CLI commands
+  - Signal handling
+  - Systemd integration
+  - Troubleshooting
 
-## Documentation Map
+### Agent Management
+- [agents.md](./agents.md) - Creating and managing agents (if exists)
+- [portable-agents.md](./portable-agents.md) - Export/import (if exists)
+
+### Tools
+- [tools.md](./tools.md) - Tool system overview (if exists)
+- [tool-registry.md](./tool-registry.md) - Pekohub integration (if exists)
+
+### Identity & Security
+- [identity.md](./identity.md) - DID identity system (if exists)
+- [secrets.md](./secrets.md) - Secret management (if exists)
+
+## Protocols
+
+- [A2A Protocol](./A2A_v0.1.md) - Agent-to-Agent messaging
+
+## Development
+
+- [API.md](./API.md) - Internal API documentation
+- [ISSUES.md](./ISSUES.md) - Known issues and workarounds
+- [ARCHITECTURE.md](./ARCHITECTURE.md) - System architecture (if exists)
+
+## CLI Reference
+
+### Command Structure
+
+Pekobot uses a hierarchical command structure:
 
 ```
-📁 docs/
-├── 📄 README.md (this file)
-├── 📄 GETTING_STARTED.md     # 5-minute quickstart
-├── 📄 USERS_GUIDE.md          # Comprehensive user guide
-├── 📄 TUTORIAL_BUILDING_FIRST_AGENT.md  # Step-by-step tutorial
-├── 📄 CLI_REFERENCE.md        # All CLI commands
-├── 📄 ARCHITECTURE.md         # System architecture
-├── 📄 AGENTS.md               # Agent Beta identity
-├── 📄 SOUL.md                 # Agent Beta personality
-└── 📄 USER.md                 # About Miz (project lead)
+pekobot <noun> <verb> [options]
 ```
 
-## Documentation Standards
+**Agent commands:**
+```bash
+pekobot agent start       # Start an agent
+pekobot agent list        # List all agents
+pekobot agent create      # Create new agent
+pekobot agent delete      # Delete an agent
+pekobot agent export      # Export to .agent package
+pekobot agent import      # Import from .agent package
+pekobot agent inspect     # Inspect package without importing
+```
 
-- **Clear** — No jargon without explanation
-- **Complete** — Examples for every feature
-- **Runnable** — All code examples tested
-- **Organized** — Logical progression from simple to complex
+**Tool commands:**
+```bash
+pekobot tool list         # List installed tools
+pekobot tool search       # Search for tools
+pekobot tool install      # Install a tool
+pekobot tool uninstall    # Remove a tool
+pekobot tool info         # Show tool details
+```
 
-## Contributing to Docs
+**Cron commands:**
+```bash
+pekobot cron list         # List cron jobs
+pekobot cron add          # Add cron job
+pekobot cron at           # One-shot job
+pekobot cron every        # Interval job
+pekobot cron remove       # Delete job
+pekobot cron run          # Manual trigger
+pekobot cron history      # View history
+```
 
-Documentation improvements welcome! Follow these guidelines:
+**Daemon commands:**
+```bash
+pekobot daemon start      # Start daemon
+pekobot daemon stop       # Stop daemon
+pekobot daemon status     # Check status
+pekobot daemon restart    # Restart daemon
+pekobot daemon check      # Trigger cron check
+```
 
-1. Use clear, concise language
-2. Include working code examples
-3. Add mermaid diagrams for architecture
-4. Test all commands before documenting
-5. Update this index when adding new docs
+**Session commands:**
+```bash
+pekobot session list      # List sessions
+pekobot session show      # Show session details
+pekobot session send      # Send message to session
+pekobot session kill      # Terminate session
+```
 
-## Version
+**Config commands:**
+```bash
+pekobot config validate   # Validate config
+pekobot config init       # Create default config
+pekobot config defaults   # Show defaults
+pekobot config path       # Show config path
+pekobot config get        # Get value
+pekobot config set        # Set value
+```
 
-This documentation is for **Pekobot v0.1.0**
+**System commands:**
+```bash
+pekobot system status     # Show status
+pekobot system info       # System information
+pekobot system doctor     # Health check
+pekobot system clean      # Clean cache
+pekobot system update     # Update Pekobot
+```
 
----
+**Gateway commands:**
+```bash
+pekobot gateway list      # List gateways
+pekobot gateway search    # Search registries
+pekobot gateway install   # Install gateway
+pekobot gateway info      # Gateway details
+```
 
-*Built with 🐰 by the Coneko team*
+**Shell completions:**
+```bash
+pekobot completions bash      # Generate bash completions
+pekobot completions zsh       # Generate zsh completions
+pekobot completions fish      # Generate fish completions
+pekobot completions powershell # Generate PowerShell completions
+pekobot completions elvish    # Generate elvish completions
+```
+
+## Global Flags
+
+Available on all commands:
+
+```bash
+--config-dir PATH    # Configuration directory
+--data-dir PATH      # Data directory
+--cache-dir PATH     # Cache directory
+--json               # JSON output
+--quiet, -q          # Suppress output
+--verbose, -v        # Verbose output
+--help, -h           # Show help
+--version, -V        # Show version
+```
+
+## Environment Variables
+
+```bash
+PEKOBOT_CONFIG_DIR   # Config directory
+PEKOBOT_DATA_DIR     # Data directory
+PEKOBOT_CACHE_DIR    # Cache directory
+PEKOBOT_LOG          # Log level (error, warn, info, debug, trace)
+RUST_LOG             # Rust tracing log level
+```
+
+## Quick Reference
+
+### Start an agent
+```bash
+pekobot agent start --name my-agent
+```
+
+### Create a cron job
+```bash
+pekobot cron add \
+  --name "daily" \
+  --schedule "0 9 * * *" \
+  --message "Good morning!"
+```
+
+### Start the daemon
+```bash
+pekobot daemon start --foreground
+```
+
+### Export an agent
+```bash
+pekobot agent export --name my-agent --output backup.agent
+```
+
+### Install a tool
+```bash
+pekobot tool install calendar
+```
+
+## Contributing
+
+See the main [README.md](../README.md) for development setup.
+
+## License
+
+MIT License - See [LICENSE](../LICENSE) for details.
