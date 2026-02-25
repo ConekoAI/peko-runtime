@@ -49,6 +49,9 @@ futures = "0.3"
 # Dynamic library loading for gateway plugins
 libloading = "0.8"
 
+# System calls (for daemon process management)
+libc = "0.2"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.8"

@@ -10,6 +10,8 @@ use pekobot::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
+use std::time::Duration;
+use tokio::time::sleep;
 use tracing::{info, warn};
 
 // ============================================================================
@@ -72,6 +74,10 @@ enum Commands {
     /// System diagnostics and maintenance
     #[command(subcommand)]
     System(SystemCommands),
+    
+    /// Daemon management (for cron job execution)
+    #[command(subcommand)]
+    Daemon(DaemonCommands),
     
     /// Cron job management
     #[command(subcommand)]
@@ -409,6 +415,44 @@ enum SystemCommands {
 }
 
 // ============================================================================
+// Daemon Commands
+// ============================================================================
+
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+enum DaemonCommands {
+    /// Start the daemon
+    Start {
+        /// Run in foreground (don't detach)
+        #[arg(short, long)]
+        foreground: bool,
+        /// Polling interval in seconds
+        #[arg(short, long, default_value = "15")]
+        interval: u64,
+    },
+    
+    /// Stop the daemon
+    Stop {
+        /// Force stop (kill immediately)
+        #[arg(short, long)]
+        force: bool,
+    },
+    
+    /// Check daemon status
+    Status,
+    
+    /// Restart the daemon
+    Restart {
+        /// Polling interval in seconds
+        #[arg(short, long, default_value = "15")]
+        interval: u64,
+    },
+    
+    /// Trigger immediate cron check
+    Check,
+}
+
+// ============================================================================
 // Cron Commands
 // ============================================================================
 
@@ -581,6 +625,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Session(cmd) => handle_session(cmd, &paths, cli.json).await,
         Commands::Config(cmd) => handle_config(cmd, &paths, cli.json).await,
         Commands::System(cmd) => handle_system(cmd, &paths, cli.json).await,
+        Commands::Daemon(cmd) => handle_daemon(cmd, &paths, cli.json).await,
         Commands::Cron(cmd) => handle_cron(cmd, &paths, cli.json).await,
         Commands::Gateway(cmd) => handle_gateway(cmd, &paths, cli.json).await,
         Commands::Completions { shell } => {
@@ -1940,6 +1985,242 @@ async fn handle_system(
         }
     }
     Ok(())
+}
+
+// ============================================================================
+// Daemon Handlers
+// ============================================================================
+
+async fn handle_daemon(
+    cmd: DaemonCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    use pekobot::daemon::{DaemonConfig, run_daemon};
+    use std::time::Duration;
+    
+    let pid_file = paths.data_dir.join("daemon.pid");
+    
+    match cmd {
+        DaemonCommands::Start { foreground, interval } => {
+            // Check if already running
+            if pid_file.exists() {
+                let pid = std::fs::read_to_string(&pid_file)?;
+                if json {
+                    println!("{}", serde_json::json!({
+                        "success": false,
+                        "error": "Daemon already running",
+                        "pid": pid.trim()
+                    }));
+                } else {
+                    println!("⚠️  Daemon already running (PID: {})", pid.trim());
+                    println!("   Stop it first with: pekobot daemon stop");
+                }
+                return Ok(());
+            }
+            
+            if foreground {
+                if json {
+                    println!("{}", serde_json::json!({
+                        "success": true,
+                        "message": "Daemon starting in foreground",
+                        "interval": interval
+                    }));
+                } else {
+                    println!("🚀 Starting daemon in foreground...");
+                    println!("   Press Ctrl+C to stop");
+                }
+                
+                // Write PID file
+                std::fs::write(&pid_file, std::process::id().to_string())?;
+                
+                let config = pekobot::daemon::DaemonConfig {
+                    cron_db_path: paths.data_dir.join("cron.db"),
+                    poll_interval: Duration::from_secs(interval),
+                    config_dir: paths.config_dir.clone(),
+                    data_dir: paths.data_dir.clone(),
+                    enable_isolated_execution: true,
+                };
+
+                // Run daemon
+                let result = pekobot::daemon::run_daemon(config).await;
+                
+                // Clean up PID file
+                let _ = std::fs::remove_file(&pid_file);
+                
+                result
+            } else {
+                // Background mode - would need proper daemonization
+                // For now, just inform user
+                if json {
+                    println!("{}", serde_json::json!({
+                        "success": true,
+                        "message": "Use --foreground flag for now",
+                        "note": "Background daemon mode not yet implemented"
+                    }));
+                } else {
+                    println!("🚀 Starting daemon...");
+                    println!("   Note: Background mode not yet implemented");
+                    println!("   Use --foreground flag for now:");
+                    println!("   pekobot daemon start --foreground");
+                }
+                Ok(())
+            }
+        }
+        
+        DaemonCommands::Stop { force } => {
+            if !pid_file.exists() {
+                if json {
+                    println!("{}", serde_json::json!({
+                        "success": false,
+                        "error": "Daemon not running"
+                    }));
+                } else {
+                    println!("⚠️  Daemon not running");
+                }
+                return Ok(());
+            }
+            
+            let pid_str = std::fs::read_to_string(&pid_file)?;
+            let pid: i32 = pid_str.trim().parse()?;
+            
+            if force {
+                // Send SIGKILL
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+                std::fs::remove_file(&pid_file)?;
+                
+                if json {
+                    println!("{}", serde_json::json!({ "success": true }));
+                } else {
+                    println!("💀 Daemon killed (PID: {})", pid);
+                }
+            } else {
+                // Send SIGTERM for graceful shutdown
+                unsafe {
+                    libc::kill(pid, libc::SIGTERM);
+                }
+                
+                if json {
+                    println!("{}", serde_json::json!({
+                        "success": true,
+                        "message": "Shutdown signal sent"
+                    }));
+                } else {
+                    println!("🛑 Shutdown signal sent to daemon (PID: {})", pid);
+                    println!("   Use --force to kill immediately");
+                }
+            }
+            
+            Ok(())
+        }
+        
+        DaemonCommands::Status => {
+            if pid_file.exists() {
+                let pid = std::fs::read_to_string(&pid_file)?;
+                let pid = pid.trim();
+                
+                // Check if process actually exists
+                let exists = unsafe { libc::kill(pid.parse::<i32>()?, 0) } == 0;
+                
+                if exists {
+                    if json {
+                        println!("{}", serde_json::json!({
+                            "running": true,
+                            "pid": pid
+                        }));
+                    } else {
+                        println!("🟢 Daemon running (PID: {})", pid);
+                    }
+                } else {
+                    // Stale PID file
+                    std::fs::remove_file(&pid_file)?;
+                    if json {
+                        println!("{}", serde_json::json!({ "running": false }));
+                    } else {
+                        println!("⚪ Daemon not running (stale PID file removed)");
+                    }
+                }
+            } else {
+                if json {
+                    println!("{}", serde_json::json!({ "running": false }));
+                } else {
+                    println!("⚪ Daemon not running");
+                }
+            }
+            Ok(())
+        }
+        
+        DaemonCommands::Restart { interval } => {
+            // Stop if running
+            if pid_file.exists() {
+                // Send SIGTERM for graceful shutdown
+                let pid_str = std::fs::read_to_string(&pid_file)?;
+                let pid: i32 = pid_str.trim().parse()?;
+                unsafe { libc::kill(pid, libc::SIGTERM); }
+                std::fs::remove_file(&pid_file)?;
+                sleep(Duration::from_secs(1)).await;
+            }
+            
+            // Start again (inline the start logic)
+            let config = pekobot::daemon::DaemonConfig {
+                cron_db_path: paths.data_dir.join("cron.db"),
+                poll_interval: Duration::from_secs(interval),
+                config_dir: paths.config_dir.clone(),
+                data_dir: paths.data_dir.clone(),
+                enable_isolated_execution: true,
+            };
+            
+            if json {
+                println!("{}", serde_json::json!({
+                    "success": true,
+                    "message": "Daemon restarting in foreground",
+                    "interval": interval
+                }));
+            } else {
+                println!("🚀 Restarting daemon...");
+            }
+            
+            std::fs::write(&pid_file, std::process::id().to_string())?;
+            let result = pekobot::daemon::run_daemon(config).await;
+            let _ = std::fs::remove_file(&pid_file);
+            result
+        }
+        
+        DaemonCommands::Check => {
+            if !pid_file.exists() {
+                if json {
+                    println!("{}", serde_json::json!({
+                        "success": false,
+                        "error": "Daemon not running"
+                    }));
+                } else {
+                    println!("⚠️  Daemon not running");
+                    println!("   Start it with: pekobot daemon start --foreground");
+                }
+                return Ok(());
+            }
+            
+            // Trigger cron check by sending USR1 signal
+            let pid_str = std::fs::read_to_string(&pid_file)?;
+            let pid: i32 = pid_str.trim().parse()?;
+            
+            unsafe {
+                libc::kill(pid, libc::SIGUSR1);
+            }
+            
+            if json {
+                println!("{}", serde_json::json!({
+                    "success": true,
+                    "message": "Cron check triggered"
+                }));
+            } else {
+                println!("🔍 Cron check triggered");
+            }
+            Ok(())
+        }
+    }
 }
 
 // ============================================================================

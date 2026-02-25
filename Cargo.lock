@@ -2395,6 +2395,7 @@ dependencies = [
  "hex",
  "hkdf",
  "keyring",
+ "libc",
  "libloading",
  "rand",
  "regex",
