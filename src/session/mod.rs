@@ -6,6 +6,8 @@
 //! - Manual reset triggers (/reset, /new)
 //! - Per-type overrides (direct, group, thread)
 
+pub mod pruning;
+
 use crate::types::provider::ChatMessage;
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};

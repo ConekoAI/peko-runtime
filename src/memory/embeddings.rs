@@ -165,6 +165,164 @@ impl EmbeddingProviderTrait for OpenAIEmbedder {
     }
 }
 
+/// Gemini embedding provider
+pub struct GeminiEmbedder {
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+    base_url: String,
+    dimension: usize,
+}
+
+impl GeminiEmbedder {
+    /// Create a new Gemini embedder
+    pub fn new(api_key: String, model: Option<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key,
+            model: model.unwrap_or_else(|| "embedding-001".to_string()),
+            base_url: "https://generativelanguage.googleapis.com/v1".to_string(),
+            dimension: 768,
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProviderTrait for GeminiEmbedder {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let url = format!(
+            "{}/models/{}:embedContent?key={}",
+            self.base_url, self.model, self.api_key
+        );
+        
+        let body = serde_json::json!({
+            "content": {
+                "parts": [{"text": text}]
+            }
+        });
+        
+        let response = self.client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .context("Failed to send Gemini embedding request")?;
+        
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Gemini API error {}: {}", status, text));
+        }
+        
+        let result: serde_json::Value = response.json().await
+            .context("Failed to parse Gemini embedding response")?;
+        
+        let embedding = result["embedding"]["values"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid Gemini embedding response format"))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect();
+        
+        debug!("Generated embedding with Gemini {}", self.model);
+        Ok(embedding)
+    }
+    
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let mut results = Vec::with_capacity(texts.len());
+        for text in texts {
+            results.push(self.embed(text).await?);
+        }
+        Ok(results)
+    }
+    
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+    
+    fn name(&self) -> &str {
+        "gemini"
+    }
+}
+
+/// Ollama embedding provider
+pub struct OllamaEmbedder {
+    client: reqwest::Client,
+    model: String,
+    base_url: String,
+    dimension: usize,
+}
+
+impl OllamaEmbedder {
+    /// Create a new Ollama embedder
+    pub fn new(model: String, base_url: Option<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            model,
+            base_url: base_url.unwrap_or_else(|| "http://localhost:11434".to_string()),
+            dimension: 4096, // Default for most Ollama models
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProviderTrait for OllamaEmbedder {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let url = format!("{}/api/embeddings", self.base_url);
+        
+        let body = serde_json::json!({
+            "model": self.model,
+            "prompt": text,
+        });
+        
+        let response = self.client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(60))
+            .send()
+            .await
+            .context("Failed to send Ollama embedding request")?;
+        
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Ollama API error {}: {}", status, text));
+        }
+        
+        let result: serde_json::Value = response.json().await
+            .context("Failed to parse Ollama embedding response")?;
+        
+        let embedding = result["embedding"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid Ollama embedding response format"))?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+            .collect();
+        
+        debug!("Generated embedding with Ollama {}", self.model);
+        Ok(embedding)
+    }
+    
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let mut results = Vec::with_capacity(texts.len());
+        for text in texts {
+            results.push(self.embed(text).await?);
+        }
+        Ok(results)
+    }
+    
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+    
+    fn name(&self) -> &str {
+        "ollama"
+    }
+}
+
 /// Factory for creating embedding providers
 pub struct EmbeddingProviderFactory;
 
@@ -185,21 +343,26 @@ impl EmbeddingProviderFactory {
             }
             
             EmbeddingProvider::Gemini => {
-                // Placeholder for Gemini implementation
-                warn!("Gemini embeddings not yet implemented");
-                Err(anyhow::anyhow!("Gemini embeddings not yet implemented"))
-            }
-            
-            EmbeddingProvider::Local => {
-                // Placeholder for local GGUF implementation
-                warn!("Local embeddings not yet implemented");
-                Err(anyhow::anyhow!("Local embeddings not yet implemented"))
+                let api_key = config.api_key.clone()
+                    .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+                    .ok_or_else(|| anyhow::anyhow!("Gemini API key not found"))?;
+                
+                Ok(Arc::new(GeminiEmbedder::new(
+                    api_key,
+                    Some(config.model.clone()),
+                )))
             }
             
             EmbeddingProvider::Ollama => {
-                // Placeholder for Ollama implementation
-                warn!("Ollama embeddings not yet implemented");
-                Err(anyhow::anyhow!("Ollama embeddings not yet implemented"))
+                Ok(Arc::new(OllamaEmbedder::new(
+                    config.model.clone(),
+                    config.base_url.clone(),
+                )))
+            }
+            
+            EmbeddingProvider::Local => {
+                warn!("Local embeddings not yet implemented");
+                Err(anyhow::anyhow!("Local embeddings not yet implemented"))
             }
         }
     }
@@ -212,7 +375,23 @@ impl EmbeddingProviderFactory {
             return Ok(Arc::new(OpenAIEmbedder::new(api_key, None, None)));
         }
         
-        Err(anyhow::anyhow!("No embedding provider configured. Set OPENAI_API_KEY or configure explicitly."))
+        // Try Gemini second
+        if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
+            info!("Creating Gemini embedder from environment");
+            return Ok(Arc::new(GeminiEmbedder::new(api_key, None)));
+        }
+        
+        // Try Ollama (no key needed)
+        if std::env::var("OLLAMA_HOST").is_ok() || 
+           std::env::var("OLLAMA_MODEL").is_ok() {
+            info!("Creating Ollama embedder from environment");
+            let model = std::env::var("OLLAMA_MODEL")
+                .unwrap_or_else(|_| "nomic-embed-text".to_string());
+            let host = std::env::var("OLLAMA_HOST").ok();
+            return Ok(Arc::new(OllamaEmbedder::new(model, host)));
+        }
+        
+        Err(anyhow::anyhow!("No embedding provider configured. Set OPENAI_API_KEY, GEMINI_API_KEY, or OLLAMA_HOST."))
     }
 }
 
@@ -299,5 +478,20 @@ mod tests {
     fn test_provider_display() {
         assert_eq!(EmbeddingProvider::OpenAI.to_string(), "openai");
         assert_eq!(EmbeddingProvider::Gemini.to_string(), "gemini");
+        assert_eq!(EmbeddingProvider::Ollama.to_string(), "ollama");
+    }
+    
+    #[test]
+    fn test_gemini_embedder_creation() {
+        let embedder = GeminiEmbedder::new("test-key".to_string(), None);
+        assert_eq!(embedder.name(), "gemini");
+        assert_eq!(embedder.dimension(), 768);
+    }
+    
+    #[test]
+    fn test_ollama_embedder_creation() {
+        let embedder = OllamaEmbedder::new("nomic-embed-text".to_string(), None);
+        assert_eq!(embedder.name(), "ollama");
+        assert_eq!(embedder.model, "nomic-embed-text");
     }
 }
