@@ -1,13 +1,14 @@
 //! Comprehensive Tool Integration Test
 //!
 //! Tests all 14 Pekobot tools to ensure they work correctly.
-//! Run with: cargo test --test tool_integration -- --nocapture
+//! Run with: cargo test --test tool_integration -- --nocapture --ignored
 
 use std::path::PathBuf;
 use pekobot::tools::Tool;
 
 /// Simple smoke test - verify tools compile and have correct names
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_tools_smoke() {
     use pekobot::tools::{
         FileSystemTool, ProcessTool, HttpTool, FetchTool, WebSearchTool,

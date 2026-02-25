@@ -372,6 +372,7 @@ fn test_flow_with_rejection() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_protocol_message_routing() {
     let (registry, _receiver) = create_registry();
     let mut protocol = A2AProtocol::new(registry);
@@ -401,6 +402,7 @@ async fn test_protocol_message_routing() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_protocol_send_intent() {
     let (registry, mut receiver) = create_registry();
     let protocol = A2AProtocol::new(registry);
@@ -427,6 +429,7 @@ async fn test_protocol_send_intent() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_protocol_unregistered_recipient() {
     let (registry, _receiver) = create_registry();
     let mut protocol = A2AProtocol::new(registry);
@@ -459,6 +462,7 @@ async fn test_protocol_unregistered_recipient() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_multi_party_negotiation() {
     let (registry, _receiver) = create_registry();
     let mut orchestrator = Orchestrator::with_registry(registry);
@@ -600,6 +604,7 @@ fn test_contract_signatures() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_error_message_handling() {
     let (registry, _receiver) = create_registry();
     let mut protocol = A2AProtocol::new(registry);

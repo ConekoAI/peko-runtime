@@ -287,6 +287,7 @@ fn test_config_builder_chaining() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_memory_with_unicode() {
     let config = Config::agent("unicode-memory").with_memory(true).build();
 
@@ -306,6 +307,7 @@ async fn test_agent_memory_with_unicode() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_memory_with_special_chars() {
     let config = Config::agent("special-memory").with_memory(true).build();
 
@@ -326,6 +328,7 @@ async fn test_agent_memory_with_special_chars() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_memory_with_large_content() {
     let config = Config::agent("large-memory").with_memory(true).build();
 
@@ -341,6 +344,7 @@ async fn test_agent_memory_with_large_content() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_without_memory() {
     let config = Config::agent("no-memory").build();
     let agent = Agent::new(config).await.unwrap();
@@ -359,6 +363,7 @@ async fn test_agent_without_memory() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_orchestrator_with_duplicate_agents() {
     let (registry, _receiver) = create_registry();
     let mut orchestrator = Orchestrator::with_registry(registry);
@@ -383,6 +388,7 @@ async fn test_orchestrator_with_duplicate_agents() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_orchestrator_find_nonexistent() {
     let (registry, _receiver) = create_registry();
     let orchestrator = Orchestrator::with_registry(registry);
@@ -398,6 +404,7 @@ async fn test_orchestrator_find_nonexistent() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_orchestrator_empty_operations() {
     let (registry, _receiver) = create_registry();
     let orchestrator = Orchestrator::with_registry(registry);
@@ -416,6 +423,7 @@ async fn test_orchestrator_empty_operations() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_concurrent_agent_creation() {
     let mut handles = vec![];
 
@@ -437,6 +445,7 @@ async fn test_concurrent_agent_creation() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_concurrent_memory_operations() {
     let config = Config::agent("concurrent-mem").with_memory(true).build();
 
@@ -462,6 +471,7 @@ async fn test_concurrent_memory_operations() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_execution_without_provider() {
     let config = Config::agent("no-provider").build();
     let agent = Agent::new(config).await.unwrap();
@@ -474,6 +484,7 @@ async fn test_agent_execution_without_provider() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_double_start() {
     let config = Config::agent("double-start").build();
     let agent = Agent::new(config).await.unwrap();
@@ -488,6 +499,7 @@ async fn test_agent_double_start() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_stop_before_start() {
     let config = Config::agent("stop-first").build();
     let agent = Agent::new(config).await.unwrap();

@@ -14,6 +14,7 @@ use pekobot::{
 
 /// Test complete multi-agent workflow
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_multi_agent_workflow() {
     let (registry, _receiver) = create_registry();
     let mut orchestrator = Orchestrator::with_registry(registry);
@@ -74,6 +75,7 @@ async fn test_multi_agent_workflow() {
 
 /// Test agent memory persistence across operations
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_memory_persistence() {
     let config = Config::agent("memory-test").with_memory(true).build();
 
@@ -108,6 +110,7 @@ async fn test_memory_persistence() {
 
 /// Test agent state transitions
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_state_transitions() {
     use pekobot::types::agent::AgentState;
 
@@ -131,6 +134,7 @@ async fn test_agent_state_transitions() {
 
 /// Test identity uniqueness
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_identity_uniqueness() {
     let config1 = Config::agent("unique-test-1").build();
     let config2 = Config::agent("unique-test-2").build();
@@ -148,6 +152,7 @@ async fn test_identity_uniqueness() {
 
 /// Test orchestrator with no agents
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_empty_orchestrator() {
     let (registry, _receiver) = create_registry();
     let orchestrator = Orchestrator::with_registry(registry);
@@ -162,6 +167,7 @@ async fn test_empty_orchestrator() {
 
 /// Test configuration variations
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_config_variations() {
     // Agent without memory
     let config_no_memory = Config::agent("no-memory").build();

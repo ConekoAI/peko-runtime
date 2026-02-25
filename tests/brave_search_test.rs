@@ -1,10 +1,13 @@
 //! Brave Search API Test
 //!
 //! Verifies Brave Search works with the provided API key.
+//! 
+//! Run manually: cargo test --test brave_search_test -- --ignored
 
 use pekobot::tools::{WebSearchTool, WebSearchConfig, SearchProvider, Tool};
 
 #[tokio::test]
+#[ignore = "Requires BRAVE_API_KEY and network access"]
 async fn test_brave_search_api() {
     // Get API key from environment
     let api_key = std::env::var("BRAVE_API_KEY")

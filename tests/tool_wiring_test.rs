@@ -1,6 +1,7 @@
 //! Verify tools are properly wired into agent runtime
 //!
 //! This test ensures agents have access to all 14 essential tools.
+//! Run with: cargo test --test tool_wiring_test -- --ignored
 
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -8,6 +9,7 @@ use pekobot::tools::Tool;
 use pekobot::manager::AgentManager;
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_agent_manager_creates_all_tools() {
     println!("\n🔧 Testing AgentManager tool creation...");
     

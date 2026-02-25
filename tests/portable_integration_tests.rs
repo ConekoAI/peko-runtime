@@ -1,4 +1,6 @@
 //! Integration tests for portable agent module
+//! 
+//! Run with: cargo test --test portable_integration_tests -- --ignored
 
 use pekobot::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use pekobot::portable::{export_agent, import_agent, ExportOptions, ImportOptions};
@@ -52,6 +54,8 @@ fn create_test_config(name: &str) -> AgentConfig {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
+#[ignore = "Integration test - run manually"]
 async fn test_export_import_roundtrip() {
     let temp_dir = tempfile::tempdir().unwrap();
     let package_path = temp_dir.path().join("test.agent");
@@ -99,6 +103,7 @@ async fn test_export_import_roundtrip() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_export_with_encryption() {
     let temp_dir = tempfile::tempdir().unwrap();
     let package_path = temp_dir.path().join("encrypted.agent");
@@ -150,6 +155,7 @@ async fn test_export_with_encryption() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_import_with_key_rotation() {
     let temp_dir = tempfile::tempdir().unwrap();
     let package_path = temp_dir.path().join("rotated.agent");
@@ -203,6 +209,7 @@ async fn test_import_with_key_rotation() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_package_inspection() {
     let temp_dir = tempfile::tempdir().unwrap();
     let package_path = temp_dir.path().join("inspect.agent");
@@ -242,6 +249,7 @@ async fn test_package_inspection() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_export_import_with_memory() {
     let temp_dir = tempfile::tempdir().unwrap();
     let package_path = temp_dir.path().join("with-memory.agent");

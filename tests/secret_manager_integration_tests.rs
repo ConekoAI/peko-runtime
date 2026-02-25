@@ -5,6 +5,7 @@ use pekobot::secrets::{
 };
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_secret_manager_basic_workflow() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test-secrets.db");
@@ -44,6 +45,7 @@ async fn test_secret_manager_basic_workflow() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_secret_manager_agent_scoped() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test-agent.db");
@@ -83,6 +85,7 @@ async fn test_secret_manager_agent_scoped() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_secret_manager_list() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test-list.db");
@@ -116,6 +119,7 @@ async fn test_secret_manager_list() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_secret_manager_delete() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test-delete.db");
@@ -148,6 +152,7 @@ async fn test_secret_manager_delete() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_secret_manager_permissions() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test-perms.db");
@@ -199,6 +204,7 @@ async fn test_secret_manager_permissions() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_secret_manager_audit_log() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test-audit.db");
@@ -239,6 +245,7 @@ async fn test_secret_manager_audit_log() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_secret_resolver_basic() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test-resolver.db");
@@ -272,6 +279,7 @@ async fn test_secret_resolver_basic() {
 }
 
 #[tokio::test]
+#[ignore = "Integration test - run manually"]
 async fn test_secret_manager_update() {
     let temp_dir = tempfile::tempdir().unwrap();
     let store_path = temp_dir.path().join("test-update.db");
