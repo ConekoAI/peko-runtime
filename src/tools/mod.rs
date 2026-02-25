@@ -11,6 +11,7 @@ pub mod fetch;
 pub mod filesystem;
 pub mod http;
 pub mod memory_tool;
+pub mod message_tool;
 pub mod process;
 pub mod session_introspection;
 pub mod session_messaging;
@@ -26,6 +27,7 @@ pub use fetch::{FetchConfig, FetchTool};
 pub use filesystem::FileSystemTool;
 pub use http::{HttpMethod, HttpTool};
 pub use memory_tool::{MemoryTool, MemoryToolFactory};
+pub use message_tool::{MessageConfig, MessageTool, ChannelType, MessageResult};
 pub use process::ProcessTool;
 pub use session_introspection::{
     InMemorySessionRegistry, SessionInfo, SessionRegistry as SessionIntrospectionRegistry, SessionStatusTool,

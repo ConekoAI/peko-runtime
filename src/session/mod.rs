@@ -7,6 +7,7 @@
 //! - Per-type overrides (direct, group, thread)
 
 pub mod pruning;
+pub mod transcript;
 
 use crate::types::provider::ChatMessage;
 use anyhow::Result;
