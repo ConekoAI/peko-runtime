@@ -12,6 +12,8 @@
 //! Design principle: Agents coordinate themselves. The manager just provides
 //! the context and messaging infrastructure.
 
+#![allow(dead_code)]
+
 pub mod context;
 pub mod lifecycle;
 pub mod pool;

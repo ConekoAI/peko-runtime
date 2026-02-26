@@ -1,7 +1,18 @@
 //! Pekobot - Lightweight Multi-Agent Runtime
 //!
 //! A Rust-based agent runtime with pluggable gateway support for multi-platform messaging.
-//!
+
+#![allow(
+    dead_code,
+    unused_async,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::unused_self,
+    clippy::format_push_string,
+    clippy::unnecessary_debug_formatting,
+    clippy::pass_by_ref_mut
+)]
+
 //! ## Architecture
 //!
 //! Pekobot uses a minimal core (~500KB-1MB) with on-demand loaded plugins:

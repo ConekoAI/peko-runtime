@@ -2,6 +2,7 @@
 //!
 //! Multi-backend tool management for Pekobot.
 //! Supports: Pekohub (cloud/self-hosted), local filesystem, source builds, embedded packages.
+#![allow(dead_code)]
 
 mod remote;
 pub use remote::*;

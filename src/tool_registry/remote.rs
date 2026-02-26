@@ -2,6 +2,7 @@
 //!
 //! Phase 2: HTTP-based tool download from remote registry.
 //! Downloads tools on-demand with signature verification.
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

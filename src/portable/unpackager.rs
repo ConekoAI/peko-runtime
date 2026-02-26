@@ -1,6 +1,7 @@
 //! Unpackager for importing portable agent packages
 //!
 //! Extracts and imports .agent files into the local Pekobot runtime
+#![allow(dead_code)]
 
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::portable::{

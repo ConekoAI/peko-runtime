@@ -3,6 +3,8 @@
 //! Stores cron jobs in `SQLite` and provides scheduling functionality.
 //! Supports both main session (system event) and isolated execution modes.
 
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use cron::Schedule;
@@ -231,7 +233,7 @@ impl CronScheduler {
         )?;
 
         let job = stmt
-            .query_row(params![job_id], |row| parse_job_from_row(row))
+            .query_row(params![job_id], parse_job_from_row)
             .optional()?;
 
         Ok(job)

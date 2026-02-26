@@ -37,6 +37,8 @@
 //! let result = import_agent("./my-agent.agent", options).await?;
 //! ```
 
+#![allow(dead_code)]
+
 pub mod crypto;
 pub mod manifest;
 pub mod packager;

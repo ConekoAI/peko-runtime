@@ -1,4 +1,5 @@
 //! Agent Pool - Manages running agent instances
+#![allow(dead_code)]
 
 use crate::agent::Agent;
 use crate::engine::state::AgentState;

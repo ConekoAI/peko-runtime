@@ -1,4 +1,5 @@
 //! Agent Management Commands
+#![allow(dead_code)]
 
 use crate::commands::GlobalPaths;
 use clap::Subcommand;

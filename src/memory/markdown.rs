@@ -5,6 +5,7 @@
 //! - MEMORY.md - Curated long-term memory
 //!
 //! These are plain Markdown files that serve as source of truth.
+#![allow(dead_code)]
 
 use crate::memory::types::MemoryEntry;
 use anyhow::{Context, Result};
