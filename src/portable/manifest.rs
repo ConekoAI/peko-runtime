@@ -183,7 +183,7 @@ impl AgentManifest {
     }
 
     /// Compute checksum for a file
-    #[must_use] 
+    #[must_use]
     pub fn compute_checksum(data: &[u8]) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -192,7 +192,7 @@ impl AgentManifest {
     }
 
     /// Verify a file against its checksum
-    #[must_use] 
+    #[must_use]
     pub fn verify_checksum(data: &[u8], expected: &str) -> bool {
         let computed = Self::compute_checksum(data);
         computed == expected

@@ -27,19 +27,19 @@ pub struct PluginHandle {
 
 impl PluginHandle {
     /// Get the factory
-    #[must_use] 
+    #[must_use]
     pub fn factory(&self) -> &dyn GatewayFactory {
         self.factory.as_ref()
     }
 
     /// Get the manifest
-    #[must_use] 
+    #[must_use]
     pub fn manifest(&self) -> &PluginManifest {
         &self.manifest
     }
 
     /// Get the plugin path
-    #[must_use] 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -64,7 +64,8 @@ impl PluginLoader {
     /// # Safety
     /// This uses `libloading` which is unsafe because we're loading arbitrary code.
     /// We trust plugins from Pekohub (verified by signatures).
-    pub fn load_from_path(&self,
+    pub fn load_from_path(
+        &self,
         path: &Path,
         manifest: PluginManifest,
     ) -> RegistryResult<PluginHandle> {
@@ -72,9 +73,7 @@ impl PluginLoader {
 
         // Check file exists
         if !path.exists() {
-            return Err(RegistryError::NotFound(
-                path.display().to_string()
-            ));
+            return Err(RegistryError::NotFound(path.display().to_string()));
         }
 
         // Load the dynamic library
@@ -88,7 +87,7 @@ impl PluginLoader {
 
         // Get the factory creation function
         type CreateFactoryFn = unsafe fn() -> *mut dyn GatewayFactory;
-        
+
         let create_factory: Symbol<CreateFactoryFn> = unsafe {
             library
                 .get(b"create_gateway_factory")
@@ -136,17 +135,14 @@ impl PluginLoader {
     }
 
     /// Get the cache directory path
-    #[must_use] 
+    #[must_use]
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }
 
     /// Get the path where a plugin would be cached
-    #[must_use] 
-    pub fn get_cache_path(&self,
-        name: &str,
-        version: &str,
-    ) -> PathBuf {
+    #[must_use]
+    pub fn get_cache_path(&self, name: &str, version: &str) -> PathBuf {
         let filename = format!(
             "{}_{}_{}.gateway{}",
             name,
@@ -158,11 +154,8 @@ impl PluginLoader {
     }
 
     /// Check if a plugin is cached
-    #[must_use] 
-    pub fn is_cached(&self,
-        name: &str,
-        version: &str,
-    ) -> bool {
+    #[must_use]
+    pub fn is_cached(&self, name: &str, version: &str) -> bool {
         self.get_cache_path(name, version).exists()
     }
 
@@ -189,7 +182,7 @@ impl Drop for PluginLoader {
 /// Platform detection utilities
 pub mod platform {
     /// Get the current platform identifier
-    #[must_use] 
+    #[must_use]
     pub fn current() -> String {
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
@@ -197,20 +190,16 @@ pub mod platform {
     }
 
     /// Check if a platform is supported
-    #[must_use] 
+    #[must_use]
     pub fn is_supported(platform: &str) -> bool {
         matches!(
             platform,
-            "linux_x86_64"
-                | "linux_aarch64"
-                | "macos_x86_64"
-                | "macos_aarch64"
-                | "windows_x86_64"
+            "linux_x86_64" | "linux_aarch64" | "macos_x86_64" | "macos_aarch64" | "windows_x86_64"
         )
     }
 
     /// Map Rust target triple to Pekohub platform string
-    #[must_use] 
+    #[must_use]
     pub fn map_target(target: &str) -> Option<&'static str> {
         match target {
             "x86_64-unknown-linux-gnu" => Some("linux_x64"),
@@ -238,7 +227,7 @@ mod tests {
     fn test_cache_path_generation() {
         let loader = PluginLoader::new("/tmp/cache");
         let path = loader.get_cache_path("discord", "1.0.0");
-        
+
         assert!(path.to_string_lossy().contains("discord"));
         assert!(path.to_string_lossy().contains("1.0.0"));
     }

@@ -62,7 +62,7 @@ pub struct AgentsListTool {
 }
 
 impl AgentsListTool {
-    #[must_use] 
+    #[must_use]
     pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
         Self { command_tx }
     }
@@ -78,9 +78,7 @@ impl Tool for AgentsListTool {
         "List agent IDs that can be targeted with sessions_spawn"
     }
 
-    async fn execute(&self,
-        _params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let (tx, mut rx) = mpsc::channel(1);
         self.command_tx
             .send(ManagerCommand::ListAgents { respond_to: tx })
@@ -119,7 +117,7 @@ pub struct AgentInfoTool {
 }
 
 impl AgentInfoTool {
-    #[must_use] 
+    #[must_use]
     pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
         Self { command_tx }
     }
@@ -141,10 +139,7 @@ Example:
 {"agent_id": "did:peko:abc123"}"#
     }
 
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let agent_id = params
             .get("agent_id")
             .and_then(|c| c.as_str())
@@ -190,7 +185,7 @@ pub struct AgentSpawnTool {
 }
 
 impl AgentSpawnTool {
-    #[must_use] 
+    #[must_use]
     pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
         Self { command_tx }
     }
@@ -214,10 +209,7 @@ Example:
 {"name": "ResearchAgent", "prompt": "Research Rust", "capabilities": ["web_search"]}"#
     }
 
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let name = params
             .get("name")
             .and_then(|n| n.as_str())
@@ -255,7 +247,10 @@ Example:
 
         let (tx, mut rx) = mpsc::channel(1);
         self.command_tx
-            .send(ManagerCommand::Spawn { config, respond_to: tx })
+            .send(ManagerCommand::Spawn {
+                config,
+                respond_to: tx,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
         let handle = rx
@@ -281,7 +276,7 @@ pub struct AgentBroadcastTool {
 }
 
 impl AgentBroadcastTool {
-    #[must_use] 
+    #[must_use]
     pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
         Self { command_tx }
     }
@@ -300,10 +295,7 @@ Example:
 {"message": "System shutdown in 5 min"}"#
     }
 
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let message = params
             .get("message")
             .and_then(|m| m.as_str())
@@ -312,7 +304,10 @@ Example:
 
         let (tx, mut rx) = mpsc::channel(1);
         self.command_tx
-            .send(ManagerCommand::Broadcast { message, respond_to: tx })
+            .send(ManagerCommand::Broadcast {
+                message,
+                respond_to: tx,
+            })
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
         rx.recv()

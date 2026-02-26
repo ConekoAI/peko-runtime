@@ -36,7 +36,7 @@ pub struct PekohubPlatform {
 
 impl PekohubManifest {
     /// Convert Pekohub manifest to internal `ToolManifest` format
-    #[must_use] 
+    #[must_use]
     pub fn to_tool_manifest(self) -> ToolManifest {
         let mut binaries = BinaryUrls {
             linux_x64: None,

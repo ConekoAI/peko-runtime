@@ -85,7 +85,7 @@ pub enum RegistryEvent {
 
 impl LocalRegistry {
     /// Create new registry
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             metadata: HashMap::new(),
@@ -144,7 +144,7 @@ impl LocalRegistry {
     }
 
     /// Find agents by capability
-    #[must_use] 
+    #[must_use]
     pub fn find_by_capability(&self, capability: &str) -> Vec<String> {
         self.capability_index
             .get(capability)
@@ -153,7 +153,7 @@ impl LocalRegistry {
     }
 
     /// Get capability details
-    #[must_use] 
+    #[must_use]
     pub fn get_capability(&self, capability: &str) -> Vec<CapabilityRecord> {
         self.capability_records
             .get(capability)
@@ -162,7 +162,7 @@ impl LocalRegistry {
     }
 
     /// List all capabilities
-    #[must_use] 
+    #[must_use]
     pub fn list_capabilities(&self) -> Vec<String> {
         self.capability_index.keys().cloned().collect()
     }

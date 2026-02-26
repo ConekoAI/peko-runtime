@@ -55,7 +55,7 @@ pub struct TraceContext {
 
 impl Tracer {
     /// Create new tracer
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             spans: HashMap::new(),
@@ -123,7 +123,7 @@ impl TraceSpan {
     }
 
     /// Get attribute
-    #[must_use] 
+    #[must_use]
     pub fn get_attr(&self, key: &str) -> Option<&serde_json::Value> {
         self.attributes.get(key)
     }
@@ -135,7 +135,7 @@ impl TraceSpan {
     }
 
     /// Check if active
-    #[must_use] 
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.status == SpanStatus::Active
     }
@@ -143,7 +143,7 @@ impl TraceSpan {
 
 impl TraceContext {
     /// Create new root context
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let tracer = Tracer::new();
         tracer.create_root_context()
@@ -159,7 +159,7 @@ impl TraceContext {
     }
 
     /// Propagate to child
-    #[must_use] 
+    #[must_use]
     pub fn child(&self) -> Self {
         Self {
             trace_id: self.trace_id.clone(),

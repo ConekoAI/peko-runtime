@@ -15,7 +15,7 @@ pub struct LifecycleManager {
 
 impl LifecycleManager {
     /// Create new lifecycle manager
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             states: Arc::new(RwLock::new(HashMap::new())),
@@ -23,9 +23,7 @@ impl LifecycleManager {
     }
 
     /// Register a new agent (starts in Idle)
-    pub async fn register(&self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn register(&self, did: &str) -> Result<()> {
         let mut states = self.states.write().await;
         states.insert(did.to_string(), StateMachine::new());
         debug!("Registered agent: {}", did);
@@ -33,11 +31,9 @@ impl LifecycleManager {
     }
 
     /// Start an agent (mark as idle)
-    pub async fn start(&self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn start(&self, did: &str) -> Result<()> {
         let states = self.states.read().await;
-        
+
         if let Some(sm) = states.get(did) {
             sm.set_idle();
             info!("Agent {} started", did);
@@ -48,11 +44,9 @@ impl LifecycleManager {
     }
 
     /// Mark agent as busy
-    pub async fn set_busy(&self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn set_busy(&self, did: &str) -> Result<()> {
         let states = self.states.read().await;
-        
+
         if let Some(sm) = states.get(did) {
             sm.set_busy();
         }
@@ -60,11 +54,9 @@ impl LifecycleManager {
     }
 
     /// Mark agent as idle
-    pub async fn set_idle(&self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn set_idle(&self, did: &str) -> Result<()> {
         let states = self.states.read().await;
-        
+
         if let Some(sm) = states.get(did) {
             sm.set_idle();
         }
@@ -72,11 +64,9 @@ impl LifecycleManager {
     }
 
     /// Stop an agent (mark as idle)
-    pub async fn stop(&self,
-        did: &str,
-    ) -> Result<()> {
+    pub async fn stop(&self, did: &str) -> Result<()> {
         let states = self.states.read().await;
-        
+
         if let Some(sm) = states.get(did) {
             sm.set_idle();
             info!("Agent {} stopped", did);
@@ -87,34 +77,28 @@ impl LifecycleManager {
     }
 
     /// Check if agent is idle
-    pub async fn is_idle(&self,
-        did: &str,
-    ) -> bool {
+    pub async fn is_idle(&self, did: &str) -> bool {
         let states = self.states.read().await;
         states.get(did).is_some_and(|sm| sm.current().is_idle())
     }
 
     /// Check if agent is busy
-    pub async fn is_busy(&self,
-        did: &str,
-    ) -> bool {
+    pub async fn is_busy(&self, did: &str) -> bool {
         let states = self.states.read().await;
         states.get(did).is_some_and(|sm| sm.current().is_busy())
     }
 
     /// Try to acquire agent (Idle -> Busy)
     /// Returns true if successful
-    pub async fn try_acquire(&self,
-        did: &str,
-    ) -> bool {
+    pub async fn try_acquire(&self, did: &str) -> bool {
         let states = self.states.read().await;
-        states.get(did).is_some_and(super::super::engine::state::StateMachine::try_acquire)
+        states
+            .get(did)
+            .is_some_and(super::super::engine::state::StateMachine::try_acquire)
     }
 
     /// Unregister an agent
-    pub async fn unregister(&self,
-        did: &str,
-    ) {
+    pub async fn unregister(&self, did: &str) {
         let mut states = self.states.write().await;
         states.remove(did);
         debug!("Unregistered agent: {}", did);

@@ -1,7 +1,7 @@
 //! Agent Management Commands
 
-use clap::Subcommand;
 use crate::commands::GlobalPaths;
+use clap::Subcommand;
 
 /// Agent management subcommands
 #[derive(Subcommand)]
@@ -26,20 +26,20 @@ pub enum AgentCommands {
         #[arg(long)]
         db: Option<String>,
     },
-    
+
     /// List all configured agents
     List {
         /// Show detailed information
         #[arg(short, long)]
         long: bool,
     },
-    
+
     /// Show detailed agent information
     Show {
         /// Agent name
         name: String,
     },
-    
+
     /// Create a new agent from template
     Create {
         /// Agent name
@@ -54,7 +54,7 @@ pub enum AgentCommands {
         #[arg(short, long)]
         yes: bool,
     },
-    
+
     /// Delete an agent and its configuration
     Delete {
         /// Agent name
@@ -66,7 +66,7 @@ pub enum AgentCommands {
         #[arg(short, long)]
         force: bool,
     },
-    
+
     /// Export agent to .agent package
     Export {
         /// Agent name
@@ -79,7 +79,7 @@ pub enum AgentCommands {
         #[arg(long)]
         encrypt: bool,
     },
-    
+
     /// Import agent from .agent package
     Import {
         /// Path to .agent file
@@ -89,7 +89,7 @@ pub enum AgentCommands {
         #[arg(short, long)]
         name: Option<String>,
     },
-    
+
     /// Inspect .agent package without importing
     Inspect {
         /// Path to .agent file
@@ -104,8 +104,15 @@ pub async fn handle_agent(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
-        AgentCommands::Start { config, name, provider, model, db } => {
-            crate::commands::agent::handlers::handle_agent_start(config, name, provider, model, db).await
+        AgentCommands::Start {
+            config,
+            name,
+            provider,
+            model,
+            db,
+        } => {
+            crate::commands::agent::handlers::handle_agent_start(config, name, provider, model, db)
+                .await
         }
         AgentCommands::List { long } => {
             crate::commands::agent::handlers::handle_agent_list(paths, long, json).await
@@ -113,14 +120,27 @@ pub async fn handle_agent(
         AgentCommands::Show { name } => {
             crate::commands::agent::handlers::handle_agent_show(paths, name, json).await
         }
-        AgentCommands::Create { name, template, provider, yes } => {
-            crate::commands::agent::handlers::handle_agent_create(paths, name, template, provider, yes).await
+        AgentCommands::Create {
+            name,
+            template,
+            provider,
+            yes,
+        } => {
+            crate::commands::agent::handlers::handle_agent_create(
+                paths, name, template, provider, yes,
+            )
+            .await
         }
         AgentCommands::Delete { name, purge, force } => {
             crate::commands::agent::handlers::handle_agent_delete(paths, name, purge, force).await
         }
-        AgentCommands::Export { name, output, encrypt } => {
-            crate::commands::agent::handlers::handle_agent_export(paths, name, output, encrypt).await
+        AgentCommands::Export {
+            name,
+            output,
+            encrypt,
+        } => {
+            crate::commands::agent::handlers::handle_agent_export(paths, name, output, encrypt)
+                .await
         }
         AgentCommands::Import { file, name } => {
             crate::commands::agent::handlers::handle_agent_import(paths, file, name).await
@@ -150,7 +170,7 @@ pub mod handlers {
         db: Option<String>,
     ) -> anyhow::Result<()> {
         info!("Starting Pekobot agent: {}", name);
-        
+
         let agent_config = if let Some(path) = config_path {
             info!("Loading config from: {}", path);
             let content = std::fs::read_to_string(&path)?;
@@ -202,7 +222,7 @@ pub mod handlers {
         json: bool,
     ) -> anyhow::Result<()> {
         let agents_dir = paths.agents_dir();
-        
+
         if !agents_dir.exists() {
             if json {
                 println!("{{\"agents\": []}}");
@@ -212,9 +232,9 @@ pub mod handlers {
             }
             return Ok(());
         }
-        
+
         let mut agents = Vec::new();
-        
+
         if let Ok(entries) = std::fs::read_dir(&agents_dir) {
             for entry in entries.flatten() {
                 if let Some(name) = entry.path().file_stem() {
@@ -223,9 +243,9 @@ pub mod handlers {
                 }
             }
         }
-        
+
         agents.sort();
-        
+
         if json {
             let output = serde_json::json!({"agents": agents});
             println!("{output}");
@@ -256,7 +276,7 @@ pub mod handlers {
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -267,15 +287,15 @@ pub mod handlers {
         json: bool,
     ) -> anyhow::Result<()> {
         let config_path = paths.agent_config(&name);
-        
+
         if !config_path.exists() {
             eprintln!("❌ Agent '{name}' not found");
             return Ok(());
         }
-        
+
         let content = std::fs::read_to_string(&config_path)?;
         let config: AgentConfig = toml::from_str(&content)?;
-        
+
         if json {
             let output = serde_json::json!({
                 "name": name,
@@ -291,7 +311,7 @@ pub mod handlers {
                 println!("   Description: {desc}");
             }
         }
-        
+
         Ok(())
     }
 
@@ -304,29 +324,29 @@ pub mod handlers {
         yes: bool,
     ) -> anyhow::Result<()> {
         let config_path = paths.agent_config(&name);
-        
+
         if config_path.exists() && !yes {
             print!("Agent '{name}' already exists. Overwrite? [y/N] ");
             io::stdout().flush()?;
-            
+
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
-            
+
             if !input.trim().eq_ignore_ascii_case("y") {
                 println!("Cancelled.");
                 return Ok(());
             }
         }
-        
+
         let config = build_default_config(&name, &provider, None, None);
         let toml = toml::to_string_pretty(&config)?;
-        
+
         std::fs::create_dir_all(paths.agents_dir())?;
         std::fs::write(&config_path, toml)?;
-        
+
         println!("✅ Created agent '{name}' using template '{template}'");
         println!("   Config: {}", config_path.display());
-        
+
         Ok(())
     }
 
@@ -338,32 +358,32 @@ pub mod handlers {
         force: bool,
     ) -> anyhow::Result<()> {
         let config_path = paths.agent_config(&name);
-        
+
         if !config_path.exists() {
             eprintln!("❌ Agent '{name}' not found");
             return Ok(());
         }
-        
+
         if !force {
             print!("Delete agent '{name}'? This cannot be undone. [y/N] ");
             io::stdout().flush()?;
-            
+
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
-            
+
             if !input.trim().eq_ignore_ascii_case("y") {
                 println!("Cancelled.");
                 return Ok(());
             }
         }
-        
+
         std::fs::remove_file(&config_path)?;
-        
+
         if purge {
             // Also delete identity if requested
             println!("🗑️  Purged identity for '{name}'");
         }
-        
+
         println!("✅ Deleted agent '{name}'");
         Ok(())
     }
@@ -376,23 +396,23 @@ pub mod handlers {
         encrypt: bool,
     ) -> anyhow::Result<()> {
         let config_path = paths.agent_config(&name);
-        
+
         if !config_path.exists() {
             eprintln!("❌ Agent '{name}' not found");
             return Ok(());
         }
-        
+
         let output_path = output.unwrap_or_else(|| format!("{name}.agent"));
-        
+
         println!("📦 Exporting agent '{name}' to '{output_path}'...");
-        
+
         if encrypt {
             println!("🔐 Encryption enabled (not yet implemented)");
         }
-        
+
         // TODO: Implement actual export via Packager
         println!("✅ Exported agent '{name}'");
-        
+
         Ok(())
     }
 
@@ -406,35 +426,34 @@ pub mod handlers {
             eprintln!("❌ File not found: {file}");
             return Ok(());
         }
-        
+
         let agent_name = name.unwrap_or_else(|| {
-            std::path::Path::new(&file)
-                .file_stem().map_or_else(|| "imported".to_string(), |s| s.to_string_lossy().to_string())
+            std::path::Path::new(&file).file_stem().map_or_else(
+                || "imported".to_string(),
+                |s| s.to_string_lossy().to_string(),
+            )
         });
-        
+
         println!("📥 Importing '{file}' as '{agent_name}'...");
-        
+
         // TODO: Implement actual import via Unpackager
         println!("✅ Imported agent '{agent_name}'");
-        
+
         Ok(())
     }
 
     /// Handle agent inspect command
-    pub async fn handle_agent_inspect(
-        file: String,
-        _json: bool,
-    ) -> anyhow::Result<()> {
+    pub async fn handle_agent_inspect(file: String, _json: bool) -> anyhow::Result<()> {
         if !std::path::Path::new(&file).exists() {
             eprintln!("❌ File not found: {file}");
             return Ok(());
         }
-        
+
         println!("🔍 Inspecting '{file}'...");
-        
+
         // TODO: Implement actual inspection via Unpackager
         println!("Package format: .agent");
-        
+
         Ok(())
     }
 
@@ -446,16 +465,16 @@ pub mod handlers {
         _db: Option<String>,
     ) -> AgentConfig {
         use std::collections::HashMap;
-        
+
         let provider_type = match provider.to_lowercase().as_str() {
             "openai" => ProviderType::OpenAI,
             "anthropic" => ProviderType::Anthropic,
             "ollama" => ProviderType::Ollama,
             _ => ProviderType::OpenAI,
         };
-        
+
         let default_model = model.unwrap_or_else(|| "default".to_string());
-        
+
         let mut models = HashMap::new();
         models.insert(
             "default".to_string(),
@@ -473,7 +492,7 @@ pub mod handlers {
                 frequency_penalty: 0.0,
             },
         );
-        
+
         AgentConfig {
             name: name.to_string(),
             description: Some(format!("Pekobot agent: {name}")),

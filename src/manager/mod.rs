@@ -452,26 +452,26 @@ impl AgentManager {
     }
 
     /// Get data directory
-    #[must_use] 
+    #[must_use]
     pub fn data_dir(&self) -> &PathBuf {
         &self.data_dir
     }
 
     /// Create agent communication tools
-    /// 
+    ///
     /// Returns tools that allow agents to:
     /// - Query info about other agents (`agent_info`)
     /// - Spawn subagents (`agent_spawn`)
     /// - Broadcast messages (`agent_broadcast`)
     /// - List available agents (`agents_list`)
-    /// 
+    ///
     /// Note: `session_messaging` is separate and needs a shared `SessionRegistry`
-    #[must_use] 
-    pub fn create_communication_tools(
-        &self,
-        agent_did: &str,
-    ) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::tools::{AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, AgentsListTool, SessionMessagingTool, SessionRegistry};
+    #[must_use]
+    pub fn create_communication_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
+        use crate::tools::{
+            AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, AgentsListTool,
+            SessionMessagingTool, SessionRegistry,
+        };
         use std::sync::Arc;
 
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = vec![];
@@ -491,25 +491,24 @@ impl AgentManager {
         // Session messaging tool (shared registry across all agents)
         // For now, create a new registry per agent - in production this should be shared
         let registry = Arc::new(SessionRegistry::new());
-        tools.push(Arc::new(SessionMessagingTool::new(registry, agent_did.to_string())));
+        tools.push(Arc::new(SessionMessagingTool::new(
+            registry,
+            agent_did.to_string(),
+        )));
 
         tools
     }
 
     /// Create all essential tools for an agent
-    /// 
+    ///
     /// This includes:
     /// - Filesystem, HTTP, Fetch, Browser tools
     /// - Web search, Apply patch, Process tools
     /// - Session introspection tools (list, history, status)
     /// - Communication tools (spawn, broadcast, messaging)
-    #[must_use] 
-    pub fn create_all_tools(
-        &self,
-        agent_did: &str,
-    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+    #[must_use]
+    pub fn create_all_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{ToolFactory, ToolFactoryConfig};
-        
 
         // Create essential tools using factory
         let factory_config = ToolFactoryConfig {
@@ -525,14 +524,13 @@ impl AgentManager {
     }
 
     /// Create tools with custom configuration
-    #[must_use] 
+    #[must_use]
     pub fn create_tools_with_config(
         &self,
         agent_did: &str,
         config: crate::tools::ToolFactoryConfig,
     ) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::ToolFactory;
-        
 
         let mut tools = ToolFactory::create_tools(&config);
         tools.extend(self.create_communication_tools(agent_did));
@@ -541,7 +539,7 @@ impl AgentManager {
 }
 
 /// Command handler loop - processes commands from agent tools
-/// 
+///
 /// This runs in a separate task and handles:
 /// - Listing agents (for `agent_info` tool)
 /// - Spawning agents (for `agent_spawn` tool)  
@@ -560,7 +558,7 @@ async fn command_handler_loop(
             ManagerCommand::ListAgents { respond_to } => {
                 // Need to await while holding the lock due to lifetime issues
                 let basic_list = pool.read().await.list().await;
-                
+
                 // Convert PoolAgentInfo to AgentInfo
                 let agents: Vec<AgentInfo> = basic_list
                     .into_iter()
@@ -598,7 +596,10 @@ async fn command_handler_loop(
                 }
             }
 
-            ManagerCommand::Broadcast { message, respond_to } => {
+            ManagerCommand::Broadcast {
+                message,
+                respond_to,
+            } => {
                 // Need to await while holding the lock due to lifetime issues
                 let result = pool.read().await.broadcast(&message).await;
 

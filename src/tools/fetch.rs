@@ -79,7 +79,6 @@ pub enum ExtractMode {
     Text,
 }
 
-
 /// Fetch arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchArgs {
@@ -128,7 +127,7 @@ pub struct FetchTool {
 
 impl FetchTool {
     /// Create a new fetch tool
-    #[must_use] 
+    #[must_use]
     pub fn new(config: FetchConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
@@ -204,19 +203,13 @@ impl FetchTool {
                         let line = line.trim();
                         if line.starts_with("User-agent:") {
                             // Check if this applies to us (User-agent: * or contains our name)
-                            let ua = line
-                                .strip_prefix("User-agent:")
-                                .unwrap_or("")
-                                .trim();
+                            let ua = line.strip_prefix("User-agent:").unwrap_or("").trim();
                             if ua == "*" || ua.to_lowercase().contains("pekobot") {
                                 // Continue checking Disallow lines
                             }
                         }
                         if line.starts_with("Disallow:") {
-                            let disallow = line
-                                .strip_prefix("Disallow:")
-                                .unwrap_or("")
-                                .trim();
+                            let disallow = line.strip_prefix("Disallow:").unwrap_or("").trim();
                             if path.starts_with(disallow) && !disallow.is_empty() {
                                 debug!("robots.txt disallows: {}", path);
                                 return Ok(false);
@@ -273,10 +266,7 @@ impl FetchTool {
         }
 
         // Normalize whitespace
-        result
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+        result.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// Extract markdown from HTML
@@ -368,13 +358,9 @@ impl FetchTool {
                     } else if tag_lower.starts_with("<h4") {
                         result.push('\n');
                         result.push_str("#### ");
-                    } else if tag_lower.starts_with("<p")
-                        || tag_lower.starts_with("<div")
-                    {
+                    } else if tag_lower.starts_with("<p") || tag_lower.starts_with("<div") {
                         result.push('\n');
-                    } else if tag_lower.starts_with("<br")
-                        || tag_lower.starts_with("</br")
-                    {
+                    } else if tag_lower.starts_with("<br") || tag_lower.starts_with("</br") {
                         result.push('\n');
                     } else if tag_lower.starts_with("<a ") {
                         // Extract href for markdown link
@@ -392,21 +378,13 @@ impl FetchTool {
                         }
                     } else if tag_lower.starts_with("</a>") {
                         result.push_str("](link)"); // Simplified
-                    } else if tag_lower.starts_with("<strong")
-                        || tag_lower.starts_with("<b")
-                    {
+                    } else if tag_lower.starts_with("<strong") || tag_lower.starts_with("<b") {
                         result.push_str("**");
-                    } else if tag_lower.starts_with("</strong")
-                        || tag_lower.starts_with("</b")
-                    {
+                    } else if tag_lower.starts_with("</strong") || tag_lower.starts_with("</b") {
                         result.push_str("**");
-                    } else if tag_lower.starts_with("<em")
-                        || tag_lower.starts_with("<i")
-                    {
+                    } else if tag_lower.starts_with("<em") || tag_lower.starts_with("<i") {
                         result.push('*');
-                    } else if tag_lower.starts_with("</em")
-                        || tag_lower.starts_with("</i")
-                    {
+                    } else if tag_lower.starts_with("</em") || tag_lower.starts_with("</i") {
                         result.push('*');
                     } else if tag_lower.starts_with("<ul") {
                         result.push('\n');
@@ -427,19 +405,14 @@ impl FetchTool {
         }
 
         // Clean up
-        result
-            .replace("\n\n\n", "\n\n")
-            .trim()
-            .to_string()
+        result.replace("\n\n\n", "\n\n").trim().to_string()
     }
 
     /// Perform the fetch
     async fn fetch(&self, args: &FetchArgs) -> anyhow::Result<FetchResult> {
         // Check robots.txt
         if !self.check_robots_txt(&args.url).await? {
-            return Err(anyhow::anyhow!(
-                "URL disallowed by robots.txt"
-            ));
+            return Err(anyhow::anyhow!("URL disallowed by robots.txt"));
         }
 
         // Fetch the URL
@@ -515,12 +488,9 @@ impl Tool for FetchTool {
         "Fetch web pages and extract content as markdown or text"
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
-        let args: FetchArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let args: FetchArgs =
+            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         // Validate URL
         if args.url.is_empty() {
@@ -528,9 +498,7 @@ impl Tool for FetchTool {
         }
 
         if !args.url.starts_with("http://") && !args.url.starts_with("https://") {
-            return Err(anyhow::anyhow!(
-                "URL must start with http:// or https://"
-            ));
+            return Err(anyhow::anyhow!("URL must start with http:// or https://"));
         }
 
         let cache_key = self.cache_key(&args.url, &args.extract_mode);
@@ -559,13 +527,19 @@ mod tests {
     #[test]
     fn test_extract_title() {
         let html = "<html><head><title>Test Page</title></head><body></body></html>";
-        assert_eq!(FetchTool::extract_title(html), Some("Test Page".to_string()));
+        assert_eq!(
+            FetchTool::extract_title(html),
+            Some("Test Page".to_string())
+        );
     }
 
     #[test]
     fn test_extract_title_from_h1() {
         let html = "<html><body><h1>Main Title</h1></body></html>";
-        assert_eq!(FetchTool::extract_title(html), Some("Main Title".to_string()));
+        assert_eq!(
+            FetchTool::extract_title(html),
+            Some("Main Title".to_string())
+        );
     }
 
     #[test]

@@ -51,13 +51,13 @@ pub struct MemoryFlusher {
 
 impl MemoryFlusher {
     /// Create a new memory flusher
-    #[must_use] 
+    #[must_use]
     pub fn new(workspace_writable: bool) -> Self {
         Self::with_config(MemoryFlushConfig::default(), workspace_writable)
     }
 
     /// Create with custom config
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: MemoryFlushConfig, workspace_writable: bool) -> Self {
         Self {
             config,
@@ -67,7 +67,7 @@ impl MemoryFlusher {
     }
 
     /// Check if flush should be triggered
-    /// 
+    ///
     /// Returns true when:
     /// - Enabled in config
     /// - Workspace is writable
@@ -94,24 +94,25 @@ impl MemoryFlusher {
             return false;
         }
 
-        let threshold = context_window.saturating_sub(reserve_tokens_floor + self.config.soft_threshold_tokens);
-        
+        let threshold =
+            context_window.saturating_sub(reserve_tokens_floor + self.config.soft_threshold_tokens);
+
         let should = current_tokens >= threshold;
-        
+
         if should {
             info!(
                 "Memory flush triggered: {} tokens >= {} threshold",
                 current_tokens, threshold
             );
         }
-        
+
         should
     }
 
     /// Create the flush prompt messages
-    /// 
+    ///
     /// These messages are injected to remind the model to store memories
-    #[must_use] 
+    #[must_use]
     pub fn create_flush_messages(&self) -> Vec<ChatMessage> {
         vec![
             ChatMessage::system(self.config.system_prompt.as_str()),
@@ -124,7 +125,7 @@ impl MemoryFlusher {
         self.state.flushed_this_cycle = true;
         self.state.last_flush_at = Some(chrono::Utc::now());
         self.state.flush_count += 1;
-        
+
         info!(
             "Memory flush marked complete (total flushes: {})",
             self.state.flush_count
@@ -140,26 +141,27 @@ impl MemoryFlusher {
     }
 
     /// Check if a response indicates `NO_REPLY` (silent)
-    #[must_use] 
+    #[must_use]
     pub fn is_no_reply(response: &str) -> bool {
         let trimmed = response.trim().to_uppercase();
         trimmed == "NO_REPLY" || trimmed.contains("NO_REPLY")
     }
 
     /// Get current state
-    #[must_use] 
+    #[must_use]
     pub fn state(&self) -> &FlushState {
         &self.state
     }
 
     /// Get status summary
-    #[must_use] 
+    #[must_use]
     pub fn status(&self) -> String {
         format!(
             "💾 Memory flushes: {} | Last: {} | Writable: {}",
             self.state.flush_count,
             self.state
-                .last_flush_at.map_or_else(|| "Never".to_string(), |t| t.format("%H:%M").to_string()),
+                .last_flush_at
+                .map_or_else(|| "Never".to_string(), |t| t.format("%H:%M").to_string()),
             self.workspace_writable
         )
     }
@@ -182,7 +184,7 @@ pub struct CompactionWithFlush {
 
 impl CompactionWithFlush {
     /// Create default configuration
-    #[must_use] 
+    #[must_use]
     pub fn default_config() -> Self {
         Self {
             reserve_tokens_floor: 20000,
@@ -198,12 +200,12 @@ mod tests {
     #[test]
     fn test_should_flush_enabled() {
         let flusher = MemoryFlusher::new(true);
-        
+
         // Should flush when crossing threshold
         let context_window = 100000;
         let reserve = 20000;
         let tokens = 80000; // Above threshold
-        
+
         assert!(flusher.should_flush(tokens, context_window, reserve));
     }
 
@@ -211,14 +213,14 @@ mod tests {
     fn test_should_flush_disabled() {
         let mut flusher = MemoryFlusher::new(true);
         flusher.config.enabled = false;
-        
+
         assert!(!flusher.should_flush(90000, 100000, 20000));
     }
 
     #[test]
     fn test_should_flush_not_writable() {
         let flusher = MemoryFlusher::new(false);
-        
+
         assert!(!flusher.should_flush(90000, 100000, 20000));
     }
 
@@ -226,7 +228,7 @@ mod tests {
     fn test_should_flush_already_flushed() {
         let mut flusher = MemoryFlusher::new(true);
         flusher.state.flushed_this_cycle = true;
-        
+
         assert!(!flusher.should_flush(90000, 100000, 20000));
     }
 
@@ -242,7 +244,7 @@ mod tests {
     fn test_flush_messages() {
         let flusher = MemoryFlusher::new(true);
         let messages = flusher.create_flush_messages();
-        
+
         assert_eq!(messages.len(), 2);
         assert!(messages[0].content.contains("compaction"));
         assert!(messages[1].content.contains("memory"));
@@ -251,12 +253,12 @@ mod tests {
     #[test]
     fn test_mark_flushed() {
         let mut flusher = MemoryFlusher::new(true);
-        
+
         assert_eq!(flusher.state.flush_count, 0);
         assert!(!flusher.state.flushed_this_cycle);
-        
+
         flusher.mark_flushed();
-        
+
         assert_eq!(flusher.state.flush_count, 1);
         assert!(flusher.state.flushed_this_cycle);
         assert!(flusher.state.last_flush_at.is_some());
@@ -266,11 +268,11 @@ mod tests {
     fn test_reset_cycle() {
         let mut flusher = MemoryFlusher::new(true);
         flusher.mark_flushed();
-        
+
         assert!(flusher.state.flushed_this_cycle);
-        
+
         flusher.reset_cycle();
-        
+
         assert!(!flusher.state.flushed_this_cycle);
     }
 
@@ -278,7 +280,7 @@ mod tests {
     fn test_status() {
         let flusher = MemoryFlusher::new(true);
         let status = flusher.status();
-        
+
         assert!(status.contains("Memory flushes"));
         assert!(status.contains("Writable: true"));
     }

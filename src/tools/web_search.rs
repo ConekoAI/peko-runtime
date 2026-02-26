@@ -24,7 +24,6 @@ pub enum SearchProvider {
     DuckDuckGo,
 }
 
-
 /// Web search tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchConfig {
@@ -125,7 +124,7 @@ pub struct WebSearchTool {
 
 impl WebSearchTool {
     /// Create a new web search tool
-    #[must_use] 
+    #[must_use]
     pub fn new(config: WebSearchConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -337,9 +336,9 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
 
     // Try multiple selectors as DDG changes their HTML
     let selectors = [
-        "div.result",           // Classic DDG
-        ".web-result",          // Alternative
-        "article.result",       // Newer design
+        "div.result",     // Classic DDG
+        ".web-result",    // Alternative
+        "article.result", // Newer design
     ];
 
     let mut results = Vec::new();
@@ -438,11 +437,9 @@ impl Tool for WebSearchTool {
         "Search the web using Brave Search or DuckDuckGo"
     }
 
-    async fn execute(&self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
-        let args: SearchArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let args: SearchArgs =
+            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         if args.query.is_empty() {
             return Err(anyhow::anyhow!("Query cannot be empty"));

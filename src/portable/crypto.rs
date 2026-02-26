@@ -136,7 +136,7 @@ pub fn decrypt_with_passphrase(
 }
 
 /// Serialize encrypted data to bytes for storage
-#[must_use] 
+#[must_use]
 pub fn serialize_encrypted(data: &EncryptedData) -> Vec<u8> {
     use serde::{Deserialize, Serialize};
 

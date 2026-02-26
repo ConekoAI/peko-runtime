@@ -55,7 +55,7 @@ pub enum ValidationWarning {
 
 impl ValidationResult {
     /// Create a new successful validation result
-    #[must_use] 
+    #[must_use]
     pub fn success() -> Self {
         Self {
             valid: true,
@@ -65,7 +65,7 @@ impl ValidationResult {
     }
 
     /// Create a new failed validation result
-    #[must_use] 
+    #[must_use]
     pub fn failure(error: ValidationError) -> Self {
         Self {
             valid: false,
@@ -86,13 +86,13 @@ impl ValidationResult {
     }
 
     /// Check if validation passed
-    #[must_use] 
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         self.valid && self.errors.is_empty()
     }
 
     /// Get formatted error report
-    #[must_use] 
+    #[must_use]
     pub fn error_report(&self) -> String {
         let mut report = String::new();
 
@@ -123,7 +123,7 @@ impl ValidationResult {
 /// # Arguments
 /// * `manifest` - The parsed manifest
 /// * `files` - Map of file paths to their contents
-#[must_use] 
+#[must_use]
 pub fn validate_package(
     manifest: &AgentManifest,
     files: &std::collections::HashMap<String, Vec<u8>>,
@@ -208,7 +208,7 @@ pub fn validate_package(
 }
 
 /// Quick validation without signature verification
-#[must_use] 
+#[must_use]
 pub fn quick_validate(files: &std::collections::HashMap<String, Vec<u8>>) -> ValidationResult {
     let manifest_bytes = match files.get("manifest.toml") {
         Some(bytes) => bytes,

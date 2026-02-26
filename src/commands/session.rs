@@ -1,7 +1,7 @@
 //! Session Management Commands
 
-use clap::Subcommand;
 use crate::commands::GlobalPaths;
+use clap::Subcommand;
 
 /// Session management subcommands
 #[derive(Subcommand)]
@@ -16,7 +16,7 @@ pub enum SessionCommands {
         #[arg(short, long)]
         agent: Option<String>,
     },
-    
+
     /// Show session details and history
     Show {
         /// Session ID
@@ -25,7 +25,7 @@ pub enum SessionCommands {
         #[arg(long)]
         history: bool,
     },
-    
+
     /// Send message to a session
     Send {
         /// Session ID
@@ -33,7 +33,7 @@ pub enum SessionCommands {
         /// Message content
         message: String,
     },
-    
+
     /// Terminate a session
     Kill {
         /// Session ID

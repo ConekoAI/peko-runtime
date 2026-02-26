@@ -26,7 +26,7 @@ pub enum ScheduleKind {
 
 impl ScheduleKind {
     /// Get display name for the schedule
-    #[must_use] 
+    #[must_use]
     pub fn display(&self) -> String {
         match self {
             ScheduleKind::At { at } => format!("at {at}"),
@@ -63,7 +63,6 @@ pub enum ExecutionTarget {
     Isolated,
 }
 
-
 /// Delivery configuration for job results
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,7 +78,6 @@ pub enum DeliveryMode {
         best_effort: bool,
     },
 }
-
 
 /// A scheduled cron job
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,7 +178,7 @@ impl CronScheduler {
     /// Add a new cron job
     pub fn add_job(&self, job: &CronJob) -> Result<()> {
         let conn = Connection::open(&self.db_path)?;
-        
+
         let schedule_data = serde_json::to_string(&job.schedule)?;
         let delivery_data = match &job.delivery {
             DeliveryMode::None => None,
@@ -212,8 +210,12 @@ impl CronScheduler {
         )
         .context("Failed to insert cron job")?;
 
-        info!("Added cron job {}: '{}' with schedule {}", 
-            job.id, job.name, job.schedule.display());
+        info!(
+            "Added cron job {}: '{}' with schedule {}",
+            job.id,
+            job.name,
+            job.schedule.display()
+        );
 
         Ok(())
     }
@@ -225,12 +227,12 @@ impl CronScheduler {
             "SELECT id, name, schedule_kind, schedule_data, target, agent_id,
                     message, delivery_mode, delivery_data, delete_after_run,
                     enabled, created_at, next_run, last_run, last_status, run_count
-             FROM cron_jobs WHERE id = ?1"
+             FROM cron_jobs WHERE id = ?1",
         )?;
 
-        let job = stmt.query_row(params![job_id], |row| {
-            parse_job_from_row(row)
-        }).optional()?;
+        let job = stmt
+            .query_row(params![job_id], |row| parse_job_from_row(row))
+            .optional()?;
 
         Ok(job)
     }
@@ -269,7 +271,7 @@ impl CronScheduler {
                     enabled, created_at, next_run, last_run, last_status, run_count
              FROM cron_jobs 
              WHERE enabled = 1 AND next_run <= ?1 
-             ORDER BY next_run ASC"
+             ORDER BY next_run ASC",
         )?;
 
         let rows = stmt.query_map(params![now.to_rfc3339()], parse_job_from_row)?;
@@ -282,13 +284,23 @@ impl CronScheduler {
     }
 
     /// Update job after execution
-    pub fn update_job_after_run(&self, job_id: &str, status: &str, next_run: DateTime<Utc>) -> Result<()> {
+    pub fn update_job_after_run(
+        &self,
+        job_id: &str,
+        status: &str,
+        next_run: DateTime<Utc>,
+    ) -> Result<()> {
         let conn = Connection::open(&self.db_path)?;
         conn.execute(
             "UPDATE cron_jobs 
              SET last_run = ?1, last_status = ?2, next_run = ?3, run_count = run_count + 1
              WHERE id = ?4",
-            params![Utc::now().to_rfc3339(), status, next_run.to_rfc3339(), job_id],
+            params![
+                Utc::now().to_rfc3339(),
+                status,
+                next_run.to_rfc3339(),
+                job_id
+            ],
         )?;
         Ok(())
     }
@@ -340,28 +352,38 @@ impl CronScheduler {
              FROM cron_runs 
              WHERE job_id = ?1 
              ORDER BY started_at DESC 
-             LIMIT ?2"
+             LIMIT ?2",
         )?;
 
         let rows = stmt.query_map(params![job_id, limit as i64], |row| {
             let started_at_raw: String = row.get(2)?;
             let finished_at_raw: Option<String> = row.get(3)?;
-            
+
             let started_at = DateTime::parse_from_rfc3339(&started_at_raw)
                 .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                    2, rusqlite::types::Type::Text, Box::new(e)
-                ))?;
-            
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?;
+
             let finished_at = match finished_at_raw {
-                Some(s) => Some(DateTime::parse_from_rfc3339(&s)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                        3, rusqlite::types::Type::Text, Box::new(e)
-                    ))?),
+                Some(s) => Some(
+                    DateTime::parse_from_rfc3339(&s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                3,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?,
+                ),
                 None => None,
             };
-            
+
             Ok(CronRun {
                 id: row.get(0)?,
                 job_id: row.get(1)?,
@@ -381,7 +403,11 @@ impl CronScheduler {
     }
 
     /// Calculate next run time for a schedule
-    pub fn calculate_next_run(&self, schedule: &ScheduleKind, after: DateTime<Utc>) -> Result<DateTime<Utc>> {
+    pub fn calculate_next_run(
+        &self,
+        schedule: &ScheduleKind,
+        after: DateTime<Utc>,
+    ) -> Result<DateTime<Utc>> {
         match schedule {
             ScheduleKind::At { at } => {
                 let dt = DateTime::parse_from_rfc3339(at)
@@ -394,9 +420,10 @@ impl CronScheduler {
             ScheduleKind::Cron { expr, tz } => {
                 let schedule = Schedule::from_str(expr)
                     .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
-                
+
                 if let Some(tz_str) = tz {
-                    let tz: chrono_tz::Tz = tz_str.parse()
+                    let tz: chrono_tz::Tz = tz_str
+                        .parse()
                         .map_err(|e| anyhow::anyhow!("Invalid timezone: {e}"))?;
                     let local_after = after.with_timezone(&tz);
                     if let Some(next) = schedule.after(&local_after).next() {
@@ -423,14 +450,18 @@ fn parse_job_from_row(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
     let delivery_data: Option<String> = row.get(8)?;
 
     let schedule = match schedule_kind.as_str() {
-        "at" => serde_json::from_str(&schedule_data).unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
-        "every" => serde_json::from_str(&schedule_data).unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
-        "cron" => serde_json::from_str(&schedule_data).unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
+        "at" => serde_json::from_str(&schedule_data)
+            .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
+        "every" => serde_json::from_str(&schedule_data)
+            .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
+        "cron" => serde_json::from_str(&schedule_data)
+            .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
         _ => ScheduleKind::Every { every_ms: 3600000 },
     };
 
     let delivery = if delivery_mode == "announce" {
-        delivery_data.and_then(|d| serde_json::from_str(&d).ok())
+        delivery_data
+            .and_then(|d| serde_json::from_str(&d).ok())
             .unwrap_or(DeliveryMode::None)
     } else {
         DeliveryMode::None
@@ -453,26 +484,40 @@ fn parse_job_from_row(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
             let s: String = row.get(11)?;
             DateTime::parse_from_rfc3339(&s)
                 .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                    11, rusqlite::types::Type::Text, Box::new(e)
-                ))?
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        11,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
         },
         next_run: {
             let s: String = row.get(12)?;
             DateTime::parse_from_rfc3339(&s)
                 .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                    12, rusqlite::types::Type::Text, Box::new(e)
-                ))?
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        12,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?
         },
         last_run: {
             let opt: Option<String> = row.get(13)?;
             match opt {
-                Some(s) => Some(DateTime::parse_from_rfc3339(&s)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                        13, rusqlite::types::Type::Text, Box::new(e)
-                    ))?),
+                Some(s) => Some(
+                    DateTime::parse_from_rfc3339(&s)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                13,
+                                rusqlite::types::Type::Text,
+                                Box::new(e),
+                            )
+                        })?,
+                ),
                 None => None,
             }
         },

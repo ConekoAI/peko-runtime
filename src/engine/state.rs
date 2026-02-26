@@ -14,13 +14,13 @@ pub enum AgentState {
 
 impl AgentState {
     /// Check if agent is busy
-    #[must_use] 
+    #[must_use]
     pub fn is_busy(self) -> bool {
         matches!(self, AgentState::Busy)
     }
 
     /// Check if agent is idle
-    #[must_use] 
+    #[must_use]
     pub fn is_idle(self) -> bool {
         matches!(self, AgentState::Idle)
     }
@@ -34,7 +34,7 @@ pub struct StateMachine {
 
 impl StateMachine {
     /// Create new state machine starting in Idle
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: AtomicU8::new(0),
@@ -88,14 +88,14 @@ mod tests {
     #[test]
     fn test_state_transitions() {
         let sm = StateMachine::new();
-        
+
         assert!(sm.is(AgentState::Idle));
         assert!(!sm.is(AgentState::Busy));
-        
+
         sm.set_busy();
         assert!(sm.is(AgentState::Busy));
         assert!(!sm.is(AgentState::Idle));
-        
+
         sm.set_idle();
         assert!(sm.is(AgentState::Idle));
     }
@@ -103,14 +103,14 @@ mod tests {
     #[test]
     fn test_try_acquire() {
         let sm = StateMachine::new();
-        
+
         // First acquire should succeed
         assert!(sm.try_acquire());
         assert!(sm.is(AgentState::Busy));
-        
+
         // Second acquire should fail (already busy)
         assert!(!sm.try_acquire());
-        
+
         // After releasing, can acquire again
         sm.set_idle();
         assert!(sm.try_acquire());

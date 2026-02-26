@@ -75,13 +75,13 @@ impl std::fmt::Display for EmbeddingProvider {
 pub trait EmbeddingProviderTrait: Send + Sync {
     /// Generate embedding for text
     async fn embed(&self, text: &str) -> Result<Vec<f32>>;
-    
+
     /// Generate embeddings for multiple texts (batch)
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
-    
+
     /// Get embedding dimension
     fn dimension(&self) -> usize;
-    
+
     /// Get provider name
     fn name(&self) -> &str;
 }
@@ -97,7 +97,7 @@ pub struct OpenAIEmbedder {
 
 impl OpenAIEmbedder {
     /// Create a new `OpenAI` embedder
-    #[must_use] 
+    #[must_use]
     pub fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -113,13 +113,14 @@ impl OpenAIEmbedder {
 impl EmbeddingProviderTrait for OpenAIEmbedder {
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/embeddings", self.base_url);
-        
+
         let body = serde_json::json!({
             "input": text,
             "model": self.model,
         });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -128,27 +129,29 @@ impl EmbeddingProviderTrait for OpenAIEmbedder {
             .send()
             .await
             .context("Failed to send embedding request")?;
-        
+
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!("Embedding API error {status}: {text}"));
         }
-        
-        let result: serde_json::Value = response.json().await
+
+        let result: serde_json::Value = response
+            .json()
+            .await
             .context("Failed to parse embedding response")?;
-        
+
         let embedding = result["data"][0]["embedding"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Invalid embedding response format"))?
             .iter()
             .map(|v| v.as_f64().unwrap_or(0.0) as f32)
             .collect();
-        
+
         debug!("Generated embedding with OpenAI {}", self.model);
         Ok(embedding)
     }
-    
+
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         let mut results = Vec::with_capacity(texts.len());
         for text in texts {
@@ -156,11 +159,11 @@ impl EmbeddingProviderTrait for OpenAIEmbedder {
         }
         Ok(results)
     }
-    
+
     fn dimension(&self) -> usize {
         self.dimension
     }
-    
+
     fn name(&self) -> &'static str {
         "openai"
     }
@@ -177,7 +180,7 @@ pub struct GeminiEmbedder {
 
 impl GeminiEmbedder {
     /// Create a new Gemini embedder
-    #[must_use] 
+    #[must_use]
     pub fn new(api_key: String, model: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -196,14 +199,15 @@ impl EmbeddingProviderTrait for GeminiEmbedder {
             "{}/models/{}:embedContent?key={}",
             self.base_url, self.model, self.api_key
         );
-        
+
         let body = serde_json::json!({
             "content": {
                 "parts": [{"text": text}]
             }
         });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -211,27 +215,29 @@ impl EmbeddingProviderTrait for GeminiEmbedder {
             .send()
             .await
             .context("Failed to send Gemini embedding request")?;
-        
+
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!("Gemini API error {status}: {text}"));
         }
-        
-        let result: serde_json::Value = response.json().await
+
+        let result: serde_json::Value = response
+            .json()
+            .await
             .context("Failed to parse Gemini embedding response")?;
-        
+
         let embedding = result["embedding"]["values"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Invalid Gemini embedding response format"))?
             .iter()
             .map(|v| v.as_f64().unwrap_or(0.0) as f32)
             .collect();
-        
+
         debug!("Generated embedding with Gemini {}", self.model);
         Ok(embedding)
     }
-    
+
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         let mut results = Vec::with_capacity(texts.len());
         for text in texts {
@@ -239,11 +245,11 @@ impl EmbeddingProviderTrait for GeminiEmbedder {
         }
         Ok(results)
     }
-    
+
     fn dimension(&self) -> usize {
         self.dimension
     }
-    
+
     fn name(&self) -> &'static str {
         "gemini"
     }
@@ -259,7 +265,7 @@ pub struct OllamaEmbedder {
 
 impl OllamaEmbedder {
     /// Create a new Ollama embedder
-    #[must_use] 
+    #[must_use]
     pub fn new(model: String, base_url: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -274,13 +280,14 @@ impl OllamaEmbedder {
 impl EmbeddingProviderTrait for OllamaEmbedder {
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let url = format!("{}/api/embeddings", self.base_url);
-        
+
         let body = serde_json::json!({
             "model": self.model,
             "prompt": text,
         });
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -288,27 +295,29 @@ impl EmbeddingProviderTrait for OllamaEmbedder {
             .send()
             .await
             .context("Failed to send Ollama embedding request")?;
-        
+
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
             return Err(anyhow::anyhow!("Ollama API error {status}: {text}"));
         }
-        
-        let result: serde_json::Value = response.json().await
+
+        let result: serde_json::Value = response
+            .json()
+            .await
             .context("Failed to parse Ollama embedding response")?;
-        
+
         let embedding = result["embedding"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Invalid Ollama embedding response format"))?
             .iter()
             .map(|v| v.as_f64().unwrap_or(0.0) as f32)
             .collect();
-        
+
         debug!("Generated embedding with Ollama {}", self.model);
         Ok(embedding)
     }
-    
+
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         let mut results = Vec::with_capacity(texts.len());
         for text in texts {
@@ -316,11 +325,11 @@ impl EmbeddingProviderTrait for OllamaEmbedder {
         }
         Ok(results)
     }
-    
+
     fn dimension(&self) -> usize {
         self.dimension
     }
-    
+
     fn name(&self) -> &'static str {
         "ollama"
     }
@@ -334,42 +343,44 @@ impl EmbeddingProviderFactory {
     pub fn create(config: &EmbeddingConfig) -> Result<Arc<dyn EmbeddingProviderTrait>> {
         match config.provider {
             EmbeddingProvider::OpenAI => {
-                let api_key = config.api_key.clone()
+                let api_key = config
+                    .api_key
+                    .clone()
                     .or_else(|| std::env::var("OPENAI_API_KEY").ok())
                     .ok_or_else(|| anyhow::anyhow!("OpenAI API key not found"))?;
-                
+
                 Ok(Arc::new(OpenAIEmbedder::new(
                     api_key,
                     Some(config.model.clone()),
                     config.base_url.clone(),
                 )))
             }
-            
+
             EmbeddingProvider::Gemini => {
-                let api_key = config.api_key.clone()
+                let api_key = config
+                    .api_key
+                    .clone()
                     .or_else(|| std::env::var("GEMINI_API_KEY").ok())
                     .ok_or_else(|| anyhow::anyhow!("Gemini API key not found"))?;
-                
+
                 Ok(Arc::new(GeminiEmbedder::new(
                     api_key,
                     Some(config.model.clone()),
                 )))
             }
-            
-            EmbeddingProvider::Ollama => {
-                Ok(Arc::new(OllamaEmbedder::new(
-                    config.model.clone(),
-                    config.base_url.clone(),
-                )))
-            }
-            
+
+            EmbeddingProvider::Ollama => Ok(Arc::new(OllamaEmbedder::new(
+                config.model.clone(),
+                config.base_url.clone(),
+            ))),
+
             EmbeddingProvider::Local => {
                 warn!("Local embeddings not yet implemented");
                 Err(anyhow::anyhow!("Local embeddings not yet implemented"))
             }
         }
     }
-    
+
     /// Try to create from environment variables
     pub fn from_env() -> Result<Arc<dyn EmbeddingProviderTrait>> {
         // Try OpenAI first
@@ -377,24 +388,25 @@ impl EmbeddingProviderFactory {
             info!("Creating OpenAI embedder from environment");
             return Ok(Arc::new(OpenAIEmbedder::new(api_key, None, None)));
         }
-        
+
         // Try Gemini second
         if let Ok(api_key) = std::env::var("GEMINI_API_KEY") {
             info!("Creating Gemini embedder from environment");
             return Ok(Arc::new(GeminiEmbedder::new(api_key, None)));
         }
-        
+
         // Try Ollama (no key needed)
-        if std::env::var("OLLAMA_HOST").is_ok() || 
-           std::env::var("OLLAMA_MODEL").is_ok() {
+        if std::env::var("OLLAMA_HOST").is_ok() || std::env::var("OLLAMA_MODEL").is_ok() {
             info!("Creating Ollama embedder from environment");
-            let model = std::env::var("OLLAMA_MODEL")
-                .unwrap_or_else(|_| "nomic-embed-text".to_string());
+            let model =
+                std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
             let host = std::env::var("OLLAMA_HOST").ok();
             return Ok(Arc::new(OllamaEmbedder::new(model, host)));
         }
-        
-        Err(anyhow::anyhow!("No embedding provider configured. Set OPENAI_API_KEY, GEMINI_API_KEY, or OLLAMA_HOST."))
+
+        Err(anyhow::anyhow!(
+            "No embedding provider configured. Set OPENAI_API_KEY, GEMINI_API_KEY, or OLLAMA_HOST."
+        ))
     }
 }
 
@@ -415,24 +427,23 @@ impl SemanticMemory {
             embedder,
         }
     }
-    
+
     /// Store content with automatic embedding
     pub async fn store(
         &self,
         content: &str,
         metadata: Option<serde_json::Value>,
     ) -> Result<String> {
-        let embedding = self.embedder.embed(content).await
+        let embedding = self
+            .embedder
+            .embed(content)
+            .await
             .context("Failed to generate embedding")?;
-        
-        self.vector_memory.store(
-            content,
-            embedding,
-            Some(self.embedder.name()),
-            metadata,
-        )
+
+        self.vector_memory
+            .store(content, embedding, Some(self.embedder.name()), metadata)
     }
-    
+
     /// Search by semantic similarity
     pub async fn search(
         &self,
@@ -440,12 +451,16 @@ impl SemanticMemory {
         limit: usize,
         min_similarity: f32,
     ) -> Result<Vec<crate::memory::vector::SimilarityResult>> {
-        let query_embedding = self.embedder.embed(query).await
+        let query_embedding = self
+            .embedder
+            .embed(query)
+            .await
             .context("Failed to generate query embedding")?;
-        
-        self.vector_memory.search_similar(&query_embedding, limit, min_similarity)
+
+        self.vector_memory
+            .search_similar(&query_embedding, limit, min_similarity)
     }
-    
+
     /// Search with hybrid scoring (semantic + keyword)
     pub async fn search_hybrid(
         &self,
@@ -455,12 +470,12 @@ impl SemanticMemory {
     ) -> Result<Vec<crate::memory::vector::SimilarityResult>> {
         // First get semantic results
         let semantic_results = self.search(query, limit * 2, -1.0).await?;
-        
+
         // For now, just return semantic results
         // In a full implementation, we'd also do keyword search and merge
         let mut results = semantic_results;
         results.truncate(limit);
-        
+
         Ok(results)
     }
 }
@@ -483,14 +498,14 @@ mod tests {
         assert_eq!(EmbeddingProvider::Gemini.to_string(), "gemini");
         assert_eq!(EmbeddingProvider::Ollama.to_string(), "ollama");
     }
-    
+
     #[test]
     fn test_gemini_embedder_creation() {
         let embedder = GeminiEmbedder::new("test-key".to_string(), None);
         assert_eq!(embedder.name(), "gemini");
         assert_eq!(embedder.dimension(), 768);
     }
-    
+
     #[test]
     fn test_ollama_embedder_creation() {
         let embedder = OllamaEmbedder::new("nomic-embed-text".to_string(), None);

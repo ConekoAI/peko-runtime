@@ -5,9 +5,9 @@
 
 use crate::security::SecurityPolicy;
 use crate::tools::{
-    ApplyPatchConfig, ApplyPatchTool, BrowserTool, FetchConfig, FetchTool,
-    FileSystemTool, HttpTool, ProcessTool, SessionStatusTool,
-    SessionsHistoryTool, SessionsListTool, WebSearchConfig, WebSearchTool,
+    ApplyPatchConfig, ApplyPatchTool, BrowserTool, FetchConfig, FetchTool, FileSystemTool,
+    HttpTool, ProcessTool, SessionStatusTool, SessionsHistoryTool, SessionsListTool,
+    WebSearchConfig, WebSearchTool,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,7 +68,7 @@ pub struct ToolFactory;
 
 impl ToolFactory {
     /// Create all essential tools based on configuration
-    #[must_use] 
+    #[must_use]
     pub fn create_tools(config: &ToolFactoryConfig) -> Vec<Arc<dyn crate::tools::Tool>> {
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
 
@@ -132,13 +132,13 @@ impl ToolFactory {
             // These need a session registry - create a placeholder for now
             // In production, this would be shared across all agents
             tools.push(Arc::new(SessionsListTool::new(Box::new(
-                crate::tools::InMemorySessionRegistry::new("main".to_string())
+                crate::tools::InMemorySessionRegistry::new("main".to_string()),
             ))));
             tools.push(Arc::new(SessionsHistoryTool::new(Box::new(
-                crate::tools::InMemorySessionRegistry::new("main".to_string())
+                crate::tools::InMemorySessionRegistry::new("main".to_string()),
             ))));
             tools.push(Arc::new(SessionStatusTool::new(Box::new(
-                crate::tools::InMemorySessionRegistry::new("main".to_string())
+                crate::tools::InMemorySessionRegistry::new("main".to_string()),
             ))));
         }
 
@@ -146,7 +146,7 @@ impl ToolFactory {
     }
 
     /// Create minimal tools (filesystem + process only)
-    #[must_use] 
+    #[must_use]
     pub fn create_minimal_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
             workspace_dir,
@@ -163,7 +163,7 @@ impl ToolFactory {
     }
 
     /// Create coding tools (filesystem + `apply_patch` + process + `web_search`)
-    #[must_use] 
+    #[must_use]
     pub fn create_coding_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
             workspace_dir,
@@ -176,7 +176,7 @@ impl ToolFactory {
     }
 
     /// Create full toolset
-    #[must_use] 
+    #[must_use]
     pub fn create_full_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
             workspace_dir,

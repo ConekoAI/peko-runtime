@@ -126,7 +126,7 @@ pub enum HealthStatus {
 }
 
 impl HealthStatus {
-    #[must_use] 
+    #[must_use]
     pub fn is_healthy(&self) -> bool {
         matches!(self, HealthStatus::Healthy)
     }

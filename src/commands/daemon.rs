@@ -1,8 +1,8 @@
 //! Daemon Management Commands
 
-use clap::Subcommand;
 use crate::commands::GlobalPaths;
-use crate::daemon::{DaemonConfig, Daemon};
+use crate::daemon::{Daemon, DaemonConfig};
+use clap::Subcommand;
 
 /// Daemon management subcommands
 #[derive(Subcommand)]
@@ -17,24 +17,24 @@ pub enum DaemonCommands {
         #[arg(short, long, default_value = "15")]
         interval: u64,
     },
-    
+
     /// Stop the daemon
     Stop {
         /// Force stop (kill immediately)
         #[arg(short, long)]
         force: bool,
     },
-    
+
     /// Check daemon status
     Status,
-    
+
     /// Restart the daemon
     Restart {
         /// Polling interval in seconds
         #[arg(short, long, default_value = "15")]
         interval: u64,
     },
-    
+
     /// Trigger immediate cron check
     Check,
 }
@@ -46,7 +46,10 @@ pub async fn handle_daemon(
     _json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
-        DaemonCommands::Start { foreground, interval } => {
+        DaemonCommands::Start {
+            foreground,
+            interval,
+        } => {
             let config = DaemonConfig {
                 cron_db_path: paths.data_dir.join("cron.db"),
                 poll_interval: std::time::Duration::from_secs(interval),
@@ -54,12 +57,12 @@ pub async fn handle_daemon(
                 data_dir: paths.data_dir.clone(),
                 enable_isolated_execution: true,
             };
-            
+
             if foreground {
                 println!("🚀 Starting daemon in foreground (interval: {interval}s)...");
                 println!("   Config dir: {}", config.config_dir.display());
                 println!("   Data dir: {}", config.data_dir.display());
-                
+
                 let (_tx, rx) = tokio::sync::mpsc::channel(10);
                 let daemon = Daemon::new(config, rx)?;
                 daemon.run().await?;

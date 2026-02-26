@@ -28,7 +28,6 @@ pub enum ResetMode {
     First,
 }
 
-
 /// Reset policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetPolicy {
@@ -44,7 +43,7 @@ impl Default for ResetPolicy {
     fn default() -> Self {
         Self {
             mode: ResetMode::Daily,
-            at_hour: 4, // 4:00 AM local time (like OpenClaw)
+            at_hour: 4,              // 4:00 AM local time (like OpenClaw)
             idle_minutes: Some(120), // 2 hours default
         }
     }
@@ -52,7 +51,7 @@ impl Default for ResetPolicy {
 
 impl ResetPolicy {
     /// Create daily reset policy
-    #[must_use] 
+    #[must_use]
     pub fn daily(at_hour: u8) -> Self {
         Self {
             mode: ResetMode::Daily,
@@ -62,7 +61,7 @@ impl ResetPolicy {
     }
 
     /// Create idle-only reset policy
-    #[must_use] 
+    #[must_use]
     pub fn idle(minutes: u64) -> Self {
         Self {
             mode: ResetMode::Idle,
@@ -72,7 +71,7 @@ impl ResetPolicy {
     }
 
     /// Create "first of daily or idle" policy
-    #[must_use] 
+    #[must_use]
     pub fn first(at_hour: u8, idle_minutes: u64) -> Self {
         Self {
             mode: ResetMode::First,
@@ -120,7 +119,6 @@ pub enum DMScope {
     PerAccountChannelPeer,
 }
 
-
 /// Session configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
@@ -143,10 +141,7 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         let mut reset_by_type = HashMap::new();
-        reset_by_type.insert(
-            SessionType::Thread,
-            ResetPolicy::daily(4),
-        );
+        reset_by_type.insert(SessionType::Thread, ResetPolicy::daily(4));
         reset_by_type.insert(
             SessionType::Direct,
             ResetPolicy::first(4, 240), // Daily at 4am OR 4 hours idle
@@ -218,7 +213,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Create a new session manager
-    #[must_use] 
+    #[must_use]
     pub fn new(config: SessionConfig) -> Self {
         Self {
             config,
@@ -227,13 +222,13 @@ impl SessionManager {
     }
 
     /// Create with default configuration
-    #[must_use] 
+    #[must_use]
     pub fn default_config() -> Self {
         Self::new(SessionConfig::default())
     }
 
     /// Generate session key based on DM scope
-    #[must_use] 
+    #[must_use]
     pub fn generate_session_key(
         &self,
         agent_id: &str,
@@ -244,32 +239,31 @@ impl SessionManager {
         thread_id: Option<&str>,
     ) -> String {
         match session_type {
-            SessionType::Direct => {
-                match self.config.dm_scope {
-                    DMScope::Main => {
-                        format!("agent:{}:{}", agent_id, self.config.main_key)
-                    }
-                    DMScope::PerPeer => {
-                        let peer = peer_id.unwrap_or("unknown");
-                        format!("agent:{agent_id}:dm:{peer}")
-                    }
-                    DMScope::PerChannelPeer => {
-                        let ch = channel.unwrap_or("default");
-                        let peer = peer_id.unwrap_or("unknown");
-                        format!("agent:{agent_id}:{ch}:dm:{peer}")
-                    }
-                    DMScope::PerAccountChannelPeer => {
-                        let acc = account_id.unwrap_or("default");
-                        let ch = channel.unwrap_or("default");
-                        let peer = peer_id.unwrap_or("unknown");
-                        format!("agent:{agent_id}:{ch}:{acc}:dm:{peer}")
-                    }
+            SessionType::Direct => match self.config.dm_scope {
+                DMScope::Main => {
+                    format!("agent:{}:{}", agent_id, self.config.main_key)
                 }
-            }
+                DMScope::PerPeer => {
+                    let peer = peer_id.unwrap_or("unknown");
+                    format!("agent:{agent_id}:dm:{peer}")
+                }
+                DMScope::PerChannelPeer => {
+                    let ch = channel.unwrap_or("default");
+                    let peer = peer_id.unwrap_or("unknown");
+                    format!("agent:{agent_id}:{ch}:dm:{peer}")
+                }
+                DMScope::PerAccountChannelPeer => {
+                    let acc = account_id.unwrap_or("default");
+                    let ch = channel.unwrap_or("default");
+                    let peer = peer_id.unwrap_or("unknown");
+                    format!("agent:{agent_id}:{ch}:{acc}:dm:{peer}")
+                }
+            },
             SessionType::Group => {
                 let ch = channel.unwrap_or("default");
                 // Use thread_id as group ID for forums/topics
-                let group_id = thread_id.map_or_else(|| "default".to_string(), |t| format!("group:{t}"));
+                let group_id =
+                    thread_id.map_or_else(|| "default".to_string(), |t| format!("group:{t}"));
                 format!("agent:{agent_id}:{ch}:{group_id}")
             }
             SessionType::Thread => {
@@ -281,46 +275,45 @@ impl SessionManager {
     }
 
     /// Check if a message is a reset trigger
-    #[must_use] 
+    #[must_use]
     pub fn is_reset_trigger(&self, message: &str) -> Option<&String> {
         let trimmed = message.trim();
-        self.config.reset_triggers.iter()
+        self.config
+            .reset_triggers
+            .iter()
             .find(|trigger| trimmed.starts_with(*trigger))
     }
 
     /// Check if session should be reset based on policy
-    #[must_use] 
+    #[must_use]
     pub fn should_reset(&self, session: &SessionMeta) -> bool {
         let policy = self.get_policy_for_session(session);
-        
+
         match policy.mode {
             ResetMode::Daily => self.should_reset_daily(session, policy),
             ResetMode::Idle => self.should_reset_idle(session, policy),
             ResetMode::First => {
-                self.should_reset_daily(session, policy) || 
-                self.should_reset_idle(session, policy)
+                self.should_reset_daily(session, policy) || self.should_reset_idle(session, policy)
             }
         }
     }
 
     /// Check daily reset condition
     fn should_reset_daily(&self, session: &SessionMeta, policy: &ResetPolicy) -> bool {
-        
-        
         let now: DateTime<Local> = Local::now();
-        
+
         // Calculate today's reset time by constructing a new datetime
-        let today_reset: DateTime<Local> = match now.date_naive().and_hms_opt(
-            u32::from(policy.at_hour),
-            0,
-            0
-        ) {
-            Some(naive) => match naive.and_local_timezone(Local) {
-                chrono::LocalResult::Single(dt) => dt,
-                _ => return false,
-            },
-            None => return false,
-        };
+        let today_reset: DateTime<Local> =
+            match now
+                .date_naive()
+                .and_hms_opt(u32::from(policy.at_hour), 0, 0)
+            {
+                Some(naive) => match naive.and_local_timezone(Local) {
+                    chrono::LocalResult::Single(dt) => dt,
+                    _ => return false,
+                },
+                None => return false,
+            };
 
         // Get last activity in local time
         let last_activity = session.last_activity.with_timezone(&Local);
@@ -395,7 +388,7 @@ impl SessionManager {
         channel: Option<String>,
     ) -> &SessionMeta {
         let now = Utc::now();
-        
+
         self.sessions.entry(key.clone()).or_insert_with(|| {
             info!("Creating new session: {}", key);
             SessionMeta {
@@ -422,31 +415,31 @@ impl SessionManager {
             session.last_activity = Utc::now();
             session.message_count = 0;
             session.last_reset_at = Some(Utc::now());
-            
+
             info!(
                 "Reset session {}: {} -> {}",
                 session_key, old_id, session.id
             );
-            
+
             return Some(session.id.clone());
         }
         None
     }
 
     /// Get session by key
-    #[must_use] 
+    #[must_use]
     pub fn get_session(&self, key: &str) -> Option<&SessionMeta> {
         self.sessions.get(key)
     }
 
     /// List all sessions
-    #[must_use] 
+    #[must_use]
     pub fn list_sessions(&self) -> Vec<&SessionMeta> {
         self.sessions.values().collect()
     }
 
     /// Check all sessions and return those needing reset
-    #[must_use] 
+    #[must_use]
     pub fn check_expirations(&self) -> Vec<&SessionMeta> {
         self.sessions
             .values()
@@ -455,14 +448,12 @@ impl SessionManager {
     }
 
     /// Get status summary
-    #[must_use] 
+    #[must_use]
     pub fn status(&self) -> String {
         let total = self.sessions.len();
         let expired = self.check_expirations().len();
-        
-        format!(
-            "📋 Sessions: {total} total, {expired} need reset"
-        )
+
+        format!("📋 Sessions: {total} total, {expired} need reset")
     }
 }
 
@@ -473,14 +464,8 @@ mod tests {
     #[test]
     fn test_session_key_generation_main() {
         let manager = SessionManager::default_config();
-        let key = manager.generate_session_key(
-            "my-agent",
-            SessionType::Direct,
-            None,
-            None,
-            None,
-            None,
-        );
+        let key =
+            manager.generate_session_key("my-agent", SessionType::Direct, None, None, None, None);
         assert_eq!(key, "agent:my-agent:main");
     }
 
@@ -489,7 +474,7 @@ mod tests {
         let mut config = SessionConfig::default();
         config.dm_scope = DMScope::PerPeer;
         let manager = SessionManager::new(config);
-        
+
         let key = manager.generate_session_key(
             "my-agent",
             SessionType::Direct,
@@ -518,7 +503,7 @@ mod tests {
     #[test]
     fn test_reset_trigger_detection() {
         let manager = SessionManager::default_config();
-        
+
         assert!(manager.is_reset_trigger("/reset").is_some());
         assert!(manager.is_reset_trigger("/new").is_some());
         assert!(manager.is_reset_trigger("/reset and start fresh").is_some());
@@ -533,7 +518,7 @@ mod tests {
             ..Default::default()
         };
         let manager = SessionManager::new(config);
-        
+
         let mut session = SessionMeta {
             id: "test".to_string(),
             key: "test".to_string(),
@@ -546,9 +531,9 @@ mod tests {
             display_name: None,
             origin: None,
         };
-        
+
         assert!(manager.should_reset_idle(&session, &manager.config.reset));
-        
+
         // Update activity
         session.last_activity = Utc::now();
         assert!(!manager.should_reset_idle(&session, &manager.config.reset));
@@ -557,13 +542,10 @@ mod tests {
     #[test]
     fn test_session_creation() {
         let mut manager = SessionManager::default_config();
-        
-        let session = manager.get_or_create_session(
-            "test-key".to_string(),
-            SessionType::Direct,
-            None,
-        );
-        
+
+        let session =
+            manager.get_or_create_session("test-key".to_string(), SessionType::Direct, None);
+
         assert_eq!(session.key, "test-key");
         assert_eq!(session.session_type, SessionType::Direct);
         assert_eq!(session.message_count, 0);
@@ -572,23 +554,19 @@ mod tests {
     #[test]
     fn test_session_reset() {
         let mut manager = SessionManager::default_config();
-        
+
         // Create session
-        manager.get_or_create_session(
-            "test-key".to_string(),
-            SessionType::Direct,
-            None,
-        );
-        
+        manager.get_or_create_session("test-key".to_string(), SessionType::Direct, None);
+
         // Record some activity
         manager.record_activity("test-key");
         manager.record_activity("test-key");
-        
+
         let old_id = manager.get_session("test-key").unwrap().id.clone();
-        
+
         // Reset
         let new_id = manager.reset_session("test-key");
-        
+
         assert!(new_id.is_some());
         assert_ne!(old_id, new_id.unwrap());
         assert_eq!(manager.get_session("test-key").unwrap().message_count, 0);
@@ -601,9 +579,9 @@ mod tests {
             SessionType::Thread,
             ResetPolicy::idle(60), // Threads have 1 hour idle
         );
-        
+
         let manager = SessionManager::new(config);
-        
+
         let thread_session = SessionMeta {
             id: "t1".to_string(),
             key: "thread-key".to_string(),
@@ -616,10 +594,10 @@ mod tests {
             display_name: None,
             origin: None,
         };
-        
+
         // Should use thread policy (60 min idle)
         assert!(manager.should_reset(&thread_session));
-        
+
         let direct_session = SessionMeta {
             id: "d1".to_string(),
             key: "direct-key".to_string(),
@@ -632,7 +610,7 @@ mod tests {
             display_name: None,
             origin: None,
         };
-        
+
         // Direct uses default (2 hours idle in default config)
         // So 65 minutes should NOT trigger reset
         assert!(!manager.should_reset_idle(&direct_session, &manager.config.reset));

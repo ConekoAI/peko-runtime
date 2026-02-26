@@ -1,7 +1,7 @@
 //! Gateway Plugin Management Commands
 
-use clap::Subcommand;
 use crate::commands::GlobalPaths;
+use clap::Subcommand;
 
 /// Gateway management subcommands
 #[derive(Subcommand)]
@@ -9,13 +9,13 @@ use crate::commands::GlobalPaths;
 pub enum GatewayCommands {
     /// List installed gateway plugins
     List,
-    
+
     /// Search available gateways on Pekohub
     Search {
         /// Search query
         query: Option<String>,
     },
-    
+
     /// Install a gateway plugin
     Install {
         /// Gateway name
@@ -24,7 +24,7 @@ pub enum GatewayCommands {
         #[arg(long)]
         version: Option<String>,
     },
-    
+
     /// Show gateway information
     Info {
         /// Gateway name

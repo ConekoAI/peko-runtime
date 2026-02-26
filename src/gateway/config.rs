@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-
 /// Configuration for a gateway instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {

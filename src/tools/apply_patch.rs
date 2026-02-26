@@ -346,12 +346,9 @@ impl Tool for ApplyPatchTool {
         "Apply structured patches to files atomically"
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
-        let args: ApplyPatchArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let args: ApplyPatchArgs =
+            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         // Validate patches
         if args.patches.is_empty() {
@@ -443,11 +440,7 @@ impl Tool for ApplyPatchTool {
         let all_succeeded = failed.is_empty();
 
         // Log results
-        info!(
-            "Applied {} patches, {} failed",
-            applied.len(),
-            failed.len()
-        );
+        info!("Applied {} patches, {} failed", applied.len(), failed.len());
 
         let result = PatchResult {
             applied,
@@ -463,7 +456,10 @@ impl Tool for ApplyPatchTool {
         if !all_succeeded {
             return Err(anyhow::anyhow!(
                 "Some patches failed: {:?}",
-                failed.iter().map(|f| (&f.path, &f.error)).collect::<Vec<_>>()
+                failed
+                    .iter()
+                    .map(|f| (&f.path, &f.error))
+                    .collect::<Vec<_>>()
             ));
         }
 
@@ -503,7 +499,7 @@ mod tests {
         // Create a subdirectory to test escape from
         let subdir = temp.path().join("subdir");
         fs::create_dir(&subdir).unwrap();
-        
+
         let config = ApplyPatchConfig {
             workspace_only: true,
             ..Default::default()
@@ -513,10 +509,10 @@ mod tests {
         // Create the outside file first so canonicalize works
         let outside_file = temp.path().join("outside.txt");
         fs::write(&outside_file, "test").unwrap();
-        
+
         // Try to escape workspace with .. traversal
         let result = tool.resolve_path("../outside.txt", None);
-        
+
         // Should fail because ../outside.txt escapes the subdir workspace
         assert!(result.is_err(), "Path should be rejected: {:?}", result);
     }
@@ -630,6 +626,9 @@ mod tests {
 
         let result = tool.apply_file_patch(&patch, None).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("deletion not allowed"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("deletion not allowed"));
     }
 }

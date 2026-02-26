@@ -77,13 +77,13 @@ pub struct AgentHandle {
 
 impl AgentHandle {
     /// Get DID
-    #[must_use] 
+    #[must_use]
     pub fn did(&self) -> &str {
         &self.did
     }
 
     /// Get name
-    #[must_use] 
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -149,7 +149,7 @@ pub struct PoolAgentInfo {
 
 impl AgentPool {
     /// Create new pool
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: PoolConfig::default(),
@@ -159,7 +159,7 @@ impl AgentPool {
     }
 
     /// Create with config
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: PoolConfig) -> Self {
         Self {
             config,
@@ -268,7 +268,9 @@ impl AgentPool {
 
     /// Get agent states
     pub async fn get_states(&self) -> HashMap<String, String> {
-        self.agents.keys().map(|did| (did.clone(), "idle".to_string()))
+        self.agents
+            .keys()
+            .map(|did| (did.clone(), "idle".to_string()))
             .collect()
     }
 
@@ -284,13 +286,13 @@ impl AgentPool {
     }
 
     /// Get pool size
-    #[must_use] 
+    #[must_use]
     pub fn size(&self) -> usize {
         self.agents.len()
     }
 
     /// Check if pool is full
-    #[must_use] 
+    #[must_use]
     pub fn is_full(&self) -> bool {
         self.agents.len() >= self.config.max_agents
     }

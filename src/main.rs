@@ -1,21 +1,21 @@
 use clap::Parser;
 use clap_complete::{generate, Shell};
 use pekobot::commands::{
-    agent, config, cron, daemon, gateway, session, system, tool,
-    Cli, Commands, GlobalPaths, init_logging,
+    agent, config, cron, daemon, gateway, init_logging, session, system, tool, Cli, Commands,
+    GlobalPaths,
 };
 
 /// Pekobot - Lightweight Multi-Agent Runtime
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    
+
     // Initialize logging
     init_logging(cli.verbose, cli.quiet);
-    
+
     // Set up global paths
     let paths = GlobalPaths::from_cli(&cli);
-    
+
     match cli.command {
         Commands::Agent(cmd) => agent::handle_agent(cmd, &paths, cli.json).await,
         Commands::Tool(cmd) => tool::handle_tool(cmd, &paths, cli.json).await,

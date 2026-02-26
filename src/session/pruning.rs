@@ -42,23 +42,20 @@ pub struct Pruner {
 
 impl Pruner {
     /// Create a new pruner with default config
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(PruningConfig::default())
     }
 
     /// Create with custom config
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: PruningConfig) -> Self {
         Self { config }
     }
 
     /// Check if pruning is needed based on token count
-    #[must_use] 
-    pub fn should_prune(&self,
-        _messages: &[ChatMessage],
-        estimated_tokens: usize,
-    ) -> bool {
+    #[must_use]
+    pub fn should_prune(&self, _messages: &[ChatMessage], estimated_tokens: usize) -> bool {
         if !self.config.enabled {
             return false;
         }
@@ -67,15 +64,13 @@ impl Pruner {
     }
 
     /// Prune messages in-place
-    /// 
+    ///
     /// Strategy:
     /// 1. Keep system messages intact
     /// 2. Keep N most recent tool results intact
     /// 3. Truncate older tool results
     /// 4. Keep user/assistant messages intact (except for truncation)
-    pub fn prune(&self,
-        messages: &mut Vec<ChatMessage>,
-    ) -> PruningResult {
+    pub fn prune(&self, messages: &mut Vec<ChatMessage>) -> PruningResult {
         if !self.config.enabled {
             return PruningResult::no_change();
         }
@@ -106,11 +101,11 @@ impl Pruner {
                 // This tool result should be pruned
                 if let Some(msg) = messages.get_mut(msg_idx) {
                     let original_len = msg.content.len();
-                    
+
                     if original_len > self.config.max_tool_result_length {
                         let truncated = self.truncate_content(&msg.content);
                         let new_len = truncated.len();
-                        
+
                         msg.content = truncated;
                         truncated_count += 1;
                         tokens_saved += (original_len - new_len) / 4; // Rough token estimate
@@ -130,8 +125,7 @@ impl Pruner {
         if result.did_prune {
             debug!(
                 "Pruned {} tool results, saved ~{} tokens",
-                result.truncated_tool_results,
-                result.estimated_tokens_saved
+                result.truncated_tool_results, result.estimated_tokens_saved
             );
         }
 
@@ -139,37 +133,44 @@ impl Pruner {
     }
 
     /// Truncate content to max length
-    fn truncate_content(&self,
-        content: &str,
-    ) -> String {
+    fn truncate_content(&self, content: &str) -> String {
         if content.len() <= self.config.max_tool_result_length {
             return content.to_string();
         }
 
-        let keep_chars = self.config.max_tool_result_length
+        let keep_chars = self
+            .config
+            .max_tool_result_length
             .saturating_sub(self.config.truncation_indicator.len());
-        
+
         let mut truncated: String = content.chars().take(keep_chars).collect();
         truncated.push_str(&self.config.truncation_indicator);
-        
+
         truncated
     }
 
     /// Quick estimate of tokens in messages
-    #[must_use] 
+    #[must_use]
     pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
-        messages.iter().map(|m| {
-            // Rough estimate: 4 chars ≈ 1 token
-            (m.content.len() + m.role.len()) / 4 + 4
-        }).sum()
+        messages
+            .iter()
+            .map(|m| {
+                // Rough estimate: 4 chars ≈ 1 token
+                (m.content.len() + m.role.len()) / 4 + 4
+            })
+            .sum()
     }
 
     /// Get status
-    #[must_use] 
+    #[must_use]
     pub fn status(&self) -> String {
         format!(
             "✂️  Pruning: {} | Max tool result: {} chars | Keep recent: {}",
-            if self.config.enabled { "enabled" } else { "disabled" },
+            if self.config.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
             self.config.max_tool_result_length,
             self.config.keep_recent_tool_results
         )
@@ -243,10 +244,10 @@ mod tests {
         let mut config = PruningConfig::default();
         config.enabled = false;
         let pruner = Pruner::with_config(config);
-        
+
         let mut messages = create_test_messages_with_tools();
         let result = pruner.prune(&mut messages);
-        
+
         assert!(!result.did_prune);
         assert_eq!(result.truncated_tool_results, 0);
     }
@@ -256,12 +257,12 @@ mod tests {
         let mut pruner = Pruner::new();
         pruner.config.max_tool_result_length = 100;
         pruner.config.keep_recent_tool_results = 1;
-        
+
         let mut messages = create_test_messages_with_tools();
         let original_tool_len = messages[3].content.len();
-        
+
         let result = pruner.prune(&mut messages);
-        
+
         assert!(result.did_prune);
         assert!(result.truncated_tool_results > 0);
         assert!(messages[3].content.len() < original_tool_len);
@@ -273,12 +274,12 @@ mod tests {
         let mut pruner = Pruner::new();
         pruner.config.max_tool_result_length = 100;
         pruner.config.keep_recent_tool_results = 1;
-        
+
         let mut messages = create_test_messages_with_tools();
         let original_last_tool = messages[6].content.clone();
-        
+
         pruner.prune(&mut messages);
-        
+
         // Most recent tool result should be unchanged
         assert_eq!(messages[6].content, original_last_tool);
     }
@@ -287,7 +288,7 @@ mod tests {
     fn test_estimate_tokens() {
         let messages = create_test_messages_with_tools();
         let tokens = Pruner::estimate_tokens(&messages);
-        
+
         assert!(tokens > 0);
         // Rough check: 5000 chars / 4 = ~1250 tokens per long message
         assert!(tokens > 2000);
@@ -300,10 +301,10 @@ mod tests {
             truncation_indicator: "...".to_string(),
             ..Default::default()
         });
-        
+
         let content = "a".repeat(100);
         let truncated = pruner.truncate_content(&content);
-        
+
         assert!(truncated.len() <= 50);
         assert!(truncated.ends_with("..."));
     }
@@ -312,7 +313,7 @@ mod tests {
     fn test_short_content_not_truncated() {
         let pruner = Pruner::new();
         let content = "Short content";
-        
+
         let truncated = pruner.truncate_content(content);
         assert_eq!(truncated, content);
     }

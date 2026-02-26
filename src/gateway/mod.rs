@@ -54,10 +54,10 @@
 
 // Re-export from gateway-interface crate
 pub use gateway_interface::{
-    error as gateway_error, interface, types, async_trait, GatewayCapabilities, GatewayError,
-    GatewayFactory, GatewayId, GatewayMetadata, GatewayPlugin, GatewayResult, Target,
-    MessageId, ChannelId, UserId, EntityRef, EntityInfo, IncomingMessage, OutgoingMessage,
-    MessageContent, MessageStream, ContentType, Attachment, User, Channel, ChannelType,
+    async_trait, error as gateway_error, interface, types, Attachment, Channel, ChannelId,
+    ChannelType, ContentType, EntityInfo, EntityRef, GatewayCapabilities, GatewayError,
+    GatewayFactory, GatewayId, GatewayMetadata, GatewayPlugin, GatewayResult, IncomingMessage,
+    MessageContent, MessageId, MessageStream, OutgoingMessage, Target, User, UserId,
     GATEWAY_API_VERSION,
 };
 

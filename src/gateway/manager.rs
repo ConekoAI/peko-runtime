@@ -94,11 +94,8 @@ impl GatewayManager {
     /// Create a new gateway manager
     pub async fn new(config: GatewaysConfig) -> GatewayResult<Self> {
         let (event_tx, event_rx) = mpsc::channel(1000);
-        
-        let registry = GatewayRegistry::new(
-            &config.cache_dir,
-            &config.pekohub_url
-        );
+
+        let registry = GatewayRegistry::new(&config.cache_dir, &config.pekohub_url);
 
         Ok(Self {
             registry,
@@ -110,10 +107,7 @@ impl GatewayManager {
     }
 
     /// Initialize gateways from configuration
-    pub async fn init_from_config(
-        &mut self,
-        config: &GatewaysConfig,
-    ) -> GatewayResult<()> {
+    pub async fn init_from_config(&mut self, config: &GatewaysConfig) -> GatewayResult<()> {
         info!("Initializing gateways from configuration");
 
         for gateway_config in &config.gateways {
@@ -127,10 +121,7 @@ impl GatewayManager {
                     info!("Started gateway: {}", gateway_config.name);
                 }
                 Err(e) => {
-                    error!(
-                        "Failed to start gateway '{}': {}",
-                        gateway_config.name, e
-                    );
+                    error!("Failed to start gateway '{}': {}", gateway_config.name, e);
                     // Continue with other gateways
                 }
             }
@@ -141,26 +132,23 @@ impl GatewayManager {
     }
 
     /// Start a gateway instance
-    pub async fn start_gateway(
-        &self,
-        config: &GatewayConfig,
-    ) -> GatewayResult<InstanceHandle> {
+    pub async fn start_gateway(&self, config: &GatewayConfig) -> GatewayResult<InstanceHandle> {
         info!(
             "Starting gateway instance: {} (plugin: {})",
             config.name, config.plugin
         );
 
         // Ensure plugin is loaded
-        self.registry.load(&config.plugin).await.map_err(|e| {
-            GatewayError::Plugin(Box::new(e))
-        })?;
+        self.registry
+            .load(&config.plugin)
+            .await
+            .map_err(|e| GatewayError::Plugin(Box::new(e)))?;
 
         // Create instance
         let instance_id = format!("{}-{}", config.plugin, config.name);
-        let instance = self.registry
-            .create_instance(&config.plugin,
-                config.config.clone()
-            )
+        let instance = self
+            .registry
+            .create_instance(&config.plugin, config.config.clone())
             .await?;
 
         // Start the gateway
@@ -177,7 +165,7 @@ impl GatewayManager {
         // Spawn message handler
         let event_tx = self.event_tx.clone();
         let instance_id_clone = instance_id.clone();
-        
+
         tokio::spawn(async move {
             while let Some(message) = stream.recv().await {
                 let event = GatewayEvent::Message {
@@ -201,28 +189,27 @@ impl GatewayManager {
         }
 
         // Emit connected event
-        let _ = self.event_tx.send(GatewayEvent::Connected {
-            instance_id: instance_id.clone(),
-        }).await;
+        let _ = self
+            .event_tx
+            .send(GatewayEvent::Connected {
+                instance_id: instance_id.clone(),
+            })
+            .await;
 
         info!("Gateway instance started: {}", instance_id);
         Ok(handle)
     }
 
     /// Stop a gateway instance
-    pub async fn stop_gateway(
-        &self,
-        instance_id: &str,
-    ) -> GatewayResult<()> {
+    pub async fn stop_gateway(&self, instance_id: &str) -> GatewayResult<()> {
         info!("Stopping gateway instance: {}", instance_id);
 
         // Get and remove instance
         let instance = {
             let mut instances = self.instances.write().await;
             instances.remove(instance_id)
-        }.ok_or_else(|| GatewayError::PluginNotFound(
-            instance_id.to_string()
-        ))?;
+        }
+        .ok_or_else(|| GatewayError::PluginNotFound(instance_id.to_string()))?;
 
         // Shutdown
         instance.shutdown().await?;
@@ -234,10 +221,13 @@ impl GatewayManager {
         }
 
         // Emit disconnected event
-        let _ = self.event_tx.send(GatewayEvent::Disconnected {
-            instance_id: instance_id.to_string(),
-            reason: "Stopped by user".to_string(),
-        }).await;
+        let _ = self
+            .event_tx
+            .send(GatewayEvent::Disconnected {
+                instance_id: instance_id.to_string(),
+                reason: "Stopped by user".to_string(),
+            })
+            .await;
 
         info!("Gateway instance stopped: {}", instance_id);
         Ok(())
@@ -251,9 +241,9 @@ impl GatewayManager {
         content: MessageContent,
     ) -> GatewayResult<MessageId> {
         let instances = self.instances.read().await;
-        let instance = instances.get(instance_id).ok_or_else(|| {
-            GatewayError::PluginNotFound(instance_id.to_string())
-        })?;
+        let instance = instances
+            .get(instance_id)
+            .ok_or_else(|| GatewayError::PluginNotFound(instance_id.to_string()))?;
 
         instance.send(target, content).await
     }
@@ -265,32 +255,24 @@ impl GatewayManager {
         target: Target,
         text: impl Into<String>,
     ) -> GatewayResult<MessageId> {
-        self.send(
-            instance_id,
-            target,
-            MessageContent::text(text)
-        ).await
+        self.send(instance_id, target, MessageContent::text(text))
+            .await
     }
 
     /// Get next event
-    pub async fn next_event(&self,
-    ) -> Option<GatewayEvent> {
+    pub async fn next_event(&self) -> Option<GatewayEvent> {
         let mut rx = self.event_rx.write().await;
         rx.recv().await
     }
 
     /// Get list of active instances
-    pub async fn list_instances(&self,
-    ) -> Vec<InstanceHandle> {
+    pub async fn list_instances(&self) -> Vec<InstanceHandle> {
         let handles = self.handles.read().await;
         handles.values().cloned().collect()
     }
 
     /// Get instance handle
-    pub async fn get_instance(
-        &self,
-        instance_id: &str,
-    ) -> Option<InstanceHandle> {
+    pub async fn get_instance(&self, instance_id: &str) -> Option<InstanceHandle> {
         let handles = self.handles.read().await;
         handles.get(instance_id).cloned()
     }
@@ -301,8 +283,7 @@ impl GatewayManager {
     }
 
     /// Shutdown all gateways
-    pub async fn shutdown_all(&self,
-    ) -> GatewayResult<()> {
+    pub async fn shutdown_all(&self) -> GatewayResult<()> {
         info!("Shutting down all gateways");
 
         let instance_ids: Vec<String> = {
@@ -358,23 +339,21 @@ pub mod adapter {
             &self.instance_id
         }
 
-        async fn send(&mut self,
-            message: &str,
-        ) -> Result<()> {
-            let target = self.default_target.clone()
+        async fn send(&mut self, message: &str) -> Result<()> {
+            let target = self
+                .default_target
+                .clone()
                 .ok_or_else(|| anyhow::anyhow!("No default target set"))?;
 
-            self.manager.send_text(
-                &self.instance_id,
-                target,
-                message.to_string()
-            ).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+            self.manager
+                .send_text(&self.instance_id, target, message.to_string())
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             Ok(())
         }
 
-        async fn receive(&mut self,
-        ) -> Result<Option<String>> {
+        async fn receive(&mut self) -> Result<Option<String>> {
             // Check for events
             // In a real implementation, this would poll the event stream
             // For now, return None (non-blocking)

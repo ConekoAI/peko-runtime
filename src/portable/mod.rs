@@ -127,7 +127,7 @@ pub struct PackageInfo {
 
 impl PackageInfo {
     /// Format as human-readable string
-    #[must_use] 
+    #[must_use]
     pub fn format(&self) -> String {
         let mut output = String::new();
 

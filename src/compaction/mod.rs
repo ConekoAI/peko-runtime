@@ -77,13 +77,13 @@ pub struct Compactor {
 
 impl Compactor {
     /// Create a new compactor with default config
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(CompactionConfig::default())
     }
 
     /// Create a new compactor with custom config
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: CompactionConfig) -> Self {
         Self {
             config,
@@ -92,7 +92,7 @@ impl Compactor {
     }
 
     /// Get current compaction state
-    #[must_use] 
+    #[must_use]
     pub fn state(&self) -> &CompactionState {
         &self.state
     }
@@ -103,8 +103,9 @@ impl Compactor {
             return false;
         }
 
-        let threshold = context_window.saturating_sub(self.config.reserve_tokens_floor + self.config.soft_threshold_tokens);
-        
+        let threshold = context_window
+            .saturating_sub(self.config.reserve_tokens_floor + self.config.soft_threshold_tokens);
+
         debug!(
             "Checking compaction: {} tokens, threshold: {}, window: {}",
             current_tokens, threshold, context_window
@@ -114,7 +115,7 @@ impl Compactor {
     }
 
     /// Estimate token count for a message (rough approximation)
-    #[must_use] 
+    #[must_use]
     pub fn estimate_tokens(message: &ChatMessage) -> usize {
         // Rough approximation: 4 chars ≈ 1 token
         let content_len = message.content.len();
@@ -123,7 +124,7 @@ impl Compactor {
     }
 
     /// Calculate total tokens for a message list
-    #[must_use] 
+    #[must_use]
     pub fn calculate_tokens(messages: &[ChatMessage]) -> usize {
         messages.iter().map(Self::estimate_tokens).sum()
     }
@@ -163,15 +164,15 @@ impl Compactor {
 
     /// Generate a summary from messages
     /// This is a placeholder - in production, you'd call an LLM
-    #[must_use] 
+    #[must_use]
     pub fn generate_summary(&self, messages: &[ChatMessage]) -> String {
         // Extract key information
         let mut summary_parts = vec![];
-        
+
         // Add conversation overview
         let user_msg_count = messages.iter().filter(|m| m.role == "user").count();
         let assistant_msg_count = messages.iter().filter(|m| m.role == "assistant").count();
-        
+
         summary_parts.push(format!(
             "Conversation with {user_msg_count} user messages and {assistant_msg_count} assistant responses."
         ));
@@ -204,27 +205,30 @@ impl Compactor {
 
     /// Perform compaction on a message list
     /// Returns (`compacted_messages`, `compaction_entry`)
-    pub fn compact(&mut self, messages: &[ChatMessage]) -> Result<(Vec<ChatMessage>, CompactionEntry)> {
+    pub fn compact(
+        &mut self,
+        messages: &[ChatMessage],
+    ) -> Result<(Vec<ChatMessage>, CompactionEntry)> {
         if messages.len() < 4 {
             return Err(anyhow::anyhow!("Not enough messages to compact"));
         }
 
         let original_tokens = Self::calculate_tokens(messages);
-        
+
         // Select messages to compact vs keep
-        let (to_compact, to_keep) = self.select_messages_for_compaction(messages, self.config.reserve_tokens_floor);
-        
+        let (to_compact, to_keep) =
+            self.select_messages_for_compaction(messages, self.config.reserve_tokens_floor);
+
         if to_compact.is_empty() {
             return Err(anyhow::anyhow!("No messages selected for compaction"));
         }
 
         // Generate summary
         let summary = self.generate_summary(&to_compact);
-        
+
         // Create system message with summary
-        let summary_message = ChatMessage::system(&format!(
-            "[Previous conversation summary]: {summary}"
-        ));
+        let summary_message =
+            ChatMessage::system(&format!("[Previous conversation summary]: {summary}"));
 
         // Build new message list
         let mut compacted = vec![summary_message];
@@ -248,23 +252,23 @@ impl Compactor {
 
         info!(
             "Compaction #{} complete: {} messages → summary, saved {} tokens",
-            entry.compaction_number,
-            entry.messages_compacted,
-            entry.tokens_saved
+            entry.compaction_number, entry.messages_compacted, entry.tokens_saved
         );
 
         Ok((compacted, entry))
     }
 
     /// Get a status summary
-    #[must_use] 
+    #[must_use]
     pub fn status(&self) -> String {
         format!(
             "🧹 Compactions: {} | Tokens saved: {} | Last: {}",
             self.state.compaction_count,
             self.state.total_tokens_saved,
-            self.state
-                .last_compaction_at.map_or_else(|| "Never".to_string(), |t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+            self.state.last_compaction_at.map_or_else(
+                || "Never".to_string(),
+                |t| t.format("%Y-%m-%d %H:%M UTC").to_string()
+            )
         )
     }
 }
@@ -281,10 +285,10 @@ mod tests {
 
     fn create_test_messages(count: usize) -> Vec<ChatMessage> {
         let mut messages = vec![];
-        
+
         // Add system message
         messages.push(ChatMessage::system("You are a helpful assistant."));
-        
+
         // Add alternating user/assistant messages
         for i in 0..count {
             if i % 2 == 0 {
@@ -293,17 +297,17 @@ mod tests {
                 messages.push(ChatMessage::assistant(&format!("Assistant response {}", i)));
             }
         }
-        
+
         messages
     }
 
     #[test]
     fn test_should_compact() {
         let compactor = Compactor::new();
-        
+
         // Should compact when near limit
         assert!(compactor.should_compact(90000, 100000)); // 90k of 100k window
-        
+
         // Should not compact when well under limit
         assert!(!compactor.should_compact(50000, 100000)); // 50k of 100k window
     }
@@ -312,7 +316,7 @@ mod tests {
     fn test_calculate_tokens() {
         let messages = create_test_messages(5);
         let tokens = Compactor::calculate_tokens(&messages);
-        
+
         assert!(tokens > 0);
         assert!(tokens < 10000); // Sanity check
     }
@@ -321,9 +325,9 @@ mod tests {
     fn test_select_messages() {
         let compactor = Compactor::new();
         let messages = create_test_messages(10);
-        
+
         let (to_compact, to_keep) = compactor.select_messages_for_compaction(&messages, 20000);
-        
+
         assert!(!to_compact.is_empty());
         assert!(!to_keep.is_empty());
         assert_eq!(messages.len(), to_compact.len() + to_keep.len());
@@ -333,9 +337,9 @@ mod tests {
     fn test_compact() {
         let mut compactor = Compactor::new();
         let messages = create_test_messages(10);
-        
+
         let (compacted, entry) = compactor.compact(&messages).unwrap();
-        
+
         assert!(compacted.len() < messages.len()); // Should be smaller
         assert_eq!(compactor.state.compaction_count, 1);
         assert!(entry.tokens_saved > 0);
@@ -346,7 +350,7 @@ mod tests {
     fn test_status() {
         let compactor = Compactor::new();
         let status = compactor.status();
-        
+
         assert!(status.contains("Compactions"));
         assert!(status.contains("0")); // No compactions yet
     }

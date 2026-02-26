@@ -53,7 +53,7 @@ impl Default for RegistryBackend {
 
 impl RegistryBackend {
     /// Create local-only registry (no cloud)
-    #[must_use] 
+    #[must_use]
     pub fn local_only() -> Self {
         RegistryBackend::Local {
             path: dirs::data_local_dir()
@@ -71,7 +71,7 @@ impl RegistryBackend {
     }
 
     /// Get display name for this backend
-    #[must_use] 
+    #[must_use]
     pub fn display_name(&self) -> String {
         match self {
             RegistryBackend::Pekohub { url, .. } => {
@@ -122,7 +122,7 @@ impl Default for MultiRegistryConfig {
 
 impl MultiRegistryConfig {
     /// Create configuration for air-gapped/offline use
-    #[must_use] 
+    #[must_use]
     pub fn offline_mode() -> Self {
         Self {
             primary: RegistryBackend::local_only(),
@@ -271,9 +271,7 @@ impl UnifiedToolRegistry {
         version: Option<&str>,
     ) -> anyhow::Result<PathBuf> {
         let version_str = version.unwrap_or("latest");
-        let manifest_url = format!(
-            "{base_url}/api/v1/tools/{tool_name}/{version_str}/manifest"
-        );
+        let manifest_url = format!("{base_url}/api/v1/tools/{tool_name}/{version_str}/manifest");
 
         let mut request = self.http_client.get(&manifest_url);
         if let Some(key) = api_key {

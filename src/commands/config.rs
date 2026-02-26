@@ -1,7 +1,7 @@
 //! Configuration Management Commands
 
-use clap::Subcommand;
 use crate::commands::GlobalPaths;
+use clap::Subcommand;
 
 /// Configuration management subcommands
 #[derive(Subcommand)]
@@ -12,7 +12,7 @@ pub enum ConfigCommands {
         /// Config file path (default: pekobot.toml in current dir)
         file: Option<String>,
     },
-    
+
     /// Initialize a new configuration
     Init {
         /// Output file
@@ -22,13 +22,13 @@ pub enum ConfigCommands {
         #[arg(short, long, default_value = "minimal")]
         template: String,
     },
-    
+
     /// Show default configuration values
     Defaults,
-    
+
     /// Show configuration paths
     Path,
-    
+
     /// Get a configuration value
     Get {
         /// Key path (e.g., "agent.name" or "`provider.api_key`")
@@ -37,7 +37,7 @@ pub enum ConfigCommands {
         #[arg(short, long)]
         file: Option<String>,
     },
-    
+
     /// Set a configuration value
     Set {
         /// Key path

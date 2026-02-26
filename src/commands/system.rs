@@ -1,7 +1,7 @@
 //! System Diagnostics and Maintenance Commands
 
-use clap::Subcommand;
 use crate::commands::GlobalPaths;
+use clap::Subcommand;
 
 /// System management subcommands
 #[derive(Subcommand)]
@@ -13,17 +13,17 @@ pub enum SystemCommands {
         #[arg(long)]
         resources: bool,
     },
-    
+
     /// Show system information
     Info,
-    
+
     /// Run health check diagnostics
     Doctor {
         /// Fix issues automatically where possible
         #[arg(long)]
         fix: bool,
     },
-    
+
     /// Clean up temporary files and cache
     Clean {
         /// Remove all tool caches
@@ -36,7 +36,7 @@ pub enum SystemCommands {
         #[arg(long)]
         all: bool,
     },
-    
+
     /// Update Pekobot to latest version
     Update {
         /// Check for updates only

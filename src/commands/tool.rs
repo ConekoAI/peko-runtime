@@ -1,7 +1,7 @@
 //! Tool Management Commands
 
-use clap::Subcommand;
 use crate::commands::GlobalPaths;
+use clap::Subcommand;
 
 /// Tool management subcommands
 #[derive(Subcommand)]
@@ -13,7 +13,7 @@ pub enum ToolCommands {
         #[arg(short, long)]
         long: bool,
     },
-    
+
     /// Search Pekohub registry
     Search {
         /// Search query
@@ -22,7 +22,7 @@ pub enum ToolCommands {
         #[arg(short, long, default_value = "20")]
         limit: usize,
     },
-    
+
     /// Install tool from Pekohub
     Install {
         /// Tool name
@@ -34,7 +34,7 @@ pub enum ToolCommands {
         #[arg(short, long)]
         force: bool,
     },
-    
+
     /// Uninstall a tool
     Uninstall {
         /// Tool name
@@ -43,7 +43,7 @@ pub enum ToolCommands {
         #[arg(short, long)]
         force: bool,
     },
-    
+
     /// Show tool information
     Info {
         /// Tool name
@@ -74,7 +74,11 @@ pub async fn handle_tool(
             println!("  (Pekohub integration coming soon)");
             Ok(())
         }
-        ToolCommands::Install { name, version, force } => {
+        ToolCommands::Install {
+            name,
+            version,
+            force,
+        } => {
             println!("📥 Installing tool '{name}'...");
             if let Some(v) = version {
                 println!("  Version: {v}");

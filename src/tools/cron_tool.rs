@@ -1,8 +1,6 @@
 //! Cron tool for agents - allows agents to schedule and manage cron jobs
 
-use crate::cron::{
-    CronJob, CronScheduler, DeliveryMode, ExecutionTarget, ScheduleKind,
-};
+use crate::cron::{CronJob, CronScheduler, DeliveryMode, ExecutionTarget, ScheduleKind};
 use crate::tools::traits::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -24,7 +22,7 @@ impl CronTool {
     }
 
     /// Get the scheduler (for engine use)
-    #[must_use] 
+    #[must_use]
     pub fn scheduler(&self) -> Arc<CronScheduler> {
         self.scheduler.clone()
     }
@@ -40,10 +38,7 @@ impl Tool for CronTool {
         "Manage scheduled cron jobs. Schedule one-time or recurring tasks."
     }
 
-    async fn execute(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let action = params["action"].as_str().unwrap_or("list");
 
         match action {
@@ -58,10 +53,7 @@ impl Tool for CronTool {
 }
 
 impl CronTool {
-    async fn handle_add(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    async fn handle_add(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let name = params["name"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("name is required"))?;
@@ -124,10 +116,7 @@ impl CronTool {
         }))
     }
 
-    async fn handle_list(
-        &self,
-        _params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    async fn handle_list(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
         let jobs = self.scheduler.list_jobs(false)?;
 
         let job_list: Vec<serde_json::Value> = jobs
@@ -155,10 +144,7 @@ impl CronTool {
         }))
     }
 
-    async fn handle_remove(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    async fn handle_remove(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let job_id = params["job_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("job_id is required"))?;
@@ -175,16 +161,14 @@ impl CronTool {
         }
     }
 
-    async fn handle_run(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    async fn handle_run(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let job_id = params["job_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("job_id is required"))?;
 
         // Get the job
-        let job = self.scheduler
+        let job = self
+            .scheduler
             .get_job(job_id)?
             .ok_or_else(|| anyhow::anyhow!("Job {job_id} not found"))?;
 
@@ -201,10 +185,7 @@ impl CronTool {
         }))
     }
 
-    async fn handle_history(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    async fn handle_history(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let job_id = params["job_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("job_id is required"))?;
@@ -257,8 +238,13 @@ fn parse_schedule(schedule: &serde_json::Value) -> Result<ScheduleKind> {
             let expr = schedule["expr"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("schedule.expr is required for kind=cron"))?;
-            let tz = schedule["tz"].as_str().map(std::string::ToString::to_string);
-            Ok(ScheduleKind::Cron { expr: expr.to_string(), tz })
+            let tz = schedule["tz"]
+                .as_str()
+                .map(std::string::ToString::to_string);
+            Ok(ScheduleKind::Cron {
+                expr: expr.to_string(),
+                tz,
+            })
         }
         _ => Err(anyhow::anyhow!("Invalid schedule kind: {kind}")),
     }

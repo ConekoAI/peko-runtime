@@ -55,7 +55,7 @@ pub struct Packager {
 
 impl Packager {
     /// Create a new packager
-    #[must_use] 
+    #[must_use]
     pub fn new(
         config: AgentConfig,
         identity: Identity,

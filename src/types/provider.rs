@@ -285,7 +285,7 @@ impl ProviderConfig {
         if let Some(key) = &self.api_key {
             // Check if it's an env reference
             if key.starts_with("${env:") && key.ends_with('}') {
-                let env_var = &key[6..key.len()-1];
+                let env_var = &key[6..key.len() - 1];
                 return std::env::var(env_var)
                     .map_err(|_| anyhow::anyhow!("Environment variable '{env_var}' not found"));
             }

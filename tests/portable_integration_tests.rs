@@ -1,5 +1,5 @@
 //! Integration tests for portable agent module
-//! 
+//!
 //! Run with: cargo test --test portable_integration_tests -- --ignored
 
 use pekobot::identity::{did::DIDScope, storage::KeyStorage, Identity};

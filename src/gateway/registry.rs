@@ -57,9 +57,7 @@ impl GatewayRegistry {
     /// 2. Check local cache
     /// 3. Download from Pekohub if needed
     /// 4. Load the plugin
-    pub async fn load(&self,
-        name: &str,
-    ) -> RegistryResult<()> {
+    pub async fn load(&self, name: &str) -> RegistryResult<()> {
         // Check if already loaded
         {
             let loaded = self.loaded.read().await;
@@ -76,7 +74,7 @@ impl GatewayRegistry {
 
         // Check if cached
         let cache_path = self.loader.get_cache_path(name, &manifest.plugin.version);
-        
+
         if !self.loader.is_cached(name, &manifest.plugin.version) {
             // Download from Pekohub
             self.download_plugin(name, &manifest).await?;
@@ -102,7 +100,7 @@ impl GatewayRegistry {
         manifest: PluginManifest,
     ) -> RegistryResult<()> {
         let name = manifest.plugin.name.clone();
-        
+
         // Check if already loaded
         {
             let loaded = self.loaded.read().await;
@@ -124,9 +122,7 @@ impl GatewayRegistry {
     }
 
     /// Unload a plugin
-    pub async fn unload(&self,
-        name: &str,
-    ) -> RegistryResult<()> {
+    pub async fn unload(&self, name: &str) -> RegistryResult<()> {
         info!("Unloading gateway plugin: {}", name);
 
         // Check if any instances are running
@@ -161,10 +157,10 @@ impl GatewayRegistry {
         // Get the factory
         let factory = {
             let loaded = self.loaded.read().await;
-            let handle = loaded.get(name).ok_or_else(|| GatewayError::PluginNotFound(
-                name.to_string()
-            ))?;
-            
+            let handle = loaded
+                .get(name)
+                .ok_or_else(|| GatewayError::PluginNotFound(name.to_string()))?;
+
             // Create instance from factory
             handle.factory().create()
         };
@@ -177,29 +173,19 @@ impl GatewayRegistry {
     }
 
     /// Store an active instance
-    pub async fn register_instance(
-        &self,
-        instance_id: String,
-        instance: Box<dyn GatewayPlugin>,
-    ) {
+    pub async fn register_instance(&self, instance_id: String, instance: Box<dyn GatewayPlugin>) {
         let mut instances = self.instances.write().await;
         instances.insert(instance_id, instance);
     }
 
     /// Remove an instance
-    pub async fn unregister_instance(
-        &self,
-        instance_id: &str,
-    ) -> Option<Box<dyn GatewayPlugin>> {
+    pub async fn unregister_instance(&self, instance_id: &str) -> Option<Box<dyn GatewayPlugin>> {
         let mut instances = self.instances.write().await;
         instances.remove(instance_id)
     }
 
     /// Get metadata for a loaded plugin
-    pub async fn get_metadata(
-        &self,
-        name: &str,
-    ) -> Option<GatewayInfo> {
+    pub async fn get_metadata(&self, name: &str) -> Option<GatewayInfo> {
         let loaded = self.loaded.read().await;
         loaded.get(name).map(|handle| {
             let manifest = handle.manifest();
@@ -216,38 +202,41 @@ impl GatewayRegistry {
     }
 
     /// List all loaded plugins
-    pub async fn list_loaded(&self,
-    ) -> Vec<GatewayInfo> {
+    pub async fn list_loaded(&self) -> Vec<GatewayInfo> {
         let loaded = self.loaded.read().await;
-        loaded.values().map(|handle| {
-            let manifest = handle.manifest();
-            GatewayInfo {
-                name: manifest.plugin.name.clone(),
-                display_name: manifest.plugin.name.clone(),
-                version: manifest.plugin.version.clone(),
-                description: manifest.plugin.description.clone(),
-                author: manifest.plugin.author.clone(),
-                installed: true,
-                latest_version: None,
-            }
-        }).collect()
+        loaded
+            .values()
+            .map(|handle| {
+                let manifest = handle.manifest();
+                GatewayInfo {
+                    name: manifest.plugin.name.clone(),
+                    display_name: manifest.plugin.name.clone(),
+                    version: manifest.plugin.version.clone(),
+                    description: manifest.plugin.description.clone(),
+                    author: manifest.plugin.author.clone(),
+                    installed: true,
+                    latest_version: None,
+                }
+            })
+            .collect()
     }
 
     /// List available plugins from Pekohub
-    pub async fn list_available(&self,
-    ) -> RegistryResult<Vec<GatewayInfo>> {
+    pub async fn list_available(&self) -> RegistryResult<Vec<GatewayInfo>> {
         let url = format!("{}/api/v1/gateways", self.pekohub_url);
-        
-        let response = self.pekohub_client
+
+        let response = self
+            .pekohub_client
             .get(&url)
             .send()
             .await
             .map_err(|e| RegistryError::Pekohub(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(RegistryError::Pekohub(
-                format!("HTTP {}", response.status())
-            ));
+            return Err(RegistryError::Pekohub(format!(
+                "HTTP {}",
+                response.status()
+            )));
         }
 
         let gateways: Vec<GatewayInfo> = response
@@ -259,22 +248,17 @@ impl GatewayRegistry {
     }
 
     /// Fetch manifest from Pekohub
-    async fn fetch_manifest(
-        &self,
-        name: &str,
-    ) -> RegistryResult<PluginManifest> {
+    async fn fetch_manifest(&self, name: &str) -> RegistryResult<PluginManifest> {
         let url = format!("{}/api/v1/gateways/{}/manifest", self.pekohub_url, name);
-        
+
         debug!("Fetching manifest from: {}", url);
 
-        let response = self.pekohub_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| RegistryError::DownloadFailed {
+        let response = self.pekohub_client.get(&url).send().await.map_err(|e| {
+            RegistryError::DownloadFailed {
                 name: name.to_string(),
                 source: Box::new(e),
-            })?;
+            }
+        })?;
 
         if response.status().is_success() {
             let manifest = response
@@ -288,18 +272,15 @@ impl GatewayRegistry {
         } else if response.status().as_u16() == 404 {
             Err(RegistryError::NotFound(name.to_string()))
         } else {
-            Err(RegistryError::Pekohub(
-                format!("HTTP {}", response.status())
-            ))
+            Err(RegistryError::Pekohub(format!(
+                "HTTP {}",
+                response.status()
+            )))
         }
     }
 
     /// Download plugin from Pekohub
-    async fn download_plugin(
-        &self,
-        name: &str,
-        manifest: &PluginManifest,
-    ) -> RegistryResult<()> {
+    async fn download_plugin(&self, name: &str, manifest: &PluginManifest) -> RegistryResult<()> {
         info!("Downloading gateway plugin: {}", name);
 
         // Determine platform
@@ -309,50 +290,52 @@ impl GatewayRegistry {
         // Get download URL from manifest
         let url = match platform_key.as_str() {
             "linux_x86_64" => &manifest.binary.linux_x64,
-            "linux_aarch64" => manifest.binary.linux_arm64.as_ref()
-                .ok_or_else(|| RegistryError::UnsupportedPlatform {
+            "linux_aarch64" => manifest.binary.linux_arm64.as_ref().ok_or_else(|| {
+                RegistryError::UnsupportedPlatform {
                     name: name.to_string(),
                     platform: platform.clone(),
-                })?,
-            "macos_x86_64" => manifest.binary.macos_x64.as_ref()
-                .ok_or_else(|| RegistryError::UnsupportedPlatform {
+                }
+            })?,
+            "macos_x86_64" => manifest.binary.macos_x64.as_ref().ok_or_else(|| {
+                RegistryError::UnsupportedPlatform {
                     name: name.to_string(),
                     platform: platform.clone(),
-                })?,
-            "macos_aarch64" => manifest.binary.macos_arm.as_ref()
-                .ok_or_else(|| RegistryError::UnsupportedPlatform {
+                }
+            })?,
+            "macos_aarch64" => manifest.binary.macos_arm.as_ref().ok_or_else(|| {
+                RegistryError::UnsupportedPlatform {
                     name: name.to_string(),
                     platform: platform.clone(),
-                })?,
-            "windows_x86_64" => manifest.binary.windows_x64.as_ref()
-                .ok_or_else(|| RegistryError::UnsupportedPlatform {
+                }
+            })?,
+            "windows_x86_64" => manifest.binary.windows_x64.as_ref().ok_or_else(|| {
+                RegistryError::UnsupportedPlatform {
                     name: name.to_string(),
                     platform: platform.clone(),
-                })?,
-            _ => return Err(RegistryError::UnsupportedPlatform {
-                name: name.to_string(),
-                platform: platform.clone(),
-            }),
+                }
+            })?,
+            _ => {
+                return Err(RegistryError::UnsupportedPlatform {
+                    name: name.to_string(),
+                    platform: platform.clone(),
+                })
+            }
         };
 
         // Download the plugin
         debug!("Downloading from: {}", url);
 
-        let response = self.pekohub_client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| RegistryError::DownloadFailed {
+        let response = self.pekohub_client.get(url).send().await.map_err(|e| {
+            RegistryError::DownloadFailed {
                 name: name.to_string(),
                 source: Box::new(e),
-            })?;
+            }
+        })?;
 
         if !response.status().is_success() {
             return Err(RegistryError::DownloadFailed {
                 name: name.to_string(),
-                source: Box::new(std::io::Error::other(
-                    format!("HTTP {}", response.status())
-                )),
+                source: Box::new(std::io::Error::other(format!("HTTP {}", response.status()))),
             });
         }
 
@@ -365,10 +348,7 @@ impl GatewayRegistry {
             })?;
 
         // Save to cache
-        let cache_path = self.loader.get_cache_path(
-            name,
-            &manifest.plugin.version
-        );
+        let cache_path = self.loader.get_cache_path(name, &manifest.plugin.version);
 
         let bytes = response
             .bytes()
@@ -389,18 +369,20 @@ impl GatewayRegistry {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&cache_path).await
+            let mut perms = fs::metadata(&cache_path)
+                .await
                 .map_err(|e| RegistryError::CacheError {
                     name: name.to_string(),
                     message: e.to_string(),
                 })?
                 .permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&cache_path, perms).await
-                .map_err(|e| RegistryError::CacheError {
+            fs::set_permissions(&cache_path, perms).await.map_err(|e| {
+                RegistryError::CacheError {
                     name: name.to_string(),
                     message: e.to_string(),
-                })?;
+                }
+            })?;
         }
 
         info!(
@@ -413,15 +395,15 @@ impl GatewayRegistry {
     }
 
     /// Update a plugin to the latest version
-    pub async fn update(&self,
-        name: &str,
-    ) -> RegistryResult<bool> {
+    pub async fn update(&self, name: &str) -> RegistryResult<bool> {
         info!("Checking for updates: {}", name);
 
         // Get current version
         let current_version = {
             let loaded = self.loaded.read().await;
-            loaded.get(name).map(|h| h.manifest().plugin.version.clone())
+            loaded
+                .get(name)
+                .map(|h| h.manifest().plugin.version.clone())
         };
 
         // Fetch latest manifest
@@ -467,10 +449,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = GatewayRegistry::new(
-            temp_dir.path(),
-            "https://tools.coneko.ai"
-        );
+        let registry = GatewayRegistry::new(temp_dir.path(), "https://tools.coneko.ai");
 
         let loaded = registry.list_loaded().await;
         assert!(loaded.is_empty());

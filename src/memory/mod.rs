@@ -9,7 +9,7 @@ pub mod types;
 pub mod vector;
 
 pub use embeddings::{EmbeddingConfig, EmbeddingProvider, SemanticMemory};
-pub use hybrid::{HybridCandidate, HybridSearcher, HybridSearchConfig};
+pub use hybrid::{HybridCandidate, HybridSearchConfig, HybridSearcher};
 pub use hygiene::{HygieneConfig, HygieneRunner, HygieneState};
 pub use markdown::{MarkdownMemory, MarkdownMemoryConfig, ParsedEntry};
 pub use sqlite::SqliteMemory;

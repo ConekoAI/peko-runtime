@@ -175,7 +175,7 @@ pub struct SessionsListTool {
 }
 
 impl SessionsListTool {
-    #[must_use] 
+    #[must_use]
     pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
         Self { registry }
     }
@@ -191,12 +191,9 @@ impl Tool for SessionsListTool {
         "List active sessions with optional filtering"
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
-        let args: SessionsListArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let args: SessionsListArgs =
+            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         debug!(
             "Listing sessions: kinds={:?}, limit={}, active_minutes={:?}",
@@ -210,7 +207,10 @@ impl Tool for SessionsListTool {
 
         let total = sessions.len();
 
-        Ok(serde_json::to_value(SessionsListResult { sessions, total })?)
+        Ok(serde_json::to_value(SessionsListResult {
+            sessions,
+            total,
+        })?)
     }
 }
 
@@ -220,7 +220,7 @@ pub struct SessionsHistoryTool {
 }
 
 impl SessionsHistoryTool {
-    #[must_use] 
+    #[must_use]
     pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
         Self { registry }
     }
@@ -236,12 +236,9 @@ impl Tool for SessionsHistoryTool {
         "Get message history for a specific session"
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
-        let args: SessionsHistoryArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let args: SessionsHistoryArgs =
+            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         if args.session_key.is_empty() {
             return Err(anyhow::anyhow!("session_key is required"));
@@ -252,11 +249,9 @@ impl Tool for SessionsHistoryTool {
             args.session_key, args.limit, args.include_tools
         );
 
-        let messages = self.registry.get_history(
-            &args.session_key,
-            args.limit,
-            args.include_tools,
-        )?;
+        let messages =
+            self.registry
+                .get_history(&args.session_key, args.limit, args.include_tools)?;
 
         let total_messages = messages.len();
 
@@ -274,7 +269,7 @@ pub struct SessionStatusTool {
 }
 
 impl SessionStatusTool {
-    #[must_use] 
+    #[must_use]
     pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
         Self { registry }
     }
@@ -290,12 +285,9 @@ impl Tool for SessionStatusTool {
         "Get status and usage information for a session"
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
-        let args: SessionStatusArgs = serde_json::from_value(args)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let args: SessionStatusArgs =
+            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         // Use provided session key or default to current
         let session_key = args
@@ -319,7 +311,7 @@ pub struct InMemorySessionRegistry {
 }
 
 impl InMemorySessionRegistry {
-    #[must_use] 
+    #[must_use]
     pub fn new(current_session: String) -> Self {
         Self {
             current_session,
@@ -329,7 +321,8 @@ impl InMemorySessionRegistry {
         }
     }
 
-    pub fn add_session(&self,
+    pub fn add_session(
+        &self,
         key: String,
         info: SessionInfo,
         history: Vec<HistoryMessage>,
@@ -354,7 +347,10 @@ impl SessionRegistry for InMemorySessionRegistry {
         _limit: usize,
         _active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
-        let sessions = self.sessions.lock().map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
         Ok(sessions.values().cloned().collect())
     }
 
@@ -364,13 +360,19 @@ impl SessionRegistry for InMemorySessionRegistry {
         limit: usize,
         _include_tools: bool,
     ) -> anyhow::Result<Vec<HistoryMessage>> {
-        let histories = self.histories.lock().map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
+        let histories = self
+            .histories
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
         let history = histories.get(session_key).cloned().unwrap_or_default();
         Ok(history.into_iter().take(limit).collect())
     }
 
     fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult> {
-        let statuses = self.statuses.lock().map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
+        let statuses = self
+            .statuses
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
         statuses
             .get(session_key)
             .cloned()
@@ -531,12 +533,7 @@ mod tests {
             is_active: true,
         };
 
-        registry.add_session(
-            "current-session".to_string(),
-            session,
-            vec![],
-            status,
-        );
+        registry.add_session("current-session".to_string(), session, vec![], status);
 
         let tool = SessionStatusTool::new(Box::new(registry));
 

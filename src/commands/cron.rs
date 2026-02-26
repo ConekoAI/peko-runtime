@@ -1,7 +1,7 @@
 //! Cron Job Management Commands
 
-use clap::Subcommand;
 use crate::commands::GlobalPaths;
+use clap::Subcommand;
 
 /// Cron management subcommands
 #[derive(Subcommand)]
@@ -16,7 +16,7 @@ pub enum CronCommands {
         #[arg(long)]
         json: bool,
     },
-    
+
     /// Add a new cron job
     Add {
         /// Job name
@@ -44,7 +44,7 @@ pub enum CronCommands {
         #[arg(long)]
         delete_after_run: bool,
     },
-    
+
     /// Add a one-shot job at specific time
     At {
         /// Job name
@@ -63,7 +63,7 @@ pub enum CronCommands {
         #[arg(long)]
         announce: bool,
     },
-    
+
     /// Add a recurring interval job
     Every {
         /// Job name
@@ -82,7 +82,7 @@ pub enum CronCommands {
         #[arg(long)]
         announce: bool,
     },
-    
+
     /// Remove a cron job
     Remove {
         /// Job ID
@@ -91,13 +91,13 @@ pub enum CronCommands {
         #[arg(short, long)]
         force: bool,
     },
-    
+
     /// Run a job immediately (manual execution)
     Run {
         /// Job ID
         job_id: String,
     },
-    
+
     /// Show job run history
     History {
         /// Job ID
@@ -126,7 +126,16 @@ pub async fn handle_cron(
             }
             Ok(())
         }
-        CronCommands::Add { name, schedule, timezone, agent, execution, message, announce, delete_after_run } => {
+        CronCommands::Add {
+            name,
+            schedule,
+            timezone,
+            agent,
+            execution,
+            message,
+            announce,
+            delete_after_run,
+        } => {
             println!("➕ Adding job '{name}' with schedule '{schedule}'");
             if let Some(tz) = timezone {
                 println!("  Timezone: {tz}");
@@ -144,7 +153,13 @@ pub async fn handle_cron(
             }
             Ok(())
         }
-        CronCommands::At { name, at, agent, message, announce } => {
+        CronCommands::At {
+            name,
+            at,
+            agent,
+            message,
+            announce,
+        } => {
             println!("➕ Adding one-shot job '{name}' at {at}");
             if let Some(a) = agent {
                 println!("  Agent: {a}");
@@ -155,7 +170,13 @@ pub async fn handle_cron(
             }
             Ok(())
         }
-        CronCommands::Every { name, interval, agent, message, announce } => {
+        CronCommands::Every {
+            name,
+            interval,
+            agent,
+            message,
+            announce,
+        } => {
             println!("➕ Adding recurring job '{name}' every {interval}");
             if let Some(a) = agent {
                 println!("  Agent: {a}");
