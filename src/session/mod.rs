@@ -1,6 +1,6 @@
 //! Session Management - Lifecycle, expiration, and reset policies
 //!
-//! Matches OpenClaw's session management:
+//! Matches `OpenClaw`'s session management:
 //! - Daily reset at configurable time (default 4:00 AM)
 //! - Idle timeout (sliding window)
 //! - Manual reset triggers (/reset, /new)
@@ -9,18 +9,18 @@
 pub mod pruning;
 pub mod transcript;
 
-use crate::types::provider::ChatMessage;
-use anyhow::Result;
-use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Session reset mode
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ResetMode {
     /// Reset daily at specific hour
+    #[default]
     Daily,
     /// Reset after idle period
     Idle,
@@ -28,11 +28,6 @@ pub enum ResetMode {
     First,
 }
 
-impl Default for ResetMode {
-    fn default() -> Self {
-        ResetMode::Daily
-    }
-}
 
 /// Reset policy configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +52,7 @@ impl Default for ResetPolicy {
 
 impl ResetPolicy {
     /// Create daily reset policy
+    #[must_use] 
     pub fn daily(at_hour: u8) -> Self {
         Self {
             mode: ResetMode::Daily,
@@ -66,6 +62,7 @@ impl ResetPolicy {
     }
 
     /// Create idle-only reset policy
+    #[must_use] 
     pub fn idle(minutes: u64) -> Self {
         Self {
             mode: ResetMode::Idle,
@@ -75,6 +72,7 @@ impl ResetPolicy {
     }
 
     /// Create "first of daily or idle" policy
+    #[must_use] 
     pub fn first(at_hour: u8, idle_minutes: u64) -> Self {
         Self {
             mode: ResetMode::First,
@@ -109,8 +107,10 @@ impl std::fmt::Display for SessionType {
 /// DM scope for session isolation
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DMScope {
     /// All DMs share the main session (default, single-user)
+    #[default]
     Main,
     /// Isolate by sender ID across channels
     PerPeer,
@@ -120,11 +120,6 @@ pub enum DMScope {
     PerAccountChannelPeer,
 }
 
-impl Default for DMScope {
-    fn default() -> Self {
-        DMScope::Main
-    }
-}
 
 /// Session configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,6 +218,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Create a new session manager
+    #[must_use] 
     pub fn new(config: SessionConfig) -> Self {
         Self {
             config,
@@ -231,11 +227,13 @@ impl SessionManager {
     }
 
     /// Create with default configuration
+    #[must_use] 
     pub fn default_config() -> Self {
         Self::new(SessionConfig::default())
     }
 
     /// Generate session key based on DM scope
+    #[must_use] 
     pub fn generate_session_key(
         &self,
         agent_id: &str,
@@ -253,37 +251,37 @@ impl SessionManager {
                     }
                     DMScope::PerPeer => {
                         let peer = peer_id.unwrap_or("unknown");
-                        format!("agent:{}:dm:{}", agent_id, peer)
+                        format!("agent:{agent_id}:dm:{peer}")
                     }
                     DMScope::PerChannelPeer => {
                         let ch = channel.unwrap_or("default");
                         let peer = peer_id.unwrap_or("unknown");
-                        format!("agent:{}:{}:dm:{}", agent_id, ch, peer)
+                        format!("agent:{agent_id}:{ch}:dm:{peer}")
                     }
                     DMScope::PerAccountChannelPeer => {
                         let acc = account_id.unwrap_or("default");
                         let ch = channel.unwrap_or("default");
                         let peer = peer_id.unwrap_or("unknown");
-                        format!("agent:{}:{}:{}:dm:{}", agent_id, ch, acc, peer)
+                        format!("agent:{agent_id}:{ch}:{acc}:dm:{peer}")
                     }
                 }
             }
             SessionType::Group => {
                 let ch = channel.unwrap_or("default");
                 // Use thread_id as group ID for forums/topics
-                let group_id = thread_id.map(|t| format!("group:{}", t))
-                    .unwrap_or_else(|| "default".to_string());
-                format!("agent:{}:{}:{}", agent_id, ch, group_id)
+                let group_id = thread_id.map_or_else(|| "default".to_string(), |t| format!("group:{t}"));
+                format!("agent:{agent_id}:{ch}:{group_id}")
             }
             SessionType::Thread => {
                 let ch = channel.unwrap_or("default");
                 let th = thread_id.unwrap_or("default");
-                format!("agent:{}:{}:thread:{}", agent_id, ch, th)
+                format!("agent:{agent_id}:{ch}:thread:{th}")
             }
         }
     }
 
     /// Check if a message is a reset trigger
+    #[must_use] 
     pub fn is_reset_trigger(&self, message: &str) -> Option<&String> {
         let trimmed = message.trim();
         self.config.reset_triggers.iter()
@@ -291,28 +289,29 @@ impl SessionManager {
     }
 
     /// Check if session should be reset based on policy
+    #[must_use] 
     pub fn should_reset(&self, session: &SessionMeta) -> bool {
         let policy = self.get_policy_for_session(session);
         
         match policy.mode {
-            ResetMode::Daily => self.should_reset_daily(session, &policy),
-            ResetMode::Idle => self.should_reset_idle(session, &policy),
+            ResetMode::Daily => self.should_reset_daily(session, policy),
+            ResetMode::Idle => self.should_reset_idle(session, policy),
             ResetMode::First => {
-                self.should_reset_daily(session, &policy) || 
-                self.should_reset_idle(session, &policy)
+                self.should_reset_daily(session, policy) || 
+                self.should_reset_idle(session, policy)
             }
         }
     }
 
     /// Check daily reset condition
     fn should_reset_daily(&self, session: &SessionMeta, policy: &ResetPolicy) -> bool {
-        use chrono::Datelike;
+        
         
         let now: DateTime<Local> = Local::now();
         
         // Calculate today's reset time by constructing a new datetime
         let today_reset: DateTime<Local> = match now.date_naive().and_hms_opt(
-            policy.at_hour as u32,
+            u32::from(policy.at_hour),
             0,
             0
         ) {
@@ -435,16 +434,19 @@ impl SessionManager {
     }
 
     /// Get session by key
+    #[must_use] 
     pub fn get_session(&self, key: &str) -> Option<&SessionMeta> {
         self.sessions.get(key)
     }
 
     /// List all sessions
+    #[must_use] 
     pub fn list_sessions(&self) -> Vec<&SessionMeta> {
         self.sessions.values().collect()
     }
 
     /// Check all sessions and return those needing reset
+    #[must_use] 
     pub fn check_expirations(&self) -> Vec<&SessionMeta> {
         self.sessions
             .values()
@@ -453,13 +455,13 @@ impl SessionManager {
     }
 
     /// Get status summary
+    #[must_use] 
     pub fn status(&self) -> String {
         let total = self.sessions.len();
         let expired = self.check_expirations().len();
         
         format!(
-            "📋 Sessions: {} total, {} need reset",
-            total, expired
+            "📋 Sessions: {total} total, {expired} need reset"
         )
     }
 }

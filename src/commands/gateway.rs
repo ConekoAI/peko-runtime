@@ -50,7 +50,7 @@ pub async fn handle_gateway(
         }
         GatewayCommands::Search { query } => {
             if let Some(q) = query {
-                println!("🔍 Searching for '{}' gateways...", q);
+                println!("🔍 Searching for '{q}' gateways...");
             } else {
                 println!("🔍 Available gateways:");
             }
@@ -58,15 +58,15 @@ pub async fn handle_gateway(
             Ok(())
         }
         GatewayCommands::Install { name, version } => {
-            println!("📥 Installing gateway '{}'...", name);
+            println!("📥 Installing gateway '{name}'...");
             if let Some(v) = version {
-                println!("  Version: {}", v);
+                println!("  Version: {v}");
             }
             println!("  (Gateway installation coming soon)");
             Ok(())
         }
         GatewayCommands::Info { name } => {
-            println!("📋 Gateway Information: {}", name);
+            println!("📋 Gateway Information: {name}");
             Ok(())
         }
     }

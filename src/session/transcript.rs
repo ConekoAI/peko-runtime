@@ -1,6 +1,6 @@
 //! Session Transcript Storage - JSONL persistence for conversation history
 //!
-//! Matches OpenClaw's format:
+//! Matches `OpenClaw`'s format:
 //! ~/.pekobot/agents/<agentId>/sessions/
 //!   ├── sessions.json          # Session metadata
 //!   ├── <sessionId>.jsonl      # Full conversation transcript
@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
 use tracing::{debug, info, warn};
 
@@ -41,7 +41,8 @@ pub struct TranscriptEntry {
 }
 
 impl TranscriptEntry {
-    /// Create from a ChatMessage
+    /// Create from a `ChatMessage`
+    #[must_use] 
     pub fn from_message(msg: &ChatMessage) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -56,6 +57,7 @@ impl TranscriptEntry {
     }
     
     /// Create a system entry
+    #[must_use] 
     pub fn system(content: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -70,6 +72,7 @@ impl TranscriptEntry {
     }
     
     /// Create a user entry
+    #[must_use] 
     pub fn user(content: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -84,6 +87,7 @@ impl TranscriptEntry {
     }
     
     /// Create an assistant entry
+    #[must_use] 
     pub fn assistant(content: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -124,28 +128,32 @@ pub struct TranscriptStorage {
 
 impl TranscriptStorage {
     /// Create new transcript storage
+    #[must_use] 
     pub fn new(config: TranscriptConfig) -> Self {
         Self { config }
     }
     
     /// Create with default config
+    #[must_use] 
     pub fn default_config() -> Self {
         Self::new(TranscriptConfig::default())
     }
     
     /// Get path for a session transcript
+    #[must_use] 
     pub fn transcript_path(&self, session_id: &str) -> PathBuf {
-        self.config.storage_dir.join(format!("{}.jsonl", session_id))
+        self.config.storage_dir.join(format!("{session_id}.jsonl"))
     }
     
     /// Get path for thread transcript
+    #[must_use] 
     pub fn thread_transcript_path(
         &self,
         session_id: &str,
         thread_id: &str,
     ) -> PathBuf {
         self.config.storage_dir
-            .join(format!("{}-thread-{}.jsonl", session_id, thread_id))
+            .join(format!("{session_id}-thread-{thread_id}.jsonl"))
     }
     
     /// Ensure storage directory exists
@@ -257,7 +265,7 @@ impl TranscriptStorage {
         
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            if path.extension().is_some_and(|e| e == "jsonl") {
                 let session_id = path.file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown")

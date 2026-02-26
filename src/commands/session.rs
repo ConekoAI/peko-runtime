@@ -60,27 +60,27 @@ pub async fn handle_session(
                     println!("  (Including inactive)");
                 }
                 if let Some(a) = agent {
-                    println!("  Filter: agent='{}'", a);
+                    println!("  Filter: agent='{a}'");
                 }
             }
             Ok(())
         }
         SessionCommands::Show { id, history } => {
-            println!("📊 Session: {}", id);
+            println!("📊 Session: {id}");
             if history {
                 println!("  (Showing full history)");
             }
             Ok(())
         }
         SessionCommands::Send { id, message } => {
-            println!("📤 Sending to session '{}': {}", id, message);
+            println!("📤 Sending to session '{id}': {message}");
             Ok(())
         }
         SessionCommands::Kill { id, force } => {
             if force {
-                println!("💀 Force killing session '{}'...", id);
+                println!("💀 Force killing session '{id}'...");
             } else {
-                println!("🛑 Stopping session '{}'...", id);
+                println!("🛑 Stopping session '{id}'...");
             }
             Ok(())
         }

@@ -10,9 +10,9 @@
 pub mod flush;
 
 use crate::types::provider::ChatMessage;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Compaction configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,11 +77,13 @@ pub struct Compactor {
 
 impl Compactor {
     /// Create a new compactor with default config
+    #[must_use] 
     pub fn new() -> Self {
         Self::with_config(CompactionConfig::default())
     }
 
     /// Create a new compactor with custom config
+    #[must_use] 
     pub fn with_config(config: CompactionConfig) -> Self {
         Self {
             config,
@@ -90,6 +92,7 @@ impl Compactor {
     }
 
     /// Get current compaction state
+    #[must_use] 
     pub fn state(&self) -> &CompactionState {
         &self.state
     }
@@ -111,6 +114,7 @@ impl Compactor {
     }
 
     /// Estimate token count for a message (rough approximation)
+    #[must_use] 
     pub fn estimate_tokens(message: &ChatMessage) -> usize {
         // Rough approximation: 4 chars ≈ 1 token
         let content_len = message.content.len();
@@ -119,16 +123,17 @@ impl Compactor {
     }
 
     /// Calculate total tokens for a message list
+    #[must_use] 
     pub fn calculate_tokens(messages: &[ChatMessage]) -> usize {
-        messages.iter().map(|m| Self::estimate_tokens(m)).sum()
+        messages.iter().map(Self::estimate_tokens).sum()
     }
 
     /// Select messages to compact (older portion, keeping recent context)
-    /// Returns (messages_to_compact, messages_to_keep)
+    /// Returns (`messages_to_compact`, `messages_to_keep`)
     pub fn select_messages_for_compaction(
         &self,
         messages: &[ChatMessage],
-        target_tokens: usize,
+        _target_tokens: usize,
     ) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
         if messages.len() < 4 {
             // Don't compact very short conversations
@@ -158,6 +163,7 @@ impl Compactor {
 
     /// Generate a summary from messages
     /// This is a placeholder - in production, you'd call an LLM
+    #[must_use] 
     pub fn generate_summary(&self, messages: &[ChatMessage]) -> String {
         // Extract key information
         let mut summary_parts = vec![];
@@ -167,8 +173,7 @@ impl Compactor {
         let assistant_msg_count = messages.iter().filter(|m| m.role == "assistant").count();
         
         summary_parts.push(format!(
-            "Conversation with {} user messages and {} assistant responses.",
-            user_msg_count, assistant_msg_count
+            "Conversation with {user_msg_count} user messages and {assistant_msg_count} assistant responses."
         ));
 
         // Extract tool calls if any
@@ -191,14 +196,14 @@ impl Compactor {
         // Try to extract key topics (first user message often has the main topic)
         if let Some(first_user) = messages.iter().find(|m| m.role == "user") {
             let preview: String = first_user.content.chars().take(100).collect();
-            summary_parts.push(format!("Topic: {}...", preview));
+            summary_parts.push(format!("Topic: {preview}..."));
         }
 
         summary_parts.join(" ")
     }
 
     /// Perform compaction on a message list
-    /// Returns (compacted_messages, compaction_entry)
+    /// Returns (`compacted_messages`, `compaction_entry`)
     pub fn compact(&mut self, messages: &[ChatMessage]) -> Result<(Vec<ChatMessage>, CompactionEntry)> {
         if messages.len() < 4 {
             return Err(anyhow::anyhow!("Not enough messages to compact"));
@@ -218,8 +223,7 @@ impl Compactor {
         
         // Create system message with summary
         let summary_message = ChatMessage::system(&format!(
-            "[Previous conversation summary]: {}",
-            summary
+            "[Previous conversation summary]: {summary}"
         ));
 
         // Build new message list
@@ -253,15 +257,14 @@ impl Compactor {
     }
 
     /// Get a status summary
+    #[must_use] 
     pub fn status(&self) -> String {
         format!(
             "🧹 Compactions: {} | Tokens saved: {} | Last: {}",
             self.state.compaction_count,
             self.state.total_tokens_saved,
             self.state
-                .last_compaction_at
-                .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
-                .unwrap_or_else(|| "Never".to_string())
+                .last_compaction_at.map_or_else(|| "Never".to_string(), |t| t.format("%Y-%m-%d %H:%M UTC").to_string())
         )
     }
 }

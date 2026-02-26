@@ -1,7 +1,7 @@
 //! Embedding providers for semantic search
 //!
 //! Supports multiple embedding backends:
-//! - OpenAI (text-embedding-3-small)
+//! - `OpenAI` (text-embedding-3-small)
 //! - Gemini (gemini-embedding-001)
 //! - Local (GGUF models via llama.cpp)
 //! - Ollama (local API)
@@ -49,7 +49,7 @@ impl Default for EmbeddingConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum EmbeddingProvider {
-    /// OpenAI embeddings API
+    /// `OpenAI` embeddings API
     OpenAI,
     /// Google Gemini embeddings
     Gemini,
@@ -86,7 +86,7 @@ pub trait EmbeddingProviderTrait: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// OpenAI embedding provider
+/// `OpenAI` embedding provider
 pub struct OpenAIEmbedder {
     client: reqwest::Client,
     api_key: String,
@@ -96,7 +96,8 @@ pub struct OpenAIEmbedder {
 }
 
 impl OpenAIEmbedder {
-    /// Create a new OpenAI embedder
+    /// Create a new `OpenAI` embedder
+    #[must_use] 
     pub fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -131,7 +132,7 @@ impl EmbeddingProviderTrait for OpenAIEmbedder {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Embedding API error {}: {}", status, text));
+            return Err(anyhow::anyhow!("Embedding API error {status}: {text}"));
         }
         
         let result: serde_json::Value = response.json().await
@@ -160,7 +161,7 @@ impl EmbeddingProviderTrait for OpenAIEmbedder {
         self.dimension
     }
     
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "openai"
     }
 }
@@ -176,6 +177,7 @@ pub struct GeminiEmbedder {
 
 impl GeminiEmbedder {
     /// Create a new Gemini embedder
+    #[must_use] 
     pub fn new(api_key: String, model: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -213,7 +215,7 @@ impl EmbeddingProviderTrait for GeminiEmbedder {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Gemini API error {}: {}", status, text));
+            return Err(anyhow::anyhow!("Gemini API error {status}: {text}"));
         }
         
         let result: serde_json::Value = response.json().await
@@ -242,7 +244,7 @@ impl EmbeddingProviderTrait for GeminiEmbedder {
         self.dimension
     }
     
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "gemini"
     }
 }
@@ -257,6 +259,7 @@ pub struct OllamaEmbedder {
 
 impl OllamaEmbedder {
     /// Create a new Ollama embedder
+    #[must_use] 
     pub fn new(model: String, base_url: Option<String>) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -289,7 +292,7 @@ impl EmbeddingProviderTrait for OllamaEmbedder {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Ollama API error {}: {}", status, text));
+            return Err(anyhow::anyhow!("Ollama API error {status}: {text}"));
         }
         
         let result: serde_json::Value = response.json().await
@@ -318,7 +321,7 @@ impl EmbeddingProviderTrait for OllamaEmbedder {
         self.dimension
     }
     
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ollama"
     }
 }
@@ -448,7 +451,7 @@ impl SemanticMemory {
         &self,
         query: &str,
         limit: usize,
-        semantic_weight: f32,
+        _semantic_weight: f32,
     ) -> Result<Vec<crate::memory::vector::SimilarityResult>> {
         // First get semantic results
         let semantic_results = self.search(query, limit * 2, -1.0).await?;

@@ -1,13 +1,12 @@
 //! Message Tool - Send messages to communication channels
 //!
-//! Supports: Discord, Slack, Telegram, WhatsApp, Signal, Email
-//! This is the core tool missing from OpenClaw parity (17/18 → 18/18)
+//! Supports: Discord, Slack, Telegram, `WhatsApp`, Signal, Email
+//! This is the core tool missing from `OpenClaw` parity (17/18 → 18/18)
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 use crate::tools::Tool;
 
@@ -21,7 +20,7 @@ pub enum ChannelType {
     Slack,
     /// Telegram
     Telegram,
-    /// WhatsApp
+    /// `WhatsApp`
     Whatsapp,
     /// Signal
     Signal,
@@ -54,7 +53,7 @@ pub struct MessageConfig {
     pub slack_webhook_url: Option<String>,
     /// Telegram bot token (optional)
     pub telegram_bot_token: Option<String>,
-    /// WhatsApp API key (optional)
+    /// `WhatsApp` API key (optional)
     pub whatsapp_api_key: Option<String>,
     /// Signal API endpoint (optional)
     pub signal_api_endpoint: Option<String>,
@@ -92,6 +91,7 @@ pub struct MessageTool {
 
 impl MessageTool {
     /// Create a new message tool
+    #[must_use] 
     pub fn new(config: MessageConfig) -> Self {
         Self {
             config,
@@ -100,6 +100,7 @@ impl MessageTool {
     }
     
     /// Create with config from environment
+    #[must_use] 
     pub fn from_env() -> Self {
         let config = MessageConfig {
             discord_webhook_url: std::env::var("DISCORD_WEBHOOK_URL").ok(),
@@ -177,7 +178,7 @@ impl MessageTool {
         } else {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            Err(anyhow::anyhow!("Discord API error {}: {}", status, text))
+            Err(anyhow::anyhow!("Discord API error {status}: {text}"))
         }
     }
     
@@ -213,7 +214,7 @@ impl MessageTool {
         } else {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            Err(anyhow::anyhow!("Slack API error {}: {}", status, text))
+            Err(anyhow::anyhow!("Slack API error {status}: {text}"))
         }
     }
     
@@ -226,8 +227,7 @@ impl MessageTool {
             .ok_or_else(|| anyhow::anyhow!("Telegram bot token not configured"))?;
         
         let url = format!(
-            "https://api.telegram.org/bot{}/sendMessage",
-            token
+            "https://api.telegram.org/bot{token}/sendMessage"
         );
         
         let payload = serde_json::json!({
@@ -245,7 +245,7 @@ impl MessageTool {
         let result: serde_json::Value = response.json().await
             .context("Failed to parse Telegram response")?;
         
-        if result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if result.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false) {
             let message_id = result["result"]["message_id"].as_i64()
                 .map(|id| id.to_string());
             
@@ -260,14 +260,14 @@ impl MessageTool {
         } else {
             let error = result["description"].as_str()
                 .unwrap_or("Unknown Telegram error");
-            Err(anyhow::anyhow!("Telegram error: {}", error))
+            Err(anyhow::anyhow!("Telegram error: {error}"))
         }
     }
     
-    /// Send WhatsApp message (placeholder - requires WhatsApp Business API)
+    /// Send `WhatsApp` message (placeholder - requires `WhatsApp` Business API)
     async fn send_whatsapp(&self,
         to: &str,
-        content: &str,
+        _content: &str,
     ) -> Result<MessageResult> {
         // WhatsApp Business API requires complex setup
         // This is a placeholder implementation
@@ -286,7 +286,7 @@ impl MessageTool {
     async fn send_signal(
         &self,
         to: &str,
-        content: &str,
+        _content: &str,
     ) -> Result<MessageResult> {
         // Signal requires signal-cli or similar
         warn!("Signal sending not fully implemented - requires signal-cli");
@@ -304,8 +304,8 @@ impl MessageTool {
     async fn send_email(
         &self,
         to: &str,
-        subject: &str,
-        body: &str,
+        _subject: &str,
+        _body: &str,
     ) -> Result<MessageResult> {
         // Email sending requires async-smtp or similar
         // This is a placeholder
@@ -349,7 +349,7 @@ impl MessageTool {
             })
         } else {
             let status = response.status();
-            Err(anyhow::anyhow!("Webhook error: HTTP {}", status))
+            Err(anyhow::anyhow!("Webhook error: HTTP {status}"))
         }
     }
 }
@@ -382,7 +382,7 @@ impl Tool for MessageTool {
             "signal" => ChannelType::Signal,
             "email" => ChannelType::Email,
             "webhook" => ChannelType::Webhook,
-            _ => return Err(anyhow::anyhow!("Unknown channel type: {}", channel_str)),
+            _ => return Err(anyhow::anyhow!("Unknown channel type: {channel_str}")),
         };
         
         let recipient = params

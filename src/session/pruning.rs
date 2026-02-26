@@ -5,9 +5,8 @@
 //! modify the stored history.
 
 use crate::types::provider::ChatMessage;
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Pruning configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,16 +42,19 @@ pub struct Pruner {
 
 impl Pruner {
     /// Create a new pruner with default config
+    #[must_use] 
     pub fn new() -> Self {
         Self::with_config(PruningConfig::default())
     }
 
     /// Create with custom config
+    #[must_use] 
     pub fn with_config(config: PruningConfig) -> Self {
         Self { config }
     }
 
     /// Check if pruning is needed based on token count
+    #[must_use] 
     pub fn should_prune(&self,
         _messages: &[ChatMessage],
         estimated_tokens: usize,
@@ -154,6 +156,7 @@ impl Pruner {
     }
 
     /// Quick estimate of tokens in messages
+    #[must_use] 
     pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         messages.iter().map(|m| {
             // Rough estimate: 4 chars ≈ 1 token
@@ -162,6 +165,7 @@ impl Pruner {
     }
 
     /// Get status
+    #[must_use] 
     pub fn status(&self) -> String {
         format!(
             "✂️  Pruning: {} | Max tool result: {} chars | Keep recent: {}",

@@ -12,7 +12,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Hygiene configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +62,7 @@ pub struct HygieneState {
 
 impl HygieneState {
     /// Check if hygiene is due based on interval
+    #[must_use] 
     pub fn is_due(&self, interval_hours: u64) -> bool {
         match self.last_run {
             None => true,
@@ -92,11 +93,13 @@ pub struct HygieneRunner {
 
 impl HygieneRunner {
     /// Create new hygiene runner
+    #[must_use] 
     pub fn new(config: HygieneConfig) -> Self {
         Self { config }
     }
     
     /// Create with default config
+    #[must_use] 
     pub fn default_config() -> Self {
         Self::new(HygieneConfig::default())
     }
@@ -142,7 +145,7 @@ impl HygieneRunner {
     }
     
     /// Run hygiene on a collection of entries
-    /// Returns (entries_to_keep, entries_to_remove, entries_to_archive)
+    /// Returns (`entries_to_keep`, `entries_to_remove`, `entries_to_archive`)
     pub fn clean_entries(
         &self,
         entries: &[MemoryEntry],
@@ -185,13 +188,12 @@ impl HygieneRunner {
             }
             
             // Check if over capacity (remove lowest importance oldest)
-            if idx >= self.config.max_entries_per_agent {
-                if entry.importance < self.config.importance_threshold {
+            if idx >= self.config.max_entries_per_agent
+                && entry.importance < self.config.importance_threshold {
                     debug!("Entry {} low importance over capacity, removing", entry.id);
                     to_remove.push((*entry).clone());
                     continue;
                 }
-            }
             
             to_keep.push((*entry).clone());
         }
@@ -229,7 +231,7 @@ impl HygieneRunner {
         Ok(format!(
             "🧹 Hygiene: {} | Last: {} | Total cleaned: {} | Config: max={}, ttl={}d",
             if self.config.enabled { "enabled" } else { "disabled" },
-            state.last_run.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "never".to_string()),
+            state.last_run.map_or_else(|| "never".to_string(), |t| t.format("%Y-%m-%d %H:%M").to_string()),
             state.total_cleaned,
             self.config.max_entries_per_agent,
             self.config.default_ttl_days

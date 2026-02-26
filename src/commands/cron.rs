@@ -25,7 +25,7 @@ pub enum CronCommands {
         /// Schedule expression (cron format: "0 9 * * *")
         #[arg(short, long)]
         schedule: String,
-        /// Timezone (e.g., "America/Los_Angeles")
+        /// Timezone (e.g., "`America/Los_Angeles`")
         #[arg(short, long)]
         timezone: Option<String>,
         /// Agent to run as
@@ -127,15 +127,15 @@ pub async fn handle_cron(
             Ok(())
         }
         CronCommands::Add { name, schedule, timezone, agent, execution, message, announce, delete_after_run } => {
-            println!("➕ Adding job '{}' with schedule '{}'", name, schedule);
+            println!("➕ Adding job '{name}' with schedule '{schedule}'");
             if let Some(tz) = timezone {
-                println!("  Timezone: {}", tz);
+                println!("  Timezone: {tz}");
             }
             if let Some(a) = agent {
-                println!("  Agent: {}", a);
+                println!("  Agent: {a}");
             }
-            println!("  Execution: {}", execution);
-            println!("  Message: {}", message);
+            println!("  Execution: {execution}");
+            println!("  Message: {message}");
             if announce {
                 println!("  Announce: enabled");
             }
@@ -145,22 +145,22 @@ pub async fn handle_cron(
             Ok(())
         }
         CronCommands::At { name, at, agent, message, announce } => {
-            println!("➕ Adding one-shot job '{}' at {}", name, at);
+            println!("➕ Adding one-shot job '{name}' at {at}");
             if let Some(a) = agent {
-                println!("  Agent: {}", a);
+                println!("  Agent: {a}");
             }
-            println!("  Message: {}", message);
+            println!("  Message: {message}");
             if announce {
                 println!("  Announce: enabled");
             }
             Ok(())
         }
         CronCommands::Every { name, interval, agent, message, announce } => {
-            println!("➕ Adding recurring job '{}' every {}", name, interval);
+            println!("➕ Adding recurring job '{name}' every {interval}");
             if let Some(a) = agent {
-                println!("  Agent: {}", a);
+                println!("  Agent: {a}");
             }
-            println!("  Message: {}", message);
+            println!("  Message: {message}");
             if announce {
                 println!("  Announce: enabled");
             }
@@ -168,18 +168,18 @@ pub async fn handle_cron(
         }
         CronCommands::Remove { job_id, force } => {
             if force {
-                println!("🗑️  Removing job '{}'...", job_id);
+                println!("🗑️  Removing job '{job_id}'...");
             } else {
-                println!("🗑️  Removing job '{}' (use --force to skip confirmation)...", job_id);
+                println!("🗑️  Removing job '{job_id}' (use --force to skip confirmation)...");
             }
             Ok(())
         }
         CronCommands::Run { job_id } => {
-            println!("▶️  Running job '{}'...", job_id);
+            println!("▶️  Running job '{job_id}'...");
             Ok(())
         }
         CronCommands::History { job_id, limit } => {
-            println!("📜 History for job '{}' (limit: {})", job_id, limit);
+            println!("📜 History for job '{job_id}' (limit: {limit})");
             Ok(())
         }
     }

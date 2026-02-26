@@ -3,11 +3,9 @@
 //! Before context is compacted, trigger a silent turn that reminds the model
 //! to write durable notes to memory. This prevents loss of important context.
 
-use crate::compaction::CompactionConfig;
 use crate::types::provider::ChatMessage;
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Configuration for memory flush before compaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,11 +51,13 @@ pub struct MemoryFlusher {
 
 impl MemoryFlusher {
     /// Create a new memory flusher
+    #[must_use] 
     pub fn new(workspace_writable: bool) -> Self {
         Self::with_config(MemoryFlushConfig::default(), workspace_writable)
     }
 
     /// Create with custom config
+    #[must_use] 
     pub fn with_config(config: MemoryFlushConfig, workspace_writable: bool) -> Self {
         Self {
             config,
@@ -111,6 +111,7 @@ impl MemoryFlusher {
     /// Create the flush prompt messages
     /// 
     /// These messages are injected to remind the model to store memories
+    #[must_use] 
     pub fn create_flush_messages(&self) -> Vec<ChatMessage> {
         vec![
             ChatMessage::system(self.config.system_prompt.as_str()),
@@ -138,26 +139,27 @@ impl MemoryFlusher {
         }
     }
 
-    /// Check if a response indicates NO_REPLY (silent)
+    /// Check if a response indicates `NO_REPLY` (silent)
+    #[must_use] 
     pub fn is_no_reply(response: &str) -> bool {
         let trimmed = response.trim().to_uppercase();
         trimmed == "NO_REPLY" || trimmed.contains("NO_REPLY")
     }
 
     /// Get current state
+    #[must_use] 
     pub fn state(&self) -> &FlushState {
         &self.state
     }
 
     /// Get status summary
+    #[must_use] 
     pub fn status(&self) -> String {
         format!(
             "💾 Memory flushes: {} | Last: {} | Writable: {}",
             self.state.flush_count,
             self.state
-                .last_flush_at
-                .map(|t| t.format("%H:%M").to_string())
-                .unwrap_or_else(|| "Never".to_string()),
+                .last_flush_at.map_or_else(|| "Never".to_string(), |t| t.format("%H:%M").to_string()),
             self.workspace_writable
         )
     }
@@ -180,6 +182,7 @@ pub struct CompactionWithFlush {
 
 impl CompactionWithFlush {
     /// Create default configuration
+    #[must_use] 
     pub fn default_config() -> Self {
         Self {
             reserve_tokens_floor: 20000,

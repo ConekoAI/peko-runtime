@@ -1,6 +1,6 @@
 //! Markdown memory backing - Human-readable memory files
 //!
-//! Matches OpenClaw's memory layout:
+//! Matches `OpenClaw`'s memory layout:
 //! - memory/YYYY-MM-DD.md - Daily logs (append-only)
 //! - MEMORY.md - Curated long-term memory
 //!
@@ -8,12 +8,12 @@
 
 use crate::memory::types::MemoryEntry;
 use anyhow::{Context, Result};
-use chrono::{Datelike, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Markdown memory configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +50,7 @@ pub struct MarkdownMemory {
 
 impl MarkdownMemory {
     /// Create a new Markdown memory backend
+    #[must_use] 
     pub fn new(config: MarkdownMemoryConfig) -> Self {
         Self {
             config,
@@ -58,11 +59,13 @@ impl MarkdownMemory {
     }
     
     /// Create with default config
+    #[must_use] 
     pub fn default_config() -> Self {
         Self::new(MarkdownMemoryConfig::default())
     }
     
     /// Get daily memory file path for a date
+    #[must_use] 
     pub fn daily_file_path(&self, date: chrono::DateTime<Utc>) -> PathBuf {
         self.config.workspace_dir
             .join(&self.config.daily_dir)
@@ -70,6 +73,7 @@ impl MarkdownMemory {
     }
     
     /// Get long-term memory file path
+    #[must_use] 
     pub fn long_term_path(&self) -> PathBuf {
         self.config.workspace_dir.join(&self.config.long_term_file)
     }
@@ -102,13 +106,13 @@ impl MarkdownMemory {
         
         // Format entry as Markdown
         let timestamp = today.format("%H:%M");
-        let mut entry_text = format!("\n## {}\n\n{}", timestamp, content);
+        let mut entry_text = format!("\n## {timestamp}\n\n{content}");
         
         // Add metadata as HTML comments
         if let Some(meta) = metadata {
             entry_text.push_str("\n\n<!--\n");
             for (key, value) in meta {
-                entry_text.push_str(&format!("{}: {}\n", key, value));
+                entry_text.push_str(&format!("{key}: {value}\n"));
             }
             entry_text.push_str("-->");
         }
@@ -149,7 +153,7 @@ impl MarkdownMemory {
         };
         
         // Check if section exists
-        let section_header = format!("## {}", section);
+        let section_header = format!("## {section}");
         if file_content.contains(&section_header) {
             // Append to existing section
             let parts: Vec<&str> = file_content.splitn(2, &section_header).collect();
@@ -162,12 +166,12 @@ impl MarkdownMemory {
                     file_content.len()
                 };
                 
-                let new_entry = format!("\n\n{}\n", content);
+                let new_entry = format!("\n\n{content}\n");
                 file_content.insert_str(insert_pos, &new_entry);
             }
         } else {
             // Add new section
-            file_content.push_str(&format!("\n\n## {}\n\n{}\n", section, content));
+            file_content.push_str(&format!("\n\n## {section}\n\n{content}\n"));
         }
         
         fs::write(&path, file_content).await
@@ -209,7 +213,7 @@ impl MarkdownMemory {
         Ok(Some(content))
     }
     
-    /// Read today's + yesterday's memory (like OpenClaw)
+    /// Read today's + yesterday's memory (like `OpenClaw`)
     pub async fn read_recent(&self,
     ) -> Result<Vec<(String, String)>> {
         let mut results = vec![];
@@ -230,6 +234,7 @@ impl MarkdownMemory {
     }
     
     /// Parse Markdown content into memory entries
+    #[must_use] 
     pub fn parse_entries(&self,
         content: &str,
         source: &str,
@@ -288,7 +293,7 @@ impl MarkdownMemory {
         
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map(|e| e == "md").unwrap_or(false) {
+            if path.extension().is_some_and(|e| e == "md") {
                 files.push(path);
             }
         }

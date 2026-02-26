@@ -112,6 +112,7 @@ pub struct GlobalPaths {
 
 impl GlobalPaths {
     /// Build paths from CLI arguments
+    #[must_use] 
     pub fn from_cli(cli: &Cli) -> Self {
         let config_dir = cli.config_dir.clone()
             .or_else(|| dirs::config_dir().map(|d| d.join("pekobot")))
@@ -134,16 +135,19 @@ impl GlobalPaths {
     }
     
     /// Get agents configuration directory
+    #[must_use] 
     pub fn agents_dir(&self) -> PathBuf {
         self.config_dir.join("agents")
     }
     
     /// Get agent config file path
+    #[must_use] 
     pub fn agent_config(&self, name: &str) -> PathBuf {
-        self.agents_dir().join(format!("{}.toml", name))
+        self.agents_dir().join(format!("{name}.toml"))
     }
     
     /// Get tools directory
+    #[must_use] 
     pub fn tools_dir(&self) -> PathBuf {
         self.data_dir.join("tools")
     }

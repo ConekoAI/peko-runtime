@@ -56,7 +56,7 @@ pub async fn handle_daemon(
             };
             
             if foreground {
-                println!("🚀 Starting daemon in foreground (interval: {}s)...", interval);
+                println!("🚀 Starting daemon in foreground (interval: {interval}s)...");
                 println!("   Config dir: {}", config.config_dir.display());
                 println!("   Data dir: {}", config.data_dir.display());
                 
@@ -64,7 +64,7 @@ pub async fn handle_daemon(
                 let daemon = Daemon::new(config, rx)?;
                 daemon.run().await?;
             } else {
-                println!("🚀 Starting daemon (interval: {}s)...", interval);
+                println!("🚀 Starting daemon (interval: {interval}s)...");
                 println!("   (Background daemon mode not yet implemented, use --foreground)");
             }
             Ok(())
@@ -84,7 +84,7 @@ pub async fn handle_daemon(
             Ok(())
         }
         DaemonCommands::Restart { interval } => {
-            println!("🔄 Restarting daemon (interval: {}s)...", interval);
+            println!("🔄 Restarting daemon (interval: {interval}s)...");
             println!("   (Daemon restart not yet implemented)");
             Ok(())
         }

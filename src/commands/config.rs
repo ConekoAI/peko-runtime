@@ -31,7 +31,7 @@ pub enum ConfigCommands {
     
     /// Get a configuration value
     Get {
-        /// Key path (e.g., "agent.name" or "provider.api_key")
+        /// Key path (e.g., "agent.name" or "`provider.api_key`")
         key: String,
         /// Config file to read from
         #[arg(short, long)]
@@ -59,11 +59,11 @@ pub async fn handle_config(
     match cmd {
         ConfigCommands::Validate { file } => {
             let path = file.unwrap_or_else(|| "pekobot.toml".to_string());
-            println!("✓ Validating: {}", path);
+            println!("✓ Validating: {path}");
             Ok(())
         }
         ConfigCommands::Init { output, template } => {
-            println!("📝 Initializing config: {} (template: {})", output, template);
+            println!("📝 Initializing config: {output} (template: {template})");
             Ok(())
         }
         ConfigCommands::Defaults => {
@@ -81,11 +81,11 @@ pub async fn handle_config(
             Ok(())
         }
         ConfigCommands::Get { key, file } => {
-            println!("🔍 Getting '{}' from {:?}", key, file);
+            println!("🔍 Getting '{key}' from {file:?}");
             Ok(())
         }
         ConfigCommands::Set { key, value, file } => {
-            println!("✏️  Setting '{}' = '{}' in {:?}", key, value, file);
+            println!("✏️  Setting '{key}' = '{value}' in {file:?}");
             Ok(())
         }
     }

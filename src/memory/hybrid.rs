@@ -4,7 +4,7 @@
 //! Vector search is strong at semantic similarity (paraphrases, meaning)
 //! Hybrid combines both for better retrieval.
 
-use crate::memory::vector::{SimilarityResult, VectorMemory};
+use crate::memory::vector::VectorMemory;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
@@ -38,6 +38,7 @@ impl Default for HybridSearchConfig {
 
 impl HybridSearchConfig {
     /// Create with normalized weights (ensure they sum to 1.0)
+    #[must_use] 
     pub fn with_weights(vector_weight: f32, text_weight: f32) -> Self {
         let total = vector_weight + text_weight;
         let normalized_vector = if total > 0.0 {
@@ -92,6 +93,7 @@ pub struct BM25Scorer {
 
 impl BM25Scorer {
     /// Create a new BM25 scorer
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             avgdl: 100.0, // Default average document length
@@ -103,6 +105,7 @@ impl BM25Scorer {
     }
     
     /// Calculate BM25 score for a document
+    #[must_use] 
     pub fn score(&self,
         query_terms: &[String],
         doc_content: &str,
@@ -133,6 +136,7 @@ impl BM25Scorer {
     }
     
     /// Normalize BM25 scores to 0-1 range
+    #[must_use] 
     pub fn normalize_score(score: f32, max_score: f32) -> f32 {
         if max_score <= 0.0 {
             return 0.0;
@@ -163,7 +167,7 @@ fn tokenize_query(query: &str) -> Vec<String> {
     query
         .to_lowercase()
         .split_whitespace()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .filter(|s| s.len() > 2) // Filter out very short terms
         .collect()
 }
@@ -176,6 +180,7 @@ pub struct HybridSearcher {
 
 impl HybridSearcher {
     /// Create a new hybrid searcher
+    #[must_use] 
     pub fn new(config: HybridSearchConfig) -> Self {
         Self {
             config,
@@ -184,6 +189,7 @@ impl HybridSearcher {
     }
     
     /// Create with default config
+    #[must_use] 
     pub fn default_config() -> Self {
         Self::new(HybridSearchConfig::default())
     }

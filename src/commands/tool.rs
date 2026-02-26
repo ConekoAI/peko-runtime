@@ -70,14 +70,14 @@ pub async fn handle_tool(
             Ok(())
         }
         ToolCommands::Search { query, limit } => {
-            println!("🔍 Searching Pekohub for '{}' (limit: {})...", query, limit);
+            println!("🔍 Searching Pekohub for '{query}' (limit: {limit})...");
             println!("  (Pekohub integration coming soon)");
             Ok(())
         }
         ToolCommands::Install { name, version, force } => {
-            println!("📥 Installing tool '{}'...", name);
+            println!("📥 Installing tool '{name}'...");
             if let Some(v) = version {
-                println!("  Version: {}", v);
+                println!("  Version: {v}");
             }
             if force {
                 println!("  Force: true");
@@ -87,14 +87,14 @@ pub async fn handle_tool(
         }
         ToolCommands::Uninstall { name, force } => {
             if force {
-                println!("🗑️  Uninstalling tool '{}'...", name);
+                println!("🗑️  Uninstalling tool '{name}'...");
             } else {
-                println!("🗑️  Uninstalling tool '{}' (use --force to skip confirmation)...", name);
+                println!("🗑️  Uninstalling tool '{name}' (use --force to skip confirmation)...");
             }
             Ok(())
         }
         ToolCommands::Info { name } => {
-            println!("📋 Tool Information: {}", name);
+            println!("📋 Tool Information: {name}");
             Ok(())
         }
     }
