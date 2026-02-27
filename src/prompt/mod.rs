@@ -9,7 +9,7 @@ pub mod bootstrap;
 pub mod builder;
 
 pub use bootstrap::{BootstrapConfig, BootstrapFile, inject_bootstrap_files, default_workspace_dir};
-pub use builder::{SystemPromptBuilder, PromptMode, PromptSection};
+pub use builder::{SystemPromptBuilder, PromptMode};
 
 use std::path::PathBuf;
 

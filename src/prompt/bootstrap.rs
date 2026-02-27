@@ -24,8 +24,8 @@ impl Default for BootstrapConfig {
                 BootstrapFile::optional("TOOLS.md"),     // Tool guidance
                 BootstrapFile::optional("IDENTITY.md"),  // Agent identity
                 BootstrapFile::optional("USER.md"),      // User info
-                BootstrapFile::optional("HEARTBEAT.md"), // Periodic tasks
                 BootstrapFile::optional("MEMORY.md"),    // Long-term memory
+                // Note: HEARTBEAT.md is NOT injected - it's read proactively on heartbeat polls
             ],
         }
     }
