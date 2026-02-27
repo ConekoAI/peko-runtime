@@ -520,6 +520,8 @@ pub mod handlers {
             auto_accept_trusted: false,
             approval_threshold: Some(100.0),
             default_timeout_seconds: 300,
+            workspace: None,
+            prompt: None,
         }
     }
 }

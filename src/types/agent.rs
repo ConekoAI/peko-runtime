@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Agent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +29,10 @@ pub struct AgentConfig {
     pub approval_threshold: Option<f64>,
     /// Default timeout for tasks (seconds)
     pub default_timeout_seconds: u64,
+    /// Workspace directory for bootstrap files
+    pub workspace: Option<PathBuf>,
+    /// System prompt configuration
+    pub prompt: Option<PromptConfig>,
 }
 
 impl Default for AgentConfig {
@@ -44,8 +49,63 @@ impl Default for AgentConfig {
             auto_accept_trusted: false,
             approval_threshold: Some(100.0),
             default_timeout_seconds: 300,
+            workspace: None,
+            prompt: None,
         }
     }
+}
+
+/// Prompt configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptConfig {
+    /// Prompt mode: full, minimal, none
+    #[serde(default)]
+    pub mode: PromptMode,
+    /// Custom system prompt override (replaces default)
+    pub custom_prompt: Option<String>,
+    /// Additional prompt sections to inject
+    #[serde(default)]
+    pub extra_sections: Vec<String>,
+    /// Bootstrap file configuration
+    pub bootstrap: Option<BootstrapFileConfig>,
+}
+
+/// Prompt mode - controls which sections are included
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptMode {
+    /// All sections (default for main sessions)
+    #[default]
+    Full,
+    /// Reduced sections (for sub-agents)
+    Minimal,
+    /// Base identity only
+    None,
+}
+
+impl PromptMode {
+    /// Parse from string
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "minimal" => Self::Minimal,
+            "none" => Self::None,
+            _ => Self::Full,
+        }
+    }
+}
+
+/// Bootstrap file configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapFileConfig {
+    /// Maximum characters per file
+    #[serde(default = "default_max_chars")]
+    pub max_chars_per_file: usize,
+    /// Custom bootstrap files to load
+    pub files: Option<Vec<String>>,
+}
+
+fn default_max_chars() -> usize {
+    20_000
 }
 
 /// Agent capability definition

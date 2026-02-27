@@ -75,6 +75,7 @@ pub mod manager;
 pub mod memory;
 pub mod observability;
 pub mod portable;
+pub mod prompt;
 pub mod providers;
 pub mod security;
 pub mod session;

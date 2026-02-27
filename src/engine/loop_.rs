@@ -2,6 +2,7 @@
 
 use crate::agent::Agent;
 use crate::providers::Provider;
+use crate::prompt::{SystemPromptBuilder, PromptMode};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -112,28 +113,27 @@ impl AgenticLoop {
         }
     }
 
-    /// Build system prompt with available tools
+    /// Build system prompt using the new builder
     fn build_system_prompt(&self) -> String {
-        let tool_descriptions: Vec<String> = self
-            .tools
-            .iter()
-            .map(|t| format!("- {}: {}", t.name(), t.description()))
-            .collect();
-
-        format!(
-            r#"You are an autonomous agent. You have access to the following tools:
-
-{}
-
-When you need to use a tool, respond in this exact format:
-TOOL_CALL: {{"name": "tool_name", "parameters": {{"key": "value"}}}}
-
-When you have a final answer, respond with:
-FINAL_ANSWER: your answer here
-
-Think step by step. Use tools when needed. Always end with FINAL_ANSWER."#,
-            tool_descriptions.join("\n")
-        )
+        // Get prompt mode from agent config
+        let mode = self.agent.config.prompt.as_ref()
+            .map(|p| match p.mode {
+                crate::types::agent::PromptMode::Full => PromptMode::Full,
+                crate::types::agent::PromptMode::Minimal => PromptMode::Minimal,
+                crate::types::agent::PromptMode::None => PromptMode::None,
+            })
+            .unwrap_or(PromptMode::Full);
+        
+        // Get workspace from config or use default
+        let workspace = self.agent.config.workspace.clone()
+            .unwrap_or_else(crate::prompt::default_workspace_dir);
+        
+        // Build the prompt using the new builder
+        SystemPromptBuilder::new(&self.agent.config.name)
+            .with_mode(mode)
+            .with_tools(self.tools.clone())
+            .with_workspace(workspace)
+            .build()
     }
 
     /// Format context messages for the provider
