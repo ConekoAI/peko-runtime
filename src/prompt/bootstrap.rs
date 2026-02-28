@@ -136,7 +136,7 @@ mod tests {
     fn test_bootstrap_config_default() {
         let config = BootstrapConfig::default();
         assert_eq!(config.max_chars_per_file, 20_000);
-        assert_eq!(config.files.len(), 7); // All bootstrap files
+        assert_eq!(config.files.len(), 6); // AGENTS, SOUL, TOOLS, IDENTITY, USER, MEMORY (HEARTBEAT.md is read proactively, not injected)
     }
     
     #[test]
