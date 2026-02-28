@@ -2,7 +2,7 @@
 //!
 //! Matches OpenClaw's AGENTS.md, SOUL.md, TOOLS.md, etc. injection
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{debug, warn};
 
 /// Bootstrap file configuration

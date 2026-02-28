@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, Notify};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Queue mode for handling inbound messages
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

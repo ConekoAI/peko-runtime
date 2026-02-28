@@ -1,7 +1,6 @@
 //! Agent manager core implementation
 
 use crate::agent::Agent;
-use crate::engine::state::AgentState;
 use crate::identity::{storage::KeyStorage, Identity};
 use crate::manager::{
     context::AgentContext,

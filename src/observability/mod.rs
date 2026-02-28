@@ -10,8 +10,8 @@ pub mod metrics;
 pub mod tracer;
 
 pub use audit::{AuditEvent, AuditLogger, AuditSeverity};
-pub use metrics::{Counter, Gauge, Histogram, MetricsCollector};
-pub use tracer::{TraceContext, TraceSpan, Tracer};
+pub use metrics::MetricsCollector;
+pub use tracer::{TraceSpan, Tracer};
 
 use anyhow::Result;
 use std::sync::Arc;

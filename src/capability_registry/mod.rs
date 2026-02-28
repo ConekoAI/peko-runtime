@@ -15,10 +15,8 @@
 //! ```
 
 mod client;
-pub use client::*;
 
 mod reputation_client;
-pub use reputation_client::*;
 
 // Re-export standard capability IDs for convenience
 pub mod standard_capabilities {
