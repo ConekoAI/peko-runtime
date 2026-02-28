@@ -77,6 +77,7 @@ pub mod observability;
 pub mod portable;
 pub mod prompt;
 pub mod providers;
+pub mod queue;
 pub mod security;
 pub mod session;
 pub mod skills;
