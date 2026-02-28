@@ -350,9 +350,9 @@ pub mod handlers {
 
         // Bootstrap workspace with OpenClaw-style files
         let workspace_dir = paths.data_dir.join("workspaces").join(&name);
-        if let Err(e) = crate::commands::agent_bootstrap::bootstrap_agent_workspace(&name,
-            &workspace_dir,
-        ) {
+        if let Err(e) =
+            crate::commands::agent_bootstrap::bootstrap_agent_workspace(&name, &workspace_dir)
+        {
             eprintln!("⚠️  Warning: Failed to bootstrap workspace: {e}");
         }
 

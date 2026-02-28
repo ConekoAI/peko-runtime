@@ -49,7 +49,10 @@ impl AgentBootstrap {
             std::fs::remove_file(bootstrap_path)?;
         }
 
-        println!("\n✅ Agent workspace ready at: {}", self.workspace_dir.display());
+        println!(
+            "\n✅ Agent workspace ready at: {}",
+            self.workspace_dir.display()
+        );
         println!("   Edit AGENTS.md for operating instructions");
         println!("   Edit SOUL.md to customize persona");
 
@@ -174,11 +177,12 @@ Delete this file. You don't need a bootstrap script anymore — you're you now.
         println!("\n🎭 Let's set up your agent's identity...\n");
 
         let creature = self.ask("What kind of creature are you? (e.g., 'AI assistant', 'digital rabbit', 'helpful fox')")?;
-        let vibe = self.ask("What's your vibe? (e.g., 'professional', 'playful', 'sarcastic', 'warm')")?;
+        let vibe =
+            self.ask("What's your vibe? (e.g., 'professional', 'playful', 'sarcastic', 'warm')")?;
         let emoji = self.ask("What's your signature emoji? (e.g., 🐰, 🤖, 🦊)")?;
-        
+
         println!("\n👤 Now, tell me about the user...\n");
-        
+
         let user_name = self.ask("What's the user's name?")?;
         let user_title = self.ask("What should you call them? (e.g., 'Miz', 'Boss', 'Doctor')")?;
         let pronouns = self.ask("What are their pronouns? (e.g., He/Him, She/Her, They/Them)")?;

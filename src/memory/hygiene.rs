@@ -6,7 +6,7 @@
 //! - Compressing or summarizing aged memories
 //! - Removing low-importance entries when capacity reached
 
-use crate::types::memory::{MemoryEntry, MemoryScope};
+use crate::types::memory::MemoryEntry;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};

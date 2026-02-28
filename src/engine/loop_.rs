@@ -1,8 +1,8 @@
 //! Agentic loop - core execution engine with tool calling
 
 use crate::agent::Agent;
+use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::Provider;
-use crate::prompt::{SystemPromptBuilder, PromptMode};
 use crate::tools::Tool;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -116,18 +116,26 @@ impl AgenticLoop {
     /// Build system prompt using the new builder
     fn build_system_prompt(&self) -> String {
         // Get prompt mode from agent config
-        let mode = self.agent.config.prompt.as_ref()
+        let mode = self
+            .agent
+            .config
+            .prompt
+            .as_ref()
             .map(|p| match p.mode {
                 crate::types::agent::PromptMode::Full => PromptMode::Full,
                 crate::types::agent::PromptMode::Minimal => PromptMode::Minimal,
                 crate::types::agent::PromptMode::None => PromptMode::None,
             })
             .unwrap_or(PromptMode::Full);
-        
+
         // Get workspace from config or use default
-        let workspace = self.agent.config.workspace.clone()
+        let workspace = self
+            .agent
+            .config
+            .workspace
+            .clone()
             .unwrap_or_else(crate::prompt::default_workspace_dir);
-        
+
         // Build the prompt using the new builder
         SystemPromptBuilder::new(&self.agent.config.name)
             .with_mode(mode)

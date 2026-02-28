@@ -236,8 +236,7 @@ impl AgentManager {
     }
 
     /// Export an agent to a .agent package
-    pub async fn export_agent(
-        &self, did: &str, options: ExportOptions) -> Result<PathBuf> {
+    pub async fn export_agent(&self, did: &str, options: ExportOptions) -> Result<PathBuf> {
         info!("Exporting agent: {}", did);
 
         let agent = self
@@ -334,8 +333,7 @@ impl AgentManager {
     }
 
     /// Get capability details
-    pub async fn get_capability_details(
-        &self, capability: &str) -> Vec<CapabilityRecord> {
+    pub async fn get_capability_details(&self, capability: &str) -> Vec<CapabilityRecord> {
         let reg = self.registry.read().await;
         reg.get_capability(capability)
     }
@@ -382,10 +380,7 @@ impl AgentManager {
 
     /// Create agent communication tools
     #[must_use]
-    pub fn create_communication_tools(
-        &self,
-        agent_did: &str,
-    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+    pub fn create_communication_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{
             AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, AgentsListTool,
             SessionMessagingTool, SessionRegistry,

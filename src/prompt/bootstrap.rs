@@ -19,13 +19,13 @@ impl Default for BootstrapConfig {
             workspace_dir: PathBuf::from("."),
             max_chars_per_file: 20_000, // Match OpenClaw default
             files: vec![
-                BootstrapFile::required("AGENTS.md"),    // Operating instructions
-                BootstrapFile::optional("SOUL.md"),      // Persona/tone
-                BootstrapFile::optional("TOOLS.md"),     // Tool guidance
-                BootstrapFile::optional("IDENTITY.md"),  // Agent identity
-                BootstrapFile::optional("USER.md"),      // User info
-                BootstrapFile::optional("MEMORY.md"),    // Long-term memory
-                // Note: HEARTBEAT.md is NOT injected - it's read proactively on heartbeat polls
+                BootstrapFile::required("AGENTS.md"),   // Operating instructions
+                BootstrapFile::optional("SOUL.md"),     // Persona/tone
+                BootstrapFile::optional("TOOLS.md"),    // Tool guidance
+                BootstrapFile::optional("IDENTITY.md"), // Agent identity
+                BootstrapFile::optional("USER.md"),     // User info
+                BootstrapFile::optional("MEMORY.md"),   // Long-term memory
+                                                        // Note: HEARTBEAT.md is NOT injected - it's read proactively on heartbeat polls
             ],
         }
     }
@@ -47,7 +47,7 @@ impl BootstrapFile {
             section_name: name.replace(".md", "").to_uppercase(),
         }
     }
-    
+
     pub fn optional(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -76,10 +76,10 @@ pub struct InjectedSection {
 pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
     let mut sections = vec![];
     let mut total_chars = 0;
-    
+
     for file_def in &config.files {
         let path = config.workspace_dir.join(&file_def.name);
-        
+
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let content_len = content.len();
@@ -116,8 +116,11 @@ pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
             }
         }
     }
-    
-    InjectedContext { sections, total_chars }
+
+    InjectedContext {
+        sections,
+        total_chars,
+    }
 }
 
 /// Get default workspace directory
@@ -131,24 +134,32 @@ pub fn default_workspace_dir() -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_bootstrap_config_default() {
         let config = BootstrapConfig::default();
         assert_eq!(config.max_chars_per_file, 20_000);
         assert_eq!(config.files.len(), 6); // AGENTS, SOUL, TOOLS, IDENTITY, USER, MEMORY (HEARTBEAT.md is read proactively, not injected)
     }
-    
+
     #[test]
     fn test_inject_bootstrap_files() {
         let tmp = TempDir::new().unwrap();
-        
+
         // Create a test AGENTS.md
-        std::fs::write(tmp.path().join("AGENTS.md"), "# Test Agent\n\nInstructions here.").unwrap();
-        
+        std::fs::write(
+            tmp.path().join("AGENTS.md"),
+            "# Test Agent\n\nInstructions here.",
+        )
+        .unwrap();
+
         // Create optional SOUL.md
-        std::fs::write(tmp.path().join("SOUL.md"), "# Persona\n\nFriendly and helpful.").unwrap();
-        
+        std::fs::write(
+            tmp.path().join("SOUL.md"),
+            "# Persona\n\nFriendly and helpful.",
+        )
+        .unwrap();
+
         let config = BootstrapConfig {
             workspace_dir: tmp.path().to_path_buf(),
             max_chars_per_file: 20_000,
@@ -158,31 +169,31 @@ mod tests {
                 BootstrapFile::optional("MISSING.md"),
             ],
         };
-        
+
         let injected = inject_bootstrap_files(&config);
-        
+
         assert_eq!(injected.sections.len(), 2); // AGENTS and SOUL, not MISSING
         assert!(injected.sections.iter().any(|s| s.name == "AGENTS"));
         assert!(injected.sections.iter().any(|s| s.name == "SOUL"));
         assert!(!injected.sections.iter().any(|s| s.name == "MISSING"));
     }
-    
+
     #[test]
     fn test_truncate_long_file() {
         let tmp = TempDir::new().unwrap();
-        
+
         // Create a file longer than max_chars
         let long_content = "a".repeat(100);
         std::fs::write(tmp.path().join("LONG.md"), &long_content).unwrap();
-        
+
         let config = BootstrapConfig {
             workspace_dir: tmp.path().to_path_buf(),
             max_chars_per_file: 50, // Small limit for testing
             files: vec![BootstrapFile::optional("LONG.md")],
         };
-        
+
         let injected = inject_bootstrap_files(&config);
-        
+
         assert_eq!(injected.sections.len(), 1);
         assert!(injected.sections[0].truncated);
         assert!(injected.sections[0].content.ends_with("..."));

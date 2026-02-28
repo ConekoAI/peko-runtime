@@ -236,10 +236,7 @@ impl MessageQueue {
 
         // Handle interrupt mode - abort active run
         if mode == QueueMode::Interrupt && lane.active {
-            warn!(
-                "Interrupting active run for session {}",
-                session_key
-            );
+            warn!("Interrupting active run for session {}", session_key);
             lane.active = false;
             lane.run_started_at = None;
             lane.pending_tool_calls.clear();
@@ -262,13 +259,10 @@ impl MessageQueue {
                     // Collect dropped messages for summary
                     let dropped: Vec<_> = lane.queue.drain(0..lane.queue.len() / 2).collect();
                     self.increment_dropped().await;
-                    
+
                     // Create summary
-                    let summary = format!(
-                        "[{} messages summarized]",
-                        dropped.len()
-                    );
-                    
+                    let summary = format!("[{} messages summarized]", dropped.len());
+
                     // Add synthetic message with summary
                     let summary_msg = QueuedMessage {
                         content: summary,
@@ -308,8 +302,7 @@ impl MessageQueue {
     }
 
     /// Dequeue the next message for processing
-    pub async fn dequeue(&self,
-    ) -> Result<Option<(QueuedMessage, QueueToken)>, QueueError> {
+    pub async fn dequeue(&self) -> Result<Option<(QueuedMessage, QueueToken)>, QueueError> {
         loop {
             // Try to acquire global concurrency permit
             let _permit = match self.global_sem.clone().try_acquire_owned() {
@@ -360,12 +353,11 @@ impl MessageQueue {
                 if let Some(lane) = lanes.get_mut(&lane_key) {
                     lane.active = true;
                     lane.run_started_at = Some(Instant::now());
-                    
+
                     // For collect mode, coalesce remaining messages
                     if msg.mode == QueueMode::Collect {
-                        let coalesced = Self::coalesce_messages(&mut lane.queue,
-                            self.config.debounce_ms,
-                        );
+                        let coalesced =
+                            Self::coalesce_messages(&mut lane.queue, self.config.debounce_ms);
                         if !coalesced.is_empty() {
                             msg.content = format!(
                                 "{}\n\n[Additional messages:]\n{}",
@@ -403,7 +395,7 @@ impl MessageQueue {
     fn coalesce_messages(queue: &mut VecDeque<QueuedMessage>, debounce_ms: u64) -> Vec<String> {
         let cutoff = Instant::now() - Duration::from_millis(debounce_ms);
         let mut coalesced = Vec::new();
-        
+
         // Take messages that arrived within debounce window
         while let Some(msg) = queue.front() {
             if msg.queued_at < cutoff {
@@ -412,7 +404,7 @@ impl MessageQueue {
                 break;
             }
         }
-        
+
         coalesced
     }
 
@@ -420,7 +412,7 @@ impl MessageQueue {
     pub async fn stats(&self) -> QueueStats {
         let lanes = self.lanes.lock().await;
         let stats = self.stats.lock().await;
-        
+
         QueueStats {
             total_queued: stats.total_queued,
             total_processed: stats.total_processed,
@@ -432,14 +424,10 @@ impl MessageQueue {
     }
 
     /// Set queue mode for a session (per-session override)
-    pub async fn set_session_mode(
-        &self,
-        session_key: &str,
-        mode: QueueMode,
-    ) {
+    pub async fn set_session_mode(&self, session_key: &str, mode: QueueMode) {
         let lane_key = format!("session:{}", session_key);
         let mut lanes = self.lanes.lock().await;
-        
+
         if let Some(lane) = lanes.get_mut(&lane_key) {
             // Update mode for all queued messages
             for msg in &mut lane.queue {
@@ -497,9 +485,7 @@ impl QueueToken {
     }
 
     /// Register a pending tool call that can be cancelled
-    pub async fn register_tool_call(&self,
-        tool_call_id: String,
-    ) {
+    pub async fn register_tool_call(&self, tool_call_id: String) {
         let mut lanes = self.lanes.lock().await;
         if let Some(lane) = lanes.get_mut(&self.lane_key) {
             lane.pending_tool_calls.push(tool_call_id);
@@ -507,10 +493,7 @@ impl QueueToken {
     }
 
     /// Mark a tool call as complete
-    pub async fn complete_tool_call(
-        &self,
-        tool_call_id: &str,
-    ) {
+    pub async fn complete_tool_call(&self, tool_call_id: &str) {
         let mut lanes = self.lanes.lock().await;
         if let Some(lane) = lanes.get_mut(&self.lane_key) {
             lane.pending_tool_calls.retain(|id| id != tool_call_id);
@@ -536,8 +519,14 @@ mod tests {
         assert_eq!(QueueMode::from_str("steer"), QueueMode::Steer);
         assert_eq!(QueueMode::from_str("followup"), QueueMode::Followup);
         assert_eq!(QueueMode::from_str("collect"), QueueMode::Collect);
-        assert_eq!(QueueMode::from_str("steer-backlog"), QueueMode::SteerBacklog);
-        assert_eq!(QueueMode::from_str("steer_backlog"), QueueMode::SteerBacklog);
+        assert_eq!(
+            QueueMode::from_str("steer-backlog"),
+            QueueMode::SteerBacklog
+        );
+        assert_eq!(
+            QueueMode::from_str("steer_backlog"),
+            QueueMode::SteerBacklog
+        );
         assert_eq!(QueueMode::from_str("interrupt"), QueueMode::Interrupt);
         assert_eq!(QueueMode::from_str("queue"), QueueMode::Steer); // Legacy
         assert_eq!(QueueMode::from_str("unknown"), QueueMode::Collect); // Default
