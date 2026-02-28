@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    if let Some(query) = args.search {
+    if let Some(ref query) = args.search {
         println!("\n🔍 Searching for '{}'...\n", query);
 
         match remote_client.search_tools(&query).await {
@@ -122,7 +122,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    if let Some(tool_name) = args.install {
+    if let Some(ref tool_name) = args.install {
         println!("\n📥 Installing '{}' from remote registry...\n", tool_name);
 
         // In a real scenario, this would download and install
