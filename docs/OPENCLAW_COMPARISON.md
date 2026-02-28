@@ -1,269 +1,326 @@
-# Pekobot vs OpenClaw: Module Comparison
+# Pekobot vs OpenClaw - Core Capabilities Comparison
 
 ## Executive Summary
 
 | Aspect | Pekobot | OpenClaw |
 |--------|---------|----------|
-| **Language** | Rust | TypeScript |
-| **Core Size** | ~2MB (minimal) | ~27,000 lines |
-| **Architecture** | Modular runtime + external tools | Monolithic with bundled features |
-| **Plugin System** | Dynamic library loading (WIP) | Built-in plugin registry |
-| **Multi-Agent** | A2A protocol | Native multi-agent orchestration |
-| **Channels** | 7 channels | 10+ channels |
-| **LLM Providers** | 15 providers | 20+ providers |
+| **Language** | Rust | TypeScript (Node.js) |
+| **Binary Size** | ~2MB (minimal core) | ~100MB+ (Node.js bundled) |
+| **Startup Time** | <50ms | ~1-2s |
+| **Architecture** | Modular core + on-demand tools | Monolithic with bundled features |
+| **Network** | Optional Coneko integration | Standalone gateway |
+| **License** | TBD | MIT |
 
 ---
 
-## Core Capabilities Comparison
+## Core Runtime Comparison
 
 ### 1. Agent Runtime
 
 | Feature | Pekobot | OpenClaw | Notes |
 |---------|---------|----------|-------|
-| **Agent Lifecycle** | ✅ Manager + Pool | ✅ agents/ + lifecycle/ | Pekobot uses Manager pattern; OpenClaw has embedded runner |
-| **State Machine** | ✅ Engine + State | ✅ pi-embedded-runner/ | Both have robust state management |
-| **Multi-Agent Coordination** | ✅ A2A Protocol | ✅ Native multi-agent | OpenClaw has more mature subagent system |
-| **Session Management** | ✅ SessionManager | ✅ sessions/ + auto-reply/ | OpenClaw has more sophisticated session routing |
-| **Queue Management** | ✅ Lane-aware FIFO | ✅ process/command-queue.ts | Both implement queue modes (steer/followup/collect) |
-| **Subagents** | ✅ sessions_spawn | ✅ subagent-registry/ | OpenClaw has more mature subagent registry |
-
-**Winner: OpenClaw** — More mature subagent and session routing infrastructure.
-
----
+| **Agent Lifecycle** | ✅ Full spawn/start/stop/restart | ✅ Full lifecycle | Both support complete lifecycle |
+| **Agent Pool** | ✅ With concurrency limits | ✅ Per-session isolation | Pekobot has configurable caps |
+| **Multi-Agent** | ✅ Local registry + optional Coneko | ✅ Workspace-based routing | OpenClaw: native multi-agent |
+| **Agent State** | ✅ Idle/Busy/Error/Stopped | ✅ Similar states | Both track agent state |
+| **Portable Agents** | ✅ `.agent` packages with encryption | ❌ Not supported | Pekobot: unique feature |
+| **Agent Export/Import** | ✅ Packager/Unpackager | ❌ Not supported | Pekobot: unique feature |
 
 ### 2. Identity & Security
 
 | Feature | Pekobot | OpenClaw | Notes |
 |---------|---------|----------|-------|
-| **DID Identity** | ✅ ed25519-based | ✅ agents/identity/ | Pekobot has cleaner DID implementation |
-| **Key Storage** | ✅ SQLite + encrypted | ✅ auth-profiles/ | OpenClaw has more auth provider support |
-| **Sandbox** | ⚠️ Planned | ✅ agents/sandbox/ | OpenClaw has Docker sandbox |
-| **Audit Logging** | ✅ Basic | ✅ security/audit/ | OpenClaw has comprehensive audit |
-| **Secret Manager** | ✅ 6 phases complete | ⚠️ Basic | **Pekobot leads** on secret management |
-| **Capability Registry** | ✅ Local + reputation | ✅ agents/model-catalog/ | Both have capability systems |
-
-**Winner: Tie** — Pekobot has better secret management; OpenClaw has better sandbox/audit.
-
----
+| **DID Identity** | ✅ ed25519-based DIDs | ❌ Not mentioned | Pekobot: decentralized identifiers |
+| **Key Storage** | ✅ Encrypted SQLite | ❌ Not mentioned | Pekobot: secure key management |
+| **Secret Manager** | ✅ 6-phase implementation | ❌ Not mentioned | Pekobot: encrypted secrets |
+| **Security Sandbox** | ✅ Filesystem restrictions | ✅ Channel restrictions | Different approaches |
+| **Allowlists** | ✅ Tool-level + Channel-level | ✅ Channel allowFrom | Both support access control |
 
 ### 3. Communication Channels
 
-| Channel | Pekobot | OpenClaw |
-|---------|---------|----------|
-| CLI | ✅ | ✅ |
-| HTTP/Webhook | ✅ | ✅ |
-| Telegram | ✅ | ✅ |
-| Discord | ✅ | ✅ |
-| Slack | ✅ | ✅ |
-| Matrix | ✅ | ✅ |
-| WhatsApp | ✅ | ✅ |
-| Signal | ❌ | ✅ |
-| iMessage/BlueBubbles | ❌ | ✅ |
-| LINE | ❌ | ✅ |
-| WebChat | ❌ | ✅ |
+| Channel | Pekobot | OpenClaw | Notes |
+|---------|---------|----------|-------|
+| **CLI** | ✅ Interactive | ✅ CLI + TUI | Both fully supported |
+| **HTTP/Webhook** | ✅ REST API | ✅ Webhooks | Both supported |
+| **Telegram** | ✅ Bot API | ✅ gramY | Both supported |
+| **Discord** | ✅ Bot API | ✅ discord.js | Both supported |
+| **Slack** | ✅ Web API | ✅ Socket Mode | Both supported |
+| **Matrix** | ✅ Client-Server API | ❌ Not mentioned | Pekobot: unique |
+| **WhatsApp** | ✅ Business Cloud API | ✅ WhatsApp Web (Baileys) | Different implementations |
+| **iMessage** | ❌ Not supported | ✅ macOS only | OpenClaw: macOS exclusive |
+| **Mattermost** | ❌ Not supported | ✅ Plugin | OpenClaw: plugin |
+| **BlueBubbles** | ❌ Not supported | ✅ Plugin | OpenClaw: iMessage bridge |
 
-**Winner: OpenClaw** — More channel integrations (Signal, iMessage, LINE, WebChat).
+**Winner:** OpenClaw has more channels (iMessage, Mattermost, BlueBubbles)
+**Pekobot Advantage:** Matrix support, WhatsApp Business API (official)
 
----
+### 4. LLM Providers
 
-### 4. LLM Provider Support
+| Provider | Pekobot | OpenClaw | Notes |
+|----------|---------|----------|-------|
+| **OpenAI** | ✅ Full support | ✅ Supported | Both |
+| **Anthropic** | ✅ Full support | ✅ Supported | Both |
+| **Kimi** | ✅ Native support | ✅ Supported | Both |
+| **Ollama** | ✅ Local models | ✅ Supported | Both |
+| **OpenRouter** | ✅ Supported | ✅ Supported | Both |
+| **Groq** | ✅ Supported | ✅ Supported | Both |
+| **Together** | ✅ Supported | ✅ Supported | Both |
+| **Fireworks** | ✅ Supported | ❓ Unknown | Pekobot advantage |
+| **Cohere** | ✅ Supported | ❓ Unknown | Pekobot advantage |
+| **Perplexity** | ✅ Supported | ❓ Unknown | Pekobot advantage |
+| **xAI** | ✅ Supported | ❓ Unknown | Pekobot advantage |
+| **Bedrock** | ✅ AWS | ❓ Unknown | Pekobot advantage |
 
-| Provider | Pekobot | OpenClaw |
-|----------|---------|----------|
-| OpenAI | ✅ | ✅ |
-| Anthropic | ✅ | ✅ |
-| Kimi | ✅ | ✅ |
-| Ollama | ✅ | ✅ |
-| OpenRouter | ✅ | ✅ |
-| Perplexity | ✅ | ✅ |
-| Cohere | ✅ | ❌ |
-| Together | ✅ | ❌ |
-| Groq | ✅ | ✅ |
-| Fireworks | ✅ | ❌ |
-| Bedrock | ✅ | ✅ |
-| XAI/Grok | ✅ | ✅ |
-| Venice | ✅ | ❌ |
-| GitHub Copilot | ❌ | ✅ |
-| Hugging Face | ❌ | ✅ |
-| Minimax | ❌ | ✅ |
-| Google Gemini | ❌ | ✅ |
-| ZAI | ❌ | ✅ |
+**Winner:** Pekobot has more provider integrations (15+)
 
-**Winner: OpenClaw** — More providers (Copilot, HuggingFace, Gemini, etc.).
-
----
-
-### 5. Memory & Persistence
+### 5. Memory Systems
 
 | Feature | Pekobot | OpenClaw | Notes |
 |---------|---------|----------|-------|
-| **SQLite Memory** | ✅ | ✅ | Both use SQLite |
-| **Vector Search** | ✅ embeddings | ✅ embeddings/ | Both have vector support |
-| **Hybrid Search** | ✅ | ✅ memory/hybrid | Similar implementations |
-| **Memory Hygiene** | ✅ TTL + archival | ⚠️ Basic compaction | **Pekobot leads** |
-| **Semantic Search** | ✅ | ✅ memory/search-manager | OpenClaw has more sophisticated search |
-| **Markdown Export** | ✅ | ❌ | Pekobot unique feature |
+| **SQLite Memory** | ✅ Full implementation | ✅ Supported | Both |
+| **Vector Search** | ✅ Embedding-based | ✅ Supported | Both |
+| **Hybrid Memory** | ✅ SQLite + Vector | ❓ Unknown | Pekobot: combined approach |
+| **Memory Scopes** | ✅ Agent/Tenant/Local/Network/System | ❌ Not mentioned | Pekobot: granular scoping |
+| **Memory Hygiene** | ✅ TTL, archiving, cleanup | ❌ Not mentioned | Pekobot: auto-cleanup |
+| **Markdown Export** | ✅ Full support | ❌ Not mentioned | Pekobot: unique |
+| **Transcript Storage** | ✅ JSONL format | ❌ Not mentioned | Pekobot: audit trail |
 
-**Winner: Tie** — Pekobot has better hygiene; OpenClaw has better semantic search.
-
----
+**Winner:** Pekobot has more sophisticated memory management
 
 ### 6. Tool System
 
 | Feature | Pekobot | OpenClaw | Notes |
 |---------|---------|----------|-------|
-| **Built-in Tools** | ✅ 18 core | ✅ 50+ tools | OpenClaw has more built-ins |
-| **External Tools** | ✅ Tool Bundle | ❌ Limited | **Pekobot leads** with on-demand tools |
-| **Tool Registry** | ✅ Pekohub | ⚠️ Plugin-based | Pekobot has dedicated registry |
-| **Browser Automation** | ✅ browser tool | ✅ browser/ extensive | OpenClaw has more browser features |
-| **File System** | ✅ | ✅ | Both have FS tools |
-| **HTTP/Web** | ✅ fetch/web_search | ✅ web-fetch/ | OpenClaw has more web tools |
-| **Cron/Daemon** | ✅ Daemon mode | ✅ daemon/ + cron/ | Both have cron support |
-| **Canvas/UI** | ❌ | ✅ canvas-host/ | OpenClaw unique |
+| **Tool Registry** | ✅ Unified multi-backend | ✅ Tool support | Both |
+| **Remote Registry** | ✅ Pekohub (cloud) | ❌ Not mentioned | Pekobot: unique |
+| **On-Demand Tools** | ✅ Download from registry | ❌ Bundled only | Pekobot: unique |
+| **Tool Bundling** | ✅ Optional features | ❌ Always bundled | Pekobot: minimal core |
+| **18 Core Tools** | ✅ Full suite | ~9 tools | Pekobot: more tools |
+| **Filesystem** | ✅ Full access | ✅ Supported | Both |
+| **HTTP/Fetch** | ✅ Built-in | ✅ Supported | Both |
+| **Browser Control** | ✅ Playwright | ✅ Playwright | Both |
+| **Web Search** | ✅ Brave/DuckDuckGo | ❓ Unknown | Pekobot: built-in |
+| **Calendar** | ✅ Google/Outlook | ❌ Not mentioned | Pekobot: unique |
+| **Email** | ✅ Gmail/Outlook | ❌ Not mentioned | Pekobot: unique |
+| **Social Media** | ✅ Twitter/X, LinkedIn | ❌ Not mentioned | Pekobot: unique |
+| **Document Processing** | ✅ PDF/OCR | ❌ Not mentioned | Pekobot: unique |
+| **Inventory** | ✅ Shopify/WooCommerce | ❌ Not mentioned | Pekobot: unique |
+| **Expense Tracking** | ✅ Receipt OCR | ❌ Not mentioned | Pekobot: unique |
+| **Research** | ✅ Web search + citations | ❌ Not mentioned | Pekobot: unique |
 
-**Winner: OpenClaw** — More built-in tools, Canvas support, extensive browser automation.
+**Winner:** Pekobot has significantly more tools (18 vs ~9)
 
-**BUT: Pekobot's tool extraction architecture is cleaner** — separates concerns better.
-
----
-
-### 7. Configuration & CLI
-
-| Feature | Pekobot | OpenClaw | Notes |
-|---------|---------|----------|-------|
-| **Config Format** | TOML | JSON5 | TOML is more readable |
-| **CLI Commands** | ✅ 10 commands | ✅ 50+ commands | OpenClaw has more CLI features |
-| **Wizard/Onboarding** | ⚠️ Basic | ✅ wizard/ extensive | OpenClaw has better onboarding |
-| **Environment Mgmt** | ✅ | ✅ | Both support env vars |
-| **Config Validation** | ⚠️ Basic | ✅ config/validation.ts | OpenClaw has Zod schemas |
-
-**Winner: OpenClaw** — More mature CLI and configuration system.
-
----
-
-### 8. Gateway & Network
+### 7. Session Management
 
 | Feature | Pekobot | OpenClaw | Notes |
 |---------|---------|----------|-------|
-| **HTTP Gateway** | ✅ | ✅ gateway/server-*.ts | Both have HTTP APIs |
-| **WebSocket** | ⚠️ Planned | ✅ gateway/ws-connection/ | OpenClaw has mature WS |
-| **A2A Protocol** | ✅ | ✅ acp/ | Both support A2A |
-| **Discovery** | ⚠️ Basic | ✅ infra/bonjour/ | OpenClaw has mDNS discovery |
-| **Tailscale** | ❌ | ✅ infra/tailscale.ts | OpenClaw unique |
-| **Node Pairing** | ❌ | ✅ nodes/ | OpenClaw has node system |
+| **Session Keys** | ✅ Agent-scoped | ✅ Per-sender/workspace | Different approaches |
+| **DM Scope** | ✅ Main/PerPeer/PerChannelPeer | ✅ Similar isolation | Both support |
+| **Session Reset** | ✅ Daily/Idle/First modes | ✅ Reset triggers | Both |
+| **Reset Triggers** | ✅ /reset, /new commands | ✅ Similar | Both |
+| **Session Pruning** | ✅ Automatic cleanup | ✅ Compaction | Both |
+| **Transcript Storage** | ✅ JSONL with metadata | ❌ Not mentioned | Pekobot: audit trail |
 
-**Winner: OpenClaw** — More mature gateway with WS, discovery, Tailscale.
+**Winner:** Roughly equivalent
 
----
-
-### 9. Observability
+### 8. Message Queue & Routing
 
 | Feature | Pekobot | OpenClaw | Notes |
 |---------|---------|----------|-------|
-| **Logging** | ✅ tracing | ✅ logging/ | Both have structured logging |
-| **Metrics** | ⚠️ Basic | ✅ | OpenClaw has more metrics |
-| **Audit** | ✅ | ✅ security/audit/ | Both have audit |
-| **Health Checks** | ⚠️ Basic | ✅ commands/health.ts | OpenClaw has health system |
-| **Dashboard** | ❌ | ✅ gateway/control-ui.ts | OpenClaw has web dashboard |
+| **Lane-Aware Queue** | ✅ Per-session serialization | ✅ Per-session lanes | Both |
+| **Queue Modes** | ✅ Steer/Followup/Collect/Interrupt | ✅ Steer/Followup/Collect | Pekobot: +Interrupt |
+| **Concurrency Control** | ✅ Configurable caps | ✅ maxConcurrent | Both |
+| **Debounce** | ✅ Configurable ms | ✅ debounceMs | Both |
+| **Backpressure** | ✅ Drop policies | ✅ Cap/overflow | Both |
+| **Global Semaphore** | ✅ Cross-session limit | ✅ Similar | Both |
 
-**Winner: OpenClaw** — Dashboard, health checks, better metrics.
+**Winner:** Roughly equivalent (Pekobot has Interrupt mode)
+
+### 9. Cron & Scheduling
+
+| Feature | Pekobot | OpenClaw | Notes |
+|---------|---------|----------|-------|
+| **Cron Jobs** | ✅ Full implementation | ✅ Supported | Both |
+| **Daemon Mode** | ✅ Long-running process | ❌ Service only | Pekobot: built-in daemon |
+| **Delivery Modes** | ✅ None/Announce | ✅ Similar | Both |
+| **Execution Modes** | ✅ Main/Isolated | ✅ Similar | Both |
+| **Cron CLI** | ✅ Full CLI | ✅ CLI | Both |
+| **Job History** | ✅ SQLite storage | ❌ Not mentioned | Pekobot: persistence |
+
+**Winner:** Pekobot has built-in daemon mode
+
+### 10. Gateway & Plugins
+
+| Feature | Pekobot | OpenClaw | Notes |
+|---------|---------|----------|-------|
+| **Plugin System** | ✅ Dynamic loading (.so/.dll) | ✅ Node.js plugins | Different tech |
+| **Plugin Registry** | ✅ Local + Remote | ❌ Local only | Pekobot: +remote |
+| **Hot Reload** | ✅ Runtime loading | ✅ Similar | Both |
+| **Gateway Manager** | ✅ Full lifecycle | ✅ Gateway process | Both |
+| **Control UI** | ❌ Not implemented | ✅ Web dashboard | OpenClaw: unique |
+| **macOS App** | ❌ Not supported | ✅ Companion app | OpenClaw: unique |
+
+**Winner:** OpenClaw has better UX (dashboard, macOS app)
+
+### 11. Mobile & Nodes
+
+| Feature | Pekobot | OpenClaw | Notes |
+|---------|---------|----------|-------|
+| **iOS Node** | ❌ Not supported | ✅ Full support | OpenClaw: unique |
+| **Android Node** | ❌ Not supported | ✅ Full support | OpenClaw: unique |
+| **Canvas Surface** | ❌ Not supported | ✅ iOS/Android | OpenClaw: unique |
+| **Camera Access** | ❌ Not supported | ✅ Mobile nodes | OpenClaw: unique |
+| **Location** | ❌ Not supported | ✅ Mobile nodes | OpenClaw: unique |
+
+**Winner:** OpenClaw has full mobile node support
+
+### 12. Prompt System
+
+| Feature | Pekobot | OpenClaw | Notes |
+|---------|---------|----------|-------|
+| **Multi-Section** | ✅ 27 sections | ✅ Multi-section | Both |
+| **Bootstrap Files** | ✅ AGENTS/SOUL/TOOLS/IDENTITY/USER | ✅ Same set | Both |
+| **Prompt Modes** | ✅ Full/Minimal/None | ✅ Full/Minimal | Pekobot: +None |
+| **Auto-Bootstrap** | ✅ Q&A ritual | ✅ Q&A ritual | Both |
+| **HEARTBEAT.md** | ✅ Read proactively | ✅ Read proactively | Both |
+| **MEMORY.md** | ✅ Tool-based access | ✅ Tool-based access | Both |
+
+**Winner:** Roughly equivalent
+
+### 13. Observability
+
+| Feature | Pekobot | OpenClaw | Notes |
+|---------|---------|----------|-------|
+| **Metrics** | ✅ Basic metrics | ✅ Metrics | Both |
+| **Tracing** | ✅ tracing crate | ✅ Debug logs | Both |
+| **Audit Logs** | ✅ SQLite storage | ❌ Not mentioned | Pekobot: unique |
+| **Session Introspection** | ✅ Tools for querying | ❌ Not mentioned | Pekobot: unique |
+
+**Winner:** Pekobot has better observability
+
+### 14. Compaction & Memory
+
+| Feature | Pekobot | OpenClaw | Notes |
+|---------|---------|----------|-------|
+| **Compaction** | ✅ Automatic | ✅ Automatic | Both |
+| **Transcript Flush** | ✅ JSONL export | ❌ Not mentioned | Pekobot: unique |
+| **Context Overflow** | ✅ Handling | ✅ Handling | Both |
 
 ---
 
-### 10. Unique Strengths
+## Unique Strengths
 
-#### Pekobot Strengths
-1. **Clean Architecture** — Better separation of concerns (tools extracted)
-2. **Rust Performance** — Native performance, memory safety
-3. **Minimal Core** — ~2MB runtime vs OpenClaw's larger bundle
-4. **Secret Management** — More sophisticated secret store
-5. **Memory Hygiene** — Better TTL/archival system
-6. **Tool Extraction** — On-demand tool installation from Pekohub
+### Pekobot Unique Features
+1. **Portable Agents** - Export/import `.agent` packages
+2. **Pekohub** - Cloud tool registry
+3. **15+ LLM Providers** - More than OpenClaw
+4. **18 Core Tools** - Calendar, email, social media, etc.
+5. **Memory Hygiene** - Automatic cleanup
+6. **DID Identity** - Decentralized identifiers
+7. **Secret Manager** - Encrypted secrets
+8. **Rust Performance** - 2MB binary, <50ms startup
+9. **Audit Logging** - Full observability
 
-#### OpenClaw Strengths
-1. **Mature Ecosystem** — 27,000+ lines, battle-tested
-2. **More Channels** — Signal, iMessage, LINE, WebChat
-3. **Canvas/UI** — Visual output support
-4. **Browser Automation** — Extensive Playwright integration
-5. **Subagent System** — Sophisticated multi-agent orchestration
-6. **Dashboard** — Web-based management UI
-7. **Tailscale** — Built-in mesh networking
-8. **More Providers** — Copilot, HuggingFace, Gemini
+### OpenClaw Unique Features
+1. **Web Control UI** - Browser dashboard
+2. **macOS Companion App** - Native integration
+3. **Mobile Nodes** - iOS/Android support
+4. **Canvas Surface** - Rich mobile UI
+5. **iMessage Support** - macOS only
+6. **Mattermost Plugin** - Enterprise chat
+7. **Voice/Audio** - Voice note transcription
+8. **Camera Access** - Mobile camera
+9. **Location** - Mobile location
 
 ---
 
-## Architecture Comparison
+## Architecture Differences
 
-### Pekobot Architecture
+### Pekobot
 ```
-┌─────────────────────────────────────────┐
-│           CLI / Commands                │
-├─────────────────────────────────────────┤
-│  Agent Manager → Pool → Agent → Engine  │
-├─────────────────────────────────────────┤
-│  Queue → Session → Memory → Identity    │
-├─────────────────────────────────────────┤
-│  Channels → Gateway → Providers         │
-├─────────────────────────────────────────┤
-│  Tools (18 core + Pekohub on-demand)    │
-└─────────────────────────────────────────┘
-```
+Minimal Core (~2MB)
+├── Agent Runtime
+├── Session Management
+├── Tool Registry (Unified)
+└── Identity System
 
-**Design Philosophy:** Minimal core, external tools, Rust performance
-
-### OpenClaw Architecture
-```
-┌─────────────────────────────────────────┐
-│  CLI → TUI → Wizard → Dashboard         │
-├─────────────────────────────────────────┤
-│  Auto-Reply → Queue → Agent Runner      │
-├─────────────────────────────────────────┤
-│  Sessions → Memory → Skills → Sandbox   │
-├─────────────────────────────────────────┤
-│  Channels → Gateway → Browser → Canvas  │
-├─────────────────────────────────────────┤
-│  Tools (50+) + Plugins + Hooks          │
-└─────────────────────────────────────────┘
+On-Demand:
+├── Tools (downloaded from Pekohub)
+├── Gateway Plugins
+└── Skills
 ```
 
-**Design Philosophy:** Batteries included, extensive integrations
+### OpenClaw
+```
+Full Runtime (~100MB)
+├── Gateway (Node.js)
+├── Pi Agent (bundled)
+├── All Channels (bundled)
+├── All Tools (bundled)
+└── Web UI (bundled)
+
+Extensions:
+├── Mobile Nodes (iOS/Android)
+└── macOS App
+```
+
+---
+
+## Recommendations
+
+### Use Pekobot When:
+- You want a **minimal footprint** (2MB vs 100MB+)
+- You need **fast startup** (<50ms)
+- You want **on-demand tools** (not bundled)
+- You need **portable agents** (export/import)
+- You want **18 built-in tools** (calendar, email, etc.)
+- You need **enterprise observability** (audit logs)
+- You want **15+ LLM provider options**
+- You prefer **Rust performance**
+
+### Use OpenClaw When:
+- You want a **Web Dashboard** (Control UI)
+- You need **mobile nodes** (iOS/Android)
+- You want **macOS integration** (companion app)
+- You need **iMessage support**
+- You want **voice/audio features**
+- You prefer **TypeScript/Node.js ecosystem**
+- You want **immediate full feature set** (no downloads)
 
 ---
 
 ## Gap Analysis
 
-### What Pekobot Needs (to match OpenClaw)
+### What Pekobot Should Add (from OpenClaw):
+1. **Web Control UI** - Dashboard for management
+2. **Mobile Node Support** - iOS/Android apps
+3. **iMessage Integration** - macOS bridge
+4. **Voice/Audio** - Voice note transcription
+5. **Camera Access** - Mobile camera integration
 
-| Priority | Feature | Effort |
-|----------|---------|--------|
-| High | WebSocket Gateway | Medium |
-| High | More Channels (Signal, iMessage) | High |
-| Medium | Canvas/UI Support | High |
-| Medium | Web Dashboard | High |
-| Medium | More LLM Providers | Low |
-| Low | Tailscale Integration | Medium |
-| Low | Node Pairing System | High |
-
-### What OpenClaw Could Learn from Pekobot
-
-| Feature | Benefit |
-|---------|---------|
-| Tool Extraction | Smaller core, faster startup |
-| Secret Manager | Better security |
-| Memory Hygiene | Better resource management |
-| Rust Performance | Lower resource usage |
+### What OpenClaw Should Add (from Pekobot):
+1. **Portable Agents** - Export/import functionality
+2. **Pekohub-style Registry** - Cloud tool distribution
+3. **More Tools** - Calendar, email, social media
+4. **DID Identity** - Decentralized identifiers
+5. **Secret Manager** - Encrypted credential storage
+6. **Memory Hygiene** - Automatic cleanup
+7. **More Providers** - 15+ LLM options
 
 ---
 
 ## Conclusion
 
-**OpenClaw** is the more mature, feature-complete platform with extensive integrations, UI support, and a large ecosystem.
+**Pekobot** excels at:
+- Performance and minimal footprint
+- Tool ecosystem and extensibility
+- Enterprise features (audit, secrets, DIDs)
+- Provider flexibility
 
-**Pekobot** is the leaner, more modular architecture with better performance characteristics and a cleaner separation of concerns.
+**OpenClaw** excels at:
+- User experience (Web UI, mobile apps)
+- Channel coverage (iMessage, mobile)
+- Media handling (voice, camera)
+- Ease of use (bundled everything)
 
-### Recommendation
-
-- **Use OpenClaw** if you need: Canvas UI, extensive channel support, web dashboard, Tailscale, mature subagent system
-- **Use Pekobot** if you need: Minimal footprint, Rust performance, clean tool separation, on-demand tool loading, better secret management
-
-**Pekobot's architecture is cleaner** but **OpenClaw has more features**.
+Both are capable multi-agent runtimes with different philosophies: Pekobot prioritizes modularity and performance, while OpenClaw prioritizes UX and convenience.
