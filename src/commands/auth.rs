@@ -1,7 +1,7 @@
 //! Auth command - Manage API keys and credentials
 
 use crate::commands::GlobalPaths;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::io::Write;
@@ -80,11 +80,14 @@ impl CredentialsStore {
             api_key,
             created_at: chrono::Utc::now().to_rfc3339(),
         };
-        self.credentials.insert(Self::key(provider, profile), credential);
+        self.credentials
+            .insert(Self::key(provider, profile), credential);
     }
 
     pub fn remove(&mut self, provider: &str, profile: &str) -> bool {
-        self.credentials.remove(&Self::key(provider, profile)).is_some()
+        self.credentials
+            .remove(&Self::key(provider, profile))
+            .is_some()
     }
 
     pub fn list_for_provider(&self, provider: &str) -> Vec<&Credential> {
@@ -114,7 +117,7 @@ impl CredentialsStore {
 /// Load credentials from file
 fn load_credentials(paths: &GlobalPaths) -> Result<CredentialsStore> {
     let path = paths.config_dir.join("credentials.json");
-    
+
     if !path.exists() {
         return Ok(CredentialsStore {
             version: 1,
@@ -130,13 +133,13 @@ fn load_credentials(paths: &GlobalPaths) -> Result<CredentialsStore> {
 /// Save credentials to file with restricted permissions
 fn save_credentials(paths: &GlobalPaths, store: &CredentialsStore) -> Result<()> {
     let path = paths.config_dir.join("credentials.json");
-    
+
     // Ensure config dir exists
     std::fs::create_dir_all(&paths.config_dir)?;
-    
+
     let content = serde_json::to_string_pretty(store)?;
     std::fs::write(&path, content)?;
-    
+
     // Set restrictive permissions (owner read/write only)
     #[cfg(unix)]
     {
@@ -145,7 +148,7 @@ fn save_credentials(paths: &GlobalPaths, store: &CredentialsStore) -> Result<()>
         perms.set_mode(0o600);
         std::fs::set_permissions(&path, perms)?;
     }
-    
+
     Ok(())
 }
 
@@ -159,15 +162,15 @@ fn mask_key(key: &str) -> String {
 }
 
 /// Handle auth commands
-pub async fn handle_auth(
-    cmd: AuthCommands,
-    paths: &GlobalPaths,
-    _json: bool,
-) -> Result<()> {
+pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
     match cmd {
-        AuthCommands::Set { provider, key, profile } => {
+        AuthCommands::Set {
+            provider,
+            key,
+            profile,
+        } => {
             let profile = profile.unwrap_or_else(|| "default".to_string());
-            
+
             // Get API key interactively if not provided
             let api_key = match key {
                 Some(k) => k,
@@ -190,14 +193,17 @@ pub async fn handle_auth(
             save_credentials(paths, &store)?;
 
             println!("✓ API key saved for {} (profile: {})", provider, profile);
-            println!("  Location: {}", paths.config_dir.join("credentials.json").display());
-            
+            println!(
+                "  Location: {}",
+                paths.config_dir.join("credentials.json").display()
+            );
+
             Ok(())
         }
 
         AuthCommands::List { show } => {
             let store = load_credentials(paths)?;
-            
+
             if store.credentials.is_empty() {
                 println!("No credentials configured.");
                 println!("  Use 'pekobot auth set <provider> <key>' to add one.");
@@ -206,7 +212,7 @@ pub async fn handle_auth(
 
             println!("Configured credentials:");
             println!();
-            
+
             for provider in store.providers() {
                 println!("  {}:", provider);
                 let creds = store.list_for_provider(&provider);
@@ -219,37 +225,43 @@ pub async fn handle_auth(
                     println!("    - {}: {}", cred.profile, key_display);
                 }
             }
-            
+
             println!();
             if !show {
                 println!("  Use --show to display full keys");
             }
-            
+
             Ok(())
         }
 
         AuthCommands::Remove { provider, profile } => {
             let profile = profile.unwrap_or_else(|| "default".to_string());
-            
+
             let mut store = load_credentials(paths)?;
             if store.remove(&provider, &profile) {
                 save_credentials(paths, &store)?;
-                println!("✓ Removed credential for {} (profile: {})", provider, profile);
+                println!(
+                    "✓ Removed credential for {} (profile: {})",
+                    provider, profile
+                );
             } else {
-                println!("✗ No credential found for {} (profile: {})", provider, profile);
+                println!(
+                    "✗ No credential found for {} (profile: {})",
+                    provider, profile
+                );
             }
-            
+
             Ok(())
         }
 
         AuthCommands::Test { provider, profile } => {
             let store = load_credentials(paths)?;
-            
+
             let providers_to_test = match provider {
                 Some(p) => vec![p],
                 None => store.providers(),
             };
-            
+
             if providers_to_test.is_empty() {
                 println!("No credentials configured to test.");
                 return Ok(());
@@ -257,10 +269,10 @@ pub async fn handle_auth(
 
             println!("Testing credentials...");
             println!();
-            
+
             for provider in providers_to_test {
                 let profile_name = profile.as_deref().unwrap_or("default");
-                
+
                 match store.get(&provider, profile_name) {
                     Some(cred) => {
                         // Simple test - just verify key format
@@ -269,7 +281,7 @@ pub async fn handle_auth(
                             "anthropic" => cred.api_key.starts_with("sk-ant-"),
                             _ => cred.api_key.len() > 10,
                         };
-                        
+
                         if valid {
                             println!("  ✓ {} ({}): Valid format", provider, profile_name);
                         } else {
@@ -281,17 +293,21 @@ pub async fn handle_auth(
                     }
                 }
             }
-            
+
             Ok(())
         }
     }
 }
 
 /// Get API key for a provider (used by agent creation)
-pub fn get_api_key(paths: &GlobalPaths, provider: &str, profile: Option<&str>) -> Result<Option<String>> {
+pub fn get_api_key(
+    paths: &GlobalPaths,
+    provider: &str,
+    profile: Option<&str>,
+) -> Result<Option<String>> {
     let store = load_credentials(paths)?;
     let profile = profile.unwrap_or("default");
-    
+
     Ok(store.get(provider, profile).map(|c| c.api_key.clone()))
 }
 

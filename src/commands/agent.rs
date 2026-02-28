@@ -340,8 +340,9 @@ pub mod handlers {
         }
 
         // Auto-detect available providers from stored credentials
-        let available_providers = crate::commands::auth::detect_available_providers(paths).unwrap_or_default();
-        
+        let available_providers =
+            crate::commands::auth::detect_available_providers(paths).unwrap_or_default();
+
         // Determine the best provider to use
         let selected_provider = if available_providers.contains(&provider) {
             provider.clone()

@@ -66,8 +66,11 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 
 /// Query GitHub for latest version
 async fn query_latest_version() -> Result<String> {
-    let api_url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
-    
+    let api_url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
+
     // Use curl to query the GitHub API
     let output = Command::new("curl")
         .args([
@@ -141,7 +144,7 @@ async fn perform_update(version: &str) -> Result<()> {
             "https://github.com/{}/releases/download/{}/{}",
             GITHUB_REPO, version, asset_name
         );
-        
+
         println!("   Trying alternative URL...");
         let status = Command::new("curl")
             .args([
@@ -155,7 +158,7 @@ async fn perform_update(version: &str) -> Result<()> {
             ])
             .status()
             .context("Failed to download update")?;
-        
+
         if !status.success() {
             anyhow::bail!("Download failed. Check that the release exists.");
         }
@@ -187,13 +190,14 @@ async fn perform_update(version: &str) -> Result<()> {
         let output = Command::new("find")
             .args([tmp_dir.to_str().unwrap(), "-name", "pekobot", "-type", "f"])
             .output()?;
-        
-        let binary_path = String::from_utf8(output.stdout)?
+
+        let binary_path_str = String::from_utf8(output.stdout)?;
+        let binary_path = binary_path_str
             .lines()
             .next()
             .context("Could not find pekobot binary in archive")?;
-        
-        std::path::PathBuf::from(binary_path)
+
+        std::path::PathBuf::from(binary_path.to_string())
     };
 
     if !new_binary.exists() {

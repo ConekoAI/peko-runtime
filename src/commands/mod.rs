@@ -107,7 +107,7 @@ pub enum Commands {
         /// Only check for updates, don't install
         #[arg(long)]
         check: bool,
-        
+
         /// Force update without confirmation
         #[arg(long)]
         force: bool,
