@@ -6,6 +6,7 @@
 //!   cargo run --example pekohub_remote -- --search weather
 
 use clap::Parser;
+use std::path::PathBuf;
 
 use pekobot::tool_registry::{
     RemoteRegistryClient, RemoteRegistryConfig, ToolRegistry, ToolRegistryConfig,
@@ -44,8 +45,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize local registry
     let local_config = ToolRegistryConfig::default();
+    let cache_dir: PathBuf = local_config.cache_dir.clone();
+    println!("📁 Local cache: {:?}", cache_dir);
     let local_registry = ToolRegistry::new(local_config)?;
-    println!("📁 Local cache: {:?}", local_registry.config.cache_dir);
 
     // Initialize remote registry client
     let remote_config = RemoteRegistryConfig {
@@ -56,8 +58,7 @@ async fn main() -> anyhow::Result<()> {
         cache_ttl_hours: 24,
     };
 
-    let cache_dir = local_registry.config.cache_dir.clone();
-    let remote_client = RemoteRegistryClient::new(remote_config, cache_dir)?;
+    let remote_client = RemoteRegistryClient::new(remote_config, cache_dir.clone())?;
 
     // Handle command
     if args.list {
@@ -135,10 +136,7 @@ async fn main() -> anyhow::Result<()> {
 
         // Mock installation
         println!("✅ Mock installation complete for '{}'", tool_name);
-        println!(
-            "   Installed to: {:?}",
-            local_registry.config.cache_dir.join(&tool_name)
-        );
+        println!("   Installed to: {:?}", cache_dir.join(&tool_name));
     }
 
     if args.check_updates {
