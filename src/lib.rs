@@ -122,7 +122,7 @@ pub(crate) mod cron;
 pub(crate) mod daemon;
 
 /// Security policies and sandboxing
-pub(crate) mod security;
+pub mod security;
 
 /// Observability (metrics, tracing, audit)
 pub(crate) mod observability;

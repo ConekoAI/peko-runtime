@@ -19,9 +19,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize tool registry
     let config = ToolRegistryConfig::default();
+    let tools_dir = config.cache_dir.clone();
     let mut registry = ToolRegistry::new(config)?;
 
-    println!("📁 Tool cache directory: {:?}", registry.config.cache_dir);
+    println!("📁 Tool cache directory: {:?}", tools_dir);
     println!();
 
     // Create sample tool manifest

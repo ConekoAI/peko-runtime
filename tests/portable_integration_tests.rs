@@ -49,12 +49,12 @@ fn create_test_config(name: &str) -> AgentConfig {
         auto_accept_trusted: false,
         approval_threshold: Some(100.0),
         default_timeout_seconds: 300,
-        coneko: None,
+        workspace: None,
+        prompt: None,
     }
 }
 
 #[tokio::test]
-#[ignore = "Integration test - run manually"]
 #[ignore = "Integration test - run manually"]
 async fn test_export_import_roundtrip() {
     let temp_dir = tempfile::tempdir().unwrap();
