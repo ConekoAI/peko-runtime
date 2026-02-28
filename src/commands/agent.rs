@@ -316,7 +316,7 @@ pub mod handlers {
         Ok(())
     }
 
-    /// Handle agent create command with bootstrapping
+    /// Handle agent create command with bootstrapping and auto-detected credentials
     pub async fn handle_agent_create(
         paths: &GlobalPaths,
         name: String,
@@ -339,14 +339,39 @@ pub mod handlers {
             }
         }
 
-        let config = build_default_config(&name, &provider, None, None);
+        // Auto-detect available providers from stored credentials
+        let available_providers = crate::commands::auth::detect_available_providers(paths).unwrap_or_default();
+        
+        // Determine the best provider to use
+        let selected_provider = if available_providers.contains(&provider) {
+            provider.clone()
+        } else if !available_providers.is_empty() && provider == "openai" {
+            // Default to first available if openai requested but not configured
+            let first = available_providers[0].clone();
+            println!("⚠️  '{provider}' not configured. Using '{first}' instead.");
+            first
+        } else {
+            provider.clone()
+        };
+
+        // Build config with stored credentials if available
+        let config = build_config_with_auth(paths, &name, &selected_provider, None, None).await?;
         let toml = toml::to_string_pretty(&config)?;
 
         std::fs::create_dir_all(paths.agents_dir())?;
         std::fs::write(&config_path, toml)?;
 
-        println!("✅ Created agent '{name}' using template '{template}'");
+        println!("✅ Created agent '{name}'");
+        println!("   Provider: {selected_provider}");
         println!("   Config: {}", config_path.display());
+
+        // Show warning if no API keys configured
+        if available_providers.is_empty() {
+            println!();
+            println!("⚠️  No API keys configured!");
+            println!("   Set one with: pekobot auth set <provider> <key>");
+            println!("   Or export: export OPENAI_API_KEY='your-key'");
+        }
 
         // Bootstrap workspace with OpenClaw-style files
         let workspace_dir = paths.data_dir.join("workspaces").join(&name);
@@ -531,5 +556,24 @@ pub mod handlers {
             workspace: None,
             prompt: None,
         }
+    }
+
+    /// Build config with stored credentials if available
+    async fn build_config_with_auth(
+        paths: &GlobalPaths,
+        name: &str,
+        provider: &str,
+        model: Option<String>,
+        db: Option<String>,
+    ) -> anyhow::Result<AgentConfig> {
+        let mut config = build_default_config(name, provider, model, db);
+
+        // Try to get stored API key
+        if let Some(api_key) = crate::commands::auth::get_api_key(paths, provider, None)? {
+            config.provider.api_key = Some(api_key);
+            config.provider.api_key_env = None; // Use direct key instead of env
+        }
+
+        Ok(config)
     }
 }

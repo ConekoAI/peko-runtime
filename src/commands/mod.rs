@@ -14,6 +14,7 @@
 
 pub mod agent;
 pub mod agent_bootstrap;
+pub mod auth;
 pub mod config;
 pub mod cron;
 pub mod daemon;
@@ -68,6 +69,10 @@ pub enum Commands {
     /// Agent management commands
     #[command(subcommand)]
     Agent(agent::AgentCommands),
+
+    /// Authentication and credential management
+    #[command(subcommand)]
+    Auth(auth::AuthCommands),
 
     /// Tool management commands (Pekohub integration)
     #[command(subcommand)]

@@ -1,7 +1,7 @@
 use clap::Parser;
 use clap_complete::{generate, Shell};
 use pekobot::commands::{
-    agent, config, cron, daemon, gateway, init_logging, session, system, tool, update, Cli,
+    agent, auth, config, cron, daemon, gateway, init_logging, session, system, tool, update, Cli,
     Commands, GlobalPaths,
 };
 
@@ -18,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Agent(cmd) => agent::handle_agent(cmd, &paths, cli.json).await,
+        Commands::Auth(cmd) => auth::handle_auth(cmd, &paths, cli.json).await,
         Commands::Tool(cmd) => tool::handle_tool(cmd, &paths, cli.json).await,
         Commands::Session(cmd) => session::handle_session(cmd, &paths, cli.json).await,
         Commands::Config(cmd) => config::handle_config(cmd, &paths, cli.json).await,
