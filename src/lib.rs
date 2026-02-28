@@ -23,7 +23,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```bash
+//! ```bash,ignore
 //! # Install a gateway plugin
 //! pekobot gateway install discord
 //!

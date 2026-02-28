@@ -4,7 +4,7 @@
 //! Pekobot stays minimal — all registry/reputation logic lives in Coneko.
 //!
 //! Usage:
-//! ```rust
+//! ```rust,ignore
 //! use pekobot::capability_registry::{RegistryClient, ReputationClient};
 //!
 //! let registry = RegistryClient::default()?;

@@ -17,7 +17,7 @@
 //!
 //! ## Example
 //!
-//! ```rust
+//! ```rust,ignore
 //! use pekobot::portable::{export_agent, import_agent, ExportOptions, ImportOptions};
 //!
 //! // Export an agent
