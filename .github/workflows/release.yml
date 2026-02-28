@@ -1,0 +1,290 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.0.0)'
+        required: true
+        default: '0.1.0'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Build for Linux x86_64
+  build-linux-x86_64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+      
+      - name: Create archive
+        run: |
+          mkdir -p dist
+          tar -czf dist/pekobot-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-gnu/release pekobot
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pekobot-linux-x86_64
+          path: dist/pekobot-linux-x86_64.tar.gz
+
+  # Build for Linux aarch64 (ARM64)
+  build-linux-aarch64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Configure Cargo for cross-compile
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+      
+      - name: Build release binary
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      
+      - name: Create archive
+        run: |
+          mkdir -p dist
+          tar -czf dist/pekobot-linux-aarch64.tar.gz -C target/aarch64-unknown-linux-gnu/release pekobot
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pekobot-linux-aarch64
+          path: dist/pekobot-linux-aarch64.tar.gz
+
+  # Build for macOS x86_64
+  build-macos-x86_64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: x86_64-apple-darwin
+      
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-x86_64-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Build release binary
+        run: cargo build --release --target x86_64-apple-darwin
+      
+      - name: Create archive
+        run: |
+          mkdir -p dist
+          tar -czf dist/pekobot-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release pekobot
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pekobot-macos-x86_64
+          path: dist/pekobot-macos-x86_64.tar.gz
+
+  # Build for macOS aarch64 (Apple Silicon)
+  build-macos-aarch64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: aarch64-apple-darwin
+      
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Build release binary
+        run: cargo build --release --target aarch64-apple-darwin
+      
+      - name: Create archive
+        run: |
+          mkdir -p dist
+          tar -czf dist/pekobot-macos-aarch64.tar.gz -C target/aarch64-apple-darwin/release pekobot
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pekobot-macos-aarch64
+          path: dist/pekobot-macos-aarch64.tar.gz
+
+  # Create GitHub Release
+  create-release:
+    needs: [build-linux-x86_64, build-linux-aarch64, build-macos-x86_64, build-macos-aarch64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: pekobot-*
+          merge-multiple: true
+      
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          # Remove 'v' prefix if present for consistency
+          VERSION=${VERSION#v}
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          cat > RELEASE_NOTES.md << EOF
+          ## Pekobot v${VERSION}
+          
+          ### Installation
+          
+          \`\`\`bash
+          # One-line installer
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+          
+          # Or manually download for your platform:
+          # Linux x86_64: pekobot-linux-x86_64.tar.gz
+          # Linux ARM64:  pekobot-linux-aarch64.tar.gz
+          # macOS x86_64: pekobot-macos-x86_64.tar.gz
+          # macOS ARM64:  pekobot-macos-aarch64.tar.gz
+          \`\`\`
+          
+          ### Quick Start
+          
+          \`\`\`bash
+          # Set API key
+          export OPENAI_API_KEY='your-key-here'
+          
+          # Create and run an agent
+          pekobot agent create my-agent
+          pekobot agent start my-agent
+          \`\`\`
+          
+          ### Assets
+          
+          | Platform | Architecture | Asset |
+          |----------|--------------|-------|
+          | Linux    | x86_64       | pekobot-linux-x86_64.tar.gz |
+          | Linux    | ARM64        | pekobot-linux-aarch64.tar.gz |
+          | macOS    | x86_64       | pekobot-macos-x86_64.tar.gz |
+          | macOS    | ARM64        | pekobot-macos-aarch64.tar.gz |
+          
+          ### Checksums
+          EOF
+          
+          for file in artifacts/*.tar.gz; do
+            echo "\`$(basename $file)\`: \`$(sha256sum $file | cut -d' ' -f1)\`" >> RELEASE_NOTES.md
+          done
+          
+          cat RELEASE_NOTES.md
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: Pekobot v${{ steps.release_notes.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: artifacts/*.tar.gz
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Manual release (for workflow_dispatch)
+  create-manual-release:
+    needs: [build-linux-x86_64, build-linux-aarch64, build-macos-x86_64, build-macos-aarch64]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: pekobot-*
+          merge-multiple: true
+      
+      - name: Create manual release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: Pekobot v${{ github.event.inputs.version }}
+          body: |
+            ## Pekobot v${{ github.event.inputs.version }}
+            
+            Manual release triggered via workflow dispatch.
+            
+            ### Installation
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh | bash
+            ```
+          files: artifacts/*.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
