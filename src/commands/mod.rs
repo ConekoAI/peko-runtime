@@ -21,6 +21,7 @@ pub mod gateway;
 pub mod session;
 pub mod system;
 pub mod tool;
+pub mod update;
 
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
@@ -95,6 +96,17 @@ pub enum Commands {
     /// Gateway plugin management
     #[command(subcommand)]
     Gateway(gateway::GatewayCommands),
+
+    /// Update Pekobot to the latest version
+    Update {
+        /// Only check for updates, don't install
+        #[arg(long)]
+        check: bool,
+        
+        /// Force update without confirmation
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Generate shell completions
     Completions {

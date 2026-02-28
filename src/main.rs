@@ -1,8 +1,8 @@
 use clap::Parser;
 use clap_complete::{generate, Shell};
 use pekobot::commands::{
-    agent, config, cron, daemon, gateway, init_logging, session, system, tool, Cli, Commands,
-    GlobalPaths,
+    agent, config, cron, daemon, gateway, init_logging, session, system, tool, update, Cli,
+    Commands, GlobalPaths,
 };
 
 /// Pekobot - Lightweight Multi-Agent Runtime
@@ -25,6 +25,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Daemon(cmd) => daemon::handle_daemon(cmd, &paths, cli.json).await,
         Commands::Cron(cmd) => cron::handle_cron(cmd, &paths, cli.json).await,
         Commands::Gateway(cmd) => gateway::handle_gateway(cmd, &paths, cli.json).await,
+        Commands::Update { check, force } => update::handle_update(check, force).await,
         Commands::Completions { shell } => {
             let mut cmd = <Cli as clap::CommandFactory>::command();
             let name = cmd.get_name().to_string();
