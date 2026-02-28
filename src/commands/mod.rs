@@ -13,6 +13,7 @@
 //! - `gateway`: Gateway plugin management
 
 pub mod agent;
+pub mod agent_bootstrap;
 pub mod config;
 pub mod cron;
 pub mod daemon;
