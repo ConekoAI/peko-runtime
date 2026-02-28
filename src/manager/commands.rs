@@ -1,0 +1,84 @@
+//! Agent manager command handler
+
+use crate::manager::{
+    pool::{AgentHandle, AgentPool},
+    registry::LocalRegistry,
+    types::{AgentInfo, IdentityInfo},
+};
+use crate::tools::ManagerCommand;
+use std::sync::Arc;
+use tokio::sync::{mpsc, RwLock};
+use tracing::{debug, warn};
+
+/// Command handler loop - processes commands from agent tools
+///
+/// This runs in a separate task and handles:
+/// - Listing agents (for `agent_info` tool)
+/// - Spawning agents (for `agent_spawn` tool)  
+/// - Broadcasting messages (for `agent_broadcast` tool)
+pub async fn command_handler_loop(
+    pool: Arc<RwLock<AgentPool>>,
+    _registry: Arc<RwLock<LocalRegistry>>,
+    mut rx: mpsc::Receiver<ManagerCommand>,
+) {
+    debug!("Agent manager command handler loop started");
+
+    while let Some(cmd) = rx.recv().await {
+        match cmd {
+            ManagerCommand::ListAgents { respond_to } => {
+                // Need to await while holding the lock due to lifetime issues
+                let basic_list = pool.read().await.list().await;
+
+                // Convert PoolAgentInfo to AgentInfo
+                let agents: Vec<AgentInfo> = basic_list
+                    .into_iter()
+                    .map(|info| {
+                        let did = info.did.clone();
+                        AgentInfo {
+                            did: info.did,
+                            name: info.name,
+                            state: info.state,
+                            capabilities: vec![],
+                            uptime_secs: info.uptime_secs,
+                            identity_info: IdentityInfo {
+                                did,
+                                scope: "local".to_string(),
+                                created_at: None,
+                            },
+                        }
+                    })
+                    .collect();
+
+                if let Err(e) = respond_to.send(agents).await {
+                    warn!("Failed to send agent list response: {}", e);
+                }
+            }
+
+            ManagerCommand::Spawn { config, respond_to } => {
+                // Note: Spawning requires access to the full manager state
+                // For now, return an error - the agent should use Manager::spawn directly
+                let _ = config;
+                let result: anyhow::Result<AgentHandle> = Err(anyhow::anyhow!(
+                    "agent_spawn via command not yet fully implemented. "
+                ));
+                if let Err(e) = respond_to.send(result).await {
+                    warn!("Failed to send spawn response: {}", e);
+                }
+            }
+
+            ManagerCommand::Broadcast {
+                message,
+                respond_to,
+            } => {
+                // Need to await while holding the lock due to lifetime issues
+                let result = pool.read().await.broadcast(&message).await;
+
+                if let Err(e) = respond_to.send(result).await {
+                    warn!("Failed to send broadcast response: {}", e);
+                }
+            }
+        }
+    }
+
+    debug!("Agent manager command handler loop ended");
+}

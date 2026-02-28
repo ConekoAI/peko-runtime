@@ -60,31 +60,112 @@
 
 #![warn(clippy::all, clippy::pedantic)]
 
+// ============================================================================
+// Core Runtime
+// ============================================================================
+
+/// Agent runtime and lifecycle
 pub mod agent;
-pub mod capability_registry;
+
+/// Execution engine and state machine
+pub(crate) mod engine;
+
+/// Message queue with lane-aware processing
+pub(crate) mod queue;
+
+/// Session management and lifecycle
+pub(crate) mod session;
+
+// ============================================================================
+// External Interfaces
+// ============================================================================
+
+/// Communication channels (Discord, Slack, Telegram, etc.)
 pub mod channels;
-pub mod commands;
-pub mod compaction;
-pub mod config;
-pub mod cron;
-pub mod daemon;
-pub mod engine;
+
+/// Gateway plugin system
 pub mod gateway;
-pub mod identity;
-pub mod manager;
-pub mod memory;
-pub mod observability;
-pub mod portable;
-pub mod prompt;
+
+/// LLM provider integrations
 pub mod providers;
-pub mod queue;
-pub mod security;
-pub mod session;
-pub mod skills;
+
+/// Tool registry and management
 pub mod tool_registry;
-pub mod tools;
-pub mod tunnel;
+
+// ============================================================================
+// Data & State
+// ============================================================================
+
+/// Type definitions
 pub mod types;
+
+/// Configuration management
+pub mod config;
+
+/// Memory systems (SQLite, vector, hybrid)
+pub mod memory;
+
+/// Agent identity and key management
+pub mod identity;
+
+// ============================================================================
+// Infrastructure
+// ============================================================================
+
+/// Agent manager (lifecycle, pool, registry)
+pub mod manager;
+
+/// Cron job scheduling
+pub(crate) mod cron;
+
+/// Daemon mode for background execution
+pub(crate) mod daemon;
+
+/// Security policies and sandboxing
+pub(crate) mod security;
+
+/// Observability (metrics, tracing, audit)
+pub(crate) mod observability;
+
+// ============================================================================
+// Tools & Skills
+// ============================================================================
+
+/// Tool implementations (filesystem, http, browser, etc.)
+pub mod tools;
+
+/// Skill system
+pub(crate) mod skills;
+
+/// Capability registry for agent discovery
+pub(crate) mod capability_registry;
+
+// ============================================================================
+// CLI & Commands
+// ============================================================================
+
+/// CLI command handlers
+pub mod commands;
+
+/// Prompt generation and bootstrap
+pub(crate) mod prompt;
+
+// ============================================================================
+// Utilities
+// ============================================================================
+
+/// Portable agent packaging (export/import)
+pub mod portable;
+
+/// Compaction and transcript management
+pub(crate) mod compaction;
+
+/// Tunnel for remote access
+pub(crate) mod tunnel;
+
+// ============================================================================
+// Public API
+// ============================================================================
 
 pub use agent::Agent;
 pub use config::Config;
