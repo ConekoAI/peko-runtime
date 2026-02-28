@@ -253,6 +253,7 @@ impl HygieneRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MemoryScope;
     use tempfile::TempDir;
 
     #[test]
