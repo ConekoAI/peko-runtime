@@ -5,11 +5,11 @@ Deploy Pekobot to a VPS for 24/7 operation.
 ## Quick Start
 
 ```bash
-# One-line installer
-curl -fsSL https://tools.coneko.ai/install.sh | bash
+# One-line installer from GitHub
+curl -fsSL https://raw.githubusercontent.com/coneko/pekobot/main/install.sh | bash
 
 # Or with custom options
-curl -fsSL https://tools.coneko.ai/install.sh | bash -s -- --install-dir /opt/pekobot
+curl -fsSL https://raw.githubusercontent.com/coneko/pekobot/main/install.sh | bash -s -- --install-dir /opt/pekobot
 ```
 
 ## Manual Installation
@@ -24,9 +24,13 @@ curl -fsSL https://tools.coneko.ai/install.sh | bash -s -- --install-dir /opt/pe
 ### 2. Download Binary
 
 ```bash
-# Download latest release
+# Get latest release version
+VERSION=$(curl -fsSL https://api.github.com/repos/coneko/pekobot/releases/latest | grep '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
+
+# Download for your platform
+PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/aarch64/')
 curl -fsSL -o pekobot.tar.gz \
-  "https://tools.coneko.ai/api/v1/releases/download/latest/pekobot-linux_x86_64.tar.gz"
+  "https://github.com/coneko/pekobot/releases/download/v${VERSION}/pekobot-${PLATFORM}.tar.gz"
 
 # Extract
 tar -xzf pekobot.tar.gz
@@ -180,9 +184,13 @@ pekobot update --force
 ### Manual Update
 
 ```bash
+# Get latest version
+VERSION=$(curl -fsSL https://api.github.com/repos/coneko/pekobot/releases/latest | grep '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
+PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/x86_64/;s/aarch64/aarch64/')
+
 # Download new version
 curl -fsSL -o pekobot.tar.gz \
-  "https://tools.coneko.ai/api/v1/releases/download/latest/pekobot-linux_x86_64.tar.gz"
+  "https://github.com/coneko/pekobot/releases/download/v${VERSION}/pekobot-${PLATFORM}.tar.gz"
 
 # Stop service
 sudo systemctl stop pekobot

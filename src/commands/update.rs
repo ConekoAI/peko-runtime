@@ -3,25 +3,28 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 
+const GITHUB_REPO: &str = "coneko/pekobot";
+
 /// Handle update command
 pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     let current_version = crate::VERSION;
 
     println!("🔍 Checking for updates...");
-    println!("   Current version: {}", current_version);
+    println!("   Current version: v{}", current_version);
 
-    // Query Pekohub for latest version
+    // Query GitHub for latest version
     let latest_version = match query_latest_version().await {
         Ok(v) => v,
         Err(e) => {
             eprintln!("❌ Failed to check for updates: {}", e);
             eprintln!("   Make sure you're connected to the internet");
-            eprintln!("   You can also manually download from: https://tools.coneko.ai");
+            eprintln!("   You can also manually download from:");
+            eprintln!("   https://github.com/{}/releases", GITHUB_REPO);
             return Ok(());
         }
     };
 
-    println!("   Latest version:  {}", latest_version);
+    println!("   Latest version:  v{}", latest_version);
 
     if current_version == latest_version && !force {
         println!("✅ Pekobot is up to date!");
@@ -30,7 +33,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 
     if check_only {
         println!(
-            "⚠️  Update available: {} → {}",
+            "⚠️  Update available: v{} → v{}",
             current_version, latest_version
         );
         println!("   Run 'pekobot update' to install");
@@ -39,7 +42,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 
     // Confirm update
     if !force {
-        print!("\nDo you want to update to {}? [y/N] ", latest_version);
+        print!("\nDo you want to update to v{}? [y/N] ", latest_version);
         std::io::Write::flush(&mut std::io::stdout())?;
 
         let mut input = String::new();
@@ -55,41 +58,46 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     println!("\n📥 Downloading update...");
     perform_update(&latest_version).await?;
 
-    println!("\n✅ Pekobot updated successfully to {}", latest_version);
+    println!("\n✅ Pekobot updated successfully to v{}", latest_version);
     println!("   Restart any running agents to use the new version");
 
     Ok(())
 }
 
-/// Query Pekohub for latest version
+/// Query GitHub for latest version
 async fn query_latest_version() -> Result<String> {
-    // Use curl to query the API (no external Rust dependencies needed)
+    let api_url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
+    
+    // Use curl to query the GitHub API
     let output = Command::new("curl")
         .args([
             "-fsSL",
             "--max-time",
             "10",
-            "https://tools.coneko.ai/api/v1/releases/latest",
+            "-H",
+            "Accept: application/vnd.github.v3+json",
+            &api_url,
         ])
         .output()
         .context("Failed to run curl. Is it installed?")?;
 
     if !output.status.success() {
-        anyhow::bail!("Failed to query update server");
+        anyhow::bail!("Failed to query GitHub API");
     }
 
     let response = String::from_utf8(output.stdout)?;
 
-    // Parse version from JSON response
-    // Expected: {"version": "x.y.z", ...}
+    // Parse tag_name from JSON response
+    // Expected: {"tag_name": "v1.2.3", ...}
     let version = response
         .split('"')
         .collect::<Vec<_>>()
         .windows(2)
-        .find(|w| w[0] == "version")
+        .find(|w| w[0] == "tag_name")
         .and_then(|w| w.get(2))
         .copied()
-        .unwrap_or("latest");
+        .unwrap_or("latest")
+        .trim_start_matches('v');
 
     Ok(version.to_string())
 }
@@ -97,12 +105,15 @@ async fn query_latest_version() -> Result<String> {
 /// Perform the actual update
 async fn perform_update(version: &str) -> Result<()> {
     let platform = detect_platform()?;
-    let binary_name = format!("pekobot-{}.tar.gz", platform);
+    let asset_name = format!("pekobot-{}.tar.gz", platform);
 
     let download_url = format!(
-        "https://tools.coneko.ai/api/v1/releases/download/{}/{}",
-        version, binary_name
+        "https://github.com/{}/releases/download/v{}/{}",
+        GITHUB_REPO, version, asset_name
     );
+
+    println!("   Downloading from GitHub...");
+    println!("   {}", download_url);
 
     // Create temp directory
     let tmp_dir = std::env::temp_dir().join("pekobot-update");
@@ -111,10 +122,10 @@ async fn perform_update(version: &str) -> Result<()> {
     let download_path = tmp_dir.join("pekobot.tar.gz");
 
     // Download using curl
-    println!("   Downloading from {}...", download_url);
     let status = Command::new("curl")
         .args([
             "-fsSL",
+            "--progress-bar",
             "--max-time",
             "120",
             "-o",
@@ -125,7 +136,29 @@ async fn perform_update(version: &str) -> Result<()> {
         .context("Failed to download update")?;
 
     if !status.success() {
-        anyhow::bail!("Download failed");
+        // Try without 'v' prefix
+        let alt_url = format!(
+            "https://github.com/{}/releases/download/{}/{}",
+            GITHUB_REPO, version, asset_name
+        );
+        
+        println!("   Trying alternative URL...");
+        let status = Command::new("curl")
+            .args([
+                "-fsSL",
+                "--progress-bar",
+                "--max-time",
+                "120",
+                "-o",
+                download_path.to_str().unwrap(),
+                &alt_url,
+            ])
+            .status()
+            .context("Failed to download update")?;
+        
+        if !status.success() {
+            anyhow::bail!("Download failed. Check that the release exists.");
+        }
     }
 
     // Extract
@@ -144,6 +177,29 @@ async fn perform_update(version: &str) -> Result<()> {
         anyhow::bail!("Extraction failed");
     }
 
+    // Find the binary
+    let new_binary = if tmp_dir.join("pekobot").exists() {
+        tmp_dir.join("pekobot")
+    } else if tmp_dir.join("target/release/pekobot").exists() {
+        tmp_dir.join("target/release/pekobot")
+    } else {
+        // Search for binary
+        let output = Command::new("find")
+            .args([tmp_dir.to_str().unwrap(), "-name", "pekobot", "-type", "f"])
+            .output()?;
+        
+        let binary_path = String::from_utf8(output.stdout)?
+            .lines()
+            .next()
+            .context("Could not find pekobot binary in archive")?;
+        
+        std::path::PathBuf::from(binary_path)
+    };
+
+    if !new_binary.exists() {
+        anyhow::bail!("Could not find pekobot binary in archive");
+    }
+
     // Get current binary path
     let current_exe = std::env::current_exe()?;
 
@@ -152,11 +208,7 @@ async fn perform_update(version: &str) -> Result<()> {
     std::fs::copy(&current_exe, &backup_path)?;
     println!("   Backed up current binary to {}", backup_path.display());
 
-    // Replace binary
-    println!("🔄 Installing new version...");
-    let new_binary = tmp_dir.join("pekobot");
-
-    // Make executable
+    // Make new binary executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -165,7 +217,8 @@ async fn perform_update(version: &str) -> Result<()> {
         std::fs::set_permissions(&new_binary, perms)?;
     }
 
-    // Replace (may need sudo if installed system-wide)
+    // Replace binary (may need sudo if installed system-wide)
+    println!("🔄 Installing new version...");
     match std::fs::rename(&new_binary, &current_exe) {
         Ok(_) => {}
         Err(_) => {
@@ -202,6 +255,8 @@ fn detect_platform() -> Result<String> {
         "x86_64"
     } else if cfg!(target_arch = "aarch64") {
         "aarch64"
+    } else if cfg!(target_arch = "arm") {
+        "armv7"
     } else {
         anyhow::bail!("Unsupported architecture")
     };
@@ -214,5 +269,5 @@ fn detect_platform() -> Result<String> {
         anyhow::bail!("Unsupported operating system")
     };
 
-    Ok(format!("{}_{}", os, arch))
+    Ok(format!("{}-{}", os, arch))
 }
