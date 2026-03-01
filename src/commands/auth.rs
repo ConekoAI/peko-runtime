@@ -15,7 +15,6 @@ pub enum AuthCommands {
         /// Provider (openai, anthropic, kimi, etc.)
         provider: String,
         /// API key value (or omit to enter interactively)
-        #[arg(trailing_var_arg = true)]
         key: Option<String>,
         /// Profile name (default: "default")
         #[arg(short, long)]
