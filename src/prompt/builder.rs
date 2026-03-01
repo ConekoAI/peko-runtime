@@ -415,18 +415,9 @@ impl SystemPromptBuilder {
             lines.push(String::new());
         }
 
-        // 25. Heartbeats (skip when tools enabled to avoid interference with agentic loop)
-        if self.tools.is_empty() {
-            lines.push("## Heartbeats".to_string());
-            lines.push("Heartbeat prompt: Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.".to_string());
-            lines.push("If you receive a heartbeat poll (a user message matching the heartbeat prompt above), and there is nothing that needs attention, reply exactly:".to_string());
-            lines.push("HEARTBEAT_OK".to_string());
-            lines.push("OpenClaw treats a leading/trailing \"HEARTBEAT_OK\" as a heartbeat ack (and may discard it).".to_string());
-            lines.push("If something needs attention, do NOT include \"HEARTBEAT_OK\"; reply with the alert text instead.".to_string());
-            lines.push(String::new());
-        }
+        // Note: HEARTBEAT.md is NOT injected - it's read proactively on heartbeat polls only
 
-        // 26. Runtime
+        // 25. Runtime
         lines.push("## Runtime".to_string());
         let hostname = std::env::var("HOSTNAME")
             .or_else(|_| std::env::var("COMPUTERNAME"))
@@ -438,7 +429,7 @@ impl SystemPromptBuilder {
         lines.push(format!("Channel: {}", self.channel));
         lines.push(String::new());
 
-        // 27. Reasoning
+        // 26. Reasoning
         lines.push("## Reasoning".to_string());
         lines.push(format!("Reasoning: {} (hidden unless on/stream). Toggle /reasoning; /status shows Reasoning when enabled.", self.thinking_level));
         lines.push(String::new());
