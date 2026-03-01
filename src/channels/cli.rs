@@ -138,11 +138,11 @@ pub async fn run_interactive_loop_with_agent(
                         channel.print_agent_response("Available commands:\n  help - Show this message\n  exit/quit/bye - Stop the agent");
                     }
                     _ => {
-                        // Process with agent's execute method
+                        // Process with agent's execute method with tools
                         channel.print_system("Thinking...");
-                        match agent.execute(trimmed).await {
-                            Ok(response) => {
-                                channel.print_agent_response(&response);
+                        match agent.execute_with_tools(trimmed).await {
+                            Ok(result) => {
+                                channel.print_agent_response(&result.final_answer);
                             }
                             Err(e) => {
                                 channel.print_error(&format!("Failed to get response: {e}"));

@@ -179,6 +179,59 @@ impl Agent {
         result
     }
 
+    /// Execute a task with tools using the agentic loop
+    pub async fn execute_with_tools(
+        &self,
+        prompt: &str,
+    ) -> Result<crate::engine::loop_::AgenticResult> {
+        use crate::engine::loop_::AgenticLoop;
+        use crate::tools::*;
+        use std::sync::Arc;
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        let result = if let Some(provider) = &self.provider {
+            // Create core tools
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            // We need to create new instances since we can't clone the agent
+            let agent_config = self.config.clone();
+            let agent_for_loop = Agent::new(agent_config).await?;
+            let agent_arc = Arc::new(agent_for_loop);
+            
+            // Create provider instance for the loop
+            let provider_for_loop = Self::init_provider(&self.config).await?.ok_or_else(|| anyhow::anyhow!("No provider"))?;
+            let provider_arc: Arc<dyn Provider> = Arc::from(provider_for_loop);
+            
+            let loop_ = AgenticLoop::new(agent_arc, provider_arc, tools);
+
+            match loop_.run(prompt).await {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    error!("Agentic loop error: {}", e);
+                    Err(e)
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!("No provider configured"))
+        };
+
+        self.set_state(AgentState::Idle);
+        result
+    }
+
     /// Search memory
     pub fn search_memory(
         &self,
