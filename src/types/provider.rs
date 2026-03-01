@@ -67,6 +67,10 @@ pub enum ProviderType {
     Ollama,
     /// OpenAI-compatible API (custom endpoint)
     OpenAICompatible,
+    /// Kimi (Moonshot AI)
+    Kimi,
+    /// Kimi Code (coding assistant)
+    KimiCode,
 }
 
 impl std::fmt::Display for ProviderType {
@@ -76,6 +80,8 @@ impl std::fmt::Display for ProviderType {
             ProviderType::Anthropic => write!(f, "anthropic"),
             ProviderType::Ollama => write!(f, "ollama"),
             ProviderType::OpenAICompatible => write!(f, "openai_compatible"),
+            ProviderType::Kimi => write!(f, "kimi"),
+            ProviderType::KimiCode => write!(f, "kimi_code"),
         }
     }
 }

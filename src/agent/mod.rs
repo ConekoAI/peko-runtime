@@ -8,7 +8,7 @@ pub use crate::engine::loop_::{AgenticLoop, AgenticResult, ToolCall};
 
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::memory::sqlite::SqliteMemory;
-use crate::providers::{OpenAIConfig, OpenAIProvider, Provider};
+use crate::providers::Provider;
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -287,37 +287,110 @@ impl Agent {
     async fn init_provider(config: &AgentConfig) -> Result<Option<Box<dyn Provider>>> {
         use crate::types::provider::ProviderType;
 
-        if config.provider.provider_type == ProviderType::OpenAI {
-            let api_key = config.provider.get_api_key()?;
+        let api_key = match config.provider.get_api_key() {
+            Ok(key) => key,
+            Err(e) => {
+                warn!("Failed to get API key: {}", e);
+                return Ok(None);
+            }
+        };
 
-            let model_config = config
-                .provider
-                .default_model_config()
-                .cloned()
-                .unwrap_or_default();
+        let model_config = config
+            .provider
+            .default_model_config()
+            .cloned()
+            .unwrap_or_default();
 
-            let openai_config = OpenAIConfig {
-                api_key,
-                base_url: config
+        let provider: Box<dyn Provider> = match config.provider.provider_type {
+            ProviderType::OpenAI => {
+                let openai_config = crate::providers::OpenAIConfig {
+                    api_key,
+                    base_url: config
+                        .provider
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+                    model: model_config.name,
+                    max_tokens: model_config.max_tokens,
+                    temperature: model_config.temperature,
+                    timeout_seconds: config.provider.timeout_seconds,
+                };
+                Box::new(crate::providers::OpenAIProvider::new(openai_config)?)
+            }
+            ProviderType::Anthropic => {
+                let anthropic_config = crate::providers::AnthropicConfig {
+                    api_key,
+                    base_url: config
+                        .provider
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.anthropic.com".to_string()),
+                    model: model_config.name,
+                    max_tokens: model_config.max_tokens,
+                    temperature: model_config.temperature,
+                    timeout_seconds: config.provider.timeout_seconds,
+                };
+                Box::new(crate::providers::AnthropicProvider::new(anthropic_config)?)
+            }
+            ProviderType::Ollama => {
+                let ollama_config = crate::providers::OllamaConfig {
+                    base_url: config
+                        .provider
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "http://localhost:11434".to_string()),
+                    model: model_config.name,
+                    temperature: model_config.temperature,
+                    timeout_seconds: config.provider.timeout_seconds,
+                    num_ctx: Some(4096),
+                    num_gpu: None,
+                };
+                Box::new(crate::providers::OllamaProvider::new(ollama_config)?)
+            }
+            ProviderType::OpenAICompatible => {
+                let base_url = config
                     .provider
                     .base_url
                     .clone()
-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-                model: model_config.name,
-                max_tokens: model_config.max_tokens,
-                temperature: model_config.temperature,
-                timeout_seconds: config.provider.timeout_seconds,
-            };
+                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+                
+                // Check if this is a Kimi endpoint
+                if base_url.contains("moonshot.cn") {
+                    Box::new(crate::providers::KimiProvider::new(api_key))
+                } else {
+                    // Generic OpenAI-compatible provider
+                    let compat_config = crate::providers::OpenAICompatibleConfig {
+                        api_key,
+                        base_url: base_url.clone(),
+                        model: model_config.name,
+                        max_tokens: model_config.max_tokens,
+                        temperature: model_config.temperature,
+                        timeout_seconds: config.provider.timeout_seconds,
+                    };
+                    Box::new(crate::providers::OpenAICompatibleProvider::new("openai_compatible", compat_config)?)
+                }
+            }
+            ProviderType::Kimi => {
+                Box::new(crate::providers::KimiProvider::new(api_key))
+            }
+            ProviderType::KimiCode => {
+                let kimi_code_config = crate::providers::KimiCodeConfig {
+                    api_key,
+                    base_url: config
+                        .provider
+                        .base_url
+                        .clone()
+                        .unwrap_or_else(|| "https://api.kimi.com/coding".to_string()),
+                    model: model_config.name,
+                    max_tokens: model_config.max_tokens,
+                    temperature: model_config.temperature,
+                    timeout_seconds: config.provider.timeout_seconds,
+                };
+                Box::new(crate::providers::KimiCodeProvider::new(kimi_code_config)?)
+            }
+        };
 
-            let provider = OpenAIProvider::new(openai_config)?;
-            Ok(Some(Box::new(provider)))
-        } else {
-            warn!(
-                "Provider type not yet implemented: {:?}",
-                config.provider.provider_type
-            );
-            Ok(None)
-        }
+        Ok(Some(provider))
     }
 }
 
