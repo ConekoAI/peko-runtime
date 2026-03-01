@@ -505,6 +505,9 @@ pub mod handlers {
             "openai" => ProviderType::OpenAI,
             "anthropic" => ProviderType::Anthropic,
             "ollama" => ProviderType::Ollama,
+            "kimi" => ProviderType::Kimi,
+            "kimi_code" => ProviderType::KimiCode,
+            "kimi-code" => ProviderType::KimiCode,
             _ => ProviderType::OpenAI,
         };
 
