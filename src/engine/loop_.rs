@@ -76,6 +76,7 @@ impl AgenticLoop {
                 .context("Failed to get completion from provider")?;
 
             debug!("Provider response: {}", response);
+            info!("Iteration {} response: {}", iteration, response);
 
             // Parse the response
             if let Some(tool_call) = self.parse_tool_call(&response) {
