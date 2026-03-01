@@ -155,7 +155,7 @@ pub async fn handle_agent(
 /// Agent command handlers
 pub mod handlers {
     use crate::agent::Agent;
-    use crate::channels::cli::{run_interactive_loop, CliChannel};
+    use crate::channels::cli::{run_interactive_loop_with_agent, CliChannel};
     use crate::commands::GlobalPaths;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -193,12 +193,9 @@ pub mod handlers {
                 println!("   State: {:?}", agent.state());
 
                 let mut channel = CliChannel::new(&name);
-                channel.print_banner();
-                channel.print_system(&format!(
-                    "Agent '{name}' is ready! Type 'exit' or 'quit' to stop."
-                ));
-
-                if let Err(e) = run_interactive_loop(&mut channel, &name).await {
+                
+                if let Err(e) = run_interactive_loop_with_agent(&mut channel, &name, &agent
+                ).await {
                     eprintln!("❌ Error in interactive loop: {e}");
                 }
 

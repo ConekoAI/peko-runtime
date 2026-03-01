@@ -105,26 +105,23 @@ impl Channel for CliChannel {
     }
 }
 
-/// Interactive conversation loop for CLI
-pub async fn run_interactive_loop<C: Channel + 'static>(
-    channel: &mut C,
+/// Interactive conversation loop for CLI with provider support
+pub async fn run_interactive_loop_with_agent(
+    channel: &mut CliChannel,
     agent_name: &str,
+    agent: &crate::agent::Agent,
 ) -> Result<()> {
-    use crate::channels::cli::CliChannel;
+    use crate::providers::Provider;
 
     // Print welcome
-    if let Some(cli) = (channel as &dyn std::any::Any).downcast_ref::<CliChannel>() {
-        cli.print_banner();
-        cli.print_system(&format!(
-            "Agent '{agent_name}' is ready! Type 'exit' or 'quit' to stop."
-        ));
-    }
+    channel.print_banner();
+    channel.print_system(&format!(
+        "Agent '{agent_name}' is ready! Type 'exit' or 'quit' to stop."
+    ));
 
     loop {
         // Print prompt
-        if let Some(cli) = (channel as &dyn std::any::Any).downcast_ref::<CliChannel>() {
-            cli.print_prompt();
-        }
+        channel.print_prompt();
 
         // Wait for input
         match channel.receive().await? {
@@ -134,25 +131,23 @@ pub async fn run_interactive_loop<C: Channel + 'static>(
                 // Check for exit commands
                 match trimmed.to_lowercase().as_str() {
                     "exit" | "quit" | "bye" => {
-                        if let Some(cli) =
-                            (channel as &dyn std::any::Any).downcast_ref::<CliChannel>()
-                        {
-                            cli.print_system("Goodbye! 👋");
-                        }
+                        channel.print_system("Goodbye! 👋");
                         break;
                     }
                     "help" => {
-                        if let Some(cli) =
-                            (channel as &dyn std::any::Any).downcast_ref::<CliChannel>()
-                        {
-                            cli.print_agent_response("Available commands:\n  help - Show this message\n  exit/quit/bye - Stop the agent");
-                        }
+                        channel.print_agent_response("Available commands:\n  help - Show this message\n  exit/quit/bye - Stop the agent");
                     }
                     _ => {
-                        // Echo back for now (would be processed by agent)
-                        let response =
-                            format!("Received: '{trimmed}' (agent processing not yet implemented)");
-                        channel.send(&response).await?;
+                        // Process with agent's execute method
+                        channel.print_system("Thinking...");
+                        match agent.execute(trimmed).await {
+                            Ok(response) => {
+                                channel.print_agent_response(&response);
+                            }
+                            Err(e) => {
+                                channel.print_error(&format!("Failed to get response: {e}"));
+                            }
+                        }
                     }
                 }
             }

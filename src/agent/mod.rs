@@ -112,6 +112,11 @@ impl Agent {
         self.state.read().unwrap().clone()
     }
 
+    /// Get provider reference
+    pub fn get_provider(&self) -> Option<&dyn Provider> {
+        self.provider.as_deref()
+    }
+
     /// Set state
     fn set_state(&self, state: AgentState) {
         let mut current = self.state.write().unwrap();
