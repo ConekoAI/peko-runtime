@@ -30,7 +30,7 @@ pub enum AgentCommands {
         message: Option<String>,
         /// Enable streaming mode for real-time output
         #[arg(long)]
-        streaming: bool,
+        streaming: Option<bool>,
     },
 
     /// List all configured agents
@@ -177,7 +177,7 @@ pub mod handlers {
         model: Option<String>,
         db: Option<String>,
         message: Option<String>,
-        streaming: bool,
+        streaming: Option<bool>,
     ) -> anyhow::Result<()> {
         // Determine agent name (default to "peko")
         let agent_name = name.unwrap_or_else(|| "peko".to_string());
@@ -226,7 +226,11 @@ pub mod handlers {
                     // Interactive mode
                     let mut channel = CliChannel::new(&agent_name);
                     
-                    if streaming {
+                    // Determine streaming mode: CLI flag overrides config
+                    let use_streaming = streaming
+                        .unwrap_or_else(|| agent.streaming_enabled());
+                    
+                    if use_streaming {
                         // Streaming mode for real-time progress
                         use crate::channels::cli::run_interactive_loop_streaming;
                         if let Err(e) = run_interactive_loop_streaming(&mut channel, &agent_name, &agent
@@ -610,6 +614,7 @@ pub mod handlers {
             default_timeout_seconds: 300,
             workspace: None,
             prompt: None,
+            streaming: None,
         }
     }
 

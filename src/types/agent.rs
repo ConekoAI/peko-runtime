@@ -33,6 +33,8 @@ pub struct AgentConfig {
     pub workspace: Option<PathBuf>,
     /// System prompt configuration
     pub prompt: Option<PromptConfig>,
+    /// Streaming configuration for real-time output
+    pub streaming: Option<StreamingConfig>,
 }
 
 impl Default for AgentConfig {
@@ -51,6 +53,7 @@ impl Default for AgentConfig {
             default_timeout_seconds: 300,
             workspace: None,
             prompt: None,
+            streaming: None,
         }
     }
 }
@@ -270,6 +273,58 @@ pub struct TlsConfig {
     pub cert_path: String,
     /// Key file path
     pub key_path: String,
+}
+
+/// Streaming configuration for real-time output
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingConfig {
+    /// Enable streaming mode by default
+    #[serde(default)]
+    pub enabled: bool,
+    /// Minimum characters before emitting a block
+    #[serde(default = "default_streaming_min_chars")]
+    pub min_chars: usize,
+    /// Maximum characters per block
+    #[serde(default = "default_streaming_max_chars")]
+    pub max_chars: usize,
+    /// Break preference: paragraph, sentence, whitespace, hard
+    #[serde(default = "default_streaming_break_preference")]
+    pub break_preference: String,
+    /// Show tool execution in real-time
+    #[serde(default = "default_streaming_true")]
+    pub show_tools: bool,
+    /// Show thinking/typing indicators
+    #[serde(default = "default_streaming_true")]
+    pub show_status: bool,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_chars: 100,
+            max_chars: 2000,
+            break_preference: "sentence".to_string(),
+            show_tools: true,
+            show_status: true,
+        }
+    }
+}
+
+fn default_streaming_min_chars() -> usize {
+    100
+}
+
+fn default_streaming_max_chars() -> usize {
+    2000
+}
+
+fn default_streaming_break_preference() -> String {
+    "sentence".to_string()
+}
+
+fn default_streaming_true() -> bool {
+    true
 }
 
 #[cfg(test)]

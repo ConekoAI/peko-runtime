@@ -125,10 +125,30 @@ impl AgenticLoop {
         event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
     ) -> Result<AgenticResult> {
         use crate::engine::{AgenticEvent, LifecyclePhase};
-        use crate::engine::chunker::BlockChunker;
+        use crate::engine::chunker::{BlockChunker, ChunkerConfig, BreakPreference};
         use tracing::error;
 
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
+
+        // Build chunker config from agent streaming settings
+        let chunker_config = self.agent
+            .streaming_config()
+            .map(|config| {
+                let break_pref = match config.break_preference.as_str() {
+                    "paragraph" => BreakPreference::Paragraph,
+                    "sentence" => BreakPreference::Sentence,
+                    "whitespace" => BreakPreference::Whitespace,
+                    "hard" => BreakPreference::Hard,
+                    _ => BreakPreference::Sentence,
+                };
+                ChunkerConfig {
+                    min_chars: config.min_chars,
+                    max_chars: config.max_chars,
+                    break_preference: break_pref,
+                    emit_partial: true,
+                }
+            })
+            .unwrap_or_default();
 
         // Emit start event
         let _ = event_tx.send(AgenticEvent::Lifecycle {
@@ -152,7 +172,7 @@ impl AgenticLoop {
         ];
 
         let mut tool_calls_made: Vec<ToolCall> = vec![];
-        let mut accumulated_response = String::new();
+        let _accumulated_response = String::new();
 
         loop {
             iteration += 1;
@@ -187,7 +207,7 @@ impl AgenticLoop {
             });
 
             // Collect streamed response
-            let mut chunker = BlockChunker::new();
+            let mut chunker = BlockChunker::with_config(chunker_config.clone());
             let mut full_response = String::new();
 
             while let Some(event) = rx.recv().await {
