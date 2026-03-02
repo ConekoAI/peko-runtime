@@ -28,9 +28,6 @@ pub enum AgentCommands {
         /// Send a single message and exit (non-interactive mode)
         #[arg(short = 'M', long)]
         message: Option<String>,
-        /// Enable streaming mode for real-time output
-        #[arg(long)]
-        streaming: Option<bool>,
     },
 
     /// List all configured agents
@@ -117,9 +114,8 @@ pub async fn handle_agent(
             model,
             db,
             message,
-            streaming,
         } => {
-            crate::commands::agent::handlers::handle_agent_start(name, config, provider, model, db, message, streaming)
+            crate::commands::agent::handlers::handle_agent_start(name, config, provider, model, db, message)
                 .await
         }
         AgentCommands::List { long } => {
@@ -177,7 +173,6 @@ pub mod handlers {
         model: Option<String>,
         db: Option<String>,
         message: Option<String>,
-        streaming: Option<bool>,
     ) -> anyhow::Result<()> {
         // Determine agent name (default to "peko")
         let agent_name = name.unwrap_or_else(|| "peko".to_string());
@@ -223,26 +218,24 @@ pub mod handlers {
                         eprintln!("❌ Error processing message: {e}");
                     }
                 } else {
-                    // Interactive mode
-                    let mut channel = CliChannel::new(&agent_name);
+                    // Interactive mode with streaming support
+                    // Streaming config is now at channel level, not agent level
+                    let streaming_config = crate::channels::StreamingConfig {
+                        enabled: true,
+                        min_chars: 100,
+                        max_chars: 2000,
+                        break_preference: crate::engine::chunker::BreakPreference::Sentence,
+                        show_tools: true,
+                        show_status: true,
+                        coalesce: false,
+                        coalesce_idle_ms: 500,
+                        human_delay: None,
+                    };
+                    let mut channel = CliChannel::with_config(&agent_name, streaming_config);
                     
-                    // Determine streaming mode: CLI flag overrides config
-                    let use_streaming = streaming
-                        .unwrap_or_else(|| agent.streaming_enabled());
-                    
-                    if use_streaming {
-                        // Streaming mode for real-time progress
-                        use crate::channels::cli::run_interactive_loop_streaming;
-                        if let Err(e) = run_interactive_loop_streaming(&mut channel, &agent_name, &agent
-                        ).await {
-                            eprintln!("❌ Error in streaming interactive loop: {e}");
-                        }
-                    } else {
-                        // Standard blocking mode
-                        if let Err(e) = run_interactive_loop_with_agent(&mut channel, &agent_name, &agent
-                        ).await {
-                            eprintln!("❌ Error in interactive loop: {e}");
-                        }
+                    if let Err(e) = run_interactive_loop_with_agent(&mut channel, &agent_name, &agent
+                    ).await {
+                        eprintln!("❌ Error in interactive loop: {e}");
                     }
                 }
 
@@ -614,7 +607,6 @@ pub mod handlers {
             default_timeout_seconds: 300,
             workspace: None,
             prompt: None,
-            streaming: None,
         }
     }
 

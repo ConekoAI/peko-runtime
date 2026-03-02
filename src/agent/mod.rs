@@ -316,20 +316,6 @@ impl Agent {
         Ok(event_rx)
     }
 
-    /// Check if streaming is enabled for this agent
-    pub fn streaming_enabled(&self) -> bool {
-        self.config
-            .streaming
-            .as_ref()
-            .map(|s| s.enabled)
-            .unwrap_or(false)
-    }
-
-    /// Get streaming configuration
-    pub fn streaming_config(&self) -> Option<&crate::types::agent::StreamingConfig> {
-        self.config.streaming.as_ref()
-    }
-
     /// Search memory
     pub fn search_memory(
         &self,

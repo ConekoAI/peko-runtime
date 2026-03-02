@@ -117,38 +117,20 @@ impl AgenticLoop {
     /// Run with streaming support
     ///
     /// This version streams events back via the provided channel.
-    /// Currently supports streaming for the initial LLM call; tool execution
-    /// still happens synchronously.
+    /// Chunking happens at the channel layer (presentation), not here.
+    /// This method emits raw deltas and lets the channel handle:
+    /// - Block chunking
+    /// - Coalescing
+    /// - Platform-specific formatting
     pub async fn run_streaming(
         &self,
         prompt: &str,
         event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
     ) -> Result<AgenticResult> {
         use crate::engine::{AgenticEvent, LifecyclePhase};
-        use crate::engine::chunker::{BlockChunker, ChunkerConfig, BreakPreference};
         use tracing::error;
 
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
-
-        // Build chunker config from agent streaming settings
-        let chunker_config = self.agent
-            .streaming_config()
-            .map(|config| {
-                let break_pref = match config.break_preference.as_str() {
-                    "paragraph" => BreakPreference::Paragraph,
-                    "sentence" => BreakPreference::Sentence,
-                    "whitespace" => BreakPreference::Whitespace,
-                    "hard" => BreakPreference::Hard,
-                    _ => BreakPreference::Sentence,
-                };
-                ChunkerConfig {
-                    min_chars: config.min_chars,
-                    max_chars: config.max_chars,
-                    break_preference: break_pref,
-                    emit_partial: true,
-                }
-            })
-            .unwrap_or_default();
 
         // Emit start event
         let _ = event_tx.send(AgenticEvent::Lifecycle {
@@ -172,7 +154,6 @@ impl AgenticLoop {
         ];
 
         let mut tool_calls_made: Vec<ToolCall> = vec![];
-        let _accumulated_response = String::new();
 
         loop {
             iteration += 1;
@@ -206,37 +187,23 @@ impl AgenticLoop {
                 provider.complete_stream(&messages, tx, run_id_clone).await
             });
 
-            // Collect streamed response
-            let mut chunker = BlockChunker::with_config(chunker_config.clone());
+            // Collect streamed response - FORWARD RAW EVENTS, NO CHUNKING
             let mut full_response = String::new();
 
             while let Some(event) = rx.recv().await {
                 match &event {
                     AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
                         if *is_delta {
-                            // Feed to chunker
-                            let blocks = chunker.feed(text);
-                            for block in blocks {
-                                let _ = event_tx.send(AgenticEvent::Assistant {
-                                    run_id: run_id.clone(),
-                                    text: block,
-                                    is_delta: true,
-                                    is_final: false,
-                                }).await;
-                            }
+                            // Forward raw delta to channel (no chunking here)
                             full_response.push_str(text);
+                            let _ = event_tx.send(AgenticEvent::Assistant {
+                                run_id: run_id.clone(),
+                                text: text.clone(),
+                                is_delta: true,
+                                is_final: false,
+                            }).await;
                         } else if *is_final {
-                            // Final chunk - flush any remaining
-                            let final_blocks = chunker.flush();
-                            for block in final_blocks {
-                                let _ = event_tx.send(AgenticEvent::Assistant {
-                                    run_id: run_id.clone(),
-                                    text: block,
-                                    is_delta: true,
-                                    is_final: false,
-                                }).await;
-                            }
-                            // Then send the complete response as final
+                            // Forward final event
                             let _ = event_tx.send(AgenticEvent::Assistant {
                                 run_id: run_id.clone(),
                                 text: full_response.clone(),
@@ -252,7 +219,7 @@ impl AgenticLoop {
                         }
                     }
                     _ => {
-                        // Forward other events
+                        // Forward other events (Lifecycle, etc.)
                         let _ = event_tx.send(event).await;
                     }
                 }

@@ -1,6 +1,6 @@
 //! CLI channel - Interactive terminal interface
 
-use super::Channel;
+use super::{Channel, StreamingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::io::Write;
@@ -13,11 +13,17 @@ pub struct CliChannel {
     stdin_tx: mpsc::Sender<String>,
     stdin_rx: mpsc::Receiver<String>,
     _input_handle: tokio::task::JoinHandle<()>,
+    streaming_config: StreamingConfig,
 }
 
 impl CliChannel {
     /// Create a new CLI channel with the given name
     pub fn new(name: impl Into<String>) -> Self {
+        Self::with_config(name, StreamingConfig::default())
+    }
+
+    /// Create a new CLI channel with custom streaming configuration
+    pub fn with_config(name: impl Into<String>, streaming_config: StreamingConfig) -> Self {
         let name = name.into();
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(100);
 
@@ -40,6 +46,7 @@ impl CliChannel {
             stdin_tx,
             stdin_rx,
             _input_handle,
+            streaming_config,
         }
     }
 
@@ -83,7 +90,9 @@ impl CliChannel {
         println!("{icon} Tool '{name}' completed");
     }
 
-    /// Handle an agentic event
+    /// Handle an agentic event (single event display)
+    /// 
+    /// Note: For streaming, use handle_stream instead which includes chunking.
     pub fn handle_event(&self, event: &crate::engine::AgenticEvent) {
         use crate::engine::AgenticEvent;
 
@@ -111,7 +120,7 @@ impl CliChannel {
                 if *is_final {
                     self.print_agent_response(text);
                 }
-                // Deltas handled by streaming mode (not implemented yet)
+                // Deltas are handled by the chunker in handle_stream
             }
             AgenticEvent::ToolStart { name, .. } => {
                 self.print_tool_start(name);
@@ -158,6 +167,159 @@ impl Channel for CliChannel {
             Ok(None) => Ok(None), // Channel closed
             Err(_) => Ok(None),   // Timeout - no input available
         }
+    }
+
+    fn streaming_config(&self) -> StreamingConfig {
+        self.streaming_config.clone()
+    }
+
+    async fn handle_stream(
+        &mut self,
+        mut event_rx: mpsc::Receiver<crate::engine::AgenticEvent>,
+    ) -> Result<()> {
+        use crate::engine::{AgenticEvent, chunker::BlockChunker};
+        use tokio::time::{sleep, Duration};
+
+        let config = self.streaming_config.clone();
+        
+        // Create chunker based on channel config
+        let chunker_config = crate::engine::chunker::ChunkerConfig {
+            min_chars: config.min_chars,
+            max_chars: config.max_chars,
+            break_preference: config.break_preference,
+            emit_partial: true,
+        };
+        let mut chunker = BlockChunker::with_config(chunker_config);
+        
+        // Coalescing buffer
+        let mut coalesce_buffer = String::new();
+        let mut last_chunk_time = std::time::Instant::now();
+        let mut first_block_sent = false;
+
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                AgenticEvent::Lifecycle { phase, error, .. } => {
+                    match phase {
+                        crate::engine::LifecyclePhase::Start => {
+                            // Silent - banner already shown
+                        }
+                        crate::engine::LifecyclePhase::Running => {
+                            if config.show_status {
+                                self.print_system("Thinking...");
+                            }
+                        }
+                        crate::engine::LifecyclePhase::End => {
+                            // Flush any remaining coalesced content
+                            if config.coalesce && !coalesce_buffer.is_empty() {
+                                self.print_agent_response(&coalesce_buffer);
+                                coalesce_buffer.clear();
+                            }
+                            break;
+                        }
+                        crate::engine::LifecyclePhase::Error => {
+                            if let Some(err) = error {
+                                self.print_error(&err);
+                            } else {
+                                self.print_error("Agent encountered an error");
+                            }
+                            break;
+                        }
+                        crate::engine::LifecyclePhase::Aborted => {
+                            self.print_system("Agent aborted");
+                            break;
+                        }
+                    }
+                }
+                AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
+                    if is_final {
+                        // Final response - flush everything
+                        let remaining = chunker.flush();
+                        for block in remaining {
+                            coalesce_buffer.push_str(&block);
+                        }
+                        if !coalesce_buffer.is_empty() {
+                            self.print_agent_response(&coalesce_buffer);
+                        }
+                    } else if is_delta {
+                        // Chunk the delta
+                        let blocks = chunker.feed(&text);
+                        
+                        for block in blocks {
+                            if config.coalesce {
+                                coalesce_buffer.push_str(&block);
+                                
+                                // Check if we should flush due to size
+                                if coalesce_buffer.len() >= config.min_chars {
+                                    // Apply human delay after first block
+                                    if first_block_sent {
+                                        if let Some((min_ms, max_ms)) = config.human_delay {
+                                            let delay_ms = rand::random::<u64>() % (max_ms - min_ms) + min_ms;
+                                            sleep(Duration::from_millis(delay_ms)).await;
+                                        }
+                                    }
+                                    
+                                    self.print_agent_response(&coalesce_buffer);
+                                    coalesce_buffer.clear();
+                                    last_chunk_time = std::time::Instant::now();
+                                    first_block_sent = true;
+                                }
+                            } else {
+                                // No coalescing - send immediately
+                                if first_block_sent {
+                                    if let Some((min_ms, max_ms)) = config.human_delay {
+                                        let delay_ms = rand::random::<u64>() % (max_ms - min_ms) + min_ms;
+                                        sleep(Duration::from_millis(delay_ms)).await;
+                                    }
+                                }
+                                self.print_agent_response(&block);
+                                first_block_sent = true;
+                            }
+                        }
+                        
+                        // Check idle timeout for coalescing
+                        if config.coalesce && !coalesce_buffer.is_empty() {
+                            let elapsed = last_chunk_time.elapsed().as_millis() as u64;
+                            if elapsed >= config.coalesce_idle_ms {
+                                if first_block_sent {
+                                    if let Some((min_ms, max_ms)) = config.human_delay {
+                                        let delay_ms = rand::random::<u64>() % (max_ms - min_ms) + min_ms;
+                                        sleep(Duration::from_millis(delay_ms)).await;
+                                    }
+                                }
+                                self.print_agent_response(&coalesce_buffer);
+                                coalesce_buffer.clear();
+                                first_block_sent = true;
+                            }
+                        }
+                    }
+                }
+                AgenticEvent::ToolStart { name, .. } => {
+                    if config.show_tools {
+                        self.print_tool_start(&name);
+                    }
+                }
+                AgenticEvent::ToolEnd { tool_id, success, .. } => {
+                    if config.show_tools {
+                        self.print_tool_result(&tool_id, success);
+                    }
+                }
+                AgenticEvent::Status { message, .. } => {
+                    if config.show_status {
+                        self.print_system(&message);
+                    }
+                }
+                _ => {
+                    // Other events not displayed
+                }
+            }
+        }
+
+        // Final flush of any remaining content
+        if config.coalesce && !coalesce_buffer.is_empty() {
+            self.print_agent_response(&coalesce_buffer);
+        }
+
+        Ok(())
     }
 }
 
@@ -278,23 +440,10 @@ pub async fn run_interactive_loop_streaming(
                         // Run the streaming execution in the LocalSet
                         local.run_until(async {
                             match agent.execute_streaming(trimmed).await {
-                                Ok(mut event_rx) => {
-                                    // Process events as they arrive
-                                    while let Some(event) = event_rx.recv().await {
-                                        channel.handle_event(&event);
-
-                                        // Check for end/error to break
-                                        match &event {
-                                            crate::engine::AgenticEvent::Lifecycle { 
-                                                phase: crate::engine::LifecyclePhase::End, 
-                                                .. 
-                                            } => break,
-                                            crate::engine::AgenticEvent::Lifecycle { 
-                                                phase: crate::engine::LifecyclePhase::Error, 
-                                                .. 
-                                            } => break,
-                                            _ => {}
-                                        }
+                                Ok(event_rx) => {
+                                    // Use channel's handle_stream for proper chunking
+                                    if let Err(e) = channel.handle_stream(event_rx).await {
+                                        channel.print_error(&format!("Streaming error: {e}"));
                                     }
                                 }
                                 Err(e) => {
