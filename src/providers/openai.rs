@@ -2,6 +2,7 @@
 
 use super::traits::Provider;
 use async_trait::async_trait;
+use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -118,6 +119,7 @@ impl Provider for OpenAIProvider {
             messages: self.build_messages(system_prompt, message),
             max_tokens: Some(self.config.max_tokens),
             temperature: Some(temperature as f32),
+            stream: None,
         };
 
         debug!("Sending request to OpenAI: model={}", model);
@@ -154,6 +156,17 @@ impl Provider for OpenAIProvider {
 
         Ok(content)
     }
+
+    async fn complete_stream(
+        &self,
+        prompt: &str,
+        event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
+        run_id: String,
+    ) -> anyhow::Result<()> {
+        // Use default implementation (blocking with events)
+        // Full streaming implementation requires reqwest stream feature
+        <Self as Provider>::complete_stream(self, prompt, event_tx, run_id).await
+    }
 }
 
 // OpenAI API types
@@ -166,6 +179,8 @@ struct ChatCompletionRequest {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -188,6 +203,27 @@ struct Choice {
 #[derive(Debug, Deserialize)]
 struct Usage {
     total_tokens: u32,
+}
+
+// Streaming types
+#[derive(Debug, Deserialize)]
+struct StreamDelta {
+    id: String,
+    object: String,
+    choices: Vec<DeltaChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeltaChoice {
+    index: u32,
+    delta: DeltaContent,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeltaContent {
+    role: Option<String>,
+    content: Option<String>,
 }
 
 #[cfg(test)]
