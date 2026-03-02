@@ -111,18 +111,16 @@ pub async fn run_interactive_loop_with_agent(
     agent_name: &str,
     agent: &crate::agent::Agent,
 ) -> Result<()> {
-    use crate::providers::Provider;
-
     // Print welcome
     channel.print_banner();
     channel.print_system(&format!(
         "Agent '{agent_name}' is ready! Type 'exit' or 'quit' to stop."
     ));
 
-    loop {
-        // Print prompt
-        channel.print_prompt();
+    // Print initial prompt
+    channel.print_prompt();
 
+    loop {
         // Wait for input
         match channel.receive().await? {
             Some(input) => {
@@ -136,6 +134,7 @@ pub async fn run_interactive_loop_with_agent(
                     }
                     "help" => {
                         channel.print_agent_response("Available commands:\n  help - Show this message\n  exit/quit/bye - Stop the agent");
+                        channel.print_prompt();
                     }
                     _ => {
                         // Process with agent's execute method with tools
@@ -148,17 +147,37 @@ pub async fn run_interactive_loop_with_agent(
                                 channel.print_error(&format!("Failed to get response: {e}"));
                             }
                         }
+                        // Print new prompt after response
+                        channel.print_prompt();
                     }
                 }
             }
             None => {
-                // No input available, continue loop
+                // No input available, just wait
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
         }
     }
 
     Ok(())
+}
+
+/// Send a single message to the agent and get a response (non-interactive)
+pub async fn send_single_message(
+    agent: &crate::agent::Agent,
+    message: &str,
+) -> Result<String> {
+    println!("⚡ Thinking...");
+    match agent.execute_with_tools(message).await {
+        Ok(result) => {
+            println!("\n🐱 Agent: {}", result.final_answer);
+            Ok(result.final_answer)
+        }
+        Err(e) => {
+            eprintln!("\n❌ Error: {e}");
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

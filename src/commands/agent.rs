@@ -26,6 +26,9 @@ pub enum AgentCommands {
         /// Database path for memory
         #[arg(long)]
         db: Option<String>,
+        /// Send a single message and exit (non-interactive mode)
+        #[arg(short = 'M', long)]
+        message: Option<String>,
     },
 
     /// List all configured agents
@@ -111,8 +114,9 @@ pub async fn handle_agent(
             provider,
             model,
             db,
+            message,
         } => {
-            crate::commands::agent::handlers::handle_agent_start(config, name, provider, model, db)
+            crate::commands::agent::handlers::handle_agent_start(config, name, provider, model, db, message)
                 .await
         }
         AgentCommands::List { long } => {
@@ -169,6 +173,7 @@ pub mod handlers {
         provider: String,
         model: Option<String>,
         db: Option<String>,
+        message: Option<String>,
     ) -> anyhow::Result<()> {
         info!("Starting Pekobot agent: {}", name);
 
@@ -192,11 +197,22 @@ pub mod handlers {
                 println!("   DID: {}", agent.identity.did);
                 println!("   State: {:?}", agent.state());
 
-                let mut channel = CliChannel::new(&name);
-                
-                if let Err(e) = run_interactive_loop_with_agent(&mut channel, &name, &agent
-                ).await {
-                    eprintln!("❌ Error in interactive loop: {e}");
+                // Check if we're in single-message mode
+                if let Some(msg) = message {
+                    // Single message mode
+                    println!();
+                    if let Err(e) = crate::channels::cli::send_single_message(&agent, &msg
+                    ).await {
+                        eprintln!("❌ Error processing message: {e}");
+                    }
+                } else {
+                    // Interactive mode
+                    let mut channel = CliChannel::new(&name);
+                    
+                    if let Err(e) = run_interactive_loop_with_agent(&mut channel, &name, &agent
+                    ).await {
+                        eprintln!("❌ Error in interactive loop: {e}");
+                    }
                 }
 
                 if let Err(e) = agent.stop().await {
