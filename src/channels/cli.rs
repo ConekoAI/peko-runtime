@@ -236,6 +236,88 @@ pub async fn send_single_message(
     }
 }
 
+/// Run interactive loop with streaming support
+///
+/// This version shows real-time progress including tool usage.
+pub async fn run_interactive_loop_streaming(
+    channel: &mut CliChannel,
+    agent_name: &str,
+    agent: &crate::agent::Agent,
+) -> Result<()> {
+    use tokio::task::LocalSet;
+
+    // Print welcome
+    channel.print_banner();
+    channel.print_system(&format!(
+        "Agent '{agent_name}' is ready (streaming mode)! Type 'exit' or 'quit' to stop."
+    ));
+
+    // Create a LocalSet for the streaming execution
+    let local = LocalSet::new();
+
+    // Print initial prompt
+    channel.print_prompt();
+
+    loop {
+        // Wait for input
+        match channel.receive().await? {
+            Some(input) => {
+                let trimmed = input.trim();
+
+                // Check for exit commands
+                match trimmed.to_lowercase().as_str() {
+                    "exit" | "quit" | "bye" => {
+                        channel.print_system("Goodbye! 👋");
+                        break;
+                    }
+                    "help" => {
+                        channel.print_agent_response("Available commands:\n  help - Show this message\n  exit/quit/bye - Stop the agent");
+                        channel.print_prompt();
+                    }
+                    _ => {
+                        // Run the streaming execution in the LocalSet
+                        local.run_until(async {
+                            match agent.execute_streaming(trimmed).await {
+                                Ok(mut event_rx) => {
+                                    // Process events as they arrive
+                                    while let Some(event) = event_rx.recv().await {
+                                        channel.handle_event(&event);
+
+                                        // Check for end/error to break
+                                        match &event {
+                                            crate::engine::AgenticEvent::Lifecycle { 
+                                                phase: crate::engine::LifecyclePhase::End, 
+                                                .. 
+                                            } => break,
+                                            crate::engine::AgenticEvent::Lifecycle { 
+                                                phase: crate::engine::LifecyclePhase::Error, 
+                                                .. 
+                                            } => break,
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    channel.print_error(&format!("Failed to start streaming: {e}"));
+                                }
+                            }
+                        }).await;
+
+                        // Print new prompt after response
+                        channel.print_prompt();
+                    }
+                }
+            }
+            None => {
+                // No input available, just wait
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
