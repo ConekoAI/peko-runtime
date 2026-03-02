@@ -71,6 +71,62 @@ impl CliChannel {
     pub fn print_error(&self, error: &str) {
         eprintln!("\n❌ Error: {error}");
     }
+
+    /// Print tool start
+    pub fn print_tool_start(&self, name: &str) {
+        println!("\n🔧 Using tool: {name}");
+    }
+
+    /// Print tool result
+    pub fn print_tool_result(&self, name: &str, success: bool) {
+        let icon = if success { "✅" } else { "❌" };
+        println!("{icon} Tool '{name}' completed");
+    }
+
+    /// Handle an agentic event
+    pub fn handle_event(&self, event: &crate::engine::AgenticEvent) {
+        use crate::engine::AgenticEvent;
+
+        match event {
+            AgenticEvent::Lifecycle { phase, .. } => {
+                match phase {
+                    crate::engine::LifecyclePhase::Start => {
+                        // Silent - already printed banner
+                    }
+                    crate::engine::LifecyclePhase::Running => {
+                        self.print_system("Thinking...");
+                    }
+                    crate::engine::LifecyclePhase::End => {
+                        // Silent - response printed separately
+                    }
+                    crate::engine::LifecyclePhase::Error => {
+                        self.print_error("Agent encountered an error");
+                    }
+                    crate::engine::LifecyclePhase::Aborted => {
+                        self.print_system("Agent aborted");
+                    }
+                }
+            }
+            AgenticEvent::Assistant { text, is_final, .. } => {
+                if *is_final {
+                    self.print_agent_response(text);
+                }
+                // Deltas handled by streaming mode (not implemented yet)
+            }
+            AgenticEvent::ToolStart { name, .. } => {
+                self.print_tool_start(name);
+            }
+            AgenticEvent::ToolEnd { tool_id, success, .. } => {
+                self.print_tool_result(tool_id, *success);
+            }
+            AgenticEvent::Status { message, .. } => {
+                self.print_system(message);
+            }
+            _ => {
+                // Other events not displayed in CLI
+            }
+        }
+    }
 }
 
 #[async_trait]
