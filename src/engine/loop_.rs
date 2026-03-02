@@ -114,6 +114,205 @@ impl AgenticLoop {
         }
     }
 
+    /// Run with streaming support
+    ///
+    /// This version streams events back via the provided channel.
+    /// Currently supports streaming for the initial LLM call; tool execution
+    /// still happens synchronously.
+    pub async fn run_streaming(
+        &self,
+        prompt: &str,
+        event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
+    ) -> Result<AgenticResult> {
+        use crate::engine::{AgenticEvent, LifecyclePhase};
+        use crate::engine::chunker::BlockChunker;
+        use tracing::error;
+
+        let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
+
+        // Emit start event
+        let _ = event_tx.send(AgenticEvent::Lifecycle {
+            run_id: run_id.clone(),
+            phase: LifecyclePhase::Start,
+            error: None,
+        }).await;
+
+        info!("Starting streaming agentic loop for agent: {}", self.agent.name());
+
+        let mut iteration = 0;
+        let mut context = vec![
+            json!({
+                "role": "system",
+                "content": self.build_system_prompt()
+            }),
+            json!({
+                "role": "user",
+                "content": prompt
+            }),
+        ];
+
+        let mut tool_calls_made: Vec<ToolCall> = vec![];
+        let mut accumulated_response = String::new();
+
+        loop {
+            iteration += 1;
+            if iteration > self.max_iterations {
+                warn!("Max iterations ({}) reached", self.max_iterations);
+                return Ok(AgenticResult {
+                    success: false,
+                    final_answer: "Max iterations reached".to_string(),
+                    tool_calls: tool_calls_made,
+                    iterations: iteration,
+                });
+            }
+
+            debug!("Iteration {}: Calling provider with streaming", iteration);
+
+            // Emit running event
+            let _ = event_tx.send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Running,
+                error: None,
+            }).await;
+
+            // Call the LLM with streaming
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<AgenticEvent>(100);
+            let provider = Arc::clone(&self.provider);
+            let messages = self.format_messages(&context);
+            let run_id_clone = run_id.clone();
+
+            // Spawn streaming task
+            let stream_handle = tokio::spawn(async move {
+                provider.complete_stream(&messages, tx, run_id_clone).await
+            });
+
+            // Collect streamed response
+            let mut chunker = BlockChunker::new();
+            let mut full_response = String::new();
+
+            while let Some(event) = rx.recv().await {
+                match &event {
+                    AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
+                        if *is_delta {
+                            // Feed to chunker
+                            let blocks = chunker.feed(text);
+                            for block in blocks {
+                                let _ = event_tx.send(AgenticEvent::Assistant {
+                                    run_id: run_id.clone(),
+                                    text: block,
+                                    is_delta: true,
+                                    is_final: false,
+                                }).await;
+                            }
+                            full_response.push_str(text);
+                        } else if *is_final {
+                            // Final chunk - flush any remaining
+                            let final_blocks = chunker.flush();
+                            for block in final_blocks {
+                                let _ = event_tx.send(AgenticEvent::Assistant {
+                                    run_id: run_id.clone(),
+                                    text: block,
+                                    is_delta: true,
+                                    is_final: false,
+                                }).await;
+                            }
+                            // Then send the complete response as final
+                            let _ = event_tx.send(AgenticEvent::Assistant {
+                                run_id: run_id.clone(),
+                                text: full_response.clone(),
+                                is_delta: false,
+                                is_final: true,
+                            }).await;
+                        }
+                    }
+                    AgenticEvent::Lifecycle { phase: LifecyclePhase::Error, error, .. } => {
+                        if let Some(err) = error {
+                            error!("Provider error during streaming: {}", err);
+                            return Err(anyhow::anyhow!("Provider error: {}", err));
+                        }
+                    }
+                    _ => {
+                        // Forward other events
+                        let _ = event_tx.send(event).await;
+                    }
+                }
+            }
+
+            // Wait for streaming to complete
+            stream_handle.await??;
+
+            debug!("Provider response: {}", full_response);
+
+            // Parse the response
+            if let Some(tool_call) = self.parse_tool_call(&full_response) {
+                // Emit tool start event
+                let _ = event_tx.send(AgenticEvent::ToolStart {
+                    run_id: run_id.clone(),
+                    tool_id: tool_call.name.clone(),
+                    name: tool_call.name.clone(),
+                    params: tool_call.parameters.clone(),
+                }).await;
+
+                // Execute tool
+                info!("Executing tool: {}", tool_call.name);
+                let tool_result = self.execute_tool(&tool_call).await;
+                tool_calls_made.push(tool_call.clone());
+
+                // Emit tool end event
+                let success = !tool_result.starts_with("Error:");
+                let _ = event_tx.send(AgenticEvent::ToolEnd {
+                    run_id: run_id.clone(),
+                    tool_id: tool_call.name.clone(),
+                    result: json!(tool_result),
+                    success,
+                    duration_ms: 0, // TODO: track actual duration
+                }).await;
+
+                // Add tool call and result to context
+                context.push(json!({
+                    "role": "assistant",
+                    "content": full_response
+                }));
+                context.push(json!({
+                    "role": "user",
+                    "content": format!("Tool result: {}", tool_result)
+                }));
+            } else if self.is_final_answer(&full_response) {
+                // Final answer reached
+                debug!("Final answer received after {} iterations", iteration);
+                let answer = self.extract_final_answer(&full_response);
+
+                // Emit final assistant event
+                let _ = event_tx.send(AgenticEvent::Assistant {
+                    run_id: run_id.clone(),
+                    text: answer.clone(),
+                    is_delta: false,
+                    is_final: true,
+                }).await;
+
+                // Emit end event
+                let _ = event_tx.send(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::End,
+                    error: None,
+                }).await;
+
+                return Ok(AgenticResult {
+                    success: true,
+                    final_answer: answer,
+                    tool_calls: tool_calls_made,
+                    iterations: iteration,
+                });
+            } else {
+                // Continue the conversation
+                context.push(json!({
+                    "role": "assistant",
+                    "content": full_response
+                }));
+            }
+        }
+    }
+
     /// Build system prompt using the new builder
     fn build_system_prompt(&self) -> String {
         use crate::prompt::builder::{PromptMode, SystemPromptBuilder};
