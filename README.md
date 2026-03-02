@@ -32,6 +32,7 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 - ✅ **Cron/Daemon** — Scheduled task execution with daemon mode
 - ✅ **Coneko Adapter** — Optional network integration
 - ✅ **Portable Agents** — Export/import agents as `.agent` packages
+- ✅ **Streaming Output** — Real-time progressive output with tool visibility
 
 ## Tool Architecture
 
@@ -739,6 +740,47 @@ pekobot cron add \
 │  └─────────────────────────────┘   │
 └─────────────────────────────────────┘
 ```
+
+## Streaming Output
+
+Pekobot supports real-time streaming for progressive output and tool visibility.
+
+### Quick Start
+
+```bash
+# Enable streaming via CLI flag
+pekobot agent start myagent --streaming
+
+# Or configure in agent config
+```toml
+# ~/.pekobot/agents/myagent.toml
+[streaming]
+enabled = true
+min_chars = 100
+max_chars = 2000
+break_preference = "sentence"
+show_tools = true
+```
+
+### Features
+
+- **Progressive Output**: Text appears as it's generated
+- **Tool Visibility**: See 🔧 tool execution in real-time
+- **Block Chunking**: Sentence/paragraph boundaries (not token spam)
+- **Provider Support**: Native streaming for OpenAI, Anthropic, Kimi, Ollama, Groq
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Enable streaming by default |
+| `min_chars` | `100` | Minimum chars before emitting |
+| `max_chars` | `2000` | Maximum chars per block |
+| `break_preference` | `"sentence"` | paragraph, sentence, whitespace, hard |
+| `show_tools` | `true` | Show tool notifications |
+| `show_status` | `true` | Show "Thinking..." status |
+
+See [docs/STREAMING.md](./docs/STREAMING.md) for full documentation.
 
 ## Development
 
