@@ -28,6 +28,9 @@ pub enum AgentCommands {
         /// Send a single message and exit (non-interactive mode)
         #[arg(short = 'M', long)]
         message: Option<String>,
+        /// Enable streaming mode for real-time output
+        #[arg(long)]
+        streaming: bool,
     },
 
     /// List all configured agents
@@ -114,8 +117,9 @@ pub async fn handle_agent(
             model,
             db,
             message,
+            streaming,
         } => {
-            crate::commands::agent::handlers::handle_agent_start(name, config, provider, model, db, message)
+            crate::commands::agent::handlers::handle_agent_start(name, config, provider, model, db, message, streaming)
                 .await
         }
         AgentCommands::List { long } => {
@@ -173,6 +177,7 @@ pub mod handlers {
         model: Option<String>,
         db: Option<String>,
         message: Option<String>,
+        streaming: bool,
     ) -> anyhow::Result<()> {
         // Determine agent name (default to "peko")
         let agent_name = name.unwrap_or_else(|| "peko".to_string());
@@ -221,9 +226,19 @@ pub mod handlers {
                     // Interactive mode
                     let mut channel = CliChannel::new(&agent_name);
                     
-                    if let Err(e) = run_interactive_loop_with_agent(&mut channel, &agent_name, &agent
-                    ).await {
-                        eprintln!("❌ Error in interactive loop: {e}");
+                    if streaming {
+                        // Streaming mode for real-time progress
+                        use crate::channels::cli::run_interactive_loop_streaming;
+                        if let Err(e) = run_interactive_loop_streaming(&mut channel, &agent_name, &agent
+                        ).await {
+                            eprintln!("❌ Error in streaming interactive loop: {e}");
+                        }
+                    } else {
+                        // Standard blocking mode
+                        if let Err(e) = run_interactive_loop_with_agent(&mut channel, &agent_name, &agent
+                        ).await {
+                            eprintln!("❌ Error in interactive loop: {e}");
+                        }
                     }
                 }
 
