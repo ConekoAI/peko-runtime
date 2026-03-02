@@ -77,7 +77,6 @@ impl AgenticLoop {
                 .context("Failed to get completion from provider")?;
 
             debug!("Provider response: {}", response);
-            info!("Iteration {} response: {}", iteration, response);
 
             // Parse the response
             if let Some(tool_call) = self.parse_tool_call(&response) {
@@ -97,7 +96,7 @@ impl AgenticLoop {
                 }));
             } else if self.is_final_answer(&response) {
                 // Final answer reached
-                info!("Final answer received after {} iterations", iteration);
+                debug!("Final answer received after {} iterations", iteration);
                 let answer = self.extract_final_answer(&response);
                 return Ok(AgenticResult {
                     success: true,
