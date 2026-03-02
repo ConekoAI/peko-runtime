@@ -141,6 +141,7 @@ impl Provider for KimiCodeProvider {
             max_tokens: self.config.max_tokens,
             temperature: Some(temperature as f32),
             messages,
+            stream: None,
         };
 
         debug!("Sending request to Kimi Code: model={}", model);
@@ -181,6 +182,138 @@ impl Provider for KimiCodeProvider {
 
         Ok(content)
     }
+
+    async fn complete_stream(
+        &self,
+        prompt: &str,
+        event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
+        run_id: String,
+    ) -> anyhow::Result<()> {
+        use crate::engine::{AgenticEvent, LifecyclePhase};
+        use crate::providers::SseParser;
+        use futures::StreamExt;
+        use tracing::error;
+
+        // Emit start event
+        let _ = event_tx.send(AgenticEvent::Lifecycle {
+            run_id: run_id.clone(),
+            phase: LifecyclePhase::Start,
+            error: None,
+        }).await;
+
+        let mut messages: Vec<Message> = Vec::new();
+        messages.push(Message {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        });
+
+        let request = MessagesRequest {
+            model: self.config.model.clone(),
+            max_tokens: self.config.max_tokens,
+            temperature: Some(self.config.temperature),
+            messages,
+            stream: Some(true),
+        };
+
+        debug!("Sending streaming request to Kimi Code: model={}", self.config.model);
+
+        // Emit running event
+        let _ = event_tx.send(AgenticEvent::Lifecycle {
+            run_id: run_id.clone(),
+            phase: LifecyclePhase::Running,
+            error: None,
+        }).await;
+
+        // Kimi Code uses Anthropic API format with SSE streaming
+        let response = self
+            .client
+            .post(format!("{}/v1/messages", self.config.base_url))
+            .header("x-api-key", &self.config.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("Kimi Code API error: {} - {}", status, error_text);
+            
+            let _ = event_tx.send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Error,
+                error: Some(format!("Kimi Code API error: {status} - {error_text}")),
+            }).await;
+            
+            return Err(anyhow::anyhow!("Kimi Code API error: {status} - {error_text}"));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut parser = SseParser::new();
+        let mut accumulated_text = String::new();
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let events = parser.feed(&text);
+
+                    for event in events {
+                        if event.is_done() {
+                            break;
+                        }
+
+                        // Parse the SSE data as JSON
+                        // Kimi Code (Anthropic format) sends content_block_delta events
+                        if let Ok(delta) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                            if let Some(content) = delta
+                                .get("delta")
+                                .and_then(|d| d.get("text"))
+                                .and_then(|t| t.as_str()) {
+                                accumulated_text.push_str(content);
+                                
+                                // Emit text delta
+                                let _ = event_tx.send(AgenticEvent::Assistant {
+                                    run_id: run_id.clone(),
+                                    text: content.to_string(),
+                                    is_delta: true,
+                                    is_final: false,
+                                }).await;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Stream error: {}", e);
+                    let _ = event_tx.send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Error,
+                        error: Some(e.to_string()),
+                    }).await;
+                    return Err(e.into());
+                }
+            }
+        }
+
+        // Emit final assistant event
+        let _ = event_tx.send(AgenticEvent::Assistant {
+            run_id: run_id.clone(),
+            text: accumulated_text,
+            is_delta: false,
+            is_final: true,
+        }).await;
+
+        // Emit end event
+        let _ = event_tx.send(AgenticEvent::Lifecycle {
+            run_id,
+            phase: LifecyclePhase::End,
+            error: None,
+        }).await;
+
+        Ok(())
+    }
 }
 
 // Anthropic API types (Kimi Code uses same format)
@@ -192,6 +325,8 @@ struct MessagesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     messages: Vec<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
