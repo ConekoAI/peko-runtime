@@ -241,6 +241,21 @@ impl Channel for CliChannel {
                             self.print_agent_response(&coalesce_buffer);
                         }
                     } else if is_delta {
+                        // Auto-flush short messages immediately
+                        let auto_flush_threshold = config.min_chars / 2;
+                        if text.len() < auto_flush_threshold && !config.coalesce {
+                            // Small message, flush immediately without chunking
+                            if first_block_sent {
+                                if let Some((min_ms, max_ms)) = config.human_delay {
+                                    let delay_ms = rand::random::<u64>() % (max_ms - min_ms) + min_ms;
+                                    sleep(Duration::from_millis(delay_ms)).await;
+                                }
+                            }
+                            self.print_agent_response(&text);
+                            first_block_sent = true;
+                            continue;
+                        }
+                        
                         // Chunk the delta
                         let blocks = chunker.feed(&text);
                         
@@ -296,6 +311,15 @@ impl Channel for CliChannel {
                 AgenticEvent::ToolStart { name, .. } => {
                     if config.show_tools {
                         self.print_tool_start(&name);
+                    }
+                }
+                AgenticEvent::ToolUpdate { tool_id, output, progress_percent, .. } => {
+                    if config.show_tools {
+                        if let Some(percent) = progress_percent {
+                            self.print_system(&format!("🔧 {}: {}% - {}", tool_id, percent, output));
+                        } else {
+                            self.print_system(&format!("🔧 {}: {}", tool_id, output));
+                        }
                     }
                 }
                 AgenticEvent::ToolEnd { tool_id, success, .. } => {

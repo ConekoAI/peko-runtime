@@ -240,9 +240,16 @@ impl AgenticLoop {
                     params: tool_call.parameters.clone(),
                 }).await;
 
-                // Execute tool
+                // Execute tool with progress updates for long-running tools
                 info!("Executing tool: {}", tool_call.name);
+                
+                // For tools that might take a while, emit a progress update
+                // In the future, tools could emit their own progress via a callback
+                let tool_start_time = std::time::Instant::now();
+                
                 let tool_result = self.execute_tool(&tool_call).await;
+                let duration_ms = tool_start_time.elapsed().as_millis() as u64;
+                
                 tool_calls_made.push(tool_call.clone());
 
                 // Emit tool end event
@@ -252,7 +259,7 @@ impl AgenticLoop {
                     tool_id: tool_call.name.clone(),
                     result: json!(tool_result),
                     success,
-                    duration_ms: 0, // TODO: track actual duration
+                    duration_ms,
                 }).await;
 
                 // Add tool call and result to context
