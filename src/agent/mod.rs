@@ -25,8 +25,8 @@ pub struct Agent {
     pub identity: Identity,
     /// Memory store
     memory: Option<SqliteMemory>,
-    /// LLM provider
-    provider: Option<Box<dyn Provider>>,
+    /// LLM provider (stored in Arc for sharing with agentic loop)
+    provider: Option<Arc<dyn Provider>>,
 }
 
 impl Agent {
@@ -206,14 +206,10 @@ impl Agent {
                 Arc::new(ProcessTool::new()),
             ];
 
-            // We need to create new instances since we can't clone the agent
-            let agent_config = self.config.clone();
-            let agent_for_loop = Agent::new(agent_config).await?;
-            let agent_arc = Arc::new(agent_for_loop);
-            
-            // Create provider instance for the loop
-            let provider_for_loop = Self::init_provider(&self.config).await?.ok_or_else(|| anyhow::anyhow!("No provider"))?;
-            let provider_arc: Arc<dyn Provider> = Arc::from(provider_for_loop);
+            // Use self (existing agent) and clone the Arc to the provider
+            // This keeps the same identity across all messages!
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
             
             let loop_ = AgenticLoop::new(agent_arc, provider_arc, tools);
 
@@ -230,6 +226,22 @@ impl Agent {
 
         self.set_state(AgentState::Idle);
         result
+    }
+
+    /// Clone the agent for use in the agentic loop
+    /// This creates a shallow copy that shares the same identity
+    fn clone_for_loop(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            state: Arc::new(RwLock::new(AgentState::Busy)),
+            identity: Identity {
+                did: self.identity.did.clone(),
+                document: self.identity.document.clone(),
+                keypair: None, // Don't clone keypair to avoid security issues
+            },
+            memory: None, // Don't clone memory to avoid lock issues
+            provider: None, // Provider passed separately to avoid double-Arc
+        }
     }
 
     /// Search memory
@@ -342,7 +354,7 @@ impl Agent {
         }
     }
 
-    async fn init_provider(config: &AgentConfig) -> Result<Option<Box<dyn Provider>>> {
+    async fn init_provider(config: &AgentConfig) -> Result<Option<Arc<dyn Provider>>> {
         use crate::types::provider::ProviderType;
 
         let api_key = match config.provider.get_api_key() {
@@ -359,7 +371,7 @@ impl Agent {
             .cloned()
             .unwrap_or_default();
 
-        let provider: Box<dyn Provider> = match config.provider.provider_type {
+        let provider: Arc<dyn Provider> = match config.provider.provider_type {
             ProviderType::OpenAI => {
                 let openai_config = crate::providers::OpenAIConfig {
                     api_key,
@@ -373,7 +385,7 @@ impl Agent {
                     temperature: model_config.temperature,
                     timeout_seconds: config.provider.timeout_seconds,
                 };
-                Box::new(crate::providers::OpenAIProvider::new(openai_config)?)
+                Arc::new(crate::providers::OpenAIProvider::new(openai_config)?)
             }
             ProviderType::Anthropic => {
                 let anthropic_config = crate::providers::AnthropicConfig {
@@ -388,7 +400,7 @@ impl Agent {
                     temperature: model_config.temperature,
                     timeout_seconds: config.provider.timeout_seconds,
                 };
-                Box::new(crate::providers::AnthropicProvider::new(anthropic_config)?)
+                Arc::new(crate::providers::AnthropicProvider::new(anthropic_config)?)
             }
             ProviderType::Ollama => {
                 let ollama_config = crate::providers::OllamaConfig {
@@ -403,7 +415,7 @@ impl Agent {
                     num_ctx: Some(4096),
                     num_gpu: None,
                 };
-                Box::new(crate::providers::OllamaProvider::new(ollama_config)?)
+                Arc::new(crate::providers::OllamaProvider::new(ollama_config)?)
             }
             ProviderType::OpenAICompatible => {
                 let base_url = config
@@ -414,7 +426,7 @@ impl Agent {
                 
                 // Check if this is a Kimi endpoint
                 if base_url.contains("moonshot.cn") {
-                    Box::new(crate::providers::KimiProvider::new(api_key))
+                    Arc::new(crate::providers::KimiProvider::new(api_key))
                 } else {
                     // Generic OpenAI-compatible provider
                     let compat_config = crate::providers::OpenAICompatibleConfig {
@@ -425,11 +437,11 @@ impl Agent {
                         temperature: model_config.temperature,
                         timeout_seconds: config.provider.timeout_seconds,
                     };
-                    Box::new(crate::providers::OpenAICompatibleProvider::new("openai_compatible", compat_config)?)
+                    Arc::new(crate::providers::OpenAICompatibleProvider::new("openai_compatible", compat_config)?)
                 }
             }
             ProviderType::Kimi => {
-                Box::new(crate::providers::KimiProvider::new(api_key))
+                Arc::new(crate::providers::KimiProvider::new(api_key))
             }
             ProviderType::KimiCode => {
                 let kimi_code_config = crate::providers::KimiCodeConfig {
@@ -444,7 +456,7 @@ impl Agent {
                     temperature: model_config.temperature,
                     timeout_seconds: config.provider.timeout_seconds,
                 };
-                Box::new(crate::providers::KimiCodeProvider::new(kimi_code_config)?)
+                Arc::new(crate::providers::KimiCodeProvider::new(kimi_code_config)?)
             }
         };
 
