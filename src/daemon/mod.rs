@@ -37,7 +37,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         let config_dir =
-            dirs::config_dir().map_or_else(|| PathBuf::from(".pekobot"), |d| d.join("pekobot"));
+            dirs::home_dir().map_or_else(|| PathBuf::from(".pekobot"), |d| d.join(".pekobot"));
 
         let data_dir = dirs::data_dir().map_or_else(|| config_dir.clone(), |d| d.join("pekobot"));
 

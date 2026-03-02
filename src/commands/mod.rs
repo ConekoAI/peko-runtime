@@ -135,7 +135,7 @@ impl GlobalPaths {
         let config_dir = cli
             .config_dir
             .clone()
-            .or_else(|| dirs::config_dir().map(|d| d.join("pekobot")))
+            .or_else(|| dirs::home_dir().map(|d| d.join(".pekobot")))
             .unwrap_or_else(|| PathBuf::from(".").join(".pekobot"));
 
         let data_dir = cli
