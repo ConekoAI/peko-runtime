@@ -7,6 +7,7 @@ use crate::tools::Tool;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -116,6 +117,8 @@ impl AgenticLoop {
 
     /// Build system prompt using the new builder
     fn build_system_prompt(&self) -> String {
+        use crate::prompt::builder::{PromptMode, SystemPromptBuilder};
+
         // Get prompt mode from agent config
         let mode = self
             .agent
@@ -129,13 +132,18 @@ impl AgenticLoop {
             })
             .unwrap_or(PromptMode::Full);
 
-        // Get workspace from config or use default
+        // Get workspace from config or use agent-specific default
+        // Agent workspace is: ~/.local/share/pekobot/workspaces/{agent_name}/
         let workspace = self
             .agent
             .config
             .workspace
             .clone()
-            .unwrap_or_else(crate::prompt::default_workspace_dir);
+            .unwrap_or_else(|| {
+                dirs::data_dir()
+                    .map(|h| h.join("pekobot").join("workspaces").join(&self.agent.config.name))
+                    .unwrap_or_else(|| PathBuf::from(format!("./workspaces/{}", self.agent.config.name)))
+            });
 
         // Build the prompt using the new builder
         SystemPromptBuilder::new(&self.agent.config.name)
