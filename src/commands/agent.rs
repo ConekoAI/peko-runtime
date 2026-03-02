@@ -8,19 +8,18 @@ use clap::Subcommand;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AgentCommands {
-    /// Run an agent interactively (legacy compatibility)
+    /// Run an agent interactively
     #[command(alias = "run")]
     Start {
-        /// Agent configuration file
+        /// Agent name (defaults to 'peko' if not specified)
+        name: Option<String>,
+        /// Custom configuration file path (optional, defaults to ~/.config/pekobot/agents/{name}.toml)
         #[arg(short, long)]
         config: Option<String>,
-        /// Agent name
-        #[arg(short, long, default_value = "peko")]
-        name: String,
-        /// LLM provider (openai, anthropic, ollama, kimi)
+        /// LLM provider (openai, anthropic, ollama, kimi) - only used when creating default config
         #[arg(short, long, default_value = "openai")]
         provider: String,
-        /// Model name
+        /// Model name - only used when creating default config
         #[arg(short, long)]
         model: Option<String>,
         /// Database path for memory
@@ -109,14 +108,14 @@ pub async fn handle_agent(
 ) -> anyhow::Result<()> {
     match cmd {
         AgentCommands::Start {
-            config,
             name,
+            config,
             provider,
             model,
             db,
             message,
         } => {
-            crate::commands::agent::handlers::handle_agent_start(config, name, provider, model, db, message)
+            crate::commands::agent::handlers::handle_agent_start(name, config, provider, model, db, message)
                 .await
         }
         AgentCommands::List { long } => {
@@ -168,22 +167,35 @@ pub mod handlers {
 
     /// Handle agent start command
     pub async fn handle_agent_start(
+        name: Option<String>,
         config_path: Option<String>,
-        name: String,
         provider: String,
         model: Option<String>,
         db: Option<String>,
         message: Option<String>,
     ) -> anyhow::Result<()> {
-        info!("Starting Pekobot agent: {}", name);
+        // Determine agent name (default to "peko")
+        let agent_name = name.unwrap_or_else(|| "peko".to_string());
+        
+        // Determine config path
+        let config_path = if let Some(path) = config_path {
+            path
+        } else {
+            // Look up in default location: ~/.config/pekobot/agents/{name}.toml
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            format!("{}/.config/pekobot/agents/{}.toml", home, agent_name)
+        };
+        
+        info!("Starting Pekobot agent: {}", agent_name);
+        info!("Loading config from: {}", config_path);
 
-        let agent_config = if let Some(path) = config_path {
-            info!("Loading config from: {}", path);
-            let content = std::fs::read_to_string(&path)?;
+        let agent_config = if std::path::Path::new(&config_path).exists() {
+            let content = std::fs::read_to_string(&config_path)?;
             toml::from_str(&content)?
         } else {
-            warn!("No config specified, using defaults");
-            build_default_config(&name, &provider, model, db)
+            warn!("Config file not found: {}", config_path);
+            warn!("Using default configuration");
+            build_default_config(&agent_name, &provider, model, db)
         };
 
         match Agent::new(agent_config).await {
@@ -193,7 +205,7 @@ pub mod handlers {
                     return Err(e);
                 }
 
-                println!("\n🐱 Agent '{name}' started successfully!");
+                println!("\n🐱 Agent '{}' started successfully!", agent_name);
                 println!("   DID: {}", agent.identity.did);
                 println!("   State: {:?}", agent.state());
 
@@ -207,9 +219,9 @@ pub mod handlers {
                     }
                 } else {
                     // Interactive mode
-                    let mut channel = CliChannel::new(&name);
+                    let mut channel = CliChannel::new(&agent_name);
                     
-                    if let Err(e) = run_interactive_loop_with_agent(&mut channel, &name, &agent
+                    if let Err(e) = run_interactive_loop_with_agent(&mut channel, &agent_name, &agent
                     ).await {
                         eprintln!("❌ Error in interactive loop: {e}");
                     }
@@ -219,7 +231,7 @@ pub mod handlers {
                     eprintln!("❌ Error stopping agent: {e}");
                 }
 
-                println!("\n👋 Agent '{name}' stopped. Goodbye!");
+                println!("\n👋 Agent '{}' stopped. Goodbye!", agent_name);
                 Ok(())
             }
             Err(e) => {
