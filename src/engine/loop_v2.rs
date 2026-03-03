@@ -15,7 +15,7 @@ use crate::providers::Provider;
 use crate::tools::{context::AbortSignal, Tool};
 use crate::types::{
     AgentContext, AgentMessage, ContentBlock, JsonMessageConverter, LlmMessage,
-    MessageConverter, MessageRole, SteeringProvider, ToolCallId,
+    MessageConverter, MessageRole, SteeringProvider,
     ContextTransformer, DefaultContextTransformer, ContextWindowConfig,
 };
 use crate::types::message::NoOpSteeringProvider;
@@ -424,7 +424,7 @@ impl AgenticLoopV2 {
         }).await;
 
         // Create abort signal for this tool
-        let tool_abort = AbortSignal::new();
+        let _tool_abort = AbortSignal::new();
 
         // Execute tool
         let start_time = std::time::Instant::now();

@@ -6,7 +6,6 @@
 //! - Support for long-running tools with progress updates
 
 use crate::agent::Agent;
-use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::Provider;
 use crate::tools::{context::AbortSignal, Tool};
 use anyhow::{Context, Result};
@@ -158,7 +157,7 @@ impl AgenticLoop {
         event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
     ) -> Result<AgenticResult> {
         use crate::engine::{AgenticEvent, LifecyclePhase};
-        use crate::tools::context::ToolContext;
+        
         use tracing::error;
 
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());

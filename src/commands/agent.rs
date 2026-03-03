@@ -357,7 +357,7 @@ pub mod handlers {
     pub async fn handle_agent_create(
         paths: &GlobalPaths,
         name: String,
-        template: String,
+        _template: String,
         provider: String,
         yes: bool,
     ) -> anyhow::Result<()> {

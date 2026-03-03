@@ -5,7 +5,6 @@
 //! - Respects min/max character bounds
 //! - Breaks at natural boundaries (paragraph/sentence/whitespace)
 
-use tracing::debug;
 
 /// Break preference for block boundaries
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

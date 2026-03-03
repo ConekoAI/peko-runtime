@@ -66,7 +66,7 @@ impl ProgressDemoTool {
             }
 
             // Report progress (may be throttled)
-            let percent = (processed * 100) / total;
+            let _percent = (processed * 100) / total;
             ctx.report_progress(
                 processed,
                 total,

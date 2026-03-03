@@ -7,7 +7,6 @@
 //! - Optional timeout handling
 
 use crate::engine::AgenticEvent;
-use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;

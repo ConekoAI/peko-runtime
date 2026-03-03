@@ -321,6 +321,81 @@ impl Agent {
         Ok(event_rx)
     }
 
+    /// Execute with streaming support using AgenticLoopV2 (new message abstraction)
+    ///
+    /// Returns a channel receiver for AgenticEvents. The caller can
+    /// display these events as they arrive for a responsive UI.
+    ///
+    /// Note: This method must be called within a tokio::task::LocalSet
+    /// because Agent contains non-Send types (rusqlite connections).
+    pub async fn execute_streaming_v2(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        use crate::engine::loop_v2::AgenticLoopV2;
+        use crate::engine::AgenticEvent;
+        use crate::tools::*;
+        use std::sync::Arc;
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(100);
+
+        if let Some(provider) = &self.provider {
+            // Create core tools
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            // Clone for the loop
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
+            let prompt = prompt.to_string();
+
+            // Spawn the streaming execution using spawn_local
+            let _handle = tokio::task::spawn_local(async move {
+                info!("Spawned v2 streaming task started");
+                let loop_ = AgenticLoopV2::new(agent_arc, provider_arc, tools);
+
+                // Run with streaming
+                match loop_.run(&prompt, event_tx.clone()).await {
+                    Ok(_) => {
+                        info!("V2 streaming task completed successfully");
+                        let _ = event_tx.send(AgenticEvent::Lifecycle {
+                            run_id: prompt[..prompt.len().min(16)].to_string(),
+                            phase: crate::engine::LifecyclePhase::End,
+                            error: None,
+                        }).await;
+                    }
+                    Err(e) => {
+                        error!("V2 streaming execution error: {}", e);
+                        let _ = event_tx.send(AgenticEvent::Lifecycle {
+                            run_id: prompt[..prompt.len().min(16)].to_string(),
+                            phase: crate::engine::LifecyclePhase::Error,
+                            error: Some(format!("Error: {}", e)),
+                        }).await;
+                    }
+                }
+                info!("Spawned v2 streaming task ending");
+            });
+            info!("V2 streaming task spawned");
+        } else {
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
+
     /// Search memory
     pub fn search_memory(
         &self,

@@ -229,7 +229,7 @@ impl AgentMessage {
     pub fn to_text(&self) -> String {
         match self {
             Self::Llm(msg) => {
-                let mut texts: Vec<String> = msg
+                let texts: Vec<String> = msg
                     .content
                     .iter()
                     .filter_map(|block| match block {

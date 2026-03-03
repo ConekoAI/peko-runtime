@@ -8,7 +8,6 @@
 pub mod bootstrap;
 pub mod builder;
 
-pub use bootstrap::default_workspace_dir;
 pub use builder::{PromptMode, SystemPromptBuilder};
 
 use std::path::PathBuf;

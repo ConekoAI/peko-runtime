@@ -310,17 +310,17 @@ pub async fn run_interactive_loop_with_agent(
                         channel.print_prompt();
                     }
                     _ => {
-                        // Process with streaming
+                        // Process with streaming v2
                         print!("\n🤔 ");
                         std::io::stdout().flush().unwrap();
                         
-                        // Use streaming for better UX
+                        // Use streaming v2 for better UX with AgentMessage abstraction
                         use crate::engine::AgenticEvent;
                         use tokio::task::LocalSet;
                         
                         let local = LocalSet::new();
                         let result = local.run_until(async {
-                            let mut event_rx = agent.execute_streaming(trimmed).await.map_err(|e| e.to_string())?;
+                            let mut event_rx = agent.execute_streaming_v2(trimmed).await.map_err(|e| e.to_string())?;
                             let mut final_answer = String::new();
                             let mut reasoning_started = false;
                             
@@ -382,7 +382,7 @@ pub async fn run_interactive_loop_with_agent(
 
 /// Send a single message to the agent and get a response (non-interactive)
 ///
-/// Uses streaming to show real-time reasoning and tool usage.
+/// Uses streaming v2 with AgentMessage abstraction for better tool handling
 pub async fn send_single_message(
     agent: &crate::agent::Agent,
     message: &str,
@@ -395,8 +395,8 @@ pub async fn send_single_message(
 
     let result = local
         .run_until(async {
-            // Start streaming
-            let mut event_rx = agent.execute_streaming(message).await?;
+            // Start streaming v2
+            let mut event_rx = agent.execute_streaming_v2(message).await?;
 
             let mut final_answer = String::new();
             let mut reasoning_started = false;
@@ -404,7 +404,7 @@ pub async fn send_single_message(
             // Process events as they arrive
             while let Some(event) = event_rx.recv().await {
                 match event {
-                    AgenticEvent::Lifecycle { phase, run_id, .. } => match phase {
+                    AgenticEvent::Lifecycle { phase, run_id: _, .. } => match phase {
                         crate::engine::LifecyclePhase::Running => {
                             // Only print reasoning indicator once
                             if !reasoning_started {
