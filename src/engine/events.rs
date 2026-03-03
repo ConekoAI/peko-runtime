@@ -9,6 +9,9 @@ use std::fmt;
 /// Unique identifier for tool executions
 pub type ToolId = String;
 
+/// Unique identifier for tool calls (streaming construction)
+pub type ToolCallId = String;
+
 /// Unique identifier for agent runs
 pub type RunId = String;
 
@@ -64,6 +67,39 @@ pub enum AgenticEvent {
         /// True if this is a delta (incremental)
         is_delta: bool,
         /// True if this is the final chunk
+        is_final: bool,
+    },
+
+    /// Thinking/reasoning block
+    ///
+    /// Models like Claude 3.7 Sonnet, o1, etc. emit thinking blocks
+    /// that show the model's reasoning process.
+    Thinking {
+        /// Run identifier
+        run_id: RunId,
+        /// Thinking content (delta or complete)
+        text: String,
+        /// True if this is a delta (incremental)
+        is_delta: bool,
+        /// True if this is the final chunk
+        is_final: bool,
+        /// Optional signature for verifying thinking (Claude)
+        signature: Option<String>,
+    },
+
+    /// Tool call streaming
+    ///
+    /// For providers that stream tool call construction (e.g., Claude, OpenAI)
+    ToolCallDelta {
+        /// Run identifier
+        run_id: RunId,
+        /// Tool call identifier
+        tool_call_id: ToolCallId,
+        /// Tool name (may be partial during streaming)
+        name: Option<String>,
+        /// Arguments delta (partial JSON)
+        arguments_delta: Option<String>,
+        /// True if this is the final delta
         is_final: bool,
     },
 
@@ -140,6 +176,8 @@ impl AgenticEvent {
         match self {
             AgenticEvent::Lifecycle { run_id, .. } => run_id,
             AgenticEvent::Assistant { run_id, .. } => run_id,
+            AgenticEvent::Thinking { run_id, .. } => run_id,
+            AgenticEvent::ToolCallDelta { run_id, .. } => run_id,
             AgenticEvent::ToolStart { run_id, .. } => run_id,
             AgenticEvent::ToolUpdate { run_id, .. } => run_id,
             AgenticEvent::ToolEnd { run_id, .. } => run_id,

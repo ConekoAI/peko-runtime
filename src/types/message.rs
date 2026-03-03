@@ -247,6 +247,70 @@ impl AgentMessage {
             },
         }
     }
+
+    /// Estimate token count for this message
+    ///
+    /// Uses provider-agnostic estimation:
+    /// - Base overhead: 4 tokens per message (role, formatting)
+    /// - Text content: ~4 chars per token
+    /// - Images: 1000 tokens each (provider varies)
+    /// - Tool calls/results: JSON token count
+    pub fn estimate_tokens(&self) -> usize {
+        match self {
+            Self::Llm(msg) => {
+                let base_overhead = 4; // Message formatting overhead
+                let content_tokens: usize = msg
+                    .content
+                    .iter()
+                    .map(|block| match block {
+                        ContentBlock::Text { text } => estimate_text_tokens(text),
+                        ContentBlock::Image { .. } => 1000, // Image tokens vary by provider
+                        ContentBlock::ToolCall { name, arguments, .. } => {
+                            // Tool call: name + JSON args
+                            estimate_text_tokens(name) + estimate_json_tokens(arguments)
+                        }
+                        ContentBlock::ToolResult { content, .. } => {
+                            // Tool result: sum of nested content
+                            content.iter().map(|c| match c {
+                                ContentBlock::Text { text } => estimate_text_tokens(text),
+                                _ => 0,
+                            }).sum()
+                        }
+                        ContentBlock::Thinking { text, .. } => estimate_text_tokens(text),
+                    })
+                    .sum();
+                base_overhead + content_tokens
+            }
+            Self::Custom(_) => 0, // Custom messages not sent to LLM
+        }
+    }
+}
+
+/// Estimate tokens for text content
+/// Uses ~4 characters per token average for English
+fn estimate_text_tokens(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+
+    // Count words and characters for better estimation
+    let word_count = text.split_whitespace().count();
+    let char_count = text.len();
+
+    // Hybrid: max of word-based and char-based estimation
+    // Words tend to be ~1.3 tokens each on average
+    // Characters are ~4 per token
+    let word_estimate = (word_count * 13) / 10;
+    let char_estimate = char_count / 4;
+
+    word_estimate.max(char_estimate).max(1)
+}
+
+/// Estimate tokens for JSON content
+fn estimate_json_tokens(value: &Value) -> usize {
+    // JSON is roughly 1 token per 2 characters (more verbose than text)
+    let json_string = value.to_string();
+    json_string.len() / 2
 }
 
 impl Default for AgentMessage {
@@ -347,9 +411,15 @@ impl AgentContext {
             .collect()
     }
 
-    /// Estimate token count (rough approximation)
+    /// Estimate token count using a more accurate approximation
+    ///
+    /// This uses a hybrid approach:
+    /// - 4 characters per token for English text (GPT-3/4 average)
+    /// - 1 token per word for whitespace-separated text
+    /// - Additional overhead for message formatting (role, metadata)
+    /// - Image content estimated at 1k tokens each (varies by provider)
     pub fn estimate_tokens(&self) -> usize {
-        self.messages.iter().map(|m| m.to_text().len() / 4).sum()
+        self.messages.iter().map(|m| m.estimate_tokens()).sum()
     }
 
     /// Clear messages except system prompt
