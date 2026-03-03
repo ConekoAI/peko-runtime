@@ -443,6 +443,17 @@ pub async fn send_single_message(
                             std::io::stdout().flush().unwrap();
                         }
                     }
+                    AgenticEvent::Thinking { text, is_delta, .. } => {
+                        if is_delta {
+                            // Stream thinking tokens inline with different styling
+                            if !reasoning_started {
+                                print!("\n💭 Thinking: ");
+                                reasoning_started = true;
+                            }
+                            print!("{}", text);
+                            std::io::stdout().flush().unwrap();
+                        }
+                    }
                     AgenticEvent::ToolStart { name, .. } => {
                         // End reasoning stream before showing tool
                         if reasoning_started {
@@ -450,6 +461,18 @@ pub async fn send_single_message(
                             reasoning_started = false;
                         }
                         println!("\n🔧 Using tool: {}", name);
+                    }
+                    AgenticEvent::ToolCallDelta { name, arguments_delta, is_final, .. } => {
+                        // Show tool call construction in real-time
+                        if !is_final {
+                            if let Some(tool_name) = name {
+                                print!("\n🔧 Calling {}...", tool_name);
+                                if let Some(args) = arguments_delta {
+                                    print!(" args: {}", args);
+                                }
+                                std::io::stdout().flush().unwrap();
+                            }
+                        }
                     }
                     AgenticEvent::ToolEnd {
                         tool_id, success, ..
