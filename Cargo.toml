@@ -103,3 +103,11 @@ path = "src/main.rs"
 [[bench]]
 name = "performance_benchmarks"
 harness = false
+
+[[example]]
+name = "tool_monitoring"
+path = "examples/tool_monitoring.rs"
+
+[[example]]
+name = "e2e_tool_test"
+path = "examples/e2e_tool_test.rs"

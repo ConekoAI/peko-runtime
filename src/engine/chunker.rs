@@ -379,19 +379,20 @@ mod tests {
                 break_preference: BreakPreference::Whitespace,
                 emit_partial: true,
             },
-            30, // min_coalesce
+            50, // min_coalesce - higher than test text
             100, // max_coalesce
         );
 
-        // Feed small chunks
+        // Feed small chunks (total ~31 chars, below 50 threshold)
         let _ = chunker.feed("Hello world ");
         let blocks = chunker.feed("this is more text. ");
 
-        // Should not emit until coalesce threshold
-        assert!(blocks.is_empty() || blocks[0].len() < 30);
+        // Should not emit until coalesce threshold (50)
+        assert!(blocks.is_empty(), "Should not emit before coalesce threshold");
 
         // Flush should emit accumulated text
         let final_blocks = chunker.flush();
         assert!(!final_blocks.is_empty());
+        assert!(final_blocks[0].len() >= 31);
     }
 }

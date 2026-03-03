@@ -1,9 +1,14 @@
 //! Agentic loop - core execution engine with tool calling
+//!
+//! Features:
+//! - Tool execution with abort signals and progress monitoring
+//! - Streaming events for tool lifecycle (start/update/end)
+//! - Support for long-running tools with progress updates
 
 use crate::agent::Agent;
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::Provider;
-use crate::tools::Tool;
+use crate::tools::{context::AbortSignal, Tool};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::json;
@@ -17,6 +22,8 @@ pub struct AgenticLoop {
     provider: Arc<dyn Provider>,
     tools: Vec<Arc<dyn Tool>>,
     max_iterations: usize,
+    /// Global abort signal for stopping the entire loop
+    abort_signal: Option<AbortSignal>,
 }
 
 impl AgenticLoop {
@@ -27,6 +34,7 @@ impl AgenticLoop {
             provider,
             tools,
             max_iterations: 10,
+            abort_signal: None,
         }
     }
 
@@ -34,6 +42,16 @@ impl AgenticLoop {
     #[must_use]
     pub fn with_max_iterations(mut self, max: usize) -> Self {
         self.max_iterations = max;
+        self
+    }
+
+    /// Set an abort signal for this loop
+    ///
+    /// When the abort signal is triggered, the current tool execution
+    /// will be cancelled and the loop will exit.
+    #[must_use]
+    pub fn with_abort_signal(mut self, signal: AbortSignal) -> Self {
+        self.abort_signal = Some(signal);
         self
     }
 
@@ -65,6 +83,19 @@ impl AgenticLoop {
                     tool_calls: tool_calls_made,
                     iterations: iteration,
                 });
+            }
+
+            // Check if aborted
+            if let Some(ref signal) = self.abort_signal {
+                if signal.is_aborted() {
+                    info!("Agentic loop aborted");
+                    return Ok(AgenticResult {
+                        success: false,
+                        final_answer: "Execution aborted".to_string(),
+                        tool_calls: tool_calls_made,
+                        iterations: iteration,
+                    });
+                }
             }
 
             debug!("Iteration {}: Calling provider", iteration);
@@ -117,17 +148,17 @@ impl AgenticLoop {
     /// Run with streaming support
     ///
     /// This version streams events back via the provided channel.
-    /// Chunking happens at the channel layer (presentation), not here.
-    /// This method emits raw deltas and lets the channel handle:
-    /// - Block chunking
-    /// - Coalescing
-    /// - Platform-specific formatting
+    /// Features:
+    /// - Tool start/update/end events for monitoring
+    /// - Abort signal support for cancelling long-running tools
+    /// - Progress updates from tools that support them
     pub async fn run_streaming(
         &self,
         prompt: &str,
         event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
     ) -> Result<AgenticResult> {
         use crate::engine::{AgenticEvent, LifecyclePhase};
+        use crate::tools::context::ToolContext;
         use tracing::error;
 
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
@@ -159,12 +190,35 @@ impl AgenticLoop {
             iteration += 1;
             if iteration > self.max_iterations {
                 warn!("Max iterations ({}) reached", self.max_iterations);
+                let _ = event_tx.send(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::Error,
+                    error: Some("Max iterations reached".to_string()),
+                }).await;
                 return Ok(AgenticResult {
                     success: false,
                     final_answer: "Max iterations reached".to_string(),
                     tool_calls: tool_calls_made,
                     iterations: iteration,
                 });
+            }
+
+            // Check if aborted
+            if let Some(ref signal) = self.abort_signal {
+                if signal.is_aborted() {
+                    info!("Agentic loop aborted");
+                    let _ = event_tx.send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Aborted,
+                        error: None,
+                    }).await;
+                    return Ok(AgenticResult {
+                        success: false,
+                        final_answer: "Execution aborted".to_string(),
+                        tool_calls: tool_calls_made,
+                        iterations: iteration,
+                    });
+                }
             }
 
             debug!("Iteration {}: Calling provider with streaming", iteration);
@@ -232,31 +286,42 @@ impl AgenticLoop {
 
             // Parse the response
             if let Some(tool_call) = self.parse_tool_call(&full_response) {
+                // Generate unique tool execution ID
+                let tool_id = format!("{}_{}", tool_call.name, chrono::Utc::now().timestamp_millis());
+
                 // Emit tool start event
                 let _ = event_tx.send(AgenticEvent::ToolStart {
                     run_id: run_id.clone(),
-                    tool_id: tool_call.name.clone(),
+                    tool_id: tool_id.clone(),
                     name: tool_call.name.clone(),
                     params: tool_call.parameters.clone(),
                 }).await;
 
-                // Execute tool with progress updates for long-running tools
-                info!("Executing tool: {}", tool_call.name);
-                
-                // For tools that might take a while, emit a progress update
-                // In the future, tools could emit their own progress via a callback
+                info!("Executing tool: {} (id: {})", tool_call.name, tool_id);
+
+                // Create abort signal for this tool execution
+                let tool_abort_signal = AbortSignal::new();
+
+                // Create tool context with event channel for progress updates
+                let tool_ctx = tool_abort_signal.create_context_with_events(
+                    &run_id,
+                    &tool_id,
+                    &tool_call.name,
+                    event_tx.clone(),
+                );
+
+                // Execute tool with context (supports abort + progress)
                 let tool_start_time = std::time::Instant::now();
-                
-                let tool_result = self.execute_tool(&tool_call).await;
+                let tool_result = self.execute_tool_with_context(&tool_call, &tool_ctx).await;
                 let duration_ms = tool_start_time.elapsed().as_millis() as u64;
-                
+
                 tool_calls_made.push(tool_call.clone());
 
                 // Emit tool end event
                 let success = !tool_result.starts_with("Error:");
                 let _ = event_tx.send(AgenticEvent::ToolEnd {
                     run_id: run_id.clone(),
-                    tool_id: tool_call.name.clone(),
+                    tool_id: tool_id.clone(),
                     result: json!(tool_result),
                     success,
                     duration_ms,
@@ -325,7 +390,6 @@ impl AgenticLoop {
             .unwrap_or(PromptMode::Full);
 
         // Get workspace from config or use agent-specific default
-        // Agent workspace is: ~/.local/share/pekobot/workspaces/{agent_name}/
         let workspace = self
             .agent
             .config
@@ -385,13 +449,77 @@ impl AgenticLoop {
         }
     }
 
-    /// Execute a tool
+    /// Execute a tool (basic version without streaming)
     async fn execute_tool(&self, call: &ToolCall) -> String {
         for tool in &self.tools {
             if tool.name() == call.name {
                 match tool.execute(call.parameters.clone()).await {
                     Ok(result) => return serde_json::to_string(&result).unwrap_or_default(),
                     Err(e) => return format!("Error: {e}"),
+                }
+            }
+        }
+        format!("Tool '{}' not found", call.name)
+    }
+
+    /// Execute a tool with full context support (abort + progress + timeout)
+    ///
+    /// This is the enhanced version that supports:
+    /// - Abort signals for cancelling long-running tools
+    /// - Progress updates via ToolUpdate events
+    /// - Timeout handling
+    /// - Duration tracking
+    async fn execute_tool_with_context(
+        &self,
+        call: &ToolCall,
+        ctx: &crate::tools::context::ToolContext,
+    ) -> String {
+        use crate::tools::ToolError;
+
+        for tool in &self.tools {
+            if tool.name() == call.name {
+                // Check if tool supports context-aware execution
+                if tool.supports_progress() {
+                    // Use the context-aware method for tools that support it
+                    match tool.execute_with_context(call.parameters.clone(), ctx).await {
+                        Ok(result) => return serde_json::to_string(&result).unwrap_or_default(),
+                        Err(e) => {
+                            // Check if this is a known tool error
+                            match e.downcast_ref::<ToolError>() {
+                                Some(ToolError::Aborted) => {
+                                    return "Error: Tool execution aborted".to_string();
+                                }
+                                Some(ToolError::Timeout(d)) => {
+                                    return format!("Error: Tool execution timed out after {:?}", d);
+                                }
+                                _ => return format!("Error: {e}"),
+                            }
+                        }
+                    }
+                } else {
+                    // Fall back to basic execution for tools without progress support
+                    // Still check abort before and after
+                    if ctx.is_aborted() {
+                        return "Error: Tool execution aborted".to_string();
+                    }
+
+                    ctx.report_status(format!("Running {}", tool.name())).await;
+
+                    match tool.execute(call.parameters.clone()).await {
+                        Ok(result) => {
+                            if ctx.is_aborted() {
+                                return "Error: Tool execution aborted".to_string();
+                            }
+                            ctx.report_status(format!("Completed {}", tool.name())).await;
+                            return serde_json::to_string(&result).unwrap_or_default();
+                        }
+                        Err(e) => {
+                            if ctx.is_aborted() {
+                                return "Error: Tool execution aborted".to_string();
+                            }
+                            return format!("Error: {e}");
+                        }
+                    }
                 }
             }
         }

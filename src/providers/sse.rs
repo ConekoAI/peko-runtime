@@ -149,8 +149,7 @@ mod tests {
         let text = r#"id: 123
 event: message
 data: Hello
-
-world"#;
+data: world"#;
 
         let event = parse_event_text(text).unwrap();
         assert_eq!(event.id, Some("123".to_string()));

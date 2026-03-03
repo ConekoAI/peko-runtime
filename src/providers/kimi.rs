@@ -270,7 +270,7 @@ mod tests {
         let provider = KimiProvider::new("test".to_string());
         let messages = vec![json!({"role": "user", "content": "Hello"})];
 
-        let body = provider.build_request_body(messages, "kimi-k2.5", 0.7);
+        let body = provider.build_request_body(messages, "kimi-k2.5", 0.7, false);
         assert_eq!(body["model"], "kimi-k2.5");
         assert!(body["messages"].as_array().unwrap().len() > 0);
     }
