@@ -188,6 +188,22 @@ impl AgenticLoop {
 
         loop {
             iteration += 1;
+            info!("Agent loop: starting iteration {}", iteration);
+            
+            // Check if aborted
+            if let Some(ref signal) = self.abort_signal {
+                if signal.is_aborted() {
+                    info!("Agent loop: abort signal detected");
+                    return Ok(AgenticResult {
+                        success: false,
+                        final_answer: "Execution aborted".to_string(),
+                        tool_calls: tool_calls_made,
+                        iterations: iteration,
+                    });
+                }
+            }
+            
+            info!("Agent loop: iteration {} proceeding", iteration);
             if iteration > self.max_iterations {
                 warn!("Max iterations ({}) reached", self.max_iterations);
                 let _ = event_tx.send(AgenticEvent::Lifecycle {
@@ -222,6 +238,7 @@ impl AgenticLoop {
             }
 
             debug!("Iteration {}: Calling provider with streaming", iteration);
+            info!("Iteration {}: About to call LLM", iteration);
 
             // Emit running event
             let _ = event_tx.send(AgenticEvent::Lifecycle {
@@ -241,10 +258,13 @@ impl AgenticLoop {
                 provider.complete_stream(&messages, tx, run_id_clone).await
             });
 
-            // Collect streamed response - FORWARD RAW EVENTS, NO CHUNKING
+            // Collect streamed response - BUFFER EVENTS, DON'T FORWARD is_final YET
             let mut full_response = String::new();
+            let mut pending_final = None;
+            info!("Iteration {}: Starting to collect streaming events", iteration);
 
             while let Some(event) = rx.recv().await {
+                info!("Iteration {}: Received event from stream", iteration);
                 match &event {
                     AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
                         if *is_delta {
@@ -257,13 +277,9 @@ impl AgenticLoop {
                                 is_final: false,
                             }).await;
                         } else if *is_final {
-                            // Forward final event
-                            let _ = event_tx.send(AgenticEvent::Assistant {
-                                run_id: run_id.clone(),
-                                text: full_response.clone(),
-                                is_delta: false,
-                                is_final: true,
-                            }).await;
+                            // Buffer the final event - don't send yet
+                            // We need to check if this is a tool call first
+                            pending_final = Some(full_response.clone());
                         }
                     }
                     AgenticEvent::Lifecycle { phase: LifecyclePhase::Error, error, .. } => {
@@ -273,19 +289,42 @@ impl AgenticLoop {
                         }
                     }
                     _ => {
-                        // Forward other events (Lifecycle, etc.)
-                        let _ = event_tx.send(event).await;
+                        // Forward other events, but not End events from provider
+                        // The End event will be sent by run_streaming when it actually completes
+                        if let AgenticEvent::Lifecycle { phase: LifecyclePhase::End, .. } = event {
+                            // Don't forward provider's End event
+                        } else {
+                            let _ = event_tx.send(event).await;
+                        }
                     }
                 }
             }
 
             // Wait for streaming to complete
-            stream_handle.await??;
+            info!("Iteration {}: Waiting for stream to complete", iteration);
+            match stream_handle.await {
+                Ok(Ok(())) => info!("Iteration {}: Stream completed successfully", iteration),
+                Ok(Err(e)) => {
+                    info!("Iteration {}: Stream completed with error: {}", iteration, e);
+                    return Err(e);
+                }
+                Err(e) => {
+                    info!("Iteration {}: Stream task panicked: {}", iteration, e);
+                    return Err(anyhow::anyhow!("Stream task panicked: {}", e));
+                }
+            }
+            
+            info!("Iteration {}: Full response length: {}", iteration, full_response.len());
+            info!("Iteration {}: Full response: '{}'", iteration, full_response);
+            info!("Iteration {}: Pending final: {:?}", iteration, pending_final.is_some());
 
             debug!("Provider response: {}", full_response);
 
             // Parse the response
+            debug!("Full response: {}", full_response);
+            info!("Iteration {}: Checking response for tool call or final answer", iteration);
             if let Some(tool_call) = self.parse_tool_call(&full_response) {
+                info!("Iteration {}: Parsed tool call: {:?}", iteration, tool_call);
                 // Generate unique tool execution ID
                 let tool_id = format!("{}_{}", tool_call.name, chrono::Utc::now().timestamp_millis());
 
@@ -311,9 +350,11 @@ impl AgenticLoop {
                 );
 
                 // Execute tool with context (supports abort + progress)
+                info!("Iteration {}: About to execute tool", iteration);
                 let tool_start_time = std::time::Instant::now();
                 let tool_result = self.execute_tool_with_context(&tool_call, &tool_ctx).await;
                 let duration_ms = tool_start_time.elapsed().as_millis() as u64;
+                info!("Iteration {}: Tool execution completed", iteration);
 
                 tool_calls_made.push(tool_call.clone());
 
@@ -336,7 +377,13 @@ impl AgenticLoop {
                     "role": "user",
                     "content": format!("Tool result: {}", tool_result)
                 }));
+                
+                info!("Iteration {}: Tool executed, continuing to next iteration", iteration);
+                // Continue to next iteration to get final answer
+                info!("Iteration {}: About to continue loop", iteration);
+                continue;
             } else if self.is_final_answer(&full_response) {
+                info!("Iteration {}: Final answer detected", iteration);
                 // Final answer reached
                 debug!("Final answer received after {} iterations", iteration);
                 let answer = self.extract_final_answer(&full_response);
@@ -364,12 +411,15 @@ impl AgenticLoop {
                 });
             } else {
                 // Continue the conversation
+                info!("Iteration {}: No tool call or final answer, continuing loop", iteration);
                 context.push(json!({
                     "role": "assistant",
                     "content": full_response
                 }));
             }
         }
+        
+        info!("Agent loop: exited after {} iterations", iteration);
     }
 
     /// Build system prompt using the new builder
@@ -428,8 +478,17 @@ impl AgenticLoop {
     fn parse_tool_call(&self, response: &str) -> Option<ToolCall> {
         if let Some(start) = response.find("TOOL_CALL:") {
             let json_str = &response[start + "TOOL_CALL:".len()..];
-            if let Ok(call) = serde_json::from_str::<ToolCall>(json_str.trim()) {
-                return Some(call);
+            // Trim markdown code block markers if present
+            let json_str = json_str.trim().trim_start_matches("```").trim_end_matches("```").trim();
+            debug!("Attempting to parse tool call JSON: {}", json_str);
+            match serde_json::from_str::<ToolCall>(json_str) {
+                Ok(call) => {
+                    debug!("Successfully parsed tool call: {:?}", call);
+                    return Some(call);
+                }
+                Err(e) => {
+                    debug!("Failed to parse tool call JSON: {:?}", e);
+                }
             }
         }
         None

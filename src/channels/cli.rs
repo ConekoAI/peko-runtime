@@ -404,7 +404,7 @@ pub async fn send_single_message(
             // Process events as they arrive
             while let Some(event) = event_rx.recv().await {
                 match event {
-                    AgenticEvent::Lifecycle { phase, .. } => match phase {
+                    AgenticEvent::Lifecycle { phase, run_id, .. } => match phase {
                         crate::engine::LifecyclePhase::Running => {
                             // Only print reasoning indicator once
                             if !reasoning_started {

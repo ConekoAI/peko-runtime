@@ -224,6 +224,8 @@ impl Provider for KimiCodeProvider {
             error: None,
         }).await;
 
+        info!("Kimi Code: About to send HTTP request to: {}/v1/messages", self.config.base_url);
+
         // Kimi Code uses Anthropic API format with SSE streaming
         let response = self
             .client
@@ -237,6 +239,7 @@ impl Provider for KimiCodeProvider {
             .await?;
 
         let status = response.status();
+        info!("Kimi Code: Response status: {}", status);
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("Kimi Code API error: {} - {}", status, error_text);
@@ -253,15 +256,19 @@ impl Provider for KimiCodeProvider {
         let mut stream = response.bytes_stream();
         let mut parser = SseParser::new();
         let mut accumulated_text = String::new();
+        info!("Kimi Code: Starting to process SSE stream");
 
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
+                    info!("Kimi Code: Received {} bytes", bytes.len());
                     let events = parser.feed(&text);
+                    info!("Kimi Code: Parsed {} events from chunk", events.len());
 
                     for event in events {
                         if event.is_done() {
+                            info!("Kimi Code: Received done event");
                             break;
                         }
 

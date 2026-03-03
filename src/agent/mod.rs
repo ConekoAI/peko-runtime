@@ -287,12 +287,15 @@ impl Agent {
 
             // Spawn the streaming execution using spawn_local
             // This is required because Agent contains non-Send types
-            tokio::task::spawn_local(async move {
+            let _handle = tokio::task::spawn_local(async move {
+                info!("Spawned streaming task started");
                 let loop_ = AgenticLoop::new(agent_arc, provider_arc, tools);
 
                 // Run with streaming
                 match loop_.run_streaming(&prompt, event_tx.clone()).await {
                     Ok(_) => {
+                        info!("Streaming task completed successfully");
+                        info!("Sending End event");
                         let _ = event_tx.send(AgenticEvent::Lifecycle {
                             run_id: prompt[..prompt.len().min(16)].to_string(),
                             phase: crate::engine::LifecyclePhase::End,
@@ -304,11 +307,13 @@ impl Agent {
                         let _ = event_tx.send(AgenticEvent::Lifecycle {
                             run_id: prompt[..prompt.len().min(16)].to_string(),
                             phase: crate::engine::LifecyclePhase::Error,
-                            error: Some(e.to_string()),
+                            error: Some(format!("Error: {}", e)),
                         }).await;
                     }
                 }
+                info!("Spawned streaming task ending");
             });
+            info!("Streaming task spawned");
         } else {
             return Err(anyhow::anyhow!("No provider configured"));
         }
