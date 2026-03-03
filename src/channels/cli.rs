@@ -177,24 +177,10 @@ impl Channel for CliChannel {
         &mut self,
         mut event_rx: mpsc::Receiver<crate::engine::AgenticEvent>,
     ) -> Result<()> {
-        use crate::engine::{AgenticEvent, chunker::BlockChunker};
-        use tokio::time::{sleep, Duration};
-
+        use crate::engine::AgenticEvent;
+        
         let config = self.streaming_config.clone();
-        
-        // Create chunker based on channel config
-        let chunker_config = crate::engine::chunker::ChunkerConfig {
-            min_chars: config.min_chars,
-            max_chars: config.max_chars,
-            break_preference: config.break_preference,
-            emit_partial: true,
-        };
-        let mut chunker = BlockChunker::with_config(chunker_config);
-        
-        // Coalescing buffer
         let mut coalesce_buffer = String::new();
-        let mut last_chunk_time = std::time::Instant::now();
-        let mut first_block_sent = false;
 
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -204,13 +190,16 @@ impl Channel for CliChannel {
                             // Silent - banner already shown
                         }
                         crate::engine::LifecyclePhase::Running => {
+                            // Start inline streaming - print prefix once
                             if config.show_status {
-                                self.print_system("Thinking...");
+                                print!("\n🤔 ");
+                                std::io::stdout().flush().unwrap();
                             }
                         }
                         crate::engine::LifecyclePhase::End => {
                             // Flush any remaining coalesced content
                             if config.coalesce && !coalesce_buffer.is_empty() {
+                                println!(); // Newline before final response
                                 self.print_agent_response(&coalesce_buffer);
                                 coalesce_buffer.clear();
                             }
@@ -232,84 +221,25 @@ impl Channel for CliChannel {
                 }
                 AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
                     if is_final {
-                        // Final response - flush everything
-                        let remaining = chunker.flush();
-                        for block in remaining {
-                            coalesce_buffer.push_str(&block);
-                        }
+                        // Final response - print with agent prefix
                         if !coalesce_buffer.is_empty() {
+                            println!(); // Newline after reasoning
                             self.print_agent_response(&coalesce_buffer);
+                            coalesce_buffer.clear();
+                        }
+                        if !text.is_empty() {
+                            println!();
+                            self.print_agent_response(&text);
                         }
                     } else if is_delta {
-                        // Auto-flush short messages immediately
-                        let auto_flush_threshold = config.min_chars / 2;
-                        if text.len() < auto_flush_threshold && !config.coalesce {
-                            // Small message, flush immediately without chunking
-                            if first_block_sent {
-                                if let Some((min_ms, max_ms)) = config.human_delay {
-                                    let delay_ms = rand::random::<u64>() % (max_ms - min_ms) + min_ms;
-                                    sleep(Duration::from_millis(delay_ms)).await;
-                                }
-                            }
-                            self.print_agent_response(&text);
-                            first_block_sent = true;
-                            continue;
-                        }
-                        
-                        // Chunk the delta
-                        let blocks = chunker.feed(&text);
-                        
-                        for block in blocks {
-                            if config.coalesce {
-                                coalesce_buffer.push_str(&block);
-                                
-                                // Check if we should flush due to size
-                                if coalesce_buffer.len() >= config.min_chars {
-                                    // Apply human delay after first block
-                                    if first_block_sent {
-                                        if let Some((min_ms, max_ms)) = config.human_delay {
-                                            let delay_ms = rand::random::<u64>() % (max_ms - min_ms) + min_ms;
-                                            sleep(Duration::from_millis(delay_ms)).await;
-                                        }
-                                    }
-                                    
-                                    self.print_agent_response(&coalesce_buffer);
-                                    coalesce_buffer.clear();
-                                    last_chunk_time = std::time::Instant::now();
-                                    first_block_sent = true;
-                                }
-                            } else {
-                                // No coalescing - send immediately
-                                if first_block_sent {
-                                    if let Some((min_ms, max_ms)) = config.human_delay {
-                                        let delay_ms = rand::random::<u64>() % (max_ms - min_ms) + min_ms;
-                                        sleep(Duration::from_millis(delay_ms)).await;
-                                    }
-                                }
-                                self.print_agent_response(&block);
-                                first_block_sent = true;
-                            }
-                        }
-                        
-                        // Check idle timeout for coalescing
-                        if config.coalesce && !coalesce_buffer.is_empty() {
-                            let elapsed = last_chunk_time.elapsed().as_millis() as u64;
-                            if elapsed >= config.coalesce_idle_ms {
-                                if first_block_sent {
-                                    if let Some((min_ms, max_ms)) = config.human_delay {
-                                        let delay_ms = rand::random::<u64>() % (max_ms - min_ms) + min_ms;
-                                        sleep(Duration::from_millis(delay_ms)).await;
-                                    }
-                                }
-                                self.print_agent_response(&coalesce_buffer);
-                                coalesce_buffer.clear();
-                                first_block_sent = true;
-                            }
-                        }
+                        // Stream reasoning inline immediately (no chunking/delay)
+                        print!("{}", text);
+                        std::io::stdout().flush().unwrap();
                     }
                 }
                 AgenticEvent::ToolStart { name, .. } => {
                     if config.show_tools {
+                        println!(); // Newline after reasoning stream
                         self.print_tool_start(&name);
                     }
                 }
@@ -405,21 +335,103 @@ pub async fn run_interactive_loop_with_agent(
 }
 
 /// Send a single message to the agent and get a response (non-interactive)
+///
+/// Uses streaming to show real-time reasoning and tool usage.
 pub async fn send_single_message(
     agent: &crate::agent::Agent,
     message: &str,
 ) -> Result<String> {
-    println!("⚡ Thinking...");
-    match agent.execute_with_tools(message).await {
-        Ok(result) => {
-            println!("\n🐱 Agent: {}", result.final_answer);
-            Ok(result.final_answer)
-        }
-        Err(e) => {
-            eprintln!("\n❌ Error: {e}");
-            Err(e)
-        }
-    }
+    use crate::engine::AgenticEvent;
+    use tokio::task::LocalSet;
+
+    // Create a LocalSet for the streaming execution (required for non-Send types)
+    let local = LocalSet::new();
+
+    let result = local
+        .run_until(async {
+            // Start streaming
+            let mut event_rx = agent.execute_streaming(message).await?;
+
+            let mut final_answer = String::new();
+            let mut reasoning_started = false;
+
+            // Process events as they arrive
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    AgenticEvent::Lifecycle { phase, .. } => match phase {
+                        crate::engine::LifecyclePhase::Running => {
+                            // Only print reasoning indicator once
+                            if !reasoning_started {
+                                print!("\n🤔 ");
+                                std::io::stdout().flush().unwrap();
+                                reasoning_started = true;
+                            }
+                        }
+                        crate::engine::LifecyclePhase::End => {
+                            // End of execution - flush any pending reasoning
+                            if reasoning_started {
+                                println!();
+                            }
+                            break;
+                        }
+                        crate::engine::LifecyclePhase::Error => {
+                            return Err(anyhow::anyhow!("Agent encountered an error"));
+                        }
+                        _ => {}
+                    },
+                    AgenticEvent::Assistant {
+                        text,
+                        is_delta,
+                        is_final,
+                        ..
+                    } => {
+                        if is_final {
+                            // Final response - print with agent prefix
+                            if !text.is_empty() {
+                                println!("\n🐱 Agent: {}", text);
+                                final_answer = text;
+                            }
+                        } else if is_delta && reasoning_started {
+                            // Stream reasoning tokens inline
+                            print!("{}", text);
+                            std::io::stdout().flush().unwrap();
+                        }
+                    }
+                    AgenticEvent::ToolStart { name, .. } => {
+                        // End reasoning stream before showing tool
+                        if reasoning_started {
+                            println!();
+                            reasoning_started = false;
+                        }
+                        println!("\n🔧 Using tool: {}", name);
+                    }
+                    AgenticEvent::ToolEnd {
+                        tool_id, success, ..
+                    } => {
+                        let icon = if success { "✅" } else { "❌" };
+                        println!("{} Tool '{}' completed", icon, tool_id);
+                    }
+                    AgenticEvent::ToolUpdate {
+                        tool_id,
+                        output,
+                        progress_percent,
+                        ..
+                    } => {
+                        if let Some(percent) = progress_percent {
+                            println!("  📊 {}: {}% - {}", tool_id, percent, output);
+                        } else {
+                            println!("  📊 {}: {}", tool_id, output);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Ok(final_answer)
+        })
+        .await;
+
+    result
 }
 
 /// Run interactive loop with streaming support

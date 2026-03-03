@@ -292,17 +292,14 @@ impl SystemPromptBuilder {
                 lines.push(format!("- `{}`: {}", tool.name(), tool.description()));
             }
             lines.push(String::new());
-            lines.push("### Tool Use Format".to_string());
-            lines.push("To use a tool, respond with:".to_string());
+            lines.push("### Tool Use".to_string());
+            lines.push("Think step by step. Explain your reasoning naturally, then use tools when needed.".to_string());
+            lines.push("When you want to use a tool, say something like 'Let me search for that...' and then output:".to_string());
             lines.push("```".to_string());
             lines.push("TOOL_CALL: {\"name\": \"tool_name\", \"parameters\": {\"key\": \"value\"}}".to_string());
             lines.push("```".to_string());
             lines.push(String::new());
-            lines.push("### Final Answer Format".to_string());
-            lines.push("When you have the final answer, respond with:".to_string());
-            lines.push("```".to_string());
-            lines.push("FINAL_ANSWER: Your response here".to_string());
-            lines.push("```".to_string());
+            lines.push("When you have the final answer, just provide it naturally. No special format needed.".to_string());
         }
         lines.push(String::new());
 

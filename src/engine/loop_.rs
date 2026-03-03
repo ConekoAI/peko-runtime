@@ -435,17 +435,19 @@ impl AgenticLoop {
         None
     }
 
-    /// Check if response is a final answer
+    /// Check if response is a final answer (no TOOL_CALL present)
     fn is_final_answer(&self, response: &str) -> bool {
-        response.contains("FINAL_ANSWER:")
+        // If no TOOL_CALL is present, treat as final answer
+        !response.contains("TOOL_CALL:")
     }
 
     /// Extract final answer from response
     fn extract_final_answer(&self, response: &str) -> String {
+        // Remove any FINAL_ANSWER: prefix if present (for backward compatibility)
         if let Some(start) = response.find("FINAL_ANSWER:") {
             response[start + "FINAL_ANSWER:".len()..].trim().to_string()
         } else {
-            response.to_string()
+            response.trim().to_string()
         }
     }
 

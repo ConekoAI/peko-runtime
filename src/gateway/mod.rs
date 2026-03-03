@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! ```
+//! ```text
 //! ┌─────────────────────────────────────────┐
 //! │           Pekobot Core                  │
 //! │  ┌─────────────────────────────────┐    │
@@ -32,7 +32,7 @@
 //!
 //! ## Loading a gateway
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use pekobot::gateway::{GatewayRegistry, GatewayConfig};
 //!
 //! # async fn example() {

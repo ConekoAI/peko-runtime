@@ -99,9 +99,15 @@ fn parse_event_text(text: &str) -> Option<SseEvent> {
 
         if let Some(value) = line.strip_prefix("id: ") {
             id = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix("id:") {
+            id = Some(value.to_string());
         } else if let Some(value) = line.strip_prefix("event: ") {
             event = value.to_string();
+        } else if let Some(value) = line.strip_prefix("event:") {
+            event = value.to_string();
         } else if let Some(value) = line.strip_prefix("data: ") {
+            data_lines.push(value);
+        } else if let Some(value) = line.strip_prefix("data:") {
             data_lines.push(value);
         } else if line.starts_with(':') {
             // Comment line, ignore
