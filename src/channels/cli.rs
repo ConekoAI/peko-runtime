@@ -103,7 +103,8 @@ impl CliChannel {
                         // Silent - already printed banner
                     }
                     crate::engine::LifecyclePhase::Running => {
-                        self.print_system("Thinking...");
+                        print!("\n🤔 ");
+                        std::io::stdout().flush().unwrap();
                     }
                     crate::engine::LifecyclePhase::End => {
                         // Silent - response printed separately
@@ -309,15 +310,60 @@ pub async fn run_interactive_loop_with_agent(
                         channel.print_prompt();
                     }
                     _ => {
-                        // Process with agent's execute method with tools
-                        channel.print_system("Thinking...");
-                        match agent.execute_with_tools(trimmed).await {
-                            Ok(result) => {
-                                channel.print_agent_response(&result.final_answer);
+                        // Process with streaming
+                        print!("\n🤔 ");
+                        std::io::stdout().flush().unwrap();
+                        
+                        // Use streaming for better UX
+                        use crate::engine::AgenticEvent;
+                        use tokio::task::LocalSet;
+                        
+                        let local = LocalSet::new();
+                        let result = local.run_until(async {
+                            let mut event_rx = agent.execute_streaming(trimmed).await.map_err(|e| e.to_string())?;
+                            let mut final_answer = String::new();
+                            let mut reasoning_started = false;
+                            
+                            while let Some(event) = event_rx.recv().await {
+                                match event {
+                                    AgenticEvent::Lifecycle { phase, .. } => match phase {
+                                        crate::engine::LifecyclePhase::Running => {
+                                            if !reasoning_started {
+                                                print!("\n🤔 ");
+                                                std::io::stdout().flush().unwrap();
+                                                reasoning_started = true;
+                                            }
+                                        }
+                                        crate::engine::LifecyclePhase::End => break,
+                                        _ => {}
+                                    }
+                                    AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
+                                        if is_final {
+                                            if !text.is_empty() {
+                                                println!("\n\n🐱 Agent: {}", text);
+                                                final_answer = text;
+                                            }
+                                        } else if is_delta && reasoning_started {
+                                            print!("{}", text);
+                                            std::io::stdout().flush().unwrap();
+                                        }
+                                    }
+                                    AgenticEvent::ToolStart { name, .. } => {
+                                        if reasoning_started {
+                                            println!();
+                                            reasoning_started = false;
+                                        }
+                                        println!("\n🔧 Using tool: {}", name);
+                                    }
+                                    _ => {}
+                                }
                             }
-                            Err(e) => {
-                                channel.print_error(&format!("Failed to get response: {e}"));
-                            }
+                            Ok::<String, String>(final_answer)
+                        }).await;
+                        
+                        match result {
+                            Ok(_) => {}
+                            Err(e) => channel.print_error(&format!("Error: {}", e)),
                         }
                         // Print new prompt after response
                         channel.print_prompt();
