@@ -194,6 +194,7 @@ impl Provider for OpenAICompatibleProvider {
             messages,
             max_tokens: Some(self.config.max_tokens),
             temperature: Some(temperature as f32),
+            stream: None,
         };
 
         debug!("Sending request to {}: model={}", self.name, model);
@@ -235,6 +236,138 @@ impl Provider for OpenAICompatibleProvider {
 
         Ok(content)
     }
+
+    async fn complete_stream(
+        &self,
+        prompt: &str,
+        event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
+        run_id: String,
+    ) -> anyhow::Result<()> {
+        use crate::engine::{AgenticEvent, LifecyclePhase};
+        use crate::providers::SseParser;
+        use futures::StreamExt;
+        use tracing::error;
+
+        // Emit start event
+        let _ = event_tx.send(AgenticEvent::Lifecycle {
+            run_id: run_id.clone(),
+            phase: LifecyclePhase::Start,
+            error: None,
+        }).await;
+
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: prompt.to_string(),
+            }
+        ];
+
+        let request = ChatCompletionRequest {
+            model: self.config.model.clone(),
+            messages,
+            max_tokens: Some(self.config.max_tokens),
+            temperature: Some(self.config.temperature),
+            stream: Some(true),
+        };
+
+        debug!("Sending streaming request to {}: model={}", self.name, self.config.model);
+
+        // Emit running event
+        let _ = event_tx.send(AgenticEvent::Lifecycle {
+            run_id: run_id.clone(),
+            phase: LifecyclePhase::Running,
+            error: None,
+        }).await;
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.config.base_url))
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("{} API error: {} - {}", self.name, status, error_text);
+            
+            let _ = event_tx.send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Error,
+                error: Some(format!("{} API error: {} - {}", self.name, status, error_text)),
+            }).await;
+            
+            return Err(anyhow::anyhow!("{} API error: {} - {}", self.name, status, error_text));
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut parser = SseParser::new();
+        let mut accumulated_text = String::new();
+
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let events = parser.feed(&text);
+
+                    for event in events {
+                        if event.is_done() {
+                            break;
+                        }
+
+                        // Parse the SSE data as JSON
+                        if let Ok(delta) = event.parse_json::<serde_json::Value>() {
+                            if let Some(content) = delta
+                                .get("choices")
+                                .and_then(|c| c.get(0))
+                                .and_then(|c| c.get("delta"))
+                                .and_then(|d| d.get("content"))
+                                .and_then(|c| c.as_str()) {
+                                accumulated_text.push_str(content);
+                                
+                                // Emit text delta
+                                let _ = event_tx.send(AgenticEvent::Assistant {
+                                    run_id: run_id.clone(),
+                                    text: content.to_string(),
+                                    is_delta: true,
+                                    is_final: false,
+                                }).await;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Stream error: {}", e);
+                    let _ = event_tx.send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Error,
+                        error: Some(e.to_string()),
+                    }).await;
+                    return Err(e.into());
+                }
+            }
+        }
+
+        // Emit final assistant event
+        let _ = event_tx.send(AgenticEvent::Assistant {
+            run_id: run_id.clone(),
+            text: accumulated_text,
+            is_delta: false,
+            is_final: true,
+        }).await;
+
+        // Emit end event
+        let _ = event_tx.send(AgenticEvent::Lifecycle {
+            run_id,
+            phase: LifecyclePhase::End,
+            error: None,
+        }).await;
+
+        Ok(())
+    }
 }
 
 // OpenAI API types (compatible with Groq, Together, Fireworks)
@@ -247,6 +380,8 @@ struct ChatCompletionRequest {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -68,7 +68,7 @@
 pub mod agent;
 
 /// Execution engine and state machine
-pub(crate) mod engine;
+pub mod engine;
 
 /// Message queue with lane-aware processing
 pub(crate) mod queue;
@@ -169,6 +169,9 @@ pub(crate) mod tunnel;
 
 pub use agent::Agent;
 pub use config::Config;
+
+// Re-export event types for tool monitoring and streaming
+pub use engine::{AgenticEvent, LifecyclePhase};
 
 /// Pekobot version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

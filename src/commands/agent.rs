@@ -218,8 +218,20 @@ pub mod handlers {
                         eprintln!("❌ Error processing message: {e}");
                     }
                 } else {
-                    // Interactive mode
-                    let mut channel = CliChannel::new(&agent_name);
+                    // Interactive mode with streaming support
+                    // Streaming config is now at channel level, not agent level
+                    let streaming_config = crate::channels::StreamingConfig {
+                        enabled: true,
+                        min_chars: 100,
+                        max_chars: 2000,
+                        break_preference: crate::engine::chunker::BreakPreference::Sentence,
+                        show_tools: true,
+                        show_status: true,
+                        coalesce: false,
+                        coalesce_idle_ms: 500,
+                        human_delay: None,
+                    };
+                    let mut channel = CliChannel::with_config(&agent_name, streaming_config);
                     
                     if let Err(e) = run_interactive_loop_with_agent(&mut channel, &agent_name, &agent
                     ).await {

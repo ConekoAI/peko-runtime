@@ -3,10 +3,14 @@
 //! Provides the core agentic loop, runner, and state management.
 //! This is the heart of Pekobot's agent execution.
 
+pub mod chunker;
+pub mod events;
 pub mod loop_;
 pub mod runner;
 pub mod state;
 
+pub use chunker::{BlockChunker, ChunkerConfig, BreakPreference, CoalescingChunker};
+pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
 pub use runner::AgentRunner;
 pub use state::{AgentState, StateMachine};
 

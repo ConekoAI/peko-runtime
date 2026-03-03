@@ -244,6 +244,78 @@ impl Agent {
         }
     }
 
+    /// Execute with streaming support
+    ///
+    /// Returns a channel receiver for AgenticEvents. The caller can
+    /// display these events as they arrive for a responsive UI.
+    ///
+    /// Note: This method must be called within a tokio::task::LocalSet
+    /// because Agent contains non-Send types (rusqlite connections).
+    pub async fn execute_streaming(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        use crate::engine::loop_::AgenticLoop;
+        use crate::engine::AgenticEvent;
+        use crate::tools::*;
+        use std::sync::Arc;
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(100);
+
+        if let Some(provider) = &self.provider {
+            // Create core tools
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            // Clone for the loop
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
+            let prompt = prompt.to_string();
+
+            // Spawn the streaming execution using spawn_local
+            // This is required because Agent contains non-Send types
+            tokio::task::spawn_local(async move {
+                let loop_ = AgenticLoop::new(agent_arc, provider_arc, tools);
+
+                // Run with streaming
+                match loop_.run_streaming(&prompt, event_tx.clone()).await {
+                    Ok(_) => {
+                        let _ = event_tx.send(AgenticEvent::Lifecycle {
+                            run_id: prompt[..prompt.len().min(16)].to_string(),
+                            phase: crate::engine::LifecyclePhase::End,
+                            error: None,
+                        }).await;
+                    }
+                    Err(e) => {
+                        error!("Streaming execution error: {}", e);
+                        let _ = event_tx.send(AgenticEvent::Lifecycle {
+                            run_id: prompt[..prompt.len().min(16)].to_string(),
+                            phase: crate::engine::LifecyclePhase::Error,
+                            error: Some(e.to_string()),
+                        }).await;
+                    }
+                }
+            });
+        } else {
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
+
     /// Search memory
     pub fn search_memory(
         &self,
