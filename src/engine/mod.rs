@@ -9,6 +9,7 @@ pub mod loop_;
 pub mod loop_v2;
 pub mod runner;
 pub mod state;
+pub mod tool_stream;
 
 pub use chunker::{BlockChunker, ChunkerConfig, BreakPreference, CoalescingChunker};
 pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
@@ -16,6 +17,7 @@ pub use loop_::{AgenticLoop, AgenticResult, ToolCall};
 pub use loop_v2::AgenticLoopV2;
 pub use runner::AgentRunner;
 pub use state::{AgentState, StateMachine};
+pub use tool_stream::{StreamingToolCall, ToolCallStreamParser, ToolCallParseError, parse_tool_calls_from_text};
 
 use crate::agent::Agent;
 use crate::providers::Provider;
