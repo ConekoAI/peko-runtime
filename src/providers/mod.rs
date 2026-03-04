@@ -34,6 +34,9 @@ pub use perplexity::PerplexityProvider;
 pub use reliable::ReliableProvider;
 pub use sse::{parse_sse_line, SseEvent, SseParser};
 pub use together::TogetherProvider;
-pub use traits::Provider;
+pub use traits::{
+    ChatMessage, ChatOptions, ChatResponse, MessageRole, Provider, StopReason, StreamEvent,
+    TokenUsage, ToolDefinition,
+};
 pub use venice::VeniceProvider;
 pub use xai::XaiProvider;
