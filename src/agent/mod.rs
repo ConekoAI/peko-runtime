@@ -122,8 +122,22 @@ impl Agent {
         *current = state;
     }
 
-    /// Execute a task with the LLM provider
-    pub async fn execute(&self, prompt: &str) -> Result<String> {
+    /// Execute a task with the LLM provider using the unified callback API.
+    ///
+    /// The `on_event` callback receives streaming events (thinking tokens,
+    /// tool calls, lifecycle events, etc.). Use `|_| {}` if you don't need
+    /// streaming updates.
+    ///
+    /// Returns the final result including the answer and tool calls made.
+    pub async fn execute(
+        &self,
+        prompt: &str,
+        on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+    ) -> Result<crate::engine::AgenticResultV4> {
+        use crate::engine::loop_v4::AgenticLoopV4;
+        use crate::tools::*;
+        use std::sync::Arc;
+
         if self.state() != AgentState::Idle {
             return Err(anyhow::anyhow!(
                 "Agent is not idle (current state: {:?})",
@@ -133,48 +147,89 @@ impl Agent {
 
         self.set_state(AgentState::Busy);
 
-        // Store the prompt in memory
-        if let Some(memory) = &self.memory {
-            let _ = memory.store(
-                prompt,
-                Some(serde_json::json!({
-                    "type": "prompt",
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                })),
-            );
-        }
-
         let result = if let Some(provider) = &self.provider {
-            debug!("Executing prompt with provider: {}", provider.name());
-            match provider.complete(prompt).await {
-                Ok(response) => {
-                    // Store the response in memory
-                    if let Some(memory) = &self.memory {
-                        let _ = memory.store(
-                            &response,
-                            Some(serde_json::json!({
-                                "type": "response",
-                                "timestamp": chrono::Utc::now().to_rfc3339(),
-                            })),
-                        );
-                    }
-                    Ok(response)
-                }
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            let supports_native = provider.supports_native_tools();
+            info!(
+                "Executing with {} tool calling",
+                if supports_native { "native" } else { "text-based" }
+            );
+
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
+
+            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+
+            match loop_.run(prompt, on_event).await {
+                Ok(result) => Ok(result),
                 Err(e) => {
-                    error!("Provider error: {}", e);
+                    error!("Agentic loop V4 error: {}", e);
                     Err(e)
                 }
             }
         } else {
-            warn!("No provider configured, returning echo response");
-            Ok(format!("Echo: {prompt}"))
+            Err(anyhow::anyhow!("No provider configured"))
         };
 
         self.set_state(AgentState::Idle);
         result
     }
 
-    /// Execute a task with tools using the agentic loop
+    /// Execute with a channel-based event interface.
+    ///
+    /// Convenience wrapper around `execute()` that returns a receiver for
+    /// async event streaming. Use this when you need to process events
+    /// in a separate async context.
+    pub async fn execute_streaming(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(100);
+
+        // Spawn the execution in a task
+        let prompt = prompt.to_string();
+        let agent_arc = Arc::new(self.clone_for_loop());
+
+        // We need to get the provider and tools into the task
+        if let Some(provider) = &self.provider {
+            use crate::tools::*;
+
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            let provider_arc = Arc::clone(provider);
+            let event_tx_clone = event_tx.clone();
+
+            tokio::task::spawn_local(async move {
+                use crate::engine::loop_v4::AgenticLoopV4;
+
+                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+
+                let _result = loop_
+                    .run(&prompt, move |event| {
+                        let _ = event_tx_clone.try_send(event);
+                    })
+                    .await;
+            });
+        } else {
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
+
+    /// Execute a task with tools using the agentic loop (deprecated - use `execute()`)
+    #[deprecated(since = "0.2.0", note = "Use execute() with callback instead")]
     pub async fn execute_with_tools(&self, prompt: &str) -> Result<crate::engine::AgenticResultV3> {
         use crate::engine::loop_v3::AgenticLoopV3;
         use crate::tools::*;
@@ -243,7 +298,8 @@ impl Agent {
     ///
     /// Note: This method must be called within a tokio::task::LocalSet
     /// because Agent contains non-Send types (rusqlite connections).
-    pub async fn execute_streaming(
+    #[deprecated(since = "0.2.0", note = "Use execute_streaming() instead")]
+    pub async fn execute_streaming_v1_v2(
         &self,
         prompt: &str,
     ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
@@ -317,7 +373,8 @@ impl Agent {
         Ok(event_rx)
     }
 
-    /// Execute with streaming support using AgenticLoopV3 (simplified working version)
+    /// Execute with streaming support using AgenticLoopV3 (deprecated - use execute_streaming())
+    #[deprecated(since = "0.2.0", note = "Use execute_streaming() instead")]
     pub async fn execute_streaming_v3(
         &self,
         prompt: &str,
@@ -547,6 +604,7 @@ impl Agent {
     ///
     /// This is the recommended method for agent execution with native tool calling support.
     /// The `on_event` callback receives all streaming events (text deltas, tool calls, etc.).
+    #[deprecated(since = "0.2.0", note = "Use execute() instead")]
     pub async fn execute_native(
         &self,
         prompt: &str,
@@ -603,6 +661,7 @@ impl Agent {
     ///
     /// This is a convenience wrapper around execute_native() that provides
     /// a channel-based interface for code that expects async event streaming.
+    #[deprecated(since = "0.2.0", note = "Use execute_streaming() instead")]
     pub async fn execute_native_streaming(
         &self,
         prompt: &str,

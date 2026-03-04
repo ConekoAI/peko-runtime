@@ -347,7 +347,7 @@ pub async fn run_interactive_loop_with_agent(
                         let result = local
                             .run_until(async {
                                 let mut event_rx = agent
-                                    .execute_native_streaming(trimmed)
+                                    .execute_streaming(trimmed)
                                     .await
                                     .map_err(|e| e.to_string())?;
                                 let mut final_answer = String::new();
@@ -451,7 +451,7 @@ pub async fn send_single_message(agent: &crate::agent::Agent, message: &str) -> 
     let result = local
         .run_until(async {
             // Start native streaming
-            let mut event_rx = agent.execute_native_streaming(message).await?;
+            let mut event_rx = agent.execute_streaming(message).await?;
 
             let mut final_answer = String::new();
             let mut reasoning_started = false;
