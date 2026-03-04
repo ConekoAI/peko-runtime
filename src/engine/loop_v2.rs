@@ -369,9 +369,26 @@ impl AgenticLoopV2 {
             }
         }
 
-        // Try TOOL_CALL: pattern
+        // Try TOOL_CALL: pattern with JSON
         if let Some(start) = text.find("TOOL_CALL:") {
-            let rest = &text[start + 10..];
+            let rest = &text[start + 10..].trim();
+            
+            // Try to parse as JSON object first
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(rest) {
+                if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
+                    // Support both "arguments" and "parameters" keys
+                    let args = json.get("arguments")
+                        .or_else(|| json.get("parameters"))
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    return Some(ToolCall {
+                        name: name.to_string(),
+                        parameters: args,
+                    });
+                }
+            }
+            
+            // Try legacy format: TOOL_CALL: tool_name({...})
             if let Some(end) = rest.find('(') {
                 let name = rest[..end].trim();
                 if let Some(close) = rest.find(')') {
