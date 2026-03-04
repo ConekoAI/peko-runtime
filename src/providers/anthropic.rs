@@ -93,8 +93,11 @@ impl AnthropicProvider {
 
                 // For tool results, format as tool_result block
                 if m.role == MessageRole::Tool {
+                    debug!("Converting Tool message with {} content blocks", m.content.len());
+                    
                     // Find ToolResult content block
-                    for block in &m.content {
+                    for (idx, block) in m.content.iter().enumerate() {
+                        debug!("  Content block [{}]: {:?}", idx, std::mem::discriminant(block));
                         if let crate::types::message::ContentBlock::ToolResult { tool_call_id, content, .. } = block {
                             // Extract text from the content blocks inside ToolResult
                             let content_text: String = content
@@ -105,6 +108,8 @@ impl AnthropicProvider {
                                 })
                                 .collect::<Vec<_>>()
                                 .join("");
+                            
+                            debug!("  Found ToolResult: tool_call_id={}, content_len={}", tool_call_id, content_text.len());
                             
                             return Some(AnthropicMessage {
                                 role: "user".to_string(),
@@ -117,6 +122,7 @@ impl AnthropicProvider {
                     }
                     
                     // Fallback: try to extract text directly from content
+                    debug!("  No ToolResult block found, trying fallback");
                     let content_text = m
                         .content
                         .iter()
@@ -128,6 +134,7 @@ impl AnthropicProvider {
                         .join("");
                     
                     let tool_use_id = m.tool_call_id.clone().unwrap_or_default();
+                    debug!("  Fallback: tool_use_id={}, content_len={}", tool_use_id, content_text.len());
                     
                     return Some(AnthropicMessage {
                         role: "user".to_string(),
@@ -235,14 +242,21 @@ impl AnthropicProvider {
             debug!("  [{}] {}: {}", i, msg.role, content_preview);
         }
 
-        AnthropicRequest {
+        let request = AnthropicRequest {
             model: self.config.model.clone(),
             messages: anthropic_messages,
             max_tokens: options.max_tokens.unwrap_or(self.config.max_tokens),
             temperature: options.temperature.or(Some(self.config.temperature)),
             tools: anthropic_tools,
             stream: false,
+        };
+        
+        // Debug: log full request as JSON
+        if let Ok(json) = serde_json::to_string_pretty(&request) {
+            debug!("Anthropic API request:\n{}", json);
         }
+        
+        request
     }
 }
 

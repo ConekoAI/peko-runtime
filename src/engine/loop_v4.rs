@@ -214,24 +214,16 @@ impl AgenticLoopV4 {
             if !response.tool_calls.is_empty() {
                 info!("Processing {} tool calls", response.tool_calls.len());
 
+                // Add tool call blocks to assistant_content for proper serialization
+                for tool_call in &response.tool_calls {
+                    assistant_content.push(tool_call.clone());
+                }
+
                 // Add assistant message with tool calls to history
-                let v3_tool_calls = extract_tool_calls(&response.tool_calls);
                 let assistant_msg = ChatMessage {
                     role: MessageRole::Assistant,
                     content: assistant_content,
-                    tool_calls: Some(
-                        v3_tool_calls
-                            .iter()
-                            .map(|tc| crate::types::provider::ToolCall {
-                                id: format!("call_{}", tc.name),
-                                tool_type: "function".to_string(),
-                                function: crate::types::provider::FunctionCall {
-                                    name: tc.name.clone(),
-                                    arguments: tc.parameters.to_string(),
-                                },
-                            })
-                            .collect(),
-                    ),
+                    tool_calls: None, // We include tool calls in content now
                     tool_call_id: None,
                 };
                 messages.push(assistant_msg.clone());
@@ -326,7 +318,9 @@ impl AgenticLoopV4 {
                 }
 
                 // Add tool results to messages
+                info!("Adding {} tool results to messages", tool_results.len());
                 messages.extend(tool_results);
+                info!("Messages now has {} items: {:?}", messages.len(), messages.iter().map(|m| format!("{:?}", m.role)).collect::<Vec<_>>());
 
                 // Continue to next iteration for final answer
                 continue;
