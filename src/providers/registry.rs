@@ -207,7 +207,7 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
     ProviderMetadata {
         id: "kimi",
         display_name: "Kimi (Moonshot)",
-        aliases: &["moonshot", "moonshotai"],
+        aliases: &["moonshot", "moonshotai", "kimi_code", "kimi-code"],
         api_key_env: &["KIMI_API_KEY", "MOONSHOT_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.moonshot.cn/v1",
