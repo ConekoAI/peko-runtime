@@ -603,7 +603,7 @@ pub mod handlers {
                     ProviderType::Ollama => Some("http://localhost:11434".to_string()),
                     ProviderType::OpenAICompatible => None,
                     ProviderType::Kimi => Some("https://api.moonshot.cn/v1".to_string()),
-                    ProviderType::KimiCode => Some("https://api.moonshot.cn/v1".to_string()),
+                    ProviderType::KimiCode => Some("https://api.kimi.com/coding".to_string()),
                 },
                 default_model,
                 models,

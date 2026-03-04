@@ -502,7 +502,7 @@ impl Agent {
             ProviderType::OpenAI => "openai",
             ProviderType::Anthropic => "anthropic",
             ProviderType::Kimi => "kimi",
-            ProviderType::KimiCode => "kimi", // Fallback to regular kimi for now
+            ProviderType::KimiCode => "kimi_code", // Use kimi_code metadata (Anthropic API)
             ProviderType::Ollama => "ollama",
             ProviderType::OpenAICompatible => {
                 // Use base_url to determine provider
@@ -530,6 +530,7 @@ impl Agent {
             "openai" => ProviderType::OpenAI,
             "anthropic" => ProviderType::Anthropic,
             "kimi" => ProviderType::Kimi,
+            "kimi_code" => ProviderType::KimiCode,
             "ollama" => ProviderType::Ollama,
             _ => ProviderType::OpenAICompatible,
         };

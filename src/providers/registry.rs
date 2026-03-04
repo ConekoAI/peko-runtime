@@ -215,6 +215,16 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         default_model: "kimi-k2.5",
     },
     ProviderMetadata {
+        id: "kimi_code",
+        display_name: "Kimi Code (subscription)",
+        aliases: &["kimi-code", "kimi-coding"],
+        api_key_env: &["KIMI_API_KEY"],
+        api_type: ApiType::AnthropicMessages,
+        base_url: "https://api.kimi.com/coding",  // Anthropic provider will append /v1/messages
+        use_auth_header: false,
+        default_model: "k2p5",
+    },
+    ProviderMetadata {
         id: "ollama",
         display_name: "Ollama",
         aliases: &[],
