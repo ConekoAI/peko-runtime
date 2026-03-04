@@ -311,31 +311,20 @@ pub async fn run_interactive_loop_with_agent(
                         channel.print_prompt();
                     }
                     _ => {
-                        // Process with streaming v2
+                        // Process with streaming (using v1 loop - v2 has conversation flow issues)
                         print!("\n🤔 ");
                         std::io::stdout().flush().unwrap();
                         
-                        // Use streaming v2 for better UX with AgentMessage abstraction
                         use crate::engine::AgenticEvent;
                         use tokio::task::LocalSet;
                         
                         let local = LocalSet::new();
                         let result = local.run_until(async {
-                            info!("Starting v2 streaming for message: {}", trimmed);
-                            let mut event_rx = match agent.execute_streaming_v2(trimmed).await {
-                                Ok(rx) => rx,
-                                Err(e) => {
-                                    error!("Failed to start v2 streaming: {}", e);
-                                    return Err(format!("Failed to start: {}", e));
-                                }
-                            };
+                            let mut event_rx = agent.execute_streaming(trimmed).await.map_err(|e| e.to_string())?;
                             let mut final_answer = String::new();
                             let mut reasoning_started = false;
-                            let mut message_count = 0;
                             
                             while let Some(event) = event_rx.recv().await {
-                                message_count += 1;
-                                debug!("Received event #{}: {:?}", message_count, event);
                                 match event {
                                     AgenticEvent::Lifecycle { phase, .. } => match phase {
                                         crate::engine::LifecyclePhase::Running => {
@@ -345,14 +334,7 @@ pub async fn run_interactive_loop_with_agent(
                                                 reasoning_started = true;
                                             }
                                         }
-                                        crate::engine::LifecyclePhase::End => {
-                                            info!("Received End event, breaking after {} events", message_count);
-                                            break;
-                                        }
-                                        crate::engine::LifecyclePhase::Error => {
-                                            error!("Received Error lifecycle event");
-                                            return Err("Agent encountered an error".to_string());
-                                        }
+                                        crate::engine::LifecyclePhase::End => break,
                                         _ => {}
                                     }
                                     AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
@@ -380,7 +362,6 @@ pub async fn run_interactive_loop_with_agent(
                                     _ => {}
                                 }
                             }
-                            info!("Event stream ended after {} messages", message_count);
                             Ok::<String, String>(final_answer)
                         }).await;
                         
@@ -428,7 +409,7 @@ pub async fn send_single_message(
     let result = local
         .run_until(async {
             // Start streaming v2
-            let mut event_rx = agent.execute_streaming_v2(message).await?;
+            let mut event_rx = agent.execute_streaming(message).await?;
 
             let mut final_answer = String::new();
             let mut reasoning_started = false;
