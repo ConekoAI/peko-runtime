@@ -55,7 +55,7 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub quiet: bool,
 
-    /// Enable verbose logging
+    /// Enable verbose logging (-v=info, -vv=debug, -vvv=trace)
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
@@ -191,9 +191,10 @@ pub fn init_logging(verbosity: u8, quiet: bool) {
     }
 
     let level = match verbosity {
-        0 => tracing::Level::INFO,
-        1 => tracing::Level::DEBUG,
-        _ => tracing::Level::TRACE,
+        0 => tracing::Level::WARN,  // Default: only warnings and errors
+        1 => tracing::Level::INFO,  // -v: info level
+        2 => tracing::Level::DEBUG, // -vv: debug level
+        _ => tracing::Level::TRACE, // -vvv: trace level
     };
 
     tracing_subscriber::fmt().with_max_level(level).init();
