@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::Receiver;
 
 /// Streaming configuration for channels
-/// 
+///
 /// Controls how streaming output is chunked and presented.
 /// This lives at the channel layer (presentation), not the agent layer.
 #[derive(Debug, Clone)]
@@ -80,21 +80,21 @@ pub trait Channel: Send + Sync {
     async fn receive(&mut self) -> Result<Option<String>>;
 
     /// Get the streaming configuration for this channel
-    /// 
+    ///
     /// Channels can override agent defaults based on their capabilities.
     fn streaming_config(&self) -> StreamingConfig {
         StreamingConfig::default()
     }
 
     /// Handle a streaming event receiver
-    /// 
+    ///
     /// This is where chunking and presentation happens.
     /// The channel receives raw AgenticEvents and handles:
     /// - Block chunking based on channel config
     /// - Coalescing small blocks
     /// - Human-like delays between blocks
     /// - Platform-specific formatting
-    /// 
+    ///
     /// Default implementation just forwards events without chunking.
     /// Override for custom streaming behavior.
     async fn handle_stream(
@@ -102,7 +102,7 @@ pub trait Channel: Send + Sync {
         mut event_rx: Receiver<crate::engine::AgenticEvent>,
     ) -> Result<()> {
         use crate::engine::AgenticEvent;
-        
+
         while let Some(event) = event_rx.recv().await {
             match event {
                 AgenticEvent::Assistant { text, is_final, .. } => {
@@ -111,18 +111,16 @@ pub trait Channel: Send + Sync {
                     }
                     // Deltas are ignored in default impl
                 }
-                AgenticEvent::Lifecycle { phase, error, .. } => {
-                    match phase {
-                        crate::engine::LifecyclePhase::End => break,
-                        crate::engine::LifecyclePhase::Error => {
-                            if let Some(err) = error {
-                                eprintln!("Stream error: {}", err);
-                            }
-                            break;
+                AgenticEvent::Lifecycle { phase, error, .. } => match phase {
+                    crate::engine::LifecyclePhase::End => break,
+                    crate::engine::LifecyclePhase::Error => {
+                        if let Some(err) = error {
+                            eprintln!("Stream error: {}", err);
                         }
-                        _ => {}
+                        break;
                     }
-                }
+                    _ => {}
+                },
                 _ => {}
             }
         }

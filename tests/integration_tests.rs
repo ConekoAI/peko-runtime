@@ -5,7 +5,7 @@
 use pekobot::{
     agent::Agent,
     types::agent::AgentConfig,
-    types::provider::{ProviderConfig, ProviderType, ModelConfig},
+    types::provider::{ModelConfig, ProviderConfig, ProviderType},
 };
 use std::collections::HashMap;
 
@@ -66,11 +66,11 @@ async fn test_agent_creation() {
 async fn test_agent_lifecycle() {
     let config = test_agent_config("lifecycle-test");
     let agent = Agent::new(config).await.unwrap();
-    
+
     // Start agent
     let result = agent.start().await;
     assert!(result.is_ok());
-    
+
     // Stop agent
     let result = agent.stop().await;
     assert!(result.is_ok());
@@ -82,7 +82,7 @@ async fn test_agent_lifecycle() {
 async fn test_agent_identity() {
     let config = test_agent_config("identity-test");
     let agent = Agent::new(config).await.unwrap();
-    
+
     let did = agent.did();
     assert!(!did.is_empty());
     assert!(did.starts_with("did:"));
@@ -94,9 +94,9 @@ async fn test_agent_identity() {
 async fn test_unique_dids() {
     let config1 = test_agent_config("unique-1");
     let config2 = test_agent_config("unique-2");
-    
+
     let agent1 = Agent::new(config1).await.unwrap();
     let agent2 = Agent::new(config2).await.unwrap();
-    
+
     assert_ne!(agent1.did(), agent2.did());
 }

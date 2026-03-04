@@ -95,12 +95,9 @@ impl KimiCodeProvider {
         };
         Self::new(config)
     }
-    
+
     /// Try sending request with timeout handling
-    async fn try_send_request(
-        &self, 
-        request: &MessagesRequest
-    ) -> anyhow::Result<String> {
+    async fn try_send_request(&self, request: &MessagesRequest) -> anyhow::Result<String> {
         // Kimi Code uses Anthropic API format
         let response = self
             .client
@@ -191,14 +188,18 @@ impl Provider for KimiCodeProvider {
         // Retry logic with exponential backoff
         let max_retries = 3;
         let mut last_error = None;
-        
+
         for attempt in 0..max_retries {
             if attempt > 0 {
                 let delay = std::time::Duration::from_secs(2u64.pow(attempt as u32));
-                info!("Retrying Kimi Code request (attempt {}), waiting {:?}", attempt + 1, delay);
+                info!(
+                    "Retrying Kimi Code request (attempt {}), waiting {:?}",
+                    attempt + 1,
+                    delay
+                );
                 tokio::time::sleep(delay).await;
             }
-            
+
             match self.try_send_request(&request).await {
                 Ok(content) => return Ok(content),
                 Err(e) => {
@@ -213,7 +214,7 @@ impl Provider for KimiCodeProvider {
                 }
             }
         }
-        
+
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Max retries exceeded")))
     }
 
@@ -229,11 +230,13 @@ impl Provider for KimiCodeProvider {
         use tracing::error;
 
         // Emit start event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Start,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Start,
+                error: None,
+            })
+            .await;
 
         let mut messages: Vec<Message> = Vec::new();
         messages.push(Message {
@@ -249,16 +252,24 @@ impl Provider for KimiCodeProvider {
             stream: Some(true),
         };
 
-        debug!("Sending streaming request to Kimi Code: model={}", self.config.model);
+        debug!(
+            "Sending streaming request to Kimi Code: model={}",
+            self.config.model
+        );
 
         // Emit running event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Running,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Running,
+                error: None,
+            })
+            .await;
 
-        info!("Kimi Code: About to send HTTP request to: {}/v1/messages", self.config.base_url);
+        info!(
+            "Kimi Code: About to send HTTP request to: {}/v1/messages",
+            self.config.base_url
+        );
 
         // Kimi Code uses Anthropic API format with SSE streaming
         let response = self
@@ -277,14 +288,18 @@ impl Provider for KimiCodeProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("Kimi Code API error: {} - {}", status, error_text);
-            
-            let _ = event_tx.send(AgenticEvent::Lifecycle {
-                run_id: run_id.clone(),
-                phase: LifecyclePhase::Error,
-                error: Some(format!("Kimi Code API error: {status} - {error_text}")),
-            }).await;
-            
-            return Err(anyhow::anyhow!("Kimi Code API error: {status} - {error_text}"));
+
+            let _ = event_tx
+                .send(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::Error,
+                    error: Some(format!("Kimi Code API error: {status} - {error_text}")),
+                })
+                .await;
+
+            return Err(anyhow::anyhow!(
+                "Kimi Code API error: {status} - {error_text}"
+            ));
         }
 
         let mut stream = response.bytes_stream();
@@ -312,46 +327,55 @@ impl Provider for KimiCodeProvider {
                             if let Some(content) = delta
                                 .get("delta")
                                 .and_then(|d| d.get("text"))
-                                .and_then(|t| t.as_str()) {
+                                .and_then(|t| t.as_str())
+                            {
                                 accumulated_text.push_str(content);
-                                
+
                                 // Emit text delta
-                                let _ = event_tx.send(AgenticEvent::Assistant {
-                                    run_id: run_id.clone(),
-                                    text: content.to_string(),
-                                    is_delta: true,
-                                    is_final: false,
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgenticEvent::Assistant {
+                                        run_id: run_id.clone(),
+                                        text: content.to_string(),
+                                        is_delta: true,
+                                        is_final: false,
+                                    })
+                                    .await;
                             }
                         }
                     }
                 }
                 Err(e) => {
                     error!("Stream error: {}", e);
-                    let _ = event_tx.send(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Error,
-                        error: Some(e.to_string()),
-                    }).await;
+                    let _ = event_tx
+                        .send(AgenticEvent::Lifecycle {
+                            run_id: run_id.clone(),
+                            phase: LifecyclePhase::Error,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                     return Err(e.into());
                 }
             }
         }
 
         // Emit final assistant event
-        let _ = event_tx.send(AgenticEvent::Assistant {
-            run_id: run_id.clone(),
-            text: accumulated_text,
-            is_delta: false,
-            is_final: true,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Assistant {
+                run_id: run_id.clone(),
+                text: accumulated_text,
+                is_delta: false,
+                is_final: true,
+            })
+            .await;
 
         // Emit end event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id,
-            phase: LifecyclePhase::End,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id,
+                phase: LifecyclePhase::End,
+                error: None,
+            })
+            .await;
 
         Ok(())
     }

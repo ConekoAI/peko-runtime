@@ -197,14 +197,19 @@ impl Provider for OllamaProvider {
         use tracing::error;
 
         // Emit start event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Start,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Start,
+                error: None,
+            })
+            .await;
 
         let mut options = serde_json::Map::new();
-        options.insert("temperature".to_string(), serde_json::json!(self.config.temperature));
+        options.insert(
+            "temperature".to_string(),
+            serde_json::json!(self.config.temperature),
+        );
 
         if let Some(ctx) = self.config.num_ctx {
             options.insert("num_ctx".to_string(), serde_json::json!(ctx));
@@ -217,14 +222,19 @@ impl Provider for OllamaProvider {
             options: Some(options),
         };
 
-        debug!("Sending streaming request to Ollama: model={}", self.config.model);
+        debug!(
+            "Sending streaming request to Ollama: model={}",
+            self.config.model
+        );
 
         // Emit running event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Running,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Running,
+                error: None,
+            })
+            .await;
 
         let response = self
             .client
@@ -238,13 +248,15 @@ impl Provider for OllamaProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("Ollama API error: {} - {}", status, error_text);
-            
-            let _ = event_tx.send(AgenticEvent::Lifecycle {
-                run_id: run_id.clone(),
-                phase: LifecyclePhase::Error,
-                error: Some(format!("Ollama API error: {status} - {error_text}")),
-            }).await;
-            
+
+            let _ = event_tx
+                .send(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::Error,
+                    error: Some(format!("Ollama API error: {status} - {error_text}")),
+                })
+                .await;
+
             return Err(anyhow::anyhow!("Ollama API error: {status} - {error_text}"));
         }
 
@@ -255,23 +267,25 @@ impl Provider for OllamaProvider {
             match chunk_result {
                 Ok(bytes) => {
                     let text = String::from_utf8_lossy(&bytes);
-                    
+
                     // Ollama uses NDJSON (newline-delimited JSON)
                     for line in text.lines() {
                         if line.is_empty() {
                             continue;
                         }
-                        
+
                         if let Ok(delta) = serde_json::from_str::<GenerateResponse>(line) {
                             accumulated_text.push_str(&delta.response);
-                            
+
                             // Emit text delta
-                            let _ = event_tx.send(AgenticEvent::Assistant {
-                                run_id: run_id.clone(),
-                                text: delta.response,
-                                is_delta: true,
-                                is_final: false,
-                            }).await;
+                            let _ = event_tx
+                                .send(AgenticEvent::Assistant {
+                                    run_id: run_id.clone(),
+                                    text: delta.response,
+                                    is_delta: true,
+                                    is_final: false,
+                                })
+                                .await;
 
                             // Check if done
                             if delta.done {
@@ -282,30 +296,36 @@ impl Provider for OllamaProvider {
                 }
                 Err(e) => {
                     error!("Stream error: {}", e);
-                    let _ = event_tx.send(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Error,
-                        error: Some(e.to_string()),
-                    }).await;
+                    let _ = event_tx
+                        .send(AgenticEvent::Lifecycle {
+                            run_id: run_id.clone(),
+                            phase: LifecyclePhase::Error,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                     return Err(e.into());
                 }
             }
         }
 
         // Emit final assistant event
-        let _ = event_tx.send(AgenticEvent::Assistant {
-            run_id: run_id.clone(),
-            text: accumulated_text,
-            is_delta: false,
-            is_final: true,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Assistant {
+                run_id: run_id.clone(),
+                text: accumulated_text,
+                is_delta: false,
+                is_final: true,
+            })
+            .await;
 
         // Emit end event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id,
-            phase: LifecyclePhase::End,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id,
+                phase: LifecyclePhase::End,
+                error: None,
+            })
+            .await;
 
         Ok(())
     }

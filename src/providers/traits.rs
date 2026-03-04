@@ -23,11 +23,7 @@ pub trait Provider: Send + Sync {
     ) -> anyhow::Result<String>;
 
     /// Simple chat interface
-    async fn chat(&self,
-        message: &str,
-        model: &str,
-        temperature: f64
-    ) -> anyhow::Result<String> {
+    async fn chat(&self, message: &str, model: &str, temperature: f64) -> anyhow::Result<String> {
         self.chat_with_system(None, message, model, temperature)
             .await
     }
@@ -51,46 +47,56 @@ pub trait Provider: Send + Sync {
         use crate::engine::{AgenticEvent, LifecyclePhase};
 
         // Emit start event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Start,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Start,
+                error: None,
+            })
+            .await;
 
         // Emit running event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Running,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Running,
+                error: None,
+            })
+            .await;
 
         // Do blocking completion
         match self.complete(_prompt).await {
             Ok(response) => {
                 // Emit assistant event
-                let _ = event_tx.send(AgenticEvent::Assistant {
-                    run_id: run_id.clone(),
-                    text: response,
-                    is_delta: false,
-                    is_final: true,
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Assistant {
+                        run_id: run_id.clone(),
+                        text: response,
+                        is_delta: false,
+                        is_final: true,
+                    })
+                    .await;
 
                 // Emit end event
-                let _ = event_tx.send(AgenticEvent::Lifecycle {
-                    run_id,
-                    phase: LifecyclePhase::End,
-                    error: None,
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id,
+                        phase: LifecyclePhase::End,
+                        error: None,
+                    })
+                    .await;
 
                 Ok(())
             }
             Err(e) => {
                 // Emit error event
-                let _ = event_tx.send(AgenticEvent::Lifecycle {
-                    run_id,
-                    phase: LifecyclePhase::Error,
-                    error: Some(e.to_string()),
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id,
+                        phase: LifecyclePhase::Error,
+                        error: Some(e.to_string()),
+                    })
+                    .await;
 
                 Err(e)
             }

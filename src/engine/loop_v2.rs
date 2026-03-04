@@ -8,17 +8,15 @@
 //! - Streaming events for full visibility
 
 use crate::agent::Agent;
-use crate::engine::{
-    AgenticEvent, AgenticResult, LifecyclePhase, ToolCall,
-};
+use crate::engine::{AgenticEvent, AgenticResult, LifecyclePhase, ToolCall};
 use crate::providers::Provider;
 use crate::tools::{context::AbortSignal, Tool};
-use crate::types::{
-    AgentContext, AgentMessage, ContentBlock, JsonMessageConverter, LlmMessage,
-    MessageConverter, MessageRole, SteeringProvider,
-    ContextTransformer, DefaultContextTransformer, ContextWindowConfig,
-};
 use crate::types::message::NoOpSteeringProvider;
+use crate::types::{
+    AgentContext, AgentMessage, ContentBlock, ContextTransformer, ContextWindowConfig,
+    DefaultContextTransformer, JsonMessageConverter, LlmMessage, MessageConverter, MessageRole,
+    SteeringProvider,
+};
 use anyhow::{Context as _, Result};
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -37,11 +35,7 @@ pub struct AgenticLoopV2 {
 
 impl AgenticLoopV2 {
     /// Create a new v2 agentic loop
-    pub fn new(
-        agent: Arc<Agent>,
-        provider: Arc<dyn Provider>,
-        tools: Vec<Arc<dyn Tool>>,
-    ) -> Self {
+    pub fn new(agent: Arc<Agent>, provider: Arc<dyn Provider>, tools: Vec<Arc<dyn Tool>>) -> Self {
         Self {
             agent,
             provider,
@@ -50,7 +44,9 @@ impl AgenticLoopV2 {
             abort_signal: None,
             message_converter: Arc::new(JsonMessageConverter),
             steering_provider: Arc::new(NoOpSteeringProvider),
-            context_transformer: Arc::new(DefaultContextTransformer::new(ContextWindowConfig::default())),
+            context_transformer: Arc::new(DefaultContextTransformer::new(
+                ContextWindowConfig::default(),
+            )),
         }
     }
 
@@ -90,18 +86,21 @@ impl AgenticLoopV2 {
     }
 
     /// Run the agentic loop with a user prompt
-    pub async fn run(&self,
+    pub async fn run(
+        &self,
         prompt: &str,
         event_tx: tokio::sync::mpsc::Sender<AgenticEvent>,
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
 
         // Emit start event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Start,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Start,
+                error: None,
+            })
+            .await;
 
         info!("Starting v2 agentic loop for agent: {}", self.agent.name());
 
@@ -122,11 +121,13 @@ impl AgenticLoopV2 {
 
             if iteration > self.max_iterations {
                 warn!("Max iterations ({}) reached", self.max_iterations);
-                let _ = event_tx.send(AgenticEvent::Lifecycle {
-                    run_id: run_id.clone(),
-                    phase: LifecyclePhase::Error,
-                    error: Some("Max iterations reached".to_string()),
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Error,
+                        error: Some("Max iterations reached".to_string()),
+                    })
+                    .await;
                 return Ok(AgenticResult {
                     success: false,
                     final_answer: "Max iterations reached".to_string(),
@@ -139,11 +140,13 @@ impl AgenticLoopV2 {
             if let Some(ref signal) = self.abort_signal {
                 if signal.is_aborted() {
                     info!("Agent loop: abort signal detected");
-                    let _ = event_tx.send(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Aborted,
-                        error: None,
-                    }).await;
+                    let _ = event_tx
+                        .send(AgenticEvent::Lifecycle {
+                            run_id: run_id.clone(),
+                            phase: LifecyclePhase::Aborted,
+                            error: None,
+                        })
+                        .await;
                     return Ok(AgenticResult {
                         success: false,
                         final_answer: "Execution aborted".to_string(),
@@ -154,15 +157,20 @@ impl AgenticLoopV2 {
             }
 
             // Transform context for context window management
-            context = self.context_transformer.transform(context).await
+            context = self
+                .context_transformer
+                .transform(context)
+                .await
                 .context("Failed to transform context")?;
 
             // Emit turn start event
-            let _ = event_tx.send(AgenticEvent::Lifecycle {
-                run_id: run_id.clone(),
-                phase: LifecyclePhase::Running,
-                error: None,
-            }).await;
+            let _ = event_tx
+                .send(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::Running,
+                    error: None,
+                })
+                .await;
 
             // Get LLM response
             let (assistant_message, tool_calls) = self
@@ -186,7 +194,8 @@ impl AgenticLoopV2 {
                 }
 
                 // No follow-ups - we're done
-                let final_text = assistant_message.content
+                let final_text = assistant_message
+                    .content
                     .iter()
                     .filter_map(|block| match block {
                         ContentBlock::Text { text } => Some(text.as_str()),
@@ -196,11 +205,13 @@ impl AgenticLoopV2 {
                     .join(" ");
 
                 info!("Agent loop: completed after {} iterations", iteration);
-                let _ = event_tx.send(AgenticEvent::Lifecycle {
-                    run_id: run_id.clone(),
-                    phase: LifecyclePhase::End,
-                    error: None,
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::End,
+                        error: None,
+                    })
+                    .await;
 
                 return Ok(AgenticResult {
                     success: true,
@@ -238,15 +249,14 @@ impl AgenticLoopV2 {
                 }
 
                 // Execute the tool
-                if let ContentBlock::ToolCall { id, name, arguments } = tool_call_block {
+                if let ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } = tool_call_block
+                {
                     let tool_result = self
-                        .execute_tool_with_events(
-                            id,
-                            name,
-                            arguments,
-                            &run_id,
-                            &event_tx,
-                        )
+                        .execute_tool_with_events(id, name, arguments, &run_id, &event_tx)
                         .await;
 
                     context.add_message(tool_result);
@@ -267,7 +277,10 @@ impl AgenticLoopV2 {
         event_tx: &tokio::sync::mpsc::Sender<AgenticEvent>,
     ) -> Result<(LlmMessage, Vec<ContentBlock>)> {
         // Convert messages to LLM format
-        let llm_messages = self.message_converter.convert(context.llm_messages()).await?;
+        let llm_messages = self
+            .message_converter
+            .convert(context.llm_messages())
+            .await?;
 
         // Convert messages to a prompt string for the provider
         // This is a simple approach - concatenate role and content
@@ -299,12 +312,14 @@ impl AgenticLoopV2 {
         // Emit assistant events - mark as final since this is the complete response
         for (idx, block) in text_content.iter().enumerate() {
             if let ContentBlock::Text { text } = block {
-                let _ = event_tx.send(AgenticEvent::Assistant {
-                    run_id: run_id.to_string(),
-                    text: text.clone(),
-                    is_delta: false,
-                    is_final: idx == text_content.len() - 1, // Mark last block as final
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Assistant {
+                        run_id: run_id.to_string(),
+                        text: text.clone(),
+                        is_delta: false,
+                        is_final: idx == text_content.len() - 1, // Mark last block as final
+                    })
+                    .await;
             }
         }
 
@@ -312,9 +327,7 @@ impl AgenticLoopV2 {
     }
 
     /// Parse provider response into content blocks and tool calls
-    fn parse_response(&self,
-        response: &str,
-    ) -> (Vec<ContentBlock>, Vec<ContentBlock>) {
+    fn parse_response(&self, response: &str) -> (Vec<ContentBlock>, Vec<ContentBlock>) {
         let mut text_blocks = Vec::new();
         let mut tool_calls = Vec::new();
 
@@ -341,9 +354,7 @@ impl AgenticLoopV2 {
     }
 
     /// Extract tool call from response text
-    fn extract_tool_call(&self,
-        text: &str,
-    ) -> Option<ToolCall> {
+    fn extract_tool_call(&self, text: &str) -> Option<ToolCall> {
         // Look for tool call patterns in the text
         // Support formats like:
         // ```json
@@ -372,12 +383,13 @@ impl AgenticLoopV2 {
         // Try TOOL_CALL: pattern with JSON
         if let Some(start) = text.find("TOOL_CALL:") {
             let rest = &text[start + 10..].trim();
-            
+
             // Try to parse as JSON object first
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(rest) {
                 if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
                     // Support both "arguments" and "parameters" keys
-                    let args = json.get("arguments")
+                    let args = json
+                        .get("arguments")
                         .or_else(|| json.get("parameters"))
                         .cloned()
                         .unwrap_or_else(|| serde_json::json!({}));
@@ -387,7 +399,7 @@ impl AgenticLoopV2 {
                     });
                 }
             }
-            
+
             // Try legacy format: TOOL_CALL: tool_name({...})
             if let Some(end) = rest.find('(') {
                 let name = rest[..end].trim();
@@ -396,9 +408,8 @@ impl AgenticLoopV2 {
                     let args = if args_str.trim().is_empty() {
                         serde_json::json!({})
                     } else {
-                        serde_json::from_str(args_str).unwrap_or_else(|_| {
-                            serde_json::json!({ "value": args_str })
-                        })
+                        serde_json::from_str(args_str)
+                            .unwrap_or_else(|_| serde_json::json!({ "value": args_str }))
                     };
                     return Some(ToolCall {
                         name: name.to_string(),
@@ -433,12 +444,14 @@ impl AgenticLoopV2 {
         };
 
         // Emit tool start event
-        let _ = event_tx.send(AgenticEvent::ToolStart {
-            run_id: run_id.to_string(),
-            tool_id: tool_call_id.to_string(),
-            name: tool_name.to_string(),
-            params: arguments.clone(),
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::ToolStart {
+                run_id: run_id.to_string(),
+                tool_id: tool_call_id.to_string(),
+                name: tool_name.to_string(),
+                params: arguments.clone(),
+            })
+            .await;
 
         // Create abort signal for this tool
         let _tool_abort = AbortSignal::new();
@@ -453,16 +466,21 @@ impl AgenticLoopV2 {
             Ok(output) => (output, true),
             Err(e) => (serde_json::json!(format!("Error: {}", e)), false),
         };
-        let result_text = result_value.as_str().map(|s| s.to_string()).unwrap_or_else(|| result_value.to_string());
+        let result_text = result_value
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| result_value.to_string());
 
         // Emit tool end event
-        let _ = event_tx.send(AgenticEvent::ToolEnd {
-            run_id: run_id.to_string(),
-            tool_id: tool_call_id.to_string(),
-            result: result_value,
-            success,
-            duration_ms: duration.as_millis() as u64,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::ToolEnd {
+                run_id: run_id.to_string(),
+                tool_id: tool_call_id.to_string(),
+                result: result_value,
+                success,
+                duration_ms: duration.as_millis() as u64,
+            })
+            .await;
 
         AgentMessage::tool_result(tool_call_id, tool_name, result_text)
     }
@@ -483,16 +501,17 @@ impl AgenticLoopV2 {
             })
             .unwrap_or(PromptMode::Full);
 
-        let workspace = self
-            .agent
-            .config
-            .workspace
-            .clone()
-            .unwrap_or_else(|| {
-                dirs::data_dir()
-                    .map(|h| h.join("pekobot").join("workspaces").join(&self.agent.config.name))
-                    .unwrap_or_else(|| std::path::PathBuf::from(format!("./workspaces/{}", self.agent.config.name)))
-            });
+        let workspace = self.agent.config.workspace.clone().unwrap_or_else(|| {
+            dirs::data_dir()
+                .map(|h| {
+                    h.join("pekobot")
+                        .join("workspaces")
+                        .join(&self.agent.config.name)
+                })
+                .unwrap_or_else(|| {
+                    std::path::PathBuf::from(format!("./workspaces/{}", self.agent.config.name))
+                })
+        });
 
         SystemPromptBuilder::new(&self.agent.config.name)
             .with_mode(mode)
@@ -531,7 +550,7 @@ mod tests {
     #[test]
     fn test_extract_tool_call_pattern() {
         let response = "TOOL_CALL: web_search({\"query\": \"rust\"})";
-        
+
         if let Some(start) = response.find("TOOL_CALL:") {
             let rest = &response[start + 10..];
             if let Some(end) = rest.find('(') {

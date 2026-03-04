@@ -27,7 +27,7 @@ pub enum SessionEntry {
         #[serde(skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
-    
+
     #[serde(rename = "model_change")]
     ModelChange {
         id: String,
@@ -38,7 +38,7 @@ pub enum SessionEntry {
         #[serde(rename = "modelId")]
         model_id: String,
     },
-    
+
     #[serde(rename = "message")]
     Message {
         id: String,
@@ -47,7 +47,7 @@ pub enum SessionEntry {
         timestamp: DateTime<Utc>,
         message: MessageContent,
     },
-    
+
     #[serde(rename = "toolResult")]
     ToolResult {
         #[serde(rename = "toolCallId")]
@@ -58,7 +58,7 @@ pub enum SessionEntry {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
-    
+
     #[serde(rename = "custom")]
     Custom {
         #[serde(rename = "customType")]
@@ -90,18 +90,14 @@ impl SessionStorage {
     pub fn new(storage_dir: PathBuf) -> Self {
         Self { storage_dir }
     }
-    
+
     /// Initialize a new session
-    pub async fn create_session(
-        &self,
-        session_id: &str,
-        cwd: Option<String>,
-    ) -> Result<()> {
+    pub async fn create_session(&self, session_id: &str, cwd: Option<String>) -> Result<()> {
         // Ensure directory exists
         fs::create_dir_all(&self.storage_dir).await?;
-        
+
         let path = self.session_path(session_id);
-        
+
         // Create session entry
         let session_entry = SessionEntry::Session {
             version: 3,
@@ -109,14 +105,14 @@ impl SessionStorage {
             timestamp: Utc::now(),
             cwd,
         };
-        
+
         let json = serde_json::to_string(&session_entry)?;
         fs::write(&path, json + "\n").await?;
-        
+
         info!("Created session: {}", session_id);
         Ok(())
     }
-    
+
     /// Append a message to the session
     pub async fn append_message(
         &self,
@@ -126,9 +122,9 @@ impl SessionStorage {
         content: Vec<ContentBlock>,
     ) -> Result<String> {
         let path = self.session_path(session_id);
-        
+
         let entry_id = format!("msg_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
-        
+
         let entry = SessionEntry::Message {
             id: entry_id.clone(),
             parent_id,
@@ -139,10 +135,10 @@ impl SessionStorage {
                 timestamp: Some(Utc::now().timestamp_millis()),
             },
         };
-        
+
         let json = serde_json::to_string(&entry)?;
         let line = json + "\n";
-        
+
         // Append to file
         use tokio::io::AsyncWriteExt;
         let mut file = fs::OpenOptions::new()
@@ -153,11 +149,11 @@ impl SessionStorage {
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
         drop(file);
-        
+
         debug!("Appended message to session {}: {}", session_id, entry_id);
         Ok(entry_id)
     }
-    
+
     /// Append a tool result to the session
     pub async fn append_tool_result(
         &self,
@@ -168,17 +164,17 @@ impl SessionStorage {
         is_error: bool,
     ) -> Result<()> {
         let path = self.session_path(session_id);
-        
+
         let entry = SessionEntry::ToolResult {
             tool_call_id: tool_call_id.to_string(),
             tool_name: tool_name.to_string(),
             content: vec![ContentBlock::Text { text: result }],
             is_error: Some(is_error),
         };
-        
+
         let json = serde_json::to_string(&entry)?;
         let line = json + "\n";
-        
+
         use tokio::io::AsyncWriteExt;
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -187,11 +183,11 @@ impl SessionStorage {
             .await?;
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
-        
+
         debug!("Appended tool result to session {}", session_id);
         Ok(())
     }
-    
+
     /// Append model change entry
     pub async fn append_model_change(
         &self,
@@ -201,9 +197,12 @@ impl SessionStorage {
         model_id: &str,
     ) -> Result<String> {
         let path = self.session_path(session_id);
-        
-        let entry_id = format!("model_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
-        
+
+        let entry_id = format!(
+            "model_{}",
+            uuid::Uuid::new_v4().to_string().replace("-", "")
+        );
+
         let entry = SessionEntry::ModelChange {
             id: entry_id.clone(),
             parent_id,
@@ -211,10 +210,10 @@ impl SessionStorage {
             provider: provider.to_string(),
             model_id: model_id.to_string(),
         };
-        
+
         let json = serde_json::to_string(&entry)?;
         let line = json + "\n";
-        
+
         use tokio::io::AsyncWriteExt;
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -223,21 +222,21 @@ impl SessionStorage {
             .await?;
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
-        
+
         Ok(entry_id)
     }
-    
+
     /// Load all entries from a session
     pub async fn load_session(&self, session_id: &str) -> Result<Vec<SessionEntry>> {
         let path = self.session_path(session_id);
-        
+
         if !path.exists() {
             return Ok(vec![]);
         }
-        
+
         let content = fs::read_to_string(&path).await?;
         let mut entries = vec![];
-        
+
         for line in content.lines() {
             if line.trim().is_empty() {
                 continue;
@@ -249,19 +248,19 @@ impl SessionStorage {
                 }
             }
         }
-        
+
         Ok(entries)
     }
-    
+
     /// Get session file path
     fn session_path(&self, session_id: &str) -> PathBuf {
         self.storage_dir.join(format!("{}.jsonl", session_id))
     }
-    
+
     /// List all sessions
     pub async fn list_sessions(&self) -> Result<Vec<String>> {
         let mut sessions = vec![];
-        
+
         if self.storage_dir.exists() {
             let mut entries = fs::read_dir(&self.storage_dir).await?;
             while let Some(entry) = entries.next_entry().await? {
@@ -272,7 +271,7 @@ impl SessionStorage {
                 }
             }
         }
-        
+
         sessions.sort_by(|a, b| b.cmp(a)); // Newest first
         Ok(sessions)
     }
@@ -282,35 +281,43 @@ impl SessionStorage {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[tokio::test]
     async fn test_session_creation() {
         let temp = TempDir::new().unwrap();
         let storage = SessionStorage::new(temp.path().to_path_buf());
-        
-        storage.create_session("test_session", Some("/home/test".to_string())).await.unwrap();
-        
+
+        storage
+            .create_session("test_session", Some("/home/test".to_string()))
+            .await
+            .unwrap();
+
         let sessions = storage.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0], "test_session");
     }
-    
+
     #[tokio::test]
     async fn test_append_and_load() {
         let temp = TempDir::new().unwrap();
         let storage = SessionStorage::new(temp.path().to_path_buf());
-        
+
         storage.create_session("test", None).await.unwrap();
-        
-        let msg_id = storage.append_message(
-            "test",
-            None,
-            "user",
-            vec![ContentBlock::Text { text: "Hello".to_string() }],
-        ).await.unwrap();
-        
+
+        let msg_id = storage
+            .append_message(
+                "test",
+                None,
+                "user",
+                vec![ContentBlock::Text {
+                    text: "Hello".to_string(),
+                }],
+            )
+            .await
+            .unwrap();
+
         assert!(!msg_id.is_empty());
-        
+
         let entries = storage.load_session("test").await.unwrap();
         assert_eq!(entries.len(), 2); // session + message
     }

@@ -25,7 +25,10 @@ pub enum ContentBlock {
     Text { text: String },
 
     /// Image content (base64 or URL)
-    Image { source: ImageSource, mime_type: String },
+    Image {
+        source: ImageSource,
+        mime_type: String,
+    },
 
     /// Tool call request
     ToolCall {
@@ -43,7 +46,10 @@ pub enum ContentBlock {
     },
 
     /// Thinking/reasoning block
-    Thinking { text: String, signature: Option<String> },
+    Thinking {
+        text: String,
+        signature: Option<String>,
+    },
 }
 
 /// Image source for image content blocks
@@ -102,13 +108,19 @@ impl LlmMessage {
     }
 
     /// Create a tool result message
-    pub fn tool_result(tool_call_id: impl Into<String>, name: impl Into<String>, result: impl Into<String>) -> Self {
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        result: impl Into<String>,
+    ) -> Self {
         Self {
             role: MessageRole::Tool,
             content: vec![ContentBlock::ToolResult {
                 tool_call_id: tool_call_id.into(),
                 name: name.into(),
-                content: vec![ContentBlock::Text { text: result.into() }],
+                content: vec![ContentBlock::Text {
+                    text: result.into(),
+                }],
                 is_error: false,
             }],
             timestamp: Utc::now(),
@@ -186,12 +198,20 @@ impl AgentMessage {
     }
 
     /// Create a tool result message
-    pub fn tool_result(tool_call_id: impl Into<String>, name: impl Into<String>, result: impl Into<String>) -> Self {
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        result: impl Into<String>,
+    ) -> Self {
         Self::Llm(LlmMessage::tool_result(tool_call_id, name, result))
     }
 
     /// Create a notification message
-    pub fn notification(level: NotificationLevel, title: impl Into<String>, body: impl Into<String>) -> Self {
+    pub fn notification(
+        level: NotificationLevel,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> Self {
         Self::Custom(CustomMessage::Notification {
             level,
             title: title.into(),
@@ -213,7 +233,10 @@ impl AgentMessage {
     pub fn is_llm_visible(&self) -> bool {
         match self {
             Self::Llm(_) => true,
-            Self::Custom(custom) => matches!(custom, CustomMessage::Steering { .. } | CustomMessage::FollowUp { .. }),
+            Self::Custom(custom) => matches!(
+                custom,
+                CustomMessage::Steering { .. } | CustomMessage::FollowUp { .. }
+            ),
         }
     }
 
@@ -265,16 +288,21 @@ impl AgentMessage {
                     .map(|block| match block {
                         ContentBlock::Text { text } => estimate_text_tokens(text),
                         ContentBlock::Image { .. } => 1000, // Image tokens vary by provider
-                        ContentBlock::ToolCall { name, arguments, .. } => {
+                        ContentBlock::ToolCall {
+                            name, arguments, ..
+                        } => {
                             // Tool call: name + JSON args
                             estimate_text_tokens(name) + estimate_json_tokens(arguments)
                         }
                         ContentBlock::ToolResult { content, .. } => {
                             // Tool result: sum of nested content
-                            content.iter().map(|c| match c {
-                                ContentBlock::Text { text } => estimate_text_tokens(text),
-                                _ => 0,
-                            }).sum()
+                            content
+                                .iter()
+                                .map(|c| match c {
+                                    ContentBlock::Text { text } => estimate_text_tokens(text),
+                                    _ => 0,
+                                })
+                                .sum()
                         }
                         ContentBlock::Thinking { text, .. } => estimate_text_tokens(text),
                     })
@@ -397,7 +425,11 @@ impl AgentContext {
 
     /// Get only LLM-visible messages
     pub fn llm_messages(&self) -> Vec<AgentMessage> {
-        self.messages.iter().filter(|m| m.is_llm_visible()).cloned().collect()
+        self.messages
+            .iter()
+            .filter(|m| m.is_llm_visible())
+            .cloned()
+            .collect()
     }
 
     /// Get messages for a specific role
@@ -424,7 +456,15 @@ impl AgentContext {
 
     /// Clear messages except system prompt
     pub fn clear_conversation(&mut self) {
-        self.messages.retain(|m| matches!(m, AgentMessage::Llm(LlmMessage { role: MessageRole::System, .. })));
+        self.messages.retain(|m| {
+            matches!(
+                m,
+                AgentMessage::Llm(LlmMessage {
+                    role: MessageRole::System,
+                    ..
+                })
+            )
+        });
     }
 }
 
@@ -516,13 +556,22 @@ impl ContextTransformer for DefaultContextTransformer {
 
             // Always keep system message first
             if let Some(system) = context.messages.first() {
-                if matches!(system, AgentMessage::Llm(LlmMessage { role: MessageRole::System, .. })) {
+                if matches!(
+                    system,
+                    AgentMessage::Llm(LlmMessage {
+                        role: MessageRole::System,
+                        ..
+                    })
+                ) {
                     pruned.push(system.clone());
                 }
             }
 
             // Keep recent messages
-            let start = context.messages.len().saturating_sub(self.config.keep_recent);
+            let start = context
+                .messages
+                .len()
+                .saturating_sub(self.config.keep_recent);
             pruned.extend(context.messages[start..].iter().cloned());
 
             context.messages = pruned;
@@ -542,9 +591,27 @@ mod tests {
         let user = AgentMessage::user("Hello");
         let assistant = AgentMessage::assistant("Hi there!");
 
-        assert!(matches!(system, AgentMessage::Llm(LlmMessage { role: MessageRole::System, .. })));
-        assert!(matches!(user, AgentMessage::Llm(LlmMessage { role: MessageRole::User, .. })));
-        assert!(matches!(assistant, AgentMessage::Llm(LlmMessage { role: MessageRole::Assistant, .. })));
+        assert!(matches!(
+            system,
+            AgentMessage::Llm(LlmMessage {
+                role: MessageRole::System,
+                ..
+            })
+        ));
+        assert!(matches!(
+            user,
+            AgentMessage::Llm(LlmMessage {
+                role: MessageRole::User,
+                ..
+            })
+        ));
+        assert!(matches!(
+            assistant,
+            AgentMessage::Llm(LlmMessage {
+                role: MessageRole::Assistant,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -565,7 +632,11 @@ mod tests {
         assert_eq!(context.messages.len(), 3);
         assert_eq!(context.llm_messages().len(), 3);
 
-        context.add_message(AgentMessage::notification(NotificationLevel::Info, "Test", "Body"));
+        context.add_message(AgentMessage::notification(
+            NotificationLevel::Info,
+            "Test",
+            "Body",
+        ));
         assert_eq!(context.messages.len(), 4);
         assert_eq!(context.llm_messages().len(), 3); // Notification filtered out
     }

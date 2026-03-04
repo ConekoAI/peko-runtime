@@ -115,8 +115,10 @@ pub async fn handle_agent(
             db,
             message,
         } => {
-            crate::commands::agent::handlers::handle_agent_start(name, config, provider, model, db, message)
-                .await
+            crate::commands::agent::handlers::handle_agent_start(
+                name, config, provider, model, db, message,
+            )
+            .await
         }
         AgentCommands::List { long } => {
             crate::commands::agent::handlers::handle_agent_list(paths, long, json).await
@@ -176,7 +178,7 @@ pub mod handlers {
     ) -> anyhow::Result<()> {
         // Determine agent name (default to "peko")
         let agent_name = name.unwrap_or_else(|| "peko".to_string());
-        
+
         // Determine config path
         let config_path = if let Some(path) = config_path {
             path
@@ -185,7 +187,7 @@ pub mod handlers {
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
             format!("{}/.pekobot/agents/{}.toml", home, agent_name)
         };
-        
+
         info!("Starting Pekobot agent: {}", agent_name);
         info!("Loading config from: {}", config_path);
 
@@ -213,8 +215,7 @@ pub mod handlers {
                 if let Some(msg) = message {
                     // Single message mode
                     println!();
-                    if let Err(e) = crate::channels::cli::send_single_message(&agent, &msg
-                    ).await {
+                    if let Err(e) = crate::channels::cli::send_single_message(&agent, &msg).await {
                         eprintln!("❌ Error processing message: {e}");
                     }
                 } else {
@@ -232,9 +233,10 @@ pub mod handlers {
                         human_delay: None,
                     };
                     let mut channel = CliChannel::with_config(&agent_name, streaming_config);
-                    
-                    if let Err(e) = run_interactive_loop_with_agent(&mut channel, &agent_name, &agent
-                    ).await {
+
+                    if let Err(e) =
+                        run_interactive_loop_with_agent(&mut channel, &agent_name, &agent).await
+                    {
                         eprintln!("❌ Error in interactive loop: {e}");
                     }
                 }
@@ -415,7 +417,8 @@ pub mod handlers {
         let workspace_dir = paths.data_dir.join("workspaces").join(&name);
         if yes {
             // Non-interactive: minimal bootstrap
-            let bootstrap = crate::commands::agent_bootstrap::AgentBootstrap::new(&name, workspace_dir);
+            let bootstrap =
+                crate::commands::agent_bootstrap::AgentBootstrap::new(&name, workspace_dir);
             if let Err(e) = bootstrap.run_non_interactive() {
                 eprintln!("⚠️  Warning: Failed to bootstrap workspace: {e}");
             }

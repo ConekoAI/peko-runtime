@@ -55,7 +55,8 @@ impl ProgressDemoTool {
         for (idx, chunk) in items.chunks(batch_size).enumerate() {
             // Check if aborted before processing this batch
             if ctx.is_aborted() {
-                ctx.report_status("Aborting: cleaning up...".to_string()).await;
+                ctx.report_status("Aborting: cleaning up...".to_string())
+                    .await;
                 return Err(ToolError::Aborted.into());
             }
 
@@ -261,16 +262,13 @@ mod tests {
         });
 
         // Run in background so we can check events
-        let handle = tokio::spawn(async move {
-            tool.execute_with_context(params, &ctx).await
-        });
+        let handle = tokio::spawn(async move { tool.execute_with_context(params, &ctx).await });
 
         // Should receive progress events
         let mut progress_count = 0;
-        while let Ok(Some(event)) = tokio::time::timeout(
-            tokio::time::Duration::from_millis(500),
-            rx.recv()
-        ).await {
+        while let Ok(Some(event)) =
+            tokio::time::timeout(tokio::time::Duration::from_millis(500), rx.recv()).await
+        {
             match event {
                 crate::engine::AgenticEvent::ToolUpdate { .. } => {
                     progress_count += 1;

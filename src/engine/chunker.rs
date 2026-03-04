@@ -5,7 +5,6 @@
 //! - Respects min/max character bounds
 //! - Breaks at natural boundaries (paragraph/sentence/whitespace)
 
-
 /// Break preference for block boundaries
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BreakPreference {
@@ -146,10 +145,9 @@ impl BlockChunker {
 
         match self.config.break_preference {
             BreakPreference::Paragraph => self.find_paragraph_break(search_limit),
-            BreakPreference::Sentence => {
-                self.find_sentence_break(search_limit)
-                    .or_else(|| self.find_whitespace_break(search_limit))
-            }
+            BreakPreference::Sentence => self
+                .find_sentence_break(search_limit)
+                .or_else(|| self.find_whitespace_break(search_limit)),
             BreakPreference::Whitespace => self.find_whitespace_break(search_limit),
             BreakPreference::Hard => Some(search_limit),
         }
@@ -160,7 +158,9 @@ impl BlockChunker {
         let search_area = &self.buffer[..limit];
 
         // Look for "\n\n" or "\r\n\r\n"
-        search_area.find("\n\n").map(|pos| pos + 2)
+        search_area
+            .find("\n\n")
+            .map(|pos| pos + 2)
             .or_else(|| search_area.find("\r\n\r\n").map(|pos| pos + 4))
     }
 
@@ -172,7 +172,12 @@ impl BlockChunker {
         for (pos, _) in search_area.match_indices(". ") {
             if pos + 2 < search_area.len() {
                 let next_char = &search_area[pos + 2..pos + 3];
-                if next_char.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                if next_char
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                {
                     return Some(pos + 2);
                 }
             }
@@ -324,9 +329,8 @@ mod tests {
             emit_partial: true,
         });
 
-        let blocks = chunker.feed(
-            "First sentence here. Second sentence here. Third sentence here."
-        );
+        let blocks =
+            chunker.feed("First sentence here. Second sentence here. Third sentence here.");
 
         // Should break at sentence boundaries
         assert!(!blocks.is_empty());
@@ -378,7 +382,7 @@ mod tests {
                 break_preference: BreakPreference::Whitespace,
                 emit_partial: true,
             },
-            50, // min_coalesce - higher than test text
+            50,  // min_coalesce - higher than test text
             100, // max_coalesce
         );
 
@@ -387,7 +391,10 @@ mod tests {
         let blocks = chunker.feed("this is more text. ");
 
         // Should not emit until coalesce threshold (50)
-        assert!(blocks.is_empty(), "Should not emit before coalesce threshold");
+        assert!(
+            blocks.is_empty(),
+            "Should not emit before coalesce threshold"
+        );
 
         // Flush should emit accumulated text
         let final_blocks = chunker.flush();

@@ -32,7 +32,7 @@ pub use openai_compatible::{OpenAICompatibleConfig, OpenAICompatibleProvider};
 pub use openrouter::OpenRouterProvider;
 pub use perplexity::PerplexityProvider;
 pub use reliable::ReliableProvider;
-pub use sse::{SseEvent, SseParser, parse_sse_line};
+pub use sse::{parse_sse_line, SseEvent, SseParser};
 pub use together::TogetherProvider;
 pub use traits::Provider;
 pub use venice::VeniceProvider;

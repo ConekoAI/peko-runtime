@@ -211,7 +211,7 @@ impl Agent {
             // This keeps the same identity across all messages!
             let agent_arc = Arc::new(self.clone_for_loop());
             let provider_arc = Arc::clone(provider);
-            
+
             let loop_ = AgenticLoop::new(agent_arc, provider_arc, tools);
 
             match loop_.run(prompt).await {
@@ -240,7 +240,7 @@ impl Agent {
                 document: self.identity.document.clone(),
                 keypair: None, // Don't clone keypair to avoid security issues
             },
-            memory: None, // Don't clone memory to avoid lock issues
+            memory: None,   // Don't clone memory to avoid lock issues
             provider: None, // Provider passed separately to avoid double-Arc
         }
     }
@@ -297,19 +297,23 @@ impl Agent {
                     Ok(_) => {
                         info!("Streaming task completed successfully");
                         info!("Sending End event");
-                        let _ = event_tx.send(AgenticEvent::Lifecycle {
-                            run_id: prompt[..prompt.len().min(16)].to_string(),
-                            phase: crate::engine::LifecyclePhase::End,
-                            error: None,
-                        }).await;
+                        let _ = event_tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: prompt[..prompt.len().min(16)].to_string(),
+                                phase: crate::engine::LifecyclePhase::End,
+                                error: None,
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("Streaming execution error: {}", e);
-                        let _ = event_tx.send(AgenticEvent::Lifecycle {
-                            run_id: prompt[..prompt.len().min(16)].to_string(),
-                            phase: crate::engine::LifecyclePhase::Error,
-                            error: Some(format!("Error: {}", e)),
-                        }).await;
+                        let _ = event_tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: prompt[..prompt.len().min(16)].to_string(),
+                                phase: crate::engine::LifecyclePhase::Error,
+                                error: Some(format!("Error: {}", e)),
+                            })
+                            .await;
                     }
                 }
                 info!("Spawned streaming task ending");
@@ -341,7 +345,7 @@ impl Agent {
         // For interactive mode, allow consecutive messages without state check
         // Just ensure we're not in a nested call by checking if already busy
         let was_idle = self.state() == AgentState::Idle;
-        
+
         if was_idle {
             self.set_state(AgentState::Busy);
         }
@@ -371,19 +375,23 @@ impl Agent {
                 match loop_.run(&prompt, event_tx.clone()).await {
                     Ok(_) => {
                         info!("V2 streaming task completed successfully");
-                        let _ = event_tx.send(AgenticEvent::Lifecycle {
-                            run_id: prompt[..prompt.len().min(16)].to_string(),
-                            phase: crate::engine::LifecyclePhase::End,
-                            error: None,
-                        }).await;
+                        let _ = event_tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: prompt[..prompt.len().min(16)].to_string(),
+                                phase: crate::engine::LifecyclePhase::End,
+                                error: None,
+                            })
+                            .await;
                     }
                     Err(e) => {
                         error!("V2 streaming execution error: {}", e);
-                        let _ = event_tx.send(AgenticEvent::Lifecycle {
-                            run_id: prompt[..prompt.len().min(16)].to_string(),
-                            phase: crate::engine::LifecyclePhase::Error,
-                            error: Some(format!("Error: {}", e)),
-                        }).await;
+                        let _ = event_tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: prompt[..prompt.len().min(16)].to_string(),
+                                phase: crate::engine::LifecyclePhase::Error,
+                                error: Some(format!("Error: {}", e)),
+                            })
+                            .await;
                     }
                 }
                 info!("Spawned v2 streaming task ending");
@@ -444,11 +452,13 @@ impl Agent {
                     }
                     Err(e) => {
                         error!("V3 streaming execution error: {}", e);
-                        let _ = event_tx.send(AgenticEvent::Lifecycle {
-                            run_id: prompt[..prompt.len().min(16)].to_string(),
-                            phase: crate::engine::LifecyclePhase::Error,
-                            error: Some(format!("Error: {}", e)),
-                        }).await;
+                        let _ = event_tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: prompt[..prompt.len().min(16)].to_string(),
+                                phase: crate::engine::LifecyclePhase::Error,
+                                error: Some(format!("Error: {}", e)),
+                            })
+                            .await;
                     }
                 }
                 info!("Spawned v3 streaming task ending");
@@ -643,7 +653,7 @@ impl Agent {
                     .base_url
                     .clone()
                     .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-                
+
                 // Check if this is a Kimi endpoint
                 if base_url.contains("moonshot.cn") {
                     Arc::new(crate::providers::KimiProvider::new(api_key))
@@ -657,12 +667,13 @@ impl Agent {
                         temperature: model_config.temperature,
                         timeout_seconds: config.provider.timeout_seconds,
                     };
-                    Arc::new(crate::providers::OpenAICompatibleProvider::new("openai_compatible", compat_config)?)
+                    Arc::new(crate::providers::OpenAICompatibleProvider::new(
+                        "openai_compatible",
+                        compat_config,
+                    )?)
                 }
             }
-            ProviderType::Kimi => {
-                Arc::new(crate::providers::KimiProvider::new(api_key))
-            }
+            ProviderType::Kimi => Arc::new(crate::providers::KimiProvider::new(api_key)),
             ProviderType::KimiCode => {
                 let kimi_code_config = crate::providers::KimiCodeConfig {
                     api_key,

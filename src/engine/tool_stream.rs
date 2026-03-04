@@ -121,7 +121,11 @@ impl StreamingToolCall {
         if self.arguments_json.is_empty() {
             name.to_string()
         } else {
-            format!("{}({})", name, &self.arguments_json[..self.arguments_json.len().min(50)])
+            format!(
+                "{}({})",
+                name,
+                &self.arguments_json[..self.arguments_json.len().min(50)]
+            )
         }
     }
 }
@@ -189,11 +193,7 @@ impl ToolCallStreamParser {
     }
 
     /// Update a tool call with an arguments delta
-    pub fn update_arguments(
-        &mut self,
-        id: &str,
-        delta: &str,
-    ) -> Option<&StreamingToolCall> {
+    pub fn update_arguments(&mut self, id: &str, delta: &str) -> Option<&StreamingToolCall> {
         if let Some(call) = self.calls.get_mut(id) {
             call.update_arguments(delta);
             Some(call)
@@ -237,9 +237,7 @@ impl ToolCallStreamParser {
     }
 
     /// Finalize any remaining active calls
-    pub fn finalize_all(
-        &mut self,
-    ) -> Result<Vec<StreamingToolCall>, ToolCallParseError> {
+    pub fn finalize_all(&mut self) -> Result<Vec<StreamingToolCall>, ToolCallParseError> {
         let ids: Vec<String> = self.calls.keys().cloned().collect();
         for id in ids {
             self.finalize_call(&id)?;
@@ -302,12 +300,12 @@ fn parse_tool_call_prefix(text: &str) -> Option<StreamingToolCall> {
                 let args = if args_str.trim().is_empty() {
                     serde_json::json!({})
                 } else {
-                    serde_json::from_str(args_str).unwrap_or_else(|_| {
-                        serde_json::json!({ "value": args_str })
-                    })
+                    serde_json::from_str(args_str)
+                        .unwrap_or_else(|_| serde_json::json!({ "value": args_str }))
                 };
 
-                let mut call = StreamingToolCall::new(format!("tc_{}", chrono::Utc::now().timestamp_millis()));
+                let mut call =
+                    StreamingToolCall::new(format!("tc_{}", chrono::Utc::now().timestamp_millis()));
                 call.set_name(name);
                 call.arguments_json = args.to_string();
                 let _ = call.finalize();
@@ -323,7 +321,10 @@ fn value_to_tool_call(value: Value) -> Option<StreamingToolCall> {
     let obj = value.as_object()?;
 
     let name = obj.get("name")?.as_str()?;
-    let args = obj.get("arguments").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let args = obj
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
 
     let id = obj
         .get("id")

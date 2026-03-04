@@ -13,7 +13,7 @@ pub mod simple_session;
 pub mod state;
 pub mod tool_stream;
 
-pub use chunker::{BlockChunker, ChunkerConfig, BreakPreference, CoalescingChunker};
+pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
 pub use loop_::{AgenticLoop, AgenticResult, ToolCall};
 pub use loop_v2::AgenticLoopV2;
@@ -21,7 +21,9 @@ pub use loop_v3::AgenticLoopV3;
 pub use runner::AgentRunner;
 pub use simple_session::SimpleSession;
 pub use state::{AgentState, StateMachine};
-pub use tool_stream::{StreamingToolCall, ToolCallStreamParser, ToolCallParseError, parse_tool_calls_from_text};
+pub use tool_stream::{
+    parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,
+};
 
 use crate::agent::Agent;
 use crate::providers::Provider;

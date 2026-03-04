@@ -249,18 +249,18 @@ impl Provider for OpenAICompatibleProvider {
         use tracing::error;
 
         // Emit start event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Start,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Start,
+                error: None,
+            })
+            .await;
 
-        let messages = vec![
-            Message {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }
-        ];
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }];
 
         let request = ChatCompletionRequest {
             model: self.config.model.clone(),
@@ -270,14 +270,19 @@ impl Provider for OpenAICompatibleProvider {
             stream: Some(true),
         };
 
-        debug!("Sending streaming request to {}: model={}", self.name, self.config.model);
+        debug!(
+            "Sending streaming request to {}: model={}",
+            self.name, self.config.model
+        );
 
         // Emit running event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Running,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Running,
+                error: None,
+            })
+            .await;
 
         let response = self
             .client
@@ -293,14 +298,24 @@ impl Provider for OpenAICompatibleProvider {
         if !status.is_success() {
             let error_text = response.text().await.unwrap_or_default();
             error!("{} API error: {} - {}", self.name, status, error_text);
-            
-            let _ = event_tx.send(AgenticEvent::Lifecycle {
-                run_id: run_id.clone(),
-                phase: LifecyclePhase::Error,
-                error: Some(format!("{} API error: {} - {}", self.name, status, error_text)),
-            }).await;
-            
-            return Err(anyhow::anyhow!("{} API error: {} - {}", self.name, status, error_text));
+
+            let _ = event_tx
+                .send(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::Error,
+                    error: Some(format!(
+                        "{} API error: {} - {}",
+                        self.name, status, error_text
+                    )),
+                })
+                .await;
+
+            return Err(anyhow::anyhow!(
+                "{} API error: {} - {}",
+                self.name,
+                status,
+                error_text
+            ));
         }
 
         let mut stream = response.bytes_stream();
@@ -325,46 +340,55 @@ impl Provider for OpenAICompatibleProvider {
                                 .and_then(|c| c.get(0))
                                 .and_then(|c| c.get("delta"))
                                 .and_then(|d| d.get("content"))
-                                .and_then(|c| c.as_str()) {
+                                .and_then(|c| c.as_str())
+                            {
                                 accumulated_text.push_str(content);
-                                
+
                                 // Emit text delta
-                                let _ = event_tx.send(AgenticEvent::Assistant {
-                                    run_id: run_id.clone(),
-                                    text: content.to_string(),
-                                    is_delta: true,
-                                    is_final: false,
-                                }).await;
+                                let _ = event_tx
+                                    .send(AgenticEvent::Assistant {
+                                        run_id: run_id.clone(),
+                                        text: content.to_string(),
+                                        is_delta: true,
+                                        is_final: false,
+                                    })
+                                    .await;
                             }
                         }
                     }
                 }
                 Err(e) => {
                     error!("Stream error: {}", e);
-                    let _ = event_tx.send(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Error,
-                        error: Some(e.to_string()),
-                    }).await;
+                    let _ = event_tx
+                        .send(AgenticEvent::Lifecycle {
+                            run_id: run_id.clone(),
+                            phase: LifecyclePhase::Error,
+                            error: Some(e.to_string()),
+                        })
+                        .await;
                     return Err(e.into());
                 }
             }
         }
 
         // Emit final assistant event
-        let _ = event_tx.send(AgenticEvent::Assistant {
-            run_id: run_id.clone(),
-            text: accumulated_text,
-            is_delta: false,
-            is_final: true,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Assistant {
+                run_id: run_id.clone(),
+                text: accumulated_text,
+                is_delta: false,
+                is_final: true,
+            })
+            .await;
 
         // Emit end event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id,
-            phase: LifecyclePhase::End,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id,
+                phase: LifecyclePhase::End,
+                error: None,
+            })
+            .await;
 
         Ok(())
     }

@@ -92,7 +92,7 @@ impl CliChannel {
     }
 
     /// Handle an agentic event (single event display)
-    /// 
+    ///
     /// Note: For streaming, use handle_stream instead which includes chunking.
     pub fn handle_event(&self, event: &crate::engine::AgenticEvent) {
         use crate::engine::AgenticEvent;
@@ -127,7 +127,9 @@ impl CliChannel {
             AgenticEvent::ToolStart { name, .. } => {
                 self.print_tool_start(name);
             }
-            AgenticEvent::ToolEnd { tool_id, success, .. } => {
+            AgenticEvent::ToolEnd {
+                tool_id, success, ..
+            } => {
                 self.print_tool_result(tool_id, *success);
             }
             AgenticEvent::Status { message, .. } => {
@@ -180,7 +182,7 @@ impl Channel for CliChannel {
         mut event_rx: mpsc::Receiver<crate::engine::AgenticEvent>,
     ) -> Result<()> {
         use crate::engine::AgenticEvent;
-        
+
         let config = self.streaming_config.clone();
         let mut coalesce_buffer = String::new();
 
@@ -221,7 +223,12 @@ impl Channel for CliChannel {
                         }
                     }
                 }
-                AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
+                AgenticEvent::Assistant {
+                    text,
+                    is_delta,
+                    is_final,
+                    ..
+                } => {
                     if is_final {
                         // Final response - print with agent prefix
                         if !coalesce_buffer.is_empty() {
@@ -245,16 +252,26 @@ impl Channel for CliChannel {
                         self.print_tool_start(&name);
                     }
                 }
-                AgenticEvent::ToolUpdate { tool_id, output, progress_percent, .. } => {
+                AgenticEvent::ToolUpdate {
+                    tool_id,
+                    output,
+                    progress_percent,
+                    ..
+                } => {
                     if config.show_tools {
                         if let Some(percent) = progress_percent {
-                            self.print_system(&format!("🔧 {}: {}% - {}", tool_id, percent, output));
+                            self.print_system(&format!(
+                                "🔧 {}: {}% - {}",
+                                tool_id, percent, output
+                            ));
                         } else {
                             self.print_system(&format!("🔧 {}: {}", tool_id, output));
                         }
                     }
                 }
-                AgenticEvent::ToolEnd { tool_id, success, .. } => {
+                AgenticEvent::ToolEnd {
+                    tool_id, success, ..
+                } => {
                     if config.show_tools {
                         self.print_tool_result(&tool_id, success);
                     }
@@ -314,57 +331,69 @@ pub async fn run_interactive_loop_with_agent(
                         // Process with streaming v3 (simplified working version)
                         print!("\n🤔 ");
                         std::io::stdout().flush().unwrap();
-                        
+
                         use crate::engine::AgenticEvent;
                         use tokio::task::LocalSet;
-                        
+
                         let local = LocalSet::new();
-                        let result = local.run_until(async {
-                            let mut event_rx = agent.execute_streaming_v3(trimmed).await.map_err(|e| e.to_string())?;
-                            let mut final_answer = String::new();
-                            let mut reasoning_started = false;
-                            
-                            while let Some(event) = event_rx.recv().await {
-                                match event {
-                                    AgenticEvent::Lifecycle { phase, .. } => match phase {
-                                        crate::engine::LifecyclePhase::Running => {
-                                            if !reasoning_started {
-                                                print!("\n🤔 ");
+                        let result = local
+                            .run_until(async {
+                                let mut event_rx = agent
+                                    .execute_streaming_v3(trimmed)
+                                    .await
+                                    .map_err(|e| e.to_string())?;
+                                let mut final_answer = String::new();
+                                let mut reasoning_started = false;
+
+                                while let Some(event) = event_rx.recv().await {
+                                    match event {
+                                        AgenticEvent::Lifecycle { phase, .. } => match phase {
+                                            crate::engine::LifecyclePhase::Running => {
+                                                if !reasoning_started {
+                                                    print!("\n🤔 ");
+                                                    std::io::stdout().flush().unwrap();
+                                                    reasoning_started = true;
+                                                }
+                                            }
+                                            crate::engine::LifecyclePhase::End => break,
+                                            _ => {}
+                                        },
+                                        AgenticEvent::Assistant {
+                                            text,
+                                            is_delta,
+                                            is_final,
+                                            ..
+                                        } => {
+                                            if is_final {
+                                                if !text.is_empty() {
+                                                    println!("\n\n🐱 Agent: {}", text);
+                                                    final_answer = text;
+                                                }
+                                            } else if is_delta && reasoning_started {
+                                                print!("{}", text);
                                                 std::io::stdout().flush().unwrap();
-                                                reasoning_started = true;
                                             }
                                         }
-                                        crate::engine::LifecyclePhase::End => break,
+                                        AgenticEvent::ToolStart { name, .. } => {
+                                            if reasoning_started {
+                                                println!();
+                                                reasoning_started = false;
+                                            }
+                                            println!("\n🔧 Using tool: {}", name);
+                                        }
+                                        AgenticEvent::ToolEnd {
+                                            tool_id, success, ..
+                                        } => {
+                                            let icon = if success { "✅" } else { "❌" };
+                                            println!("{} Tool '{}' completed", icon, tool_id);
+                                        }
                                         _ => {}
                                     }
-                                    AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
-                                        if is_final {
-                                            if !text.is_empty() {
-                                                println!("\n\n🐱 Agent: {}", text);
-                                                final_answer = text;
-                                            }
-                                        } else if is_delta && reasoning_started {
-                                            print!("{}", text);
-                                            std::io::stdout().flush().unwrap();
-                                        }
-                                    }
-                                    AgenticEvent::ToolStart { name, .. } => {
-                                        if reasoning_started {
-                                            println!();
-                                            reasoning_started = false;
-                                        }
-                                        println!("\n🔧 Using tool: {}", name);
-                                    }
-                                    AgenticEvent::ToolEnd { tool_id, success, .. } => {
-                                        let icon = if success { "✅" } else { "❌" };
-                                        println!("{} Tool '{}' completed", icon, tool_id);
-                                    }
-                                    _ => {}
                                 }
-                            }
-                            Ok::<String, String>(final_answer)
-                        }).await;
-                        
+                                Ok::<String, String>(final_answer)
+                            })
+                            .await;
+
                         match result {
                             Ok(answer) => {
                                 if answer.is_empty() {
@@ -396,10 +425,7 @@ pub async fn run_interactive_loop_with_agent(
 /// Send a single message to the agent and get a response (non-interactive)
 ///
 /// Uses streaming v2 with AgentMessage abstraction for better tool handling
-pub async fn send_single_message(
-    agent: &crate::agent::Agent,
-    message: &str,
-) -> Result<String> {
+pub async fn send_single_message(agent: &crate::agent::Agent, message: &str) -> Result<String> {
     use crate::engine::AgenticEvent;
     use tokio::task::LocalSet;
 
@@ -417,7 +443,9 @@ pub async fn send_single_message(
             // Process events as they arrive
             while let Some(event) = event_rx.recv().await {
                 match event {
-                    AgenticEvent::Lifecycle { phase, run_id: _, .. } => match phase {
+                    AgenticEvent::Lifecycle {
+                        phase, run_id: _, ..
+                    } => match phase {
                         crate::engine::LifecyclePhase::Running => {
                             // Only print reasoning indicator once
                             if !reasoning_started {
@@ -475,7 +503,12 @@ pub async fn send_single_message(
                         }
                         println!("\n🔧 Using tool: {}", name);
                     }
-                    AgenticEvent::ToolCallDelta { name, arguments_delta, is_final, .. } => {
+                    AgenticEvent::ToolCallDelta {
+                        name,
+                        arguments_delta,
+                        is_final,
+                        ..
+                    } => {
                         // Show tool call construction in real-time
                         if !is_final {
                             if let Some(tool_name) = name {
@@ -556,19 +589,23 @@ pub async fn run_interactive_loop_streaming(
                     }
                     _ => {
                         // Run the streaming execution in the LocalSet
-                        local.run_until(async {
-                            match agent.execute_streaming(trimmed).await {
-                                Ok(event_rx) => {
-                                    // Use channel's handle_stream for proper chunking
-                                    if let Err(e) = channel.handle_stream(event_rx).await {
-                                        channel.print_error(&format!("Streaming error: {e}"));
+                        local
+                            .run_until(async {
+                                match agent.execute_streaming(trimmed).await {
+                                    Ok(event_rx) => {
+                                        // Use channel's handle_stream for proper chunking
+                                        if let Err(e) = channel.handle_stream(event_rx).await {
+                                            channel.print_error(&format!("Streaming error: {e}"));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        channel.print_error(&format!(
+                                            "Failed to start streaming: {e}"
+                                        ));
                                     }
                                 }
-                                Err(e) => {
-                                    channel.print_error(&format!("Failed to start streaming: {e}"));
-                                }
-                            }
-                        }).await;
+                            })
+                            .await;
 
                         // Print new prompt after response
                         channel.print_prompt();

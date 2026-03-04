@@ -4,9 +4,9 @@
 
 #[cfg(test)]
 mod tests {
-    use pekobot::{AgenticEvent, LifecyclePhase};
     use pekobot::tools::context::{AbortSignal, ToolContext, ToolError};
     use pekobot::tools::{ProgressDemoTool, Tool};
+    use pekobot::{AgenticEvent, LifecyclePhase};
     use serde_json::json;
     use std::time::Duration;
     use tokio::time::{sleep, Instant};
@@ -73,7 +73,9 @@ mod tests {
         while let Ok(event) = rx.try_recv() {
             match event {
                 AgenticEvent::ToolUpdate {
-                    progress_percent, output, ..
+                    progress_percent,
+                    output,
+                    ..
                 } => {
                     progress_count += 1;
                     println!("Progress: {:?}% - {}", progress_percent, output);
@@ -120,12 +122,13 @@ mod tests {
             result.is_err(),
             "Tool should have returned an error when aborted"
         );
-        
+
         // Check that it's a ToolError::Aborted
         let err_string = result.unwrap_err().to_string();
         assert!(
             err_string.contains("aborted"),
-            "Error message should mention abortion, got: {}", err_string
+            "Error message should mention abortion, got: {}",
+            err_string
         );
     }
 
@@ -134,7 +137,7 @@ mod tests {
         let tool = ProgressDemoTool::new();
         let (tx, _rx) = tokio::sync::mpsc::channel(100);
         let signal = AbortSignal::new();
-        
+
         // Set a short timeout
         let ctx = signal
             .create_context_with_events("run-1", "tool-1", "demo", tx)
@@ -156,7 +159,7 @@ mod tests {
             result.is_err(),
             "Tool should have returned an error when timed out"
         );
-        
+
         let err_string = result.unwrap_err().to_string();
         assert!(
             err_string.contains("timeout") || err_string.contains("timed out"),
@@ -170,7 +173,7 @@ mod tests {
         let tool = ProgressDemoTool::new();
         let (tx, mut rx) = tokio::sync::mpsc::channel(100);
         let signal = AbortSignal::new();
-        
+
         // Set aggressive throttling
         let ctx = signal
             .create_context_with_events("run-1", "tool-1", "demo", tx)
@@ -188,14 +191,18 @@ mod tests {
         // Count events - should be throttled
         let mut event_count = 0;
         sleep(Duration::from_millis(100)).await;
-        
+
         while rx.try_recv().is_ok() {
             event_count += 1;
         }
 
         println!("Received {} events (should be throttled)", event_count);
         // With 1 second throttle and ~250ms total work, we expect 1-2 events
-        assert!(event_count <= 3, "Events should be throttled, got {}", event_count);
+        assert!(
+            event_count <= 3,
+            "Events should be throttled, got {}",
+            event_count
+        );
     }
 
     #[tokio::test]
@@ -298,8 +305,14 @@ mod tests {
             tool2_events += 1;
         }
 
-        println!("Tool1 events: {}, Tool2 events: {}", tool1_events, tool2_events);
-        assert!(tool1_events > 0, "Tool1 should have emitted events before abort");
+        println!(
+            "Tool1 events: {}, Tool2 events: {}",
+            tool1_events, tool2_events
+        );
+        assert!(
+            tool1_events > 0,
+            "Tool1 should have emitted events before abort"
+        );
         assert!(tool2_events > 0, "Tool2 should have completed with events");
     }
 

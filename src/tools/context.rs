@@ -159,8 +159,7 @@ impl ToolContext {
     }
 
     /// Check if enough time has passed since last progress update
-    async fn should_send_progress(&self,
-    ) -> bool {
+    async fn should_send_progress(&self) -> bool {
         if self.progress_throttle_ms == 0 {
             return true; // No throttling
         }
@@ -195,12 +194,7 @@ impl ToolContext {
     /// * `current` - Current progress value
     /// * `total` - Total progress value
     /// * `message` - Optional status message
-    pub async fn report_progress(
-        &self,
-        current: usize,
-        total: usize,
-        message: Option<String>,
-    ) {
+    pub async fn report_progress(&self, current: usize, total: usize, message: Option<String>) {
         if self.event_tx.is_none() {
             return;
         }
@@ -234,8 +228,7 @@ impl ToolContext {
     /// Report a progress message without percentage
     ///
     /// Status updates are also throttled to avoid flooding.
-    pub async fn report_status(&self,
-        message: impl Into<String>) {
+    pub async fn report_status(&self, message: impl Into<String>) {
         if self.event_tx.is_none() {
             return;
         }
@@ -264,9 +257,7 @@ impl ToolContext {
     /// Check if the tool has exceeded its timeout
     ///
     /// Returns `Some(elapsed)` if timed out, `None` if still within limit
-    pub fn check_timeout(&self,
-        start_time: Instant,
-    ) -> Result<(), ToolError> {
+    pub fn check_timeout(&self, start_time: Instant) -> Result<(), ToolError> {
         if let Some(timeout) = self.timeout {
             let elapsed = start_time.elapsed();
             if elapsed > timeout {
@@ -542,12 +533,15 @@ mod tests {
         let signal = AbortSignal::new();
         let ctx = signal.create_context_with_events("run-1", "tool-1", "test", tx);
 
-        ctx.report_progress(50, 100, Some("Half done".to_string())).await;
+        ctx.report_progress(50, 100, Some("Half done".to_string()))
+            .await;
 
         if let Some(event) = rx.recv().await {
             match event {
                 AgenticEvent::ToolUpdate {
-                    progress_percent, output, ..
+                    progress_percent,
+                    output,
+                    ..
                 } => {
                     assert_eq!(progress_percent, Some(50));
                     assert_eq!(output, "Half done");

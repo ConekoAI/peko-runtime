@@ -8,9 +8,9 @@
 //!
 //! Run with: cargo run --example tool_monitoring
 
-use pekobot::{AgenticEvent, LifecyclePhase};
 use pekobot::tools::context::AbortSignal;
 use pekobot::tools::{ProgressDemoTool, Tool};
+use pekobot::{AgenticEvent, LifecyclePhase};
 use serde_json::json;
 use std::time::Duration;
 use tokio::time::{sleep, Instant};
@@ -73,7 +73,11 @@ async fn run_with_progress(tool: &ProgressDemoTool) {
                 AgenticEvent::ToolStart { name, tool_id, .. } => {
                     println!("   🚀 Tool '{}' started (id: {})", name, tool_id);
                 }
-                AgenticEvent::ToolUpdate { output, progress_percent, .. } => {
+                AgenticEvent::ToolUpdate {
+                    output,
+                    progress_percent,
+                    ..
+                } => {
                     progress_count += 1;
                     if let Some(percent) = progress_percent {
                         let bar = progress_bar(percent);
@@ -82,7 +86,11 @@ async fn run_with_progress(tool: &ProgressDemoTool) {
                         println!("   📝 {}", output);
                     }
                 }
-                AgenticEvent::ToolEnd { success, duration_ms, .. } => {
+                AgenticEvent::ToolEnd {
+                    success,
+                    duration_ms,
+                    ..
+                } => {
                     let icon = if success { "✅" } else { "❌" };
                     println!(
                         "   {} Tool completed: success={}, duration={}ms",
@@ -142,7 +150,11 @@ async fn run_and_abort(tool: &ProgressDemoTool) {
                 AgenticEvent::ToolStart { name, .. } => {
                     println!("   🚀 Tool '{}' started", name);
                 }
-                AgenticEvent::ToolUpdate { output, progress_percent, .. } => {
+                AgenticEvent::ToolUpdate {
+                    output,
+                    progress_percent,
+                    ..
+                } => {
                     if let Some(percent) = progress_percent {
                         let bar = progress_bar(percent);
                         println!("   📊 {} {}% - {}", bar, percent, output);
@@ -213,7 +225,11 @@ async fn run_with_timeout(tool: &ProgressDemoTool) {
                 AgenticEvent::ToolStart { name, .. } => {
                     println!("   🚀 Tool '{}' started", name);
                 }
-                AgenticEvent::ToolUpdate { output, progress_percent, .. } => {
+                AgenticEvent::ToolUpdate {
+                    output,
+                    progress_percent,
+                    ..
+                } => {
                     if let Some(percent) = progress_percent {
                         let bar = progress_bar(percent);
                         println!("   📊 {} {}% - {}", bar, percent, output);
@@ -240,7 +256,10 @@ async fn run_with_timeout(tool: &ProgressDemoTool) {
     // Show result
     match result {
         Ok(_) => {
-            println!("\n   ⚠️  Tool completed before timeout (took {:?})", elapsed);
+            println!(
+                "\n   ⚠️  Tool completed before timeout (took {:?})",
+                elapsed
+            );
         }
         Err(e) => {
             if e.to_string().contains("timeout") || e.to_string().contains("timed out") {
@@ -280,7 +299,11 @@ async fn run_with_throttling(tool: &ProgressDemoTool) {
         let mut event_count = 0;
         while let Some(event) = event_rx.recv().await {
             match event {
-                AgenticEvent::ToolUpdate { output, progress_percent, .. } => {
+                AgenticEvent::ToolUpdate {
+                    output,
+                    progress_percent,
+                    ..
+                } => {
                     event_count += 1;
                     if let Some(percent) = progress_percent {
                         println!("   📊 {}% - {} (event #{})", percent, output, event_count);
@@ -301,7 +324,10 @@ async fn run_with_throttling(tool: &ProgressDemoTool) {
     let event_count = event_handle.await.unwrap();
 
     println!("\n   ✅ Completed in {:?}", elapsed);
-    println!("   📊 Received only {} progress events (throttled)", event_count);
+    println!(
+        "   📊 Received only {} progress events (throttled)",
+        event_count
+    );
     println!("   (Without throttling, would have received ~10 events)");
 }
 

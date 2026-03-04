@@ -57,7 +57,8 @@ pub trait Tool: Send + Sync {
         ctx.check_timeout(start_time)?;
 
         // Report completion
-        ctx.report_status(format!("Completed {}", self.name())).await;
+        ctx.report_status(format!("Completed {}", self.name()))
+            .await;
 
         result
     }

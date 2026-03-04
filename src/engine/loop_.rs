@@ -157,19 +157,24 @@ impl AgenticLoop {
         event_tx: tokio::sync::mpsc::Sender<crate::engine::AgenticEvent>,
     ) -> Result<AgenticResult> {
         use crate::engine::{AgenticEvent, LifecyclePhase};
-        
+
         use tracing::error;
 
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
 
         // Emit start event
-        let _ = event_tx.send(AgenticEvent::Lifecycle {
-            run_id: run_id.clone(),
-            phase: LifecyclePhase::Start,
-            error: None,
-        }).await;
+        let _ = event_tx
+            .send(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Start,
+                error: None,
+            })
+            .await;
 
-        info!("Starting streaming agentic loop for agent: {}", self.agent.name());
+        info!(
+            "Starting streaming agentic loop for agent: {}",
+            self.agent.name()
+        );
 
         let mut iteration = 0;
         let mut context = vec![
@@ -188,7 +193,7 @@ impl AgenticLoop {
         loop {
             iteration += 1;
             info!("Agent loop: starting iteration {}", iteration);
-            
+
             // Check if aborted
             if let Some(ref signal) = self.abort_signal {
                 if signal.is_aborted() {
@@ -201,15 +206,17 @@ impl AgenticLoop {
                     });
                 }
             }
-            
+
             info!("Agent loop: iteration {} proceeding", iteration);
             if iteration > self.max_iterations {
                 warn!("Max iterations ({}) reached", self.max_iterations);
-                let _ = event_tx.send(AgenticEvent::Lifecycle {
-                    run_id: run_id.clone(),
-                    phase: LifecyclePhase::Error,
-                    error: Some("Max iterations reached".to_string()),
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Error,
+                        error: Some("Max iterations reached".to_string()),
+                    })
+                    .await;
                 return Ok(AgenticResult {
                     success: false,
                     final_answer: "Max iterations reached".to_string(),
@@ -222,11 +229,13 @@ impl AgenticLoop {
             if let Some(ref signal) = self.abort_signal {
                 if signal.is_aborted() {
                     info!("Agentic loop aborted");
-                    let _ = event_tx.send(AgenticEvent::Lifecycle {
-                        run_id: run_id.clone(),
-                        phase: LifecyclePhase::Aborted,
-                        error: None,
-                    }).await;
+                    let _ = event_tx
+                        .send(AgenticEvent::Lifecycle {
+                            run_id: run_id.clone(),
+                            phase: LifecyclePhase::Aborted,
+                            error: None,
+                        })
+                        .await;
                     return Ok(AgenticResult {
                         success: false,
                         final_answer: "Execution aborted".to_string(),
@@ -240,11 +249,13 @@ impl AgenticLoop {
             info!("Iteration {}: About to call LLM", iteration);
 
             // Emit running event
-            let _ = event_tx.send(AgenticEvent::Lifecycle {
-                run_id: run_id.clone(),
-                phase: LifecyclePhase::Running,
-                error: None,
-            }).await;
+            let _ = event_tx
+                .send(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::Running,
+                    error: None,
+                })
+                .await;
 
             // Call the LLM with streaming
             let (tx, mut rx) = tokio::sync::mpsc::channel::<AgenticEvent>(100);
@@ -253,35 +264,50 @@ impl AgenticLoop {
             let run_id_clone = run_id.clone();
 
             // Spawn streaming task
-            let stream_handle = tokio::spawn(async move {
-                provider.complete_stream(&messages, tx, run_id_clone).await
-            });
+            let stream_handle =
+                tokio::spawn(
+                    async move { provider.complete_stream(&messages, tx, run_id_clone).await },
+                );
 
             // Collect streamed response - BUFFER EVENTS, DON'T FORWARD is_final YET
             let mut full_response = String::new();
             let mut pending_final = None;
-            info!("Iteration {}: Starting to collect streaming events", iteration);
+            info!(
+                "Iteration {}: Starting to collect streaming events",
+                iteration
+            );
 
             while let Some(event) = rx.recv().await {
                 info!("Iteration {}: Received event from stream", iteration);
                 match &event {
-                    AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
+                    AgenticEvent::Assistant {
+                        text,
+                        is_delta,
+                        is_final,
+                        ..
+                    } => {
                         if *is_delta {
                             // Forward raw delta to channel (no chunking here)
                             full_response.push_str(text);
-                            let _ = event_tx.send(AgenticEvent::Assistant {
-                                run_id: run_id.clone(),
-                                text: text.clone(),
-                                is_delta: true,
-                                is_final: false,
-                            }).await;
+                            let _ = event_tx
+                                .send(AgenticEvent::Assistant {
+                                    run_id: run_id.clone(),
+                                    text: text.clone(),
+                                    is_delta: true,
+                                    is_final: false,
+                                })
+                                .await;
                         } else if *is_final {
                             // Buffer the final event - don't send yet
                             // We need to check if this is a tool call first
                             pending_final = Some(full_response.clone());
                         }
                     }
-                    AgenticEvent::Lifecycle { phase: LifecyclePhase::Error, error, .. } => {
+                    AgenticEvent::Lifecycle {
+                        phase: LifecyclePhase::Error,
+                        error,
+                        ..
+                    } => {
                         if let Some(err) = error {
                             error!("Provider error during streaming: {}", err);
                             return Err(anyhow::anyhow!("Provider error: {}", err));
@@ -290,7 +316,11 @@ impl AgenticLoop {
                     _ => {
                         // Forward other events, but not End events from provider
                         // The End event will be sent by run_streaming when it actually completes
-                        if let AgenticEvent::Lifecycle { phase: LifecyclePhase::End, .. } = event {
+                        if let AgenticEvent::Lifecycle {
+                            phase: LifecyclePhase::End,
+                            ..
+                        } = event
+                        {
                             // Don't forward provider's End event
                         } else {
                             let _ = event_tx.send(event).await;
@@ -304,7 +334,10 @@ impl AgenticLoop {
             match stream_handle.await {
                 Ok(Ok(())) => info!("Iteration {}: Stream completed successfully", iteration),
                 Ok(Err(e)) => {
-                    info!("Iteration {}: Stream completed with error: {}", iteration, e);
+                    info!(
+                        "Iteration {}: Stream completed with error: {}",
+                        iteration, e
+                    );
                     return Err(e);
                 }
                 Err(e) => {
@@ -312,28 +345,48 @@ impl AgenticLoop {
                     return Err(anyhow::anyhow!("Stream task panicked: {}", e));
                 }
             }
-            
-            info!("Iteration {}: Full response length: {}", iteration, full_response.len());
-            info!("Iteration {}: Full response: '{}'", iteration, full_response);
-            info!("Iteration {}: Pending final: {:?}", iteration, pending_final.is_some());
+
+            info!(
+                "Iteration {}: Full response length: {}",
+                iteration,
+                full_response.len()
+            );
+            info!(
+                "Iteration {}: Full response: '{}'",
+                iteration, full_response
+            );
+            info!(
+                "Iteration {}: Pending final: {:?}",
+                iteration,
+                pending_final.is_some()
+            );
 
             debug!("Provider response: {}", full_response);
 
             // Parse the response
             debug!("Full response: {}", full_response);
-            info!("Iteration {}: Checking response for tool call or final answer", iteration);
+            info!(
+                "Iteration {}: Checking response for tool call or final answer",
+                iteration
+            );
             if let Some(tool_call) = self.parse_tool_call(&full_response) {
                 info!("Iteration {}: Parsed tool call: {:?}", iteration, tool_call);
                 // Generate unique tool execution ID
-                let tool_id = format!("{}_{}", tool_call.name, chrono::Utc::now().timestamp_millis());
+                let tool_id = format!(
+                    "{}_{}",
+                    tool_call.name,
+                    chrono::Utc::now().timestamp_millis()
+                );
 
                 // Emit tool start event
-                let _ = event_tx.send(AgenticEvent::ToolStart {
-                    run_id: run_id.clone(),
-                    tool_id: tool_id.clone(),
-                    name: tool_call.name.clone(),
-                    params: tool_call.parameters.clone(),
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::ToolStart {
+                        run_id: run_id.clone(),
+                        tool_id: tool_id.clone(),
+                        name: tool_call.name.clone(),
+                        params: tool_call.parameters.clone(),
+                    })
+                    .await;
 
                 info!("Executing tool: {} (id: {})", tool_call.name, tool_id);
 
@@ -359,13 +412,15 @@ impl AgenticLoop {
 
                 // Emit tool end event
                 let success = !tool_result.starts_with("Error:");
-                let _ = event_tx.send(AgenticEvent::ToolEnd {
-                    run_id: run_id.clone(),
-                    tool_id: tool_id.clone(),
-                    result: json!(tool_result),
-                    success,
-                    duration_ms,
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::ToolEnd {
+                        run_id: run_id.clone(),
+                        tool_id: tool_id.clone(),
+                        result: json!(tool_result),
+                        success,
+                        duration_ms,
+                    })
+                    .await;
 
                 // Add tool call and result to context
                 context.push(json!({
@@ -376,8 +431,11 @@ impl AgenticLoop {
                     "role": "user",
                     "content": format!("Tool result: {}", tool_result)
                 }));
-                
-                info!("Iteration {}: Tool executed, continuing to next iteration", iteration);
+
+                info!(
+                    "Iteration {}: Tool executed, continuing to next iteration",
+                    iteration
+                );
                 // Continue to next iteration to get final answer
                 info!("Iteration {}: About to continue loop", iteration);
                 continue;
@@ -388,19 +446,23 @@ impl AgenticLoop {
                 let answer = self.extract_final_answer(&full_response);
 
                 // Emit final assistant event
-                let _ = event_tx.send(AgenticEvent::Assistant {
-                    run_id: run_id.clone(),
-                    text: answer.clone(),
-                    is_delta: false,
-                    is_final: true,
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Assistant {
+                        run_id: run_id.clone(),
+                        text: answer.clone(),
+                        is_delta: false,
+                        is_final: true,
+                    })
+                    .await;
 
                 // Emit end event
-                let _ = event_tx.send(AgenticEvent::Lifecycle {
-                    run_id: run_id.clone(),
-                    phase: LifecyclePhase::End,
-                    error: None,
-                }).await;
+                let _ = event_tx
+                    .send(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::End,
+                        error: None,
+                    })
+                    .await;
 
                 return Ok(AgenticResult {
                     success: true,
@@ -410,14 +472,17 @@ impl AgenticLoop {
                 });
             } else {
                 // Continue the conversation
-                info!("Iteration {}: No tool call or final answer, continuing loop", iteration);
+                info!(
+                    "Iteration {}: No tool call or final answer, continuing loop",
+                    iteration
+                );
                 context.push(json!({
                     "role": "assistant",
                     "content": full_response
                 }));
             }
         }
-        
+
         info!("Agent loop: exited after {} iterations", iteration);
     }
 
@@ -439,16 +504,17 @@ impl AgenticLoop {
             .unwrap_or(PromptMode::Full);
 
         // Get workspace from config or use agent-specific default
-        let workspace = self
-            .agent
-            .config
-            .workspace
-            .clone()
-            .unwrap_or_else(|| {
-                dirs::data_dir()
-                    .map(|h| h.join("pekobot").join("workspaces").join(&self.agent.config.name))
-                    .unwrap_or_else(|| PathBuf::from(format!("./workspaces/{}", self.agent.config.name)))
-            });
+        let workspace = self.agent.config.workspace.clone().unwrap_or_else(|| {
+            dirs::data_dir()
+                .map(|h| {
+                    h.join("pekobot")
+                        .join("workspaces")
+                        .join(&self.agent.config.name)
+                })
+                .unwrap_or_else(|| {
+                    PathBuf::from(format!("./workspaces/{}", self.agent.config.name))
+                })
+        });
 
         // Build the prompt using the new builder
         SystemPromptBuilder::new(&self.agent.config.name)
@@ -478,7 +544,11 @@ impl AgenticLoop {
         if let Some(start) = response.find("TOOL_CALL:") {
             let json_str = &response[start + "TOOL_CALL:".len()..];
             // Trim markdown code block markers if present
-            let json_str = json_str.trim().trim_start_matches("```").trim_end_matches("```").trim();
+            let json_str = json_str
+                .trim()
+                .trim_start_matches("```")
+                .trim_end_matches("```")
+                .trim();
             debug!("Attempting to parse tool call JSON: {}", json_str);
             match serde_json::from_str::<ToolCall>(json_str) {
                 Ok(call) => {
@@ -541,7 +611,10 @@ impl AgenticLoop {
                 // Check if tool supports context-aware execution
                 if tool.supports_progress() {
                     // Use the context-aware method for tools that support it
-                    match tool.execute_with_context(call.parameters.clone(), ctx).await {
+                    match tool
+                        .execute_with_context(call.parameters.clone(), ctx)
+                        .await
+                    {
                         Ok(result) => return serde_json::to_string(&result).unwrap_or_default(),
                         Err(e) => {
                             // Check if this is a known tool error
@@ -550,7 +623,10 @@ impl AgenticLoop {
                                     return "Error: Tool execution aborted".to_string();
                                 }
                                 Some(ToolError::Timeout(d)) => {
-                                    return format!("Error: Tool execution timed out after {:?}", d);
+                                    return format!(
+                                        "Error: Tool execution timed out after {:?}",
+                                        d
+                                    );
                                 }
                                 _ => return format!("Error: {e}"),
                             }
@@ -570,7 +646,8 @@ impl AgenticLoop {
                             if ctx.is_aborted() {
                                 return "Error: Tool execution aborted".to_string();
                             }
-                            ctx.report_status(format!("Completed {}", tool.name())).await;
+                            ctx.report_status(format!("Completed {}", tool.name()))
+                                .await;
                             return serde_json::to_string(&result).unwrap_or_default();
                         }
                         Err(e) => {
