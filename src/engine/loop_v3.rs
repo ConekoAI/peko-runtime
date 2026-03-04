@@ -393,35 +393,90 @@ impl AgenticLoopV3 {
 
     /// Parse response as JSON with content blocks
     fn parse_response(&self, response: &str) -> Vec<ContentBlock> {
-        // Strip markdown code fences if present
-        let cleaned = response
-            .trim()
-            .strip_prefix("```json")
-            .or_else(|| response.trim().strip_prefix("```"))
-            .and_then(|s| s.strip_suffix("```"))
-            .map(|s| s.trim())
-            .unwrap_or(response.trim());
+        let trimmed = response.trim();
 
-        // Try to parse as JSON with content field
-        if let Ok(json) = serde_json::from_str::<Value>(cleaned) {
-            // Check for content array
-            if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
-                let mut blocks = vec![];
-                for item in content {
-                    if let Some(block) = self.parse_content_block(item) {
-                        blocks.push(block);
-                    }
-                }
-                if !blocks.is_empty() {
-                    return blocks;
-                }
-            }
+        // Try to find JSON with content array anywhere in the response
+        // This handles nested code fences and mixed content
+        if let Some(blocks) = self.try_extract_content_blocks(trimmed) {
+            return blocks;
         }
 
         // Fallback: treat as plain text
         vec![ContentBlock::Text {
             text: response.to_string(),
         }]
+    }
+
+    /// Try to extract content blocks from potentially nested JSON
+    fn try_extract_content_blocks(&self, text: &str) -> Option<Vec<ContentBlock>> {
+        // Strategy 1: Try parsing the whole thing as JSON
+        if let Ok(json) = serde_json::from_str::<'_, Value>(text) {
+            if let Some(blocks) = self.extract_blocks_from_json(&json) {
+                return Some(blocks);
+            }
+        }
+
+        // Strategy 2: Strip outer code fence and retry
+        let without_fences = text
+            .strip_prefix("```json")
+            .or_else(|| text.strip_prefix("```"))
+            .and_then(|s| s.strip_suffix("```"))
+            .map(|s| s.trim())
+            .unwrap_or(text);
+
+        if without_fences != text {
+            if let Some(blocks) = self.try_extract_content_blocks(without_fences) {
+                return Some(blocks);
+            }
+        }
+
+        // Strategy 3: Find all ```json ... ``` blocks and try each
+        let mut start = 0;
+        while let Some(block_start) = text[start..].find("```json") {
+            let block_start = start + block_start + 7; // Skip "```json"
+            if let Some(block_end) = text[block_start..].find("```") {
+                let json_str = text[block_start..block_start + block_end].trim();
+                if let Ok(json) = serde_json::from_str::<'_, Value>(json_str) {
+                    if let Some(blocks) = self.extract_blocks_from_json(&json) {
+                        return Some(blocks);
+                    }
+                }
+                start = block_start + block_end + 3;
+            } else {
+                break;
+            }
+        }
+
+        // Strategy 4: Look for raw {"content": [...]} pattern
+        if let Some(start_idx) = text.find("{\"content\"") {
+            if let Some(end_idx) = text[start_idx..].rfind("]}") {
+                let json_str = &text[start_idx..start_idx + end_idx + 2];
+                if let Ok(json) = serde_json::from_str::<'_, Value>(json_str) {
+                    if let Some(blocks) = self.extract_blocks_from_json(&json) {
+                        return Some(blocks);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Extract content blocks from parsed JSON Value
+    fn extract_blocks_from_json(&self, json: &Value) -> Option<Vec<ContentBlock>> {
+        // Check for content array
+        if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
+            let mut blocks = vec![];
+            for item in content {
+                if let Some(block) = self.parse_content_block(item) {
+                    blocks.push(block);
+                }
+            }
+            if !blocks.is_empty() {
+                return Some(blocks);
+            }
+        }
+        None
     }
 
     /// Parse a single content block from JSON

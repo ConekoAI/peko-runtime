@@ -300,9 +300,7 @@ impl SystemPromptBuilder {
             lines.push("2. Then output tool_calls with the tool name and arguments".to_string());
             lines.push(String::new());
             lines.push("Example:".to_string());
-            lines.push("```json".to_string());
             lines.push("{\"content\": [{\"type\": \"thinking\", \"thinking\": \"Let me search for the latest news...\"}, {\"type\": \"tool_call\", \"id\": \"call_123\", \"name\": \"web_search\", \"arguments\": {\"query\": \"latest news\"}}]}".to_string());
-            lines.push("```".to_string());
             lines.push(String::new());
             lines.push(
                 "You can call multiple tools in parallel by including multiple tool_call blocks."
