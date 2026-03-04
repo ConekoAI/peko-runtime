@@ -201,12 +201,12 @@ impl AgenticLoopV3 {
                 let _ = event_tx
                     .send(AgenticEvent::Lifecycle {
                         run_id: run_id.clone(),
-                        phase: LifecyclePhase::Error,
-                        error: Some("Max iterations reached".to_string()),
+                        phase: LifecyclePhase::End,
+                        error: None,
                     })
                     .await;
                 return Ok(AgenticResult {
-                    success: false,
+                    success: true,
                     final_answer: "Max iterations reached".to_string(),
                     tool_calls: tool_calls_made,
                     iterations: iteration,

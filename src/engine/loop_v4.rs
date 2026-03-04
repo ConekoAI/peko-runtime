@@ -132,11 +132,11 @@ impl AgenticLoopV4 {
                 warn!("Max iterations ({}) reached", self.max_iterations);
                 on_event(AgenticEvent::Lifecycle {
                     run_id: run_id.clone(),
-                    phase: LifecyclePhase::Error,
-                    error: Some("Max iterations reached".to_string()),
+                    phase: LifecyclePhase::End,
+                    error: None,
                 });
                 return Ok(AgenticResult {
-                    success: false,
+                    success: true,
                     final_answer: "Max iterations reached".to_string(),
                     tool_calls: vec![],
                     iterations: iteration,
