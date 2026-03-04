@@ -59,21 +59,38 @@ impl AgentBootstrap {
         Ok(())
     }
 
-    /// Run non-interactive bootstrap (skips Q&A)
+    /// Run non-interactive bootstrap (creates all files with defaults)
     pub fn run_non_interactive(&self) -> anyhow::Result<()> {
         println!("🌱 Bootstrapping agent workspace (non-interactive)...\n");
 
         // Create workspace directory
         std::fs::create_dir_all(&self.workspace_dir)?;
 
-        // Seed template files only (no Q&A, no personalized files)
+        // Seed all template files with defaults
         self.seed_agents_md()?;
         self.seed_tools_md()?;
+        self.seed_bootstrap_md()?;
+        
+        // Create default identity files (non-interactive defaults)
+        let default_identity = IdentityAnswers {
+            agent_name: self.name.clone(),
+            creature: "AI assistant".to_string(),
+            vibe: "professional".to_string(),
+            emoji: "🤖".to_string(),
+            user_name: "User".to_string(),
+            user_title: "User".to_string(),
+            pronouns: "They/Them".to_string(),
+        };
+        
+        self.write_identity_md(&default_identity)?;
+        self.write_user_md(&default_identity)?;
+        self.write_soul_md(&default_identity)?;
 
         println!(
             "\n✅ Agent workspace ready at: {}",
             self.workspace_dir.display()
         );
+        println!("   Edit AGENTS.md, IDENTITY.md, SOUL.md, USER.md to customize");
 
         Ok(())
     }
