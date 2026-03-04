@@ -59,6 +59,25 @@ impl AgentBootstrap {
         Ok(())
     }
 
+    /// Run non-interactive bootstrap (skips Q&A)
+    pub fn run_non_interactive(&self) -> anyhow::Result<()> {
+        println!("🌱 Bootstrapping agent workspace (non-interactive)...\n");
+
+        // Create workspace directory
+        std::fs::create_dir_all(&self.workspace_dir)?;
+
+        // Seed template files only (no Q&A, no personalized files)
+        self.seed_agents_md()?;
+        self.seed_tools_md()?;
+
+        println!(
+            "\n✅ Agent workspace ready at: {}",
+            self.workspace_dir.display()
+        );
+
+        Ok(())
+    }
+
     /// Seed AGENTS.md template
     fn seed_agents_md(&self) -> anyhow::Result<()> {
         let content = format!(
