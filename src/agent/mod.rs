@@ -658,6 +658,52 @@ impl Agent {
         result
     }
 
+    /// Execute with native tool calling and return a channel receiver for events.
+    ///
+    /// This is a convenience wrapper around execute_native() that provides
+    /// a channel-based interface for code that expects async event streaming.
+    pub async fn execute_native_streaming(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(100);
+
+        // Spawn the execution in a task
+        let prompt = prompt.to_string();
+        let agent_arc = Arc::new(self.clone_for_loop());
+
+        // We need to get the provider and tools into the task
+        if let Some(provider) = &self.provider {
+            use crate::tools::*;
+
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            let provider_arc = Arc::clone(provider);
+            let event_tx_clone = event_tx.clone();
+
+            tokio::task::spawn_local(async move {
+                use crate::engine::loop_v4::AgenticLoopV4;
+
+                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+
+                let _result = loop_
+                    .run(&prompt, move |event| {
+                        let _ = event_tx_clone.try_send(event);
+                    })
+                    .await;
+            });
+        } else {
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
+
     /// Check if the configured provider supports native tool calling
     pub fn supports_native_tools(&self) -> bool {
         self.provider

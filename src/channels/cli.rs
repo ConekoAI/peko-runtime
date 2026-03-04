@@ -335,11 +335,19 @@ pub async fn run_interactive_loop_with_agent(
                         use crate::engine::AgenticEvent;
                         use tokio::task::LocalSet;
 
+                        // Check if provider supports native tool calling
+                        let supports_native = agent.supports_native_tools();
+                        if supports_native {
+                            println!("\n🚀 Using native tool calling");
+                        } else {
+                            println!("\n📄 Using text-based tool calling");
+                        }
+
                         let local = LocalSet::new();
                         let result = local
                             .run_until(async {
                                 let mut event_rx = agent
-                                    .execute_streaming_v3(trimmed)
+                                    .execute_native_streaming(trimmed)
                                     .await
                                     .map_err(|e| e.to_string())?;
                                 let mut final_answer = String::new();
@@ -424,18 +432,26 @@ pub async fn run_interactive_loop_with_agent(
 
 /// Send a single message to the agent and get a response (non-interactive)
 ///
-/// Uses streaming v2 with AgentMessage abstraction for better tool handling
+/// Uses native tool calling with AgenticLoopV4
 pub async fn send_single_message(agent: &crate::agent::Agent, message: &str) -> Result<String> {
     use crate::engine::AgenticEvent;
     use tokio::task::LocalSet;
+
+    // Check if provider supports native tool calling
+    let supports_native = agent.supports_native_tools();
+    if supports_native {
+        println!("\n🚀 Using native tool calling");
+    } else {
+        println!("\n📄 Using text-based tool calling");
+    }
 
     // Create a LocalSet for the streaming execution (required for non-Send types)
     let local = LocalSet::new();
 
     let result = local
         .run_until(async {
-            // Start streaming v3
-            let mut event_rx = agent.execute_streaming_v3(message).await?;
+            // Start native streaming
+            let mut event_rx = agent.execute_native_streaming(message).await?;
 
             let mut final_answer = String::new();
             let mut reasoning_started = false;
