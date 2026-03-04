@@ -395,6 +395,8 @@ pub async fn run_interactive_loop_with_agent(
                                 channel.print_error(&format!("Error: {}", e));
                             }
                         }
+                        // Reset agent state to Idle for next message
+                        agent.set_state(crate::types::agent::AgentState::Idle);
                         // Print new prompt after response
                         channel.print_prompt();
                     }

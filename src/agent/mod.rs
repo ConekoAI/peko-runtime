@@ -118,7 +118,8 @@ impl Agent {
     }
 
     /// Set state
-    fn set_state(&self, state: AgentState) {
+    /// Set agent state (public for channel use)
+    pub fn set_state(&self, state: AgentState) {
         let mut current = self.state.write().unwrap();
         debug!(
             "Agent {} state: {:?} -> {:?}",
@@ -337,14 +338,13 @@ impl Agent {
         use crate::tools::*;
         use std::sync::Arc;
 
-        if self.state() != AgentState::Idle {
-            return Err(anyhow::anyhow!(
-                "Agent is not idle (current state: {:?})",
-                self.state()
-            ));
+        // For interactive mode, allow consecutive messages without state check
+        // Just ensure we're not in a nested call by checking if already busy
+        let was_idle = self.state() == AgentState::Idle;
+        
+        if was_idle {
+            self.set_state(AgentState::Busy);
         }
-
-        self.set_state(AgentState::Busy);
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(100);
 
@@ -390,6 +390,10 @@ impl Agent {
             });
             info!("V2 streaming task spawned");
         } else {
+            // Reset state if we set it
+            if was_idle {
+                self.set_state(AgentState::Idle);
+            }
             return Err(anyhow::anyhow!("No provider configured"));
         }
 
