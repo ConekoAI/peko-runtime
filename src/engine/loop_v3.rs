@@ -273,8 +273,17 @@ impl AgenticLoopV3 {
 
     /// Parse response as JSON with content blocks
     fn parse_response(&self, response: &str) -> Vec<ContentBlock> {
+        // Strip markdown code fences if present
+        let cleaned = response
+            .trim()
+            .strip_prefix("```json")
+            .or_else(|| response.trim().strip_prefix("```"))
+            .and_then(|s| s.strip_suffix("```"))
+            .map(|s| s.trim())
+            .unwrap_or(response.trim());
+        
         // Try to parse as JSON with content field
-        if let Ok(json) = serde_json::from_str::<Value>(response) {
+        if let Ok(json) = serde_json::from_str::<Value>(cleaned) {
             // Check for content array
             if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
                 let mut blocks = vec![];

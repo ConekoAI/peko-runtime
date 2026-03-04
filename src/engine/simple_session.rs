@@ -168,19 +168,42 @@ impl SimpleSession {
             match entry {
                 crate::session::jsonl::SessionEntry::Message { message, .. } => {
                     let role = &message.role;
-                    // Extract text content from content blocks
-                    let content_text: String = message.content.iter()
-                        .filter_map(|block| match block {
-                            crate::types::ContentBlock::Text { text } => Some(text.as_str()),
-                            crate::types::ContentBlock::Thinking { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let mut parts: Vec<String> = Vec::new();
                     
+                    for block in &message.content {
+                        match block {
+                            ContentBlock::Text { text } => parts.push(text.clone()),
+                            ContentBlock::Thinking { text, .. } => parts.push(text.clone()),
+                            ContentBlock::ToolCall { name, arguments, .. } => {
+                                let args_str = serde_json::to_string(arguments).unwrap_or_default();
+                                parts.push(format!("[ToolCall: {}({})]", name, args_str));
+                            }
+                            ContentBlock::ToolResult { content, .. } => {
+                                let result_text: String = content.iter()
+                                    .filter_map(|c| match c {
+                                        ContentBlock::Text { text } => Some(text.clone()),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                parts.push(format!("[ToolResult: {}]", result_text));
+                            }
+                            _ => {}
+                        }
+                    }
+                    
+                    let content_text = parts.join("\n");
                     if !content_text.is_empty() {
                         context.push_str(&format!("{}: {}\n\n", role, content_text));
                     }
+                }
+                crate::session::jsonl::SessionEntry::ToolResult { tool_name, content, .. } => {
+                    let result_text: String = content.iter()
+                        .filter_map(|c| match c {
+                            ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    context.push_str(&format!("tool: [{} result: {}]\n\n", tool_name, result_text));
                 }
                 _ => {}
             }
