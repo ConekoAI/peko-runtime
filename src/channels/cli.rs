@@ -311,7 +311,7 @@ pub async fn run_interactive_loop_with_agent(
                         channel.print_prompt();
                     }
                     _ => {
-                        // Process with streaming (using v1 loop - v2 has conversation flow issues)
+                        // Process with streaming v3 (simplified working version)
                         print!("\n🤔 ");
                         std::io::stdout().flush().unwrap();
                         
@@ -320,7 +320,7 @@ pub async fn run_interactive_loop_with_agent(
                         
                         let local = LocalSet::new();
                         let result = local.run_until(async {
-                            let mut event_rx = agent.execute_streaming(trimmed).await.map_err(|e| e.to_string())?;
+                            let mut event_rx = agent.execute_streaming_v3(trimmed).await.map_err(|e| e.to_string())?;
                             let mut final_answer = String::new();
                             let mut reasoning_started = false;
                             
@@ -408,8 +408,8 @@ pub async fn send_single_message(
 
     let result = local
         .run_until(async {
-            // Start streaming v2
-            let mut event_rx = agent.execute_streaming(message).await?;
+            // Start streaming v3
+            let mut event_rx = agent.execute_streaming_v3(message).await?;
 
             let mut final_answer = String::new();
             let mut reasoning_started = false;

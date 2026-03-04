@@ -400,6 +400,70 @@ impl Agent {
         Ok(event_rx)
     }
 
+    /// Execute with streaming support using AgenticLoopV3 (simplified working version)
+    pub async fn execute_streaming_v3(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        use crate::engine::loop_v3::AgenticLoopV3;
+        use crate::engine::AgenticEvent;
+        use crate::tools::*;
+        use std::sync::Arc;
+
+        // Allow consecutive messages in interactive mode
+        let was_idle = self.state() == AgentState::Idle;
+        if was_idle {
+            self.set_state(AgentState::Busy);
+        }
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(100);
+
+        if let Some(provider) = &self.provider {
+            // Create core tools
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            // Clone for the loop
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
+            let prompt = prompt.to_string();
+
+            // Spawn the streaming execution
+            let _handle = tokio::task::spawn_local(async move {
+                info!("Spawned v3 streaming task started");
+                let loop_ = AgenticLoopV3::new(agent_arc, provider_arc, tools);
+
+                // Run with streaming
+                match loop_.run_streaming(&prompt, event_tx.clone()).await {
+                    Ok(_) => {
+                        info!("V3 streaming task completed successfully");
+                    }
+                    Err(e) => {
+                        error!("V3 streaming execution error: {}", e);
+                        let _ = event_tx.send(AgenticEvent::Lifecycle {
+                            run_id: prompt[..prompt.len().min(16)].to_string(),
+                            phase: crate::engine::LifecyclePhase::Error,
+                            error: Some(format!("Error: {}", e)),
+                        }).await;
+                    }
+                }
+                info!("Spawned v3 streaming task ending");
+            });
+            info!("V3 streaming task spawned");
+        } else {
+            if was_idle {
+                self.set_state(AgentState::Idle);
+            }
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
+
     /// Search memory
     pub fn search_memory(
         &self,
