@@ -16,8 +16,8 @@ pub enum AgentCommands {
         /// Custom configuration file path (optional, defaults to ~/.pekobot/agents/{name}.toml)
         #[arg(short, long)]
         config: Option<String>,
-        /// LLM provider (openai, anthropic, ollama, kimi) - only used when creating default config
-        #[arg(short, long, default_value = "openai")]
+        /// LLM provider (openai, anthropic, ollama, kimi, kimi_code) - only used when creating default config
+        #[arg(short, long, default_value = "kimi_code")]
         provider: String,
         /// Model name - only used when creating default config
         #[arg(short, long)]
@@ -51,7 +51,7 @@ pub enum AgentCommands {
         #[arg(short, long, default_value = "minimal")]
         template: String,
         /// Provider to use
-        #[arg(short, long, default_value = "openai")]
+        #[arg(short, long, default_value = "kimi_code")]
         provider: String,
         /// Skip confirmation
         #[arg(short, long)]
