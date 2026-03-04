@@ -603,7 +603,7 @@ pub mod handlers {
                     ProviderType::Ollama => Some("http://localhost:11434".to_string()),
                     ProviderType::OpenAICompatible => None,
                     ProviderType::Kimi => Some("https://api.moonshot.cn/v1".to_string()),
-                    ProviderType::KimiCode => Some("https://api.kimi.com/coding".to_string()),
+                    ProviderType::KimiCode => Some("https://api.moonshot.cn/v1".to_string()),
                 },
                 default_model,
                 models,
@@ -633,7 +633,13 @@ pub mod handlers {
         let mut config = build_default_config(name, provider, model, db);
 
         // Try to get stored API key
-        if let Some(api_key) = crate::commands::auth::get_api_key(paths, provider, None)? {
+        // Normalize provider name for credential lookup (e.g., "kimi_code" -> "kimi")
+        let credential_provider = match provider {
+            "kimi_code" | "kimi-code" => "kimi",
+            _ => provider,
+        };
+        
+        if let Some(api_key) = crate::commands::auth::get_api_key(paths, credential_provider, None)? {
             config.provider.api_key = Some(api_key);
             config.provider.api_key_env = None; // Use direct key instead of env
         }

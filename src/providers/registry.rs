@@ -285,13 +285,15 @@ pub fn create_provider(
         .with_context(|| format!("Unknown provider: {}", provider_name))?;
 
     // Get API key
-    let api_key = if metadata.api_key_env.is_empty() {
+    // Priority: 1) Config API key, 2) Environment variable
+    let api_key = if let Some(ref key) = config.api_key {
+        key.clone()
+    } else if metadata.api_key_env.is_empty() {
         // No API key required (e.g., local Ollama)
         String::new()
     } else {
         registry
             .get_api_key(metadata)
-            .or_else(|| config.api_key.clone())
             .with_context(|| {
                 format!(
                     "No API key found for {}. Set one of: {}",
