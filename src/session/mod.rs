@@ -6,6 +6,7 @@
 //! - Manual reset triggers (/reset, /new)
 //! - Per-type overrides (direct, group, thread)
 
+pub mod jsonl;
 pub mod pruning;
 pub mod transcript;
 
