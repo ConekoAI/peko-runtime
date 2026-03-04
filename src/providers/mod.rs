@@ -1,42 +1,28 @@
 //! LLM Providers
+//!
+//! Provider architecture:
+//! - **Base implementations**: OpenAI and Anthropic handle actual API calls
+//! - **Registry**: Maps provider names to metadata (URL, auth, etc.)
+//! - **Factory**: Routes to appropriate base implementation
+//!
+//! This means adding a new provider = adding a registry entry,
+//! not a new file. 90% of providers are OpenAI-compatible.
 
 pub mod anthropic;
-pub mod bedrock;
-pub mod cohere;
-pub mod fireworks;
-pub mod groq;
+pub mod openai;
+pub mod registry;
+pub mod sse;
+pub mod traits;
+
+// Legacy providers (to be removed after migration)
 pub mod kimi;
 pub mod kimi_code;
-pub mod ollama;
-pub mod openai;
-pub mod openai_compatible;
-pub mod openrouter;
-pub mod perplexity;
-pub mod reliable;
-pub mod sse;
-pub mod together;
-pub mod traits;
-pub mod venice;
-pub mod xai;
 
 pub use anthropic::{AnthropicConfig, AnthropicProvider};
-pub use bedrock::BedrockProvider;
-pub use cohere::CohereProvider;
-pub use fireworks::FireworksProvider;
-pub use groq::GroqProvider;
-pub use kimi::KimiProvider;
-pub use kimi_code::{KimiCodeConfig, KimiCodeProvider};
-pub use ollama::{OllamaConfig, OllamaProvider};
 pub use openai::{OpenAIConfig, OpenAIProvider};
-pub use openai_compatible::{OpenAICompatibleConfig, OpenAICompatibleProvider};
-pub use openrouter::OpenRouterProvider;
-pub use perplexity::PerplexityProvider;
-pub use reliable::ReliableProvider;
+pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
 pub use sse::{parse_sse_line, SseEvent, SseParser};
-pub use together::TogetherProvider;
 pub use traits::{
     ChatMessage, ChatOptions, ChatResponse, MessageRole, Provider, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
 };
-pub use venice::VeniceProvider;
-pub use xai::XaiProvider;

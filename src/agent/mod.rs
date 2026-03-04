@@ -494,113 +494,53 @@ impl Agent {
     }
 
     async fn init_provider(config: &AgentConfig) -> Result<Option<Arc<dyn Provider>>> {
+        use crate::providers::registry::create_provider;
         use crate::types::provider::ProviderType;
 
-        let api_key = match config.provider.get_api_key() {
-            Ok(key) => key,
-            Err(e) => {
-                warn!("Failed to get API key: {}", e);
-                return Ok(None);
-            }
-        };
-
-        let model_config = config
-            .provider
-            .default_model_config()
-            .cloned()
-            .unwrap_or_default();
-
-        let provider: Arc<dyn Provider> = match config.provider.provider_type {
-            ProviderType::OpenAI => {
-                let openai_config = crate::providers::OpenAIConfig {
-                    api_key,
-                    base_url: config
-                        .provider
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
-                    model: model_config.name,
-                    max_tokens: model_config.max_tokens,
-                    temperature: model_config.temperature,
-                    timeout_seconds: config.provider.timeout_seconds,
-                };
-                Arc::new(crate::providers::OpenAIProvider::new(openai_config)?)
-            }
-            ProviderType::Anthropic => {
-                let anthropic_config = crate::providers::AnthropicConfig {
-                    api_key,
-                    base_url: config
-                        .provider
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(|| "https://api.anthropic.com".to_string()),
-                    model: model_config.name,
-                    max_tokens: model_config.max_tokens,
-                    temperature: model_config.temperature,
-                    timeout_seconds: config.provider.timeout_seconds,
-                };
-                Arc::new(crate::providers::AnthropicProvider::new(anthropic_config)?)
-            }
-            ProviderType::Ollama => {
-                let ollama_config = crate::providers::OllamaConfig {
-                    base_url: config
-                        .provider
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(|| "http://localhost:11434".to_string()),
-                    model: model_config.name,
-                    temperature: model_config.temperature,
-                    timeout_seconds: config.provider.timeout_seconds,
-                    num_ctx: Some(4096),
-                    num_gpu: None,
-                };
-                Arc::new(crate::providers::OllamaProvider::new(ollama_config)?)
-            }
+        // Map ProviderType to string for registry lookup
+        let provider_name = match config.provider.provider_type {
+            ProviderType::OpenAI => "openai",
+            ProviderType::Anthropic => "anthropic",
+            ProviderType::Kimi => "kimi",
+            ProviderType::KimiCode => "kimi", // Fallback to regular kimi for now
+            ProviderType::Ollama => "ollama",
             ProviderType::OpenAICompatible => {
-                let base_url = config
-                    .provider
-                    .base_url
-                    .clone()
-                    .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-
-                // Check if this is a Kimi endpoint
-                if base_url.contains("moonshot.cn") {
-                    Arc::new(crate::providers::KimiProvider::new(api_key))
+                // Use base_url to determine provider
+                if let Some(ref url) = config.provider.base_url {
+                    if url.contains("moonshot.cn") || url.contains("kimi") {
+                        "kimi"
+                    } else if url.contains("groq") {
+                        "groq"
+                    } else if url.contains("together") {
+                        "together"
+                    } else if url.contains("fireworks") {
+                        "fireworks"
+                    } else {
+                        "openai"
+                    }
                 } else {
-                    // Generic OpenAI-compatible provider
-                    let compat_config = crate::providers::OpenAICompatibleConfig {
-                        api_key,
-                        base_url: base_url.clone(),
-                        model: model_config.name,
-                        max_tokens: model_config.max_tokens,
-                        temperature: model_config.temperature,
-                        timeout_seconds: config.provider.timeout_seconds,
-                    };
-                    Arc::new(crate::providers::OpenAICompatibleProvider::new(
-                        "openai_compatible",
-                        compat_config,
-                    )?)
+                    "openai"
                 }
             }
-            ProviderType::Kimi => Arc::new(crate::providers::KimiProvider::new(api_key)),
-            ProviderType::KimiCode => {
-                let kimi_code_config = crate::providers::KimiCodeConfig {
-                    api_key,
-                    base_url: config
-                        .provider
-                        .base_url
-                        .clone()
-                        .unwrap_or_else(|| "https://api.kimi.com/coding".to_string()),
-                    model: model_config.name,
-                    max_tokens: model_config.max_tokens,
-                    temperature: model_config.temperature,
-                    timeout_seconds: config.provider.timeout_seconds,
-                };
-                Arc::new(crate::providers::KimiCodeProvider::new(kimi_code_config)?)
-            }
+            _ => "openai", // Default fallback
         };
 
-        Ok(Some(provider))
+        // Get the provider type for the registry
+        let provider_type = match provider_name {
+            "openai" => ProviderType::OpenAI,
+            "anthropic" => ProviderType::Anthropic,
+            "kimi" => ProviderType::Kimi,
+            "ollama" => ProviderType::Ollama,
+            _ => ProviderType::OpenAICompatible,
+        };
+
+        match create_provider(provider_type, &config.provider) {
+            Ok(provider) => Ok(Some(provider)),
+            Err(e) => {
+                warn!("Failed to create provider: {}", e);
+                Ok(None)
+            }
+        }
     }
     /// Execute with native tool calling using AgenticLoopV4 (unified API).
     ///
