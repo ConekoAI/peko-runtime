@@ -85,6 +85,14 @@ impl CliChannel {
         println!("\n🔧 Using tool: {name}");
     }
 
+    /// Print thinking/reasoning text
+    pub fn print_thinking(&self, text: &str) {
+        // Only print non-empty thinking text
+        if !text.trim().is_empty() {
+            println!("\n💭 {text}");
+        }
+    }
+
     /// Print tool result
     pub fn print_tool_result(&self, name: &str, success: bool) {
         let icon = if success { "✅" } else { "❌" };
@@ -123,6 +131,9 @@ impl CliChannel {
                     self.print_agent_response(text);
                 }
                 // Deltas are handled by the chunker in handle_stream
+            }
+            AgenticEvent::Thinking { text, .. } => {
+                self.print_thinking(text);
             }
             AgenticEvent::ToolStart { name, .. } => {
                 self.print_tool_start(name);

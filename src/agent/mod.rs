@@ -190,7 +190,8 @@ impl Agent {
         &self,
         prompt: &str,
     ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(100);
+        // Use larger buffer to prevent event loss
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(1000);
 
         // Spawn the execution in a task
         let prompt = prompt.to_string();
@@ -217,6 +218,7 @@ impl Agent {
 
                 let _result = loop_
                     .run(&prompt, move |event| {
+                        // Try to send event - don't block if channel is full
                         let _ = event_tx_clone.try_send(event);
                     })
                     .await;

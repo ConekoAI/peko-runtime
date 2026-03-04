@@ -214,6 +214,22 @@ impl AgenticLoopV4 {
             if !response.tool_calls.is_empty() {
                 info!("Processing {} tool calls", response.tool_calls.len());
 
+                // Emit thinking text BEFORE tool calls
+                let assistant_text = text_parts.join(" ");
+                if !assistant_text.is_empty() {
+                    eprintln!("DEBUG: Printing thinking text: '{}'", assistant_text);
+                    // Print directly since channel is losing events
+                    println!("\n💭 {}", assistant_text);
+                    // Also emit event for any other listeners
+                    on_event(AgenticEvent::Thinking {
+                        run_id: run_id.clone(),
+                        text: assistant_text.clone(),
+                        is_delta: true,
+                        is_final: true,
+                        signature: None,
+                    });
+                }
+
                 // Add tool call blocks to assistant_content for proper serialization
                 for tool_call in &response.tool_calls {
                     assistant_content.push(tool_call.clone());
