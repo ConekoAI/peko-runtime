@@ -358,8 +358,26 @@ pub fn create_provider(
 
 /// Get provider metadata by name
 pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
-    let registry = ProviderRegistry::new();
-    registry.get(name)
+    // Direct lookup in BUILT_IN_PROVIDERS to avoid lifetime issues
+    let name_lower = name.to_lowercase();
+    
+    // First try canonical IDs
+    for meta in BUILT_IN_PROVIDERS {
+        if meta.id == name_lower {
+            return Some(meta);
+        }
+    }
+    
+    // Then try aliases
+    for meta in BUILT_IN_PROVIDERS {
+        for alias in meta.aliases {
+            if *alias == name_lower {
+                return Some(meta);
+            }
+        }
+    }
+    
+    None
 }
 
 /// List all available providers
