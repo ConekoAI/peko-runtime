@@ -19,6 +19,7 @@ pub mod config;
 pub mod cron;
 pub mod daemon;
 pub mod gateway;
+pub mod provider;
 pub mod session;
 pub mod system;
 pub mod tool;
@@ -101,6 +102,10 @@ pub enum Commands {
     /// Gateway plugin management
     #[command(subcommand)]
     Gateway(gateway::GatewayCommands),
+
+    /// LLM Provider management
+    #[command(subcommand)]
+    Provider(provider::ProviderCommands),
 
     /// Update Pekobot to the latest version
     Update {

@@ -83,17 +83,16 @@ impl Default for ProviderRegistry {
 impl ProviderRegistry {
     /// Create a new registry with all built-in providers
     pub fn new() -> Self {
-        let mut providers = HashMap::new();
-
-        // Register all built-in providers
-        for meta in BUILT_IN_PROVIDERS {
-            // Register by canonical ID
-            providers.insert(meta.id.to_string(), *meta);
-            // Register by aliases
-            for alias in meta.aliases {
-                providers.insert(alias.to_string(), *meta);
-            }
-        }
+        let providers: HashMap<String, &'static ProviderMetadata> = BUILT_IN_PROVIDERS
+            .iter()
+            .flat_map(|meta| {
+                let mut entries = vec![(meta.id.to_string(), meta as &'static ProviderMetadata)];
+                for alias in meta.aliases {
+                    entries.push((alias.to_string(), meta as &'static ProviderMetadata));
+                }
+                entries
+            })
+            .collect();
 
         Self { providers }
     }
@@ -382,7 +381,7 @@ pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
 
 /// List all available providers
 pub fn list_providers() -> Vec<&'static ProviderMetadata> {
-    BUILT_IN_PROVIDERS.to_vec()
+    BUILT_IN_PROVIDERS.iter().collect()
 }
 
 #[cfg(test)]
