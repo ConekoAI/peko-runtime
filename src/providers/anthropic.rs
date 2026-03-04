@@ -85,13 +85,7 @@ impl AnthropicProvider {
         messages
             .iter()
             .filter_map(|m| {
-                let role = match m.role {
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                    _ => return None,
-                };
-
-                // For tool results, format as tool_result block
+                // Handle tool results FIRST (before the role match that filters them out)
                 if m.role == MessageRole::Tool {
                     debug!("Converting Tool message with {} content blocks", m.content.len());
                     
@@ -144,6 +138,13 @@ impl AnthropicProvider {
                         }]),
                     });
                 }
+
+                // Now handle other roles
+                let role = match m.role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    _ => return None,  // Filter out System (handled separately)
+                };
 
                 // Extract text content and tool calls
                 let mut text_parts = Vec::new();

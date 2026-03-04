@@ -38,8 +38,8 @@ echo "Test: Native Tool Calling (DEBUG)"
 echo "========================================"
 echo "Prompt: 'Feed me some news'"
 echo ""
-# Use -vv for debug logging, capture first 100 lines of debug output
-./target/debug/pekobot agent start testagent -vv -M "Feed me some news" 2>&1 | tee /tmp/debug_test.log | grep -E "Using tool|Agent:|final_answer|completed|stopped|Max iterations" | head -30
+# Use -vvv for trace logging
+./target/debug/pekobot agent start testagent -vvv -M "Feed me some news" 2>&1 | tee /tmp/debug_test.log | grep -E "Using tool|Agent:|final_answer|completed|stopped|Max iterations|Messages sent|Adding" | head -30
 echo ""
 
 # Show any Anthropic API debug info
