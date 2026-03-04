@@ -30,7 +30,7 @@ impl Default for KimiCodeConfig {
             model: "k2p5".to_string(),
             max_tokens: 4096,
             temperature: 0.7,
-            timeout_seconds: 60,
+            timeout_seconds: 120, // Increased from 60 to 120 seconds
         }
     }
 }
@@ -95,6 +95,48 @@ impl KimiCodeProvider {
         };
         Self::new(config)
     }
+    
+    /// Try sending request with timeout handling
+    async fn try_send_request(
+        &self, 
+        request: &MessagesRequest
+    ) -> anyhow::Result<String> {
+        // Kimi Code uses Anthropic API format
+        let response = self
+            .client
+            .post(format!("{}/v1/messages", self.config.base_url))
+            .header("x-api-key", &self.config.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            error!("Kimi Code API error: {} - {}", status, error_text);
+            return Err(anyhow::anyhow!(
+                "Kimi Code API error: {status} - {error_text}"
+            ));
+        }
+
+        let completion: MessagesResponse = response.json().await?;
+
+        let content = completion
+            .content
+            .into_iter()
+            .next()
+            .map(|c| c.text)
+            .unwrap_or_default();
+
+        debug!(
+            "Received response from Kimi Code: input_tokens={}, output_tokens={}",
+            completion.usage.input_tokens, completion.usage.output_tokens
+        );
+
+        Ok(content)
+    }
 }
 
 #[async_trait]
@@ -146,41 +188,33 @@ impl Provider for KimiCodeProvider {
 
         debug!("Sending request to Kimi Code: model={}", model);
 
-        // Kimi Code uses Anthropic API format
-        let response = self
-            .client
-            .post(format!("{}/v1/messages", self.config.base_url))
-            .header("x-api-key", &self.config.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            error!("Kimi Code API error: {} - {}", status, error_text);
-            return Err(anyhow::anyhow!(
-                "Kimi Code API error: {status} - {error_text}"
-            ));
+        // Retry logic with exponential backoff
+        let max_retries = 3;
+        let mut last_error = None;
+        
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_secs(2u64.pow(attempt as u32));
+                info!("Retrying Kimi Code request (attempt {}), waiting {:?}", attempt + 1, delay);
+                tokio::time::sleep(delay).await;
+            }
+            
+            match self.try_send_request(&request).await {
+                Ok(content) => return Ok(content),
+                Err(e) => {
+                    let err_str = e.to_string();
+                    // Only retry on timeout or connection errors
+                    if err_str.contains("timed out") || err_str.contains("connection") {
+                        last_error = Some(e);
+                        continue;
+                    }
+                    // For other errors, fail immediately
+                    return Err(e);
+                }
+            }
         }
-
-        let completion: MessagesResponse = response.json().await?;
-
-        let content = completion
-            .content
-            .into_iter()
-            .next()
-            .map(|c| c.text)
-            .unwrap_or_default();
-
-        debug!(
-            "Received response from Kimi Code: input_tokens={}, output_tokens={}",
-            completion.usage.input_tokens, completion.usage.output_tokens
-        );
-
-        Ok(content)
+        
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Max retries exceeded")))
     }
 
     async fn complete_stream(
