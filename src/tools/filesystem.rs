@@ -199,7 +199,29 @@ impl Tool for FileSystemTool {
     }
 
     fn description(&self) -> &'static str {
-        "File system operations. Actions: read, write, list, exists, delete. Parameters: {\"action\": \"read|write|list|exists|delete\", \"path\": string, \"content\": string (for write)}"
+        "File system operations: read, write, list, exists, delete files and directories"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "The action to perform",
+                    "enum": ["read", "write", "list", "exists", "delete"]
+                },
+                "path": {
+                    "type": "string",
+                    "description": "The file or directory path"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Content to write (required for write action)"
+                }
+            },
+            "required": ["action", "path"]
+        })
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {

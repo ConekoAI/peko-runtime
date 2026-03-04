@@ -140,7 +140,39 @@ impl Tool for ProcessTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute system commands. Parameters: {\"command\": string, \"args\": [string] (optional), \"timeout\": number (seconds, optional), \"working_dir\": string (optional), \"env\": object (optional)}"
+        "Execute system commands with arguments, timeout, and working directory"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The command to execute"
+                },
+                "args": {
+                    "type": "array",
+                    "description": "Command arguments",
+                    "items": { "type": "string" }
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds",
+                    "minimum": 1,
+                    "maximum": 300
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": "Working directory for the command"
+                },
+                "env": {
+                    "type": "object",
+                    "description": "Environment variables"
+                }
+            },
+            "required": ["command"]
+        })
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {

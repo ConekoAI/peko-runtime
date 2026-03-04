@@ -437,6 +437,30 @@ impl Tool for WebSearchTool {
         "Search the web using Brave Search or DuckDuckGo"
     }
 
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query to execute"
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of results to return (1-20)",
+                    "minimum": 1,
+                    "maximum": 20
+                },
+                "freshness": {
+                    "type": "string",
+                    "description": "Filter by freshness: pd (past day), pw (past week), pm (past month), py (past year)",
+                    "enum": ["pd", "pw", "pm", "py"]
+                }
+            },
+            "required": ["query"]
+        })
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let args: SearchArgs =
             serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;

@@ -488,6 +488,25 @@ impl Tool for FetchTool {
         "Fetch web pages and extract content as markdown or text"
     }
 
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch"
+                },
+                "format": {
+                    "type": "string",
+                    "description": "Output format: 'markdown' or 'text'",
+                    "enum": ["markdown", "text"],
+                    "default": "markdown"
+                }
+            },
+            "required": ["url"]
+        })
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let args: FetchArgs =
             serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
