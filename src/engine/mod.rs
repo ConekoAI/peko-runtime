@@ -6,6 +6,7 @@
 pub mod chunker;
 pub mod events;
 pub mod loop_v3;
+pub mod loop_v4;
 pub mod runner;
 pub mod simple_session;
 pub mod state;
@@ -13,7 +14,8 @@ pub mod tool_stream;
 
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
-pub use loop_v3::{AgenticLoopV3, AgenticResult, ToolCall};
+pub use loop_v3::{AgenticLoopV3, AgenticResult as AgenticResultV3, ToolCall};
+pub use loop_v4::{AgenticLoopV4, AgenticResult as AgenticResultV4};
 pub use runner::AgentRunner;
 pub use simple_session::SimpleSession;
 pub use state::{AgentState, StateMachine};

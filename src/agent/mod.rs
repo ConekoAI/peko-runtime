@@ -175,7 +175,7 @@ impl Agent {
     }
 
     /// Execute a task with tools using the agentic loop
-    pub async fn execute_with_tools(&self, prompt: &str) -> Result<crate::engine::AgenticResult> {
+    pub async fn execute_with_tools(&self, prompt: &str) -> Result<crate::engine::AgenticResultV3> {
         use crate::engine::loop_v3::AgenticLoopV3;
         use crate::tools::*;
         use std::sync::Arc;

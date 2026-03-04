@@ -12,6 +12,18 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
 
+    /// Get the JSON Schema for this tool's parameters
+    ///
+    /// This is used for native tool calling APIs (OpenAI, Anthropic, etc.)
+    /// Default implementation returns an empty object schema.
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        })
+    }
+
     /// Execute the tool with parameters
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value>;
 
