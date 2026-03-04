@@ -602,6 +602,69 @@ impl Agent {
 
         Ok(Some(provider))
     }
+    /// Execute with native tool calling using AgenticLoopV4 (unified API).
+    ///
+    /// This is the recommended method for agent execution with native tool calling support.
+    /// The `on_event` callback receives all streaming events (text deltas, tool calls, etc.).
+    pub async fn execute_native(
+        &self,
+        prompt: &str,
+        on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+    ) -> Result<crate::engine::AgenticResultV4> {
+        use crate::engine::loop_v4::AgenticLoopV4;
+        use crate::tools::*;
+        use std::sync::Arc;
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        let result = if let Some(provider) = &self.provider {
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            let supports_native = provider.supports_native_tools();
+            info!(
+                "Executing with {} tool calling",
+                if supports_native { "native" } else { "text-based" }
+            );
+
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
+
+            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+
+            match loop_.run(prompt, on_event).await {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    error!("Agentic loop V4 error: {}", e);
+                    Err(e)
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!("No provider configured"))
+        };
+
+        self.set_state(AgentState::Idle);
+        result
+    }
+
+    /// Check if the configured provider supports native tool calling
+    pub fn supports_native_tools(&self) -> bool {
+        self.provider
+            .as_ref()
+            .map(|p| p.supports_native_tools())
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
