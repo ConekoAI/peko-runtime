@@ -296,14 +296,14 @@ impl AgenticLoopV2 {
             metadata: Default::default(),
         };
 
-        // Emit assistant events
-        for block in &text_content {
+        // Emit assistant events - mark as final since this is the complete response
+        for (idx, block) in text_content.iter().enumerate() {
             if let ContentBlock::Text { text } = block {
                 let _ = event_tx.send(AgenticEvent::Assistant {
                     run_id: run_id.to_string(),
                     text: text.clone(),
                     is_delta: false,
-                    is_final: false,
+                    is_final: idx == text_content.len() - 1, // Mark last block as final
                 }).await;
             }
         }
