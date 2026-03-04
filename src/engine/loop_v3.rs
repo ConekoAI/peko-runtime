@@ -1,27 +1,19 @@
-//! Agentic loop v3 - simplified working version
+//! Agentic loop v3 - with mandatory session persistence
 //!
-//! Based on v1's proven structure with cleaner message handling.
-//! Key differences from v2:
-//! - Uses v1's prompt formatting (proven to work)
-//! - Adds AgentMessage abstraction for extensibility
-//! - Cleaner event streaming
+//! Based on v1's proven structure with mandatory session management.
 
 use crate::agent::Agent;
 use crate::engine::{
-    AgenticEvent, AgenticResult, LifecyclePhase, ToolCall,
+    AgenticEvent, AgenticResult, LifecyclePhase, ToolCall, SimpleSession,
 };
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::Provider;
 use crate::tools::{context::AbortSignal, Tool};
-use crate::types::{
-    AgentContext, AgentMessage, ContentBlock, LlmMessage, MessageRole,
-};
 use anyhow::{Context as _, Result};
-use serde_json::json;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-/// Simplified v3 agentic loop
+/// v3 agentic loop with mandatory session persistence
 pub struct AgenticLoopV3 {
     agent: Arc<Agent>,
     provider: Arc<dyn Provider>,
@@ -60,13 +52,22 @@ impl AgenticLoopV3 {
         self
     }
 
-    /// Run with streaming support
+    /// Run with streaming support and session persistence
     pub async fn run_streaming(
         &self,
         prompt: &str,
         event_tx: tokio::sync::mpsc::Sender<AgenticEvent>,
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
+
+        // Create session (mandatory persistence)
+        let mut session = SimpleSession::create(&self.agent.name()).await
+            .context("Failed to create session")?;
+        
+        // Add system prompt and user message
+        let system_prompt = self.build_system_prompt();
+        session.add_system(&system_prompt).await?;
+        session.add_user(prompt).await?;
 
         // Emit start event
         let _ = event_tx.send(AgenticEvent::Lifecycle {
@@ -75,24 +76,8 @@ impl AgenticLoopV3 {
             error: None,
         }).await;
 
-        info!("Starting v3 agentic loop for agent: {}", self.agent.name());
-
-        // Build context with v1's proven prompt format
-        let system_prompt = self.build_system_prompt();
-        let mut context = vec![
-            json!({
-                "role": "system",
-                "content": system_prompt
-            }),
-            json!({
-                "role": "user",
-                "content": prompt
-            }),
-        ];
-
-        // Also maintain AgentContext for future extensibility
-        let mut _agent_context = AgentContext::with_system_prompt(&system_prompt);
-        _agent_context.add_message(AgentMessage::user(prompt));
+        info!("Starting v3 agentic loop for agent: {} (session: {})", 
+              self.agent.name(), session.id);
 
         let mut iteration = 0;
         let mut tool_calls_made: Vec<ToolCall> = vec![];
@@ -141,12 +126,12 @@ impl AgenticLoopV3 {
                 error: None,
             }).await;
 
-            // Format messages for provider (v1's proven method)
-            let messages = self.format_messages(&context);
-            debug!("Sending to provider: {}", messages);
+            // Get context from session (last 50 entries)
+            let context = session.get_context_text(50);
+            debug!("Context length: {} chars", context.len());
 
             // Get LLM response
-            let response = match self.provider.complete(&messages).await {
+            let response = match self.provider.complete(&context).await {
                 Ok(r) => r,
                 Err(e) => {
                     error!("Provider error: {}", e);
@@ -164,6 +149,9 @@ impl AgenticLoopV3 {
             // Parse for tool calls
             if let Some(tool_call) = self.parse_tool_call(&response) {
                 info!("Executing tool: {}", tool_call.name);
+
+                // Add assistant message with tool call to session
+                session.add_assistant(&response, Some(vec![tool_call.clone()])).await?;
 
                 // Emit tool start event
                 let tool_id = format!("{}_{}", tool_call.name, chrono::Utc::now().timestamp_millis());
@@ -190,24 +178,17 @@ impl AgenticLoopV3 {
                     format!("Tool '{}' not found", tool_call.name)
                 };
 
+                // Add tool result to session
+                session.add_tool_result(&tool_id, &tool_call.name, &tool_result).await?;
+
                 // Emit tool end event
                 let _ = event_tx.send(AgenticEvent::ToolEnd {
                     run_id: run_id.clone(),
                     tool_id: tool_id.clone(),
                     result: serde_json::json!(&tool_result),
                     success: !tool_result.starts_with("Error:"),
-                    duration_ms: 0, // Could track actual duration
+                    duration_ms: 0,
                 }).await;
-
-                // Add assistant message (with tool call) and tool result to context
-                context.push(json!({
-                    "role": "assistant",
-                    "content": response
-                }));
-                context.push(json!({
-                    "role": "user",
-                    "content": format!("Tool result: {}", tool_result)
-                }));
 
                 tool_calls_made.push(tool_call);
                 
@@ -217,6 +198,9 @@ impl AgenticLoopV3 {
 
             // No tool call - this is the final answer
             info!("Final answer received after {} iterations", iteration);
+            
+            // Add final answer to session
+            session.add_assistant(&response, None).await?;
             
             // Emit final assistant event
             let _ = event_tx.send(AgenticEvent::Assistant {
@@ -240,23 +224,6 @@ impl AgenticLoopV3 {
                 iterations: iteration,
             });
         }
-    }
-
-    /// Format messages for provider (v1's proven method)
-    fn format_messages(&self,
-        context: &[serde_json::Value],
-    ) -> String {
-        context
-            .iter()
-            .map(|m| {
-                format!(
-                    "{}: {}",
-                    m.get("role").and_then(|r| r.as_str()).unwrap_or("unknown"),
-                    m.get("content").and_then(|c| c.as_str()).unwrap_or("")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n")
     }
 
     /// Parse a tool call from LLM response

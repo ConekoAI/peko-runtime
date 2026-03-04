@@ -9,6 +9,7 @@ pub mod loop_;
 pub mod loop_v2;
 pub mod loop_v3;
 pub mod runner;
+pub mod simple_session;
 pub mod state;
 pub mod tool_stream;
 
@@ -18,6 +19,7 @@ pub use loop_::{AgenticLoop, AgenticResult, ToolCall};
 pub use loop_v2::AgenticLoopV2;
 pub use loop_v3::AgenticLoopV3;
 pub use runner::AgentRunner;
+pub use simple_session::SimpleSession;
 pub use state::{AgentState, StateMachine};
 pub use tool_stream::{StreamingToolCall, ToolCallStreamParser, ToolCallParseError, parse_tool_calls_from_text};
 
