@@ -155,12 +155,42 @@ impl SimpleSession {
     }
     
     /// Get context as text (for LLM)
-    pub fn get_context_text(&self,
-        _limit: usize,
-    ) -> String {
-        // For now, return a simple format
-        // In the future, load from storage and format for LLM context
-        format!("Session: {}", self.id)
+    pub async fn get_context_text(&self, _limit: usize) -> String {
+        // Load session entries and format as conversation context
+        let entries = match self.storage.load_session(&self.id).await {
+            Ok(e) => e,
+            Err(_) => return format!("Session: {}", self.id),
+        };
+        
+        let mut context = String::new();
+        
+        for entry in entries {
+            match entry {
+                crate::session::jsonl::SessionEntry::Message { message, .. } => {
+                    let role = &message.role;
+                    // Extract text content from content blocks
+                    let content_text: String = message.content.iter()
+                        .filter_map(|block| match block {
+                            crate::types::ContentBlock::Text { text } => Some(text.as_str()),
+                            crate::types::ContentBlock::Thinking { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    
+                    if !content_text.is_empty() {
+                        context.push_str(&format!("{}: {}\n\n", role, content_text));
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        if context.is_empty() {
+            format!("Session: {}", self.id)
+        } else {
+            context
+        }
     }
     
     /// Record model change

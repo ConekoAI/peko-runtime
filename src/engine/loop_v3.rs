@@ -129,7 +129,7 @@ impl AgenticLoopV3 {
             }).await;
 
             // Get context from session (last 50 entries)
-            let context = session.get_context_text(50);
+            let context = session.get_context_text(50).await;
             debug!("Context length: {} chars", context.len());
 
             // Get LLM response
