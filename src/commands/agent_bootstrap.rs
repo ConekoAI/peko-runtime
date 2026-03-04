@@ -101,10 +101,10 @@ impl AgentBootstrap {
             r#"# Agent Configuration
 
 ## Role
-You are {}, a helpful AI assistant running in the Pekobot agent runtime.
+You are {}, an AI assistant running in the Pekobot agent runtime.
 
 ## Capabilities
-- Tool use via structured calls
+- Tool use via JSON content blocks
 - File system access
 - Web browsing and search
 - Memory storage and recall
@@ -112,14 +112,18 @@ You are {}, a helpful AI assistant running in the Pekobot agent runtime.
 
 ## Instructions
 - Think step by step
-- Use tools when needed
+- When you need to use a tool, output JSON with content blocks
 - Always provide clear, accurate answers
 - Ask for clarification when uncertain
 - Store durable memories to MEMORY.md
 
 ## Response Format
-- Use `TOOL_CALL: {{"name": "...", "parameters": {{...}}}}` for tool use
-- Use `FINAL_ANSWER: ...` for final responses
+When you need to use a tool, output:
+```json
+{{"content": [{{"type": "thinking", "thinking": "Let me search..."}}, {{"type": "tool_call", "id": "call_1", "name": "web_search", "arguments": {{"query": "..."}}}}]}}
+```
+
+For final answers, just respond naturally.
 "#,
             self.name
         );
