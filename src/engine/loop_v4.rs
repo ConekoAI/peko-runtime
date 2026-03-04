@@ -159,6 +159,18 @@ impl AgenticLoopV4 {
                 headers: std::collections::HashMap::new(),
             };
 
+            // Debug: print messages being sent
+            debug!("Messages sent to LLM (iteration {}):", iteration);
+            for (i, msg) in messages.iter().enumerate() {
+                let content_preview: String = msg.content.iter().map(|b| match b {
+                    crate::types::message::ContentBlock::Text { text } => format!("[Text: {}]", text.chars().take(50).collect::<String>()),
+                    crate::types::message::ContentBlock::ToolCall { id, name, .. } => format!("[ToolCall: {} ({})]", name, id),
+                    crate::types::message::ContentBlock::ToolResult { tool_call_id, name, .. } => format!("[ToolResult: {} -> {}]", tool_call_id, name),
+                    _ => "[Other]".to_string(),
+                }).collect();
+                debug!("  [{}] {:?}: {}", i, msg.role, content_preview);
+            }
+
             let response = if self.provider.supports_native_tools() {
                 // Use native tool calling
                 self.provider
@@ -224,10 +236,25 @@ impl AgenticLoopV4 {
                 };
                 messages.push(assistant_msg.clone());
 
-                // Add to session
+                // Add to session with original tool call IDs
                 let assistant_text = text_parts.join(" ");
+                let tool_call_blocks: Vec<ContentBlock> = response
+                    .tool_calls
+                    .iter()
+                    .filter_map(|tc| {
+                        if let ContentBlock::ToolCall { id, name, arguments } = tc {
+                            Some(ContentBlock::ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                arguments: arguments.clone(),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 session
-                    .add_assistant(&assistant_text, Some(v3_tool_calls))
+                    .add_assistant_with_tool_calls(&assistant_text, tool_call_blocks)
                     .await?;
 
                 // Execute each tool
@@ -280,11 +307,16 @@ impl AgenticLoopV4 {
                             duration_ms,
                         });
 
-                        // Build tool result message
+                        // Build tool result message using proper ToolResult block
                         let result_msg = ChatMessage {
                             role: MessageRole::Tool,
-                            content: vec![ContentBlock::Text {
-                                text: tool_result.clone(),
+                            content: vec![ContentBlock::ToolResult {
+                                tool_call_id: id.clone(),
+                                name: name.clone(),
+                                content: vec![ContentBlock::Text {
+                                    text: tool_result.clone(),
+                                }],
+                                is_error: tool_result.starts_with("Error:"),
                             }],
                             tool_calls: None,
                             tool_call_id: Some(id.clone()),
@@ -404,6 +436,8 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
 
     prompt.push_str("## Instructions\n\n");
     prompt.push_str("Think step by step. When you need to use a tool, the system will handle it.\n");
+    prompt.push_str("After receiving tool results, provide a final answer to the user.\n");
+    prompt.push_str("If a tool returns empty results, do not retry the same tool - just inform the user.\n");
     prompt.push_str("Provide clear, accurate answers. Ask for clarification when uncertain.\n");
 
     prompt

@@ -91,9 +91,33 @@ impl AnthropicProvider {
                     _ => return None,
                 };
 
-                // For tool results, use the tool_call_id as the role indicator
+                // For tool results, format as tool_result block
                 if m.role == MessageRole::Tool {
-                    let content = m
+                    // Find ToolResult content block
+                    for block in &m.content {
+                        if let crate::types::message::ContentBlock::ToolResult { tool_call_id, content, .. } = block {
+                            // Extract text from the content blocks inside ToolResult
+                            let content_text: String = content
+                                .iter()
+                                .filter_map(|b| match b {
+                                    crate::types::message::ContentBlock::Text { text } => Some(text.clone()),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("");
+                            
+                            return Some(AnthropicMessage {
+                                role: "user".to_string(),
+                                content: Content::Blocks(vec![ContentBlock::ToolResult {
+                                    tool_use_id: tool_call_id.clone(),
+                                    content: content_text,
+                                }]),
+                            });
+                        }
+                    }
+                    
+                    // Fallback: try to extract text directly from content
+                    let content_text = m
                         .content
                         .iter()
                         .filter_map(|b| match b {
@@ -102,9 +126,15 @@ impl AnthropicProvider {
                         })
                         .collect::<Vec<_>>()
                         .join("");
+                    
+                    let tool_use_id = m.tool_call_id.clone().unwrap_or_default();
+                    
                     return Some(AnthropicMessage {
                         role: "user".to_string(),
-                        content: Content::Text(content),
+                        content: Content::Blocks(vec![ContentBlock::ToolResult {
+                            tool_use_id,
+                            content: content_text,
+                        }]),
                     });
                 }
 
@@ -187,6 +217,23 @@ impl AnthropicProvider {
     ) -> AnthropicRequest {
         let anthropic_messages = self.convert_messages(messages);
         let anthropic_tools = tools.map(|t| self.convert_tools(t));
+
+        // Debug: log converted messages
+        debug!("Anthropic request messages:");
+        for (i, msg) in anthropic_messages.iter().enumerate() {
+            let content_preview = match &msg.content {
+                Content::Text(text) => format!("[Text: {}]", text.chars().take(50).collect::<String>()),
+                Content::Blocks(blocks) => {
+                    let block_strs: Vec<String> = blocks.iter().map(|b| match b {
+                        ContentBlock::Text { text } => format!("[Text: {}]", text.chars().take(30).collect::<String>()),
+                        ContentBlock::ToolUse { id, name, .. } => format!("[ToolUse: {}]", name),
+                        ContentBlock::ToolResult { tool_use_id, content } => format!("[ToolResult: {} -> {}]", tool_use_id, content.chars().take(30).collect::<String>()),
+                    }).collect();
+                    format!("[Blocks: {}]", block_strs.join(", "))
+                }
+            };
+            debug!("  [{}] {}: {}", i, msg.role, content_preview);
+        }
 
         AnthropicRequest {
             model: self.config.model.clone(),
@@ -590,6 +637,7 @@ enum Content {
 enum ContentBlock {
     Text { text: String },
     ToolUse { id: String, name: String, input: Value },
+    ToolResult { tool_use_id: String, content: String },
 }
 
 #[derive(Debug, Serialize)]

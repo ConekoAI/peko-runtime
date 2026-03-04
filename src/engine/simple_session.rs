@@ -80,7 +80,42 @@ impl SimpleSession {
         Ok(())
     }
 
-    /// Add assistant message
+    /// Add assistant message with tool calls
+    pub async fn add_assistant_with_tool_calls(
+        &mut self,
+        content: impl Into<String>,
+        tool_calls: Vec<ContentBlock>,
+    ) -> Result<()> {
+        let content_str = content.into();
+
+        let mut content_blocks = vec![];
+
+        // Add text if present
+        if !content_str.is_empty() {
+            content_blocks.push(ContentBlock::Text { text: content_str });
+        }
+
+        // Add tool calls with their original IDs
+        for block in tool_calls {
+            if let ContentBlock::ToolCall { id, name, arguments } = block {
+                content_blocks.push(ContentBlock::ToolCall { id, name, arguments });
+            }
+        }
+
+        let msg_id = self
+            .storage
+            .append_message(
+                &self.id,
+                self.last_message_id.clone(),
+                "assistant",
+                content_blocks,
+            )
+            .await?;
+        self.last_message_id = Some(msg_id);
+        Ok(())
+    }
+
+    /// Add assistant message (legacy API for text-only)
     pub async fn add_assistant(
         &mut self,
         content: impl Into<String>,
