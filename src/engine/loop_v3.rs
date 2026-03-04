@@ -1,6 +1,6 @@
-//! Agentic loop v3 - with mandatory session persistence
+//! Agentic loop v3 - with native JSON tool calling and content blocks
 //!
-//! Based on v1's proven structure with mandatory session management.
+//! Based on v1's proven structure with content block support.
 
 use crate::agent::Agent;
 use crate::engine::{
@@ -9,11 +9,13 @@ use crate::engine::{
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::Provider;
 use crate::tools::{context::AbortSignal, Tool};
+use crate::types::ContentBlock;
 use anyhow::{Context as _, Result};
+use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-/// v3 agentic loop with mandatory session persistence
+/// v3 agentic loop with native JSON tool calling
 pub struct AgenticLoopV3 {
     agent: Arc<Agent>,
     provider: Arc<dyn Provider>,
@@ -131,7 +133,7 @@ impl AgenticLoopV3 {
             debug!("Context length: {} chars", context.len());
 
             // Get LLM response
-            let response = match self.provider.complete(&context).await {
+            let response_text = match self.provider.complete(&context).await {
                 Ok(r) => r,
                 Err(e) => {
                     error!("Provider error: {}", e);
@@ -144,68 +146,111 @@ impl AgenticLoopV3 {
                 }
             };
 
-            debug!("Provider response: {}", response);
+            debug!("Provider response: {}", response_text);
 
-            // Parse for tool calls
-            if let Some(tool_call) = self.parse_tool_call(&response) {
-                info!("Executing tool: {}", tool_call.name);
-
-                // Add assistant message with tool call to session
-                session.add_assistant(&response, Some(vec![tool_call.clone()])).await?;
-
-                // Emit tool start event
-                let tool_id = format!("{}_{}", tool_call.name, chrono::Utc::now().timestamp_millis());
-                let _ = event_tx.send(AgenticEvent::ToolStart {
-                    run_id: run_id.clone(),
-                    tool_id: tool_id.clone(),
-                    name: tool_call.name.clone(),
-                    params: tool_call.parameters.clone(),
-                }).await;
-
-                // Find and execute tool
-                let tool_result = if let Some(tool) = self.tools.iter().find(|t| t.name() == tool_call.name) {
-                    match tool.execute(tool_call.parameters.clone()).await {
-                        Ok(result) => {
-                            info!("Tool '{}' executed successfully", tool_call.name);
-                            result.to_string()
-                        }
-                        Err(e) => {
-                            error!("Tool '{}' failed: {}", tool_call.name, e);
-                            format!("Error: {}", e)
-                        }
+            // Parse response as JSON with content blocks
+            let content_blocks = self.parse_response(&response_text);
+            
+            // Process content blocks
+            let mut thinking_text = String::new();
+            let mut text_response = String::new();
+            let mut tool_calls: Vec<ToolCall> = vec![];
+            
+            for block in &content_blocks {
+                match block {
+                    ContentBlock::Thinking { text, .. } => {
+                        // Stream thinking to user
+                        let _ = event_tx.send(AgenticEvent::Assistant {
+                            run_id: run_id.clone(),
+                            text: text.clone(),
+                            is_delta: true,
+                            is_final: false,
+                        }).await;
+                        thinking_text.push_str(text);
                     }
+                    ContentBlock::Text { text } => {
+                        text_response.push_str(text);
+                    }
+                    ContentBlock::ToolCall { id, name, arguments } => {
+                        tool_calls.push(ToolCall {
+                            name: name.clone(),
+                            parameters: arguments.clone(),
+                        });
+                        // Store tool call ID for later matching
+                        let _ = id; // TODO: use for matching
+                    }
+                    _ => {}
+                }
+            }
+
+            // If we have tool calls, execute them
+            if !tool_calls.is_empty() {
+                // Add assistant message with tool calls to session
+                let assistant_content = if thinking_text.is_empty() {
+                    response_text.clone()
                 } else {
-                    format!("Tool '{}' not found", tool_call.name)
+                    thinking_text.clone()
                 };
+                session.add_assistant(&assistant_content, Some(tool_calls.clone())).await?;
 
-                // Add tool result to session
-                session.add_tool_result(&tool_id, &tool_call.name, &tool_result).await?;
+                // Execute each tool
+                for tool_call in &tool_calls {
+                    info!("Executing tool: {}", tool_call.name);
 
-                // Emit tool end event
-                let _ = event_tx.send(AgenticEvent::ToolEnd {
-                    run_id: run_id.clone(),
-                    tool_id: tool_id.clone(),
-                    result: serde_json::json!(&tool_result),
-                    success: !tool_result.starts_with("Error:"),
-                    duration_ms: 0,
-                }).await;
+                    // Emit tool start event
+                    let tool_id = format!("{}_{}", tool_call.name, chrono::Utc::now().timestamp_millis());
+                    let _ = event_tx.send(AgenticEvent::ToolStart {
+                        run_id: run_id.clone(),
+                        tool_id: tool_id.clone(),
+                        name: tool_call.name.clone(),
+                        params: tool_call.parameters.clone(),
+                    }).await;
 
-                tool_calls_made.push(tool_call);
+                    // Find and execute tool
+                    let tool_result = if let Some(tool) = self.tools.iter().find(|t| t.name() == tool_call.name) {
+                        match tool.execute(tool_call.parameters.clone()).await {
+                            Ok(result) => {
+                                info!("Tool '{}' executed successfully", tool_call.name);
+                                result.to_string()
+                            }
+                            Err(e) => {
+                                error!("Tool '{}' failed: {}", tool_call.name, e);
+                                format!("Error: {}", e)
+                            }
+                        }
+                    } else {
+                        format!("Tool '{}' not found", tool_call.name)
+                    };
+
+                    // Add tool result to session
+                    session.add_tool_result(&tool_id, &tool_call.name, &tool_result).await?;
+
+                    // Emit tool end event
+                    let _ = event_tx.send(AgenticEvent::ToolEnd {
+                        run_id: run_id.clone(),
+                        tool_id: tool_id.clone(),
+                        result: serde_json::json!(&tool_result),
+                        success: !tool_result.starts_with("Error:"),
+                        duration_ms: 0,
+                    }).await;
+
+                    tool_calls_made.push(tool_call.clone());
+                }
                 
                 // Continue to next iteration to get final answer
                 continue;
             }
 
-            // No tool call - this is the final answer
+            // No tool calls - this is the final answer
             info!("Final answer received after {} iterations", iteration);
             
             // Add final answer to session
-            session.add_assistant(&response, None).await?;
+            session.add_assistant(&text_response, None).await?;
             
             // Emit final assistant event
             let _ = event_tx.send(AgenticEvent::Assistant {
                 run_id: run_id.clone(),
-                text: response.clone(),
+                text: text_response.clone(),
                 is_delta: false,
                 is_final: true,
             }).await;
@@ -219,54 +264,64 @@ impl AgenticLoopV3 {
 
             return Ok(AgenticResult {
                 success: true,
-                final_answer: response,
+                final_answer: text_response,
                 tool_calls: tool_calls_made,
                 iterations: iteration,
             });
         }
     }
 
-    /// Parse a tool call from LLM response
-    fn parse_tool_call(&self,
-        response: &str,
-    ) -> Option<ToolCall> {
-        if let Some(start) = response.find("TOOL_CALL:") {
-            let json_str = response[start + "TOOL_CALL:".len()..].trim();
-            
-            // Try JSON object format first: {"name": "...", "parameters": {...}}
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
-                if let Some(name) = json.get("name").and_then(|v| v.as_str()) {
-                    let params = json.get("parameters")
-                        .or_else(|| json.get("arguments"))
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::json!({}));
-                    return Some(ToolCall {
-                        name: name.to_string(),
-                        parameters: params,
-                    });
+    /// Parse response as JSON with content blocks
+    fn parse_response(&self, response: &str) -> Vec<ContentBlock> {
+        // Try to parse as JSON with content field
+        if let Ok(json) = serde_json::from_str::<Value>(response) {
+            // Check for content array
+            if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
+                let mut blocks = vec![];
+                for item in content {
+                    if let Some(block) = self.parse_content_block(item) {
+                        blocks.push(block);
+                    }
                 }
-            }
-            
-            // Try legacy format: tool_name({...})
-            if let Some(paren) = json_str.find('(') {
-                let name = json_str[..paren].trim();
-                if let Some(close) = json_str.find(')') {
-                    let args_str = &json_str[paren + 1..close];
-                    let args = if args_str.trim().is_empty() {
-                        serde_json::json!({})
-                    } else {
-                        serde_json::from_str(args_str).unwrap_or_else(|_| {
-                            serde_json::json!({ "value": args_str })
-                        })
-                    };
-                    return Some(ToolCall {
-                        name: name.to_string(),
-                        parameters: args,
-                    });
+                if !blocks.is_empty() {
+                    return blocks;
                 }
             }
         }
-        None
+        
+        // Fallback: treat as plain text
+        vec![ContentBlock::Text { text: response.to_string() }]
+    }
+    
+    /// Parse a single content block from JSON
+    fn parse_content_block(&self, value: &Value) -> Option<ContentBlock> {
+        let block_type = value.get("type")?.as_str()?;
+        
+        match block_type {
+            "text" => {
+                let text = value.get("text")?.as_str()?.to_string();
+                Some(ContentBlock::Text { text })
+            }
+            "thinking" => {
+                let thinking = value.get("thinking")?.as_str()?.to_string();
+                let signature = value.get("signature").and_then(|s| s.as_str()).map(|s| s.to_string());
+                Some(ContentBlock::Thinking { text: thinking, signature })
+            }
+            "tool_call" => {
+                let id = value.get("id")?.as_str()?.to_string();
+                let name = value.get("name")?.as_str()?.to_string();
+                let arguments = value.get("arguments")?.clone();
+                Some(ContentBlock::ToolCall { id, name, arguments })
+            }
+            "tool_result" => {
+                let tool_call_id = value.get("tool_call_id")?.as_str()?.to_string();
+                let name = value.get("name")?.as_str()?.to_string();
+                let content = vec![]; // Simplified for now
+                let is_error = value.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                Some(ContentBlock::ToolResult { tool_call_id, name, content, is_error })
+            }
+            _ => None,
+        }
     }
 
     /// Build system prompt
@@ -307,35 +362,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_tool_call_json() {
+    fn test_parse_response_with_content_blocks() {
         let loop_v3 = AgenticLoopV3::new(
             Arc::new(Agent::default()),
             Arc::new(crate::providers::MockProvider::new()),
             vec![],
         );
 
-        let response = r#"I'll search for that.
-TOOL_CALL: {"name": "web_search", "parameters": {"query": "rust async"}}"#;
+        let response = r#"{"content": [{"type": "thinking", "thinking": "Let me search..."}, {"type": "tool_call", "id": "call_123", "name": "web_search", "arguments": {"query": "rust"}}]}"#;
 
-        let tool_call = loop_v3.parse_tool_call(response);
-        assert!(tool_call.is_some());
-        let tc = tool_call.unwrap();
-        assert_eq!(tc.name, "web_search");
+        let blocks = loop_v3.parse_response(response);
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(blocks[0], ContentBlock::Thinking { .. }));
+        assert!(matches!(blocks[1], ContentBlock::ToolCall { .. }));
     }
 
     #[test]
-    fn test_parse_tool_call_legacy() {
+    fn test_parse_plain_text_fallback() {
         let loop_v3 = AgenticLoopV3::new(
             Arc::new(Agent::default()),
             Arc::new(crate::providers::MockProvider::new()),
             vec![],
         );
 
-        let response = "TOOL_CALL: filesystem({\"path\": \"/tmp\"})";
+        let response = "Just a plain text response";
         
-        let tool_call = loop_v3.parse_tool_call(response);
-        assert!(tool_call.is_some());
-        let tc = tool_call.unwrap();
-        assert_eq!(tc.name, "filesystem");
+        let blocks = loop_v3.parse_response(response);
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0], ContentBlock::Text { .. }));
     }
 }

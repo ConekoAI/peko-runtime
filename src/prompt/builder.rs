@@ -293,13 +293,17 @@ impl SystemPromptBuilder {
             }
             lines.push(String::new());
             lines.push("### Tool Use".to_string());
-            lines.push("Think step by step. Explain your reasoning naturally, then use tools when needed.".to_string());
-            lines.push("When you want to use a tool, say something like 'Let me search for that...' and then output:".to_string());
-            lines.push("```".to_string());
-            lines.push("TOOL_CALL: {\"name\": \"tool_name\", \"parameters\": {\"key\": \"value\"}}".to_string());
+            lines.push("Think step by step. When you need to use a tool:".to_string());
+            lines.push("1. First output a thinking block explaining what you're about to do".to_string());
+            lines.push("2. Then output tool_calls with the tool name and arguments".to_string());
+            lines.push(String::new());
+            lines.push("Example:".to_string());
+            lines.push("```json".to_string());
+            lines.push("{\"content\": [{\"type\": \"thinking\", \"thinking\": \"Let me search for the latest news...\"}, {\"type\": \"tool_call\", \"id\": \"call_123\", \"name\": \"web_search\", \"arguments\": {\"query\": \"latest news\"}}]}".to_string());
             lines.push("```".to_string());
             lines.push(String::new());
-            lines.push("When you have the final answer, just provide it naturally. No special format needed.".to_string());
+            lines.push("You can call multiple tools in parallel by including multiple tool_call blocks.".to_string());
+            lines.push("When you have the final answer, just provide it naturally in a text block.".to_string());
         }
         lines.push(String::new());
 
