@@ -1,7 +1,7 @@
 //! Agent Runner - High-level interface for running agents
 
 use crate::agent::Agent;
-use crate::engine::loop_::AgenticLoop;
+use crate::engine::loop_v3::AgenticLoopV3;
 use crate::engine::EngineConfig;
 use crate::providers::Provider;
 use crate::tools::Tool;
@@ -107,7 +107,7 @@ impl AgentRunner {
         };
 
         // Create the agentic loop
-        let loop_ = AgenticLoop::new(self.agent.clone(), self.provider.clone(), tools)
+        let loop_ = AgenticLoopV3::new(self.agent.clone(), self.provider.clone(), tools)
             .with_max_iterations(self.config.max_iterations);
 
         // Run with timeout

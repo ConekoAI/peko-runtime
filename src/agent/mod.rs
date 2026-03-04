@@ -1,10 +1,4 @@
 //! Agent management module
-//!
-//! Note: The agentic loop has been moved to `engine::loop_`.
-//! This module re-exports for backward compatibility.
-
-// Re-export from engine for backward compatibility
-pub use crate::engine::loop_::{AgenticLoop, AgenticResult, ToolCall};
 
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::memory::sqlite::SqliteMemory;
@@ -181,11 +175,8 @@ impl Agent {
     }
 
     /// Execute a task with tools using the agentic loop
-    pub async fn execute_with_tools(
-        &self,
-        prompt: &str,
-    ) -> Result<crate::engine::loop_::AgenticResult> {
-        use crate::engine::loop_::AgenticLoop;
+    pub async fn execute_with_tools(&self, prompt: &str) -> Result<crate::engine::AgenticResult> {
+        use crate::engine::loop_v3::AgenticLoopV3;
         use crate::tools::*;
         use std::sync::Arc;
 
@@ -212,7 +203,7 @@ impl Agent {
             let agent_arc = Arc::new(self.clone_for_loop());
             let provider_arc = Arc::clone(provider);
 
-            let loop_ = AgenticLoop::new(agent_arc, provider_arc, tools);
+            let loop_ = AgenticLoopV3::new(agent_arc, provider_arc, tools);
 
             match loop_.run(prompt).await {
                 Ok(result) => Ok(result),
@@ -256,7 +247,7 @@ impl Agent {
         &self,
         prompt: &str,
     ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
-        use crate::engine::loop_::AgenticLoop;
+        use crate::engine::loop_v3::AgenticLoopV3;
         use crate::engine::AgenticEvent;
         use crate::tools::*;
         use std::sync::Arc;
@@ -290,7 +281,7 @@ impl Agent {
             // This is required because Agent contains non-Send types
             let _handle = tokio::task::spawn_local(async move {
                 info!("Spawned streaming task started");
-                let loop_ = AgenticLoop::new(agent_arc, provider_arc, tools);
+                let loop_ = AgenticLoopV3::new(agent_arc, provider_arc, tools);
 
                 // Run with streaming
                 match loop_.run_streaming(&prompt, event_tx.clone()).await {

@@ -3,15 +3,38 @@
 //! Based on v1's proven structure with content block support.
 
 use crate::agent::Agent;
-use crate::engine::{AgenticEvent, AgenticResult, LifecyclePhase, SimpleSession, ToolCall};
+use crate::engine::{AgenticEvent, LifecyclePhase, SimpleSession};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::Provider;
 use crate::tools::{context::AbortSignal, Tool};
 use crate::types::ContentBlock;
 use anyhow::{Context as _, Result};
+use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
+
+/// Result of running the agentic loop
+#[derive(Debug, Clone)]
+pub struct AgenticResult {
+    /// Whether execution succeeded
+    pub success: bool,
+    /// Final answer from the agent
+    pub final_answer: String,
+    /// Tool calls made during execution
+    pub tool_calls: Vec<ToolCall>,
+    /// Number of iterations
+    pub iterations: usize,
+}
+
+/// A tool call parsed from LLM response
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolCall {
+    /// Tool name
+    pub name: String,
+    /// Tool parameters
+    pub parameters: serde_json::Value,
+}
 
 /// v3 agentic loop with native JSON tool calling
 pub struct AgenticLoopV3 {
@@ -46,6 +69,71 @@ impl AgenticLoopV3 {
     pub fn with_abort_signal(mut self, signal: AbortSignal) -> Self {
         self.abort_signal = Some(signal);
         self
+    }
+
+    /// Run without streaming - collects all output into a result
+    pub async fn run(&self, prompt: &str) -> Result<AgenticResult> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+
+        // Spawn streaming execution and collect results
+        let streaming_future = self.run_streaming(prompt, tx.clone());
+
+        let mut final_answer = String::new();
+        let mut success = false;
+        let mut iterations = 0;
+        let mut tool_calls = Vec::new();
+
+        tokio::pin!(streaming_future);
+
+        loop {
+            tokio::select! {
+                result = &mut streaming_future => {
+                    // Streaming completed
+                    return match result {
+                        Ok(r) => Ok(r),
+                        Err(e) => Ok(AgenticResult {
+                            success: false,
+                            final_answer: format!("Error: {}", e),
+                            tool_calls,
+                            iterations,
+                        }),
+                    };
+                }
+                event = rx.recv() => {
+                    match event {
+                        Some(AgenticEvent::Assistant { text, is_final, .. }) => {
+                            if is_final {
+                                final_answer = text;
+                                success = true;
+                            }
+                        }
+                        Some(AgenticEvent::Lifecycle { phase, .. }) => {
+                            if let LifecyclePhase::Error = phase {
+                                // Error occurred
+                            }
+                        }
+                        Some(AgenticEvent::ToolStart { name, .. }) => {
+                            tool_calls.push(ToolCall {
+                                name: name.clone(),
+                                parameters: serde_json::json!({}),
+                            });
+                        }
+                        None => {
+                            // Channel closed
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        Ok(AgenticResult {
+            success,
+            final_answer,
+            tool_calls,
+            iterations,
+        })
     }
 
     /// Run with streaming support and session persistence
