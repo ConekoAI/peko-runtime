@@ -1,4 +1,7 @@
 //! CLI channel - Interactive terminal interface
+//!
+//! Presentation layer for CLI output. Separated from agent/engine logic
+//! to allow easy extension to other channels (Discord, WhatsApp, etc.)
 
 use super::{Channel, StreamingConfig};
 use anyhow::Result;
@@ -65,11 +68,6 @@ impl CliChannel {
         std::io::stdout().flush().unwrap();
     }
 
-    /// Print agent response
-    pub fn print_agent_response(&self, response: &str) {
-        println!("\n🐱 Agent: {response}");
-    }
-
     /// Print error
     pub fn print_error(&self, error: &str) {
         eprintln!("\n❌ Error: {error}");
@@ -102,26 +100,66 @@ impl Channel for CliChannel {
     }
 }
 
+/// Presentation state for streaming output
+struct PresentationState {
+    agent_name: String,
+    has_started_response: bool,
+    in_streaming: bool,
+}
+
+impl PresentationState {
+    fn new(agent_name: String) -> Self {
+        Self {
+            agent_name,
+            has_started_response: false,
+            in_streaming: false,
+        }
+    }
+
+    /// Start a new response line if not already started
+    fn start_response(&mut self) {
+        if !self.has_started_response {
+            print!("\n{}: ", self.agent_name);
+            self.has_started_response = true;
+            self.in_streaming = true;
+        }
+    }
+
+    /// Print text content (streaming)
+    fn print_text(&mut self, text: &str) {
+        self.start_response();
+        print!("{}", text);
+        std::io::stdout().flush().unwrap();
+    }
+
+    /// End the current response stream
+    fn end_stream(&mut self) {
+        if self.in_streaming {
+            println!();
+            self.in_streaming = false;
+            self.has_started_response = false;
+        }
+    }
+}
+
 /// Process events and return final answer
 /// 
-/// Unified event handling for both interactive and non-interactive modes.
-/// Only shows: thinking 💭, agent response 🐱, and errors ❌
-/// Tool usage is logged at DEBUG level (visible with -v)
+/// Presentation-layer function - handles how events are displayed to the user.
+/// Other channels (Discord, WhatsApp) can implement their own version.
 async fn process_events(
     mut event_rx: tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>,
+    agent_name: &str,
 ) -> Result<String> {
     use crate::engine::{AgenticEvent, LifecyclePhase};
     
     let mut final_answer = String::new();
-    let mut in_thinking = false;
+    let mut state = PresentationState::new(agent_name.to_string());
 
     while let Some(event) = event_rx.recv().await {
         match event {
             AgenticEvent::Lifecycle { phase, .. } => match phase {
                 LifecyclePhase::End => {
-                    if in_thinking {
-                        println!();
-                    }
+                    state.end_stream();
                     break;
                 }
                 LifecyclePhase::Error => {
@@ -129,43 +167,33 @@ async fn process_events(
                 }
                 _ => {}
             },
-            AgenticEvent::Thinking { text, is_delta: _, .. } => {
-                // Accept both delta and complete thinking text
-                // Replace newlines with spaces to keep on one line with emoji
-                let single_line = text.replace('\n', " ");
-                if !single_line.is_empty() {
-                    if !in_thinking {
-                        // Start new thinking line
-                        print!("\n💭 ");
-                        in_thinking = true;
-                    }
-                    print!("{}", single_line);
-                    std::io::stdout().flush().unwrap();
+            AgenticEvent::Thinking { text, .. } => {
+                // Treat reasoning/thinking as normal agent text
+                // This streams continuously while the agent is "working"
+                if !text.is_empty() {
+                    // Replace newlines with spaces for clean single-line output
+                    let single_line = text.replace('\n', " ");
+                    state.print_text(&single_line);
                 }
             }
-            AgenticEvent::Assistant { text, is_delta, is_final, .. } => {
+            AgenticEvent::Assistant { text, is_final, .. } => {
                 if is_final && !text.is_empty() {
-                    if in_thinking {
-                        println!();
-                        in_thinking = false;
+                    // Final answer - ensure we're on a new line if needed
+                    if !state.has_started_response {
+                        print!("\n{}: ", agent_name);
                     }
-                    println!("\n🐱 Agent: {}", text);
+                    println!("{}", text);
                     final_answer = text;
-                } else if is_delta && in_thinking {
-                    // Stream reasoning tokens
-                    print!("{}", text);
-                    std::io::stdout().flush().unwrap();
+                    state.in_streaming = false;
+                    state.has_started_response = false;
                 }
             }
             AgenticEvent::ToolStart { name, .. } => {
-                if in_thinking {
-                    println!();
-                    in_thinking = false;
-                }
-                debug!("Using tool: {}", name);
+                // Tools are working in the background - logged at DEBUG only
+                debug!("{} using tool: {}", agent_name, name);
             }
             AgenticEvent::ToolEnd { tool_id, success, .. } => {
-                debug!("Tool '{}' completed (success: {})", tool_id, success);
+                debug!("{} tool '{}' completed (success: {})", agent_name, tool_id, success);
             }
             _ => {}
         }
@@ -211,14 +239,15 @@ pub async fn run_interactive_loop(
                 }
 
                 // Process the message
-                let agent = agent.lock().unwrap();
+                let agent_lock = agent.lock().unwrap();
+                let agent_name = agent_lock.name().to_string();
                 
                 // Create a LocalSet for the streaming execution
                 let local = LocalSet::new();
                 let result = local
                     .run_until(async {
-                        let event_rx = agent.execute_streaming(trimmed).await?;
-                        process_events(event_rx).await
+                        let event_rx = agent_lock.execute_streaming(trimmed).await?;
+                        process_events(event_rx, &agent_name).await
                     })
                     .await;
 
@@ -235,7 +264,7 @@ pub async fn run_interactive_loop(
                 }
 
                 // Reset agent state to Idle for next message
-                agent.set_state(crate::types::agent::AgentState::Idle);
+                agent_lock.set_state(crate::types::agent::AgentState::Idle);
                 
                 // Print new prompt after response
                 channel.print_prompt();
@@ -260,13 +289,15 @@ pub async fn send_single_message(
 ) -> Result<String> {
     use tokio::task::LocalSet;
 
+    let agent_name = agent.name().to_string();
+    
     // Create a LocalSet for the streaming execution
     let local = LocalSet::new();
 
     local
         .run_until(async {
             let event_rx = agent.execute_streaming(message).await?;
-            process_events(event_rx).await
+            process_events(event_rx, &agent_name).await
         })
         .await
 }
