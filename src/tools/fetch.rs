@@ -11,6 +11,9 @@ use tracing::debug;
 
 use crate::tools::traits::Tool;
 
+/// Specific user-agent to use for fetch requests
+const FETCH_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
+
 /// Fetch tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchConfig {
@@ -29,9 +32,6 @@ pub struct FetchConfig {
     /// Request timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
-    /// User agent string
-    #[serde(default = "default_user_agent")]
-    pub user_agent: String,
 }
 
 impl Default for FetchConfig {
@@ -42,7 +42,6 @@ impl Default for FetchConfig {
             cache_ttl_seconds: 900, // 15 minutes
             respect_robots_txt: true,
             timeout_seconds: 30,
-            user_agent: "Pekobot/0.1 (FetchTool)".to_string(),
         }
     }
 }
@@ -61,10 +60,6 @@ fn default_cache_ttl() -> u64 {
 
 fn default_timeout() -> u64 {
     30
-}
-
-fn default_user_agent() -> String {
-    "Pekobot/0.1 (FetchTool)".to_string()
 }
 
 /// Extraction mode
@@ -126,34 +121,12 @@ pub struct FetchTool {
 }
 
 impl FetchTool {
-    /// List of rotating user agents to use
-    const USER_AGENTS: &'static [&'static str] = &[
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:123.0) Gecko/20100101 Firefox/123.0",
-    ];
-
     /// Create a new fetch tool
     #[must_use]
     pub fn new(config: FetchConfig) -> Self {
-        // Use a random user agent from the list
-        let user_agent = if config.user_agent == default_user_agent() {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let seed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let idx = (seed as usize) % Self::USER_AGENTS.len();
-            Self::USER_AGENTS[idx].to_string()
-        } else {
-            config.user_agent.clone()
-        };
-
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
-            .user_agent(user_agent)
+            .user_agent(FETCH_USER_AGENT)
             .build()
             .expect("Failed to create HTTP client");
 
@@ -212,7 +185,7 @@ impl FetchTool {
         let host = parsed.host_str().unwrap_or("");
         let scheme = parsed.scheme();
 
-        let robots_url = format!("{scheme}://{host}/robots.txt");
+        let robots_url = format!("{}://{}/robots.txt", scheme, host);
 
         // Try to fetch robots.txt
         if let Ok(response) = self.client.get(&robots_url).send().await {
@@ -247,9 +220,27 @@ impl FetchTool {
         Ok(true)
     }
 
-    /// Extract text from HTML
+    /// Extract title from HTML
+    fn extract_title(html: &str) -> Option<String> {
+        if let Some(start) = html.to_lowercase().find("<title>") {
+            if let Some(end) = html[start..].to_lowercase().find("</title>") {
+                let title = &html[start + 7..start + end];
+                return Some(title.trim().to_string());
+            }
+        }
+        if let Some(start) = html.find("<h1") {
+            if let Some(close) = html[start..].find('>') {
+                if let Some(end) = html[start + close..].find("</h1>") {
+                    let h1 = &html[start + close + 1..start + close + end];
+                    return Some(Self::extract_text(h1));
+                }
+            }
+        }
+        None
+    }
+
+    /// Extract text from HTML using readability-like approach
     fn extract_text(html: &str) -> String {
-        // Simple HTML to text extraction
         // Remove script and style tags first
         let mut text = html.to_string();
 
@@ -291,35 +282,15 @@ impl FetchTool {
         result.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
-    /// Extract markdown from HTML
+    /// Convert HTML to markdown (simplified)
     fn extract_markdown(html: &str) -> (Option<String>, String) {
         // Try to extract title
         let title = Self::extract_title(html);
 
         // Use a simplified markdown extraction
-        // For production, consider using a crate like html2md or readability
         let markdown = Self::html_to_markdown(html);
 
         (title, markdown)
-    }
-
-    /// Extract title from HTML
-    fn extract_title(html: &str) -> Option<String> {
-        if let Some(start) = html.to_lowercase().find("<title>") {
-            if let Some(end) = html[start..].to_lowercase().find("</title>") {
-                let title = &html[start + 7..start + end];
-                return Some(title.trim().to_string());
-            }
-        }
-        if let Some(start) = html.find("<h1") {
-            if let Some(close) = html[start..].find('>') {
-                if let Some(end) = html[start + close..].find("</h1>") {
-                    let h1 = &html[start + close + 1..start + close + end];
-                    return Some(Self::extract_text(h1));
-                }
-            }
-        }
-        None
     }
 
     /// Convert HTML to markdown (simplified)
@@ -518,21 +489,25 @@ impl FetchTool {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("text/html")
-            .to_string();
+            .to_lowercase();
 
         let body = response
             .text()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
 
-        // Extract content based on mode
-        let (title, content) = if content_type.contains("text/html") {
+        // Extract content based on content type
+        let (title, content) = if content_type.contains("text/plain") || content_type.contains("text/markdown") {
+            // Return as-is for plain text and markdown
+            (None, body)
+        } else if content_type.contains("text/html") {
+            // Extract from HTML
             match args.extract_mode {
                 ExtractMode::Markdown => Self::extract_markdown(&body),
                 ExtractMode::Text => (None, Self::extract_text(&body)),
             }
         } else {
-            // Non-HTML, return as-is
+            // For other types, return as-is
             (None, body)
         };
 
