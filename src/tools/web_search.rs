@@ -334,11 +334,14 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
 
     let document = Html::parse_document(html);
 
-    // Try multiple selectors as DDG changes their HTML
+    // Try multiple selectors as DDG changes their HTML frequently
     let selectors = [
-        "div.result",     // Classic DDG
-        ".web-result",    // Alternative
-        "article.result", // Newer design
+        "article[data-testid='result']",        // 2025 DDG layout
+        "div[data-result]",                     // Alternative layout
+        ".result[data-testid]",                 // Another variant
+        "article.result",                       // Older design
+        "div.result",                           // Classic DDG
+        ".web-result",                          // Legacy
     ];
 
     let mut results = Vec::new();
@@ -350,9 +353,9 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
         };
 
         for element in document.select(&selector).take(limit) {
-            // Try to extract title
+            // Try multiple title selectors
             let title = element
-                .select(&Selector::parse("h2, .result__title, .result__a").unwrap())
+                .select(&Selector::parse("h2 a, h3 a, [data-testid='result-title-a'], a[href]").unwrap())
                 .next()
                 .and_then(|e| {
                     let text = e.text().collect::<String>();
@@ -364,16 +367,18 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
                     }
                 });
 
-            // Try to extract URL
+            // Try multiple URL selectors
             let url = element
-                .select(&Selector::parse("a.result__a, a[href]").unwrap())
+                .select(&Selector::parse("a[href]").unwrap())
                 .next()
                 .and_then(|e| e.value().attr("href"))
                 .map(std::string::ToString::to_string);
 
-            // Try to extract snippet
+            // Try multiple snippet selectors
             let snippet = element
-                .select(&Selector::parse(".result__snippet, .result__body").unwrap())
+                .select(&Selector::parse(
+                    "[data-testid='result-snippet'], .result__snippet, .result__body, p"
+                ).unwrap())
                 .next()
                 .and_then(|e| {
                     let text = e.text().collect::<String>();
@@ -387,12 +392,17 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
 
             if let (Some(title), Some(url)) = (title, url) {
                 // DDG uses redirects, extract actual URL
-                let actual_url = if url.starts_with("//duckduckgo.com/l/") {
+                let actual_url = if url.starts_with("//duckduckgo.com/l/") || url.starts_with("/l/") {
                     // Extract from redirect URL
                     extract_ddg_redirect(&url).unwrap_or(url)
                 } else {
                     url
                 };
+
+                // Skip if it's a DDG internal link
+                if actual_url.contains("duckduckgo.com") || actual_url.starts_with("/") {
+                    continue;
+                }
 
                 results.push(SearchResult {
                     title,
@@ -405,16 +415,53 @@ fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, Stri
         }
 
         if !results.is_empty() {
+            debug!("Found {} DDG results using selector: {}", results.len(), selector_str);
             break; // Found results with this selector
         }
     }
 
     if results.is_empty() {
-        // Fallback: try very simple parsing
+        // Fallback: try very simple parsing with regex
         warn!("Could not parse DDG results with standard selectors, trying fallback");
+        results = parse_ddg_fallback(html, limit);
     }
 
     Ok(results)
+}
+
+/// Fallback parser using regex when CSS selectors fail
+fn parse_ddg_fallback(html: &str, limit: usize) -> Vec<SearchResult> {
+    use regex::Regex;
+    let mut results = Vec::new();
+    
+    // Try to find result links with their text
+    let link_regex = match Regex::new(r#"<a[^>]+href="([^"]*duckduckgo\.com/l/[^"]*)"[^>]*>(.*?)</a>"#) {
+        Ok(re) => re,
+        Err(_) => return results,
+    };
+    
+    for cap in link_regex.captures_iter(html).take(limit) {
+        let href = &cap[1];
+        let title_html = &cap[2];
+        
+        // Extract title (strip HTML tags)
+        let title = title_html.replace(|c: char| c == '<' || c == '>', " ").trim().to_string();
+        
+        if !title.is_empty() {
+            let actual_url = extract_ddg_redirect(href).unwrap_or_else(|| href.to_string());
+            if !actual_url.contains("duckduckgo.com") && !actual_url.starts_with("/") {
+                results.push(SearchResult {
+                    title,
+                    url: actual_url.clone(),
+                    snippet: String::new(),
+                    source: extract_domain(&actual_url),
+                    published: None,
+                });
+            }
+        }
+    }
+    
+    results
 }
 
 /// Extract actual URL from DDG redirect

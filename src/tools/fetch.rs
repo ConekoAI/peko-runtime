@@ -126,12 +126,34 @@ pub struct FetchTool {
 }
 
 impl FetchTool {
+    /// List of rotating user agents to use
+    const USER_AGENTS: &'static [&'static str] = &[
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:123.0) Gecko/20100101 Firefox/123.0",
+    ];
+
     /// Create a new fetch tool
     #[must_use]
     pub fn new(config: FetchConfig) -> Self {
+        // Use a random user agent from the list
+        let user_agent = if config.user_agent == default_user_agent() {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let seed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let idx = (seed as usize) % Self::USER_AGENTS.len();
+            Self::USER_AGENTS[idx].to_string()
+        } else {
+            config.user_agent.clone()
+        };
+
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
-            .user_agent(&config.user_agent)
+            .user_agent(user_agent)
             .build()
             .expect("Failed to create HTTP client");
 
@@ -408,30 +430,87 @@ impl FetchTool {
         result.replace("\n\n\n", "\n\n").trim().to_string()
     }
 
-    /// Perform the fetch
+    /// Perform the fetch with retry logic
     async fn fetch(&self, args: &FetchArgs) -> anyhow::Result<FetchResult> {
         // Check robots.txt
-        if !self.check_robots_txt(&args.url).await? {
-            return Err(anyhow::anyhow!("URL disallowed by robots.txt"));
+        match self.check_robots_txt(&args.url).await {
+            Ok(true) => {} // Allowed
+            Ok(false) => {
+                return Err(anyhow::anyhow!(
+                    "URL disallowed by robots.txt - the site has requested that automated tools not access this page"
+                ));
+            }
+            Err(e) => {
+                debug!("Could not check robots.txt: {}", e);
+                // Continue anyway if we can't check
+            }
         }
 
+        // Try fetching with retries
+        let max_retries = 2;
+        let mut last_error = None;
+
+        for attempt in 0..=max_retries {
+            match self.fetch_once(args).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    let error_str = e.to_string();
+                    
+                    // Don't retry on certain errors
+                    if error_str.contains("robots.txt") 
+                        || error_str.contains("Invalid URL")
+                        || error_str.contains("timeout") && attempt == max_retries
+                    {
+                        return Err(e);
+                    }
+                    
+                    last_error = Some(e);
+                    if attempt < max_retries {
+                        let delay = Duration::from_millis(500 * (attempt + 1) as u64);
+                        debug!("Fetch attempt {} failed, retrying in {:?}...", attempt + 1, delay);
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Fetch failed after {} retries", max_retries)))
+    }
+
+    /// Single fetch attempt
+    async fn fetch_once(&self, args: &FetchArgs) -> anyhow::Result<FetchResult> {
         // Fetch the URL
         let response = self
             .client
             .get(&args.url)
             .send()
             .await
-            .map_err(|e| anyhow::anyhow!("Request failed: {e}"))?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    anyhow::anyhow!("Request timed out - the server took too long to respond")
+                } else if e.is_connect() {
+                    anyhow::anyhow!("Connection failed - could not connect to the server")
+                } else {
+                    anyhow::anyhow!("Request failed: {}", e)
+                }
+            })?;
 
         let status_code = response.status().as_u16();
         let final_url = response.url().to_string();
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "HTTP error {}: {}",
-                status_code,
-                response.status().canonical_reason().unwrap_or("Unknown")
-            ));
+            let status_text = response.status().canonical_reason().unwrap_or("Unknown");
+            
+            // Provide helpful messages for common errors
+            let message = match status_code {
+                403 => format!("HTTP 403 Forbidden - access denied (may be blocked by robots.txt or require authentication)"),
+                429 => format!("HTTP 429 Too Many Requests - rate limited, please try again later"),
+                404 => format!("HTTP 404 Not Found - page does not exist"),
+                500..=599 => format!("HTTP {} {} - server error", status_code, status_text),
+                _ => format!("HTTP error {}: {}", status_code, status_text),
+            };
+            
+            return Err(anyhow::anyhow!(message));
         }
 
         let content_type = response
@@ -444,7 +523,7 @@ impl FetchTool {
         let body = response
             .text()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to read body: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
 
         // Extract content based on mode
         let (title, content) = if content_type.contains("text/html") {
