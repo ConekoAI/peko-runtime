@@ -135,9 +135,43 @@ impl PresentationState {
         std::io::stdout().flush().unwrap();
     }
 
+    /// Print final content and add to tracking
+    fn print_final(&mut self, text: &str) {
+        if !text.is_empty() {
+            print!("{}", text);
+            self.printed_content.push_str(text);
+        }
+        println!();
+        std::io::stdout().flush().unwrap();
+        self.in_streaming = false;
+        self.has_started_response = false;
+    }
+
     /// Check if content was already printed
     fn is_duplicate(&self, text: &str) -> bool {
-        self.printed_content.contains(text) || text == self.printed_content
+        // If we've already printed this exact text
+        if text == self.printed_content {
+            return true;
+        }
+        // If what we have is a prefix of the new text, it's a continuation not a duplicate
+        if text.starts_with(&self.printed_content) && !self.printed_content.is_empty() {
+            return false;
+        }
+        // If new text is contained in what we printed
+        self.printed_content.contains(text)
+    }
+
+    /// Get only the new part of text that hasn't been printed
+    fn get_new_content(&self, text: &str) -> String {
+        if self.printed_content.is_empty() {
+            return text.to_string();
+        }
+        // If text starts with what we printed, return the remainder
+        if text.starts_with(&self.printed_content) {
+            return text[self.printed_content.len()..].to_string();
+        }
+        // Otherwise return full text (might be different content)
+        text.to_string()
     }
 
     /// End the current response stream
@@ -177,25 +211,46 @@ async fn process_events(
             },
             AgenticEvent::Thinking { text, .. } => {
                 // Treat reasoning/thinking as normal agent text
-                // Skip if this is duplicate of what we already printed
-                if !text.is_empty() && !state.is_duplicate(&text) {
+                // Get only the new content that hasn't been printed
+                let new_content = state.get_new_content(&text);
+                if !new_content.is_empty() {
                     // Replace newlines with spaces for clean single-line output
-                    let single_line = text.replace('\n', " ");
+                    let single_line = new_content.replace('\n', " ");
                     // Ensure space before new content if already printing
                     let spacer = if state.in_streaming { " " } else { "" };
                     state.print_text(&format!("{}{}", spacer, single_line));
                 }
             }
             AgenticEvent::Assistant { text, is_final, .. } => {
-                if is_final && !text.is_empty() && !state.is_duplicate(&text) {
-                    // Final answer - ensure we're on a new line if needed
-                    if !state.has_started_response {
-                        print!("\n{}: ", agent_name);
+                if !text.is_empty() {
+                    // Get only the new content that hasn't been printed
+                    let new_content = state.get_new_content(&text);
+                    
+                    if is_final {
+                        // Final answer - print any remaining content and finish
+                        if !new_content.is_empty() {
+                            if !state.has_started_response {
+                                print!("\n{}: ", agent_name);
+                            } else if state.in_streaming {
+                                // Already streaming, add space if needed
+                                print!(" ");
+                            }
+                            println!("{}", new_content);
+                        } else if state.has_started_response {
+                            // Already printed everything, just end the line
+                            println!();
+                        }
+                        final_answer = text;
+                        state.in_streaming = false;
+                        state.has_started_response = false;
+                    } else if !new_content.is_empty() {
+                        // Streaming delta - print new content
+                        if !state.has_started_response {
+                            print!("\n{}: ", agent_name);
+                        }
+                        print!("{}", new_content);
+                        std::io::stdout().flush().unwrap();
                     }
-                    println!("{}", text);
-                    final_answer = text;
-                    state.in_streaming = false;
-                    state.has_started_response = false;
                 }
             }
             AgenticEvent::ToolStart { name, .. } => {
