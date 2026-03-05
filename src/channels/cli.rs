@@ -112,6 +112,7 @@ pub async fn process_events(
     
     let mut final_answer = String::new();
     let mut has_started_line = false;
+    let mut last_was_thinking = false;
 
     while let Some(event) = event_rx.recv().await {
         match event {
@@ -128,19 +129,25 @@ pub async fn process_events(
                 _ => {}
             },
             AgenticEvent::Thinking { text, .. } => {
-                // Thinking/reasoning before tool calls - print inline
+                // Thinking/reasoning before tool calls
                 if !text.is_empty() {
                     if !has_started_line {
+                        // First thinking of this turn
                         print!("\n{}: ", agent_name);
                         has_started_line = true;
+                    } else if last_was_thinking {
+                        // Continuing from previous thinking - add space
+                        print!(" ");
                     }
                     // Replace newlines with spaces for clean output
                     let single_line = text.replace('\n', " ");
                     print!("{}", single_line);
                     std::io::stdout().flush().unwrap();
+                    last_was_thinking = true;
                 }
             }
             AgenticEvent::Assistant { text, is_final, .. } => {
+                last_was_thinking = false;
                 if !text.is_empty() {
                     if is_final {
                         // Final answer - ensure newline and finish
@@ -161,6 +168,15 @@ pub async fn process_events(
                     }
                 }
             }
+            AgenticEvent::ToolStart { name, .. } => {
+                // Tool execution starts - end current line so next thinking starts fresh
+                if has_started_line {
+                    println!();
+                    has_started_line = false;
+                }
+                last_was_thinking = false;
+            }
+            AgenticEvent::ToolEnd { .. } => {}
             _ => {}
         }
     }
