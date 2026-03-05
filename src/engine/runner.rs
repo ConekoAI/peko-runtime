@@ -1,8 +1,8 @@
 //! Agent Runner - High-level interface for running agents
 
 use crate::agent::Agent;
-use crate::engine::loop_v3::AgenticLoopV3;
-use crate::engine::EngineConfig;
+use crate::engine::loop_v4::AgenticLoopV4;
+use crate::engine::{AgenticEvent, EngineConfig};
 use crate::providers::Provider;
 use crate::tools::Tool;
 use anyhow::Result;
@@ -106,16 +106,29 @@ impl AgentRunner {
             vec![]
         };
 
-        // Create the agentic loop
-        let loop_ = AgenticLoopV3::new(self.agent.clone(), self.provider.clone(), tools)
-            .with_max_iterations(self.config.max_iterations);
+        // Create the agentic loop with v4
+        let loop_ = AgenticLoopV4::new(
+            self.agent.clone(),
+            self.provider.clone(),
+            tools,
+        )
+        .with_max_iterations(self.config.max_iterations);
 
         // Run with timeout
         let timeout_duration = Duration::from_secs(
             self.config.provider_timeout_secs * self.config.max_iterations as u64 + 10,
         );
 
-        let result = match timeout(timeout_duration, loop_.run(prompt)).await {
+        // Run with a no-op callback (events are logged but not streamed)
+        let result = match timeout(
+            timeout_duration,
+            loop_.run(prompt, |_event| {
+                // Events are ignored in non-streaming mode
+                // They get logged inside loop_v4 anyway
+            })
+        )
+        .await
+        {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => {
                 error!("Agentic loop error: {}", e);
@@ -143,7 +156,14 @@ impl AgentRunner {
 
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
 
-        let tool_calls: Vec<String> = result.tool_calls.iter().map(|tc| tc.name.clone()).collect();
+        let tool_calls: Vec<String> = result
+            .tool_calls
+            .iter()
+            .filter_map(|tc| match tc {
+                crate::types::message::ContentBlock::ToolCall { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
 
         info!(
             "AgentRunner completed: success={}, iterations={}, tools={}, time={}ms",
@@ -163,11 +183,100 @@ impl AgentRunner {
         })
     }
 
-    /// Run with streaming (placeholder for future implementation)
-    pub async fn run_streaming(&self, _prompt: &str) -> Result<RunResult> {
-        // TODO: Implement streaming support
-        warn!("Streaming not yet implemented, falling back to regular run");
-        self.run(_prompt).await
+    /// Run with streaming support
+    ///
+    /// Returns a channel receiver that emits AgenticEvents during execution.
+    /// The channel has a large buffer (10,000) to prevent event loss.
+    ///
+    /// # Note
+    /// This method must be called within a `tokio::task::LocalSet` because
+    /// Agent contains non-Send types (rusqlite connections).
+    pub async fn run_streaming(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<AgenticEvent>> {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(10000);
+
+        // Filter tools if disabled
+        let tools = if self.config.enable_tools {
+            self.tools.clone()
+        } else {
+            vec![]
+        };
+
+        // Clone for the spawned task
+        let agent = self.agent.clone();
+        let provider = self.provider.clone();
+        let max_iterations = self.config.max_iterations;
+        let timeout_secs = self.config.provider_timeout_secs;
+        let prompt = prompt.to_string();
+        let event_tx_clone = event_tx.clone();
+
+        // Spawn the execution in a local task (Agent is !Send due to rusqlite)
+        tokio::task::spawn_local(async move {
+            let start_time = std::time::Instant::now();
+            info!(
+                "AgentRunner (streaming) starting for agent: {} (prompt: {} chars)",
+                agent.name(),
+                prompt.len()
+            );
+
+            let loop_ = AgenticLoopV4::new(agent.clone(), provider, tools)
+                .with_max_iterations(max_iterations);
+
+            let timeout_duration = Duration::from_secs(
+                timeout_secs * max_iterations as u64 + 10,
+            );
+
+            let result = match timeout(
+                timeout_duration,
+                loop_.run(&prompt, {
+                    let event_tx = event_tx_clone.clone();
+                    move |event| {
+                        let _ = event_tx.try_send(event);
+                    }
+                })
+            )
+            .await
+            {
+                Ok(Ok(result)) => {
+                    info!(
+                        "AgentRunner (streaming) completed: success={}, iterations={}, time={}ms",
+                        result.success,
+                        result.iterations,
+                        start_time.elapsed().as_millis()
+                    );
+                    result
+                }
+                Ok(Err(e)) => {
+                    error!("Agentic loop error: {}", e);
+                    let _ = event_tx_clone.try_send(AgenticEvent::Lifecycle {
+                        run_id: "error".to_string(),
+                        phase: crate::engine::LifecyclePhase::Error,
+                        error: Some(e.to_string()),
+                    });
+                    return;
+                }
+                Err(_) => {
+                    warn!("Agent execution timed out");
+                    let _ = event_tx_clone.try_send(AgenticEvent::Lifecycle {
+                        run_id: "timeout".to_string(),
+                        phase: crate::engine::LifecyclePhase::Aborted,
+                        error: Some("Execution timed out".to_string()),
+                    });
+                    return;
+                }
+            };
+
+            // Send completion event
+            let _ = event_tx_clone.try_send(AgenticEvent::Lifecycle {
+                run_id: "complete".to_string(),
+                phase: crate::engine::LifecyclePhase::End,
+                error: if result.success { None } else { Some("Execution failed".to_string()) },
+            });
+        });
+
+        Ok(event_rx)
     }
 }
 
