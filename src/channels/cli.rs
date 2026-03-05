@@ -181,7 +181,9 @@ async fn process_events(
                 if !text.is_empty() && !state.is_duplicate(&text) {
                     // Replace newlines with spaces for clean single-line output
                     let single_line = text.replace('\n', " ");
-                    state.print_text(&single_line);
+                    // Ensure space before new content if already printing
+                    let spacer = if state.in_streaming { " " } else { "" };
+                    state.print_text(&format!("{}{}", spacer, single_line));
                 }
             }
             AgenticEvent::Assistant { text, is_final, .. } => {
