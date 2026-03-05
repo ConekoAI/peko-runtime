@@ -214,15 +214,23 @@ impl AgenticLoopV4 {
                 }
             }
 
-            // Emit thinking text BEFORE any response (tool calls or final answer)
-            // Only emit actual thinking content, not regular text
+            // Emit thinking/reasoning text BEFORE tool calls
             let thinking_text = thinking_parts.join(" ").trim().to_string();
-            let assistant_text = text_parts.join(" ");
+            let assistant_text = text_parts.join(" ").trim().to_string();
             
-            if !thinking_text.is_empty() {
+            // Combine thinking and assistant text for the "reasoning" event
+            let reasoning_text = if !thinking_text.is_empty() && !assistant_text.is_empty() {
+                format!("{} {}", thinking_text, assistant_text)
+            } else if !thinking_text.is_empty() {
+                thinking_text.clone()
+            } else {
+                assistant_text.clone()
+            };
+            
+            if !reasoning_text.is_empty() {
                 on_event(AgenticEvent::Thinking {
                     run_id: run_id.clone(),
-                    text: thinking_text,
+                    text: reasoning_text,
                     is_delta: false,
                     is_final: true,
                     signature: None,
