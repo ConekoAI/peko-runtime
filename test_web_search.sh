@@ -41,7 +41,7 @@ echo "Test: Native Tool Calling"
 echo "========================================"
 echo "Prompt: 'Feed me some news'"
 echo ""
-./target/debug/pekobot agent start testagent -M "Feed me some news"
+./target/debug/pekobot agent start testagent -M "use web search to get me some news"
 echo ""
 
 echo "========================================"

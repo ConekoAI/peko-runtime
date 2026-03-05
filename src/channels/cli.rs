@@ -113,7 +113,6 @@ async fn process_events(
     use crate::engine::{AgenticEvent, LifecyclePhase};
     
     let mut final_answer = String::new();
-    let mut has_printed_thinking = false;
     let mut in_thinking = false;
 
     while let Some(event) = event_rx.recv().await {
@@ -133,9 +132,9 @@ async fn process_events(
             AgenticEvent::Thinking { text, is_delta: _, .. } => {
                 // Accept both delta and complete thinking text
                 if !text.is_empty() {
-                    if !has_printed_thinking {
+                    if !in_thinking {
+                        // Start new thinking line
                         print!("\n💭 ");
-                        has_printed_thinking = true;
                         in_thinking = true;
                     }
                     print!("{}", text);
