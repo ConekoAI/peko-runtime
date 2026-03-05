@@ -255,8 +255,147 @@ impl Agent {
     ///
     /// Note: This method must be called within a tokio::task::LocalSet
     /// because Agent contains non-Send types (rusqlite connections).
+    #[deprecated(since = "0.2.0", note = "Use execute_streaming() instead")]
+    pub async fn execute_streaming_v1_v2(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        use crate::engine::loop_v3::AgenticLoopV3;
+        use crate::engine::AgenticEvent;
+        use crate::tools::*;
+        use std::sync::Arc;
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(100);
+
+        if let Some(provider) = &self.provider {
+            // Create core tools
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            // Clone for the loop
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
+            let prompt = prompt.to_string();
+
+            // Spawn the streaming execution using spawn_local
+            // This is required because Agent contains non-Send types
+            let _handle = tokio::task::spawn_local(async move {
+                info!("Spawned streaming task started");
+                let loop_ = AgenticLoopV3::new(agent_arc, provider_arc, tools);
+
+                // Run with streaming
+                match loop_.run_streaming(&prompt, event_tx.clone()).await {
+                    Ok(_) => {
+                        info!("Streaming task completed successfully");
+                        info!("Sending End event");
+                        let _ = event_tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: prompt[..prompt.len().min(16)].to_string(),
+                                phase: crate::engine::LifecyclePhase::End,
+                                error: None,
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        error!("Streaming execution error: {}", e);
+                        let _ = event_tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: prompt[..prompt.len().min(16)].to_string(),
+                                phase: crate::engine::LifecyclePhase::Error,
+                                error: Some(format!("Error: {}", e)),
+                            })
+                            .await;
+                    }
+                }
+                info!("Spawned streaming task ending");
+            });
+            info!("Streaming task spawned");
+        } else {
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
 
     /// Execute with streaming support using AgenticLoopV3 (deprecated - use execute_streaming())
+    #[deprecated(since = "0.2.0", note = "Use execute_streaming() instead")]
+    pub async fn execute_streaming_v3(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        use crate::engine::loop_v3::AgenticLoopV3;
+        use crate::engine::AgenticEvent;
+        use crate::tools::*;
+        use std::sync::Arc;
+
+        // Allow consecutive messages in interactive mode
+        let was_idle = self.state() == AgentState::Idle;
+        if was_idle {
+            self.set_state(AgentState::Busy);
+        }
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(100);
+
+        if let Some(provider) = &self.provider {
+            // Create core tools
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            // Clone for the loop
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
+            let prompt = prompt.to_string();
+
+            // Spawn the streaming execution
+            let _handle = tokio::task::spawn_local(async move {
+                info!("Spawned v3 streaming task started");
+                let loop_ = AgenticLoopV3::new(agent_arc, provider_arc, tools);
+
+                // Run with streaming
+                match loop_.run_streaming(&prompt, event_tx.clone()).await {
+                    Ok(_) => {
+                        info!("V3 streaming task completed successfully");
+                    }
+                    Err(e) => {
+                        error!("V3 streaming execution error: {}", e);
+                        let _ = event_tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: prompt[..prompt.len().min(16)].to_string(),
+                                phase: crate::engine::LifecyclePhase::Error,
+                                error: Some(format!("Error: {}", e)),
+                            })
+                            .await;
+                    }
+                }
+                info!("Spawned v3 streaming task ending");
+            });
+            info!("V3 streaming task spawned");
+        } else {
+            if was_idle {
+                self.set_state(AgentState::Idle);
+            }
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
 
     /// Search memory
     pub fn search_memory(
@@ -422,11 +561,105 @@ impl Agent {
     ///
     /// This is the recommended method for agent execution with native tool calling support.
     /// The `on_event` callback receives all streaming events (text deltas, tool calls, etc.).
+    #[deprecated(since = "0.2.0", note = "Use execute() instead")]
+    pub async fn execute_native(
+        &self,
+        prompt: &str,
+        on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+    ) -> Result<crate::engine::AgenticResultV4> {
+        use crate::engine::loop_v4::AgenticLoopV4;
+        use crate::tools::*;
+        use std::sync::Arc;
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        let result = if let Some(provider) = &self.provider {
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            let supports_native = provider.supports_native_tools();
+            info!(
+                "Executing with {} tool calling",
+                if supports_native { "native" } else { "text-based" }
+            );
+
+            let agent_arc = Arc::new(self.clone_for_loop());
+            let provider_arc = Arc::clone(provider);
+
+            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+
+            match loop_.run(prompt, on_event).await {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    error!("Agentic loop V4 error: {}", e);
+                    Err(e)
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!("No provider configured"))
+        };
+
+        self.set_state(AgentState::Idle);
+        result
+    }
 
     /// Execute with native tool calling and return a channel receiver for events.
     ///
     /// This is a convenience wrapper around execute_native() that provides
     /// a channel-based interface for code that expects async event streaming.
+    #[deprecated(since = "0.2.0", note = "Use execute_streaming() instead")]
+    pub async fn execute_native_streaming(
+        &self,
+        prompt: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(100);
+
+        // Spawn the execution in a task
+        let prompt = prompt.to_string();
+        let agent_arc = Arc::new(self.clone_for_loop());
+
+        // We need to get the provider and tools into the task
+        if let Some(provider) = &self.provider {
+            use crate::tools::*;
+
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            let provider_arc = Arc::clone(provider);
+            let event_tx_clone = event_tx.clone();
+
+            tokio::task::spawn_local(async move {
+                use crate::engine::loop_v4::AgenticLoopV4;
+
+                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+
+                let _result = loop_
+                    .run(&prompt, move |event| {
+                        let _ = event_tx_clone.try_send(event);
+                    })
+                    .await;
+            });
+        } else {
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
 
     /// Check if the configured provider supports native tool calling
     pub fn supports_native_tools(&self) -> bool {
