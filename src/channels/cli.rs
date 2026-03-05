@@ -131,13 +131,15 @@ async fn process_events(
             },
             AgenticEvent::Thinking { text, is_delta: _, .. } => {
                 // Accept both delta and complete thinking text
-                if !text.is_empty() {
+                // Replace newlines with spaces to keep on one line with emoji
+                let single_line = text.replace('\n', " ");
+                if !single_line.is_empty() {
                     if !in_thinking {
                         // Start new thinking line
                         print!("\n💭 ");
                         in_thinking = true;
                     }
-                    print!("{}", text);
+                    print!("{}", single_line);
                     std::io::stdout().flush().unwrap();
                 }
             }
