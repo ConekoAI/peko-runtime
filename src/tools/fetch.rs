@@ -26,9 +26,6 @@ pub struct FetchConfig {
     /// Cache TTL in seconds
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl_seconds: u64,
-    /// Respect robots.txt
-    #[serde(default = "default_true")]
-    pub respect_robots_txt: bool,
     /// Request timeout in seconds
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u64,
@@ -40,7 +37,6 @@ impl Default for FetchConfig {
             enabled: true,
             max_chars: 50000,
             cache_ttl_seconds: 900, // 15 minutes
-            respect_robots_txt: true,
             timeout_seconds: 30,
         }
     }
@@ -173,51 +169,6 @@ impl FetchTool {
                 },
             );
         }
-    }
-
-    /// Check robots.txt (basic implementation)
-    async fn check_robots_txt(&self, url: &str) -> anyhow::Result<bool> {
-        if !self.config.respect_robots_txt {
-            return Ok(true);
-        }
-
-        let parsed = reqwest::Url::parse(url)?;
-        let host = parsed.host_str().unwrap_or("");
-        let scheme = parsed.scheme();
-
-        let robots_url = format!("{}://{}/robots.txt", scheme, host);
-
-        // Try to fetch robots.txt
-        if let Ok(response) = self.client.get(&robots_url).send().await {
-            if response.status().is_success() {
-                if let Ok(text) = response.text().await {
-                    // Simple check: look for Disallow entries
-                    // This is a basic implementation - a full robots.txt parser would be more complex
-                    let path = parsed.path();
-                    for line in text.lines() {
-                        let line = line.trim();
-                        if line.starts_with("User-agent:") {
-                            // Check if this applies to us (User-agent: * or contains our name)
-                            let ua = line.strip_prefix("User-agent:").unwrap_or("").trim();
-                            if ua == "*" || ua.to_lowercase().contains("pekobot") {
-                                // Continue checking Disallow lines
-                            }
-                        }
-                        if line.starts_with("Disallow:") {
-                            let disallow = line.strip_prefix("Disallow:").unwrap_or("").trim();
-                            if path.starts_with(disallow) && !disallow.is_empty() {
-                                debug!("robots.txt disallows: {}", path);
-                                return Ok(false);
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // If we can't fetch robots.txt, assume allowed
-        }
-
-        Ok(true)
     }
 
     /// Extract title from HTML
@@ -451,20 +402,6 @@ impl FetchTool {
 
     /// Perform the fetch with retry logic
     async fn fetch(&self, args: &FetchArgs) -> anyhow::Result<FetchResult> {
-        // Check robots.txt
-        match self.check_robots_txt(&args.url).await {
-            Ok(true) => {} // Allowed
-            Ok(false) => {
-                return Err(anyhow::anyhow!(
-                    "URL disallowed by robots.txt - the site has requested that automated tools not access this page"
-                ));
-            }
-            Err(e) => {
-                debug!("Could not check robots.txt: {}", e);
-                // Continue anyway if we can't check
-            }
-        }
-
         // Try fetching with retries
         let max_retries = 2;
         let mut last_error = None;
@@ -476,8 +413,7 @@ impl FetchTool {
                     let error_str = e.to_string();
                     
                     // Don't retry on certain errors
-                    if error_str.contains("robots.txt") 
-                        || error_str.contains("Invalid URL")
+                    if error_str.contains("Invalid URL")
                         || error_str.contains("timeout") && attempt == max_retries
                     {
                         return Err(e);
@@ -690,5 +626,102 @@ mod tests {
 
         assert_ne!(key1, key2); // Different modes
         assert_eq!(key1, key3); // Case insensitive
+    }
+
+    #[test]
+    fn test_simple_extract_text_removes_scripts() {
+        let html = "<html><script>alert('xss');</script><p>Content</p></html>";
+        let text = FetchTool::simple_extract_text(html);
+        assert!(!text.contains("alert"));
+        assert!(!text.contains("script"));
+        assert!(text.contains("Content"));
+    }
+
+    #[test]
+    fn test_simple_extract_text_removes_styles() {
+        let html = "<html><style>.body{color:red}</style><p>Content</p></html>";
+        let text = FetchTool::simple_extract_text(html);
+        assert!(!text.contains("style"));
+        assert!(!text.contains("color"));
+        assert!(text.contains("Content"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_paragraphs() {
+        let html = "<p>First paragraph.</p><p>Second paragraph.</p>";
+        let md = FetchTool::html_to_markdown(html);
+        assert!(md.contains("First paragraph"));
+        assert!(md.contains("Second paragraph"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_bold() {
+        let html = "<p>This is <strong>bold</strong> text.</p>";
+        let md = FetchTool::html_to_markdown(html);
+        assert!(md.contains("**bold**"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_italic() {
+        let html = "<p>This is <em>italic</em> text.</p>";
+        let md = FetchTool::html_to_markdown(html);
+        assert!(md.contains("*italic*"));
+    }
+
+    #[test]
+    fn test_html_to_markdown_list() {
+        let html = "<ul><li>Item 1</li><li>Item 2</li></ul>";
+        let md = FetchTool::html_to_markdown(html);
+        assert!(md.contains("- Item 1"));
+        assert!(md.contains("- Item 2"));
+    }
+
+    #[test]
+    fn test_config_default() {
+        let config = FetchConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.max_chars, 50000);
+        assert_eq!(config.cache_ttl_seconds, 900);
+        assert_eq!(config.timeout_seconds, 30);
+    }
+
+    #[test]
+    fn test_fetch_result_serialization() {
+        let result = FetchResult {
+            url: "https://example.com".to_string(),
+            final_url: "https://example.com/redirect".to_string(),
+            title: Some("Example".to_string()),
+            content: "Hello World".to_string(),
+            content_type: "text/html".to_string(),
+            status_code: 200,
+            truncated: false,
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("https://example.com"));
+        assert!(json.contains("Hello World"));
+
+        let deserialized: FetchResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.status_code, 200);
+        assert_eq!(deserialized.title, Some("Example".to_string()));
+    }
+
+    #[test]
+    fn test_fetch_args_parsing() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "extract_mode": "markdown"
+        });
+
+        let args: FetchArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.url, "https://example.com");
+        // extract_mode should default to Markdown
+    }
+
+    #[tokio::test]
+    async fn test_fetch_tool_creation() {
+        let config = FetchConfig::default();
+        let tool = FetchTool::new(config);
+        assert_eq!(tool.name(), "fetch");
     }
 }
