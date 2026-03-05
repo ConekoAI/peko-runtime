@@ -239,8 +239,33 @@ impl FetchTool {
         None
     }
 
-    /// Extract text from HTML using readability-like approach
+    /// Extract text from HTML using readability
     fn extract_text(html: &str) -> String {
+        use readability::extractor;
+
+        // Create a dummy URL for extraction
+        let url = reqwest::Url::parse("http://example.com").unwrap();
+
+        match extractor::extract(&mut html.as_bytes(), &url) {
+            Ok(product) => {
+                let mut result = String::new();
+                if !product.title.is_empty() {
+                    result.push_str(&product.title);
+                    result.push('\n');
+                    result.push('\n');
+                }
+                result.push_str(&product.text);
+                result
+            }
+            Err(_) => {
+                // Fallback to simple extraction
+                Self::simple_extract_text(html)
+            }
+        }
+    }
+
+    /// Simple fallback text extraction
+    fn simple_extract_text(html: &str) -> String {
         // Remove script and style tags first
         let mut text = html.to_string();
 
@@ -282,15 +307,38 @@ impl FetchTool {
         result.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
-    /// Convert HTML to markdown (simplified)
+    /// Convert HTML to markdown using readability for text extraction
     fn extract_markdown(html: &str) -> (Option<String>, String) {
-        // Try to extract title
-        let title = Self::extract_title(html);
+        use readability::extractor;
 
-        // Use a simplified markdown extraction
-        let markdown = Self::html_to_markdown(html);
+        // Create a dummy URL for extraction
+        let url = reqwest::Url::parse("http://example.com").unwrap();
 
-        (title, markdown)
+        match extractor::extract(&mut html.as_bytes(), &url) {
+            Ok(product) => {
+                let title = if product.title.is_empty() {
+                    None
+                } else {
+                    Some(product.title.clone())
+                };
+                // Convert readability text to simple markdown
+                let markdown = Self::text_to_markdown(&product.text);
+                (title, markdown)
+            }
+            Err(_) => {
+                // Fallback to simple extraction
+                let title = Self::extract_title(html);
+                let markdown = Self::html_to_markdown(html);
+                (title, markdown)
+            }
+        }
+    }
+
+    /// Convert plain text to simple markdown
+    fn text_to_markdown(text: &str) -> String {
+        // Just return the text as-is for now
+        // In the future, could add formatting detection
+        text.to_string()
     }
 
     /// Convert HTML to markdown (simplified)
