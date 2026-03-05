@@ -197,6 +197,7 @@ impl AgenticLoopV4 {
 
             // Process response content
             let mut text_parts = Vec::new();
+            let mut thinking_parts = Vec::new();
             let mut assistant_content = Vec::new();
 
             for block in &response.content {
@@ -206,30 +207,34 @@ impl AgenticLoopV4 {
                         assistant_content.push(block.clone());
                     }
                     ContentBlock::Thinking { text, .. } => {
-                        // Collect thinking content but don't emit event here
-                        // It will be emitted as AgenticEvent::Thinking before tool calls
+                        thinking_parts.push(text.clone());
                         assistant_content.push(block.clone());
                     }
                     _ => {}
                 }
             }
 
+            // Emit thinking text BEFORE any response (tool calls or final answer)
+            let thinking_text = thinking_parts.join(" ");
+            let assistant_text = text_parts.join(" ");
+            let separator = if !thinking_text.is_empty() && !assistant_text.is_empty() { " " } else { "" };
+            let combined_thinking = format!("{}{}{}", thinking_text, separator, assistant_text)
+                .trim()
+                .to_string();
+            
+            if !combined_thinking.is_empty() {
+                on_event(AgenticEvent::Thinking {
+                    run_id: run_id.clone(),
+                    text: combined_thinking,
+                    is_delta: false,
+                    is_final: true,
+                    signature: None,
+                });
+            }
+
             // Handle tool calls
             if !response.tool_calls.is_empty() {
                 info!("Processing {} tool calls", response.tool_calls.len());
-
-                // Emit thinking text BEFORE tool calls
-                let assistant_text = text_parts.join(" ");
-                if !assistant_text.is_empty() {
-                    // Emit thinking event for listeners (CLI will display with 💭)
-                    on_event(AgenticEvent::Thinking {
-                        run_id: run_id.clone(),
-                        text: assistant_text.clone(),
-                        is_delta: false, // Complete text, not incremental
-                        is_final: true,
-                        signature: None,
-                    });
-                }
 
                 // Add tool call blocks to assistant_content for proper serialization
                 for tool_call in &response.tool_calls {
@@ -246,7 +251,6 @@ impl AgenticLoopV4 {
                 messages.push(assistant_msg.clone());
 
                 // Add to session with original tool call IDs
-                let assistant_text = text_parts.join(" ");
                 let tool_call_blocks: Vec<ContentBlock> = response
                     .tool_calls
                     .iter()

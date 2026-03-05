@@ -196,7 +196,6 @@ impl WebSearchTool {
             .post("https://api.search.brave.com/res/v1/llm/context")
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
-            .header("Accept-Encoding", "gzip")
             .header("X-Subscription-Token", api_key)
             .json(&request_body)
             .send()

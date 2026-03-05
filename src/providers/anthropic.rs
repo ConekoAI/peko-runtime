@@ -283,9 +283,9 @@ impl Provider for AnthropicProvider {
 
     async fn chat_with_system(
         &self,
-        system_prompt: Option<&str>,
+        _system_prompt: Option<&str>,
         message: &str,
-        model: &str,
+        _model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
         let messages = vec![ChatMessage {

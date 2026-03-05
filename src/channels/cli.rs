@@ -130,8 +130,9 @@ async fn process_events(
                 }
                 _ => {}
             },
-            AgenticEvent::Thinking { text, is_delta, .. } => {
-                if is_delta && !text.is_empty() {
+            AgenticEvent::Thinking { text, is_delta: _, .. } => {
+                // Accept both delta and complete thinking text
+                if !text.is_empty() {
                     if !has_printed_thinking {
                         print!("\n💭 ");
                         has_printed_thinking = true;
