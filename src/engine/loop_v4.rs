@@ -575,6 +575,7 @@ mod tests {
 
         let calls = extract_tool_calls(&blocks);
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].function.name, "web_search");
+        assert_eq!(calls[0].name, "web_search");
+        assert_eq!(calls[0].parameters, serde_json::json!({"query": "test"}));
     }
 }
