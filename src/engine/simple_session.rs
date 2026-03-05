@@ -3,6 +3,7 @@
 //! Wraps the new JSONL session storage for mandatory persistence.
 
 use crate::engine::ToolCall;
+use crate::providers::ChatMessage;
 use crate::session::jsonl::SessionStorage;
 use crate::types::ContentBlock;
 use anyhow::Result;
@@ -44,6 +45,120 @@ impl SimpleSession {
             storage,
             last_message_id: None,
         })
+    }
+
+    /// Open an existing session for resumption
+    pub async fn open(agent_name: &str, session_id: &str) -> Result<Option<Self>> {
+        let storage_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".pekobot")
+            .join("agents")
+            .join(agent_name)
+            .join("sessions");
+
+        let storage = SessionStorage::new(storage_dir);
+
+        // Load existing entries to find the last message ID
+        let entries = storage.load_session(session_id).await?;
+        
+        if entries.is_empty() {
+            return Ok(None);
+        }
+
+        // Find the last message ID
+        let last_message_id = entries.iter().rev().find_map(|entry| {
+            match entry {
+                crate::session::jsonl::SessionEntry::Message { id, .. } => Some(id.clone()),
+                _ => None,
+            }
+        });
+
+        Ok(Some(Self {
+            id: session_id.to_string(),
+            storage,
+            last_message_id,
+        }))
+    }
+
+    /// Load conversation history for resumption
+    /// Returns ChatMessages that can be fed to the LLM
+    pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
+        use crate::providers::MessageRole;
+
+        let entries = self.storage.load_session(&self.id).await?;
+        let mut messages = Vec::new();
+
+        for entry in entries {
+            match entry {
+                crate::session::jsonl::SessionEntry::Message { message, .. } => {
+                    let role = match message.role.as_str() {
+                        "system" => MessageRole::System,
+                        "user" => MessageRole::User,
+                        "assistant" => MessageRole::Assistant,
+                        "tool" => MessageRole::Tool,
+                        _ => continue,
+                    };
+
+                    messages.push(ChatMessage {
+                        role,
+                        content: message.content,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                crate::session::jsonl::SessionEntry::ToolResult { 
+                    tool_call_id, 
+                    content, 
+                    is_error,
+                    .. 
+                } => {
+                    // Tool results become tool role messages
+                    messages.push(ChatMessage {
+                        role: MessageRole::Tool,
+                        content,
+                        tool_calls: None,
+                        tool_call_id: Some(tool_call_id),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// List available sessions for an agent
+    pub async fn list_sessions(agent_name: &str) -> Result<Vec<(String, std::time::SystemTime)>> {
+        let storage_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".pekobot")
+            .join("agents")
+            .join(agent_name)
+            .join("sessions");
+
+        let mut sessions = Vec::new();
+
+        if let Ok(mut entries) = tokio::fs::read_dir(&storage_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.extension().map_or(false, |e| e == "jsonl") {
+                    let session_id = path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    
+                    if let Ok(metadata) = entry.metadata().await {
+                        if let Ok(modified) = metadata.modified() {
+                            sessions.push((session_id, modified));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by modification time (newest first)
+        sessions.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(sessions)
     }
 
     /// Add system message

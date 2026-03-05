@@ -75,23 +75,33 @@ impl AgenticLoopV4 {
         self
     }
 
-    /// Run the agent with a user prompt.
+    /// Run the agent with a user prompt, optionally resuming from an existing session.
     ///
-    /// The `on_event` callback receives streaming events (thinking tokens,
-    /// tool calls, etc.). Use `|_| {}` if you don't need streaming.
-    ///
-    /// Returns the final result including the answer and tool calls made.
-    pub async fn run(
+    /// If `existing_session` is provided, it will be used instead of creating a new one.
+    /// If `history` is provided, those messages will be used as the starting point.
+    pub async fn run_with_resume(
         &self,
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+        existing_session: Option<SimpleSession>,
+        history: Option<Vec<ChatMessage>>,
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
 
-        // Create session (mandatory persistence)
-        let mut session = SimpleSession::create(&self.agent.name())
-            .await
-            .context("Failed to create session")?;
+        // Use existing session or create new one
+        let mut session = match existing_session {
+            Some(s) => {
+                info!("Resuming session: {}", s.id);
+                s
+            }
+            None => {
+                let s = SimpleSession::create(&self.agent.name())
+                    .await
+                    .context("Failed to create session")?;
+                info!("Created new session: {}", s.id);
+                s
+            }
+        };
 
         // Emit start event
         on_event(AgenticEvent::Lifecycle {
@@ -106,33 +116,42 @@ impl AgenticLoopV4 {
             session.id
         );
 
-        // Build initial messages
-        let mut messages = vec![ChatMessage {
-            role: MessageRole::System,
-            content: vec![ContentBlock::Text {
-                text: self.system_prompt.clone(),
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        }];
-
-        // Add system prompt to session
-        session.add_system(&self.system_prompt).await?;
-
-        // Add current time as system message before user message
-        let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let time_message = format!("current time: {}", current_time);
-        messages.push(ChatMessage {
-            role: MessageRole::System,
-            content: vec![ContentBlock::Text {
-                text: time_message.clone(),
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        });
-
-        // Add current time to session
-        session.add_system(&time_message).await?;
+        // Build messages - either from history or fresh start
+        let mut messages = match history {
+            Some(h) => {
+                info!("Loaded {} messages from history", h.len());
+                h
+            }
+            None => {
+                // Fresh start - add system prompt
+                let mut msgs = vec![ChatMessage {
+                    role: MessageRole::System,
+                    content: vec![ContentBlock::Text {
+                        text: self.system_prompt.clone(),
+                    }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                }];
+                
+                // Add system prompt to session
+                session.add_system(&self.system_prompt).await?;
+                
+                // Add current time
+                let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+                let time_message = format!("current time: {}", current_time);
+                msgs.push(ChatMessage {
+                    role: MessageRole::System,
+                    content: vec![ContentBlock::Text {
+                        text: time_message.clone(),
+                    }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+                session.add_system(&time_message).await?;
+                
+                msgs
+            }
+        };
 
         // Add user message
         messages.push(ChatMessage {
@@ -145,6 +164,27 @@ impl AgenticLoopV4 {
         // Add user message to session
         session.add_user(prompt).await?;
 
+        // Continue with the rest of the run logic
+        self.run_loop(messages, session, on_event, run_id).await
+    }
+
+    /// Original run method - creates new session
+    pub async fn run(
+        &self,
+        prompt: &str,
+        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+    ) -> Result<AgenticResult> {
+        self.run_with_resume(prompt, on_event, None, None).await
+    }
+
+    /// Main agent loop logic
+    async fn run_loop(
+        &self,
+        mut messages: Vec<ChatMessage>,
+        mut session: SimpleSession,
+        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+        run_id: String,
+    ) -> Result<AgenticResult> {
         // Build tool definitions
         let tool_defs = self.build_tool_definitions();
 
@@ -205,7 +245,7 @@ impl AgenticLoopV4 {
                     .await?
             } else {
                 // Fallback to legacy text-based approach
-                self.fallback_chat_with_tools(&messages, prompt).await?
+                self.fallback_chat_with_tools(&messages, "").await?
             };
 
             // Accumulate usage
