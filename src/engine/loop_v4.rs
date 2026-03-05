@@ -359,7 +359,8 @@ impl AgenticLoopV4 {
                                     result.to_string()
                                 }
                                 Err(e) => {
-                                    error!("Tool '{}' failed: {}", name, e);
+                                    // Tool errors are informational - agent can handle them
+                                    info!("Tool '{}' failed: {}", name, e);
                                     format!("Error: {}", e)
                                 }
                             }
