@@ -218,9 +218,9 @@ impl Agent {
 
                 let _result = loop_
                     .run(&prompt, move |event| {
-                        // Try to send event - log if dropped
-                        if let Err(e) = event_tx_clone.try_send(event) {
-                            eprintln!("Warning: Dropped agent event: {:?}", e);
+                        // Try to send event - log if dropped (buffer full means consumer is slow)
+                        if let Err(_) = event_tx_clone.try_send(event) {
+                            warn!("Agent event dropped (channel full)");
                         }
                     })
                     .await;
@@ -230,53 +230,6 @@ impl Agent {
         }
 
         Ok(event_rx)
-    }
-
-    /// Execute a task with tools using the agentic loop (deprecated - use `execute()`)
-    #[deprecated(since = "0.2.0", note = "Use execute() with callback instead")]
-    pub async fn execute_with_tools(&self, prompt: &str) -> Result<crate::engine::AgenticResultV3> {
-        use crate::engine::loop_v3::AgenticLoopV3;
-        use crate::tools::*;
-        use std::sync::Arc;
-
-        if self.state() != AgentState::Idle {
-            return Err(anyhow::anyhow!(
-                "Agent is not idle (current state: {:?})",
-                self.state()
-            ));
-        }
-
-        self.set_state(AgentState::Busy);
-
-        let result = if let Some(provider) = &self.provider {
-            // Create core tools
-            let tools: Vec<Arc<dyn Tool>> = vec![
-                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
-                Arc::new(FetchTool::new(FetchConfig::default())),
-                Arc::new(FileSystemTool::new()),
-                Arc::new(ProcessTool::new()),
-            ];
-
-            // Use self (existing agent) and clone the Arc to the provider
-            // This keeps the same identity across all messages!
-            let agent_arc = Arc::new(self.clone_for_loop());
-            let provider_arc = Arc::clone(provider);
-
-            let loop_ = AgenticLoopV3::new(agent_arc, provider_arc, tools);
-
-            match loop_.run(prompt).await {
-                Ok(result) => Ok(result),
-                Err(e) => {
-                    error!("Agentic loop error: {}", e);
-                    Err(e)
-                }
-            }
-        } else {
-            Err(anyhow::anyhow!("No provider configured"))
-        };
-
-        self.set_state(AgentState::Idle);
-        result
     }
 
     /// Clone the agent for use in the agentic loop

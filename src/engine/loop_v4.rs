@@ -217,10 +217,8 @@ impl AgenticLoopV4 {
                 // Emit thinking text BEFORE tool calls
                 let assistant_text = text_parts.join(" ");
                 if !assistant_text.is_empty() {
-                    eprintln!("DEBUG: Printing thinking text: '{}'", assistant_text);
-                    // Print directly since channel is losing events
+                    // Print thinking text and emit event for listeners
                     println!("\n💭 {}", assistant_text);
-                    // Also emit event for any other listeners
                     on_event(AgenticEvent::Thinking {
                         run_id: run_id.clone(),
                         text: assistant_text.clone(),
