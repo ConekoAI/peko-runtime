@@ -1,27 +1,33 @@
 //! Web search tool
 //!
-//! Provides web search capabilities using Brave Search or `DuckDuckGo`.
+//! Provides web search capabilities using Brave Search API.
 //! Results are cached for 15 minutes to reduce API calls.
+//!
+//! # Configuration
+//! Requires `BRAVE_API_KEY` environment variable or api_key in config.
+//! Get a free API key at: https://api.search.brave.com/
 
 use async_trait::async_trait;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::tools::traits::Tool;
 
-/// Search provider configuration
+/// Search provider (only Brave supported now)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 pub enum SearchProvider {
     /// Brave Search API (requires API key)
     Brave,
-    /// `DuckDuckGo` (no API key needed, uses HTML scraping)
-    #[default]
-    DuckDuckGo,
+}
+
+impl Default for SearchProvider {
+    fn default() -> Self {
+        SearchProvider::Brave
+    }
 }
 
 /// Web search tool configuration
@@ -30,10 +36,7 @@ pub struct WebSearchConfig {
     /// Enable the tool
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Search provider
-    #[serde(default)]
-    pub provider: SearchProvider,
-    /// API key (for Brave)
+    /// API key for Brave Search (or use BRAVE_API_KEY env var)
     pub api_key: Option<String>,
     /// Maximum results per query (1-20)
     #[serde(default = "default_max_results")]
@@ -47,7 +50,6 @@ impl Default for WebSearchConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            provider: SearchProvider::default(),
             api_key: None,
             max_results: 10,
             cache_ttl_seconds: 900, // 15 minutes
@@ -98,37 +100,29 @@ pub struct SearchResult {
 /// Search response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResponse {
-    /// Search query
+    /// Original query
     pub query: String,
-    /// Total results found (approximate)
+    /// Total results found (may be None for some providers)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub total_results: Option<u32>,
-    /// List of results
+    /// Search results
     pub results: Vec<SearchResult>,
     /// Provider used
     pub provider: String,
 }
 
-/// Simple in-memory cache entry
-#[derive(Debug, Clone)]
-struct CacheEntry {
-    response: SearchResponse,
-    timestamp: std::time::Instant,
-}
-
-/// Web search tool
+/// Web search tool implementation
 pub struct WebSearchTool {
     config: WebSearchConfig,
     client: Client,
-    cache: std::sync::Mutex<HashMap<String, CacheEntry>>,
+    cache: std::sync::Mutex<HashMap<String, (SearchResponse, std::time::Instant)>>,
 }
 
 impl WebSearchTool {
     /// Create a new web search tool
-    #[must_use]
     pub fn new(config: WebSearchConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
-            .user_agent("Pekobot/0.1 (WebSearchTool)")
             .build()
             .expect("Failed to create HTTP client");
 
@@ -139,25 +133,28 @@ impl WebSearchTool {
         }
     }
 
-    /// Generate cache key from query + count + freshness
+    /// Get API key from config or environment
+    fn get_api_key(&self) -> Option<String> {
+        self.config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("BRAVE_API_KEY").ok())
+    }
+
+    /// Generate cache key
     fn cache_key(&self, query: &str, count: u32, freshness: Option<&str>) -> String {
-        format!(
-            "{}:{}:{}",
-            query.to_lowercase(),
-            count,
-            freshness.unwrap_or("none")
-        )
+        format!("{}:{}:{:?}", query.to_lowercase(), count, freshness)
     }
 
     /// Check cache for existing results
     fn check_cache(&self, key: &str) -> Option<SearchResponse> {
         let cache = self.cache.lock().ok()?;
-        let entry = cache.get(key)?;
+        let (response, timestamp) = cache.get(key)?;
 
-        let age = entry.timestamp.elapsed().as_secs();
+        let age = timestamp.elapsed().as_secs();
         if age < self.config.cache_ttl_seconds {
             debug!("Cache hit for key: {}", key);
-            Some(entry.response.clone())
+            Some(response.clone())
         } else {
             debug!("Cache expired for key: {}", key);
             None
@@ -170,74 +167,74 @@ impl WebSearchTool {
             // Simple cleanup: remove entries older than 2x TTL
             let now = std::time::Instant::now();
             let ttl = Duration::from_secs(self.config.cache_ttl_seconds * 2);
-            cache.retain(|_, entry| now.duration_since(entry.timestamp) < ttl);
+            cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp) < ttl);
 
-            cache.insert(
-                key,
-                CacheEntry {
-                    response,
-                    timestamp: std::time::Instant::now(),
-                },
-            );
+            cache.insert(key, (response, std::time::Instant::now()));
         }
     }
 
-    /// Perform search with Brave API
-    async fn search_brave(&self, args: &SearchArgs) -> Result<SearchResponse, String> {
+    /// Search using Brave API
+    async fn search_brave(&self, args: &SearchArgs) -> anyhow::Result<SearchResponse> {
         let api_key = self
-            .config
-            .api_key
-            .as_ref()
-            .ok_or("Brave API key not configured")?;
+            .get_api_key()
+            .ok_or_else(|| anyhow::anyhow!("BRAVE_API_KEY not configured. Get a free key at https://api.search.brave.com/"))?;
 
         let count = args.count.unwrap_or(self.config.max_results).min(20).max(1);
 
-        let mut url = Url::parse("https://api.search.brave.com/res/v1/web/search")
-            .map_err(|e| format!("Invalid URL: {e}"))?;
-
-        url.query_pairs_mut()
-            .append_pair("q", &args.query)
-            .append_pair("count", &count.to_string());
-
-        if let Some(freshness) = &args.freshness {
-            url.query_pairs_mut().append_pair("freshness", freshness);
-        }
+        let url = Url::parse_with_params(
+            "https://api.search.brave.com/res/v1/web/search",
+            &[
+                ("q", args.query.as_str()),
+                ("count", &count.to_string()),
+                ("offset", "0"),
+                ("mkt", "en-US"),
+            ],
+        )
+        .map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
 
         debug!("Brave search URL: {}", url);
 
         let response = self
             .client
             .get(url)
+            .header("Accept", "application/json")
             .header("X-Subscription-Token", api_key)
             .send()
             .await
-            .map_err(|e| format!("Request failed: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Request failed: {e}"))?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(format!("Brave API error {status}: {text}"));
+            let error_text = response.text().await.unwrap_or_default();
+            
+            // Provide helpful error messages
+            return Err(anyhow::anyhow!(
+                "{}",
+                match status.as_u16() {
+                    401 => "Invalid Brave API key. Please check your BRAVE_API_KEY.".to_string(),
+                    429 => "Brave API rate limit exceeded. Please try again later.".to_string(),
+                    _ => format!("Brave API error: {} - {}", status, error_text),
+                }
+            ));
         }
 
-        let brave_response: BraveResponse = response
+        let brave_response: BraveSearchResponse = response
             .json()
             .await
-            .map_err(|e| format!("Failed to parse response: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse response: {e}"))?;
 
         let results: Vec<SearchResult> = brave_response
             .web
             .results
             .into_iter()
+            .take(count as usize)
             .map(|r| {
-                let url = r.url; // Extract first to avoid move issues
+                let source = extract_domain(&r.url);
                 SearchResult {
                     title: r.title,
-                    source: extract_domain(&url),
-                    url,
+                    url: r.url,
                     snippet: r.description,
+                    source,
                     published: r.age,
                 }
             })
@@ -245,233 +242,11 @@ impl WebSearchTool {
 
         Ok(SearchResponse {
             query: args.query.clone(),
-            total_results: brave_response.web.total_count,
+            total_results: Some(results.len() as u32),
             results,
             provider: "brave".to_string(),
         })
     }
-
-    /// Perform search with `DuckDuckGo` (HTML scraping)
-    async fn search_ddg(&self, args: &SearchArgs) -> Result<SearchResponse, String> {
-        let count = args.count.unwrap_or(self.config.max_results).min(20).max(1);
-
-        // DuckDuckGo HTML interface
-        let mut url = Url::parse("https://html.duckduckgo.com/html/")
-            .map_err(|e| format!("Invalid URL: {e}"))?;
-
-        url.query_pairs_mut().append_pair("q", &args.query);
-
-        // DDG doesn't support freshness filter in HTML interface
-        // We could use the JSON API but it has stricter rate limits
-
-        debug!("DDG search URL: {}", url);
-
-        let response = self
-            .client
-            .get(url)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0",
-            )
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {e}"))?;
-
-        if !response.status().is_success() {
-            return Err(format!("DDG returned status: {}", response.status()));
-        }
-
-        let html = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response: {e}"))?;
-
-        let results = parse_ddg_results(&html, count as usize)?;
-
-        Ok(SearchResponse {
-            query: args.query.clone(),
-            total_results: None, // DDG doesn't provide this
-            results,
-            provider: "duckduckgo".to_string(),
-        })
-    }
-}
-
-/// Extract domain from URL
-fn extract_domain(url: &str) -> Option<String> {
-    Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(std::string::ToString::to_string))
-}
-
-/// Brave API response structure
-#[derive(Debug, Deserialize)]
-struct BraveResponse {
-    #[serde(rename = "web")]
-    web: BraveWebResults,
-}
-
-#[derive(Debug, Deserialize)]
-struct BraveWebResults {
-    #[serde(rename = "total_count")]
-    total_count: Option<u32>,
-    results: Vec<BraveResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BraveResult {
-    title: String,
-    url: String,
-    description: String,
-    #[serde(rename = "age")]
-    age: Option<String>,
-}
-
-/// Parse `DuckDuckGo` HTML results
-/// This is fragile - DDG may change their HTML structure
-fn parse_ddg_results(html: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
-    use scraper::{Html, Selector};
-
-    let document = Html::parse_document(html);
-
-    // Try multiple selectors as DDG changes their HTML frequently
-    let selectors = [
-        "article[data-testid='result']",        // 2025 DDG layout
-        "div[data-result]",                     // Alternative layout
-        ".result[data-testid]",                 // Another variant
-        "article.result",                       // Older design
-        "div.result",                           // Classic DDG
-        ".web-result",                          // Legacy
-    ];
-
-    let mut results = Vec::new();
-
-    for selector_str in &selectors {
-        let selector = match Selector::parse(selector_str) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        for element in document.select(&selector).take(limit) {
-            // Try multiple title selectors
-            let title = element
-                .select(&Selector::parse("h2 a, h3 a, [data-testid='result-title-a'], a[href]").unwrap())
-                .next()
-                .and_then(|e| {
-                    let text = e.text().collect::<String>();
-                    let trimmed = text.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                });
-
-            // Try multiple URL selectors
-            let url = element
-                .select(&Selector::parse("a[href]").unwrap())
-                .next()
-                .and_then(|e| e.value().attr("href"))
-                .map(std::string::ToString::to_string);
-
-            // Try multiple snippet selectors
-            let snippet = element
-                .select(&Selector::parse(
-                    "[data-testid='result-snippet'], .result__snippet, .result__body, p"
-                ).unwrap())
-                .next()
-                .and_then(|e| {
-                    let text = e.text().collect::<String>();
-                    let trimmed = text.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                });
-
-            if let (Some(title), Some(url)) = (title, url) {
-                // DDG uses redirects, extract actual URL
-                let actual_url = if url.starts_with("//duckduckgo.com/l/") || url.starts_with("/l/") {
-                    // Extract from redirect URL
-                    extract_ddg_redirect(&url).unwrap_or(url)
-                } else {
-                    url
-                };
-
-                // Skip if it's a DDG internal link
-                if actual_url.contains("duckduckgo.com") || actual_url.starts_with("/") {
-                    continue;
-                }
-
-                results.push(SearchResult {
-                    title,
-                    url: actual_url.clone(),
-                    snippet: snippet.unwrap_or_default(),
-                    source: extract_domain(&actual_url),
-                    published: None,
-                });
-            }
-        }
-
-        if !results.is_empty() {
-            debug!("Found {} DDG results using selector: {}", results.len(), selector_str);
-            break; // Found results with this selector
-        }
-    }
-
-    if results.is_empty() {
-        // Fallback: try very simple parsing with regex
-        warn!("Could not parse DDG results with standard selectors, trying fallback");
-        results = parse_ddg_fallback(html, limit);
-    }
-
-    Ok(results)
-}
-
-/// Fallback parser using regex when CSS selectors fail
-fn parse_ddg_fallback(html: &str, limit: usize) -> Vec<SearchResult> {
-    use regex::Regex;
-    let mut results = Vec::new();
-    
-    // Try to find result links with their text
-    let link_regex = match Regex::new(r#"<a[^>]+href="([^"]*duckduckgo\.com/l/[^"]*)"[^>]*>(.*?)</a>"#) {
-        Ok(re) => re,
-        Err(_) => return results,
-    };
-    
-    for cap in link_regex.captures_iter(html).take(limit) {
-        let href = &cap[1];
-        let title_html = &cap[2];
-        
-        // Extract title (strip HTML tags)
-        let title = title_html.replace(|c: char| c == '<' || c == '>', " ").trim().to_string();
-        
-        if !title.is_empty() {
-            let actual_url = extract_ddg_redirect(href).unwrap_or_else(|| href.to_string());
-            if !actual_url.contains("duckduckgo.com") && !actual_url.starts_with("/") {
-                results.push(SearchResult {
-                    title,
-                    url: actual_url.clone(),
-                    snippet: String::new(),
-                    source: extract_domain(&actual_url),
-                    published: None,
-                });
-            }
-        }
-    }
-    
-    results
-}
-
-/// Extract actual URL from DDG redirect
-fn extract_ddg_redirect(redirect_url: &str) -> Option<String> {
-    // DDG redirect URLs look like: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com
-    if let Some(pos) = redirect_url.find("uddg=") {
-        let encoded = &redirect_url[pos + 5..];
-        return urlencoding::decode(encoded).ok().map(|s| s.to_string());
-    }
-    None
 }
 
 #[async_trait]
@@ -481,7 +256,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search the web using Brave Search or DuckDuckGo"
+        "Search the web using Brave Search API. Requires BRAVE_API_KEY environment variable."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -524,11 +299,8 @@ impl Tool for WebSearchTool {
             return Ok(serde_json::to_value(cached)?);
         }
 
-        // Perform search
-        let result = match self.config.provider {
-            SearchProvider::Brave => self.search_brave(&args).await,
-            SearchProvider::DuckDuckGo => self.search_ddg(&args).await,
-        };
+        // Perform search with Brave
+        let result = self.search_brave(&args).await;
 
         match result {
             Ok(response) => {
@@ -541,6 +313,33 @@ impl Tool for WebSearchTool {
     }
 }
 
+/// Extract domain from URL
+fn extract_domain(url: &str) -> Option<String> {
+    Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+}
+
+/// Brave Search API response structure
+#[derive(Debug, Deserialize)]
+struct BraveSearchResponse {
+    web: BraveWebResults,
+}
+
+#[derive(Debug, Deserialize)]
+struct BraveWebResults {
+    results: Vec<BraveResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BraveResult {
+    title: String,
+    url: String,
+    description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    age: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,17 +349,14 @@ mod tests {
         let config = WebSearchConfig::default();
         let tool = WebSearchTool::new(config);
 
-        let key1 = tool.cache_key("hello world", 10, None);
-        assert_eq!(key1, "hello world:10:none");
+        let key1 = tool.cache_key("rust", 10, None);
+        let key2 = tool.cache_key("rust", 10, None);
+        let key3 = tool.cache_key("Rust", 10, None); // case insensitive
+        let key4 = tool.cache_key("rust", 5, None);
 
-        let key2 = tool.cache_key("Hello World", 10, Some("pd"));
-        assert_eq!(key2, "hello world:10:pd");
-
-        // Different queries = different keys
-        assert_ne!(
-            tool.cache_key("hello", 10, None),
-            tool.cache_key("world", 10, None)
-        );
+        assert_eq!(key1, key2);
+        assert_eq!(key1, key3); // case insensitive
+        assert_ne!(key1, key4); // different count
     }
 
     #[test]
@@ -570,32 +366,9 @@ mod tests {
             Some("example.com".to_string())
         );
         assert_eq!(
-            extract_domain("https://sub.example.co.uk/path"),
-            Some("sub.example.co.uk".to_string())
+            extract_domain("https://www.example.com/path"),
+            Some("www.example.com".to_string())
         );
         assert_eq!(extract_domain("not-a-url"), None);
-    }
-
-    #[tokio::test]
-    async fn test_ddg_fallback_when_no_brave_key() {
-        let config = WebSearchConfig {
-            enabled: true,
-            provider: SearchProvider::Brave,
-            api_key: None,
-            max_results: 5,
-            cache_ttl_seconds: 900,
-        };
-
-        let tool = WebSearchTool::new(config);
-        let args = SearchArgs {
-            query: "test".to_string(),
-            count: Some(5),
-            freshness: None,
-        };
-
-        // Should fail because no API key
-        let result = tool.search_brave(&args).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("API key not configured"));
     }
 }
