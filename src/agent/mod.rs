@@ -255,9 +255,6 @@ impl Agent {
     ///
     /// Note: This method must be called within a tokio::task::LocalSet
     /// because Agent contains non-Send types (rusqlite connections).
-
-    /// Execute with streaming support using AgenticLoopV3 (deprecated - use execute_streaming())
-
     /// Search memory
     pub fn search_memory(
         &self,
