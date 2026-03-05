@@ -1,7 +1,8 @@
-//! Web search tool
+//! Web search tool using Brave LLM Context API
 //!
-//! Provides web search capabilities using Brave Search API.
-//! Results are cached for 15 minutes to reduce API calls.
+//! Provides web search capabilities optimized for AI agents.
+//! Uses Brave's LLM Context API which returns pre-extracted, relevance-scored
+//! web content ready for LLM consumption—no scraping needed.
 //!
 //! # Configuration
 //! Requires `BRAVE_API_KEY` environment variable or api_key in config.
@@ -12,23 +13,9 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::tools::traits::Tool;
-
-/// Search provider (only Brave supported now)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum SearchProvider {
-    /// Brave Search API (requires API key)
-    Brave,
-}
-
-impl Default for SearchProvider {
-    fn default() -> Self {
-        SearchProvider::Brave
-    }
-}
 
 /// Web search tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,9 +25,12 @@ pub struct WebSearchConfig {
     pub enabled: bool,
     /// API key for Brave Search (or use BRAVE_API_KEY env var)
     pub api_key: Option<String>,
-    /// Maximum results per query (1-20)
-    #[serde(default = "default_max_results")]
-    pub max_results: u32,
+    /// Maximum URLs to include in context (1-20)
+    #[serde(default = "default_max_urls")]
+    pub max_urls: u32,
+    /// Maximum tokens per URL (100-5000)
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
     /// Cache TTL in seconds
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl_seconds: u64,
@@ -51,7 +41,8 @@ impl Default for WebSearchConfig {
         Self {
             enabled: true,
             api_key: None,
-            max_results: 10,
+            max_urls: 5,
+            max_tokens: 2000,
             cache_ttl_seconds: 900, // 15 minutes
         }
     }
@@ -61,8 +52,12 @@ fn default_true() -> bool {
     true
 }
 
-fn default_max_results() -> u32 {
-    10
+fn default_max_urls() -> u32 {
+    5
+}
+
+fn default_max_tokens() -> u32 {
+    2000
 }
 
 fn default_cache_ttl() -> u64 {
@@ -74,27 +69,21 @@ fn default_cache_ttl() -> u64 {
 pub struct SearchArgs {
     /// Search query
     pub query: String,
-    /// Number of results (1-20, default from config)
+    /// Number of URLs to include (1-20, default from config)
     pub count: Option<u32>,
-    /// Freshness filter: "pd" (past day), "pw" (past week), "pm" (past month), "py" (past year)
-    pub freshness: Option<String>,
 }
 
-/// Individual search result
+/// Search result with pre-extracted content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
-    /// Result title
-    pub title: String,
-    /// Result URL
+    /// Source URL
     pub url: String,
-    /// Snippet/description
-    pub snippet: String,
-    /// Source domain (extracted from URL)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    /// Published date if available
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub published: Option<String>,
+    /// Page title
+    pub title: String,
+    /// Extracted content (text, tables, code blocks)
+    pub content: String,
+    /// Source domain
+    pub source: String,
 }
 
 /// Search response
@@ -102,13 +91,10 @@ pub struct SearchResult {
 pub struct SearchResponse {
     /// Original query
     pub query: String,
-    /// Total results found (may be None for some providers)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_results: Option<u32>,
-    /// Search results
-    pub results: Vec<SearchResult>,
-    /// Provider used
-    pub provider: String,
+    /// Aggregated context from all sources
+    pub context: String,
+    /// Individual source results
+    pub sources: Vec<SearchResult>,
 }
 
 /// Web search tool implementation
@@ -142,8 +128,8 @@ impl WebSearchTool {
     }
 
     /// Generate cache key
-    fn cache_key(&self, query: &str, count: u32, freshness: Option<&str>) -> String {
-        format!("{}:{}:{:?}", query.to_lowercase(), count, freshness)
+    fn cache_key(&self, query: &str, max_urls: u32) -> String {
+        format!("{}:{}", query.to_lowercase(), max_urls)
     }
 
     /// Check cache for existing results
@@ -173,26 +159,28 @@ impl WebSearchTool {
         }
     }
 
-    /// Search using Brave API
-    async fn search_brave(&self, args: &SearchArgs) -> anyhow::Result<SearchResponse> {
+    /// Search using Brave LLM Context API
+    async fn search_brave(&self,
+        args: &SearchArgs,
+    ) -> anyhow::Result<SearchResponse> {
         let api_key = self
             .get_api_key()
             .ok_or_else(|| anyhow::anyhow!("BRAVE_API_KEY not configured. Get a free key at https://api.search.brave.com/"))?;
 
-        let count = args.count.unwrap_or(self.config.max_results).min(20).max(1);
+        let max_urls = args.count.unwrap_or(self.config.max_urls).min(20).max(1);
+        let max_tokens = self.config.max_tokens.min(5000).max(100);
 
         let url = Url::parse_with_params(
-            "https://api.search.brave.com/res/v1/web/search",
+            "https://api.search.brave.com/res/v1/llm/context",
             &[
                 ("q", args.query.as_str()),
-                ("count", &count.to_string()),
-                ("offset", "0"),
-                ("mkt", "en-US"),
+                ("max_urls", &max_urls.to_string()),
+                ("max_tokens_per_url", &max_tokens.to_string()),
             ],
         )
         .map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
 
-        debug!("Brave search URL: {}", url);
+        debug!("Brave LLM Context URL: {}", url);
 
         let response = self
             .client
@@ -207,44 +195,36 @@ impl WebSearchTool {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             
-            // Provide helpful error messages
-            return Err(anyhow::anyhow!(
-                "{}",
-                match status.as_u16() {
-                    401 => "Invalid Brave API key. Please check your BRAVE_API_KEY.".to_string(),
-                    429 => "Brave API rate limit exceeded. Please try again later.".to_string(),
-                    _ => format!("Brave API error: {} - {}", status, error_text),
-                }
-            ));
+            let message = match status.as_u16() {
+                401 => "Invalid Brave API key. Please check your BRAVE_API_KEY.".to_string(),
+                429 => "Brave API rate limit exceeded. Please try again later.".to_string(),
+                _ => format!("Brave API error: {} - {}", status, error_text),
+            };
+            
+            return Err(anyhow::anyhow!(message));
         }
 
-        let brave_response: BraveSearchResponse = response
+        let llm_response: BraveLlmContextResponse = response
             .json()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to parse response: {e}"))?;
 
-        let results: Vec<SearchResult> = brave_response
-            .web
-            .results
+        // Convert to our SearchResult format
+        let sources: Vec<SearchResult> = llm_response
+            .urls
             .into_iter()
-            .take(count as usize)
-            .map(|r| {
-                let source = extract_domain(&r.url);
-                SearchResult {
-                    title: r.title,
-                    url: r.url,
-                    snippet: r.description,
-                    source,
-                    published: r.age,
-                }
+            .map(|u| SearchResult {
+                url: u.url.clone(),
+                title: u.title.clone(),
+                content: u.content.clone(),
+                source: extract_domain(&u.url),
             })
             .collect();
 
         Ok(SearchResponse {
             query: args.query.clone(),
-            total_results: Some(results.len() as u32),
-            results,
-            provider: "brave".to_string(),
+            context: llm_response.context,
+            sources,
         })
     }
 }
@@ -256,7 +236,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search the web using Brave Search API. Requires BRAVE_API_KEY environment variable."
+        "Search the web using Brave LLM Context API. Returns pre-extracted, relevance-scored content optimized for AI agents. Requires BRAVE_API_KEY environment variable."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -269,21 +249,19 @@ impl Tool for WebSearchTool {
                 },
                 "count": {
                     "type": "integer",
-                    "description": "Number of results to return (1-20)",
+                    "description": "Number of URLs to include in context (1-20)",
                     "minimum": 1,
                     "maximum": 20
-                },
-                "freshness": {
-                    "type": "string",
-                    "description": "Filter by freshness: pd (past day), pw (past week), pm (past month), py (past year)",
-                    "enum": ["pd", "pw", "pm", "py"]
                 }
             },
             "required": ["query"]
         })
     }
 
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
         let args: SearchArgs =
             serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
@@ -291,15 +269,15 @@ impl Tool for WebSearchTool {
             return Err(anyhow::anyhow!("Query cannot be empty"));
         }
 
-        let count = args.count.unwrap_or(self.config.max_results).min(20).max(1);
-        let cache_key = self.cache_key(&args.query, count, args.freshness.as_deref());
+        let count = args.count.unwrap_or(self.config.max_urls).min(20).max(1);
+        let cache_key = self.cache_key(&args.query, count);
 
         // Check cache
         if let Some(cached) = self.check_cache(&cache_key) {
             return Ok(serde_json::to_value(cached)?);
         }
 
-        // Perform search with Brave
+        // Perform search with Brave LLM Context API
         let result = self.search_brave(&args).await;
 
         match result {
@@ -314,30 +292,30 @@ impl Tool for WebSearchTool {
 }
 
 /// Extract domain from URL
-fn extract_domain(url: &str) -> Option<String> {
+fn extract_domain(url: &str) -> String {
     Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Brave Search API response structure
+/// Brave LLM Context API response structure
 #[derive(Debug, Deserialize)]
-struct BraveSearchResponse {
-    web: BraveWebResults,
+struct BraveLlmContextResponse {
+    /// Aggregated context from all sources
+    context: String,
+    /// Individual URL results
+    urls: Vec<BraveUrlResult>,
 }
 
 #[derive(Debug, Deserialize)]
-struct BraveWebResults {
-    results: Vec<BraveResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BraveResult {
-    title: String,
+struct BraveUrlResult {
+    /// Source URL
     url: String,
-    description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    age: Option<String>,
+    /// Page title
+    title: String,
+    /// Extracted content
+    content: String,
 }
 
 #[cfg(test)]
@@ -349,10 +327,10 @@ mod tests {
         let config = WebSearchConfig::default();
         let tool = WebSearchTool::new(config);
 
-        let key1 = tool.cache_key("rust", 10, None);
-        let key2 = tool.cache_key("rust", 10, None);
-        let key3 = tool.cache_key("Rust", 10, None); // case insensitive
-        let key4 = tool.cache_key("rust", 5, None);
+        let key1 = tool.cache_key("rust", 5);
+        let key2 = tool.cache_key("rust", 5);
+        let key3 = tool.cache_key("Rust", 5); // case insensitive
+        let key4 = tool.cache_key("rust", 3);
 
         assert_eq!(key1, key2);
         assert_eq!(key1, key3); // case insensitive
@@ -363,12 +341,12 @@ mod tests {
     fn test_extract_domain() {
         assert_eq!(
             extract_domain("https://example.com/path"),
-            Some("example.com".to_string())
+            "example.com"
         );
         assert_eq!(
             extract_domain("https://www.example.com/path"),
-            Some("www.example.com".to_string())
+            "www.example.com"
         );
-        assert_eq!(extract_domain("not-a-url"), None);
+        assert_eq!(extract_domain("not-a-url"), "unknown");
     }
 }

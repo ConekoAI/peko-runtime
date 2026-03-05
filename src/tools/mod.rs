@@ -44,4 +44,4 @@ pub use session_introspection::{
 };
 pub use session_messaging::{SessionMessagingTool, SessionRegistry};
 pub use traits::{Tool, ToolError};
-pub use web_search::{SearchProvider, WebSearchConfig, WebSearchTool};
+pub use web_search::{WebSearchConfig, WebSearchTool};
