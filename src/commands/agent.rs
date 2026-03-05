@@ -160,7 +160,7 @@ pub async fn handle_agent(
 /// Agent command handlers
 pub mod handlers {
     use crate::agent::Agent;
-    use crate::channels::cli::{run_interactive_loop_with_agent, CliChannel};
+    use crate::channels::cli::{run_interactive_loop, CliChannel};
     use crate::commands::GlobalPaths;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -234,15 +234,18 @@ pub mod handlers {
                     };
                     let mut channel = CliChannel::with_config(&agent_name, streaming_config);
 
+                    let agent_arc = std::sync::Arc::new(std::sync::Mutex::new(agent));
                     if let Err(e) =
-                        run_interactive_loop_with_agent(&mut channel, &agent_name, &agent).await
+                        run_interactive_loop(channel, agent_arc.clone()).await
                     {
                         eprintln!("❌ Error in interactive loop: {e}");
                     }
-                }
-
-                if let Err(e) = agent.stop().await {
-                    eprintln!("❌ Error stopping agent: {e}");
+                    
+                    // Stop the agent after the loop completes
+                    let agent_guard = agent_arc.lock().unwrap();
+                    if let Err(e) = agent_guard.stop().await {
+                        eprintln!("❌ Error stopping agent: {e}");
+                    }
                 }
 
                 println!("\n👋 Agent '{}' stopped. Goodbye!", agent_name);
