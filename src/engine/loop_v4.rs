@@ -116,6 +116,17 @@ impl AgenticLoopV4 {
             tool_call_id: None,
         }];
 
+        // Add current time as system message before user message
+        let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+        messages.push(ChatMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text {
+                text: format!("current time: {}", current_time),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
         // Add user message
         messages.push(ChatMessage {
             role: MessageRole::User,
