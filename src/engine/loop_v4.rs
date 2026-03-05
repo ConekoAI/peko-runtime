@@ -32,6 +32,15 @@ pub struct AgenticResult {
     pub usage: crate::providers::TokenUsage,
 }
 
+/// A tool call for session storage compatibility
+#[derive(Debug, Clone)]
+pub struct ToolCall {
+    /// Tool name
+    pub name: String,
+    /// Tool parameters
+    pub parameters: serde_json::Value,
+}
+
 /// v4 agentic loop with native tool calling
 pub struct AgenticLoopV4 {
     agent: Arc<Agent>,
@@ -478,12 +487,12 @@ fn messages_to_prompt(messages: &[ChatMessage]) -> String {
 }
 
 /// Extract tool calls from ContentBlock for session storage
-fn extract_tool_calls(blocks: &[ContentBlock]) -> Vec<crate::engine::loop_v3::ToolCall> {
+fn extract_tool_calls(blocks: &[ContentBlock]) -> Vec<ToolCall> {
     blocks
         .iter()
         .filter_map(|b| match b {
             ContentBlock::ToolCall { id: _, name, arguments } => {
-                Some(crate::engine::loop_v3::ToolCall {
+                Some(ToolCall {
                     name: name.clone(),
                     parameters: arguments.clone(),
                 })
