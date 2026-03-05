@@ -105,6 +105,7 @@ struct PresentationState {
     agent_name: String,
     has_started_response: bool,
     in_streaming: bool,
+    printed_content: String, // Track what we've already printed
 }
 
 impl PresentationState {
@@ -113,6 +114,7 @@ impl PresentationState {
             agent_name,
             has_started_response: false,
             in_streaming: false,
+            printed_content: String::new(),
         }
     }
 
@@ -129,7 +131,13 @@ impl PresentationState {
     fn print_text(&mut self, text: &str) {
         self.start_response();
         print!("{}", text);
+        self.printed_content.push_str(text);
         std::io::stdout().flush().unwrap();
+    }
+
+    /// Check if content was already printed
+    fn is_duplicate(&self, text: &str) -> bool {
+        self.printed_content.contains(text) || text == self.printed_content
     }
 
     /// End the current response stream
@@ -169,15 +177,15 @@ async fn process_events(
             },
             AgenticEvent::Thinking { text, .. } => {
                 // Treat reasoning/thinking as normal agent text
-                // This streams continuously while the agent is "working"
-                if !text.is_empty() {
+                // Skip if this is duplicate of what we already printed
+                if !text.is_empty() && !state.is_duplicate(&text) {
                     // Replace newlines with spaces for clean single-line output
                     let single_line = text.replace('\n', " ");
                     state.print_text(&single_line);
                 }
             }
             AgenticEvent::Assistant { text, is_final, .. } => {
-                if is_final && !text.is_empty() {
+                if is_final && !text.is_empty() && !state.is_duplicate(&text) {
                     // Final answer - ensure we're on a new line if needed
                     if !state.has_started_response {
                         print!("\n{}: ", agent_name);
