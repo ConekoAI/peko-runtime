@@ -206,13 +206,8 @@ impl AgenticLoopV4 {
                         assistant_content.push(block.clone());
                     }
                     ContentBlock::Thinking { text, .. } => {
-                        // Stream thinking to user
-                        on_event(AgenticEvent::Assistant {
-                            run_id: run_id.clone(),
-                            text: text.clone(),
-                            is_delta: true,
-                            is_final: false,
-                        });
+                        // Collect thinking content but don't emit event here
+                        // It will be emitted as AgenticEvent::Thinking before tool calls
                         assistant_content.push(block.clone());
                     }
                     _ => {}
@@ -226,12 +221,11 @@ impl AgenticLoopV4 {
                 // Emit thinking text BEFORE tool calls
                 let assistant_text = text_parts.join(" ");
                 if !assistant_text.is_empty() {
-                    // Print thinking text and emit event for listeners
-                    println!("\n💭 {}", assistant_text);
+                    // Emit thinking event for listeners (CLI will display with 💭)
                     on_event(AgenticEvent::Thinking {
                         run_id: run_id.clone(),
                         text: assistant_text.clone(),
-                        is_delta: true,
+                        is_delta: false, // Complete text, not incremental
                         is_final: true,
                         signature: None,
                     });

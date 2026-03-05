@@ -9,7 +9,7 @@
 //! Get a free API key at: https://api.search.brave.com/
 
 use async_trait::async_trait;
-use reqwest::{Client, Url};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -25,10 +25,10 @@ pub struct WebSearchConfig {
     pub enabled: bool,
     /// API key for Brave Search (or use BRAVE_API_KEY env var)
     pub api_key: Option<String>,
-    /// Maximum URLs to include in context (1-20)
+    /// Maximum URLs to include in context (1-50)
     #[serde(default = "default_max_urls")]
     pub max_urls: u32,
-    /// Maximum tokens per URL (100-5000)
+    /// Maximum tokens for total context (1024-32768)
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     /// Cache TTL in seconds
@@ -42,7 +42,7 @@ impl Default for WebSearchConfig {
             enabled: true,
             api_key: None,
             max_urls: 5,
-            max_tokens: 2000,
+            max_tokens: 4096,
             cache_ttl_seconds: 900, // 15 minutes
         }
     }
@@ -57,7 +57,7 @@ fn default_max_urls() -> u32 {
 }
 
 fn default_max_tokens() -> u32 {
-    2000
+    4096
 }
 
 fn default_cache_ttl() -> u64 {
@@ -69,8 +69,21 @@ fn default_cache_ttl() -> u64 {
 pub struct SearchArgs {
     /// Search query
     pub query: String,
-    /// Number of URLs to include (1-20, default from config)
+    /// Number of URLs to include (1-50, default from config)
     pub count: Option<u32>,
+}
+
+/// Search request body for POST API
+#[derive(Debug, Serialize)]
+struct LlmContextRequest {
+    /// Search query
+    q: String,
+    /// Max unique URLs to include
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maximum_number_of_urls: Option<u32>,
+    /// Approx max tokens for total context
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maximum_number_of_tokens: Option<u32>,
 }
 
 /// Search result with pre-extracted content
@@ -159,7 +172,7 @@ impl WebSearchTool {
         }
     }
 
-    /// Search using Brave LLM Context API
+    /// Search using Brave LLM Context API (POST)
     async fn search_brave(&self,
         args: &SearchArgs,
     ) -> anyhow::Result<SearchResponse> {
@@ -167,26 +180,25 @@ impl WebSearchTool {
             .get_api_key()
             .ok_or_else(|| anyhow::anyhow!("BRAVE_API_KEY not configured. Get a free key at https://api.search.brave.com/"))?;
 
-        let max_urls = args.count.unwrap_or(self.config.max_urls).min(20).max(1);
-        let max_tokens = self.config.max_tokens.min(5000).max(100);
+        let max_urls = args.count.unwrap_or(self.config.max_urls).min(50).max(1);
+        let max_tokens = self.config.max_tokens.min(32768).max(1024);
 
-        let url = Url::parse_with_params(
-            "https://api.search.brave.com/res/v1/llm/context",
-            &[
-                ("q", args.query.as_str()),
-                ("max_urls", &max_urls.to_string()),
-                ("max_tokens_per_url", &max_tokens.to_string()),
-            ],
-        )
-        .map_err(|e| anyhow::anyhow!("Invalid URL: {e}"))?;
+        let request_body = LlmContextRequest {
+            q: args.query.clone(),
+            maximum_number_of_urls: Some(max_urls),
+            maximum_number_of_tokens: Some(max_tokens),
+        };
 
-        debug!("Brave LLM Context URL: {}", url);
+        debug!("Brave LLM Context POST request: {:?}", request_body);
 
         let response = self
             .client
-            .get(url)
+            .post("https://api.search.brave.com/res/v1/llm/context")
             .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .header("Accept-Encoding", "gzip")
             .header("X-Subscription-Token", api_key)
+            .json(&request_body)
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Request failed: {e}"))?;
@@ -198,6 +210,7 @@ impl WebSearchTool {
             let message = match status.as_u16() {
                 401 => "Invalid Brave API key. Please check your BRAVE_API_KEY.".to_string(),
                 429 => "Brave API rate limit exceeded. Please try again later.".to_string(),
+                422 => format!("Validation error: {}", error_text),
                 _ => format!("Brave API error: {} - {}", status, error_text),
             };
             
@@ -209,21 +222,39 @@ impl WebSearchTool {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to parse response: {e}"))?;
 
-        // Convert to our SearchResult format
-        let sources: Vec<SearchResult> = llm_response
-            .urls
-            .into_iter()
-            .map(|u| SearchResult {
-                url: u.url.clone(),
-                title: u.title.clone(),
-                content: u.content.clone(),
-                source: extract_domain(&u.url),
-            })
-            .collect();
+        // Extract content from grounding and build sources
+        let mut sources = Vec::new();
+        let mut context_parts = Vec::new();
+
+        if let Some(grounding) = llm_response.grounding {
+            // Collect text chunks from grounding
+            if let Some(texts) = grounding.text {
+                for text in texts {
+                    if let Some(content) = text.text {
+                        context_parts.push(content.clone());
+                    }
+                }
+            }
+            // Could also extract tables, qa, etc. here
+        }
+
+        // Build sources from sources map
+        if let Some(sources_map) = llm_response.sources {
+            for (url, source_info) in sources_map {
+                sources.push(SearchResult {
+                    url: url.clone(),
+                    title: source_info.title.unwrap_or_else(|| "Untitled".to_string()),
+                    content: source_info.snippet.unwrap_or_default(),
+                    source: extract_domain(&url),
+                });
+            }
+        }
+
+        let context = context_parts.join("\n\n");
 
         Ok(SearchResponse {
             query: args.query.clone(),
-            context: llm_response.context,
+            context,
             sources,
         })
     }
@@ -249,9 +280,9 @@ impl Tool for WebSearchTool {
                 },
                 "count": {
                     "type": "integer",
-                    "description": "Number of URLs to include in context (1-20)",
+                    "description": "Number of URLs to include in context (1-50)",
                     "minimum": 1,
-                    "maximum": 20
+                    "maximum": 50
                 }
             },
             "required": ["query"]
@@ -269,7 +300,7 @@ impl Tool for WebSearchTool {
             return Err(anyhow::anyhow!("Query cannot be empty"));
         }
 
-        let count = args.count.unwrap_or(self.config.max_urls).min(20).max(1);
+        let count = args.count.unwrap_or(self.config.max_urls).min(50).max(1);
         let cache_key = self.cache_key(&args.query, count);
 
         // Check cache
@@ -293,7 +324,7 @@ impl Tool for WebSearchTool {
 
 /// Extract domain from URL
 fn extract_domain(url: &str) -> String {
-    Url::parse(url)
+    url.parse::<reqwest::Url>()
         .ok()
         .and_then(|u| u.host_str().map(|h| h.to_string()))
         .unwrap_or_else(|| "unknown".to_string())
@@ -302,20 +333,36 @@ fn extract_domain(url: &str) -> String {
 /// Brave LLM Context API response structure
 #[derive(Debug, Deserialize)]
 struct BraveLlmContextResponse {
-    /// Aggregated context from all sources
-    context: String,
-    /// Individual URL results
-    urls: Vec<BraveUrlResult>,
+    /// Grounding data containing text chunks, tables, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grounding: Option<Grounding>,
+    /// Metadata for all referenced URLs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sources: Option<HashMap<String, SourceInfo>>,
 }
 
 #[derive(Debug, Deserialize)]
-struct BraveUrlResult {
-    /// Source URL
-    url: String,
+struct Grounding {
+    /// Text chunks
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<Vec<TextChunk>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TextChunk {
+    /// The text content
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SourceInfo {
     /// Page title
-    title: String,
-    /// Extracted content
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    /// Snippet/description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snippet: Option<String>,
 }
 
 #[cfg(test)]
