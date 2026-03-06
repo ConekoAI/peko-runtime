@@ -542,7 +542,7 @@ impl AgenticLoopV4 {
             .iter()
             .map(|tool| ToolDefinition {
                 name: tool.name().to_string(),
-                description: tool.description().to_string(),
+                description: tool.llm_description(),
                 parameters: tool.parameters(),
             })
             .collect()
