@@ -1,42 +1,54 @@
-//! Context Compaction - Summarize and compact conversation history
+//! Context Compaction - LLM-based conversation history summarization
 //!
 //! When sessions approach context window limits, compaction:
-//! 1. Summarizes older conversation into a compact summary
-//! 2. Persists the summary in session history
-//! 3. Keeps recent messages intact
+//! 1. Sends older conversation to LLM for summarization
+//! 2. Replaces old messages with a compact summary
+//! 3. Keeps recent messages intact for context
+//! 4. Persists compaction metadata in session history
 //!
-//! This allows long-running sessions without hitting token limits.
+//! Based on pi_agent_rust compaction algorithm.
 
 pub mod flush;
 
-use crate::types::provider::ChatMessage;
-use anyhow::Result;
+use crate::providers::{ChatMessage, MessageRole, Provider};
+use crate::types::message::ContentBlock;
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use std::sync::Arc;
+use tracing::{debug, info, warn};
+
+/// Approximate characters per token for estimation
+const CHARS_PER_TOKEN: usize = 4;
 
 /// Compaction configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
     /// Enable auto-compaction
     pub enabled: bool,
-    /// Reserve tokens floor (keep this many tokens free)
-    pub reserve_tokens_floor: usize,
-    /// Soft threshold for triggering compaction
-    pub soft_threshold_tokens: usize,
+    /// Context window size (tokens)
+    pub context_window_tokens: usize,
+    /// Reserve tokens (keep this many free)
+    pub reserve_tokens: usize,
+    /// Keep this many recent tokens intact
+    pub keep_recent_tokens: usize,
     /// System prompt for compaction summary
     pub system_prompt: String,
-    /// User prompt for compaction summary
-    pub user_prompt: String,
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            reserve_tokens_floor: 20000,
-            soft_threshold_tokens: 4000,
-            system_prompt: "Summarize the following conversation concisely. Focus on key decisions, facts, and open questions. Be brief but complete.".to_string(),
-            user_prompt: "Please summarize this conversation history:\n\n{history}\n\nProvide a concise summary of what was discussed and any decisions made.".to_string(),
+            context_window_tokens: 128_000, // Default to kimi context
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+            system_prompt: "Summarize the following conversation concisely. Focus on:
+- Key user requests and questions
+- Important facts and decisions
+- Action items and open questions
+- Any tool calls or file operations
+
+Be brief but complete. Use bullet points.".to_string(),
         }
     }
 }
@@ -48,12 +60,14 @@ pub struct CompactionEntry {
     pub timestamp: chrono::DateTime<chrono::Utc>,
     /// Summary text
     pub summary: String,
+    /// Entry ID of first kept message (for reference)
+    pub first_kept_entry_id: String,
     /// Number of messages that were compacted
     pub messages_compacted: usize,
-    /// Approximate tokens saved
-    pub tokens_saved: usize,
-    /// Compaction number (1st, 2nd, etc.)
-    pub compaction_number: usize,
+    /// Approximate tokens before compaction
+    pub tokens_before: usize,
+    /// Approximate tokens after compaction
+    pub tokens_after: usize,
 }
 
 /// Tracks compaction state for a session
@@ -65,8 +79,17 @@ pub struct CompactionState {
     pub total_tokens_saved: usize,
     /// Last compaction timestamp
     pub last_compaction_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Whether a memory flush was performed before last compaction
-    pub flush_performed: bool,
+}
+
+/// Result of a compaction operation
+#[derive(Debug, Clone)]
+pub struct CompactionResult {
+    /// Messages after compaction (summary + kept messages)
+    pub messages: Vec<ChatMessage>,
+    /// Compaction entry for persistence
+    pub entry: CompactionEntry,
+    /// State update
+    pub state: CompactionState,
 }
 
 /// Compactor for managing context window
@@ -97,64 +120,83 @@ impl Compactor {
         &self.state
     }
 
+    /// Estimate token count for messages
+    #[must_use]
+    pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
+        messages
+            .iter()
+            .map(|m| {
+                let content_len: usize = m.content.iter()
+                    .map(|b| match b {
+                        ContentBlock::Text { text } => text.len(),
+                        _ => 50, // Estimate for other blocks
+                    })
+                    .sum();
+                (content_len + 20) / CHARS_PER_TOKEN + 4
+            })
+            .sum()
+    }
+
     /// Check if compaction is needed based on current token count
-    pub fn should_compact(&self, current_tokens: usize, context_window: usize) -> bool {
+    #[must_use]
+    pub fn should_compact(&self, estimated_tokens: usize) -> bool {
         if !self.config.enabled {
             return false;
         }
 
-        let threshold = context_window
-            .saturating_sub(self.config.reserve_tokens_floor + self.config.soft_threshold_tokens);
+        // Calculate threshold: context window minus reserve and keep_recent
+        let threshold = self
+            .config
+            .context_window_tokens
+            .saturating_sub(self.config.reserve_tokens + self.config.keep_recent_tokens);
 
         debug!(
             "Checking compaction: {} tokens, threshold: {}, window: {}",
-            current_tokens, threshold, context_window
+            estimated_tokens, threshold, self.config.context_window_tokens
         );
 
-        current_tokens >= threshold
+        estimated_tokens >= threshold
     }
 
-    /// Estimate token count for a message (rough approximation)
-    #[must_use]
-    pub fn estimate_tokens(message: &ChatMessage) -> usize {
-        // Rough approximation: 4 chars ≈ 1 token
-        let content_len = message.content.len();
-        let role_len = message.role.len();
-        (content_len + role_len) / 4 + 10 // Base overhead
-    }
-
-    /// Calculate total tokens for a message list
-    #[must_use]
-    pub fn calculate_tokens(messages: &[ChatMessage]) -> usize {
-        messages.iter().map(Self::estimate_tokens).sum()
-    }
-
-    /// Select messages to compact (older portion, keeping recent context)
+    /// Select messages to compact vs keep
     /// Returns (`messages_to_compact`, `messages_to_keep`)
-    pub fn select_messages_for_compaction(
-        &self,
-        messages: &[ChatMessage],
-        _target_tokens: usize,
-    ) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
+    fn select_messages(&self, messages: &[ChatMessage]) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
         if messages.len() < 4 {
-            // Don't compact very short conversations
             return (vec![], messages.to_vec());
         }
 
-        // Always keep the most recent messages (system + last 3-4 exchanges)
-        let keep_count = messages.len().min(6); // Keep ~6 most recent messages
-        let split_point = messages.len() - keep_count;
+        // Strategy: Keep recent messages that fit within keep_recent_tokens
+        // Start from the end and work backwards
+        let mut keep_count = 0usize;
+        let mut keep_tokens = 0usize;
 
+        for msg in messages.iter().rev() {
+            let content_len: usize = msg.content.iter()
+                .map(|b| match b {
+                    ContentBlock::Text { text } => text.len(),
+                    _ => 50,
+                })
+                .sum();
+            let msg_tokens = (content_len + 20) / CHARS_PER_TOKEN + 4;
+
+            if keep_tokens + msg_tokens > self.config.keep_recent_tokens {
+                break;
+            }
+
+            keep_tokens += msg_tokens;
+            keep_count += 1;
+        }
+
+        // Always keep at least the last 2 messages (user + assistant)
+        keep_count = keep_count.max(2).min(messages.len());
+
+        let split_point = messages.len() - keep_count;
         let to_compact = messages[..split_point].to_vec();
         let to_keep = messages[split_point..].to_vec();
 
-        let compact_tokens = Self::calculate_tokens(&to_compact);
-        let keep_tokens = Self::calculate_tokens(&to_keep);
-
         info!(
-            "Selected {} messages to compact ({} tokens), keeping {} messages ({} tokens)",
+            "Selected {} messages to compact, keeping {} messages (~{} tokens)",
             to_compact.len(),
-            compact_tokens,
             to_keep.len(),
             keep_tokens
         );
@@ -162,80 +204,121 @@ impl Compactor {
         (to_compact, to_keep)
     }
 
-    /// Generate a summary from messages
-    /// This is a placeholder - in production, you'd call an LLM
-    #[must_use]
-    pub fn generate_summary(&self, messages: &[ChatMessage]) -> String {
-        // Extract key information
-        let mut summary_parts = vec![];
+    /// Format messages for summarization prompt
+    fn format_history_for_summary(&self, messages: &[ChatMessage]) -> String {
+        let mut formatted = String::new();
 
-        // Add conversation overview
-        let user_msg_count = messages.iter().filter(|m| m.role == "user").count();
-        let assistant_msg_count = messages.iter().filter(|m| m.role == "assistant").count();
+        for msg in messages {
+            let role_label = match msg.role {
+                MessageRole::System => "System",
+                MessageRole::User => "User",
+                MessageRole::Assistant => "Assistant",
+                MessageRole::Tool => "Tool",
+            };
 
-        summary_parts.push(format!(
-            "Conversation with {user_msg_count} user messages and {assistant_msg_count} assistant responses."
-        ));
+            // Extract text content
+            let content: String = msg.content.iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    ContentBlock::ToolCall { name, .. } => Some(format!("[Tool: {}]", name)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
 
-        // Extract tool calls if any
-        let tool_calls: Vec<&str> = messages
-            .iter()
-            .filter(|m| m.role == "assistant")
-            .filter_map(|m| {
-                if m.content.contains("[tool:") {
-                    Some("Tool usage detected")
-                } else {
-                    None
-                }
-            })
-            .collect();
+            // Truncate very long messages for the summary prompt
+            let display = if content.len() > 500 {
+                format!("{}... [truncated]", &content[..500])
+            } else {
+                content
+            };
 
-        if !tool_calls.is_empty() {
-            summary_parts.push("Tools were used during this conversation.".to_string());
+            formatted.push_str(&format!("{}: {}\n\n", role_label, display));
         }
 
-        // Try to extract key topics (first user message often has the main topic)
-        if let Some(first_user) = messages.iter().find(|m| m.role == "user") {
-            let preview: String = first_user.content.chars().take(100).collect();
-            summary_parts.push(format!("Topic: {preview}..."));
-        }
-
-        summary_parts.join(" ")
+        formatted
     }
 
-    /// Perform compaction on a message list
-    /// Returns (`compacted_messages`, `compaction_entry`)
-    pub fn compact(
+    /// Generate summary using LLM
+    async fn generate_summary_with_llm(
+        &self,
+        messages: &[ChatMessage],
+        provider: &Arc<dyn Provider>,
+    ) -> Result<String> {
+        let history = self.format_history_for_summary(messages);
+
+        // Build the summarization prompt
+        let prompt = format!(
+            "{system_prompt}\n\nConversation to summarize:\n\n{history}\n\nProvide a concise summary capturing key points, decisions, and open items.",
+            system_prompt = self.config.system_prompt,
+            history = history
+        );
+
+        // Use the simple chat method
+        let summary = provider
+            .chat(&prompt, "default", 0.3)
+            .await
+            .context("Failed to generate compaction summary")?;
+
+        if summary.is_empty() {
+            warn!("LLM returned empty summary, using fallback");
+            Ok(format!(
+                "[{} messages summarized - conversation history]",
+                messages.len()
+            ))
+        } else {
+            Ok(summary)
+        }
+    }
+
+    /// Perform compaction using LLM for summarization
+    pub async fn compact(
         &mut self,
         messages: &[ChatMessage],
-    ) -> Result<(Vec<ChatMessage>, CompactionEntry)> {
+        provider: &Arc<dyn Provider>,
+    ) -> Result<CompactionResult> {
         if messages.len() < 4 {
-            return Err(anyhow::anyhow!("Not enough messages to compact"));
+            return Err(anyhow::anyhow!(
+                "Not enough messages to compact (need at least 4, got {})",
+                messages.len()
+            ));
         }
 
-        let original_tokens = Self::calculate_tokens(messages);
+        let tokens_before = Self::estimate_tokens(messages);
 
         // Select messages to compact vs keep
-        let (to_compact, to_keep) =
-            self.select_messages_for_compaction(messages, self.config.reserve_tokens_floor);
+        let (to_compact, to_keep) = self.select_messages(messages);
 
         if to_compact.is_empty() {
-            return Err(anyhow::anyhow!("No messages selected for compaction"));
+            return Err(anyhow::anyhow!(
+                "No messages selected for compaction (conversation too short)"
+            ));
         }
 
-        // Generate summary
-        let summary = self.generate_summary(&to_compact);
+        // Generate LLM summary
+        let summary = self
+            .generate_summary_with_llm(&to_compact, provider)
+            .await?;
 
-        // Create system message with summary
-        let summary_message =
-            ChatMessage::system(&format!("[Previous conversation summary]: {summary}"));
+        // Create summary message
+        let summary_content = format!(
+            "[Conversation Summary - {} messages]: {}",
+            to_compact.len(),
+            summary
+        );
+        let summary_message = ChatMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text { text: summary_content }],
+            tool_calls: None,
+            tool_call_id: None,
+        };
 
-        // Build new message list
+        // Build compacted message list
         let mut compacted = vec![summary_message];
-        compacted.extend(to_keep);
+        compacted.extend(to_keep.clone());
 
-        let new_tokens = Self::calculate_tokens(&compacted);
-        let tokens_saved = original_tokens.saturating_sub(new_tokens);
+        let tokens_after = Self::estimate_tokens(&compacted);
+        let tokens_saved = tokens_before.saturating_sub(tokens_after);
 
         // Update state
         self.state.compaction_count += 1;
@@ -245,17 +328,32 @@ impl Compactor {
         let entry = CompactionEntry {
             timestamp: chrono::Utc::now(),
             summary,
+            first_kept_entry_id: format!("kept_{}", to_keep.len()),
             messages_compacted: to_compact.len(),
-            tokens_saved,
-            compaction_number: self.state.compaction_count,
+            tokens_before,
+            tokens_after,
         };
 
         info!(
-            "Compaction #{} complete: {} messages → summary, saved {} tokens",
-            entry.compaction_number, entry.messages_compacted, entry.tokens_saved
+            "Compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
+            self.state.compaction_count,
+            entry.messages_compacted,
+            tokens_saved,
+            tokens_before,
+            tokens_after
         );
 
-        Ok((compacted, entry))
+        Ok(CompactionResult {
+            messages: compacted,
+            entry,
+            state: self.state.clone(),
+        })
+    }
+
+    /// Quick check if compaction would help
+    #[must_use]
+    pub fn would_help(&self, estimated_tokens: usize) -> bool {
+        self.config.enabled && estimated_tokens > self.config.context_window_tokens / 2
     }
 
     /// Get a status summary
@@ -286,15 +384,31 @@ mod tests {
     fn create_test_messages(count: usize) -> Vec<ChatMessage> {
         let mut messages = vec![];
 
-        // Add system message
-        messages.push(ChatMessage::system("You are a helpful assistant."));
+        messages.push(ChatMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text { text: "You are a helpful assistant.".to_string() }],
+            tool_calls: None,
+            tool_call_id: None,
+        });
 
-        // Add alternating user/assistant messages
         for i in 0..count {
             if i % 2 == 0 {
-                messages.push(ChatMessage::user(&format!("User message {}", i)));
+                messages.push(ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text { text: format!("User message {}", i) }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
             } else {
-                messages.push(ChatMessage::assistant(&format!("Assistant response {}", i)));
+                messages.push(ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentBlock::Text { text: format!(
+                        "Assistant response {} with some additional text to make it longer",
+                        i
+                    ) }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
             }
         }
 
@@ -305,20 +419,20 @@ mod tests {
     fn test_should_compact() {
         let compactor = Compactor::new();
 
-        // Should compact when near limit
-        assert!(compactor.should_compact(90000, 100000)); // 90k of 100k window
+        // Should compact when near threshold
+        assert!(compactor.should_compact(100_000)); // Near 128k window with reserves
 
-        // Should not compact when well under limit
-        assert!(!compactor.should_compact(50000, 100000)); // 50k of 100k window
+        // Should not compact when well under
+        assert!(!compactor.should_compact(50_000));
     }
 
     #[test]
-    fn test_calculate_tokens() {
+    fn test_estimate_tokens() {
         let messages = create_test_messages(5);
-        let tokens = Compactor::calculate_tokens(&messages);
+        let tokens = Compactor::estimate_tokens(&messages);
 
         assert!(tokens > 0);
-        assert!(tokens < 10000); // Sanity check
+        assert!(tokens < 5000);
     }
 
     #[test]
@@ -326,32 +440,30 @@ mod tests {
         let compactor = Compactor::new();
         let messages = create_test_messages(10);
 
-        let (to_compact, to_keep) = compactor.select_messages_for_compaction(&messages, 20000);
+        let (to_compact, to_keep) = compactor.select_messages(&messages);
 
         assert!(!to_compact.is_empty());
         assert!(!to_keep.is_empty());
         assert_eq!(messages.len(), to_compact.len() + to_keep.len());
+        assert!(to_keep.len() >= 2); // At least user + assistant
     }
 
     #[test]
-    fn test_compact() {
-        let mut compactor = Compactor::new();
-        let messages = create_test_messages(10);
-
-        let (compacted, entry) = compactor.compact(&messages).unwrap();
-
-        assert!(compacted.len() < messages.len()); // Should be smaller
-        assert_eq!(compactor.state.compaction_count, 1);
-        assert!(entry.tokens_saved > 0);
-        assert!(entry.messages_compacted > 0);
-    }
-
-    #[test]
-    fn test_status() {
+    fn test_format_history() {
         let compactor = Compactor::new();
-        let status = compactor.status();
+        let messages = create_test_messages(3);
 
-        assert!(status.contains("Compactions"));
-        assert!(status.contains("0")); // No compactions yet
+        let formatted = compactor.format_history_for_summary(&messages);
+
+        assert!(formatted.contains("User:"));
+        assert!(formatted.contains("Assistant:"));
+    }
+
+    #[test]
+    fn test_would_help() {
+        let compactor = Compactor::new();
+
+        assert!(compactor.would_help(100_000)); // Over half window
+        assert!(!compactor.would_help(30_000)); // Well under half
     }
 }

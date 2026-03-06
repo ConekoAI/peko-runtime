@@ -191,9 +191,42 @@ impl AgenticLoopV4 {
         let mut iteration = 0;
         let mut total_usage = crate::providers::TokenUsage::default();
 
+        // Initialize compactor for context management
+        let mut compactor = crate::compaction::Compactor::new();
+
         loop {
             iteration += 1;
             info!("Agent loop: iteration {}", iteration);
+
+            // Check if compaction is needed before LLM call
+            let estimated_tokens = crate::compaction::Compactor::estimate_tokens(&messages);
+            if compactor.should_compact(estimated_tokens) {
+                info!(
+                    "Context window approaching limit ({} tokens), compacting...",
+                    estimated_tokens
+                );
+                on_event(AgenticEvent::Thinking {
+                    run_id: run_id.clone(),
+                    text: "Session is getting long. Summarizing older messages...".to_string(),
+                    is_delta: false,
+                    is_final: false,
+                    signature: None,
+                });
+
+                match compactor.compact(&messages, &self.provider).await {
+                    Ok(result) => {
+                        messages = result.messages;
+                        info!(
+                            "Compaction complete: {} messages compacted, saved {} tokens",
+                            result.entry.messages_compacted,
+                            result.entry.tokens_before - result.entry.tokens_after
+                        );
+                    }
+                    Err(e) => {
+                        warn!("Compaction failed, continuing without: {}", e);
+                    }
+                }
+            }
 
             if iteration > self.max_iterations {
                 warn!("Max iterations ({}) reached", self.max_iterations);
