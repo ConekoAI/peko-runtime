@@ -13,7 +13,9 @@ use crate::providers::{
 };
 use crate::tools::Tool;
 use crate::types::message::{ContentBlock, LlmMessage};
+use crate::prompt::{SystemPromptBuilder, PromptMode};
 use anyhow::{Context as _, Result};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -589,28 +591,19 @@ impl AgenticLoopV4 {
     }
 }
 
-/// Build system prompt from agent and tools
+/// Build system prompt from agent and tools using SystemPromptBuilder
+/// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.)
 fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
-    let mut prompt = format!(
-        "You are {}, an AI assistant running in the Pekobot agent runtime.\n\n",
-        agent.name()
-    );
+    // Determine workspace directory: ~/.pekobot/workspaces/{agent_name}
+    let workspace_dir = dirs::home_dir()
+        .map(|h| h.join(".pekobot").join("workspaces").join(agent.name()))
+        .unwrap_or_else(|| PathBuf::from("."));
 
-    if !tools.is_empty() {
-        prompt.push_str("## Available Tools\n\n");
-        for tool in tools {
-            prompt.push_str(&format!("- `{}`: {}\n", tool.name(), tool.description()));
-        }
-        prompt.push_str("\n");
-    }
-
-    prompt.push_str("## Instructions\n\n");
-    prompt.push_str("Think step by step. When you need to use a tool, the system will handle it.\n");
-    prompt.push_str("After receiving tool results, provide a final answer to the user.\n");
-    prompt.push_str("If a tool returns empty results, do not retry the same tool - just inform the user.\n");
-    prompt.push_str("Provide clear, accurate answers. Ask for clarification when uncertain.\n");
-
-    prompt
+    SystemPromptBuilder::new(agent.name())
+        .with_mode(PromptMode::Full)
+        .with_workspace(&workspace_dir)
+        .with_tools(tools.to_vec())
+        .build()
 }
 
 /// Convert chat messages to prompt string (fallback)

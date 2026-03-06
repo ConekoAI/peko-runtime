@@ -73,8 +73,10 @@ pub mod engine;
 /// Message queue with lane-aware processing
 pub(crate) mod queue;
 
-/// Session management and lifecycle
-pub(crate) mod session;
+/// Session storage (JSONL)
+pub(crate) mod session {
+    pub mod jsonl;
+}
 
 // ============================================================================
 // External Interfaces

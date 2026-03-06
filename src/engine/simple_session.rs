@@ -84,7 +84,7 @@ impl SimpleSession {
         let storage = SessionStorage::new(storage_dir);
 
         // Load existing entries to find the last message ID
-        let entries = storage.load_session(session_id).await?;
+        let entries: Vec<crate::session::jsonl::SessionEntry> = storage.load_session(session_id).await?;
         
         if entries.is_empty() {
             return Ok(None);
@@ -364,7 +364,7 @@ impl SimpleSession {
                             ContentBlock::ToolCall {
                                 name, arguments, ..
                             } => {
-                                let args_str = serde_json::to_string(arguments).unwrap_or_default();
+                                let args_str = serde_json::to_string(&arguments).unwrap_or_default();
                                 parts.push(format!("[ToolCall: {}({})]", name, args_str));
                             }
                             ContentBlock::ToolResult { content, .. } => {
@@ -451,7 +451,7 @@ impl SimpleSession {
 
     /// Load the most recent compaction summary from session
     pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
-        let entries = self.storage.load_session(&self.id).await?;
+        let entries: Vec<crate::session::jsonl::SessionEntry> = self.storage.load_session(&self.id).await?;
 
         // Find the most recent compaction entry
         for entry in entries.iter().rev() {
