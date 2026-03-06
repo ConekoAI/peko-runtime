@@ -59,6 +59,25 @@ pub enum SessionEntry {
         is_error: Option<bool>,
     },
 
+    /// Compaction entry - records a context compaction event
+    #[serde(rename = "compaction")]
+    Compaction {
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_id: Option<String>,
+        timestamp: DateTime<Utc>,
+        /// Summary text (structured format)
+        summary: String,
+        /// Number of messages compacted
+        messages_compacted: usize,
+        /// Tokens before compaction
+        tokens_before: usize,
+        /// Tokens after compaction
+        tokens_after: usize,
+        /// Compaction number (1st, 2nd, etc.)
+        compaction_number: usize,
+    },
+
     #[serde(rename = "custom")]
     Custom {
         #[serde(rename = "customType")]
@@ -223,6 +242,51 @@ impl SessionStorage {
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
 
+        Ok(entry_id)
+    }
+
+    /// Append compaction entry
+    pub async fn append_compaction(
+        &self,
+        session_id: &str,
+        parent_id: Option<String>,
+        summary: &str,
+        messages_compacted: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        compaction_number: usize,
+    ) -> Result<String> {
+        let path = self.session_path(session_id);
+
+        let entry_id = format!(
+            "compact_{}",
+            uuid::Uuid::new_v4().to_string().replace("-", "")
+        );
+
+        let entry = SessionEntry::Compaction {
+            id: entry_id.clone(),
+            parent_id,
+            timestamp: Utc::now(),
+            summary: summary.to_string(),
+            messages_compacted,
+            tokens_before,
+            tokens_after,
+            compaction_number,
+        };
+
+        let json = serde_json::to_string(&entry)?;
+        let line = json + "\n";
+
+        use tokio::io::AsyncWriteExt;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+        file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
+
+        debug!("Appended compaction #{} to session {}", compaction_number, session_id);
         Ok(entry_id)
     }
 

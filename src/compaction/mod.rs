@@ -3,8 +3,8 @@
 //! When sessions approach context window limits, compaction:
 //! 1. Sends older conversation to LLM for summarization
 //! 2. Replaces old messages with a compact summary
-//! 3. Keeps recent messages intact for context
-//! 4. Persists compaction metadata in session history
+//! 3. Supports cumulative summaries (updating previous summaries)
+//! 4. Uses structured format (Goal, Progress, Decisions, Next Steps)
 //!
 //! Based on pi_agent_rust compaction algorithm.
 
@@ -20,6 +20,85 @@ use tracing::{debug, info, warn};
 /// Approximate characters per token for estimation
 const CHARS_PER_TOKEN: usize = 4;
 
+/// System prompt for initial summarization
+const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+
+Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
+
+/// Prompt for initial summarization (when no previous summary exists)
+const INITIAL_SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another AI will use to continue the work.
+
+Use this EXACT format:
+
+## Goal
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or \"(none)\" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [Or \"(none)\" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.";
+
+/// Prompt for updating an existing summary
+const UPDATE_SUMMARIZATION_PROMPT: &str = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+Update the existing structured summary with new information. RULES:
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context from the new messages
+- UPDATE the Progress section: move items from \"In Progress\" to \"Done\" when completed
+- UPDATE \"Next Steps\" based on what was accomplished
+- PRESERVE exact file paths, function names, and error messages
+- If something is no longer relevant, you may remove it
+
+Use this EXACT format:
+
+## Goal
+[Preserve existing goals, add new ones if the task expanded]
+
+## Constraints & Preferences
+- [Preserve existing, add new ones discovered]
+
+## Progress
+### Done
+- [x] [Include previously done items AND newly completed items]
+
+### In Progress
+- [ ] [Current work - update based on progress]
+
+### Blocked
+- [Current blockers - remove if resolved]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+## Next Steps
+1. [Update based on current state]
+
+## Critical Context
+- [Preserve important context, add new if needed]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.";
+
 /// Compaction configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
@@ -31,8 +110,6 @@ pub struct CompactionConfig {
     pub reserve_tokens: usize,
     /// Keep this many recent tokens intact
     pub keep_recent_tokens: usize,
-    /// System prompt for compaction summary
-    pub system_prompt: String,
 }
 
 impl Default for CompactionConfig {
@@ -42,13 +119,6 @@ impl Default for CompactionConfig {
             context_window_tokens: 128_000, // Default to kimi context
             reserve_tokens: 16_384,
             keep_recent_tokens: 20_000,
-            system_prompt: "Summarize the following conversation concisely. Focus on:
-- Key user requests and questions
-- Important facts and decisions
-- Action items and open questions
-- Any tool calls or file operations
-
-Be brief but complete. Use bullet points.".to_string(),
         }
     }
 }
@@ -58,7 +128,7 @@ Be brief but complete. Use bullet points.".to_string(),
 pub struct CompactionEntry {
     /// When compaction occurred
     pub timestamp: chrono::DateTime<chrono::Utc>,
-    /// Summary text
+    /// Summary text (structured format)
     pub summary: String,
     /// Entry ID of first kept message (for reference)
     pub first_kept_entry_id: String,
@@ -68,6 +138,8 @@ pub struct CompactionEntry {
     pub tokens_before: usize,
     /// Approximate tokens after compaction
     pub tokens_after: usize,
+    /// Compaction number (1st, 2nd, etc.)
+    pub compaction_number: usize,
 }
 
 /// Tracks compaction state for a session
@@ -96,28 +168,44 @@ pub struct CompactionResult {
 pub struct Compactor {
     config: CompactionConfig,
     state: CompactionState,
+    /// Previous summary for cumulative updates
+    previous_summary: Option<String>,
 }
 
 impl Compactor {
     /// Create a new compactor with default config
     #[must_use]
     pub fn new() -> Self {
-        Self::with_config(CompactionConfig::default())
+        Self::with_config(CompactionConfig::default(), None)
     }
 
-    /// Create a new compactor with custom config
+    /// Create a new compactor with custom config and optional previous summary
     #[must_use]
-    pub fn with_config(config: CompactionConfig) -> Self {
+    pub fn with_config(config: CompactionConfig, previous_summary: Option<String>) -> Self {
         Self {
             config,
             state: CompactionState::default(),
+            previous_summary,
         }
+    }
+
+    /// Create compactor with previous summary loaded from session
+    #[must_use]
+    pub fn with_previous_summary(mut self, summary: Option<String>) -> Self {
+        self.previous_summary = summary;
+        self
     }
 
     /// Get current compaction state
     #[must_use]
     pub fn state(&self) -> &CompactionState {
         &self.state
+    }
+
+    /// Get the current summary (for cumulative updates)
+    #[must_use]
+    pub fn current_summary(&self) -> Option<&String> {
+        self.previous_summary.as_ref()
     }
 
     /// Estimate token count for messages
@@ -239,7 +327,7 @@ impl Compactor {
         formatted
     }
 
-    /// Generate summary using LLM
+    /// Generate summary using LLM (cumulative if previous summary exists)
     async fn generate_summary_with_llm(
         &self,
         messages: &[ChatMessage],
@@ -247,11 +335,28 @@ impl Compactor {
     ) -> Result<String> {
         let history = self.format_history_for_summary(messages);
 
-        // Build the summarization prompt
+        // Choose prompt based on whether we have a previous summary
+        let (base_prompt, is_update) = if let Some(ref prev) = self.previous_summary {
+            (
+                format!(
+                    "<previous-summary>\n{}\n</previous-summary>\n\n{}",
+                    prev, UPDATE_SUMMARIZATION_PROMPT
+                ),
+                true
+            )
+        } else {
+            (INITIAL_SUMMARIZATION_PROMPT.to_string(), false)
+        };
+
         let prompt = format!(
-            "{system_prompt}\n\nConversation to summarize:\n\n{history}\n\nProvide a concise summary capturing key points, decisions, and open items.",
-            system_prompt = self.config.system_prompt,
-            history = history
+            "<conversation>\n{}\n</conversation>\n\n{}",
+            history, base_prompt
+        );
+
+        debug!(
+            "Requesting {} summary from LLM ({} messages)",
+            if is_update { "cumulative" } else { "initial" },
+            messages.len()
         );
 
         // Use the simple chat method
@@ -262,10 +367,15 @@ impl Compactor {
 
         if summary.is_empty() {
             warn!("LLM returned empty summary, using fallback");
-            Ok(format!(
-                "[{} messages summarized - conversation history]",
-                messages.len()
-            ))
+            if let Some(ref prev) = self.previous_summary {
+                // If update failed, return previous summary with note
+                Ok(format!("{}\n\n[Note: {} new messages not incorporated]", prev, messages.len()))
+            } else {
+                Ok(format!(
+                    "[{} messages summarized - conversation history]",
+                    messages.len()
+                ))
+            }
         } else {
             Ok(summary)
         }
@@ -301,14 +411,17 @@ impl Compactor {
             ));
         }
 
-        // Generate LLM summary
+        // Generate LLM summary (cumulative if previous exists)
         let summary = self
             .generate_summary_with_llm(&to_compact, provider)
             .await?;
 
+        // Update previous summary for future cumulative updates
+        self.previous_summary = Some(summary.clone());
+
         // Create summary message (as a system message after original system prompts)
         let summary_content = format!(
-            "[Conversation Summary - {} messages]: {}",
+            "[Conversation Summary - {} messages]:\n{}",
             to_compact.len(),
             summary
         );
@@ -339,11 +452,13 @@ impl Compactor {
             messages_compacted: to_compact.len(),
             tokens_before,
             tokens_after,
+            compaction_number: self.state.compaction_count,
         };
 
         info!(
-            "Compaction #{} complete: {} messages → summary, saved {} tokens ({} → {}), kept {} system prompts",
+            "Compaction #{} {}: {} messages → summary, saved {} tokens ({} → {}), kept {} system prompts",
             self.state.compaction_count,
+            if self.state.compaction_count > 1 { "(cumulative)" } else { "" },
             entry.messages_compacted,
             tokens_saved,
             tokens_before,
@@ -479,5 +594,15 @@ mod tests {
 
         assert!(compactor.would_help(100_000)); // Over half window
         assert!(!compactor.would_help(30_000)); // Well under half
+    }
+
+    #[test]
+    fn test_cumulative_summary_tracking() {
+        let mut compactor = Compactor::with_previous_summary(
+            Compactor::with_config(CompactionConfig::default(), None),
+            Some("Initial summary".to_string())
+        );
+        
+        assert_eq!(compactor.current_summary(), Some(&"Initial summary".to_string()));
     }
 }

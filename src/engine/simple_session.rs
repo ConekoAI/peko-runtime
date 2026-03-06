@@ -422,4 +422,44 @@ impl SimpleSession {
         let _ = entry_id;
         Ok(())
     }
+
+    /// Record compaction event
+    pub async fn record_compaction(
+        &mut self,
+        summary: &str,
+        messages_compacted: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        compaction_number: usize,
+    ) -> Result<()> {
+        let entry_id = self
+            .storage
+            .append_compaction(
+                &self.id,
+                self.last_message_id.clone(),
+                summary,
+                messages_compacted,
+                tokens_before,
+                tokens_after,
+                compaction_number,
+            )
+            .await?;
+        // Compaction entries don't update last_message_id
+        let _ = entry_id;
+        Ok(())
+    }
+
+    /// Load the most recent compaction summary from session
+    pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
+        let entries = self.storage.load_session(&self.id).await?;
+
+        // Find the most recent compaction entry
+        for entry in entries.iter().rev() {
+            if let crate::session::jsonl::SessionEntry::Compaction { summary, .. } = entry {
+                return Ok(Some(summary.clone()));
+            }
+        }
+
+        Ok(None)
+    }
 }

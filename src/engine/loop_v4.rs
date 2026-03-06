@@ -191,8 +191,17 @@ impl AgenticLoopV4 {
         let mut iteration = 0;
         let mut total_usage = crate::providers::TokenUsage::default();
 
-        // Initialize compactor for context management
-        let mut compactor = crate::compaction::Compactor::new();
+        // Load previous compaction summary from session for cumulative updates
+        let previous_summary = session.load_previous_compaction_summary().await.ok().flatten();
+        if previous_summary.is_some() {
+            info!("Found previous compaction summary for cumulative updates");
+        }
+
+        // Initialize compactor with previous summary for cumulative updates
+        let mut compactor = crate::compaction::Compactor::with_previous_summary(
+            crate::compaction::Compactor::new(),
+            previous_summary,
+        );
 
         loop {
             iteration += 1;
@@ -217,10 +226,27 @@ impl AgenticLoopV4 {
                     Ok(result) => {
                         messages = result.messages;
                         info!(
-                            "Compaction complete: {} messages compacted, saved {} tokens",
+                            "Compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
+                            result.entry.compaction_number,
                             result.entry.messages_compacted,
-                            result.entry.tokens_before - result.entry.tokens_after
+                            result.entry.tokens_before - result.entry.tokens_after,
+                            result.entry.tokens_before,
+                            result.entry.tokens_after
                         );
+
+                        // Record compaction entry in session
+                        if let Err(e) = session
+                            .record_compaction(
+                                &result.entry.summary,
+                                result.entry.messages_compacted,
+                                result.entry.tokens_before,
+                                result.entry.tokens_after,
+                                result.entry.compaction_number,
+                            )
+                            .await
+                        {
+                            warn!("Failed to record compaction entry: {}", e);
+                        }
                     }
                     Err(e) => {
                         warn!("Compaction failed, continuing without: {}", e);
