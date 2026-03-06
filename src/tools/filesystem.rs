@@ -203,10 +203,56 @@ impl Tool for FileSystemTool {
     }
 
     fn llm_description(&self) -> String {
-        "File system operations: read, write, list, exists, delete. \
-        Use when: reading source files, writing code, listing directories, checking file existence. \
-        Don't use when: a more specific tool exists (e.g., use `apply_patch` for code edits, `fetch` for remote files)."
-            .to_string()
+        r#"## Purpose
+File system operations: read, write, list, check existence, and delete files and directories.
+
+## When to Use
+- **read**: Inspecting source files, configuration files, logs, or any text content
+- **write**: Creating new files or completely rewriting existing files
+- **list**: Exploring directory structure, finding files by name pattern
+- **exists**: Checking if a file or directory exists before operations
+- **delete**: Removing files or directories (use with caution)
+
+## When NOT to Use
+- For code edits that preserve most of the file (use `apply_patch` instead)
+- For temporary files that should auto-cleanup (use `/tmp` via process)
+
+## Input
+```json
+{
+  "action": "read|write|list|exists|delete",
+  "path": "relative/or/absolute/path",
+  "content": "file content (required for write)"
+}
+```
+
+## Returns
+- **read**: File content, size, and path
+- **write**: Bytes written and path
+- **list**: Array of entries with name, type, size, modified time
+- **exists**: Boolean existence check with metadata if exists
+- **delete**: Success status
+
+## Examples
+Read a file:
+```json
+{"action": "read", "path": "src/main.rs"}
+```
+
+Write a file:
+```json
+{"action": "write", "path": "config.toml", "content": "[settings]\nkey = value"}
+```
+
+List directory:
+```json
+{"action": "list", "path": "src"}
+```
+
+## Security
+- All paths are validated against security policy
+- Path traversal (`..`) is blocked
+- Prefer `trash` over `rm` for recoverable deletes"#.to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

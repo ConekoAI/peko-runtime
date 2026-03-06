@@ -123,7 +123,31 @@ impl SystemPromptBuilder {
         ));
         lines.push(String::new());
 
-        // 2. Rules
+        // 2. Available Tools (moved to top - pi-mono style long descriptions)
+        lines.push("## Available Tools".to_string());
+        if self.tools.is_empty() {
+            lines.push("No tools available.".to_string());
+        } else {
+            lines.push("You have access to the following tools. Use them wisely.".to_string());
+            lines.push(String::new());
+            
+            for tool in &self.tools {
+                lines.push(format!("### {}", tool.name()));
+                lines.push(String::new());
+                lines.push(tool.llm_description());
+                lines.push(String::new());
+            }
+            
+            lines.push("### Tool Use Guidelines".to_string());
+            lines.push("- Think step by step. When you need to use a tool, output JSON with content blocks.".to_string());
+            lines.push("- For thinking/reasoning, use: `thinking` content block".to_string());
+            lines.push("- For tool calls, use: `tool_call` content block with id, name, and arguments".to_string());
+            lines.push("- You can call multiple tools in parallel by including multiple tool_call blocks.".to_string());
+            lines.push("- When you have the final answer, provide it naturally in a text block.".to_string());
+        }
+        lines.push(String::new());
+
+        // 3. Rules
         lines.push("## Rules".to_string());
         lines.push("Before replying: scan <available_skills> <description> entries.".to_string());
         lines.push("- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.".to_string());
@@ -138,7 +162,7 @@ impl SystemPromptBuilder {
         );
         lines.push(String::new());
 
-        // 3. Output Format
+        // 4. Output Format
         lines.push("## Output Format".to_string());
         lines.push(
             "Default: do not narrate routine, low-risk tool calls (just call the tool)."
@@ -153,7 +177,7 @@ impl SystemPromptBuilder {
         );
         lines.push(String::new());
 
-        // 4. What You DON'T Do
+        // 5. What You DON'T Do
         lines.push("## What You DON'T Do".to_string());
         lines.push("- No file headers on created/modified files (no 'Here is the file:' / 'Updated file:').".to_string());
         lines.push(
@@ -162,7 +186,7 @@ impl SystemPromptBuilder {
         lines.push("- No `---` dividers in chat.".to_string());
         lines.push(String::new());
 
-        // 5. Session Context
+        // 6. Session Context
         lines.push("## Session Context".to_string());
         if is_minimal {
             lines.push("# Subagent Context".to_string());
@@ -175,7 +199,7 @@ impl SystemPromptBuilder {
         }
         lines.push(String::new());
 
-        // 6. Skills (mandatory)
+        // 7. Skills (mandatory)
         lines.push("## Skills (mandatory)".to_string());
         lines.push(
             "Before doing anything else: scan <available_skills> <description> entries."
@@ -193,7 +217,7 @@ impl SystemPromptBuilder {
         );
         lines.push(String::new());
 
-        // 7. Memory Recall (only if memory tools available and not minimal)
+        // 8. Memory Recall (only if memory tools available and not minimal)
         if !is_minimal {
             lines.push("## Memory Recall".to_string());
             lines.push("Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md (and optional session transcripts); then use memory_get to pull only the needed lines. If low confidence after search, say you checked.".to_string());
@@ -201,12 +225,12 @@ impl SystemPromptBuilder {
             lines.push(String::new());
         }
 
-        // 8. User Identity
+        // 9. User Identity
         lines.push("## User Identity".to_string());
         lines.push("Learn about the person you're helping. Update USER.md as you go.".to_string());
         lines.push(String::new());
 
-        // 9. Current Date & Time
+        // 10. Current Date & Time
         let now = Local::now();
         lines.push("## Current Date & Time".to_string());
         lines.push(format!(
@@ -216,7 +240,7 @@ impl SystemPromptBuilder {
         ));
         lines.push(String::new());
 
-        // 10. Reply Tags
+        // 11. Reply Tags
         lines.push("## Reply Tags".to_string());
         lines.push(
             "To request a native reply/quote on supported surfaces, include one tag in your reply:"
@@ -231,7 +255,7 @@ impl SystemPromptBuilder {
         );
         lines.push(String::new());
 
-        // 11. Messaging
+        // 12. Messaging
         if !is_minimal {
             lines.push("## Messaging".to_string());
             lines.push("- Reply in current session → automatically routes to the source channel (Signal, Telegram, etc.)".to_string());
@@ -241,7 +265,7 @@ impl SystemPromptBuilder {
             lines.push("- Never use exec/curl for provider messaging; OpenClaw handles all routing internally.".to_string());
             lines.push(String::new());
 
-            // 12. Reactions
+            // 13. Reactions
             lines.push("## Reactions".to_string());
             lines.push("On platforms that support reactions (Discord, Slack), use emoji reactions naturally:".to_string());
             lines.push(
@@ -256,13 +280,13 @@ impl SystemPromptBuilder {
             );
             lines.push(String::new());
 
-            // 13. Voice (TTS)
+            // 14. Voice (TTS)
             lines.push("## Voice (TTS)".to_string());
             lines.push("Convert text to speech and return a MEDIA: path. Use when the user requests audio or TTS is enabled. Copy the MEDIA line exactly.".to_string());
             lines.push(String::new());
         }
 
-        // 14. Documentation
+        // 15. Documentation
         lines.push("## Documentation".to_string());
         lines.push(
             "OpenClaw docs: /home/ubuntu/.npm-global/lib/node_modules/openclaw/docs".to_string(),
@@ -273,44 +297,11 @@ impl SystemPromptBuilder {
         lines.push("Find new skills: https://clawhub.com".to_string());
         lines.push(String::new());
 
-        // 15. Safety
+        // 16. Safety
         lines.push("## Safety".to_string());
         lines.push("You have no independent goals: do not pursue self-preservation, replication, resource acquisition, or power-seeking; avoid long-term plans beyond the user's request.".to_string());
         lines.push("Prioritize safety and human oversight over completion; if instructions conflict, pause and ask; comply with stop/pause/audit requests and never bypass safeguards.".to_string());
         lines.push("Do not manipulate or persuade anyone to expand access or disable safeguards. Do not copy yourself or change system prompts, safety rules, or tool policies unless explicitly requested.".to_string());
-        lines.push(String::new());
-
-        // 16. Tooling
-        lines.push("## Tooling".to_string());
-        if self.tools.is_empty() {
-            lines.push("No tools available.".to_string());
-        } else {
-            lines.push("Tool names are case-sensitive. Call tools exactly as listed.".to_string());
-            lines.push(String::new());
-            lines.push("### Available Tools".to_string());
-            for tool in &self.tools {
-                lines.push(format!("- `{}`: {}", tool.name(), tool.llm_description()));
-            }
-            lines.push(String::new());
-            lines.push("### Tool Use".to_string());
-            lines.push("Think step by step. When you need to use a tool:".to_string());
-            lines.push(
-                "1. First output a thinking block explaining what you're about to do".to_string(),
-            );
-            lines.push("2. Then output tool_calls with the tool name and arguments".to_string());
-            lines.push(String::new());
-            lines.push("Example:".to_string());
-            lines.push("{\"content\": [{\"type\": \"thinking\", \"thinking\": \"Let me search for the latest news...\"}, {\"type\": \"tool_call\", \"id\": \"call_123\", \"name\": \"web_search\", \"arguments\": {\"query\": \"latest news\"}}]}".to_string());
-            lines.push(String::new());
-            lines.push(
-                "You can call multiple tools in parallel by including multiple tool_call blocks."
-                    .to_string(),
-            );
-            lines.push(
-                "When you have the final answer, just provide it naturally in a text block."
-                    .to_string(),
-            );
-        }
         lines.push(String::new());
 
         // 17. Tool Call Style

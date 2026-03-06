@@ -270,11 +270,54 @@ impl Tool for WebSearchTool {
     }
 
     fn llm_description(&self) -> String {
-        "Search the web using Brave LLM Context API. \
-        Use when: you need current information not in your training data, researching topics, verifying facts, finding documentation. \
-        Don't use when: the information is already in the conversation context, or you need to access a specific known URL (use `fetch` instead). \
-        Requires BRAVE_API_KEY."
-            .to_string()
+        r#"## Purpose
+Search the web using Brave LLM Context API. Returns pre-extracted, relevance-scored web content optimized for AI agents.
+
+## When to Use
+- Current information not in your training data (news, recent events)
+- Researching topics, technologies, or concepts
+- Verifying facts or finding authoritative sources
+- Finding documentation, tutorials, or examples
+- Competitive research or market information
+
+## When NOT to Use
+- The information is already in the conversation context
+- You need to access a specific known URL (use `fetch` instead)
+- The query is about private/internal information
+
+## Input
+```json
+{
+  "query": "search query string",
+  "count": 5
+}
+```
+
+## Returns
+Structured search results with:
+- Source URL and title
+- Extracted content (pre-processed for LLM consumption)
+- Relevance scoring
+
+## Examples
+Search for recent Rust features:
+```json
+{"query": "Rust programming new features 2024", "count": 5}
+```
+
+Research a technology:
+```json
+{"query": "what is WebAssembly used for", "count": 3}
+```
+
+## Configuration
+Requires BRAVE_API_KEY environment variable or api_key in config.
+Get a free API key at: https://api.search.brave.com/
+
+## Notes
+- Results are cached for 15 minutes by default
+- Content is pre-extracted and scored for relevance
+- No need to fetch URLs separately — content is included"#.to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

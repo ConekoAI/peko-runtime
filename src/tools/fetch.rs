@@ -527,10 +527,51 @@ impl Tool for FetchTool {
     }
 
     fn llm_description(&self) -> String {
-        "Fetch web pages and extract content as markdown or text. \
-        Use when: you need to access a specific known URL, read documentation, get content from a webpage. \
-        Don't use when: you need to search for information (use `web_search` instead), or the page requires browser interaction (use `browser` instead)."
-            .to_string()
+        r#"## Purpose
+Fetch web pages and extract content as markdown or text. Lightweight HTTP fetcher for reading static web content.
+
+## When to Use
+- Accessing a specific known URL (documentation, articles, raw files)
+- Reading GitHub raw files, API documentation, blog posts
+- Extracting content from pages that don't require JavaScript
+- Quick content extraction without browser overhead
+
+## When NOT to Use
+- Pages requiring JavaScript interaction (use `browser` instead)
+- Searching for information across multiple sources (use `web_search` instead)
+- Sites requiring authentication or complex session handling
+
+## Input
+```json
+{
+  "url": "https://example.com/page",
+  "format": "markdown"
+}
+```
+
+## Returns
+- Extracted content (markdown or plain text)
+- Page title (if available)
+- HTTP status code
+- Content type
+- Truncation status if content was too large
+
+## Examples
+Fetch documentation:
+```json
+{"url": "https://raw.githubusercontent.com/user/repo/main/README.md"}
+```
+
+Get a web page as text:
+```json
+{"url": "https://example.com/article", "format": "text"}
+```
+
+## Notes
+- Follows redirects automatically
+- Respects robots.txt
+- Results are cached for 15 minutes
+- Maximum content size: 50KB (truncated if larger)"#.to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

@@ -144,11 +144,59 @@ impl Tool for ProcessTool {
     }
 
     fn llm_description(&self) -> String {
-        "Execute system commands with arguments, timeout, and working directory. \
-        Use when: running build commands (cargo, npm), git operations, checking system state, file operations that need scripting. \
-        Don't use when: a safer dedicated tool exists (e.g., use `filesystem` for simple file ops, `apply_patch` for code edits). \
-        Be careful with destructive commands - prefer `trash` over `rm`."
-            .to_string()
+        r#"## Purpose
+Execute system commands with arguments, timeout, and working directory control. For build commands, git operations, and system diagnostics.
+
+## When to Use
+- Running build commands (cargo build, npm install, make, etc.)
+- Git operations (status, log, diff, commit when authorized)
+- System diagnostics (df, ps, netstat, etc.)
+- File operations that need scripting (find with complex filters)
+- Running tests or linting tools
+
+## When NOT to Use
+- Simple file reads/writes (use `filesystem` instead)
+- Code patches that preserve file structure (use `apply_patch` instead)
+- Destructive operations without explicit user confirmation
+- Commands with unbounded output (may be truncated)
+
+## Input
+```json
+{
+  "command": "command-name",
+  "args": ["arg1", "arg2"],
+  "timeout": 30,
+  "working_dir": "/optional/path"
+}
+```
+
+## Returns
+- stdout and stderr output (truncated if >100KB)
+- Exit code
+- Success/failure status
+
+## Examples
+Check git status:
+```json
+{"command": "git", "args": ["status"]}
+```
+
+Build a Rust project:
+```json
+{"command": "cargo", "args": ["build", "--release"], "timeout": 120}
+```
+
+Run tests:
+```json
+{"command": "cargo", "args": ["test"], "timeout": 60}
+```
+
+## Safety
+- Commands are validated for forbidden characters
+- Timeout prevents runaway processes (default: 30s, max: 300s)
+- Output is truncated at 100KB to prevent memory issues
+- Prefer `trash` over `rm` for recoverable deletes
+- Ask before destructive operations"#.to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
