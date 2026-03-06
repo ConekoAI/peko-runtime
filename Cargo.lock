@@ -2443,6 +2443,7 @@ dependencies = [
  "reqwest",
  "rpassword",
  "rusqlite",
+ "scopeguard",
  "scraper",
  "secrecy",
  "serde",

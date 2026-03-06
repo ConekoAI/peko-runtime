@@ -197,59 +197,98 @@ impl AgenticLoopV4 {
             info!("Found previous compaction summary for cumulative updates");
         }
 
-        // Initialize compactor with previous summary for cumulative updates
-        let mut compactor = crate::compaction::Compactor::with_previous_summary(
-            crate::compaction::Compactor::new(),
-            previous_summary,
+        // Initialize background compactor
+        let background_compactor = crate::compaction::background::BackgroundCompactor::new(
+            self.provider.clone()
         );
+
+        // Track pending compaction
+        let mut pending_compaction: Option<tokio::sync::oneshot::Receiver<crate::compaction::background::CompactionResponse>> = None;
+
+        // Initialize compactor config for quota checks
+        let compaction_config = crate::compaction::CompactionConfig::default();
 
         loop {
             iteration += 1;
             info!("Agent loop: iteration {}", iteration);
 
-            // Check if compaction is needed before LLM call
+            // Check if compaction is needed before LLM call (background)
             let estimated_tokens = crate::compaction::Compactor::estimate_tokens(&messages);
-            if compactor.should_compact(estimated_tokens) {
+
+            // Start background compaction if needed and not already running
+            if pending_compaction.is_none() && background_compactor.should_request(
+                estimated_tokens, &compaction_config).await {
                 info!(
-                    "Context window approaching limit ({} tokens), compacting...",
+                    "Context window approaching limit ({} tokens), starting background compaction...",
                     estimated_tokens
                 );
                 on_event(AgenticEvent::Thinking {
                     run_id: run_id.clone(),
-                    text: "Session is getting long. Summarizing older messages...".to_string(),
+                    text: "Session is getting long. Summarizing older messages in background...".to_string(),
                     is_delta: false,
                     is_final: false,
                     signature: None,
                 });
 
-                match compactor.compact(&messages, &self.provider).await {
-                    Ok(result) => {
-                        messages = result.messages;
-                        info!(
-                            "Compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
-                            result.entry.compaction_number,
-                            result.entry.messages_compacted,
-                            result.entry.tokens_before - result.entry.tokens_after,
-                            result.entry.tokens_before,
-                            result.entry.tokens_after
-                        );
-
-                        // Record compaction entry in session
-                        if let Err(e) = session
-                            .record_compaction(
-                                &result.entry.summary,
-                                result.entry.messages_compacted,
-                                result.entry.tokens_before,
-                                result.entry.tokens_after,
-                                result.entry.compaction_number,
-                            )
-                            .await
-                        {
-                            warn!("Failed to record compaction entry: {}", e);
-                        }
+                let prev_summary = session.load_previous_compaction_summary().await.ok().flatten();
+                match background_compactor.request_compaction(messages.clone(), prev_summary).await {
+                    Ok(receiver) => {
+                        pending_compaction = Some(receiver);
                     }
                     Err(e) => {
-                        warn!("Compaction failed, continuing without: {}", e);
+                        warn!("Failed to start background compaction: {}", e);
+                    }
+                }
+            }
+
+            // Check if background compaction has completed
+            if let Some(ref mut receiver) = pending_compaction {
+                match tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver).await {
+                    Ok(Ok(response)) => {
+                        match response {
+                            crate::compaction::background::CompactionResponse::Completed(result) => {
+                                messages = result.messages;
+                                info!(
+                                    "Background compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
+                                    result.entry.compaction_number,
+                                    result.entry.messages_compacted,
+                                    result.entry.tokens_before - result.entry.tokens_after,
+                                    result.entry.tokens_before,
+                                    result.entry.tokens_after
+                                );
+
+                                // Record compaction entry in session
+                                if let Err(e) = session
+                                    .record_compaction(
+                                        &result.entry.summary,
+                                        result.entry.messages_compacted,
+                                        result.entry.tokens_before,
+                                        result.entry.tokens_after,
+                                        result.entry.compaction_number,
+                                    )
+                                    .await
+                                {
+                                    warn!("Failed to record compaction entry: {}", e);
+                                }
+                            }
+                            crate::compaction::background::CompactionResponse::NotNeeded => {
+                                debug!("Background compaction: not needed");
+                            }
+                            crate::compaction::background::CompactionResponse::Skipped(reason) => {
+                                debug!("Background compaction skipped: {}", reason);
+                            }
+                            crate::compaction::background::CompactionResponse::Failed(err) => {
+                                warn!("Background compaction failed: {}", err);
+                            }
+                        }
+                        pending_compaction = None;
+                    }
+                    Ok(Err(_)) => {
+                        warn!("Background compaction channel closed");
+                        pending_compaction = None;
+                    }
+                    Err(_) => {
+                        // Timeout - compaction still in progress, continue with LLM call
                     }
                 }
             }
