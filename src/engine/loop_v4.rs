@@ -594,9 +594,13 @@ impl AgenticLoopV4 {
 /// Build system prompt from agent and tools using SystemPromptBuilder
 /// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.)
 fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
-    // Determine workspace directory: ~/.pekobot/workspaces/{agent_name}
-    let workspace_dir = dirs::home_dir()
-        .map(|h| h.join(".pekobot").join("workspaces").join(agent.name()))
+    // Use configured workspace if specified, otherwise use default
+    let workspace_dir = agent.config.workspace.clone()
+        .or_else(|| {
+            dirs::data_dir()
+                .map(|d| d.join("pekobot").join("workspaces").join(agent.name()))
+                .or_else(|| dirs::home_dir().map(|h| h.join(".pekobot").join("workspaces").join(agent.name())))
+        })
         .unwrap_or_else(|| PathBuf::from("."));
 
     SystemPromptBuilder::new(agent.name())

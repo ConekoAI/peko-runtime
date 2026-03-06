@@ -125,9 +125,10 @@ pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
 
 /// Get default workspace directory
 pub fn default_workspace_dir() -> PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join(".pekobot/workspace"))
-        .unwrap_or_else(|| PathBuf::from("./workspace"))
+    dirs::data_dir()
+        .map(|d| d.join("pekobot").join("workspaces"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".pekobot").join("workspaces")))
+        .unwrap_or_else(|| PathBuf::from("./workspaces"))
 }
 
 #[cfg(test)]
