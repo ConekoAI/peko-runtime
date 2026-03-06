@@ -470,7 +470,7 @@ mod tests {
         assert!(prompt.contains("## Skills (mandatory)"));
         assert!(prompt.contains("## Memory Recall"));
         assert!(prompt.contains("## Safety"));
-        assert!(prompt.contains("## Tooling"));
+        assert!(prompt.contains("## Available Tools"));
         assert!(prompt.contains("## Workspace"));
         assert!(prompt.contains("## Runtime"));
         assert!(prompt.contains("## Reasoning"));
@@ -488,7 +488,7 @@ mod tests {
         // Should have core sections
         assert!(prompt.contains("## Your Role"));
         assert!(prompt.contains("## Safety"));
-        assert!(prompt.contains("## Tooling"));
+        assert!(prompt.contains("## Available Tools"));
 
         // Should NOT have these in minimal mode
         assert!(!prompt.contains("## Memory Recall"));
