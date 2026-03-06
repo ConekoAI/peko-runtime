@@ -396,14 +396,16 @@ impl Compactor {
 
         let tokens_before = Self::estimate_tokens(messages);
 
-        // Extract system prompts first - they are NEVER compacted and always kept at the beginning
-        let (system_msgs, non_system_msgs): (Vec<_>, Vec<_>) = messages
-            .iter()
-            .cloned()
-            .partition(|m| m.role == MessageRole::System);
+        // Extract ONLY the initial system prompt (first message if it's system)
+        // Runtime-injected system messages (compaction summaries, interceptors) are treated as conversation
+        let (initial_system_msg, conversation_msgs): (Vec<_>, Vec<_>) = if !messages.is_empty() && messages[0].role == MessageRole::System {
+            (vec![messages[0].clone()], messages[1..].to_vec())
+        } else {
+            (vec![], messages.to_vec())
+        };
 
-        // Select from non-system messages only
-        let (to_compact, to_keep_conversation) = self.select_messages(&non_system_msgs);
+        // Select from conversation messages only (includes runtime system messages)
+        let (to_compact, to_keep_conversation) = self.select_messages(&conversation_msgs);
 
         if to_compact.is_empty() {
             return Err(anyhow::anyhow!(
@@ -432,8 +434,9 @@ impl Compactor {
             tool_call_id: None,
         };
 
-        // Build compacted message list: Original system prompts + Summary + Recent conversation
-        let mut compacted = system_msgs.clone();
+        // Build compacted message list: Initial system prompt + New Summary + Recent conversation
+        // Note: Old compaction summaries in to_compact get summarized into the new summary
+        let mut compacted = initial_system_msg.clone();
         compacted.push(summary_message);
         compacted.extend(to_keep_conversation.clone());
 
@@ -456,14 +459,14 @@ impl Compactor {
         };
 
         info!(
-            "Compaction #{} {}: {} messages → summary, saved {} tokens ({} → {}), kept {} system prompts",
+            "Compaction #{} {}: {} messages → summary, saved {} tokens ({} → {}), kept {} initial system prompt",
             self.state.compaction_count,
             if self.state.compaction_count > 1 { "(cumulative)" } else { "" },
             entry.messages_compacted,
             tokens_saved,
             tokens_before,
             tokens_after,
-            system_msgs.len()
+            initial_system_msg.len()
         );
 
         Ok(CompactionResult {
