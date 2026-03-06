@@ -411,7 +411,47 @@ impl AgentManager {
         tools
     }
 
-    /// Create all essential tools for an agent
+    /// Create all essential tools for an agent, filtered by agent config
+    #[must_use]
+    pub fn create_all_tools_for_agent(
+        &self,
+        agent: &crate::agent::Agent,
+    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+        use crate::tools::{ToolFactory, ToolFactoryConfig};
+
+        // Create essential tools using factory
+        let factory_config = ToolFactoryConfig {
+            workspace_dir: self.data_dir.clone(),
+            ..Default::default()
+        };
+        let mut tools = ToolFactory::create_tools(&factory_config);
+
+        // Add communication tools
+        tools.extend(self.create_communication_tools(&agent.identity.did));
+
+        // Filter tools based on agent config if specified
+        if let Some(ref tool_config) = agent.config.tools {
+            if !tool_config.enabled.is_empty() {
+                tools = self.filter_tools(tools, &tool_config.enabled);
+            }
+        }
+
+        tools
+    }
+
+    /// Filter tools to only include enabled ones
+    fn filter_tools(
+        &self,
+        tools: Vec<Arc<dyn crate::tools::Tool>>,
+        enabled: &[String],
+    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+        tools
+            .into_iter()
+            .filter(|tool| enabled.contains(&tool.name().to_string()))
+            .collect()
+    }
+
+    /// Create all essential tools for an agent (legacy method - use create_all_tools_for_agent)
     #[must_use]
     pub fn create_all_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{ToolFactory, ToolFactoryConfig};
@@ -435,11 +475,20 @@ impl AgentManager {
         &self,
         agent_did: &str,
         config: crate::tools::ToolFactoryConfig,
+        tool_config: Option<&crate::types::agent::ToolConfig>,
     ) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::ToolFactory;
 
         let mut tools = ToolFactory::create_tools(&config);
         tools.extend(self.create_communication_tools(agent_did));
+
+        // Filter if tool config specified
+        if let Some(tc) = tool_config {
+            if !tc.enabled.is_empty() {
+                return self.filter_tools(tools, &tc.enabled);
+            }
+        }
+
         tools
     }
 }

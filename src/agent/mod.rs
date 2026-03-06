@@ -24,6 +24,31 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Create tools for this agent based on configuration
+    fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
+        use crate::tools::*;
+
+        // Create all available tools
+        let mut tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+            Arc::new(FetchTool::new(FetchConfig::default())),
+            Arc::new(FileSystemTool::new()),
+            Arc::new(ProcessTool::new()),
+        ];
+
+        // Filter based on agent config if specified
+        if let Some(ref tool_config) = self.config.tools {
+            if !tool_config.enabled.is_empty() {
+                tools = tools
+                    .into_iter()
+                    .filter(|tool| tool_config.enabled.contains(&tool.name().to_string()))
+                    .collect();
+            }
+        }
+
+        tools
+    }
+
     /// Create a new agent with the given configuration
     pub async fn new(config: AgentConfig) -> Result<Self> {
         info!("Creating agent: {}", config.name);
@@ -148,12 +173,7 @@ impl Agent {
         self.set_state(AgentState::Busy);
 
         let result = if let Some(provider) = &self.provider {
-            let tools: Vec<Arc<dyn Tool>> = vec![
-                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
-                Arc::new(FetchTool::new(FetchConfig::default())),
-                Arc::new(FileSystemTool::new()),
-                Arc::new(ProcessTool::new()),
-            ];
+            let tools = self.create_tools();
 
             let supports_native = provider.supports_native_tools();
             info!(
@@ -199,14 +219,7 @@ impl Agent {
 
         // We need to get the provider and tools into the task
         if let Some(provider) = &self.provider {
-            use crate::tools::*;
-
-            let tools: Vec<Arc<dyn Tool>> = vec![
-                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
-                Arc::new(FetchTool::new(FetchConfig::default())),
-                Arc::new(FileSystemTool::new()),
-                Arc::new(ProcessTool::new()),
-            ];
+            let tools = self.create_tools();
 
             let provider_arc = Arc::clone(provider);
             let event_tx_clone = event_tx.clone();
@@ -254,12 +267,7 @@ impl Agent {
         if let Some(provider) = &self.provider {
             use crate::tools::*;
 
-            let tools: Vec<Arc<dyn Tool>> = vec![
-                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
-                Arc::new(FetchTool::new(FetchConfig::default())),
-                Arc::new(FileSystemTool::new()),
-                Arc::new(ProcessTool::new()),
-            ];
+            let tools = self.create_tools();
 
             let provider_arc = Arc::clone(provider);
             let event_tx_clone = event_tx.clone();
