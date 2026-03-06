@@ -28,6 +28,9 @@ pub enum AgentCommands {
         /// Send a single message and exit (non-interactive mode)
         #[arg(short = 'M', long)]
         message: Option<String>,
+        /// Start a new session (don't resume existing CLI session)
+        #[arg(short, long)]
+        new: bool,
     },
 
     /// List all configured agents
@@ -114,9 +117,10 @@ pub async fn handle_agent(
             model,
             db,
             message,
+            new,
         } => {
             crate::commands::agent::handlers::handle_agent_start(
-                name, config, provider, model, db, message,
+                name, config, provider, model, db, message, new,
             )
             .await
         }
@@ -175,6 +179,7 @@ pub mod handlers {
         model: Option<String>,
         db: Option<String>,
         message: Option<String>,
+        new_session: bool,
     ) -> anyhow::Result<()> {
         // Determine agent name (default to "peko")
         let agent_name = name.unwrap_or_else(|| "peko".to_string());
@@ -215,12 +220,12 @@ pub mod handlers {
                 if let Some(msg) = message {
                     // Single message mode
                     println!();
-                    if let Err(e) = crate::channels::cli::send_single_message(&agent, &msg).await {
+                    if let Err(e) = crate::channels::cli::send_single_message_with_session(&agent, &msg, new_session).await {
                         eprintln!("❌ Error processing message: {e}");
                     }
                 } else {
                     // Interactive mode with streaming support
-                    // Streaming config is now at channel level, not agent level
+                    // TODO: Support session persistence in interactive mode too
                     let streaming_config = crate::channels::StreamingConfig {
                         enabled: true,
                         min_chars: 100,

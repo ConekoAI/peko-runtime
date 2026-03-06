@@ -47,6 +47,31 @@ impl SimpleSession {
         })
     }
 
+    /// Create a new session for an agent with a specific session ID
+    pub async fn create_with_id(agent_name: &str, session_id: &str) -> Result<Self> {
+        // Use agent-specific session directory
+        let storage_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".pekobot")
+            .join("agents")
+            .join(agent_name)
+            .join("sessions");
+
+        let storage = SessionStorage::new(storage_dir);
+
+        // Create session entry
+        let cwd = std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string());
+        storage.create_session(session_id, cwd).await?;
+
+        Ok(Self {
+            id: session_id.to_string(),
+            storage,
+            last_message_id: None,
+        })
+    }
+
     /// Open an existing session for resumption
     pub async fn open(agent_name: &str, session_id: &str) -> Result<Option<Self>> {
         let storage_dir = dirs::home_dir()

@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use std::io::Write;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
-use tracing::error;
+use tracing::{error, info, warn};
+
+use crate::engine::SimpleSession;
 
 /// Command line interface channel with interactive input
 pub struct CliChannel {
@@ -220,15 +222,82 @@ pub async fn run_interactive_loop(
                     continue;
                 }
 
-                // Process the message
-                let agent_lock = agent.lock().unwrap();
-                let agent_name = agent_lock.name().to_string();
+                // Handle /new command - start fresh session
+                if trimmed.eq_ignore_ascii_case("/new") {
+                    println!("\n🆕 Starting new session...");
+                    // Session will be reset on next message
+                    let agent = agent.lock().unwrap();
+                    if let Err(e) = reset_cli_session(&agent).await {
+                        eprintln!("❌ Failed to reset session: {}", e);
+                    } else {
+                        println!("✅ Session reset. Next message will start fresh.");
+                    }
+                    channel.print_prompt();
+                    continue;
+                }
+
+                // Handle /sessions command - list sessions
+                if trimmed.eq_ignore_ascii_case("/sessions") {
+                    if let Err(e) = list_cli_sessions().await {
+                        eprintln!("❌ Failed to list sessions: {}", e);
+                    }
+                    channel.print_prompt();
+                    continue;
+                }
+
+                // Process the message with session persistence
+                let agent_name = {
+                    let agent_lock = agent.lock().unwrap();
+                    agent_lock.name().to_string()
+                };
+                
+                // CLI uses a consistent session key for persistence
+                // OpenClaw-compatible format: agent:{agent}:cli:default
+                let session_id = format!("agent:{}:cli:default", agent_name);
                 
                 // Create a LocalSet for the streaming execution
                 let local = LocalSet::new();
                 let result = local
                     .run_until(async {
-                        let event_rx = agent_lock.execute_streaming(trimmed).await?;
+                        // Check for existing session
+                        let (existing_session, history) = match SimpleSession::open(&agent_name, &session_id).await {
+                            Ok(Some(session)) => {
+                                info!("Resuming existing CLI session: {}", session_id);
+                                match session.load_history().await {
+                                    Ok(hist) => {
+                                        if !hist.is_empty() {
+                                            println!("📂 Resumed session with {} previous messages", hist.len());
+                                        }
+                                        (Some(session), Some(hist))
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to load session history: {}", e);
+                                        (Some(session), None)
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                info!("No existing CLI session found, creating new one with ID: {}", session_id);
+                                match SimpleSession::create_with_id(&agent_name, &session_id).await {
+                                    Ok(session) => (Some(session), None),
+                                    Err(e) => {
+                                        warn!("Failed to create session: {}", e);
+                                        (None, None)
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to open session: {}", e);
+                                (None, None)
+                            }
+                        };
+
+                        let agent_lock = agent.lock().unwrap();
+                        let event_rx = agent_lock.execute_streaming_with_session(
+                            trimmed,
+                            existing_session,
+                            history,
+                        ).await?;
                         process_events(event_rx, &agent_name).await
                     })
                     .await;
@@ -244,7 +313,10 @@ pub async fn run_interactive_loop(
                 }
 
                 // Reset agent state to Idle for next message
-                agent_lock.set_state(crate::types::agent::AgentState::Idle);
+                {
+                    let agent_lock = agent.lock().unwrap();
+                    agent_lock.set_state(crate::types::agent::AgentState::Idle);
+                }
                 
                 // Print new prompt after response
                 channel.print_prompt();
@@ -268,17 +340,223 @@ pub async fn send_single_message(
     agent: &crate::agent::Agent,
     message: &str,
 ) -> Result<String> {
+    send_single_message_with_session(agent, message, false).await
+}
+
+/// Send a single message with session persistence support
+/// 
+/// If `new_session` is true, creates a new session.
+/// Otherwise, tries to resume the existing CLI session for this agent.
+pub async fn send_single_message_with_session(
+    agent: &crate::agent::Agent,
+    message: &str,
+    new_session: bool,
+) -> Result<String> {
     use tokio::task::LocalSet;
 
     let agent_name = agent.name().to_string();
+    
+    // CLI uses a consistent session key for persistence
+    // OpenClaw-compatible format: agent:{agent}:cli:default
+    let session_id = format!("agent:{}:cli:default", agent_name);
     
     // Create a LocalSet for the streaming execution
     let local = LocalSet::new();
 
     local
         .run_until(async {
-            let event_rx = agent.execute_streaming(message).await?;
+            let (existing_session, history) = if new_session {
+                info!("Starting new CLI session (explicit --new flag)");
+                // Create new session with cli_default ID
+                match SimpleSession::create_with_id(&agent_name, &session_id).await {
+                    Ok(session) => (Some(session), None),
+                    Err(e) => {
+                        warn!("Failed to create session: {}", e);
+                        (None, None)
+                    }
+                }
+            } else {
+                match SimpleSession::open(&agent_name, &session_id).await {
+                    Ok(Some(session)) => {
+                        info!("Resuming existing CLI session: {}", session_id);
+                        match session.load_history().await {
+                            Ok(hist) => {
+                                println!("📂 Resumed session with {} previous messages", hist.len());
+                                (Some(session), Some(hist))
+                            }
+                            Err(e) => {
+                                warn!("Failed to load session history: {}", e);
+                                (Some(session), None)
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        info!("No existing CLI session found, creating new one with ID: {}", session_id);
+                        // Create new session with cli_default ID
+                        match SimpleSession::create_with_id(&agent_name, &session_id).await {
+                            Ok(session) => (Some(session), None),
+                            Err(e) => {
+                                warn!("Failed to create session: {}", e);
+                                (None, None)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to open session: {}", e);
+                        (None, None)
+                    }
+                }
+            };
+
+            let event_rx = agent.execute_streaming_with_session(
+                message,
+                existing_session,
+                history,
+            ).await?;
             process_events(event_rx, &agent_name).await
         })
         .await
+}
+
+/// Reset the CLI session for an agent (delete the session file)
+async fn reset_cli_session(agent: &crate::agent::Agent) -> Result<()> {
+    use crate::engine::SimpleSession;
+    
+    let agent_name = agent.name();
+    // OpenClaw-compatible format: agent:{agent}:cli:default
+    let session_id = format!("agent:{}:cli:default", agent_name);
+    
+    // Try to open and reset the session
+    match SimpleSession::open(agent_name, &session_id).await {
+        Ok(Some(_)) => {
+            // Session exists - we need to delete the file to reset
+            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+            let session_path = home
+                .join(".pekobot")
+                .join("agents")
+                .join(agent_name)
+                .join("sessions")
+                .join(format!("{}.jsonl", session_id));
+            
+            if session_path.exists() {
+                tokio::fs::remove_file(&session_path).await?;
+                info!("Deleted session file: {:?}", session_path);
+            }
+            Ok(())
+        }
+        _ => {
+            // No existing session, nothing to reset
+            Ok(())
+        }
+    }
+}
+
+/// List CLI sessions for all agents or a specific agent
+async fn list_cli_sessions() -> Result<()> {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let agents_dir = home.join(".pekobot").join("agents");
+    
+    let mut all_sessions = Vec::new();
+    
+    // List all agents
+    match tokio::fs::read_dir(&agents_dir).await {
+        Ok(mut entries) => {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if let Ok(metadata) = entry.metadata().await {
+                    if metadata.is_dir() {
+                        if let Some(agent_name) = entry.file_name().to_str() {
+                            let sessions_dir = entry.path().join("sessions");
+                            
+                            match tokio::fs::read_dir(&sessions_dir).await {
+                                Ok(mut session_entries) => {
+                                    while let Ok(Some(session_entry)) = session_entries.next_entry().await {
+                                        let path = session_entry.path();
+                                        if path.extension().map_or(false, |e| e == "jsonl") {
+                                            if let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) {
+                                                if let Ok(metadata) = session_entry.metadata().await {
+                                                    if let Ok(modified) = metadata.modified() {
+                                                        let size = metadata.len();
+                                                        all_sessions.push((
+                                                            agent_name.to_string(),
+                                                            session_id.to_string(),
+                                                            modified,
+                                                            size,
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(_) => continue,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to read agents directory: {}", e));
+        }
+    }
+    
+    // Sort by modification time (newest first)
+    all_sessions.sort_by(|a, b| b.2.cmp(&a.2));
+    
+    if all_sessions.is_empty() {
+        println!("\n📭 No sessions found.");
+    } else {
+        println!("\n📋 Sessions ({} found):", all_sessions.len());
+        println!();
+        
+        let mut current_agent = String::new();
+        for (agent, session_id, modified, size) in all_sessions {
+            if agent != current_agent {
+                println!("  🐱 {}", agent);
+                current_agent = agent;
+            }
+            
+            let time_ago = format_time_ago(modified);
+            let size_str = format_size(size);
+            
+            // Check if this is the CLI default session (OpenClaw format: agent:{agent}:cli:default)
+            let is_cli_default = session_id.ends_with(":cli:default");
+            let indicator = if is_cli_default { "→ " } else { "   " };
+            
+            println!("{}   {} {} ({})", indicator, session_id, time_ago, size_str);
+        }
+        
+        println!();
+        println!("  → = CLI default session (persistent)");
+    }
+    
+    Ok(())
+}
+
+/// Format duration as human-readable "time ago"
+fn format_time_ago(time: std::time::SystemTime) -> String {
+    let now = std::time::SystemTime::now();
+    let duration = now.duration_since(time).unwrap_or_default();
+    
+    let secs = duration.as_secs();
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
+/// Format byte size
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }

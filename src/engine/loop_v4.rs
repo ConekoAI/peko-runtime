@@ -276,19 +276,12 @@ impl AgenticLoopV4 {
             let thinking_text = thinking_parts.join(" ").trim().to_string();
             let assistant_text = text_parts.join(" ").trim().to_string();
             
-            // Combine thinking and assistant text for the "reasoning" event
-            let reasoning_text = if !thinking_text.is_empty() && !assistant_text.is_empty() {
-                format!("{} {}", thinking_text, assistant_text)
-            } else if !thinking_text.is_empty() {
-                thinking_text.clone()
-            } else {
-                assistant_text.clone()
-            };
-            
-            if !reasoning_text.is_empty() {
+            // Only emit thinking event if there's actual thinking content
+            // Don't emit assistant text as thinking - that causes duplication
+            if !thinking_text.is_empty() {
                 on_event(AgenticEvent::Thinking {
                     run_id: run_id.clone(),
-                    text: reasoning_text,
+                    text: thinking_text.clone(),
                     is_delta: false,
                     is_final: true,
                     signature: None,

@@ -232,6 +232,59 @@ impl Agent {
         Ok(event_rx)
     }
 
+    /// Execute with streaming support, optionally resuming from an existing session.
+    ///
+    /// If `existing_session` is provided, the agent will resume from that session
+    /// with the given history. This enables conversation continuity across
+    /// separate command invocations.
+    pub async fn execute_streaming_with_session(
+        &self,
+        prompt: &str,
+        existing_session: Option<crate::engine::SimpleSession>,
+        history: Option<Vec<crate::providers::ChatMessage>>,
+    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
+        // Use a large buffer to prevent event loss during bursts
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(10000);
+
+        // Spawn the execution in a task
+        let prompt = prompt.to_string();
+        let agent_arc = Arc::new(self.clone_for_loop());
+
+        // We need to get the provider and tools into the task
+        if let Some(provider) = &self.provider {
+            use crate::tools::*;
+
+            let tools: Vec<Arc<dyn Tool>> = vec![
+                Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+                Arc::new(FetchTool::new(FetchConfig::default())),
+                Arc::new(FileSystemTool::new()),
+                Arc::new(ProcessTool::new()),
+            ];
+
+            let provider_arc = Arc::clone(provider);
+            let event_tx_clone = event_tx.clone();
+
+            tokio::task::spawn_local(async move {
+                use crate::engine::loop_v4::AgenticLoopV4;
+
+                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+
+                let _result = loop_
+                    .run_with_resume(&prompt, move |event| {
+                        // Try to send event - log if dropped (buffer full means consumer is slow)
+                        if let Err(_) = event_tx_clone.try_send(event) {
+                            warn!("Agent event dropped (channel full)");
+                        }
+                    }, existing_session, history)
+                    .await;
+            });
+        } else {
+            return Err(anyhow::anyhow!("No provider configured"));
+        }
+
+        Ok(event_rx)
+    }
+
     /// Clone the agent for use in the agentic loop
     /// This creates a shallow copy that shares the same identity
     fn clone_for_loop(&self) -> Self {
