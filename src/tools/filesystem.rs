@@ -202,6 +202,13 @@ impl Tool for FileSystemTool {
         "File system operations: read, write, list, exists, delete files and directories"
     }
 
+    fn llm_description(&self) -> String {
+        "File system operations: read, write, list, exists, delete. \
+        Use when: reading source files, writing code, listing directories, checking file existence. \
+        Don't use when: a more specific tool exists (e.g., use `apply_patch` for code edits, `fetch` for remote files)."
+            .to_string()
+    }
+
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",

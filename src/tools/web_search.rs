@@ -269,6 +269,14 @@ impl Tool for WebSearchTool {
         "Search the web using Brave LLM Context API. Returns pre-extracted, relevance-scored content optimized for AI agents. Requires BRAVE_API_KEY environment variable."
     }
 
+    fn llm_description(&self) -> String {
+        "Search the web using Brave LLM Context API. \
+        Use when: you need current information not in your training data, researching topics, verifying facts, finding documentation. \
+        Don't use when: the information is already in the conversation context, or you need to access a specific known URL (use `fetch` instead). \
+        Requires BRAVE_API_KEY."
+            .to_string()
+    }
+
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",

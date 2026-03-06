@@ -344,6 +344,14 @@ impl Tool for BrowserTool {
         for precise element interaction. Allowed domains only."
     }
 
+    fn llm_description(&self) -> String {
+        "Web browser automation for interactive web pages. \
+        Use when: pages require JavaScript, logging into sites, filling forms, clicking buttons, taking screenshots. \
+        Don't use when: you just need to read static content (use `fetch` instead), or searching for information (use `web_search`). \
+        Tip: Use 'snapshot' first to get element refs (@e1, @e2), then use those refs for clicking/filling."
+            .to_string()
+    }
+
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // Check if agent-browser is available
         if !Self::is_available().await {

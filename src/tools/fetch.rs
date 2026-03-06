@@ -526,6 +526,13 @@ impl Tool for FetchTool {
         "Fetch web pages and extract content as markdown or text"
     }
 
+    fn llm_description(&self) -> String {
+        "Fetch web pages and extract content as markdown or text. \
+        Use when: you need to access a specific known URL, read documentation, get content from a webpage. \
+        Don't use when: you need to search for information (use `web_search` instead), or the page requires browser interaction (use `browser` instead)."
+            .to_string()
+    }
+
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",

@@ -289,7 +289,7 @@ impl SystemPromptBuilder {
             lines.push(String::new());
             lines.push("### Available Tools".to_string());
             for tool in &self.tools {
-                lines.push(format!("- `{}`: {}", tool.name(), tool.description()));
+                lines.push(format!("- `{}`: {}", tool.name(), tool.llm_description()));
             }
             lines.push(String::new());
             lines.push("### Tool Use".to_string());

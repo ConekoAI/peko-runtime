@@ -143,6 +143,14 @@ impl Tool for ProcessTool {
         "Execute system commands with arguments, timeout, and working directory"
     }
 
+    fn llm_description(&self) -> String {
+        "Execute system commands with arguments, timeout, and working directory. \
+        Use when: running build commands (cargo, npm), git operations, checking system state, file operations that need scripting. \
+        Don't use when: a safer dedicated tool exists (e.g., use `filesystem` for simple file ops, `apply_patch` for code edits). \
+        Be careful with destructive commands - prefer `trash` over `rm`."
+            .to_string()
+    }
+
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
