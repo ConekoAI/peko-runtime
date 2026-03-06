@@ -132,26 +132,26 @@ impl AgenticLoopV4 {
                     tool_calls: None,
                     tool_call_id: None,
                 }];
-                
+
                 // Add system prompt to session
                 session.add_system(&self.system_prompt).await?;
-                
-                // Add current time
-                let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-                let time_message = format!("current time: {}", current_time);
-                msgs.push(ChatMessage {
-                    role: MessageRole::System,
-                    content: vec![ContentBlock::Text {
-                        text: time_message.clone(),
-                    }],
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
-                session.add_system(&time_message).await?;
-                
+
                 msgs
             }
         };
+
+        // Inject current time before each user message (runtime context)
+        let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+        let time_message = format!("current time: {}", current_time);
+        messages.push(ChatMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text {
+                text: time_message.clone(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        session.add_system(&time_message).await?;
 
         // Add user message
         messages.push(ChatMessage {
