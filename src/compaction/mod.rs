@@ -158,10 +158,10 @@ impl Compactor {
         estimated_tokens >= threshold
     }
 
-    /// Select messages to compact vs keep
+    /// Select messages to compact vs keep (system messages should be pre-filtered)
     /// Returns (`messages_to_compact`, `messages_to_keep`)
     fn select_messages(&self, messages: &[ChatMessage]) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
-        if messages.len() < 4 {
+        if messages.len() < 3 {
             return (vec![], messages.to_vec());
         }
 
@@ -286,8 +286,14 @@ impl Compactor {
 
         let tokens_before = Self::estimate_tokens(messages);
 
-        // Select messages to compact vs keep
-        let (to_compact, to_keep) = self.select_messages(messages);
+        // Extract system prompts first - they are NEVER compacted and always kept at the beginning
+        let (system_msgs, non_system_msgs): (Vec<_>, Vec<_>) = messages
+            .iter()
+            .cloned()
+            .partition(|m| m.role == MessageRole::System);
+
+        // Select from non-system messages only
+        let (to_compact, to_keep_conversation) = self.select_messages(&non_system_msgs);
 
         if to_compact.is_empty() {
             return Err(anyhow::anyhow!(
@@ -300,7 +306,7 @@ impl Compactor {
             .generate_summary_with_llm(&to_compact, provider)
             .await?;
 
-        // Create summary message
+        // Create summary message (as a system message after original system prompts)
         let summary_content = format!(
             "[Conversation Summary - {} messages]: {}",
             to_compact.len(),
@@ -313,9 +319,10 @@ impl Compactor {
             tool_call_id: None,
         };
 
-        // Build compacted message list
-        let mut compacted = vec![summary_message];
-        compacted.extend(to_keep.clone());
+        // Build compacted message list: Original system prompts + Summary + Recent conversation
+        let mut compacted = system_msgs.clone();
+        compacted.push(summary_message);
+        compacted.extend(to_keep_conversation.clone());
 
         let tokens_after = Self::estimate_tokens(&compacted);
         let tokens_saved = tokens_before.saturating_sub(tokens_after);
@@ -328,19 +335,20 @@ impl Compactor {
         let entry = CompactionEntry {
             timestamp: chrono::Utc::now(),
             summary,
-            first_kept_entry_id: format!("kept_{}", to_keep.len()),
+            first_kept_entry_id: format!("kept_{}", to_keep_conversation.len()),
             messages_compacted: to_compact.len(),
             tokens_before,
             tokens_after,
         };
 
         info!(
-            "Compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
+            "Compaction #{} complete: {} messages → summary, saved {} tokens ({} → {}), kept {} system prompts",
             self.state.compaction_count,
             entry.messages_compacted,
             tokens_saved,
             tokens_before,
-            tokens_after
+            tokens_after,
+            system_msgs.len()
         );
 
         Ok(CompactionResult {
@@ -439,12 +447,18 @@ mod tests {
     fn test_select_messages() {
         let compactor = Compactor::new();
         let messages = create_test_messages(10);
+        
+        // Filter out system messages for this test (select_messages expects non-system)
+        let conversation_msgs: Vec<_> = messages
+            .into_iter()
+            .filter(|m| m.role != MessageRole::System)
+            .collect();
 
-        let (to_compact, to_keep) = compactor.select_messages(&messages);
+        let (to_compact, to_keep) = compactor.select_messages(&conversation_msgs);
 
         assert!(!to_compact.is_empty());
         assert!(!to_keep.is_empty());
-        assert_eq!(messages.len(), to_compact.len() + to_keep.len());
+        assert_eq!(conversation_msgs.len(), to_compact.len() + to_keep.len());
         assert!(to_keep.len() >= 2); // At least user + assistant
     }
 
