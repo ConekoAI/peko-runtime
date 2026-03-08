@@ -114,6 +114,10 @@ pub struct SessionStatusArgs {
     /// Session key or ID (defaults to current session)
     #[serde(default)]
     pub session_key: Option<String>,
+    /// Optional timezone for timestamp formatting (e.g., "America/New_York", "UTC")
+    /// If not provided, uses machine's local timezone
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// Usage stats
@@ -136,6 +140,10 @@ pub struct SessionStatusResult {
     pub status: String,
     pub created_at: String,
     pub last_activity: String,
+    /// Current timestamp in ISO 8601 format (UTC)
+    pub timestamp_utc: String,
+    /// Current timestamp formatted for display (respects timezone parameter)
+    pub timestamp: String,
     pub message_count: usize,
     pub usage: UsageStats,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -282,7 +290,9 @@ impl Tool for SessionStatusTool {
     }
 
     fn description(&self) -> &'static str {
-        "Get status and usage information for a session"
+        "Returns current session status including timestamp, token usage, and model information. \
+         Use this tool when you need to know the current date and time. \
+         Optional timezone parameter allows formatting time for a specific timezone (e.g., 'America/New_York', 'Europe/London', 'UTC')."
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -296,7 +306,27 @@ impl Tool for SessionStatusTool {
 
         debug!("Getting status for session: {}", session_key);
 
-        let status = self.registry.get_status(&session_key)?;
+        let mut status = self.registry.get_status(&session_key)?;
+
+        // Add current timestamps
+        let now_utc = chrono::Utc::now();
+        status.timestamp_utc = now_utc.to_rfc3339();
+
+        // Format timestamp based on requested timezone or default to local
+        status.timestamp = if let Some(tz_str) = args.timezone {
+            match tz_str.parse::<chrono_tz::Tz>() {
+                Ok(tz) => {
+                    let now_local = now_utc.with_timezone(&tz);
+                    now_local.format("%Y-%m-%d %H:%M:%S %Z").to_string()
+                }
+                Err(_) => {
+                    // Invalid timezone, fall back to local
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string()
+                }
+            }
+        } else {
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string()
+        };
 
         Ok(serde_json::to_value(status)?)
     }

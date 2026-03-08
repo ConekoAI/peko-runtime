@@ -230,14 +230,11 @@ impl SystemPromptBuilder {
         lines.push("Learn about the person you're helping. Update USER.md as you go.".to_string());
         lines.push(String::new());
 
-        // 10. Current Date & Time
-        let now = Local::now();
+        // 10. Current Date & Time (OpenClaw-compatible: timezone only for cache stability)
         lines.push("## Current Date & Time".to_string());
-        lines.push(format!(
-            "Timezone: {} ({})",
-            now.format("%Z"),
-            now.format("%:z")
-        ));
+        lines.push(format!("Timezone: {}", Local::now().format("%:z")));
+        lines.push("".to_string());
+        lines.push("Use the `session_status` tool when you need the current date and time.".to_string());
         lines.push(String::new());
 
         // 11. Reply Tags

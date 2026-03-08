@@ -3,6 +3,7 @@
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::memory::sqlite::SqliteMemory;
 use crate::providers::Provider;
+use crate::tools::{InMemorySessionRegistry, SessionStatusTool};
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -35,6 +36,10 @@ impl Agent {
             Arc::new(FileSystemTool::new()),
             Arc::new(ProcessTool::new()),
         ];
+
+        // Add session introspection tools
+        let session_registry = InMemorySessionRegistry::new(format!("agent:{}:cli:default", self.config.name));
+        tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
 
         // Filter based on agent config if specified
         if let Some(ref tool_config) = self.config.tools {
