@@ -1,5 +1,0 @@
-error: unexpected argument '/tmp/cargo_check.log' found
-
-Usage: cargo check [OPTIONS]
-
-For more information, try '--help'.
