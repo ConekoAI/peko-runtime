@@ -283,7 +283,6 @@ impl Packager {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No keypair"))?;
 
-        use ed25519_dalek::Signer as _;
         let signature = keypair.sign(manifest_toml.as_bytes());
 
         // Use standard base64 encoding (URL-safe without padding)

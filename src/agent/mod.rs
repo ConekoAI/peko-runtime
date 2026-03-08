@@ -467,7 +467,6 @@ impl Agent {
                     "openai"
                 }
             }
-            _ => "openai", // Default fallback
         };
 
         // Get the provider type for the registry

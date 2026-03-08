@@ -16,7 +16,7 @@ use tracing::{debug, info};
 
 use crate::gateway::config::{GatewayInfo, PluginManifest};
 use crate::gateway::error::{GatewayError, GatewayResult};
-use crate::gateway::interface::{GatewayFactory, GatewayPlugin};
+use crate::gateway::interface::GatewayPlugin;
 use crate::gateway::loader::{platform, PluginHandle, PluginLoader};
 use crate::gateway::{RegistryError, RegistryResult};
 

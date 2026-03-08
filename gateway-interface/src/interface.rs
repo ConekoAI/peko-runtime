@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::error::{GatewayError, GatewayResult};
 use crate::types::{
     EntityInfo, EntityRef, GatewayCapabilities, GatewayMetadata, IncomingMessage,
-    MessageContent, MessageId, MessageStream, Target, UserId, ChannelId,
+    MessageContent, MessageId, MessageStream, Target, ChannelId,
 };
 
 /// API version
@@ -46,7 +46,7 @@ pub trait GatewayPlugin: Send + Sync {
         &self,
         target: Target,
         content: MessageContent,
-        timeout_secs: u64,
+        _timeout_secs: u64,
     ) -> GatewayResult<Option<IncomingMessage>> {
         let _ = self.send(target, content).await?;
         Ok(None)

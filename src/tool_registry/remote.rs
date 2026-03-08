@@ -437,6 +437,7 @@ impl RemoteRegistryClient {
             return binaries.windows_x64.clone();
         }
 
+        #[allow(unreachable_code)]
         None
     }
 

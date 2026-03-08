@@ -445,8 +445,6 @@ pub fn wrap_tool<T: ToolWithContext>(tool: T) -> (AbortableTool<T>, AbortSignal)
     (abortable, signal)
 }
 
-use super::Tool;
-
 #[cfg(test)]
 mod tests {
     use super::*;

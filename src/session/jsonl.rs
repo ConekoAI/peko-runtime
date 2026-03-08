@@ -13,7 +13,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
 use tracing::{debug, info};
 
 /// Default lock timeout for session operations (10 seconds)
