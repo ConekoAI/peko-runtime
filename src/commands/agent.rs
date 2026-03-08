@@ -220,7 +220,13 @@ pub mod handlers {
                 if let Some(msg) = message {
                     // Single message mode
                     println!();
-                    if let Err(e) = crate::channels::cli::send_single_message_with_session(&agent, &msg, new_session).await {
+                    if let Err(e) = crate::channels::cli::send_single_message_with_session(
+                        &agent,
+                        &msg,
+                        new_session,
+                    )
+                    .await
+                    {
                         eprintln!("❌ Error processing message: {e}");
                     }
                 } else {
@@ -237,15 +243,13 @@ pub mod handlers {
                         coalesce_idle_ms: 500,
                         human_delay: None,
                     };
-                    let mut channel = CliChannel::with_config(&agent_name, streaming_config);
+                    let channel = CliChannel::with_config(&agent_name, streaming_config);
 
                     let agent_arc = std::sync::Arc::new(std::sync::Mutex::new(agent));
-                    if let Err(e) =
-                        run_interactive_loop(channel, agent_arc.clone()).await
-                    {
+                    if let Err(e) = run_interactive_loop(channel, agent_arc.clone()).await {
                         eprintln!("❌ Error in interactive loop: {e}");
                     }
-                    
+
                     // Stop the agent after the loop completes
                     let agent_guard = agent_arc.lock().unwrap();
                     if let Err(e) = agent_guard.stop().await {
@@ -646,8 +650,9 @@ pub mod handlers {
             "kimi_code" | "kimi-code" => "kimi",
             _ => provider,
         };
-        
-        if let Some(api_key) = crate::commands::auth::get_api_key(paths, credential_provider, None)? {
+
+        if let Some(api_key) = crate::commands::auth::get_api_key(paths, credential_provider, None)?
+        {
             config.provider.api_key = Some(api_key);
             config.provider.api_key_env = None; // Use direct key instead of env
         }

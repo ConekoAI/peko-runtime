@@ -215,7 +215,9 @@ impl Compactor {
         messages
             .iter()
             .map(|m| {
-                let content_len: usize = m.content.iter()
+                let content_len: usize = m
+                    .content
+                    .iter()
                     .map(|b| match b {
                         ContentBlock::Text { text } => text.len(),
                         _ => 50, // Estimate for other blocks
@@ -260,7 +262,9 @@ impl Compactor {
         let mut keep_tokens = 0usize;
 
         for msg in messages.iter().rev() {
-            let content_len: usize = msg.content.iter()
+            let content_len: usize = msg
+                .content
+                .iter()
                 .map(|b| match b {
                     ContentBlock::Text { text } => text.len(),
                     _ => 50,
@@ -306,7 +310,9 @@ impl Compactor {
             };
 
             // Extract text content
-            let content: String = msg.content.iter()
+            let content: String = msg
+                .content
+                .iter()
                 .filter_map(|b| match b {
                     ContentBlock::Text { text } => Some(text.clone()),
                     ContentBlock::ToolCall { name, .. } => Some(format!("[Tool: {}]", name)),
@@ -343,7 +349,7 @@ impl Compactor {
                     "<previous-summary>\n{}\n</previous-summary>\n\n{}",
                     prev, UPDATE_SUMMARIZATION_PROMPT
                 ),
-                true
+                true,
             )
         } else {
             (INITIAL_SUMMARIZATION_PROMPT.to_string(), false)
@@ -370,7 +376,11 @@ impl Compactor {
             warn!("LLM returned empty summary, using fallback");
             if let Some(ref prev) = self.previous_summary {
                 // If update failed, return previous summary with note
-                Ok(format!("{}\n\n[Note: {} new messages not incorporated]", prev, messages.len()))
+                Ok(format!(
+                    "{}\n\n[Note: {} new messages not incorporated]",
+                    prev,
+                    messages.len()
+                ))
             } else {
                 Ok(format!(
                     "[{} messages summarized - conversation history]",
@@ -399,11 +409,12 @@ impl Compactor {
 
         // Extract ONLY the initial system prompt (first message if it's system)
         // Runtime-injected system messages (compaction summaries, interceptors) are treated as conversation
-        let (initial_system_msg, conversation_msgs): (Vec<_>, Vec<_>) = if !messages.is_empty() && messages[0].role == MessageRole::System {
-            (vec![messages[0].clone()], messages[1..].to_vec())
-        } else {
-            (vec![], messages.to_vec())
-        };
+        let (initial_system_msg, conversation_msgs): (Vec<_>, Vec<_>) =
+            if !messages.is_empty() && messages[0].role == MessageRole::System {
+                (vec![messages[0].clone()], messages[1..].to_vec())
+            } else {
+                (vec![], messages.to_vec())
+            };
 
         // Select from conversation messages only (includes runtime system messages)
         let (to_compact, to_keep_conversation) = self.select_messages(&conversation_msgs);
@@ -430,7 +441,9 @@ impl Compactor {
         );
         let summary_message = ChatMessage {
             role: MessageRole::System,
-            content: vec![ContentBlock::Text { text: summary_content }],
+            content: vec![ContentBlock::Text {
+                text: summary_content,
+            }],
             tool_calls: None,
             tool_call_id: None,
         };
@@ -513,7 +526,9 @@ mod tests {
 
         messages.push(ChatMessage {
             role: MessageRole::System,
-            content: vec![ContentBlock::Text { text: "You are a helpful assistant.".to_string() }],
+            content: vec![ContentBlock::Text {
+                text: "You are a helpful assistant.".to_string(),
+            }],
             tool_calls: None,
             tool_call_id: None,
         });
@@ -522,17 +537,21 @@ mod tests {
             if i % 2 == 0 {
                 messages.push(ChatMessage {
                     role: MessageRole::User,
-                    content: vec![ContentBlock::Text { text: format!("User message {}", i) }],
+                    content: vec![ContentBlock::Text {
+                        text: format!("User message {}", i),
+                    }],
                     tool_calls: None,
                     tool_call_id: None,
                 });
             } else {
                 messages.push(ChatMessage {
                     role: MessageRole::Assistant,
-                    content: vec![ContentBlock::Text { text: format!(
-                        "Assistant response {} with some additional text to make it longer",
-                        i
-                    ) }],
+                    content: vec![ContentBlock::Text {
+                        text: format!(
+                            "Assistant response {} with some additional text to make it longer",
+                            i
+                        ),
+                    }],
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -566,7 +585,7 @@ mod tests {
     fn test_select_messages() {
         let compactor = Compactor::new();
         let messages = create_test_messages(10);
-        
+
         // Filter out system messages for this test (select_messages expects non-system)
         let conversation_msgs: Vec<_> = messages
             .into_iter()
@@ -604,9 +623,12 @@ mod tests {
     fn test_cumulative_summary_tracking() {
         let mut compactor = Compactor::with_previous_summary(
             Compactor::with_config(CompactionConfig::default(), None),
-            Some("Initial summary".to_string())
+            Some("Initial summary".to_string()),
         );
-        
-        assert_eq!(compactor.current_summary(), Some(&"Initial summary".to_string()));
+
+        assert_eq!(
+            compactor.current_summary(),
+            Some(&"Initial summary".to_string())
+        );
     }
 }

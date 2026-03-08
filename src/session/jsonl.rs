@@ -8,10 +8,9 @@
 
 use crate::session::lock::FileLock;
 use crate::types::ContentBlock;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -303,7 +302,10 @@ impl SessionStorage {
         file.write_all(line.as_bytes()).await?;
         file.flush().await?;
 
-        debug!("Appended compaction #{} to session {}", compaction_number, session_id);
+        debug!(
+            "Appended compaction #{} to session {}",
+            compaction_number, session_id
+        );
         Ok(entry_id)
     }
 

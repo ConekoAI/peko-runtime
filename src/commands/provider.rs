@@ -35,19 +35,13 @@ async fn list_providers_cmd(detailed: bool) -> Result<()> {
             format!(", aliases: {})", meta.aliases.join(", "))
         };
 
-        println!(
-            "  {} - {}{}",
-            meta.id, meta.display_name, aliases
-        );
+        println!("  {} - {}{}", meta.id, meta.display_name, aliases);
 
         if detailed {
             println!("    API Type: {}", meta.api_type.as_str());
             println!("    Base URL: {}", meta.base_url);
             println!("    Default Model: {}", meta.default_model);
-            println!(
-                "    API Key: set one of {}",
-                meta.api_key_env.join(", ")
-            );
+            println!("    API Key: set one of {}", meta.api_key_env.join(", "));
             println!();
         }
     }

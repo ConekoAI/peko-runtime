@@ -8,16 +8,14 @@
 
 use crate::agent::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase, SimpleSession};
-use crate::providers::{
-    ChatMessage, ChatOptions, MessageRole, StopReason, StreamEvent, ToolDefinition,
-};
+use crate::prompt::{PromptMode, SystemPromptBuilder};
+use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
 use crate::tools::Tool;
-use crate::types::message::{ContentBlock, LlmMessage};
-use crate::prompt::{SystemPromptBuilder, PromptMode};
+use crate::types::message::ContentBlock;
 use anyhow::{Context as _, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Result of running the agentic loop
 #[derive(Debug, Clone)]
@@ -126,7 +124,7 @@ impl AgenticLoopV4 {
             }
             None => {
                 // Fresh start - add system prompt
-                let mut msgs = vec![ChatMessage {
+                let msgs = vec![ChatMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
                         text: self.system_prompt.clone(),
@@ -145,7 +143,9 @@ impl AgenticLoopV4 {
         // Add user message
         messages.push(ChatMessage {
             role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: prompt.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+            }],
             tool_calls: None,
             tool_call_id: None,
         });
@@ -181,18 +181,23 @@ impl AgenticLoopV4 {
         let mut total_usage = crate::providers::TokenUsage::default();
 
         // Load previous compaction summary from session for cumulative updates
-        let previous_summary = session.load_previous_compaction_summary().await.ok().flatten();
+        let previous_summary = session
+            .load_previous_compaction_summary()
+            .await
+            .ok()
+            .flatten();
         if previous_summary.is_some() {
             info!("Found previous compaction summary for cumulative updates");
         }
 
         // Initialize background compactor
-        let background_compactor = crate::compaction::background::BackgroundCompactor::new(
-            self.provider.clone()
-        );
+        let background_compactor =
+            crate::compaction::background::BackgroundCompactor::new(self.provider.clone());
 
         // Track pending compaction
-        let mut pending_compaction: Option<tokio::sync::oneshot::Receiver<crate::compaction::background::CompactionResponse>> = None;
+        let mut pending_compaction: Option<
+            tokio::sync::oneshot::Receiver<crate::compaction::background::CompactionResponse>,
+        > = None;
 
         // Initialize compactor config for quota checks
         let compaction_config = crate::compaction::CompactionConfig::default();
@@ -205,22 +210,33 @@ impl AgenticLoopV4 {
             let estimated_tokens = crate::compaction::Compactor::estimate_tokens(&messages);
 
             // Start background compaction if needed and not already running
-            if pending_compaction.is_none() && background_compactor.should_request(
-                estimated_tokens, &compaction_config).await {
+            if pending_compaction.is_none()
+                && background_compactor
+                    .should_request(estimated_tokens, &compaction_config)
+                    .await
+            {
                 info!(
                     "Context window approaching limit ({} tokens), starting background compaction...",
                     estimated_tokens
                 );
                 on_event(AgenticEvent::Thinking {
                     run_id: run_id.clone(),
-                    text: "Session is getting long. Summarizing older messages in background...".to_string(),
+                    text: "Session is getting long. Summarizing older messages in background..."
+                        .to_string(),
                     is_delta: false,
                     is_final: false,
                     signature: None,
                 });
 
-                let prev_summary = session.load_previous_compaction_summary().await.ok().flatten();
-                match background_compactor.request_compaction(messages.clone(), prev_summary).await {
+                let prev_summary = session
+                    .load_previous_compaction_summary()
+                    .await
+                    .ok()
+                    .flatten();
+                match background_compactor
+                    .request_compaction(messages.clone(), prev_summary)
+                    .await
+                {
                     Ok(receiver) => {
                         pending_compaction = Some(receiver);
                     }
@@ -232,10 +248,13 @@ impl AgenticLoopV4 {
 
             // Check if background compaction has completed
             if let Some(ref mut receiver) = pending_compaction {
-                match tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver).await {
+                match tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver).await
+                {
                     Ok(Ok(response)) => {
                         match response {
-                            crate::compaction::background::CompactionResponse::Completed(result) => {
+                            crate::compaction::background::CompactionResponse::Completed(
+                                result,
+                            ) => {
                                 messages = result.messages;
                                 info!(
                                     "Background compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
@@ -316,12 +335,24 @@ impl AgenticLoopV4 {
             // Debug: print messages being sent
             debug!("Messages sent to LLM (iteration {}):", iteration);
             for (i, msg) in messages.iter().enumerate() {
-                let content_preview: String = msg.content.iter().map(|b| match b {
-                    crate::types::message::ContentBlock::Text { text } => format!("[Text: {}]", text.chars().take(50).collect::<String>()),
-                    crate::types::message::ContentBlock::ToolCall { id, name, .. } => format!("[ToolCall: {} ({})]", name, id),
-                    crate::types::message::ContentBlock::ToolResult { tool_call_id, name, .. } => format!("[ToolResult: {} -> {}]", tool_call_id, name),
-                    _ => "[Other]".to_string(),
-                }).collect();
+                let content_preview: String = msg
+                    .content
+                    .iter()
+                    .map(|b| match b {
+                        crate::types::message::ContentBlock::Text { text } => {
+                            format!("[Text: {}]", text.chars().take(50).collect::<String>())
+                        }
+                        crate::types::message::ContentBlock::ToolCall { id, name, .. } => {
+                            format!("[ToolCall: {} ({})]", name, id)
+                        }
+                        crate::types::message::ContentBlock::ToolResult {
+                            tool_call_id,
+                            name,
+                            ..
+                        } => format!("[ToolResult: {} -> {}]", tool_call_id, name),
+                        _ => "[Other]".to_string(),
+                    })
+                    .collect();
                 debug!("  [{}] {:?}: {}", i, msg.role, content_preview);
             }
 
@@ -362,7 +393,7 @@ impl AgenticLoopV4 {
             // Emit thinking/reasoning text BEFORE tool calls
             let thinking_text = thinking_parts.join(" ").trim().to_string();
             let assistant_text = text_parts.join(" ").trim().to_string();
-            
+
             // Only emit thinking event if there's actual thinking content
             // Don't emit assistant text as thinking - that causes duplication
             if !thinking_text.is_empty() {
@@ -398,7 +429,12 @@ impl AgenticLoopV4 {
                     .tool_calls
                     .iter()
                     .filter_map(|tc| {
-                        if let ContentBlock::ToolCall { id, name, arguments } = tc {
+                        if let ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } = tc
+                        {
                             Some(ContentBlock::ToolCall {
                                 id: id.clone(),
                                 name: name.clone(),
@@ -427,7 +463,12 @@ impl AgenticLoopV4 {
                 let mut tool_results = Vec::new();
 
                 for tool_call in &response.tool_calls {
-                    if let ContentBlock::ToolCall { id, name, arguments } = tool_call {
+                    if let ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } = tool_call
+                    {
                         info!("Executing tool: {} (id: {})", name, id);
 
                         // Emit tool start event
@@ -440,30 +481,27 @@ impl AgenticLoopV4 {
 
                         // Find and execute tool
                         let start_time = std::time::Instant::now();
-                        let tool_result = if let Some(tool) =
-                            self.tools.iter().find(|t| t.name() == name)
-                        {
-                            match tool.execute(arguments.clone()).await {
-                                Ok(result) => {
-                                    info!("Tool '{}' executed successfully", name);
-                                    result.to_string()
+                        let tool_result =
+                            if let Some(tool) = self.tools.iter().find(|t| t.name() == name) {
+                                match tool.execute(arguments.clone()).await {
+                                    Ok(result) => {
+                                        info!("Tool '{}' executed successfully", name);
+                                        result.to_string()
+                                    }
+                                    Err(e) => {
+                                        // Tool errors are informational - agent can handle them
+                                        info!("Tool '{}' failed: {}", name, e);
+                                        format!("Error: {}", e)
+                                    }
                                 }
-                                Err(e) => {
-                                    // Tool errors are informational - agent can handle them
-                                    info!("Tool '{}' failed: {}", name, e);
-                                    format!("Error: {}", e)
-                                }
-                            }
-                        } else {
-                            format!("Tool '{}' not found", name)
-                        };
+                            } else {
+                                format!("Tool '{}' not found", name)
+                            };
 
                         let duration_ms = start_time.elapsed().as_millis() as u64;
 
                         // Add tool result to session
-                        session
-                            .add_tool_result(id, name, &tool_result)
-                            .await?;
+                        session.add_tool_result(id, name, &tool_result).await?;
 
                         // Emit tool end event
                         on_event(AgenticEvent::ToolEnd {
@@ -495,7 +533,14 @@ impl AgenticLoopV4 {
                 // Add tool results to messages
                 info!("Adding {} tool results to messages", tool_results.len());
                 messages.extend(tool_results);
-                info!("Messages now has {} items: {:?}", messages.len(), messages.iter().map(|m| format!("{:?}", m.role)).collect::<Vec<_>>());
+                info!(
+                    "Messages now has {} items: {:?}",
+                    messages.len(),
+                    messages
+                        .iter()
+                        .map(|m| format!("{:?}", m.role))
+                        .collect::<Vec<_>>()
+                );
 
                 // Continue to next iteration for final answer
                 continue;
@@ -592,11 +637,17 @@ impl AgenticLoopV4 {
 /// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.)
 fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
     // Use configured workspace if specified, otherwise use default
-    let workspace_dir = agent.config.workspace.clone()
+    let workspace_dir = agent
+        .config
+        .workspace
+        .clone()
         .or_else(|| {
             dirs::data_dir()
                 .map(|d| d.join("pekobot").join("workspaces").join(agent.name()))
-                .or_else(|| dirs::home_dir().map(|h| h.join(".pekobot").join("workspaces").join(agent.name())))
+                .or_else(|| {
+                    dirs::home_dir()
+                        .map(|h| h.join(".pekobot").join("workspaces").join(agent.name()))
+                })
         })
         .unwrap_or_else(|| PathBuf::from("."));
 
@@ -638,12 +689,14 @@ fn extract_tool_calls(blocks: &[ContentBlock]) -> Vec<ToolCall> {
     blocks
         .iter()
         .filter_map(|b| match b {
-            ContentBlock::ToolCall { id: _, name, arguments } => {
-                Some(ToolCall {
-                    name: name.clone(),
-                    parameters: arguments.clone(),
-                })
-            }
+            ContentBlock::ToolCall {
+                id: _,
+                name,
+                arguments,
+            } => Some(ToolCall {
+                name: name.clone(),
+                parameters: arguments.clone(),
+            }),
             _ => None,
         })
         .collect()

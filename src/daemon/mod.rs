@@ -111,7 +111,10 @@ impl Daemon {
         info!("   Data dir: {}", self.config.data_dir.display());
         info!("   Cron DB: {}", self.config.cron_db_path.display());
         info!("   Poll interval: {:?}", self.config.poll_interval);
-        info!("   Maintenance interval: {:?}", self.config.maintenance_interval);
+        info!(
+            "   Maintenance interval: {:?}",
+            self.config.maintenance_interval
+        );
 
         {
             let mut status = self.status.lock().await;

@@ -348,11 +348,15 @@ impl Tool for SessionStatusTool {
                 }
                 Err(_) => {
                     // Invalid timezone, fall back to local
-                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string()
+                    chrono::Local::now()
+                        .format("%Y-%m-%d %H:%M:%S %Z")
+                        .to_string()
                 }
             }
         } else {
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string()
+            chrono::Local::now()
+                .format("%Y-%m-%d %H:%M:%S %Z")
+                .to_string()
         };
 
         Ok(serde_json::to_value(status)?)

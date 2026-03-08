@@ -130,20 +130,29 @@ impl SystemPromptBuilder {
         } else {
             lines.push("You have access to the following tools. Use them wisely.".to_string());
             lines.push(String::new());
-            
+
             for tool in &self.tools {
                 lines.push(format!("### {}", tool.name()));
                 lines.push(String::new());
                 lines.push(tool.llm_description());
                 lines.push(String::new());
             }
-            
+
             lines.push("### Tool Use Guidelines".to_string());
             lines.push("- Think step by step. When you need to use a tool, output JSON with content blocks.".to_string());
             lines.push("- For thinking/reasoning, use: `thinking` content block".to_string());
-            lines.push("- For tool calls, use: `tool_call` content block with id, name, and arguments".to_string());
-            lines.push("- You can call multiple tools in parallel by including multiple tool_call blocks.".to_string());
-            lines.push("- When you have the final answer, provide it naturally in a text block.".to_string());
+            lines.push(
+                "- For tool calls, use: `tool_call` content block with id, name, and arguments"
+                    .to_string(),
+            );
+            lines.push(
+                "- You can call multiple tools in parallel by including multiple tool_call blocks."
+                    .to_string(),
+            );
+            lines.push(
+                "- When you have the final answer, provide it naturally in a text block."
+                    .to_string(),
+            );
         }
         lines.push(String::new());
 
@@ -234,7 +243,9 @@ impl SystemPromptBuilder {
         lines.push("## Current Date & Time".to_string());
         lines.push(format!("Timezone: {}", Local::now().format("%:z")));
         lines.push("".to_string());
-        lines.push("Use the `session_status` tool when you need the current date and time.".to_string());
+        lines.push(
+            "Use the `session_status` tool when you need the current date and time.".to_string(),
+        );
         lines.push(String::new());
 
         // 11. Reply Tags

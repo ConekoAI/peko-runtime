@@ -220,7 +220,7 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         aliases: &["kimi-code", "kimi-coding"],
         api_key_env: &["KIMI_API_KEY"],
         api_type: ApiType::AnthropicMessages,
-        base_url: "https://api.kimi.com/coding",  // Anthropic provider will append /v1/messages
+        base_url: "https://api.kimi.com/coding", // Anthropic provider will append /v1/messages
         use_auth_header: false,
         default_model: "k2p5",
     },
@@ -302,15 +302,13 @@ pub fn create_provider(
         // No API key required (e.g., local Ollama)
         String::new()
     } else {
-        registry
-            .get_api_key(metadata)
-            .with_context(|| {
-                format!(
-                    "No API key found for {}. Set one of: {}",
-                    metadata.display_name,
-                    metadata.api_key_env.join(", ")
-                )
-            })?
+        registry.get_api_key(metadata).with_context(|| {
+            format!(
+                "No API key found for {}. Set one of: {}",
+                metadata.display_name,
+                metadata.api_key_env.join(", ")
+            )
+        })?
     };
 
     // Get base URL (config overrides default)
@@ -371,14 +369,14 @@ pub fn create_provider(
 pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
     // Direct lookup in BUILT_IN_PROVIDERS to avoid lifetime issues
     let name_lower = name.to_lowercase();
-    
+
     // First try canonical IDs
     for meta in BUILT_IN_PROVIDERS {
         if meta.id == name_lower {
             return Some(meta);
         }
     }
-    
+
     // Then try aliases
     for meta in BUILT_IN_PROVIDERS {
         for alias in meta.aliases {
@@ -387,7 +385,7 @@ pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
             }
         }
     }
-    
+
     None
 }
 
@@ -410,7 +408,7 @@ mod tests {
 
         // Test alias lookup
         assert!(registry.has("moonshot")); // alias for kimi
-        assert!(registry.has("claude"));   // alias for anthropic
+        assert!(registry.has("claude")); // alias for anthropic
     }
 
     #[test]

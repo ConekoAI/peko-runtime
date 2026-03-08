@@ -3,7 +3,6 @@
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::memory::sqlite::SqliteMemory;
 use crate::providers::Provider;
-use crate::tools::{InMemorySessionRegistry, SessionStatusTool};
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -38,7 +37,8 @@ impl Agent {
         ];
 
         // Add session introspection tools
-        let session_registry = InMemorySessionRegistry::new(format!("agent:{}:cli:default", self.config.name));
+        let session_registry =
+            InMemorySessionRegistry::new(format!("agent:{}:cli:default", self.config.name));
         tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
 
         // Filter based on agent config if specified
@@ -165,7 +165,7 @@ impl Agent {
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
     ) -> Result<crate::engine::AgenticResultV4> {
         use crate::engine::loop_v4::AgenticLoopV4;
-        use crate::tools::*;
+
         use std::sync::Arc;
 
         if self.state() != AgentState::Idle {
@@ -183,7 +183,11 @@ impl Agent {
             let supports_native = provider.supports_native_tools();
             info!(
                 "Executing with {} tool calling",
-                if supports_native { "native" } else { "text-based" }
+                if supports_native {
+                    "native"
+                } else {
+                    "text-based"
+                }
             );
 
             let agent_arc = Arc::new(self.clone_for_loop());
@@ -270,8 +274,6 @@ impl Agent {
 
         // We need to get the provider and tools into the task
         if let Some(provider) = &self.provider {
-            use crate::tools::*;
-
             let tools = self.create_tools();
 
             let provider_arc = Arc::clone(provider);
@@ -283,12 +285,17 @@ impl Agent {
                 let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
 
                 let _result = loop_
-                    .run_with_resume(&prompt, move |event| {
-                        // Try to send event - log if dropped (buffer full means consumer is slow)
-                        if let Err(_) = event_tx_clone.try_send(event) {
-                            warn!("Agent event dropped (channel full)");
-                        }
-                    }, existing_session, history)
+                    .run_with_resume(
+                        &prompt,
+                        move |event| {
+                            // Try to send event - log if dropped (buffer full means consumer is slow)
+                            if let Err(_) = event_tx_clone.try_send(event) {
+                                warn!("Agent event dropped (channel full)");
+                            }
+                        },
+                        existing_session,
+                        history,
+                    )
                     .await;
             });
         } else {

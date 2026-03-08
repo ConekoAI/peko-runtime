@@ -252,7 +252,8 @@ List directory:
 ## Security
 - All paths are validated against security policy
 - Path traversal (`..`) is blocked
-- Prefer `trash` over `rm` for recoverable deletes"#.to_string()
+- Prefer `trash` over `rm` for recoverable deletes"#
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

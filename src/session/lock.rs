@@ -44,10 +44,7 @@ impl FileLock {
     /// # Returns
     /// * `Ok(FileLock)` - Lock acquired successfully
     /// * `Err` - Timeout or other error
-    pub async fn acquire(
-        session_path: impl AsRef<Path>,
-        timeout_ms: u64,
-    ) -> Result<Self> {
+    pub async fn acquire(session_path: impl AsRef<Path>, timeout_ms: u64) -> Result<Self> {
         let lock_path = Self::lock_path(&session_path);
         let start = SystemTime::now();
         let timeout = Duration::from_millis(timeout_ms);
@@ -91,7 +88,9 @@ impl FileLock {
                 Err(e) => {
                     // If we can't read the lock file, assume it's corrupt and remove it
                     // Check if it's just a "file not found" error (race condition with another process cleaning up)
-                    if e.to_string().contains("No such file") || e.to_string().contains("entity not found") {
+                    if e.to_string().contains("No such file")
+                        || e.to_string().contains("entity not found")
+                    {
                         debug!("Lock file was removed by another process (race condition), continuing...");
                     } else {
                         warn!("Could not read lock file (removing): {}", e);
@@ -144,8 +143,8 @@ impl FileLock {
             }
         };
 
-        let payload: LockPayload = serde_json::from_str(&content)
-            .context("Failed to parse lock file")?;
+        let payload: LockPayload =
+            serde_json::from_str(&content).context("Failed to parse lock file")?;
 
         // Check if PID is still alive
         if !Self::is_pid_alive(payload.pid) {

@@ -13,7 +13,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::{debug, error, warn};
+use tracing::debug;
 
 use crate::tools::traits::Tool;
 
@@ -173,12 +173,12 @@ impl WebSearchTool {
     }
 
     /// Search using Brave LLM Context API (POST)
-    async fn search_brave(&self,
-        args: &SearchArgs,
-    ) -> anyhow::Result<SearchResponse> {
-        let api_key = self
-            .get_api_key()
-            .ok_or_else(|| anyhow::anyhow!("BRAVE_API_KEY not configured. Get a free key at https://api.search.brave.com/"))?;
+    async fn search_brave(&self, args: &SearchArgs) -> anyhow::Result<SearchResponse> {
+        let api_key = self.get_api_key().ok_or_else(|| {
+            anyhow::anyhow!(
+                "BRAVE_API_KEY not configured. Get a free key at https://api.search.brave.com/"
+            )
+        })?;
 
         let max_urls = args.count.unwrap_or(self.config.max_urls).min(50).max(1);
         let max_tokens = self.config.max_tokens.min(32768).max(1024);
@@ -205,14 +205,14 @@ impl WebSearchTool {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            
+
             let message = match status.as_u16() {
                 401 => "Invalid Brave API key. Please check your BRAVE_API_KEY.".to_string(),
                 429 => "Brave API rate limit exceeded. Please try again later.".to_string(),
                 422 => format!("Validation error: {}", error_text),
                 _ => format!("Brave API error: {} - {}", status, error_text),
             };
-            
+
             return Err(anyhow::anyhow!(message));
         }
 
@@ -339,10 +339,7 @@ Get a free API key at: https://api.search.brave.com/
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let args: SearchArgs =
             serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
@@ -436,10 +433,7 @@ mod tests {
 
     #[test]
     fn test_extract_domain() {
-        assert_eq!(
-            extract_domain("https://example.com/path"),
-            "example.com"
-        );
+        assert_eq!(extract_domain("https://example.com/path"), "example.com");
         assert_eq!(
             extract_domain("https://www.example.com/path"),
             "www.example.com"

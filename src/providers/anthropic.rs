@@ -87,24 +87,42 @@ impl AnthropicProvider {
             .filter_map(|m| {
                 // Handle tool results FIRST (before the role match that filters them out)
                 if m.role == MessageRole::Tool {
-                    debug!("Converting Tool message with {} content blocks", m.content.len());
-                    
+                    debug!(
+                        "Converting Tool message with {} content blocks",
+                        m.content.len()
+                    );
+
                     // Find ToolResult content block
                     for (idx, block) in m.content.iter().enumerate() {
-                        debug!("  Content block [{}]: {:?}", idx, std::mem::discriminant(block));
-                        if let crate::types::message::ContentBlock::ToolResult { tool_call_id, content, .. } = block {
+                        debug!(
+                            "  Content block [{}]: {:?}",
+                            idx,
+                            std::mem::discriminant(block)
+                        );
+                        if let crate::types::message::ContentBlock::ToolResult {
+                            tool_call_id,
+                            content,
+                            ..
+                        } = block
+                        {
                             // Extract text from the content blocks inside ToolResult
                             let content_text: String = content
                                 .iter()
                                 .filter_map(|b| match b {
-                                    crate::types::message::ContentBlock::Text { text } => Some(text.clone()),
+                                    crate::types::message::ContentBlock::Text { text } => {
+                                        Some(text.clone())
+                                    }
                                     _ => None,
                                 })
                                 .collect::<Vec<_>>()
                                 .join("");
-                            
-                            debug!("  Found ToolResult: tool_call_id={}, content_len={}", tool_call_id, content_text.len());
-                            
+
+                            debug!(
+                                "  Found ToolResult: tool_call_id={}, content_len={}",
+                                tool_call_id,
+                                content_text.len()
+                            );
+
                             return Some(AnthropicMessage {
                                 role: "user".to_string(),
                                 content: Content::Blocks(vec![ContentBlock::ToolResult {
@@ -114,22 +132,28 @@ impl AnthropicProvider {
                             });
                         }
                     }
-                    
+
                     // Fallback: try to extract text directly from content
                     debug!("  No ToolResult block found, trying fallback");
                     let content_text = m
                         .content
                         .iter()
                         .filter_map(|b| match b {
-                            crate::types::message::ContentBlock::Text { text } => Some(text.clone()),
+                            crate::types::message::ContentBlock::Text { text } => {
+                                Some(text.clone())
+                            }
                             _ => None,
                         })
                         .collect::<Vec<_>>()
                         .join("");
-                    
+
                     let tool_use_id = m.tool_call_id.clone().unwrap_or_default();
-                    debug!("  Fallback: tool_use_id={}, content_len={}", tool_use_id, content_text.len());
-                    
+                    debug!(
+                        "  Fallback: tool_use_id={}, content_len={}",
+                        tool_use_id,
+                        content_text.len()
+                    );
+
                     return Some(AnthropicMessage {
                         role: "user".to_string(),
                         content: Content::Blocks(vec![ContentBlock::ToolResult {
@@ -143,7 +167,7 @@ impl AnthropicProvider {
                 let role = match m.role {
                     MessageRole::User => "user",
                     MessageRole::Assistant => "assistant",
-                    _ => return None,  // Filter out System (handled separately)
+                    _ => return None, // Filter out System (handled separately)
                 };
 
                 // Extract text content and tool calls
@@ -156,7 +180,9 @@ impl AnthropicProvider {
                             text_parts.push(text.clone());
                         }
                         crate::types::message::ContentBlock::ToolCall {
-                            id, name, arguments
+                            id,
+                            name,
+                            arguments,
                         } => {
                             tool_calls.push(AnthropicToolUse {
                                 tool_type: "tool_use".to_string(),
@@ -230,13 +256,29 @@ impl AnthropicProvider {
         debug!("Anthropic request messages:");
         for (i, msg) in anthropic_messages.iter().enumerate() {
             let content_preview = match &msg.content {
-                Content::Text(text) => format!("[Text: {}]", text.chars().take(50).collect::<String>()),
+                Content::Text(text) => {
+                    format!("[Text: {}]", text.chars().take(50).collect::<String>())
+                }
                 Content::Blocks(blocks) => {
-                    let block_strs: Vec<String> = blocks.iter().map(|b| match b {
-                        ContentBlock::Text { text } => format!("[Text: {}]", text.chars().take(30).collect::<String>()),
-                        ContentBlock::ToolUse { id, name, .. } => format!("[ToolUse: {}]", name),
-                        ContentBlock::ToolResult { tool_use_id, content } => format!("[ToolResult: {} -> {}]", tool_use_id, content.chars().take(30).collect::<String>()),
-                    }).collect();
+                    let block_strs: Vec<String> = blocks
+                        .iter()
+                        .map(|b| match b {
+                            ContentBlock::Text { text } => {
+                                format!("[Text: {}]", text.chars().take(30).collect::<String>())
+                            }
+                            ContentBlock::ToolUse { id: _, name, .. } => {
+                                format!("[ToolUse: {}]", name)
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                            } => format!(
+                                "[ToolResult: {} -> {}]",
+                                tool_use_id,
+                                content.chars().take(30).collect::<String>()
+                            ),
+                        })
+                        .collect();
                     format!("[Blocks: {}]", block_strs.join(", "))
                 }
             };
@@ -251,12 +293,12 @@ impl AnthropicProvider {
             tools: anthropic_tools,
             stream: false,
         };
-        
+
         // Debug: log full request as JSON
         if let Ok(json) = serde_json::to_string_pretty(&request) {
             debug!("Anthropic API request:\n{}", json);
         }
-        
+
         request
     }
 }
@@ -492,10 +534,7 @@ impl AnthropicStreamState {
         }
     }
 
-    fn process_event(
-        &mut self,
-        event: AnthropicSseEvent,
-    ) -> anyhow::Result<Option<StreamEvent>> {
+    fn process_event(&mut self, event: AnthropicSseEvent) -> anyhow::Result<Option<StreamEvent>> {
         if event.data.trim() == "[DONE]" {
             return Ok(Some(StreamEvent::Done {
                 stop_reason: StopReason::Stop,
@@ -516,8 +555,10 @@ impl AnthropicStreamState {
                             return Ok(Some(StreamEvent::TextStart { content_index: 0 }));
                         }
                         Some("tool_use") => {
-                            self.current_tool_id = block.get("id").and_then(|i| i.as_str()).map(String::from);
-                            self.current_tool_name = block.get("name").and_then(|n| n.as_str()).map(String::from);
+                            self.current_tool_id =
+                                block.get("id").and_then(|i| i.as_str()).map(String::from);
+                            self.current_tool_name =
+                                block.get("name").and_then(|n| n.as_str()).map(String::from);
                             return Ok(Some(StreamEvent::ToolCallStart { content_index: 1 }));
                         }
                         _ => {}
@@ -538,7 +579,9 @@ impl AnthropicStreamState {
                             }
                         }
                         Some("input_json_delta") => {
-                            if let Some(partial) = delta.get("partial_json").and_then(|p| p.as_str()) {
+                            if let Some(partial) =
+                                delta.get("partial_json").and_then(|p| p.as_str())
+                            {
                                 self.current_tool_input.push_str(partial);
                             }
                         }
@@ -548,10 +591,9 @@ impl AnthropicStreamState {
             }
             Some("content_block_stop") => {
                 // Check if we were building a tool call
-                if let (Some(id), Some(name)) = (
-                    self.current_tool_id.take(),
-                    self.current_tool_name.take(),
-                ) {
+                if let (Some(id), Some(name)) =
+                    (self.current_tool_id.take(), self.current_tool_name.take())
+                {
                     let input = serde_json::from_str(&self.current_tool_input)
                         .unwrap_or_else(|_| serde_json::json!({}));
                     self.current_tool_input.clear();
@@ -650,9 +692,18 @@ enum Content {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: Value },
-    ToolResult { tool_use_id: String, content: String },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -673,8 +724,14 @@ struct AnthropicResponse {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: Value },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 #[derive(Debug, Deserialize)]

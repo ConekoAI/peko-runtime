@@ -52,14 +52,16 @@ async fn test_file_lock_stale_removal() {
 async fn test_session_index_create_and_load() {
     let temp = TempDir::new().unwrap();
     let index_path = temp.path();
-    
+
     // Create directory for index
     tokio::fs::create_dir_all(&index_path).await.unwrap();
 
     let mut index = SessionIndex::open(index_path);
-    
+
     // Create initial empty index file
-    tokio::fs::write(index_path.join("sessions.json"), "{}").await.unwrap();
+    tokio::fs::write(index_path.join("sessions.json"), "{}")
+        .await
+        .unwrap();
 
     // Initially empty
     let entries = index.load().await.unwrap();
@@ -72,7 +74,10 @@ async fn test_session_index_create_and_load() {
         "test_123.jsonl".to_string(),
     );
     index
-        .insert("agent:testagent:session:test_123".to_string(), entry.clone())
+        .insert(
+            "agent:testagent:session:test_123".to_string(),
+            entry.clone(),
+        )
         .await
         .unwrap();
 
@@ -92,7 +97,9 @@ async fn test_session_index_maintenance_prune() {
     let temp = TempDir::new().unwrap();
     tokio::fs::create_dir_all(temp.path()).await.unwrap();
     // Create initial empty index file
-    tokio::fs::write(temp.path().join("sessions.json"), "{}").await.unwrap();
+    tokio::fs::write(temp.path().join("sessions.json"), "{}")
+        .await
+        .unwrap();
     let mut index = SessionIndex::open(temp.path());
 
     // Add old entry
@@ -122,13 +129,24 @@ async fn test_session_index_maintenance_prune() {
 
     let report = index.maintenance(&config).await.unwrap();
     println!("Pruned: {}, Capped: {}", report.pruned, report.capped);
-    println!("Entries before reload: {}", index.load().await.unwrap().len());
-    assert!(report.pruned >= 1, "Expected at least 1 pruned, got {}", report.pruned);
+    println!(
+        "Entries before reload: {}",
+        index.load().await.unwrap().len()
+    );
+    assert!(
+        report.pruned >= 1,
+        "Expected at least 1 pruned, got {}",
+        report.pruned
+    );
 
     // Verify old entry is gone
     let entries = index.load().await.unwrap();
     println!("Entries after reload: {}", entries.len());
-    assert!(entries.len() <= 1, "Expected at most 1 entry, got {}", entries.len());
+    assert!(
+        entries.len() <= 1,
+        "Expected at most 1 entry, got {}",
+        entries.len()
+    );
 }
 
 /// Test session index maintenance (cap)
@@ -137,7 +155,9 @@ async fn test_session_index_maintenance_cap() {
     let temp = TempDir::new().unwrap();
     tokio::fs::create_dir_all(temp.path()).await.unwrap();
     // Create initial empty index file
-    tokio::fs::write(temp.path().join("sessions.json"), "{}").await.unwrap();
+    tokio::fs::write(temp.path().join("sessions.json"), "{}")
+        .await
+        .unwrap();
     let mut index = SessionIndex::open(temp.path());
 
     // Add 5 entries
@@ -223,7 +243,10 @@ fn test_discord_session_keys() {
 
     // Guild channel
     let key = discord_session_key("myagent", None, Some("guild456"), Some("channel789"), None);
-    assert_eq!(key, "agent:myagent:discord:guild:guild456:channel:channel789");
+    assert_eq!(
+        key,
+        "agent:myagent:discord:guild:guild456:channel:channel789"
+    );
 
     // Thread
     let key = discord_session_key(
@@ -250,7 +273,10 @@ async fn test_session_storage_with_locking() {
     let storage = SessionStorage::new(temp.path().to_path_buf());
 
     // Create session
-    storage.create_session("test_session", Some("/tmp".to_string())).await.unwrap();
+    storage
+        .create_session("test_session", Some("/tmp".to_string()))
+        .await
+        .unwrap();
 
     // Append messages concurrently (simulated)
     let storage2 = SessionStorage::new(temp.path().to_path_buf());
@@ -259,14 +285,18 @@ async fn test_session_storage_with_locking() {
         "test_session",
         None,
         "user",
-        vec![ContentBlock::Text { text: "Hello".to_string() }],
+        vec![ContentBlock::Text {
+            text: "Hello".to_string(),
+        }],
     );
 
     let fut2 = storage2.append_message(
         "test_session",
         None,
         "assistant",
-        vec![ContentBlock::Text { text: "Hi there".to_string() }],
+        vec![ContentBlock::Text {
+            text: "Hi there".to_string(),
+        }],
     );
 
     // Both should succeed with locking
@@ -289,9 +319,11 @@ async fn test_session_index_migration() {
     let temp = TempDir::new().unwrap();
     let sessions_dir = temp.path().join("sessions");
     tokio::fs::create_dir_all(&sessions_dir).await.unwrap();
-    
+
     // Create initial empty index file
-    tokio::fs::write(sessions_dir.join("sessions.json"), "{}").await.unwrap();
+    tokio::fs::write(sessions_dir.join("sessions.json"), "{}")
+        .await
+        .unwrap();
 
     // Create old-style session files (without index)
     for i in 0..3 {
@@ -344,9 +376,11 @@ async fn test_full_session_lifecycle() {
     let temp = TempDir::new().unwrap();
     let sessions_dir = temp.path().join("sessions");
     tokio::fs::create_dir_all(&sessions_dir).await.unwrap();
-    
+
     // Create initial empty index file
-    tokio::fs::write(sessions_dir.join("sessions.json"), "{}").await.unwrap();
+    tokio::fs::write(sessions_dir.join("sessions.json"), "{}")
+        .await
+        .unwrap();
 
     // 1. Create storage and index
     let storage = SessionStorage::new(sessions_dir.clone());
@@ -354,11 +388,18 @@ async fn test_full_session_lifecycle() {
 
     // 2. Create session
     let session_id = "lifecycle_test";
-    storage.create_session(session_id, Some("/tmp".to_string())).await.unwrap();
+    storage
+        .create_session(session_id, Some("/tmp".to_string()))
+        .await
+        .unwrap();
 
     // 3. Create index entry with key
     let session_key = format!("agent:testagent:session:{}", session_id);
-    let mut entry = IndexEntry::new(session_id.to_string(), "testagent".to_string(), format!("{}.jsonl", session_id));
+    let mut entry = IndexEntry::new(
+        session_id.to_string(),
+        "testagent".to_string(),
+        format!("{}.jsonl", session_id),
+    );
     entry.session_key = Some(session_key.clone());
     index.insert(session_key.clone(), entry).await.unwrap();
 
@@ -368,7 +409,9 @@ async fn test_full_session_lifecycle() {
             session_id,
             None,
             "user",
-            vec![ContentBlock::Text { text: "Hello".to_string() }],
+            vec![ContentBlock::Text {
+                text: "Hello".to_string(),
+            }],
         )
         .await
         .unwrap();

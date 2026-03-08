@@ -450,9 +450,10 @@ impl StreamState {
                 if !text.is_empty() {
                     if self.text_buffer.is_empty() {
                         let idx = self.content.len();
-                        self.content.push(crate::types::message::ContentBlock::Text {
-                            text: String::new(),
-                        });
+                        self.content
+                            .push(crate::types::message::ContentBlock::Text {
+                                text: String::new(),
+                            });
                         return Ok(Some(StreamEvent::TextStart { content_index: idx }));
                     }
                     self.text_buffer.push_str(&text);
@@ -469,18 +470,18 @@ impl StreamState {
                     let index = tc_delta.index as usize;
 
                     // Find or create tool call state
-                    let tc_state = if let Some(tc) = self.tool_calls.iter_mut().find(|t| t.index == index)
-                    {
-                        tc
-                    } else {
-                        self.tool_calls.push(PartialToolCall {
-                            index,
-                            id: String::new(),
-                            name: String::new(),
-                            arguments: String::new(),
-                        });
-                        self.tool_calls.last_mut().unwrap()
-                    };
+                    let tc_state =
+                        if let Some(tc) = self.tool_calls.iter_mut().find(|t| t.index == index) {
+                            tc
+                        } else {
+                            self.tool_calls.push(PartialToolCall {
+                                index,
+                                id: String::new(),
+                                name: String::new(),
+                                arguments: String::new(),
+                            });
+                            self.tool_calls.last_mut().unwrap()
+                        };
 
                     if let Some(id) = tc_delta.id {
                         tc_state.id.push_str(&id);

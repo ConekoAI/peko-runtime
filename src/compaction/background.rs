@@ -8,11 +8,11 @@
 //! - In-flight compaction tracking
 //! - Result notification via callback
 
-use crate::compaction::{CompactionConfig, CompactionEntry, CompactionResult, Compactor};
+use crate::compaction::{CompactionConfig, CompactionResult, Compactor};
 use crate::providers::{ChatMessage, Provider};
 use anyhow::Result;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, error, info, warn};
 
@@ -30,9 +30,9 @@ pub struct CompactionQuota {
 impl Default for CompactionQuota {
     fn default() -> Self {
         Self {
-            cooldown_seconds: 60,           // 1 minute cooldown
+            cooldown_seconds: 60,             // 1 minute cooldown
             max_compactions_per_session: 100, // Generous limit
-            max_consecutive_auto: 5,        // Force manual after 5 auto compactions
+            max_consecutive_auto: 5,          // Force manual after 5 auto compactions
         }
     }
 }
@@ -107,8 +107,7 @@ impl BackgroundCompactor {
                 let state = state_clone.clone();
 
                 // Process compaction request
-                let result =
-                    process_compaction_request(request, provider, state).await;
+                let result = process_compaction_request(request, provider, state).await;
 
                 if let Err(e) = result {
                     error!("Background compaction error: {}", e);
@@ -286,13 +285,8 @@ async fn process_compaction_request(
     provider: Arc<dyn Provider>,
     state: Arc<Mutex<WorkerState>>,
 ) -> Result<()> {
-    process_compaction_request_with_config(
-        request,
-        provider,
-        state,
-        CompactionConfig::default(),
-    )
-    .await
+    process_compaction_request_with_config(request, provider, state, CompactionConfig::default())
+        .await
 }
 
 /// Process a compaction request with custom config
@@ -329,8 +323,7 @@ async fn process_compaction_request_with_config(
     }
 
     // Perform compaction
-    let mut compactor =
-        Compactor::with_config(config, request.previous_summary.clone());
+    let mut compactor = Compactor::with_config(config, request.previous_summary.clone());
 
     match compactor.compact(&request.messages, &provider).await {
         Ok(result) => {
@@ -344,11 +337,12 @@ async fn process_compaction_request_with_config(
 
             info!(
                 "Background compaction #{} completed: {} messages → summary",
-                result.state.compaction_count,
-                result.entry.messages_compacted
+                result.state.compaction_count, result.entry.messages_compacted
             );
 
-            let _ = request.response_tx.send(CompactionResponse::Completed(result));
+            let _ = request
+                .response_tx
+                .send(CompactionResponse::Completed(result));
         }
         Err(e) => {
             error!("Background compaction failed: {}", e);

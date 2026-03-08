@@ -9,10 +9,9 @@ use crate::providers::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::pin::Pin;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 /// Kimi (Moonshot) provider
 pub struct KimiProvider {
@@ -288,9 +287,7 @@ impl Provider for KimiProvider {
         let content = if content_text.is_empty() {
             vec![]
         } else {
-            vec![crate::types::message::ContentBlock::Text {
-                text: content_text,
-            }]
+            vec![crate::types::message::ContentBlock::Text { text: content_text }]
         };
 
         // Extract tool calls
@@ -305,9 +302,8 @@ impl Provider for KimiProvider {
                         let function = tc.get("function")?;
                         let name = function.get("name")?.as_str()?.to_string();
                         let arguments_str = function.get("arguments")?.as_str()?;
-                        let arguments = serde_json::from_str(arguments_str).unwrap_or_else(|_| {
-                            serde_json::json!({"raw": arguments_str})
-                        });
+                        let arguments = serde_json::from_str(arguments_str)
+                            .unwrap_or_else(|_| serde_json::json!({"raw": arguments_str}));
 
                         Some(crate::types::message::ContentBlock::ToolCall {
                             id,
@@ -443,10 +439,7 @@ impl KimiStreamState {
         }
     }
 
-    fn process_event(
-        &mut self,
-        event: KimiSseEvent,
-    ) -> anyhow::Result<Option<StreamEvent>> {
+    fn process_event(&mut self, event: KimiSseEvent) -> anyhow::Result<Option<StreamEvent>> {
         if event.data.trim() == "[DONE]" {
             return Ok(Some(StreamEvent::Done {
                 stop_reason: StopReason::Stop,
@@ -476,21 +469,21 @@ impl KimiStreamState {
             // Handle tool calls
             if let Some(tool_calls_delta) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 for tc_delta in tool_calls_delta {
-                    let index = tc_delta.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                    let index =
+                        tc_delta.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
 
-                    let tc_state = if let Some(tc) =
-                        self.tool_calls.iter_mut().find(|t| t.index == index)
-                    {
-                        tc
-                    } else {
-                        self.tool_calls.push(PartialToolCall {
-                            index,
-                            id: String::new(),
-                            name: String::new(),
-                            arguments: String::new(),
-                        });
-                        self.tool_calls.last_mut().unwrap()
-                    };
+                    let tc_state =
+                        if let Some(tc) = self.tool_calls.iter_mut().find(|t| t.index == index) {
+                            tc
+                        } else {
+                            self.tool_calls.push(PartialToolCall {
+                                index,
+                                id: String::new(),
+                                name: String::new(),
+                                arguments: String::new(),
+                            });
+                            self.tool_calls.last_mut().unwrap()
+                        };
 
                     if let Some(id) = tc_delta.get("id").and_then(|i| i.as_str()) {
                         tc_state.id.push_str(id);

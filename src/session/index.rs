@@ -340,12 +340,15 @@ impl SessionIndex {
 
     /// Insert or update an entry
     pub async fn insert(&mut self, key: String, entry: IndexEntry) -> Result<()> {
-        let mut entries = self.load().await
+        let mut entries = self
+            .load()
+            .await
             .with_context(|| format!("Failed to load index from {:?}", self.path))?;
         entries.insert(key, entry);
-        self.save(&entries).await
+        self.save(&entries)
+            .await
             .with_context(|| format!("Failed to save index to {:?}", self.path))?;
-        
+
         // Update cache
         if let Some(cache) = &mut self.cache {
             cache.data = entries;
@@ -360,10 +363,10 @@ impl SessionIndex {
     pub async fn remove(&mut self, key: &str) -> Result<Option<IndexEntry>> {
         let mut entries = self.load().await?;
         let removed = entries.remove(key);
-        
+
         if removed.is_some() {
             self.save(&entries).await?;
-            
+
             // Update cache
             if let Some(cache) = &mut self.cache {
                 cache.data = entries;
@@ -391,9 +394,7 @@ impl SessionIndex {
     }
 
     /// Find entry by session ID
-    pub async fn find_by_session_id(&mut self,
-        session_id: &str
-    ) -> Result<Option<IndexEntry>> {
+    pub async fn find_by_session_id(&mut self, session_id: &str) -> Result<Option<IndexEntry>> {
         let entries = self.load().await?;
         Ok(entries
             .values()
@@ -402,10 +403,7 @@ impl SessionIndex {
     }
 
     /// Perform maintenance on the index
-    pub async fn maintenance(
-        &mut self,
-        config: &MaintenanceConfig,
-    ) -> Result<MaintenanceReport> {
+    pub async fn maintenance(&mut self, config: &MaintenanceConfig) -> Result<MaintenanceReport> {
         let mut report = MaintenanceReport {
             pruned: 0,
             capped: 0,
@@ -520,8 +518,7 @@ impl SessionIndex {
     }
 
     /// Clean up old backup files
-    async fn cleanup_backups(&self
-) -> Result<()> {
+    async fn cleanup_backups(&self) -> Result<()> {
         let mut backups: Vec<PathBuf> = vec![];
         let mut entries = fs::read_dir(&self.dir).await?;
 
@@ -552,10 +549,7 @@ impl SessionIndex {
     }
 
     /// Migrate existing sessions (scan directory and populate index)
-    pub async fn migrate_from_directory(
-        &mut self,
-        agent_name: &str,
-    ) -> Result<usize> {
+    pub async fn migrate_from_directory(&mut self, agent_name: &str) -> Result<usize> {
         // Create directory if it doesn't exist
         if !self.dir.exists() {
             fs::create_dir_all(&self.dir).await?;
@@ -568,7 +562,7 @@ impl SessionIndex {
             let path = entry.path();
             if path.extension().map_or(false, |e| e == "jsonl") {
                 let filename = path.file_stem().unwrap().to_string_lossy().to_string();
-                
+
                 // Check if already indexed
                 let exists = self.find_by_session_id(&filename).await?.is_some();
                 if exists {
@@ -622,8 +616,7 @@ impl SessionIndex {
     }
 
     /// Get file modification time
-    async fn get_mtime(&self
-) -> Result<u64> {
+    async fn get_mtime(&self) -> Result<u64> {
         let metadata = fs::metadata(&self.path).await?;
         let modified = metadata.modified()?;
         let ms = modified
@@ -645,7 +638,7 @@ mod tests {
         let index_path = temp.path();
 
         let mut index = SessionIndex::open(index_path);
-        
+
         // Initially empty
         let entries = index.load().await.unwrap();
         assert!(entries.is_empty());
@@ -656,11 +649,20 @@ mod tests {
             "testagent".to_string(),
             "test_123.jsonl".to_string(),
         );
-        index.insert("agent:testagent:session:test_123".to_string(), entry.clone()).await.unwrap();
+        index
+            .insert(
+                "agent:testagent:session:test_123".to_string(),
+                entry.clone(),
+            )
+            .await
+            .unwrap();
 
         // Reload and verify
         let mut index2 = SessionIndex::open(index_path);
-        let loaded = index2.get("agent:testagent:session:test_123").await.unwrap();
+        let loaded = index2
+            .get("agent:testagent:session:test_123")
+            .await
+            .unwrap();
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().session_id, "test_123");
     }

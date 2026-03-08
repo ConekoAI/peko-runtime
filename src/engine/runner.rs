@@ -107,12 +107,8 @@ impl AgentRunner {
         };
 
         // Create the agentic loop with v4
-        let loop_ = AgenticLoopV4::new(
-            self.agent.clone(),
-            self.provider.clone(),
-            tools,
-        )
-        .with_max_iterations(self.config.max_iterations);
+        let loop_ = AgenticLoopV4::new(self.agent.clone(), self.provider.clone(), tools)
+            .with_max_iterations(self.config.max_iterations);
 
         // Run with timeout
         let timeout_duration = Duration::from_secs(
@@ -125,7 +121,7 @@ impl AgentRunner {
             loop_.run(prompt, |_event| {
                 // Events are ignored in non-streaming mode
                 // They get logged inside loop_v4 anyway
-            })
+            }),
         )
         .await
         {
@@ -224,9 +220,7 @@ impl AgentRunner {
             let loop_ = AgenticLoopV4::new(agent.clone(), provider, tools)
                 .with_max_iterations(max_iterations);
 
-            let timeout_duration = Duration::from_secs(
-                timeout_secs * max_iterations as u64 + 10,
-            );
+            let timeout_duration = Duration::from_secs(timeout_secs * max_iterations as u64 + 10);
 
             let result = match timeout(
                 timeout_duration,
@@ -235,7 +229,7 @@ impl AgentRunner {
                     move |event| {
                         let _ = event_tx.try_send(event);
                     }
-                })
+                }),
             )
             .await
             {
@@ -272,7 +266,11 @@ impl AgentRunner {
             let _ = event_tx_clone.try_send(AgenticEvent::Lifecycle {
                 run_id: "complete".to_string(),
                 phase: crate::engine::LifecyclePhase::End,
-                error: if result.success { None } else { Some("Execution failed".to_string()) },
+                error: if result.success {
+                    None
+                } else {
+                    Some("Execution failed".to_string())
+                },
             });
         });
 

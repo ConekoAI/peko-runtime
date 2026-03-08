@@ -236,9 +236,7 @@ pub trait Provider: Send + Sync {
         let response = self.complete(&prompt).await?;
 
         Ok(ChatResponse {
-            content: vec![crate::types::message::ContentBlock::Text {
-                text: response,
-            }],
+            content: vec![crate::types::message::ContentBlock::Text { text: response }],
             tool_calls: vec![],
             stop_reason: StopReason::Stop,
             usage: TokenUsage::default(),

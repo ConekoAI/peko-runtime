@@ -70,27 +70,43 @@ impl SimpleSession {
         let mut index = SessionIndex::open(&storage_dir);
 
         // Ensure index is migrated
-        index.migrate_from_directory(agent_name).await
+        index
+            .migrate_from_directory(agent_name)
+            .await
             .with_context(|| format!("Failed to migrate index for agent: {}", agent_name))?;
 
         // Create session entry
         let cwd = std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().to_string());
-        storage.create_session(session_id, cwd.clone()).await
-            .with_context(|| format!("Failed to create session file: {}/{}", storage_dir.display(), session_id))?;
+        storage
+            .create_session(session_id, cwd.clone())
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to create session file: {}/{}",
+                    storage_dir.display(),
+                    session_id
+                )
+            })?;
 
         // Create index entry
         let transcript_file = format!("{}.jsonl", session_id);
-        let mut entry = IndexEntry::new(session_id.to_string(), agent_name.to_string(), transcript_file);
+        let mut entry = IndexEntry::new(
+            session_id.to_string(),
+            agent_name.to_string(),
+            transcript_file,
+        );
         entry.session_key = session_key.clone();
         entry.cwd = cwd;
 
         // Insert into index
-        let index_key = session_key.clone().unwrap_or_else(|| {
-            format!("agent:{}:session:{}", agent_name, session_id)
-        });
-        index.insert(index_key, entry).await
+        let index_key = session_key
+            .clone()
+            .unwrap_or_else(|| format!("agent:{}:session:{}", agent_name, session_id));
+        index
+            .insert(index_key, entry)
+            .await
             .with_context(|| "Failed to insert into index")?;
 
         Ok(Self {
@@ -118,7 +134,8 @@ impl SimpleSession {
         index.migrate_from_directory(agent_name).await?;
 
         // Load existing entries to find the last message ID
-        let entries: Vec<crate::session::jsonl::SessionEntry> = storage.load_session(session_id).await?;
+        let entries: Vec<crate::session::jsonl::SessionEntry> =
+            storage.load_session(session_id).await?;
 
         if entries.is_empty() {
             return Ok(None);
@@ -126,21 +143,25 @@ impl SimpleSession {
 
         // Count messages and find last ID
         let mut message_count = 0;
-        let last_message_id = entries.iter().rev().find_map(|entry| {
-            match entry {
-                crate::session::jsonl::SessionEntry::Message { id, .. } => {
-                    message_count += 1;
-                    Some(id.clone())
-                }
-                _ => None,
+        let last_message_id = entries.iter().rev().find_map(|entry| match entry {
+            crate::session::jsonl::SessionEntry::Message { id, .. } => {
+                message_count += 1;
+                Some(id.clone())
             }
+            _ => None,
         });
 
         // Find session key and token counts from index if available
         let index_entry = index.find_by_session_id(session_id).await?;
         let session_key = index_entry.as_ref().and_then(|e| e.session_key.clone());
-        let input_tokens = index_entry.as_ref().and_then(|e| e.input_tokens).unwrap_or(0);
-        let output_tokens = index_entry.as_ref().and_then(|e| e.output_tokens).unwrap_or(0);
+        let input_tokens = index_entry
+            .as_ref()
+            .and_then(|e| e.input_tokens)
+            .unwrap_or(0);
+        let output_tokens = index_entry
+            .as_ref()
+            .and_then(|e| e.output_tokens)
+            .unwrap_or(0);
         let current_provider = index_entry.as_ref().and_then(|e| e.provider.clone());
         let current_model = index_entry.as_ref().and_then(|e| e.model.clone());
 
@@ -160,10 +181,7 @@ impl SimpleSession {
     }
 
     /// Open or create a session by key (for CLI persistence)
-    pub async fn open_or_create_by_key(
-        agent_name: &str,
-        session_key: &str,
-    ) -> Result<Self> {
+    pub async fn open_or_create_by_key(agent_name: &str, session_key: &str) -> Result<Self> {
         let storage_dir = Self::storage_dir(agent_name);
         let mut index = SessionIndex::open(&storage_dir);
 
@@ -184,10 +202,7 @@ impl SimpleSession {
     }
 
     /// Open an existing session by key (returns None if not found)
-    pub async fn open_by_key(
-        agent_name: &str,
-        session_key: &str,
-    ) -> Result<Option<Self>> {
+    pub async fn open_by_key(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
         let storage_dir = Self::storage_dir(agent_name);
         let mut index = SessionIndex::open(&storage_dir);
 
@@ -238,7 +253,11 @@ impl SimpleSession {
 
     /// Get current token usage
     pub fn token_usage(&self) -> (usize, usize, usize) {
-        (self.input_tokens, self.output_tokens, self.input_tokens + self.output_tokens)
+        (
+            self.input_tokens,
+            self.output_tokens,
+            self.input_tokens + self.output_tokens,
+        )
     }
 
     /// Get current provider and model
@@ -278,7 +297,7 @@ impl SimpleSession {
                 crate::session::jsonl::SessionEntry::ToolResult {
                     tool_call_id,
                     content,
-                    is_error,
+                    is_error: _,
                     ..
                 } => {
                     // Tool results become tool role messages
@@ -311,7 +330,8 @@ impl SimpleSession {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if path.extension().map_or(false, |e| e == "jsonl") {
-                    let session_id = path.file_stem()
+                    let session_id = path
+                        .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("")
                         .to_string();
@@ -385,8 +405,17 @@ impl SimpleSession {
 
         // Add tool calls with their original IDs
         for block in tool_calls {
-            if let ContentBlock::ToolCall { id, name, arguments } = block {
-                content_blocks.push(ContentBlock::ToolCall { id, name, arguments });
+            if let ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+            } = block
+            {
+                content_blocks.push(ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
             }
         }
 
@@ -516,7 +545,8 @@ impl SimpleSession {
                             ContentBlock::ToolCall {
                                 name, arguments, ..
                             } => {
-                                let args_str = serde_json::to_string(&arguments).unwrap_or_default();
+                                let args_str =
+                                    serde_json::to_string(&arguments).unwrap_or_default();
                                 parts.push(format!("[ToolCall: {}({})]", name, args_str));
                             }
                             ContentBlock::ToolResult { content, .. } => {
@@ -603,7 +633,8 @@ impl SimpleSession {
 
     /// Load the most recent compaction summary from session
     pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
-        let entries: Vec<crate::session::jsonl::SessionEntry> = self.storage.load_session(&self.id).await?;
+        let entries: Vec<crate::session::jsonl::SessionEntry> =
+            self.storage.load_session(&self.id).await?;
 
         // Find the most recent compaction entry
         for entry in entries.iter().rev() {

@@ -103,7 +103,7 @@ pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionContext
         SessionScope::PerChannel => {
             let channel = ctx.channel.as_deref().unwrap_or("unknown");
             let channel_id = ctx.channel_id.as_deref().unwrap_or("default");
-            
+
             // Include thread ID if present
             if let Some(thread_id) = &ctx.thread_id {
                 format!(
@@ -136,9 +136,9 @@ pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionContext
 /// assert_eq!(parts.context, "discord");
 /// assert_eq!(parts.identifier, "123456");
 /// ```
-pub fn parse_session_key(key: &str) -> SessionKeyParts {
+pub fn parse_session_key(key: &str) -> SessionKeyParts<'_> {
     let parts: Vec<&str> = key.split(':').collect();
-    
+
     if parts.len() < 2 {
         return SessionKeyParts {
             agent: "",
@@ -147,14 +147,17 @@ pub fn parse_session_key(key: &str) -> SessionKeyParts {
             raw: key,
         };
     }
-    
+
     // Skip "agent:" prefix if present
     let start_idx = if parts[0] == "agent" { 1 } else { 0 };
-    
+
     let agent = parts.get(start_idx).copied().unwrap_or("");
     let context = parts.get(start_idx + 1).copied().unwrap_or("");
-    let identifier = parts.get(start_idx + 2..).map(|p| p.join(":")).unwrap_or_default();
-    
+    let identifier = parts
+        .get(start_idx + 2..)
+        .map(|p| p.join(":"))
+        .unwrap_or_default();
+
     SessionKeyParts {
         agent,
         context,
@@ -184,7 +187,7 @@ fn sanitize_key_component(s: &str) -> String {
 /// Get the scope from a session key
 pub fn scope_from_key(key: &str) -> Option<SessionScope> {
     let parts = parse_session_key(key);
-    
+
     match parts.context {
         "global" => Some(SessionScope::Global),
         "cli" => Some(SessionScope::CliDefault),
@@ -224,10 +227,7 @@ pub fn discord_session_key(
         (_, Some(guild), Some(channel), Some(thread)) => {
             format!(
                 "agent:{}:discord:guild:{}:channel:{}:thread:{}",
-                agent,
-                guild,
-                channel,
-                thread
+                agent, guild, channel, thread
             )
         }
         // Channel in guild
@@ -299,7 +299,10 @@ mod tests {
             ..Default::default()
         };
         let key = derive_session_key("testagent", SessionScope::PerChannel, &ctx);
-        assert_eq!(key, "agent:testagent:discord:channel:987654:thread:thread123");
+        assert_eq!(
+            key,
+            "agent:testagent:discord:channel:987654:thread:thread123"
+        );
     }
 
     #[test]
@@ -326,8 +329,17 @@ mod tests {
 
     #[test]
     fn test_discord_guild_channel_key() {
-        let key = discord_session_key("testagent", None, Some("guild456"), Some("channel789"), None);
-        assert_eq!(key, "agent:testagent:discord:guild:guild456:channel:channel789");
+        let key = discord_session_key(
+            "testagent",
+            None,
+            Some("guild456"),
+            Some("channel789"),
+            None,
+        );
+        assert_eq!(
+            key,
+            "agent:testagent:discord:guild:guild456:channel:channel789"
+        );
     }
 
     #[test]

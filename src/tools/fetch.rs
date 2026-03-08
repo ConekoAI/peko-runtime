@@ -411,51 +411,51 @@ impl FetchTool {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     let error_str = e.to_string();
-                    
+
                     // Don't retry on certain errors
                     if error_str.contains("Invalid URL")
                         || error_str.contains("timeout") && attempt == max_retries
                     {
                         return Err(e);
                     }
-                    
+
                     last_error = Some(e);
                     if attempt < max_retries {
                         let delay = Duration::from_millis(500 * (attempt + 1) as u64);
-                        debug!("Fetch attempt {} failed, retrying in {:?}...", attempt + 1, delay);
+                        debug!(
+                            "Fetch attempt {} failed, retrying in {:?}...",
+                            attempt + 1,
+                            delay
+                        );
                         tokio::time::sleep(delay).await;
                     }
                 }
             }
         }
 
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Fetch failed after {} retries", max_retries)))
+        Err(last_error
+            .unwrap_or_else(|| anyhow::anyhow!("Fetch failed after {} retries", max_retries)))
     }
 
     /// Single fetch attempt
     async fn fetch_once(&self, args: &FetchArgs) -> anyhow::Result<FetchResult> {
         // Fetch the URL
-        let response = self
-            .client
-            .get(&args.url)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    anyhow::anyhow!("Request timed out - the server took too long to respond")
-                } else if e.is_connect() {
-                    anyhow::anyhow!("Connection failed - could not connect to the server")
-                } else {
-                    anyhow::anyhow!("Request failed: {}", e)
-                }
-            })?;
+        let response = self.client.get(&args.url).send().await.map_err(|e| {
+            if e.is_timeout() {
+                anyhow::anyhow!("Request timed out - the server took too long to respond")
+            } else if e.is_connect() {
+                anyhow::anyhow!("Connection failed - could not connect to the server")
+            } else {
+                anyhow::anyhow!("Request failed: {}", e)
+            }
+        })?;
 
         let status_code = response.status().as_u16();
         let final_url = response.url().to_string();
 
         if !response.status().is_success() {
             let status_text = response.status().canonical_reason().unwrap_or("Unknown");
-            
+
             // Provide helpful messages for common errors
             let message = match status_code {
                 403 => format!("HTTP 403 Forbidden - access denied (may be blocked by robots.txt or require authentication)"),
@@ -464,7 +464,7 @@ impl FetchTool {
                 500..=599 => format!("HTTP {} {} - server error", status_code, status_text),
                 _ => format!("HTTP error {}: {}", status_code, status_text),
             };
-            
+
             return Err(anyhow::anyhow!(message));
         }
 
@@ -481,19 +481,20 @@ impl FetchTool {
             .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
 
         // Extract content based on content type
-        let (title, content) = if content_type.contains("text/plain") || content_type.contains("text/markdown") {
-            // Return as-is for plain text and markdown
-            (None, body)
-        } else if content_type.contains("text/html") {
-            // Extract from HTML
-            match args.extract_mode {
-                ExtractMode::Markdown => Self::extract_markdown(&body),
-                ExtractMode::Text => (None, Self::extract_text(&body)),
-            }
-        } else {
-            // For other types, return as-is
-            (None, body)
-        };
+        let (title, content) =
+            if content_type.contains("text/plain") || content_type.contains("text/markdown") {
+                // Return as-is for plain text and markdown
+                (None, body)
+            } else if content_type.contains("text/html") {
+                // Extract from HTML
+                match args.extract_mode {
+                    ExtractMode::Markdown => Self::extract_markdown(&body),
+                    ExtractMode::Text => (None, Self::extract_text(&body)),
+                }
+            } else {
+                // For other types, return as-is
+                (None, body)
+            };
 
         // Truncate if needed
         let max_chars = args.max_chars.unwrap_or(self.config.max_chars);

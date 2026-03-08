@@ -1,5 +1,5 @@
 use clap::Parser;
-use clap_complete::{generate, Shell};
+use clap_complete::generate;
 use pekobot::commands::{
     agent, auth, config, cron, daemon, gateway, init_logging, provider, session, system, tool,
     update, Cli, Commands, GlobalPaths,
