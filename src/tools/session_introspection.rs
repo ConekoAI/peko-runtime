@@ -302,11 +302,38 @@ impl Tool for SessionStatusTool {
         // Use provided session key or default to current
         let session_key = args
             .session_key
+            .clone()
             .unwrap_or_else(|| self.registry.current_session_key());
 
         debug!("Getting status for session: {}", session_key);
 
-        let mut status = self.registry.get_status(&session_key)?;
+        // Try to get existing status, or create minimal one for time queries
+        let mut status = match self.registry.get_status(&session_key) {
+            Ok(s) => s,
+            Err(_) => {
+                // Session not in registry - create minimal status for time query
+                SessionStatusResult {
+                    session_key: session_key.clone(),
+                    session_id: session_key.clone(),
+                    agent_id: "unknown".to_string(),
+                    model: "default".to_string(),
+                    status: "active".to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    last_activity: chrono::Utc::now().to_rfc3339(),
+                    timestamp_utc: String::new(),
+                    timestamp: String::new(),
+                    message_count: 0,
+                    usage: UsageStats {
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                        total_tokens: 0,
+                        estimated_cost_usd: None,
+                    },
+                    label: None,
+                    parent_session: None,
+                }
+            }
+        };
 
         // Add current timestamps
         let now_utc = chrono::Utc::now();
