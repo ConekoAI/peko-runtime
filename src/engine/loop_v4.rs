@@ -426,6 +426,16 @@ impl AgenticLoopV4 {
                     .add_assistant_with_tool_calls(&assistant_text, tool_call_blocks)
                     .await?;
 
+                // Emit assistant text BEFORE tool calls so user sees what's happening
+                if !assistant_text.is_empty() {
+                    on_event(AgenticEvent::Assistant {
+                        run_id: run_id.clone(),
+                        text: assistant_text.clone(),
+                        is_delta: false,
+                        is_final: false, // Not final - tool calls coming
+                    });
+                }
+
                 // Execute each tool
                 let mut tool_results = Vec::new();
 

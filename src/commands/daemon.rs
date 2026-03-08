@@ -56,6 +56,7 @@ pub async fn handle_daemon(
                 config_dir: paths.config_dir.clone(),
                 data_dir: paths.data_dir.clone(),
                 enable_isolated_execution: true,
+                maintenance_interval: std::time::Duration::from_secs(3600), // 1 hour
             };
 
             if foreground {

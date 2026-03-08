@@ -1,108 +1,252 @@
 //! Simple session persistence with OpenClaw-compatible JSONL format
 //!
 //! Wraps the new JSONL session storage for mandatory persistence.
+//! Now with session index integration for fast lookups.
 
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
+use crate::session::index::{IndexEntry, SessionIndex};
 use crate::session::jsonl::SessionStorage;
 use crate::types::ContentBlock;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 /// Simple session that auto-persists in OpenClaw-compatible format
 pub struct SimpleSession {
     /// Session ID
     pub id: String,
+    /// Agent name
+    pub agent_name: String,
+    /// Optional session key (for indexed lookup)
+    pub session_key: Option<String>,
     /// Storage
     storage: SessionStorage,
+    /// Session index for metadata tracking
+    index: SessionIndex,
     /// Last message ID (for parent chaining)
     last_message_id: Option<String>,
+    /// Message count for index updates
+    message_count: usize,
+    /// Input tokens for index updates
+    input_tokens: usize,
+    /// Output tokens for index updates
+    output_tokens: usize,
+    /// Current provider (e.g., "anthropic", "openai")
+    current_provider: Option<String>,
+    /// Current model (e.g., "claude-3-5-sonnet")
+    current_model: Option<String>,
 }
 
 impl SimpleSession {
-    /// Create a new session for an agent
-    pub async fn create(agent_name: &str) -> Result<Self> {
-        let session_id = format!("{}_{}", agent_name, chrono::Utc::now().timestamp_millis());
-
-        // Use agent-specific session directory
-        let storage_dir = dirs::home_dir()
+    /// Get the storage directory for an agent
+    pub fn storage_dir(agent_name: &str) -> PathBuf {
+        dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pekobot")
             .join("agents")
             .join(agent_name)
-            .join("sessions");
+            .join("sessions")
+    }
 
-        let storage = SessionStorage::new(storage_dir);
-
-        // Create session entry
-        let cwd = std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().to_string());
-        storage.create_session(&session_id, cwd).await?;
-
-        Ok(Self {
-            id: session_id,
-            storage,
-            last_message_id: None,
-        })
+    /// Create a new session for an agent
+    pub async fn create(agent_name: &str) -> Result<Self> {
+        let session_id = format!("{}_{}", agent_name, chrono::Utc::now().timestamp_millis());
+        Self::create_with_id(agent_name, &session_id).await
     }
 
     /// Create a new session for an agent with a specific session ID
     pub async fn create_with_id(agent_name: &str, session_id: &str) -> Result<Self> {
-        // Use agent-specific session directory
-        let storage_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".pekobot")
-            .join("agents")
-            .join(agent_name)
-            .join("sessions");
+        Self::create_with_key(agent_name, session_id, None).await
+    }
 
-        let storage = SessionStorage::new(storage_dir);
+    /// Create a new session with an optional session key for indexing
+    pub async fn create_with_key(
+        agent_name: &str,
+        session_id: &str,
+        session_key: Option<String>,
+    ) -> Result<Self> {
+        let storage_dir = Self::storage_dir(agent_name);
+        let storage = SessionStorage::new(storage_dir.clone());
+        let mut index = SessionIndex::open(&storage_dir);
+
+        // Ensure index is migrated
+        index.migrate_from_directory(agent_name).await
+            .with_context(|| format!("Failed to migrate index for agent: {}", agent_name))?;
 
         // Create session entry
         let cwd = std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().to_string());
-        storage.create_session(session_id, cwd).await?;
+        storage.create_session(session_id, cwd.clone()).await
+            .with_context(|| format!("Failed to create session file: {}/{}", storage_dir.display(), session_id))?;
+
+        // Create index entry
+        let transcript_file = format!("{}.jsonl", session_id);
+        let mut entry = IndexEntry::new(session_id.to_string(), agent_name.to_string(), transcript_file);
+        entry.session_key = session_key.clone();
+        entry.cwd = cwd;
+
+        // Insert into index
+        let index_key = session_key.clone().unwrap_or_else(|| {
+            format!("agent:{}:session:{}", agent_name, session_id)
+        });
+        index.insert(index_key, entry).await
+            .with_context(|| "Failed to insert into index")?;
 
         Ok(Self {
             id: session_id.to_string(),
+            agent_name: agent_name.to_string(),
+            session_key,
             storage,
+            index,
             last_message_id: None,
+            message_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            current_provider: None,
+            current_model: None,
         })
     }
 
-    /// Open an existing session for resumption
+    /// Open an existing session by ID
     pub async fn open(agent_name: &str, session_id: &str) -> Result<Option<Self>> {
-        let storage_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".pekobot")
-            .join("agents")
-            .join(agent_name)
-            .join("sessions");
+        let storage_dir = Self::storage_dir(agent_name);
+        let storage = SessionStorage::new(storage_dir.clone());
+        let mut index = SessionIndex::open(&storage_dir);
 
-        let storage = SessionStorage::new(storage_dir);
+        // Ensure index is migrated
+        index.migrate_from_directory(agent_name).await?;
 
         // Load existing entries to find the last message ID
         let entries: Vec<crate::session::jsonl::SessionEntry> = storage.load_session(session_id).await?;
-        
+
         if entries.is_empty() {
             return Ok(None);
         }
 
-        // Find the last message ID
+        // Count messages and find last ID
+        let mut message_count = 0;
         let last_message_id = entries.iter().rev().find_map(|entry| {
             match entry {
-                crate::session::jsonl::SessionEntry::Message { id, .. } => Some(id.clone()),
+                crate::session::jsonl::SessionEntry::Message { id, .. } => {
+                    message_count += 1;
+                    Some(id.clone())
+                }
                 _ => None,
             }
         });
 
+        // Find session key and token counts from index if available
+        let index_entry = index.find_by_session_id(session_id).await?;
+        let session_key = index_entry.as_ref().and_then(|e| e.session_key.clone());
+        let input_tokens = index_entry.as_ref().and_then(|e| e.input_tokens).unwrap_or(0);
+        let output_tokens = index_entry.as_ref().and_then(|e| e.output_tokens).unwrap_or(0);
+        let current_provider = index_entry.as_ref().and_then(|e| e.provider.clone());
+        let current_model = index_entry.as_ref().and_then(|e| e.model.clone());
+
         Ok(Some(Self {
             id: session_id.to_string(),
+            agent_name: agent_name.to_string(),
+            session_key,
             storage,
+            index,
             last_message_id,
+            message_count,
+            input_tokens,
+            output_tokens,
+            current_provider,
+            current_model,
         }))
+    }
+
+    /// Open or create a session by key (for CLI persistence)
+    pub async fn open_or_create_by_key(
+        agent_name: &str,
+        session_key: &str,
+    ) -> Result<Self> {
+        let storage_dir = Self::storage_dir(agent_name);
+        let mut index = SessionIndex::open(&storage_dir);
+
+        // Ensure index is migrated
+        index.migrate_from_directory(agent_name).await?;
+
+        // Check if session exists
+        if let Some(entry) = index.get(session_key).await? {
+            // Open existing
+            return Self::open(agent_name, &entry.session_id)
+                .await
+                .map(|s| s.expect("Session in index but not on disk"));
+        }
+
+        // Create new with this key
+        let session_id = format!("{}_{}", agent_name, chrono::Utc::now().timestamp_millis());
+        Self::create_with_key(agent_name, &session_id, Some(session_key.to_string())).await
+    }
+
+    /// Open an existing session by key (returns None if not found)
+    pub async fn open_by_key(
+        agent_name: &str,
+        session_key: &str,
+    ) -> Result<Option<Self>> {
+        let storage_dir = Self::storage_dir(agent_name);
+        let mut index = SessionIndex::open(&storage_dir);
+
+        // Ensure index is migrated
+        index.migrate_from_directory(agent_name).await?;
+
+        // Check if session exists
+        if let Some(entry) = index.get(session_key).await? {
+            // Open existing
+            Self::open(agent_name, &entry.session_id).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Update the index with current session metadata
+    async fn update_index(&mut self) -> Result<()> {
+        if let Some(ref session_key) = self.session_key {
+            if let Some(mut entry) = self.index.get(session_key).await? {
+                entry.touch();
+                entry.message_count = self.message_count;
+                entry.input_tokens = Some(self.input_tokens);
+                entry.output_tokens = Some(self.output_tokens);
+                entry.total_tokens = Some(self.input_tokens + self.output_tokens);
+                entry.provider = self.current_provider.clone();
+                entry.model = self.current_model.clone();
+                self.index.insert(session_key.clone(), entry).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Record token usage from an LLM response
+    pub async fn record_usage(&mut self, input_tokens: usize, output_tokens: usize) -> Result<()> {
+        self.input_tokens += input_tokens;
+        self.output_tokens += output_tokens;
+        self.update_index().await?;
+        Ok(())
+    }
+
+    /// Set the current provider and model
+    pub async fn set_model(&mut self, provider: &str, model: &str) -> Result<()> {
+        self.current_provider = Some(provider.to_string());
+        self.current_model = Some(model.to_string());
+        self.update_index().await?;
+        Ok(())
+    }
+
+    /// Get current token usage
+    pub fn token_usage(&self) -> (usize, usize, usize) {
+        (self.input_tokens, self.output_tokens, self.input_tokens + self.output_tokens)
+    }
+
+    /// Get current provider and model
+    pub fn current_model(&self) -> Option<(&str, &str)> {
+        match (&self.current_provider, &self.current_model) {
+            (Some(p), Some(m)) => Some((p.as_str(), m.as_str())),
+            _ => None,
+        }
     }
 
     /// Load conversation history for resumption
@@ -131,11 +275,11 @@ impl SimpleSession {
                         tool_call_id: None,
                     });
                 }
-                crate::session::jsonl::SessionEntry::ToolResult { 
-                    tool_call_id, 
-                    content, 
+                crate::session::jsonl::SessionEntry::ToolResult {
+                    tool_call_id,
+                    content,
                     is_error,
-                    .. 
+                    ..
                 } => {
                     // Tool results become tool role messages
                     messages.push(ChatMessage {
@@ -171,7 +315,7 @@ impl SimpleSession {
                         .and_then(|s| s.to_str())
                         .unwrap_or("")
                         .to_string();
-                    
+
                     if let Ok(metadata) = entry.metadata().await {
                         if let Ok(modified) = metadata.modified() {
                             sessions.push((session_id, modified));
@@ -200,6 +344,8 @@ impl SimpleSession {
             )
             .await?;
         self.last_message_id = Some(msg_id);
+        self.message_count += 1;
+        self.update_index().await?;
         Ok(())
     }
 
@@ -217,6 +363,8 @@ impl SimpleSession {
             )
             .await?;
         self.last_message_id = Some(msg_id);
+        self.message_count += 1;
+        self.update_index().await?;
         Ok(())
     }
 
@@ -252,6 +400,8 @@ impl SimpleSession {
             )
             .await?;
         self.last_message_id = Some(msg_id);
+        self.message_count += 1;
+        self.update_index().await?;
         Ok(())
     }
 
@@ -296,6 +446,8 @@ impl SimpleSession {
             )
             .await?;
         self.last_message_id = Some(msg_id);
+        self.message_count += 1;
+        self.update_index().await?;
         Ok(())
     }
 

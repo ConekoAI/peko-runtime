@@ -74,9 +74,7 @@ pub mod engine;
 pub(crate) mod queue;
 
 /// Session storage (JSONL)
-pub(crate) mod session {
-    pub mod jsonl;
-}
+pub mod session;
 
 // ============================================================================
 // External Interfaces

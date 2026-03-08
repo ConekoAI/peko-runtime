@@ -5,9 +5,11 @@
 //! - Main session job handling (enqueue system events)
 //! - Isolated job handling (spawn agent turns)
 //! - Delivery/announcement of results
+//! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
 
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget};
+use crate::session::index::{MaintenanceConfig, MaintenanceMode, SessionIndex};
 use crate::types::agent::AgentConfig;
 use anyhow::Result;
 use chrono::Utc;
@@ -16,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::interval;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Daemon configuration
@@ -32,6 +34,8 @@ pub struct DaemonConfig {
     pub data_dir: PathBuf,
     /// Whether to enable isolated job execution
     pub enable_isolated_execution: bool,
+    /// Session maintenance interval (0 to disable)
+    pub maintenance_interval: Duration,
 }
 
 impl Default for DaemonConfig {
@@ -47,6 +51,7 @@ impl Default for DaemonConfig {
             config_dir,
             data_dir,
             enable_isolated_execution: true,
+            maintenance_interval: Duration::from_secs(3600), // 1 hour default
         }
     }
 }
@@ -106,14 +111,16 @@ impl Daemon {
         info!("   Data dir: {}", self.config.data_dir.display());
         info!("   Cron DB: {}", self.config.cron_db_path.display());
         info!("   Poll interval: {:?}", self.config.poll_interval);
+        info!("   Maintenance interval: {:?}", self.config.maintenance_interval);
 
         {
             let mut status = self.status.lock().await;
             status.running = true;
         }
 
-        // Create polling interval
+        // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);
+        let mut maintenance_tick = interval(self.config.maintenance_interval);
 
         info!("✅ Daemon ready. Waiting for cron jobs...");
 
@@ -123,6 +130,13 @@ impl Daemon {
                 _ = poll_tick.tick() => {
                     if let Err(e) = self.check_and_run_jobs().await {
                         error!("Error checking cron jobs: {}", e);
+                    }
+                }
+
+                // Periodic session maintenance
+                _ = maintenance_tick.tick() => {
+                    if let Err(e) = self.run_session_maintenance().await {
+                        error!("Error running session maintenance: {}", e);
                     }
                 }
 
@@ -399,25 +413,73 @@ impl Daemon {
         Ok(config)
     }
 
+    /// Run session maintenance on all agents
+    async fn run_session_maintenance(&self) -> Result<()> {
+        info!("🔧 Running session maintenance...");
+
+        let agents_dir = self.config.config_dir.join("agents");
+        if !agents_dir.exists() {
+            return Ok(());
+        }
+
+        let mut total_pruned = 0;
+        let mut total_capped = 0;
+        let mut total_rotated = 0;
+        let mut total_bytes = 0u64;
+
+        let mut entries = tokio::fs::read_dir(&agents_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let metadata = entry.metadata().await?;
+            if !metadata.is_dir() {
+                continue;
+            }
+
+            let agent_name = entry.file_name().to_string_lossy().to_string();
+            let sessions_dir = entry.path().join("sessions");
+
+            if !sessions_dir.exists() {
+                continue;
+            }
+
+            let mut index = SessionIndex::open(&sessions_dir);
+            let _ = index.migrate_from_directory(&agent_name).await;
+
+            let config = MaintenanceConfig {
+                mode: MaintenanceMode::Auto,
+                ..Default::default()
+            };
+
+            match index.maintenance(&config).await {
+                Ok(report) => {
+                    total_pruned += report.pruned;
+                    total_capped += report.capped;
+                    if report.rotated {
+                        total_rotated += 1;
+                    }
+                    total_bytes += report.bytes_reclaimed;
+                }
+                Err(e) => {
+                    warn!("Session maintenance failed for {}: {}", agent_name, e);
+                }
+            }
+        }
+
+        if total_pruned > 0 || total_capped > 0 || total_rotated > 0 {
+            info!(
+                "🔧 Session maintenance complete: pruned={}, capped={}, rotated={}, reclaimed={} bytes",
+                total_pruned, total_capped, total_rotated, total_bytes
+            );
+        } else {
+            debug!("🔧 Session maintenance complete: no action needed");
+        }
+
+        Ok(())
+    }
+
     /// Get current daemon status
     pub async fn get_status(&self) -> DaemonStatus {
         self.status.lock().await.clone()
     }
-}
-
-/// Run the daemon with given configuration
-pub async fn run_daemon(config: DaemonConfig) -> Result<()> {
-    let (_command_tx, command_rx) = mpsc::channel(100);
-
-    let daemon = Daemon::new(config, command_rx)?;
-
-    // TODO: Store command_tx somewhere accessible for external control
-    // This could be via:
-    // - Unix socket for CLI commands
-    // - HTTP API for remote control
-    // - Signal handlers for graceful shutdown
-
-    daemon.run().await
 }
 
 /// Spawn a daemon in the background and return control handle
@@ -482,6 +544,7 @@ mod tests {
             config_dir: tmp.path().join("config"),
             data_dir: tmp.path().join("data"),
             enable_isolated_execution: false,
+            maintenance_interval: Duration::from_secs(60), // 1 minute for tests
         };
 
         let (_tx, rx) = mpsc::channel(10);

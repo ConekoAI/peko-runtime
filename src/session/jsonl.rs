@@ -6,6 +6,7 @@
 //! - toolCall entries
 //! - toolResult entries
 
+use crate::session::lock::FileLock;
 use crate::types::ContentBlock;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -13,7 +14,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tracing::{debug, info};
+
+/// Default lock timeout for session operations (10 seconds)
+pub const SESSION_LOCK_TIMEOUT_MS: u64 = 10_000;
 
 /// Session entry type (first line in JSONL)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +147,9 @@ impl SessionStorage {
     ) -> Result<String> {
         let path = self.session_path(session_id);
 
+        // Acquire lock for concurrent access protection
+        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+
         let entry_id = format!("msg_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
 
         let entry = SessionEntry::Message {
@@ -184,6 +192,9 @@ impl SessionStorage {
     ) -> Result<()> {
         let path = self.session_path(session_id);
 
+        // Acquire lock for concurrent access protection
+        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+
         let entry = SessionEntry::ToolResult {
             tool_call_id: tool_call_id.to_string(),
             tool_name: tool_name.to_string(),
@@ -216,6 +227,9 @@ impl SessionStorage {
         model_id: &str,
     ) -> Result<String> {
         let path = self.session_path(session_id);
+
+        // Acquire lock for concurrent access protection
+        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
 
         let entry_id = format!(
             "model_{}",
@@ -258,6 +272,9 @@ impl SessionStorage {
     ) -> Result<String> {
         let path = self.session_path(session_id);
 
+        // Acquire lock for concurrent access protection
+        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+
         let entry_id = format!(
             "compact_{}",
             uuid::Uuid::new_v4().to_string().replace("-", "")
@@ -290,13 +307,16 @@ impl SessionStorage {
         Ok(entry_id)
     }
 
-    /// Load all entries from a session
+    /// Load all entries from a session (with shared lock for consistency)
     pub async fn load_session(&self, session_id: &str) -> Result<Vec<SessionEntry>> {
         let path = self.session_path(session_id);
 
         if !path.exists() {
             return Ok(vec![]);
         }
+
+        // Acquire lock to ensure consistent read
+        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
 
         let content = fs::read_to_string(&path).await?;
         let mut entries = vec![];
