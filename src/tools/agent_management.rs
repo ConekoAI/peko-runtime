@@ -16,12 +16,12 @@ use crate::tools::Tool;
 pub enum ManagerCommand {
     /// List all agents
     ListAgents {
-        respond_to: mpsc::Sender<Vec<crate::manager::AgentInfo>>,
+        respond_to: mpsc::Sender<Vec<crate::agent::AgentInfo>>,
     },
     /// Spawn a new agent
     Spawn {
         config: crate::types::agent::AgentConfig,
-        respond_to: mpsc::Sender<anyhow::Result<crate::manager::AgentHandle>>,
+        respond_to: mpsc::Sender<anyhow::Result<crate::agent::AgentHandle>>,
     },
     /// Broadcast message
     Broadcast {
@@ -85,7 +85,7 @@ impl Tool for AgentsListTool {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
 
-        let agents: Vec<crate::manager::AgentInfo> = rx
+        let agents: Vec<crate::agent::AgentInfo> = rx
             .recv()
             .await
             .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))?;
@@ -151,7 +151,7 @@ Example:
             .await
             .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
 
-        let agents: Vec<crate::manager::AgentInfo> = rx
+        let agents: Vec<crate::agent::AgentInfo> = rx
             .recv()
             .await
             .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))?;

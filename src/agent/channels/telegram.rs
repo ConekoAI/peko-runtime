@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info, warn};
 
-use crate::channels::Channel;
+use crate::agent::channels::Channel;
 
 /// Telegram channel configuration
 #[derive(Debug, Clone)]

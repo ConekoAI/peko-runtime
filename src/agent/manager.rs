@@ -2,7 +2,7 @@
 
 use crate::agent::Agent;
 use crate::identity::{storage::KeyStorage, Identity};
-use crate::manager::{
+use crate::agent::{
     context::AgentContext,
     lifecycle::LifecycleManager,
     pool::{AgentHandle, AgentPool},

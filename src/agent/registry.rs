@@ -1,6 +1,6 @@
 //! Local Registry - Agent metadata and discovery with capabilities
 
-use crate::manager::context::{AgentRegistryView, AgentSummary};
+use crate::agent::context::{AgentRegistryView, AgentSummary};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

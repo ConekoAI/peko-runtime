@@ -64,7 +64,7 @@
 // Core Runtime
 // ============================================================================
 
-/// Agent runtime and lifecycle
+/// Agent runtime, lifecycle, and multi-agent management
 pub mod agent;
 
 /// Execution engine and state machine
@@ -80,10 +80,7 @@ pub mod session;
 // External Interfaces
 // ============================================================================
 
-/// Communication channels (Discord, Slack, Telegram, etc.)
-pub mod channels;
-
-/// Gateway plugin system
+/// Gateway plugin system and built-in channel implementations
 pub mod gateway;
 
 /// LLM provider integrations
@@ -112,9 +109,6 @@ pub mod identity;
 // Infrastructure
 // ============================================================================
 
-/// Agent manager (lifecycle, pool, registry)
-pub mod manager;
-
 /// Cron job scheduling
 pub(crate) mod cron;
 
@@ -137,9 +131,6 @@ pub mod tools;
 /// Skill system
 pub(crate) mod skills;
 
-/// Capability registry for agent discovery
-pub(crate) mod capability_registry;
-
 // ============================================================================
 // CLI & Commands
 // ============================================================================
@@ -160,8 +151,12 @@ pub mod portable;
 /// Compaction and transcript management
 pub(crate) mod compaction;
 
-/// Tunnel for remote access
-pub(crate) mod tunnel;
+// ============================================================================
+// Development / Experimental
+// ============================================================================
+
+/// Development and experimental features
+pub mod dev;
 
 // ============================================================================
 // Public API

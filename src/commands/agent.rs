@@ -164,7 +164,7 @@ pub async fn handle_agent(
 /// Agent command handlers
 pub mod handlers {
     use crate::agent::Agent;
-    use crate::channels::cli::{run_interactive_loop, CliChannel};
+    use crate::agent::channels::cli::{run_interactive_loop, CliChannel};
     use crate::commands::GlobalPaths;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -220,7 +220,7 @@ pub mod handlers {
                 if let Some(msg) = message {
                     // Single message mode
                     println!();
-                    if let Err(e) = crate::channels::cli::send_single_message_with_session(
+                    if let Err(e) = crate::agent::channels::cli::send_single_message_with_session(
                         &agent,
                         &msg,
                         new_session,
@@ -232,7 +232,7 @@ pub mod handlers {
                 } else {
                     // Interactive mode with streaming support
                     // TODO: Support session persistence in interactive mode too
-                    let streaming_config = crate::channels::StreamingConfig {
+                    let streaming_config = crate::agent::channels::StreamingConfig {
                         enabled: true,
                         min_chars: 100,
                         max_chars: 2000,

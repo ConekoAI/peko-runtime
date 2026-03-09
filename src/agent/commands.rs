@@ -1,6 +1,6 @@
 //! Agent manager command handler
 
-use crate::manager::{
+use crate::agent::{
     pool::{AgentHandle, AgentPool},
     registry::LocalRegistry,
     types::{AgentInfo, IdentityInfo},

@@ -307,7 +307,7 @@ impl GatewayManager {
 /// This allows gradual migration from channels to gateways.
 pub mod adapter {
     use super::{Arc, GatewayManager, Target};
-    use crate::channels::Channel;
+    use crate::agent::channels::Channel;
     use anyhow::Result;
     use async_trait::async_trait;
 
