@@ -1,5 +1,7 @@
 #!/bin/bash
 set -e
+# Set cwd
+cd ~/pekora/projects/pekobot
 
 # Get KIMI_API_KEY from .bashrc
 export KIMI_API_KEY=$(grep "export KIMI_API_KEY=" ~/.bashrc | head -1 | sed 's/.*export KIMI_API_KEY="\(.*\)".*/\1/')

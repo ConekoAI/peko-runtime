@@ -176,7 +176,7 @@ impl GlobalPaths {
     /// Get agent config file path
     #[must_use]
     pub fn agent_config(&self, name: &str) -> PathBuf {
-        self.agents_dir().join(format!("{name}.toml"))
+        self.agents_dir().join(name).join("config.toml")
     }
 
     /// Get tools directory

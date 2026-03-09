@@ -13,7 +13,7 @@ pub enum AgentCommands {
     Start {
         /// Agent name (defaults to 'peko' if not specified)
         name: Option<String>,
-        /// Custom configuration file path (optional, defaults to ~/.pekobot/agents/{name}.toml)
+        /// Custom configuration file path (optional, defaults to ~/.pekobot/agents/{name}/config.toml)
         #[arg(short, long)]
         config: Option<String>,
         /// LLM provider (openai, anthropic, ollama, kimi, kimi_code) - only used when creating default config
@@ -188,9 +188,9 @@ pub mod handlers {
         let config_path = if let Some(path) = config_path {
             path
         } else {
-            // Look up in default location: ~/.pekobot/agents/{name}.toml
+            // Look up in default location: ~/.pekobot/agents/{name}/config.toml
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            format!("{}/.pekobot/agents/{}.toml", home, agent_name)
+            format!("{}/.pekobot/agents/{}/config.toml", home, agent_name)
         };
 
         info!("Starting Pekobot agent: {}", agent_name);
@@ -410,7 +410,7 @@ pub mod handlers {
         let config = build_config_with_auth(paths, &name, &selected_provider, None, None).await?;
         let toml = toml::to_string_pretty(&config)?;
 
-        std::fs::create_dir_all(paths.agents_dir())?;
+        std::fs::create_dir_all(config_path.parent().unwrap())?;
         std::fs::write(&config_path, toml)?;
 
         println!("✅ Created agent '{name}'");

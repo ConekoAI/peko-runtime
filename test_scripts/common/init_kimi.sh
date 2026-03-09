@@ -1,11 +1,14 @@
 #!/bin/bash
 set -e
 
+# Set cwd
+cd ~/pekora/projects/pekobot
+
 # Get KIMI_API_KEY from .bashrc
 export KIMI_API_KEY=$(grep "export KIMI_API_KEY=" ~/.bashrc | head -1 | sed 's/.*export KIMI_API_KEY="\(.*\)".*/\1/')
 
 echo "========================================"
-echo "Testing Session Resumption"
+echo "Setting up testagent with kimi"
 echo "========================================"
 echo ""
 echo "KIMI_API_KEY: ${KIMI_API_KEY:0:15}..."
@@ -20,29 +23,20 @@ echo ""
 echo "Cleaning up previous test agent..."
 rm -rf ~/.pekobot/agents/testagent
 rm -rf ~/.pekobot/agents/testagent.toml
+rm -rf ~/.local/share/pekobot/workspaces/testagent
 echo ""
+
+pwd
+
 
 # Create agent with kimi provider (using kimi_code alias)
 echo "Creating test agent with kimi_code provider..."
-./target/debug/pekobot agent create testagent --provider kimi_code --yes
+pekobot agent create testagent --provider kimi_code --yes
 echo ""
 
 # Set API key
 echo "Setting API key..."
-./target/debug/pekobot auth set kimi "$KIMI_API_KEY"
+pekobot auth set kimi "$KIMI_API_KEY"
+echo "Agent ready"
 echo ""
 
-# Test native tool calling
-echo "========================================"
-echo "Test: Session Resumption"
-echo "========================================"
-echo "Prompt: 'What's USA's Capital?'"
-echo ""
-./target/debug/pekobot agent start testagent -M "What's USA's Capital?"
-echo "Prompt: 'What about France?'"
-echo ""
-./target/debug/pekobot agent start testagent -M "What about France?"
-echo ""
-echo "========================================"
-echo "Test completed!"
-echo "========================================"
