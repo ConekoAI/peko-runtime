@@ -424,6 +424,127 @@ Manages agent lifecycle:
 - Health checks
 - Resource limits
 
+#### 4.1.4 Agent Coordination
+
+Agent Coordination enables **multiple agents to communicate and collaborate** via message passing. Unlike shared memory or direct method calls, agents remain isolated and interact through the coordination layer.
+
+**Core Principle:** Message passing, not shared state. Each agent has its own memory, tools, and configuration.
+
+**Coordination Patterns:**
+
+| Pattern | Description | Use Case |
+|---------|-------------|----------|
+| **A2A Messaging** | Direct agent-to-agent request/reply | Researcher → Writer → Critic |
+| **Broadcast** | One agent publishes to many subscribers | Market data to traders |
+| **Group Chat** | Multiple agents + humans in shared thread | Collaborative content creation |
+| **Workflows** | Sequential/parallel agent chains | Research → Write → Edit → Publish |
+
+**Coordination API:**
+```rust
+pub trait AgentCoordination {
+    /// Send message to specific agent
+    async fn send_to_agent(
+        &self,
+        target_agent: &str,
+        message: &str,
+        wait_for_reply: bool,
+    ) -> Result<AgentReply>;
+    
+    /// Subscribe agent to broadcast topic
+    async fn subscribe(&self, agent: &str, topic: &str) -> Result<()>;
+    
+    /// Publish message to topic
+    async fn publish(&self, topic: &str, message: &str) -> Result<()>;
+    
+    /// Start workflow instance
+    async fn start_workflow(
+        &self,
+        workflow: &str,
+        input: Value,
+    ) -> Result<WorkflowId>;
+}
+```
+
+**A2A Messaging:**
+```toml
+[coordination]
+enabled = true
+
+[coordination.a2a]
+# Who can message whom (security boundary)
+allow_rules = [
+    { from = "researcher", to = ["writer", "critic"] },
+    { from = "orchestrator", to = ["*"] },
+    { from = "critic", to = ["writer"] },
+]
+max_ping_pong = 3  # Max reply turns per conversation
+timeout_seconds = 60
+```
+
+**Broadcast / Pub-Sub:**
+```toml
+[coordination.broadcast]
+topics = [
+    { name = "alerts", subscribers = ["ops", "oncall"] },
+    { name = "market_data", subscribers = ["trader", "analyst"] },
+    { name = "system_events", subscribers = ["*"] },  # All agents
+]
+```
+
+**Group Chat:**
+```toml
+[group_chats.market_analysis]
+participants = ["researcher", "writer", "fact_checker"]
+trigger_mode = "interval"  # or "immediate", "idle"
+trigger_interval = "5m"    # Agents respond every 5 minutes
+mention_patterns = ["@researcher", "@writer"]
+
+[group_chats.code_review]
+participants = ["coder", "reviewer", "tester"]
+trigger_mode = "immediate"  # Respond immediately when mentioned
+```
+
+**Workflow Sequencing:**
+```toml
+[workflows.content_pipeline]
+name = "Content Creation Pipeline"
+
+[[workflows.content_pipeline.steps]]
+agent = "researcher"
+prompt_template = "Research topic: {{input.topic}}"
+timeout = "5m"
+
+[[workflows.content_pipeline.steps]]
+agent = "writer"
+prompt_template = "Write article based on: {{previous.output}}"
+timeout = "10m"
+
+[[workflows.content_pipeline.steps]]
+agent = "editor"
+prompt_template = "Edit: {{previous.output}}"
+timeout = "5m"
+
+workflows.content_pipeline.on_complete = { type = "notify", agent = "orchestrator" }
+```
+
+**Scheduled + Coordination Hybrid:**
+```toml
+[scheduler.tasks.market_update]
+trigger = { type = "interval", minutes = 30 }
+action = { type = "broadcast", topic = "market_data", message = "Fetch prices" }
+
+[scheduler.tasks.daily_report]
+trigger = { type = "cron", expr = "0 9 * * *" }
+action = { type = "workflow", workflow = "content_pipeline", input = { topic = "Daily Summary" } }
+```
+
+**Backend Storage:**
+Coordination state shares the scheduler backend (SQLite/Postgres):
+- `a2a_conversations` - Active agent-to-agent conversations
+- `broadcast_topics` - Topic subscriptions
+- `group_chats` - Group chat configurations
+- `workflow_instances` - Running workflow state
+
 ### 4.2 Communication Layer (Channels)
 
 **Channel Trait:**
@@ -840,6 +961,108 @@ context = { isolated = true }
 [[scheduler.tasks.reminder]]
 trigger = { type = "once", at = "2026-03-15T09:00:00Z" }
 action = { type = "message", channel = "cli", content = "Meeting in 15 minutes!" }
+```
+
+### 7.5 Multi-Agent Coordination
+
+```toml
+# Three specialized agents working together
+
+# Researcher agent - gathers information
+[[agents]]
+id = "researcher"
+name = "Research Bot"
+provider = { type = "anthropic", model = "claude-sonnet-4" }
+capabilities = { tools = ["web_search", "fetch"], mcp = ["browser"] }
+
+# Writer agent - creates content
+[[agents]]
+id = "writer"
+name = "Content Writer"
+provider = { type = "anthropic", model = "claude-sonnet-4" }
+capabilities = { tools = ["write", "edit"], mcp = ["memory-markdown"] }
+
+# Critic agent - reviews and feedback
+[[agents]]
+id = "critic"
+name = "Content Critic"
+provider = { type = "anthropic", model = "claude-haiku-3" }
+capabilities = { tools = ["read"] }
+
+# Coordination configuration
+[coordination]
+enabled = true
+
+[coordination.a2a]
+# Define who can message whom
+allow_rules = [
+    { from = "researcher", to = ["writer"] },
+    { from = "writer", to = ["critic", "researcher"] },
+    { from = "critic", to = ["writer"] },
+]
+max_ping_pong = 3
+timeout_seconds = 120
+
+# Broadcast topics
+[coordination.broadcast]
+topics = [
+    { name = "content_ideas", subscribers = ["researcher", "writer"] },
+    { name = "review_requests", subscribers = ["critic"] },
+]
+
+# Group chat for collaborative sessions
+[group_chats.content_team]
+participants = ["researcher", "writer", "critic"]
+trigger_mode = "immediate"
+mention_patterns = ["@team"]
+
+# Workflow: Automated content pipeline
+[workflows.auto_content]
+name = "Automated Content Pipeline"
+
+[[workflows.auto_content.steps]]
+agent = "researcher"
+prompt_template = """
+Research the topic: {{input.topic}}
+Find 3-5 credible sources and extract key points.
+Return a structured research summary.
+"""
+timeout = "10m"
+
+[[workflows.auto_content.steps]]
+agent = "writer"
+prompt_template = """
+Write a blog post based on this research:
+{{previous.output}}
+
+Target length: 500-800 words
+Tone: {{input.tone | default: "professional"}}
+"""
+timeout = "15m"
+
+[[workflows.auto_content.steps]]
+agent = "critic"
+prompt_template = """
+Review this draft and provide feedback:
+{{previous.output}}
+
+Check for: accuracy, clarity, engagement
+Return: "APPROVED" or specific revision requests.
+"""
+timeout = "5m"
+
+# If critic approves, workflow ends
+# If critic requests changes, loop back to writer
+workflows.auto_content.on_complete = { type = "notify", agent = "orchestrator" }
+
+# Scheduled workflow execution
+[scheduler.tasks.daily_content]
+trigger = { type = "cron", expr = "0 9 * * 1-5", timezone = "UTC" }
+action = { 
+    type = "workflow", 
+    workflow = "auto_content",
+    input = { topic = "Daily Tech News", tone = "casual" }
+}
 ```
 
 ## 8. Anti-Goals
