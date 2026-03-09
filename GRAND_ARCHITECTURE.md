@@ -28,72 +28,83 @@ The core runtime is **deliberately agnostic** about security:
 
 **Security is the user's responsibility** after reviewing tool/MCP/skill/channel manifests and external registry reputation.
 
-### 2.2 Two Orthogonal Extension Layers
+### 2.2 Three Orthogonal Extension Layers
 
-Pekobot separates **how agents communicate** from **what agents can do**:
+Pekobot separates concerns along three independent axes:
+
+| Axis | Direction | Who Controls | Purpose |
+|------|-----------|--------------|---------|
+| **Orchestration** | System → Agent | Core/System | *When* agents run |
+| **Communication** | External → Agent | Users | *How* users talk to agents |
+| **Capabilities** | Agent → Service | Agents | *What* agents can do |
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│           COMMUNICATION LAYER (Channels)                   │
+│         ORCHESTRATION LAYER (System → Agent)               │
 │                                                             │
-│  How agents interface with users.                          │
-│  Multiple channels per agent supported.                    │
+│  • Scheduler     - Time/idle-based invocation              │
+│  • Event Router  - Event-driven agent dispatch             │
+│  • Lifecycle     - Spawn/stop/manage agents                │
+│                                                             │
+│  The system PROACTIVELY invokes agents.                    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ Scheduled invocations
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│           COMMUNICATION LAYER (External → Agent)           │
 │                                                             │
 │  • CLI        - Terminal interface (built-in)              │
 │  • HTTP       - Webhook/REST (built-in)                    │
 │  • Discord    - Discord bot (plugin)                       │
 │  • WhatsApp   - WhatsApp Business (plugin)                 │
-│  • TUI        - Custom terminal UI (user-built)            │
-│  • Game       - Video game integration (user-built)        │
 │                                                             │
-│  All channels: pluggable, swappable, multi-instance        │
+│  Users PROACTIVELY talk to agents.                         │
 └─────────────────────────────────────────────────────────────┘
                               │
                               │ Messages flow through
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│            CAPABILITY LAYER (Tools/MCPs/Skills)            │
+│                      AGENT RUNTIME                           │
 │                                                             │
-│  What agents can do. Independent of channels.              │
-│  Same capabilities across all channels.                    │
+│  Agents are PASSIVE - they receive from:                   │
+│  - Orchestration layer (scheduled runs)                    │
+│  - Communication layer (user messages)                     │
+│                                                             │
+│  Agents are ACTIVE when calling:                           │
+│  - Capability layer (tools/MCPs/skills)                    │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ Agent invokes
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│            CAPABILITY LAYER (Agent → Service)              │
 │                                                             │
 │  Three-Tier Model:                                         │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │ TIER 0: Bootstrap Tools (built-in, optional)        │   │
-│  │ • process    - Shell execution  (⚠️ privileged)     │   │
-│  │ • filesystem - File operations  (⚠️ privileged)     │   │
-│  │ • fetch      - HTTP requests                        │   │
-│  │ • agent_mgmt - Lifecycle control                    │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                            ↓ Registry install              │
-│  ┌─────────────────────────────────────────────────────┐   │
 │  │ TIER 1: Tools (atomic, stateless)                   │   │
-│  │ • web_search - Search APIs                          │   │
-│  │ • calculator - Math operations                      │   │
-│  │ • apply_patch - Code patching                       │   │
-│  │ Single-purpose, no persistence                      │   │
+│  │ • web_search • calculator • apply_patch             │   │
 │  └─────────────────────────────────────────────────────┘   │
-│                            ↓ Registry install              │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │ TIER 2: MCPs (bundled, stateful)                    │   │
-│  │ • browser - CDP connection (multi-function)         │   │
-│  │ • database - Connection pool                        │   │
-│  │ • email - IMAP/SMTP session                         │   │
-│  │ "The Kitchen" - maintains state                     │   │
+│  │ • browser • database • email • memory-*             │   │
 │  └─────────────────────────────────────────────────────┘   │
-│                            ↓ User creates                  │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │ TIER 3: Skills (workflows)                          │   │
-│  │ • coding_assistant - Multi-step workflows           │   │
-│  │ • research_pipeline - Tool orchestration            │   │
-│  │ "The Recipe" - combines Tools and MCPs              │   │
+│  │ • coding_assistant • research_pipeline              │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                                                             │
+│  Agents PROACTIVELY invoke capabilities.                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Orthogonality**: An agent can use `web_search` (Tool) on Discord, CLI, or WhatsApp. The capability doesn't care about the channel.
+**Orthogonality Examples:**
+- Scheduler invokes agent → agent uses `web_search` (Tool)
+- Discord message invokes agent → agent uses `browser` (MCP)
+- Scheduled cron job → agent sends message via Discord (Orchestration + Communication)
+- User on CLI → agent schedules follow-up (Communication + Orchestration)
 
 ### 2.3 Trust Model
 
@@ -125,33 +136,60 @@ Pekobot separates **how agents communicate** from **what agents can do**:
 
 **The user is the security boundary.** Core executes. Registry recommends. User decides. Audit logs for review.
 
-### 2.4 Session-Centric State with Channel Overlays
+### 2.4 Session-Centric State with Overlays
 
 - **Agents are stateless runtime instances**
 - **Base sessions hold shared conversation context** (JSONL files)
-- **Channel overlays hold channel-specific context** (isolated or linked)
-- **Tools/MCPs are stateless/stateful independently of channels**
+- **Overlays hold context-specific state** (isolated or linked)
+  - *Channel overlays* - Communication-specific (Discord guild, CLI terminal)
+  - *Orchestration overlays* - Scheduled task context
+- **Tools/MCPs are stateless/stateful independently**
 - Sessions are portable, inspectable, long-lived
 
 **Hybrid Session Model:**
 ```
 Agent Session Structure:
-├── Base Session (shared across all channels)
+├── Base Session (shared across all invocation sources)
 │   └── Tool history, user preferences, core context
-├── Channel Overlay: CLI (optional isolation)
-│   └── Terminal formatting, local paths
-├── Channel Overlay: Discord (optional isolation)
-│   └── Guild IDs, Discord user mappings
-└── Channel Overlay: WhatsApp (optional isolation)
-    └── Phone numbers, message IDs
+│
+├── Channel Overlays (Communication Layer)
+│   ├── CLI: Terminal formatting, local paths
+│   ├── Discord: Guild IDs, user mappings
+│   └── WhatsApp: Phone numbers, message IDs
+│
+└── Orchestration Overlays (Orchestration Layer)
+    ├── check_email: Isolated email check context
+    ├── daily_report: Inherited base + report state
+    └── cleanup: Temporary cleanup session
 ```
+
+Each overlay is independent - an agent can have both Discord and scheduled task contexts simultaneously.
 
 ## 3. System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    COMMUNICATION LAYER                          │
-│                     (Pluggable Channels)                        │
+│                   ORCHESTRATION LAYER                            │
+│              (System-Proactive Agent Invocation)                 │
+│                                                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐    │
+│  │  Scheduler  │  │   Event     │  │    Lifecycle         │    │
+│  │             │  │   Router    │  │    Manager           │    │
+│  │ • Interval  │  │             │  │                      │    │
+│  │ • Idle      │  │ • File      │  │ • Spawn agents       │    │
+│  │ • Cron      │  │ • Webhook   │  │ • Stop/Restart       │    │
+│  │ • Once      │  │ • Internal  │  │ • Health checks      │    │
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬───────────┘    │
+│         │                │                    │                │
+│         └────────────────┴────────────────────┘                │
+│                          │                                     │
+│                    Invokes agent                               │
+└──────────────────────────┼─────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    COMMUNICATION LAYER                           │
+│              (User-Proactive Agent Invocation)                   │
 │                                                                  │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐    │
 │  │   Built-in  │  │   Registry  │  │       Custom         │    │
@@ -161,19 +199,22 @@ Agent Session Structure:
 │  │             │  │ • WhatsApp  │  │ • Game integration   │    │
 │  │             │  │ • Telegram  │  │ • Web dashboard      │    │
 │  │             │  │ • Slack     │  │ • IoT interface      │    │
-│  └─────────────┘  └─────────────┘  └──────────────────────┘    │
-│                                                                  │
-│  All implement Channel trait. Multi-channel per agent.         │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              │ Messages
-                              ▼
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬───────────┘    │
+│         │                │                    │                │
+│         └────────────────┴────────────────────┘                │
+│                          │                                     │
+│                    Messages to agent                           │
+└──────────────────────────┼─────────────────────────────────────┘
+                           │
+                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      AGENT RUNTIME                               │
+│                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Channel Router                                           │   │
-│  │  ├─ Route messages from any channel to agent             │   │
-│  │  ├─ Manage session overlays (isolated vs shared)         │   │
+│  │  Invocation Router                                          │   │
+│  │  ├─ Route from Orchestration (scheduled runs)            │   │
+│  │  ├─ Route from Communication (user messages)             │   │
+│  │  ├─ Manage session overlays (orchestration vs comm)      │   │
 │  │  └─ Optional broadcast to multiple channels              │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                              │                                    │
@@ -192,8 +233,9 @@ Agent Session Structure:
 │  │  └──────────┘  └──────────┘  └──────────────┘       │       │
 │  └──────────────────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+                           │
+                           │ Agent invokes
+                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     EXECUTION ENGINE                             │
 │  ┌──────────────────────────────────────────────────────────┐   │
@@ -224,7 +266,165 @@ Agent Session Structure:
 
 ## 4. Component Details
 
-### 4.1 Communication Layer (Channels)
+### 4.1 Orchestration Layer
+
+The Orchestration Layer **proactively invokes agents** based on time, events, or system state. Unlike Capabilities (which agents call) or Communication (where users initiate), Orchestration is the system calling agents.
+
+#### 4.1.1 Scheduler
+
+The Scheduler enables time-based and event-driven agent invocation with pluggable persistence backends.
+
+**Trigger Types:**
+
+| Trigger | Description | Use Case |
+|---------|-------------|----------|
+| `interval` | Every X minutes/seconds | Health checks, polling |
+| `idle` | Every X minutes when idling | Cleanup, background sync |
+| `cron` | Calendar-based (cron syntax) | Daily reports, weekly digests |
+| `once` | One-shot at specific time | Reminders, delayed tasks |
+| `event` | React to system events | File changes, webhooks |
+
+**Scheduler Core Trait:**
+```rust
+pub trait Scheduler {
+    async fn schedule(&self, task: ScheduledTask) -> Result<TaskId>;
+    async fn cancel(&self, id: TaskId) -> Result<()>;
+    async fn list(&self) -> Vec<ScheduledTask>;
+    async fn history(&self, task_id: TaskId) -> Vec<ExecutionLog>;
+}
+
+pub struct ScheduledTask {
+    pub id: TaskId,
+    pub trigger: Trigger,
+    pub action: Action,
+    pub context: TaskContext,  // Custom session/overlay
+    pub enabled: bool,
+}
+
+pub enum Trigger {
+    Interval { duration: Duration },
+    Idle { timeout: Duration },  // Resets on activity
+    Cron { expression: String, timezone: String },
+    Once { at: DateTime<Utc> },
+}
+
+pub enum Action {
+    Tool { name: String, args: Value },
+    Mcp { mcp: String, method: String, args: Value },
+    Skill { name: String, input: Value },
+    Message { channel: String, content: String },
+}
+```
+
+**Idle Detection:**
+```rust
+pub struct IdleMonitor {
+    last_activity: HashMap<String, Instant>,
+    threshold: Duration,
+}
+
+impl IdleMonitor {
+    pub fn record_activity(&mut self, source: &str) {
+        self.last_activity.insert(source.to_string(), Instant::now());
+    }
+    
+    pub fn is_idle(&self) -> bool {
+        self.last_activity.values()
+            .all(|t| t.elapsed() > self.threshold)
+    }
+}
+```
+
+**Pluggable Backends:**
+
+| Backend | Use Case | Features |
+|---------|----------|----------|
+| `sqlite` (default) | Single-node, local | Lightweight, embedded |
+| `postgres` | Multi-agent, team | Coordination, locking |
+
+```rust
+pub trait SchedulerBackend: Send + Sync {
+    async fn store(&self, task: ScheduledTask) -> Result<()>;
+    async fn load_due(&self, before: DateTime) -> Result<Vec<ScheduledTask>>;
+    async fn delete(&self, id: TaskId) -> Result<()>;
+    async fn claim(&self, id: TaskId, node: NodeId) -> Result<bool>;
+}
+```
+
+**Session Context Model:**
+
+Each scheduled task runs with its own session overlay:
+
+```toml
+[scheduler]
+backend = "sqlite"  # or "postgres"
+
+[[scheduler.tasks.check_email]]
+trigger = { type = "interval", minutes = 5 }
+action = { type = "mcp", mcp = "email", method = "check_inbox" }
+context = { isolated = true, ttl = "1h" }
+
+[[scheduler.tasks.daily_report]]
+trigger = { type = "cron", expr = "0 9 * * 1-5", timezone = "Asia/Shanghai" }
+action = { type = "skill", name = "generate_report" }
+context = { isolated = false, inherit = "base" }
+
+[[scheduler.tasks.cleanup]]
+trigger = { type = "idle", minutes = 10 }  # After 10min of no activity
+action = { type = "tool", name = "filesystem", args = { op = "cleanup_temp" } }
+context = { isolated = true }
+```
+
+**Execution Guarantees:**
+
+| Aspect | Behavior |
+|--------|----------|
+| Persistence | Schedules survive restarts |
+| Overlap | Skip if previous run still executing (configurable) |
+| Missed runs | Catch-up or drop (configurable) |
+| Error handling | Exponential backoff, max retries |
+| Concurrency | Parallel execution per task, isolated contexts |
+
+**Agent Self-Scheduling:**
+
+Agents can schedule themselves dynamically:
+
+```rust
+async fn handle_message(&mut self, msg: Message) -> Result<Response> {
+    if msg.content.contains("remind me") {
+        let when = parse_time(&msg.content)?;
+        
+        self.scheduler.schedule(ScheduledTask {
+            trigger: Trigger::Once { at: when },
+            action: Action::Message { 
+                channel: "cli".to_string(), 
+                content: "Reminder!".to_string() 
+            },
+            context: TaskContext::isolated(),
+            ..Default::default()
+        }).await?;
+    }
+    Ok(Response::text("Scheduled!"))
+}
+```
+
+#### 4.1.2 Event Router
+
+Routes internal events to agents:
+- File system events
+- Webhook deliveries
+- Inter-agent messages
+- System notifications
+
+#### 4.1.3 Lifecycle Manager
+
+Manages agent lifecycle:
+- Spawn new agents
+- Stop/restart agents
+- Health checks
+- Resource limits
+
+### 4.2 Communication Layer (Channels)
 
 **Channel Trait:**
 ```rust
@@ -287,7 +487,7 @@ impl AgentChannels {
 }
 ```
 
-### 4.2 Memory Architecture
+### 4.3 Memory Architecture
 
 Pekobot separates **immediate context** (built-in) from **long-term memory** (pluggable MCP):
 
@@ -373,7 +573,7 @@ vector_dimension = 1536
 
 **Key Principle:** The core runtime provides session context (1st order). Long-term memory (2nd order) is an optional capability provided via MCP. Users choose their backend based on their needs—no lock-in.
 
-### 4.3 Bootstrap Components
+### 4.4 Bootstrap Components
 
 **Built-in Channels:**
 ```toml
@@ -394,7 +594,7 @@ session_introspection = true
 
 **Installation requirement:** At least one of `filesystem` or `fetch` must be enabled to install additional components from registry.
 
-### 4.4 Capability Tiers
+### 4.5 Capability Tiers
 
 **Tier 1: Tools (atomic, stateless)**
 - Single function, no persistence
@@ -412,7 +612,7 @@ session_introspection = true
 - Declarative: SKILL.md defines workflow
 - Examples: `coding_assistant`, `research_pipeline`
 
-### 4.5 Session Storage
+### 4.6 Session Storage
 
 ```
 ~/.pekobot/agents/{agent_name}/
@@ -596,6 +796,52 @@ plugin = "discord"
 # Agent uses SAME web_search, responds in Discord
 ```
 
+### 7.4 Agent with Scheduled Tasks
+
+```toml
+name = "maintenance_bot"
+
+[provider]
+provider_type = "anthropic"
+
+# Capabilities
+[capabilities]
+tools = ["filesystem", "fetch"]
+mcp = ["database", "email"]
+
+# Communication channels
+[[channels]]
+id = "cli"
+type = "builtin"
+
+# Scheduler configuration
+[scheduler]
+backend = "sqlite"  # or "postgres" for multi-agent
+
+# Check email every 5 minutes
+[[scheduler.tasks.check_email]]
+trigger = { type = "interval", minutes = 5 }
+action = { type = "mcp", mcp = "email", method = "check_inbox", args = { folder = "INBOX" } }
+context = { isolated = true, ttl = "30m" }
+
+# Daily report at 9 AM on weekdays
+[[scheduler.tasks.daily_report]]
+trigger = { type = "cron", expr = "0 9 * * 1-5", timezone = "Asia/Shanghai" }
+action = { type = "skill", name = "generate_daily_report" }
+context = { isolated = false, inherit = "base" }
+
+# Cleanup temp files when idle for 10 minutes
+[[scheduler.tasks.cleanup]]
+trigger = { type = "idle", minutes = 10 }
+action = { type = "tool", name = "filesystem", args = { operation = "cleanup", path = "/tmp" } }
+context = { isolated = true }
+
+# One-shot reminder
+[[scheduler.tasks.reminder]]
+trigger = { type = "once", at = "2026-03-15T09:00:00Z" }
+action = { type = "message", channel = "cli", content = "Meeting in 15 minutes!" }
+```
+
 ## 8. Anti-Goals
 
 What Pekobot explicitly avoids:
@@ -625,12 +871,14 @@ What Pekobot explicitly avoids:
 - Channel plugin architecture stabilization
 - Tool/MCP migration from core to registry
 - Multi-channel session management
+- **Scheduler with pluggable backends (SQLite, PostgreSQL)**
 
 ### Medium-term (6-12 months)
 - External trust layer (signed extensions, audits)
 - Multi-agent workflows (A2A orchestration)
 - Memory MCP ecosystem (markdown, postgres, chroma, pinecone backends)
 - Web dashboard channel
+- **Advanced scheduler (Kubernetes CronJob, AWS EventBridge backends)**
 
 ### Long-term (12+ months)
 - Distributed agent clusters
@@ -639,5 +887,5 @@ What Pekobot explicitly avoids:
 
 ---
 
-*Status: Revised per philosophy discussion*
+*Status: Revised per philosophy discussion - Three orthogonal layers (Orchestration, Communication, Capabilities)*
 *Last updated: 2026-03-09*
