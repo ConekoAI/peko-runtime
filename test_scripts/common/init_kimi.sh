@@ -22,11 +22,8 @@ echo ""
 # Clean up previous test
 echo "Cleaning up previous test agent..."
 rm -rf ~/.pekobot/agents/testagent
-rm -rf ~/.pekobot/agents/testagent.toml
 rm -rf ~/.local/share/pekobot/workspaces/testagent
 echo ""
-
-pwd
 
 
 # Create agent with kimi provider (using kimi_code alias)
