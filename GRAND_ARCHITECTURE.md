@@ -469,13 +469,34 @@ pub trait Tool: Send + Sync {
 
 **Core Built-in Tools:**
 
-| Tool | Purpose | Modes |
-|------|---------|-------|
-| `web_search` | Search the web | sync or async (system-managed) |
-| `filesystem` | File operations | sync or async (system-managed) |
-| `process` | Shell execution | sync or async (system-managed) |
-| `agent_send` | Send message to another agent | sync or async (system-managed) |
-| `agent_spawn` | Spawn sub-session for multitasking | sync or async (system-managed) |
+| Tool | Category | Purpose |
+|------|----------|---------|
+| `read` | Filesystem | Read file contents from workspace |
+| `write` | Filesystem | Write/create files in workspace |
+| `edit` | Filesystem | Apply search/replace edits to files |
+| `exec` | Process | Execute shell commands with optional sandboxing |
+| `process` | Process | Manage background processes (list, kill, send signals) |
+| `apply_patch` | Code | Apply unified diff patches to codebase |
+| `agents_list` | Agent | List available agents in the system |
+| `agent_send` | Agent | Send message to another agent (1-to-1 communication) |
+| `agent_spawn` | Agent | Spawn sub-session for parallel/multitasking workflows |
+| `subagents` | Agent | Manage and interact with running subagents |
+| `sessions_list` | Session | List active and historical sessions |
+| `sessions_history` | Session | Retrieve conversation history for a session |
+| `session_status` | Session | Check current session state and metadata |
+| `cron` | Scheduling | Schedule recurring tasks and delayed one-time jobs |
+
+**Design Rationale:** Only fundamental primitives are built-in. Everything else is provided via MCPs or skills. Complex tools like `web_search`, `browser`, `memory_*`, and platform-specific actions are externalized to MCPs.
+
+**Not Built-in (MCP/Skill candidates):**
+| Tool Type | Moved to | Reason |
+|-----------|----------|--------|
+| Web tools (`web_search`, `web_fetch`) | **MCP: `web`** | Requires external API keys, rate limits |
+| Browser | **MCP: `browser`** | Heavy dependency, optional use |
+| Media (`image`, `tts`, `canvas`) | **MCP: `media`** | Optional capabilities, heavy deps |
+| Memory | **MCP: `memory-*`** | Pluggable memory backends |
+| Platform actions | **Channel plugins** | Platform-specific, not core |
+| Gateway/Nodes | **MCP: `infrastructure`** | External service integration, distributed execution |
 
 **Tool Trait (Simple):**
 ```rust
