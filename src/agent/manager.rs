@@ -1,7 +1,6 @@
 //! Agent manager core implementation
 
 use crate::agent::Agent;
-use crate::identity::{storage::KeyStorage, Identity};
 use crate::agent::{
     context::AgentContext,
     lifecycle::LifecycleManager,
@@ -9,6 +8,7 @@ use crate::agent::{
     registry::{CapabilityRecord, LocalRegistry, Registry as _},
     types::{AgentInfo, IdentityInfo, ManagerEvent},
 };
+use crate::identity::{storage::KeyStorage, Identity};
 use crate::portable::{ExportOptions, ImportOptions, Packager, Unpackager};
 use crate::tools::ManagerCommand;
 use anyhow::Result;
@@ -382,8 +382,8 @@ impl AgentManager {
     #[must_use]
     pub fn create_communication_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{
-            AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, AgentsListTool,
-            AgentInbox, SessionMessagingTool,
+            AgentBroadcastTool, AgentInbox, AgentInfoTool, AgentSpawnTool, AgentsListTool,
+            SessionMessagingTool,
         };
         use std::sync::Arc;
 

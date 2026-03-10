@@ -3,7 +3,7 @@
 //! This test ensures agents have access to all 14 essential tools.
 //! Run with: cargo test --test tool_wiring_test -- --ignored
 
-use pekobot::manager::AgentManager;
+use pekobot::agent::AgentManager;
 use pekobot::tools::Tool;
 use std::path::PathBuf;
 use std::sync::Arc;

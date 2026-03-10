@@ -57,7 +57,7 @@ async fn test_tools_smoke() {
     println!("✅ Session introspection tools: 3/3 passed");
 
     // Agent management tools
-    use pekobot::tools::{AgentsListTool, ManagerCommand};
+    use pekobot::tools::AgentsListTool;
     use tokio::sync::mpsc;
 
     let (tx, _rx) = mpsc::channel(10);
@@ -66,10 +66,10 @@ async fn test_tools_smoke() {
     println!("✅ Agent management: 1/1 passed");
 
     // Session messaging tool
-    use pekobot::tools::{SessionMessagingTool, SessionRegistry};
+    use pekobot::tools::{AgentInbox, SessionMessagingTool};
     use std::sync::Arc;
 
-    let registry = Arc::new(SessionRegistry::new());
+    let registry = Arc::new(AgentInbox::new());
     assert_eq!(
         SessionMessagingTool::new(registry, "test".to_string()).name(),
         "session_messaging"
@@ -236,12 +236,11 @@ async fn test_fetch_tool() {
 #[tokio::test]
 #[ignore = "requires network access"]
 async fn test_web_search_tool() {
-    use pekobot::tools::{SearchProvider, WebSearchConfig, WebSearchTool};
+    use pekobot::tools::{WebSearchConfig, WebSearchTool};
 
     println!("\n🔍 Testing web search tool...");
 
     let config = WebSearchConfig {
-        provider: SearchProvider::DuckDuckGo,
         ..Default::default()
     };
     let tool = WebSearchTool::new(config);

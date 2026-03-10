@@ -4,7 +4,7 @@
 //!
 //! Run manually: cargo test --test brave_search_test -- --ignored
 
-use pekobot::tools::{SearchProvider, Tool, WebSearchConfig, WebSearchTool};
+use pekobot::tools::{Tool, WebSearchConfig, WebSearchTool};
 
 #[tokio::test]
 #[ignore = "Requires BRAVE_API_KEY and network access"]
@@ -16,9 +16,8 @@ async fn test_brave_search_api() {
     println!("\n🔍 Testing Brave Search API...");
 
     let config = WebSearchConfig {
-        provider: SearchProvider::Brave,
         api_key: Some(api_key),
-        max_results: 5,
+        max_urls: 5,
         ..Default::default()
     };
 
@@ -52,36 +51,4 @@ async fn test_brave_search_api() {
     }
 
     println!("✅ Brave Search API test passed!");
-}
-
-#[tokio::test]
-async fn test_duckduckgo_fallback() {
-    println!("\n🔍 Testing DuckDuckGo fallback...");
-
-    let config = WebSearchConfig {
-        provider: SearchProvider::DuckDuckGo,
-        ..Default::default()
-    };
-
-    let tool = WebSearchTool::new(config);
-
-    let result = tool
-        .execute(serde_json::json!({
-            "query": "Rust programming",
-            "count": 3
-        }))
-        .await;
-
-    assert!(result.is_ok(), "DDG search failed: {:?}", result);
-
-    let response = result.unwrap();
-    let provider = response["provider"].as_str().unwrap();
-
-    println!("  Provider: {}", provider);
-    assert_eq!(
-        provider, "duckduckgo",
-        "Expected provider to be 'duckduckgo'"
-    );
-
-    println!("✅ DuckDuckGo fallback test passed!");
 }

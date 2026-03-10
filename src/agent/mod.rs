@@ -20,7 +20,7 @@ pub mod lifecycle;
 pub use lifecycle::LifecycleManager;
 
 pub mod registry;
-pub use registry::{LocalRegistry, CapabilityRecord};
+pub use registry::{CapabilityRecord, LocalRegistry};
 
 // Manager submodules
 pub mod commands;

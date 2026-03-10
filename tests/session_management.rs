@@ -404,7 +404,7 @@ async fn test_full_session_lifecycle() {
     index.insert(session_key.clone(), entry).await.unwrap();
 
     // 4. Append messages
-    let msg_id = storage
+    let _msg_id = storage
         .append_message(
             session_id,
             None,
