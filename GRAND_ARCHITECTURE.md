@@ -573,9 +573,123 @@ Multi-step workflows. **Complex coordination patterns are skills:**
 - Users can customize
 - No core bloat
 
-## 5. Memory Architecture
+### 4.6 Channel & Session Routing
 
-### 5.1 1st Order Memory (Context)
+**Core Principles:**
+1. **Session per peer** - Each unique peer gets their own session
+2. **Peer = user or agent** - Both treated the same for session purposes
+3. **Default user** - If no username specified, use "default"
+4. **Reply to source channel** - Agent responds on the channel where message was received
+5. **Cross-channel same session** - Same peer on different channels = same session context
+
+**Session Key Format:**
+```
+{agent_id}:{peer_type}:{peer_id}:{session_id}
+
+Examples:
+- main:user:default:session_abc123     (default user)
+- main:user:alice:session_def456       (user "alice")
+- main:agent:researcher:session_ghi789 (agent "researcher")
+```
+
+**Routing Logic:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MESSAGE ROUTING                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  INCOMING:                                                       │
+│  Channel receives message ──► Identify peer                      │
+│                               ├── User: extract username         │
+│                               ├── Agent: agent ID from envelope  │
+│                               └── None: "default"                │
+│                                                                  │
+│  ├───► Get or create session for (agent, peer)                   │
+│  │                                                                │
+│  └───► Invoke agent with (session, message, source_channel)      │
+│                                                                  │
+│  OUTGOING:                                                       │
+│  Agent generates response ──► Route to source_channel            │
+│                                                                  │
+│  Special cases:                                                  │
+│  - Agent-to-agent via tool: return via tool result               │
+│  - Explicit channel override: use specified channel              │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Cross-Channel Same Session:**
+```
+User "alice"
+     │
+     ├──► CLI ──► Session A ──► Agent ──► Reply CLI
+     │
+     ├──► Discord ──► Session A ──► Agent ──► Reply Discord
+     │
+     └──► WhatsApp ──► Session A ──► Agent ──► Reply WhatsApp
+
+Same session context across all channels!
+Agent remembers context from previous channel.
+```
+
+**Implementation:**
+```rust
+pub struct SessionManager {
+    /// Active sessions: (agent_id, peer) -> session
+    sessions: HashMap<(String, Peer), Session>,
+}
+
+pub enum Peer {
+    User(String),   // username
+    Agent(String),  // agent_id
+}
+
+pub struct IncomingMessage {
+    pub content: String,
+    pub source: Source,
+    pub peer: Peer,
+}
+
+pub struct Source {
+    pub channel: String,      // "cli", "discord", "whatsapp"
+    pub channel_specific_id: Option<String>,
+}
+
+impl SessionManager {
+    /// Get or create session for peer
+    pub fn get_session(&mut self, agent: &str, peer: &Peer) -> &mut Session {
+        let key = (agent.to_string(), peer.clone());
+        self.sessions.entry(key).or_insert_with(|| {
+            Session::new(agent, peer)
+        })
+    }
+}
+```
+
+**Channel Override:**
+Agents can explicitly send to a different channel:
+```rust
+// Default: reply to source channel
+agent.reply(response).await?;
+
+// Override: send to specific channel
+agent.send_to("discord:general", response).await?;
+```
+
+**Example Scenarios:**
+
+| # | Scenario | Session | Reply To |
+|---|----------|---------|----------|
+| 1 | User (default) on CLI | Session A (user:default) | CLI |
+| 2 | User (default) on Discord | Session A (same user) | Discord |
+| 3 | User (default) on CLI with `/new` | Session B (new session, same user) | CLI |
+| 4 | Agent B via tool call | Session C (peer=agent:researcher) | Tool result |
+| 5 | User (default) on WhatsApp | Session A (same user) | WhatsApp |
+| 6 | User "X" on any channel | Session D (user:X) | Same channel |
+
+## 6. Memory Architecture
+
+### 6.1 1st Order Memory (Context)
 
 **Built-in, always present:**
 - Session JSONL files
@@ -583,7 +697,7 @@ Multi-step workflows. **Complex coordination patterns are skills:**
 - Automatic LLM context injection
 - Stored in: `~/.pekobot/agents/{agent}/sessions/`
 
-### 5.2 2nd Order Memory (Long-term)
+### 6.2 2nd Order Memory (Long-term)
 
 **Pluggable MCP, optional:**
 - `memory-markdown` - MD files + SQLite vectors
@@ -593,9 +707,9 @@ Multi-step workflows. **Complex coordination patterns are skills:**
 - `memory-files` - Simple files
 - `memory-none` - Disabled
 
-## 6. Async Flow Examples
+## 7. Async Flow Examples
 
-### 6.1 Async Tool Call
+### 8.1 Async Tool Call
 
 ```rust
 // Agent calls tool asynchronously
@@ -614,7 +728,7 @@ if let Some(result) = receipt.result() {
 let result = receipt.wait(Duration::from_secs(30)).await?;
 ```
 
-### 6.2 Async Agent Messaging
+### 8.2 Async Agent Messaging
 
 ```rust
 // Send message to another agent asynchronously
@@ -627,7 +741,7 @@ let receipt = agent_send_tool.call_async(json!({
 // Researcher will reply to inbox when done
 ```
 
-### 6.3 Async Spawn (Multitasking)
+### 8.3 Async Spawn (Multitasking)
 
 ```rust
 // Spawn 3 research tasks in parallel
@@ -641,7 +755,7 @@ let r3 = spawn_tool.call_async(json!({"task": "Research curio"})).await?;
 let results = vec![r1.wait().await?, r2.wait().await?, r3.wait().await?];
 ```
 
-### 6.4 Complex Coordination (External Skill)
+### 8.4 Complex Coordination (External Skill)
 
 ```rust
 // Group chat manager skill (built on agent_send)
@@ -654,9 +768,9 @@ group_chat_tool.call(json!({
 // Internally uses agent_send to each participant
 ```
 
-## 7. Configuration Examples
+## 8. Configuration Examples
 
-### 7.1 Minimal Agent
+### 8.1 Minimal Agent
 
 ```toml
 name = "minimal"
@@ -673,7 +787,7 @@ id = "cli"
 type = "builtin"
 ```
 
-### 7.2 Agent with External Coordination
+### 8.2 Agent with External Coordination
 
 ```toml
 name = "coordinator"
@@ -696,7 +810,7 @@ type = "registry"
 plugin = "discord"
 ```
 
-### 7.3 Multi-Tasking Agent
+### 8.3 Multi-Tasking Agent
 
 ```toml
 name = "research_assistant"
@@ -713,7 +827,7 @@ builtin = ["agent_spawn"]
 max_concurrent = 3
 ```
 
-### 7.4 Scheduled Async Tasks
+### 8.4 Scheduled Async Tasks
 
 ```toml
 [scheduler.tasks.poll_inbox]
@@ -725,7 +839,7 @@ trigger = { type = "idle", minutes = 30 }
 action = { type = "tool", name = "spawn_cleanup" }
 ```
 
-## 8. Anti-Goals
+## 9. Anti-Goals
 
 What Pekobot explicitly avoids:
 
@@ -737,7 +851,7 @@ What Pekobot explicitly avoids:
 - **Complex coordination in core**: Group chat, broadcast are skills, not core
 - **Special async primitives**: All tools support sync/async uniformly
 
-## 9. Related Concepts
+## 10. Related Concepts
 
 | Concept | Analogy | Pekobot Equivalent |
 |---------|---------|-------------------|
@@ -750,7 +864,7 @@ What Pekobot explicitly avoids:
 | Thread pool | Parallel execution | Async spawn tool |
 | Message queue | Async communication | Agent inbox |
 
-## 10. Future Directions
+## 11. Future Directions
 
 ### Near-term (3-6 months)
 - Pekohub production with reputation system
