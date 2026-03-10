@@ -42,6 +42,6 @@ pub use session_introspection::{
     InMemorySessionRegistry, SessionInfo, SessionRegistry as SessionIntrospectionRegistry,
     SessionStatusTool, SessionsHistoryTool, SessionsListTool,
 };
-pub use session_messaging::{SessionMessagingTool, SessionRegistry};
+pub use session_messaging::{AgentInbox, SessionMessagingTool};
 pub use traits::{Tool, ToolError};
 pub use web_search::{WebSearchConfig, WebSearchTool};

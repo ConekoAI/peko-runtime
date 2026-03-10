@@ -383,7 +383,7 @@ impl AgentManager {
     pub fn create_communication_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{
             AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, AgentsListTool,
-            SessionMessagingTool, SessionRegistry,
+            AgentInbox, SessionMessagingTool,
         };
         use std::sync::Arc;
 
@@ -402,7 +402,7 @@ impl AgentManager {
         tools.push(Arc::new(AgentBroadcastTool::new(self.command_tx.clone())));
 
         // Session messaging tool (shared registry across all agents)
-        let registry = Arc::new(SessionRegistry::new());
+        let registry = Arc::new(AgentInbox::new());
         tools.push(Arc::new(SessionMessagingTool::new(
             registry,
             agent_did.to_string(),

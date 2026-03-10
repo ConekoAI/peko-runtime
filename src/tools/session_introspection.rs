@@ -489,6 +489,8 @@ mod tests {
             status: "active".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
+            timestamp_utc: "2024-01-01T02:00:00Z".to_string(),
+            timestamp: "2024-01-01 02:00:00 UTC".to_string(),
             message_count: 10,
             usage: UsageStats {
                 prompt_tokens: 100,
@@ -571,6 +573,8 @@ mod tests {
             status: "active".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
+            timestamp_utc: "2024-01-01T02:00:00Z".to_string(),
+            timestamp: "2024-01-01 02:00:00 UTC".to_string(),
             message_count: 5,
             usage: UsageStats {
                 prompt_tokens: 50,

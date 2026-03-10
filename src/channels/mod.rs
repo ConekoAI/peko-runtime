@@ -2,20 +2,13 @@
 //!
 //! This module provides different channels for agents to communicate:
 //! - CLI: Interactive terminal interface
-//! - HTTP: Webhook-based HTTP server
-//! - Telegram: Telegram Bot API integration
 //! - Discord: Discord Bot API integration
-//! - Slack: Slack Web API integration
-//! - Matrix: Matrix Client-Server API integration
-//! - `WhatsApp`: `WhatsApp` Business Cloud API integration
+//!
+//! Additional channels (HTTP, Telegram, Slack, Matrix, WhatsApp) will be
+//! implemented as GatewayPlugin extensions.
 
 pub mod cli;
 pub mod discord;
-pub mod http;
-pub mod matrix;
-pub mod slack;
-pub mod telegram;
-pub mod whatsapp;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -131,11 +124,6 @@ pub trait Channel: Send + Sync {
 // Re-exports for convenience
 pub use cli::CliChannel;
 pub use discord::{DiscordChannel, DiscordConfig};
-pub use http::HttpChannel;
-pub use matrix::{MatrixChannel, MatrixConfig};
-pub use slack::{SlackChannel, SlackConfig};
-pub use telegram::{TelegramChannel, TelegramConfig};
-pub use whatsapp::{WhatsAppChannel, WhatsAppConfig};
 
 #[cfg(test)]
 mod tests {

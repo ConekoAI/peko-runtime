@@ -19,14 +19,14 @@ pub struct SessionMessage {
     pub timestamp: u64,
 }
 
-/// Session registry for lightweight messaging
+/// Agent inbox for lightweight messaging
 #[derive(Default)]
-pub struct SessionRegistry {
+pub struct AgentInbox {
     sessions: Mutex<HashMap<String, Vec<SessionMessage>>>,
     subscribers: Mutex<HashMap<String, mpsc::Sender<SessionMessage>>>,
 }
 
-impl SessionRegistry {
+impl AgentInbox {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -79,12 +79,12 @@ impl SessionRegistry {
 
 /// Session tool for simple agent-to-agent messaging
 pub struct SessionMessagingTool {
-    registry: std::sync::Arc<SessionRegistry>,
+    registry: std::sync::Arc<AgentInbox>,
     agent_did: String,
 }
 
 impl SessionMessagingTool {
-    pub fn new(registry: std::sync::Arc<SessionRegistry>, agent_did: String) -> Self {
+    pub fn new(registry: std::sync::Arc<AgentInbox>, agent_did: String) -> Self {
         Self {
             registry,
             agent_did,
@@ -206,8 +206,8 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_session_registry() {
-        let registry = std::sync::Arc::new(SessionRegistry::new());
+    async fn test_agent_inbox() {
+        let registry = std::sync::Arc::new(AgentInbox::new());
 
         // Register two agents
         registry
@@ -239,7 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_tool() {
-        let registry = std::sync::Arc::new(SessionRegistry::new());
+        let registry = std::sync::Arc::new(AgentInbox::new());
         registry
             .register_session("did:pekobot:local:agent1".to_string())
             .await;

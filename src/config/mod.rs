@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 /// Pekobot configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub agent: AgentConfig,
+    pub agent: AgentMetadata,
     pub providers: ProvidersConfig,
     pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
+pub struct AgentMetadata {
     pub name: String,
     pub description: Option<String>,
 }
@@ -38,7 +38,7 @@ pub struct MemoryConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            agent: AgentConfig {
+            agent: AgentMetadata {
                 name: "pekobot".to_string(),
                 description: None,
             },

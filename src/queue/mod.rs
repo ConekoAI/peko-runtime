@@ -1,10 +1,15 @@
 //! Message queue system with lane-aware FIFO processing
 //!
+//! ⚠️ EXPERIMENTAL: This module is not yet integrated into the runtime.
+//! It will be used by the Event Router (GAP-004) for message queuing.
+//!
 //! Matches OpenClaw's queue design:
 //! - Lane-aware FIFO queue (per-session serialization)
 //! - Configurable concurrency caps per lane
 //! - Queue modes: steer, followup, collect, steer-backlog, interrupt
 //! - Debounce and backpressure handling
+
+#![allow(dead_code)] // Experimental module, will be used in GAP-004
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;

@@ -4,7 +4,6 @@
 //! - Single agent runtime (Agent struct)
 //! - Multi-agent coordination (AgentManager)
 //! - Agent lifecycle management
-//! - Built-in channel implementations
 
 // Single agent runtime
 mod agent;
@@ -22,9 +21,6 @@ pub use lifecycle::LifecycleManager;
 
 pub mod registry;
 pub use registry::{LocalRegistry, CapabilityRecord};
-
-// Channel implementations
-pub mod channels;
 
 // Manager submodules
 pub mod commands;
