@@ -86,7 +86,7 @@ Pekobot separates concerns along three independent axes:
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │ TIER 1: Tools (atomic, stateless)                   │   │
 │  │ • web_search • calculator • apply_patch             │   │
-│  │ • send_message • spawn_subagent • check_inbox       │   │
+│  │ • agent_send • agent_spawn                          │   │
 │  └─────────────────────────────────────────────────────┘   │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │ TIER 2: MCPs (bundled, stateful)                    │   │
@@ -94,21 +94,22 @@ Pekobot separates concerns along three independent axes:
 │  └─────────────────────────────────────────────────────┘   │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │ TIER 3: Skills (workflows)                          │   │
-│  │ • coding_assistant • group_chat_manager             │   │
-│  │ • broadcast_hub • research_pipeline                 │   │
+│  │ • coding_assistant • research_pipeline              │   │
+│  │ • group_chat_manager • broadcast_hub                │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                                                             │
 │  Agents PROACTIVELY invoke capabilities.                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Insight:** Complex coordination patterns (group chat, broadcast) are **built as tools/skills** on top of simple primitives (`send_message`, `spawn_subagent`), not core features.
+**Key Insight:** Complex coordination patterns (group chat, broadcast, workflows) are **built as tools/skills**, not core features. Core only provides basic 1-to-1 messaging primitives.
 
 **Orthogonality Examples:**
 - Scheduler invokes agent → agent uses `web_search` (Tool)
-- Discord message invokes agent → agent uses `send_message` to another agent (Tool)
-- Scheduled cron job → agent spawns subagent via `spawn_subagent` (Tool)
-- User on CLI → agent calls `group_chat_manager` skill (built on messaging tools)
+- Discord message invokes agent → agent uses `browser` (MCP)
+- Agent uses `agent_send` tool to message another agent (1-to-1)
+- Agent uses `agent_spawn` tool to multitask (sync/async)
+- Complex group chat? Use `group_chat_manager` skill built on `agent_send`
 
 ### 2.3 Trust Model
 
@@ -140,13 +141,46 @@ Pekobot separates concerns along three independent axes:
 
 **The user is the security boundary.** Core executes. Registry recommends. User decides. Audit logs for review.
 
-### 2.4 Session-Centric State with Overlays
+### 2.4 Unified Async Model
+
+All tool invocations (including messaging and spawn) support **sync** and **async** modes:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              UNIFIED TOOL INVOCATION MODEL                   │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ANY TOOL can be invoked:                                   │
+│  • tool.call_sync()    → Block until result                 │
+│  • tool.call_async()   → Return receipt immediately         │
+│                                                              │
+│  Includes:                                                   │
+│  • Regular tools (web_search, filesystem)                   │
+│  • Messaging tools (agent_send)                             │
+│  • Spawn tools (agent_spawn)                                │
+│                                                              │
+│  ASYNC FLOW:                                                │
+│  1. Agent calls tool.async() → Gets Receipt                 │
+│  2. Operation runs in background                            │
+│  3. Result lands in Agent Inbox when complete               │
+│  4. Agent polls inbox or gets notified                      │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Benefits:**
+- Single mental model for all async operations
+- No special cases for messaging vs tools
+- Agent can multitask naturally
+
+### 2.5 Session-Centric State with Overlays
 
 - **Agents are stateless runtime instances**
 - **Base sessions hold shared conversation context** (JSONL files)
 - **Overlays hold context-specific state** (isolated or linked)
   - *Channel overlays* - Communication-specific (Discord guild, CLI terminal)
   - *Orchestration overlays* - Scheduled task context
+  - *Spawn overlays* - Sub-session isolation
 - **Tools/MCPs are stateless/stateful independently**
 - Sessions are portable, inspectable, long-lived
 
@@ -161,13 +195,10 @@ Agent Session Structure:
 │   ├── Discord: Guild IDs, user mappings
 │   └── WhatsApp: Phone numbers, message IDs
 │
-└── Orchestration Overlays (Orchestration Layer)
-    ├── check_email: Isolated email check context
-    ├── daily_report: Inherited base + report state
-    └── cleanup: Temporary cleanup session
+└── Spawn Overlays (from agent_spawn)
+    ├── spawn_abc123: Isolated research task
+    └── spawn_def456: Isolated writing task
 ```
-
-Each overlay is independent - an agent can have both Discord and scheduled task contexts simultaneously.
 
 ## 3. System Architecture
 
@@ -218,8 +249,7 @@ Each overlay is independent - an agent can have both Discord and scheduled task 
 │  │  Invocation Router                                          │   │
 │  │  ├─ Route from Orchestration (scheduled runs)            │   │
 │  │  ├─ Route from Communication (user messages)             │   │
-│  │  ├─ Manage session overlays (orchestration vs comm)      │   │
-│  │  └─ Optional broadcast to multiple channels              │   │
+│  │  └─ Manage session overlays                              │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                              │                                    │
 │  ┌───────────────────────────▼──────────────────────────┐       │
@@ -236,15 +266,23 @@ Each overlay is independent - an agent can have both Discord and scheduled task 
 │  │  │  (DID)   │  │  (JSONL) │  │   (LLM)      │       │       │
 │  │  └──────────┘  └──────────┘  └──────────────┘       │       │
 │  └──────────────────────────────────────────────────────┘       │
+│                              │                                    │
+│  ┌───────────────────────────▼──────────────────────────┐       │
+│  │              Agent Inbox                              │       │
+│  │  ├─ Async results queue (tools, spawn, messages)     │       │
+│  │  ├─ Poll for completed items                         │       │
+│  │  └─ Notification on completion                       │       │
+│  └──────────────────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────┘
                            │
-                           │ Agent invokes
+                           │ Agent invokes tools
                            ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     EXECUTION ENGINE                             │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │  AgenticLoopV4 (native tool calling)                     │   │
-│  │  ├─ Tool/MCP dispatch (independent of channels)          │   │
+│  │  ├─ Tool/MCP dispatch                                    │   │
+│  │  ├─ Sync/Async handling                                  │   │
 │  │  ├─ Streaming event generation                           │   │
 │  │  └─ Session persistence (JSONL)                         │   │
 │  └──────────────────────────────────────────────────────────┘   │
@@ -258,15 +296,12 @@ Each overlay is independent - an agent can have both Discord and scheduled task 
 │  │   Tools     │  │    MCPs     │  │       Skills         │    │
 │  │  (atomic)   │  │  (bundled)  │  │    (workflows)       │    │
 │  │             │  │             │  │                      │    │
-│  │ • web_search│  │ • browser   │  │ • coding_assistant   │    │
-│  │ • calc      │  │ • database  │  │ • research_pipe      │    │
-│  │ • patch     │  │ • email     │  │ • deploy_workflow    │    │
-│  │ • send_msg  │  │ • memory-*  │  │ • group_chat_mgr     │    │
-│  │ • spawn     │  │             │  │ • broadcast_hub      │    │
+│  │• web_search│  │• browser    │  │• coding_assistant    │    │
+│  │• agent_send│  │• database   │  │• group_chat_manager   │    │
+│  │• agent_spawn│ │• email      │  │• broadcast_hub       │    │
 │  └─────────────┘  └─────────────┘  └──────────────────────┘    │
 │                                                                  │
-│  Sources: Built-in (T0) | Registry (T1/T2/T3)                   │
-│  Used by: ALL channels (orthogonal)                             │
+│  Sources: Built-in | Registry | User-created                    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -278,7 +313,7 @@ The Orchestration Layer **proactively invokes agents** based on time, events, or
 
 #### 4.1.1 Scheduler
 
-The Scheduler enables time-based and event-driven agent invocation with pluggable persistence backends.
+Time-based and event-driven agent invocation.
 
 **Trigger Types:**
 
@@ -290,141 +325,49 @@ The Scheduler enables time-based and event-driven agent invocation with pluggabl
 | `once` | One-shot at specific time | Reminders, delayed tasks |
 | `event` | React to system events | File changes, webhooks |
 
-**Scheduler Core Trait:**
+**Scheduler Core:**
 ```rust
 pub trait Scheduler {
     async fn schedule(&self, task: ScheduledTask) -> Result<TaskId>;
     async fn cancel(&self, id: TaskId) -> Result<()>;
     async fn list(&self) -> Vec<ScheduledTask>;
-    async fn history(&self, task_id: TaskId) -> Vec<ExecutionLog>;
 }
 
 pub struct ScheduledTask {
     pub id: TaskId,
     pub trigger: Trigger,
-    pub action: Action,
-    pub context: TaskContext,
+    pub action: Action,  // Invoke agent with context
     pub enabled: bool,
-}
-
-pub enum Trigger {
-    Interval { duration: Duration },
-    Idle { timeout: Duration },
-    Cron { expression: String, timezone: String },
-    Once { at: DateTime<Utc> },
 }
 
 pub enum Action {
     Tool { name: String, args: Value },
     Mcp { mcp: String, method: String, args: Value },
     Skill { name: String, input: Value },
+    Message { channel: String, content: String },
 }
 ```
 
 **Pluggable Backends:**
-
-| Backend | Use Case |
-|---------|----------|
-| `sqlite` (default) | Single-node, embedded |
-| `postgres` | Multi-agent, distributed |
+- `sqlite` (default) - Single-node, embedded
+- `postgres` - Multi-agent, distributed
 
 #### 4.1.2 Event Router
 
-Routes internal events to agents: file system events, webhook deliveries, system notifications.
+Routes external events to agents:
+- File system events
+- Webhook deliveries
+- Internal system events
 
 #### 4.1.3 Lifecycle Manager
 
-Manages agent lifecycle: spawn, stop/restart, health checks, resource limits.
+Manages agent lifecycle:
+- Spawn new agents
+- Stop/restart agents
+- Health checks
+- Resource limits
 
-### 4.2 Unified Tool Model (Core Primitive)
-
-All operations—whether calling a web search, sending a message to another agent, or spawning a subagent—are **tools**. Tools natively support **sync** and **async** invocation modes.
-
-```rust
-/// All tools implement this trait
-pub trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> &str;
-    
-    /// Synchronous: Block until result
-    async fn call(&self, args: Value, ctx: ToolContext) -> Result<Value>;
-    
-    /// Asynchronous: Return receipt immediately
-    async fn call_async(&self, args: Value, ctx: ToolContext) -> Result<Receipt>;
-}
-
-/// Receipt for async operations
-pub struct Receipt {
-    pub id: String,
-    pub tool: String,
-    pub status: AsyncStatus,
-}
-
-pub enum AsyncStatus {
-    Pending,
-    Running,
-    Completed { result: Value },
-    Failed { error: String },
-    Timeout,
-}
-
-/// Check status or get result from receipt
-pub trait ReceiptOps {
-    async fn status(&self) -> AsyncStatus;
-    async fn wait(&self, timeout: Duration) -> Result<Value>;
-    async fn result(&self) -> Option<Value>;
-}
-```
-
-**Async Result Flow:**
-
-```
-Agent calls tool.call_async()
-         │
-         ▼
-    Returns Receipt immediately
-         │
-         ▼
-    Agent continues execution
-         │
-         ▼
-    Tool runs in background
-         │
-         ▼
-    On completion → Result goes to INBOX
-         │
-         ▼
-    Agent checks inbox: receipt.wait() or inbox.poll()
-```
-
-**Inbox for Async Results:**
-
-```rust
-pub struct AgentInbox {
-    /// Completed async operations waiting to be processed
-    queue: VecDeque<InboxItem>,
-}
-
-pub struct InboxItem {
-    pub receipt_id: String,
-    pub tool: String,
-    pub result: Value,
-    pub timestamp: DateTime,
-}
-
-pub trait Inbox {
-    /// Poll for completed items (non-blocking)
-    async fn poll(&mut self) -> Vec<InboxItem>;
-    
-    /// Wait for next item (blocking)
-    async fn next(&mut self) -> InboxItem;
-    
-    /// Check specific receipt
-    async fn check(&self, receipt_id: &str) -> AsyncStatus;
-}
-```
-
-### 4.3 Communication Layer (Channels)
+### 4.2 Communication Layer
 
 **Channel Trait:**
 ```rust
@@ -445,16 +388,204 @@ pub trait Channel: Send + Sync {
 | Registry | Discord, WhatsApp | Pekohub |
 | Custom | TUI, Game mods | User-built |
 
-### 4.4 Memory Architecture
+### 4.3 Agent Runtime
 
-Pekobot separates **immediate context** (built-in) from **long-term memory** (pluggable MCP):
+#### 4.3.1 Agent Inbox
 
-**1st Order Memory (Context):**
+Queue for async operation results:
+
+```rust
+pub struct AgentInbox {
+    /// Completed async operations waiting to be processed
+    queue: VecDeque<InboxItem>,
+    
+    /// In-progress operations tracked by receipt
+    pending: HashMap<String, AsyncStatus>,
+}
+
+pub struct InboxItem {
+    pub receipt_id: String,
+    pub source: Source,  // Tool, Spawn, Message
+    pub result: String,
+    pub timestamp: DateTime,
+}
+
+pub trait Inbox {
+    /// Poll for completed items (non-blocking)
+    async fn poll(&mut self) -> Vec<InboxItem>;
+    
+    /// Wait for next item (blocking)
+    async fn next(&mut self) -> InboxItem;
+    
+    /// Get status of pending operation
+    fn status(&self, receipt_id: &str) -> Option<AsyncStatus>;
+}
+```
+
+### 4.4 Execution Engine
+
+The **AgenticLoopV4** handles tool invocation with native sync/async support:
+
+```rust
+pub struct AgenticLoopV4 {
+    /// Execute tool call
+    async fn execute_tool(&self, call: ToolCall) -> Result<ToolResult>;
+    
+    /// Handle sync invocation - block until result
+    async fn invoke_sync(&self, tool: &str, args: Value) -> Result<Value>;
+    
+    /// Handle async invocation - return receipt
+    async fn invoke_async(&self, tool: &str, args: Value) -> Result<Receipt>;
+}
+
+/// Unified receipt for any async operation
+pub struct Receipt {
+    pub id: String,
+    pub operation_type: OperationType,  // Tool, Spawn, Message
+    pub status: AsyncStatus,
+}
+
+pub enum AsyncStatus {
+    Pending,
+    Running,
+    Completed { result: String },
+    Failed { error: String },
+    Timeout,
+}
+
+impl Receipt {
+    /// Check current status
+    pub async fn status(&self) -> AsyncStatus;
+    
+    /// Block and wait for result
+    pub async fn wait(&self, timeout: Duration) -> Result<String>;
+    
+    /// Get result if completed
+    pub fn result(&self) -> Option<String>;
+}
+```
+
+### 4.5 Capability Layer
+
+#### 4.5.1 Tools (Atomic, Stateless)
+
+**Core Built-in Tools:**
+
+| Tool | Purpose | Modes |
+|------|---------|-------|
+| `web_search` | Search the web | sync/async |
+| `filesystem` | File operations | sync/async |
+| `process` | Shell execution | sync/async |
+| `agent_send` | Send message to another agent | sync/async |
+| `agent_spawn` | Spawn sub-session for multitasking | sync/async |
+
+**Tool Trait:**
+```rust
+#[async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn schema(&self) -> ToolSchema;
+    
+    /// Execute synchronously
+    async fn call(&self, args: Value) -> Result<Value>;
+    
+    /// Execute asynchronously - return receipt
+    async fn call_async(&self, args: Value) -> Result<Receipt>;
+}
+```
+
+**Example: agent_send Tool:**
+```rust
+pub struct AgentSendTool;
+
+impl Tool for AgentSendTool {
+    fn name(&self) -> &str { "agent_send" }
+    
+    async fn call(&self, args: Value) -> Result<Value> {
+        // Synchronous: block until reply
+        let target = args["target"].as_str().unwrap();
+        let message = args["message"].as_str().unwrap();
+        let timeout = args["timeout"].as_u64().unwrap_or(60);
+        
+        let reply = send_and_wait(target, message, Duration::from_secs(timeout)).await?;
+        Ok(json!({ "reply": reply }))
+    }
+    
+    async fn call_async(&self, args: Value) -> Result<Receipt> {
+        // Asynchronous: return receipt immediately
+        let target = args["target"].as_str().unwrap();
+        let message = args["message"].as_str().unwrap();
+        
+        let receipt_id = queue_message(target, message).await?;
+        Ok(Receipt::new(receipt_id, OperationType::Message))
+    }
+}
+```
+
+**Example: agent_spawn Tool:**
+```rust
+pub struct AgentSpawnTool;
+
+impl Tool for AgentSpawnTool {
+    fn name(&self) -> &str { "agent_spawn" }
+    
+    async fn call(&self, args: Value) -> Result<Value> {
+        // Synchronous: block until spawn completes
+        let task = args["task"].as_str().unwrap();
+        let timeout = args["timeout"].as_u64().unwrap_or(300);
+        
+        let result = spawn_and_wait(task, Duration::from_secs(timeout)).await?;
+        Ok(json!({ "result": result }))
+    }
+    
+    async fn call_async(&self, args: Value) -> Result<Receipt> {
+        // Asynchronous: return receipt, run in background
+        let task = args["task"].as_str().unwrap();
+        
+        let receipt_id = spawn_background(task).await?;
+        Ok(Receipt::new(receipt_id, OperationType::Spawn))
+    }
+}
+```
+
+#### 4.5.2 MCPs (Bundled, Stateful)
+
+Stateful service connections:
+- `browser` - Browser automation
+- `database` - Database connections
+- `email` - Email IMAP/SMTP
+- `memory-*` - Pluggable memory backends
+
+#### 4.5.3 Skills (Workflows)
+
+Multi-step workflows. **Complex coordination patterns are skills:**
+
+| Skill | Built On | Purpose |
+|-------|----------|---------|
+| `coding_assistant` | Tools + MCPs | Code generation workflow |
+| `group_chat_manager` | `agent_send` tool | Multi-agent conversations |
+| `broadcast_hub` | `agent_send` tool | Pub-sub messaging |
+| `workflow_engine` | `agent_spawn` tool | Sequential/parallel chains |
+
+**Why externalize?**
+- Core stays minimal
+- Patterns can evolve independently
+- Users can customize
+- No core bloat
+
+## 5. Memory Architecture
+
+### 5.1 1st Order Memory (Context)
+
+**Built-in, always present:**
 - Session JSONL files
 - Immediate conversation history
 - Automatic LLM context injection
+- Stored in: `~/.pekobot/agents/{agent}/sessions/`
 
-**2nd Order Memory (Long-term):**
+### 5.2 2nd Order Memory (Long-term)
+
+**Pluggable MCP, optional:**
 - `memory-markdown` - MD files + SQLite vectors
 - `memory-postgres` - PostgreSQL + pgvector
 - `memory-chroma` - ChromaDB
@@ -462,33 +593,70 @@ Pekobot separates **immediate context** (built-in) from **long-term memory** (pl
 - `memory-files` - Simple files
 - `memory-none` - Disabled
 
-### 4.5 Capability Tiers
+## 6. Async Flow Examples
 
-**Tier 1: Tools (atomic, stateless)**
-- Single function, no persistence
-- Examples: `web_search`, `calculator`, `send_message`, `spawn_subagent`
+### 6.1 Async Tool Call
 
-**Tier 2: MCPs (bundled, stateful)**
-- Multiple related functions, maintains state
-- Examples: `browser`, `database`, `email`, `memory-*`
+```rust
+// Agent calls tool asynchronously
+let receipt = tool.call_async(json!({
+    "query": "Rust async programming"
+})).await?;
 
-**Tier 3: Skills (workflows)**
-- Multi-step processes using tools and MCPs
-- Examples: `coding_assistant`, `group_chat_manager`, `broadcast_hub`
+// Agent continues conversation while tool runs
+// ...
 
-## 5. Security Model
+// Later, check result
+if let Some(result) = receipt.result() {
+    // Process result
+}
+// Or block and wait
+let result = receipt.wait(Duration::from_secs(30)).await?;
+```
 
-| Aspect | Core Implementation |
-|--------|---------------------|
-| Sandboxing | ❌ None |
-| Permission system | ❌ None |
-| Audit logging | ✅ Complete JSONL transcripts |
-| Session isolation | ✅ Configurable per overlay |
-| Checksum verification | ✅ If provided by registry |
+### 6.2 Async Agent Messaging
 
-## 6. Configuration Examples
+```rust
+// Send message to another agent asynchronously
+let receipt = agent_send_tool.call_async(json!({
+    "target": "researcher",
+    "message": "Research this topic"
+})).await?;
 
-### 6.1 Minimal Agent
+// Continue working...
+// Researcher will reply to inbox when done
+```
+
+### 6.3 Async Spawn (Multitasking)
+
+```rust
+// Spawn 3 research tasks in parallel
+let r1 = spawn_tool.call_async(json!({"task": "Research asyncio"})).await?;
+let r2 = spawn_tool.call_async(json!({"task": "Research trio"})).await?;
+let r3 = spawn_tool.call_async(json!({"task": "Research curio"})).await?;
+
+// Continue talking to user...
+
+// Collect results later
+let results = vec![r1.wait().await?, r2.wait().await?, r3.wait().await?];
+```
+
+### 6.4 Complex Coordination (External Skill)
+
+```rust
+// Group chat manager skill (built on agent_send)
+group_chat_tool.call(json!({
+    "room": "engineering",
+    "action": "broadcast",
+    "message": "Deploying to production"
+}))?;
+
+// Internally uses agent_send to each participant
+```
+
+## 7. Configuration Examples
+
+### 7.1 Minimal Agent
 
 ```toml
 name = "minimal"
@@ -497,86 +665,112 @@ name = "minimal"
 provider_type = "kimi"
 
 [capabilities]
-tools = ["process", "filesystem"]
+tools = ["filesystem", "process"]
+builtin = ["agent_send", "agent_spawn"]
 
 [[channels]]
 id = "cli"
 type = "builtin"
 ```
 
-### 6.2 Agent with Messaging
+### 7.2 Agent with External Coordination
 
 ```toml
 name = "coordinator"
 
+[provider]
+provider_type = "anthropic"
+
 [capabilities]
-# Basic tools + messaging primitives
-tools = ["web_search", "send_message", "spawn_subagent", "check_inbox"]
-mcp = ["memory-markdown"]
+tools = ["web_search", "filesystem"]
+builtin = ["agent_send", "agent_spawn"]
+skills = ["group_chat_manager", "broadcast_hub"]
 
 [[channels]]
 id = "cli"
 type = "builtin"
+
+[[channels]]
+id = "discord"
+type = "registry"
+plugin = "discord"
 ```
 
-### 6.3 Async Operations
-
-```rust
-// Spawn subagent asynchronously
-let receipt = tools.spawn_subagent.call_async({
-    "task": "Research async Rust patterns"
-}, ctx).await?;
-
-// Continue working...
-
-// Check status later
-match receipt.status().await? {
-    AsyncStatus::Completed { result } => println!("Done: {}", result),
-    AsyncStatus::Pending => println!("Still running..."),
-    _ => {}
-}
-
-// Or block and wait
-let result = receipt.wait(Duration::from_secs(60)).await?;
-```
-
-### 6.4 Complex Coordination as External Tool
+### 7.3 Multi-Tasking Agent
 
 ```toml
-# Group chat manager is a skill, not core
-[capabilities]
-tools = ["send_message", "check_inbox"]
-skills = ["group_chat_manager"]
+name = "research_assistant"
 
-# The skill uses basic messaging tools internally
+[provider]
+provider_type = "anthropic"
+
+[capabilities]
+tools = ["web_search", "write", "read"]
+builtin = ["agent_spawn"]
+
+# Spawn configuration
+[spawn]
+max_concurrent = 3
 ```
 
-## 7. Anti-Goals
+### 7.4 Scheduled Async Tasks
 
-- **Sandboxing**: Use OS-level isolation if needed
-- **Enterprise RBAC**: Organization-specific
-- **Content moderation**: User's responsibility
-- **Complex coordination in core**: Group chat, broadcast are tools/skills
-- **Synchronous broadcast**: Async only (avoids context explosion)
+```toml
+[scheduler.tasks.poll_inbox]
+trigger = { type = "interval", minutes = 5 }
+action = { type = "tool", name = "inbox_poll", args = { max_items = 5 } }
 
-## 8. Related Concepts
+[scheduler.tasks.cleanup_spawns]
+trigger = { type = "idle", minutes = 30 }
+action = { type = "tool", name = "spawn_cleanup" }
+```
 
-| Concept | Analogy | Pekobot |
-|---------|---------|---------|
+## 8. Anti-Goals
+
+What Pekobot explicitly avoids:
+
+- **Sandboxing**: Use OS-level isolation (containers, VMs) if needed
+- **Enterprise RBAC**: Role-based access is organization-specific
+- **Content moderation**: Speech is the user's responsibility
+- **Vendor lock-in**: Open protocols, portable sessions
+- **Cloud dependency**: Self-hosted by design, cloud optional
+- **Complex coordination in core**: Group chat, broadcast are skills, not core
+- **Special async primitives**: All tools support sync/async uniformly
+
+## 9. Related Concepts
+
+| Concept | Analogy | Pekobot Equivalent |
+|---------|---------|-------------------|
 | Unix shell | Command execution | Core runtime |
 | apt/npm | Package manager | Extension registry |
-| Docker | Isolation | External |
-| IRC bouncer | Multi-client | Multi-channel agent |
-| Email | Async messaging | Agent inbox |
+| Docker | Isolation | Not provided - use external |
+| IRC bouncer | Multi-client presence | Multi-channel agent |
+| X11/Wayland | Display server | Channel layer |
+| Shell script | Automation | Skills |
+| Thread pool | Parallel execution | Async spawn tool |
+| Message queue | Async communication | Agent inbox |
 
-## 9. Future Directions
+## 10. Future Directions
 
+### Near-term (3-6 months)
 - Pekohub production with reputation system
+- Channel plugin architecture stabilization
 - Tool/MCP migration from core to registry
+- Multi-channel session management
+- Scheduler with pluggable backends
+
+### Medium-term (6-12 months)
+- External trust layer (signed extensions, audits)
 - Memory MCP ecosystem (markdown, postgres, chroma, pinecone)
-- Advanced scheduler backends (Kubernetes, cloud)
+- Web dashboard channel
+- Advanced scheduler (Kubernetes CronJob, AWS EventBridge backends)
+
+### Long-term (12+ months)
+- Distributed agent clusters
+- WASM-based extensions
+- Cross-runtime session portability
 
 ---
 
-*Status: Simplified architecture - Unified Tool Model*
+*Status: Simplified Architecture - Core provides primitives, complex coordination externalized*
 *Last updated: 2026-03-09*
