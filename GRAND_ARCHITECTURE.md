@@ -141,37 +141,36 @@ Pekobot separates concerns along three independent axes:
 
 **The user is the security boundary.** Core executes. Registry recommends. User decides. Audit logs for review.
 
-### 2.4 Unified Async Model
+### 2.4 System-Managed Async Model
 
-All tool invocations (including messaging and spawn) support **sync** and **async** modes:
+The **system** manages sync/async execution, not the tools themselves. Tools are simple synchronous functions.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              UNIFIED TOOL INVOCATION MODEL                   │
+│              SYSTEM-MANAGED ASYNC MODEL                      │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
-│  ANY TOOL can be invoked:                                   │
-│  • tool.call_sync()    → Block until result                 │
-│  • tool.call_async()   → Return receipt immediately         │
+│  TOOL: Simple synchronous function                          │
+│  pub async fn call(&self, args: Value) -> Result<Value>      │
 │                                                              │
-│  Includes:                                                   │
-│  • Regular tools (web_search, filesystem)                   │
-│  • Messaging tools (agent_send)                             │
-│  • Spawn tools (agent_spawn)                                │
+│  SYSTEM manages execution mode:                             │
+│  • sync  → Block until result                               │
+│  • async → Return receipt, run in background                │
 │                                                              │
-│  ASYNC FLOW:                                                │
-│  1. Agent calls tool.async() → Gets Receipt                 │
-│  2. Operation runs in background                            │
-│  3. Result lands in Agent Inbox when complete               │
-│  4. Agent polls inbox or gets notified                      │
+│  ASYNC FLOW (managed by Execution Engine):                  │
+│  1. Agent requests async tool call                          │
+│  2. System spawns task, returns Receipt                     │
+│  3. Tool runs synchronously in background                   │
+│  4. Result stored, agent notified via MCP (optional)        │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 **Benefits:**
-- Single mental model for all async operations
-- No special cases for messaging vs tools
-- Agent can multitask naturally
+- Tools are simple - no sync/async complexity
+- System handles all concurrency
+- Consistent behavior across all tools
+- Async inbox can be provided by MCP (not core)
 
 ### 2.5 Session-Centric State with Overlays
 
@@ -267,12 +266,6 @@ Agent Session Structure:
 │  │  └──────────┘  └──────────┘  └──────────────┘       │       │
 │  └──────────────────────────────────────────────────────┘       │
 │                              │                                    │
-│  ┌───────────────────────────▼──────────────────────────┐       │
-│  │              Agent Inbox                              │       │
-│  │  ├─ Async results queue (tools, spawn, messages)     │       │
-│  │  ├─ Poll for completed items                         │       │
-│  │  └─ Notification on completion                       │       │
-│  └──────────────────────────────────────────────────────┘       │
 └─────────────────────────────────────────────────────────────────┘
                            │
                            │ Agent invokes tools
@@ -390,80 +383,85 @@ pub trait Channel: Send + Sync {
 
 ### 4.3 Agent Runtime
 
-#### 4.3.1 Agent Inbox
+The Agent Runtime manages agent state, session context, and tool execution coordination.
 
-Queue for async operation results:
+**Components:**
+- **Invocation Router** - Route messages from Orchestration vs Communication
+- **AgentManager** - Pool, registry, lifecycle
+- **Individual Agent** - Identity, Session, Provider
+- **Async Task Manager** - System-managed background task tracking
 
-```rust
-pub struct AgentInbox {
-    /// Completed async operations waiting to be processed
-    queue: VecDeque<InboxItem>,
-    
-    /// In-progress operations tracked by receipt
-    pending: HashMap<String, AsyncStatus>,
-}
-
-pub struct InboxItem {
-    pub receipt_id: String,
-    pub source: Source,  // Tool, Spawn, Message
-    pub result: String,
-    pub timestamp: DateTime,
-}
-
-pub trait Inbox {
-    /// Poll for completed items (non-blocking)
-    async fn poll(&mut self) -> Vec<InboxItem>;
-    
-    /// Wait for next item (blocking)
-    async fn next(&mut self) -> InboxItem;
-    
-    /// Get status of pending operation
-    fn status(&self, receipt_id: &str) -> Option<AsyncStatus>;
-}
-```
+**Note:** Agent inbox/queue for async results is **not built into core** - agents needing inbox functionality should use an MCP (e.g., `inbox-sqlite`, `inbox-redis`). Simple async is handled by the Execution Engine.
 
 ### 4.4 Execution Engine
 
-The **AgenticLoopV4** handles tool invocation with native sync/async support:
+The **AgenticLoopV4** handles tool invocation. Tools are simple synchronous functions; the system manages sync/async execution.
 
 ```rust
 pub struct AgenticLoopV4 {
-    /// Execute tool call
-    async fn execute_tool(&self, call: ToolCall) -> Result<ToolResult>;
-    
-    /// Handle sync invocation - block until result
-    async fn invoke_sync(&self, tool: &str, args: Value) -> Result<Value>;
-    
-    /// Handle async invocation - return receipt
-    async fn invoke_async(&self, tool: &str, args: Value) -> Result<Receipt>;
+    /// Execute tool (system manages sync vs async)
+    async fn execute(
+        &self, 
+        tool: &str, 
+        args: Value,
+        mode: ExecutionMode,
+    ) -> Result<ExecutionResult>;
 }
 
-/// Unified receipt for any async operation
-pub struct Receipt {
+pub enum ExecutionMode {
+    /// Block until result
+    Sync { timeout: Duration },
+    /// Return immediately with handle
+    Async,
+}
+
+pub enum ExecutionResult {
+    /// Sync result
+    Value(Value),
+    /// Async handle
+    Handle(TaskHandle),
+}
+
+/// Handle for async operation (system-managed)
+pub struct TaskHandle {
     pub id: String,
-    pub operation_type: OperationType,  // Tool, Spawn, Message
-    pub status: AsyncStatus,
+    pub status: TaskStatus,
 }
 
-pub enum AsyncStatus {
+pub enum TaskStatus {
     Pending,
     Running,
-    Completed { result: String },
+    Completed { result: Value },
     Failed { error: String },
     Timeout,
 }
 
-impl Receipt {
+impl TaskHandle {
     /// Check current status
-    pub async fn status(&self) -> AsyncStatus;
+    pub async fn status(&self) -> TaskStatus;
     
     /// Block and wait for result
-    pub async fn wait(&self, timeout: Duration) -> Result<String>;
-    
-    /// Get result if completed
-    pub fn result(&self) -> Option<String>;
+    pub async fn wait(&self, timeout: Duration) -> Result<Value>;
 }
 ```
+
+**Tool Trait (Simple):**
+```rust
+#[async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn schema(&self) -> ToolSchema;
+    
+    /// Execute tool (always synchronous from tool's perspective)
+    async fn call(&self, args: Value) -> Result<Value>;
+}
+```
+
+**Key Point:** Tools don't know about sync/async. They just execute and return. The system manages:
+- Spawning async tasks
+- Tracking handles
+- Returning results
+- Timeouts and cancellation
 
 ### 4.5 Capability Layer
 
@@ -473,24 +471,21 @@ impl Receipt {
 
 | Tool | Purpose | Modes |
 |------|---------|-------|
-| `web_search` | Search the web | sync/async |
-| `filesystem` | File operations | sync/async |
-| `process` | Shell execution | sync/async |
-| `agent_send` | Send message to another agent | sync/async |
-| `agent_spawn` | Spawn sub-session for multitasking | sync/async |
+| `web_search` | Search the web | sync or async (system-managed) |
+| `filesystem` | File operations | sync or async (system-managed) |
+| `process` | Shell execution | sync or async (system-managed) |
+| `agent_send` | Send message to another agent | sync or async (system-managed) |
+| `agent_spawn` | Spawn sub-session for multitasking | sync or async (system-managed) |
 
-**Tool Trait:**
+**Tool Trait (Simple):**
 ```rust
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> ToolSchema;
     
-    /// Execute synchronously
+    /// Execute tool - the system manages sync/async, not the tool
     async fn call(&self, args: Value) -> Result<Value>;
-    
-    /// Execute asynchronously - return receipt
-    async fn call_async(&self, args: Value) -> Result<Receipt>;
 }
 ```
 
@@ -502,22 +497,11 @@ impl Tool for AgentSendTool {
     fn name(&self) -> &str { "agent_send" }
     
     async fn call(&self, args: Value) -> Result<Value> {
-        // Synchronous: block until reply
-        let target = args["target"].as_str().unwrap();
-        let message = args["message"].as_str().unwrap();
-        let timeout = args["timeout"].as_u64().unwrap_or(60);
-        
-        let reply = send_and_wait(target, message, Duration::from_secs(timeout)).await?;
-        Ok(json!({ "reply": reply }))
-    }
-    
-    async fn call_async(&self, args: Value) -> Result<Receipt> {
-        // Asynchronous: return receipt immediately
         let target = args["target"].as_str().unwrap();
         let message = args["message"].as_str().unwrap();
         
-        let receipt_id = queue_message(target, message).await?;
-        Ok(Receipt::new(receipt_id, OperationType::Message))
+        send_message(target, message).await?;
+        Ok(json!({ "status": "sent" }))
     }
 }
 ```
@@ -530,23 +514,15 @@ impl Tool for AgentSpawnTool {
     fn name(&self) -> &str { "agent_spawn" }
     
     async fn call(&self, args: Value) -> Result<Value> {
-        // Synchronous: block until spawn completes
         let task = args["task"].as_str().unwrap();
-        let timeout = args["timeout"].as_u64().unwrap_or(300);
         
-        let result = spawn_and_wait(task, Duration::from_secs(timeout)).await?;
+        let result = spawn_task(task).await?;
         Ok(json!({ "result": result }))
-    }
-    
-    async fn call_async(&self, args: Value) -> Result<Receipt> {
-        // Asynchronous: return receipt, run in background
-        let task = args["task"].as_str().unwrap();
-        
-        let receipt_id = spawn_background(task).await?;
-        Ok(Receipt::new(receipt_id, OperationType::Spawn))
     }
 }
 ```
+
+**Note:** Tools are simple synchronous functions. The system (Execution Engine) manages whether to run them synchronously (blocking) or asynchronously (returning a handle). Tools don't need to implement separate sync/async paths.
 
 #### 4.5.2 MCPs (Bundled, Stateful)
 
@@ -712,47 +688,62 @@ agent.send_to("discord:general", response).await?;
 ### 8.1 Async Tool Call
 
 ```rust
-// Agent calls tool asynchronously
-let receipt = tool.call_async(json!({
-    "query": "Rust async programming"
-})).await?;
+// System executes tool asynchronously, returns handle immediately
+let handle = execution_engine.execute(
+    "web_search",
+    json!({ "query": "Rust async programming" }),
+    ExecutionMode::Async
+).await?;
 
 // Agent continues conversation while tool runs
 // ...
 
 // Later, check result
-if let Some(result) = receipt.result() {
+if let TaskStatus::Completed { result } = handle.status().await {
     // Process result
 }
 // Or block and wait
-let result = receipt.wait(Duration::from_secs(30)).await?;
+let result = handle.wait(Duration::from_secs(30)).await?;
 ```
 
 ### 8.2 Async Agent Messaging
 
 ```rust
-// Send message to another agent asynchronously
-let receipt = agent_send_tool.call_async(json!({
-    "target": "researcher",
-    "message": "Research this topic"
-})).await?;
+// System sends message to another agent asynchronously
+let handle = execution_engine.execute(
+    "agent_send",
+    json!({ "target": "researcher", "message": "Research this topic" }),
+    ExecutionMode::Async
+).await?;
 
 // Continue working...
-// Researcher will reply to inbox when done
+// Result (if any) can be retrieved later via handle
 ```
 
 ### 8.3 Async Spawn (Multitasking)
 
 ```rust
-// Spawn 3 research tasks in parallel
-let r1 = spawn_tool.call_async(json!({"task": "Research asyncio"})).await?;
-let r2 = spawn_tool.call_async(json!({"task": "Research trio"})).await?;
-let r3 = spawn_tool.call_async(json!({"task": "Research curio"})).await?;
+// System spawns 3 tasks in parallel
+let h1 = execution_engine.execute(
+    "agent_spawn",
+    json!({"task": "Research asyncio"}),
+    ExecutionMode::Async
+).await?;
+let h2 = execution_engine.execute(
+    "agent_spawn",
+    json!({"task": "Research trio"}),
+    ExecutionMode::Async
+).await?;
+let h3 = execution_engine.execute(
+    "agent_spawn",
+    json!({"task": "Research curio"}),
+    ExecutionMode::Async
+).await?;
 
 // Continue talking to user...
 
 // Collect results later
-let results = vec![r1.wait().await?, r2.wait().await?, r3.wait().await?];
+let results = vec![h1.wait().await?, h2.wait().await?, h3.wait().await?];
 ```
 
 ### 8.4 Complex Coordination (External Skill)
@@ -849,7 +840,7 @@ What Pekobot explicitly avoids:
 - **Vendor lock-in**: Open protocols, portable sessions
 - **Cloud dependency**: Self-hosted by design, cloud optional
 - **Complex coordination in core**: Group chat, broadcast are skills, not core
-- **Special async primitives**: All tools support sync/async uniformly
+- **Agent inbox in core**: Use inbox MCP if needed
 
 ## 10. Related Concepts
 
@@ -862,7 +853,7 @@ What Pekobot explicitly avoids:
 | X11/Wayland | Display server | Channel layer |
 | Shell script | Automation | Skills |
 | Thread pool | Parallel execution | Async spawn tool |
-| Message queue | Async communication | Agent inbox |
+| Message queue | Async communication | Inbox MCP (optional) |
 
 ## 11. Future Directions
 
@@ -887,4 +878,4 @@ What Pekobot explicitly avoids:
 ---
 
 *Status: Simplified Architecture - Core provides primitives, complex coordination externalized*
-*Last updated: 2026-03-09*
+*Last updated: 2026-03-10*
