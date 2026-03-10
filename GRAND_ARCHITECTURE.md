@@ -740,6 +740,216 @@ CREATE INDEX idx_source ON coordination_messages(source_type, source_agent);
 
 **Key Principle:** The inbox is not a separate system—it's a **delivery mode** within the coordination layer. All patterns (A2A, Group Chat, Broadcast, Workflows) can use either immediate or inbox delivery.
 
+#### 4.1.6 Session Spawn (Agent Multitasking)
+
+The `session_spawn` built-in tool enables agents to **multitask** by spawning isolated sub-sessions. Unlike coordination patterns (which communicate between independent agents), session spawn creates child sessions under the same agent for parallel task execution.
+
+**Core Principles:**
+- **Same-agent only** - Cross-agent communication must use message send (A2A), not sub-sessions
+- **Sync and Async modes** - Agent chooses blocking vs non-blocking execution
+- **Results as user text** - Spawned sessions return results as if responding to a user
+- **Tool restrictions** - Spawned sessions have limited tool access (no nested spawn, no coordination)
+
+**Spawn Modes:**
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| **Sync** | Blocks until result ready, returns output | "I need this now to continue" |
+| **Async** | Returns immediately with handle, check later | "Do this in background while I chat" |
+
+**Tool API:**
+```rust
+/// Built-in tool: session_spawn
+pub struct SessionSpawnTool;
+
+#[derive(Debug, Clone)]
+pub struct SpawnRequest {
+    /// What the spawned session should do
+    pub task: String,
+    
+    /// Sync or Async mode
+    pub mode: SpawnMode,
+    
+    /// Timeout for the spawned task
+    pub timeout_seconds: u64,
+    
+    /// Context isolation settings
+    pub context: SpawnContext,
+    
+    /// Model override (optional)
+    pub model: Option<String>,
+    
+    /// Tool restrictions
+    pub tool_policy: ToolPolicy,
+}
+
+pub enum SpawnMode {
+    /// Blocking - wait for result
+    Sync { wait_seconds: u64 },
+    /// Non-blocking - return handle
+    Async,
+}
+
+pub struct SpawnContext {
+    /// Inherit parent's context
+    pub inherit: bool,
+    /// Isolated overlay for this task
+    pub isolated: bool,
+}
+
+pub struct SpawnHandle {
+    pub id: String,
+    pub status: SpawnStatus,
+}
+
+pub enum SpawnStatus {
+    Pending,
+    Running,
+    Completed { result: String },
+    Failed { error: String },
+    Timeout,
+}
+```
+
+**Default Tool Restrictions:**
+Spawned sessions cannot use orchestration or session management tools:
+```rust
+const DEFAULT_SPAWN_DENY: &[\u0026str] = &[
+    "session_spawn",      // No nested spawning
+    "session_list",       // No session management
+    "session_history",    // No session management  
+    "session_send",       // No A2A from spawned
+    "agent_coordination", // No coordination from spawned
+    "scheduler",          // No scheduling from spawned
+];
+```
+
+**Integration with Orchestration Layer:**
+```
+Agent calls session_spawn tool
+         │
+         ▼
+┌─────────────────────┐
+│  ORCHESTRATION      │
+│  - Scheduler        │
+│  - Creates task     │
+│  - Tracks status    │
+└─────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│  EXECUTION ENGINE   │
+│  - Isolated session │
+│  - Tool policy      │
+│  - Runs task        │
+└─────────────────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+┌───────┐  ┌────────┐
+│  SYNC │  │  ASYNC │
+│Return │  │ Store  │
+│result │  │ in     │
+│to     │  │ handle │
+│parent │  │        │
+└───────┘  └────────┘
+```
+
+**Configuration:**
+```toml
+[capabilities]
+# Enable spawn tool
+builtin = ["session_spawn"]
+
+[spawn]
+# Default settings
+default_timeout = 300  # 5 minutes
+max_concurrent = 0     # 0 = unlimited (default)
+
+# Resource limits (optional)
+# max_concurrent = 4   # Limit concurrent spawned sessions
+
+[spawn.tool_policy]
+# Additional restrictions beyond defaults
+deny = ["browser"]  # Spawned sessions can't use browser
+allow = []          # Empty = all except denied
+```
+
+**Example Usage:**
+
+```rust
+// User: "Research and write a report on Rust async"
+
+// Step 1: Spawn research task (async)
+let research = session_spawn(SpawnRequest {
+    task: "Research Rust async runtimes".to_string(),
+    mode: Async,
+    timeout_seconds: 300,
+    context: SpawnContext { 
+        inherit: false, 
+        isolated: true 
+    },
+    tool_policy: ToolPolicy {
+        allow: vec!["web_search", "fetch", "read"],
+        ..Default::default()
+    },
+    ..Default::default()
+}).await?;
+
+// Step 2: Continue talking to user while research runs
+// "I'm researching that for you..."
+
+// Step 3: Check result later
+let research_result = research.get_result().await?;
+
+// Step 4: Spawn writing task (sync - need result)
+let report = session_spawn(SpawnRequest {
+    task: format!("Write report: {}", research_result),
+    mode: Sync { wait_seconds: 120 },
+    context: SpawnContext { inherit: true, isolated: false },
+    tool_policy: ToolPolicy {
+        allow: vec!["write", "edit"],
+        ..Default::default()
+    },
+    ..Default::default()
+}).await?;
+
+// Step 5: Present report to user
+```
+
+**Storage:**
+```sql
+-- Spawned sessions tracked in scheduler backend
+CREATE TABLE spawned_sessions (
+    id TEXT PRIMARY KEY,
+    parent_session TEXT,      -- Who spawned this
+    parent_agent TEXT,
+    task TEXT,
+    mode TEXT,               -- 'sync' or 'async'
+    status TEXT,             -- 'pending', 'running', 'completed', 'failed'
+    created_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    result TEXT,             -- Text result (as if user response)
+    error TEXT,
+    
+    -- Async handle tracking
+    result_ready BOOLEAN DEFAULT FALSE,
+    result_fetched BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX idx_spawned_parent ON spawned_sessions(parent_session, status);
+```
+
+**Key Differences from Coordination:**
+
+| Aspect | Coordination (A2A) | Session Spawn |
+|--------|-------------------|---------------|
+| **Scope** | Between independent agents | Within same agent |
+| **Communication** | Message passing | Parent spawns child |
+| **Use case** | Team collaboration | Agent multitasking |
+| **Cross-agent?** | ✅ Yes | ❌ No (same agent only) |
+| **Result** | Inbox/announce | Direct return or handle |
+
 ### 4.2 Communication Layer (Channels)
 
 **Channel Trait:**
@@ -1326,6 +1536,89 @@ trigger = { type = "idle", minutes = 10 }
 agent = "oncall"
 action = { type = "inbox_process_all", max_messages = 10 }
 ```
+
+### 7.7 Agent with Session Spawn (Multitasking)
+
+Agent using session_spawn for parallel task execution.
+
+```toml
+name = "research_assistant"
+
+[provider]
+provider_type = "anthropic"
+
+# Enable spawn tool
+[capabilities]
+tools = ["web_search", "write", "read"]
+builtin = ["session_spawn"]
+
+[spawn]
+default_timeout = 600  # 10 minutes
+max_concurrent = 3     # Max 3 spawned sessions at once
+
+[spawn.tool_policy]
+# Spawned tasks can only use research tools
+allow = ["web_search", "fetch", "read", "write"]
+deny = ["browser", "exec", "process"]
+
+# Communication channel
+[[channels]]
+id = "cli"
+type = "builtin"
+
+# Memory for long-term storage
+[mcp]
+memory = "memory-markdown"
+
+[mcp.memory-markdown]
+workspace_dir = "./memory"
+```
+
+**Example agent workflow:**
+
+When user asks: *"Research Python async frameworks and write a comparison"*
+
+1. **Agent spawns research tasks (async):**
+   ```
+   session_spawn(
+     task: "Research asyncio - features, pros/cons",
+     mode: async,
+     timeout: 300
+   ) -> handle_1
+
+   session_spawn(
+     task: "Research trio - features, pros/cons",
+     mode: async,
+     timeout: 300
+   ) -> handle_2
+
+   session_spawn(
+     task: "Research curio - features, pros/cons",
+     mode: async,
+     timeout: 300
+   ) -> handle_3
+   ```
+   Agent tells user: *"I'm researching 3 frameworks in parallel, this will take a few minutes..."*
+
+2. **While research runs, agent continues conversation**
+
+3. **Agent collects results:**
+   ```
+   asyncio_research = handle_1.get_result()
+   trio_research = handle_2.get_result()
+   curio_research = handle_3.get_result()
+   ```
+
+4. **Agent spawns writing task (sync):**
+   ```
+   report = session_spawn(
+     task: "Write comparison report from research data",
+     mode: sync { wait: 120 },
+     context: { inherit: true }
+   )
+   ```
+
+5. **Agent presents final report to user**
 
 ## 8. Anti-Goals
 
