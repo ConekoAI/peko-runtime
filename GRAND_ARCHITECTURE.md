@@ -545,6 +545,201 @@ Coordination state shares the scheduler backend (SQLite/Postgres):
 - `group_chats` - Group chat configurations
 - `workflow_instances` - Running workflow state
 
+#### 4.1.5 Message Routing & Inbox
+
+The coordination layer supports **two delivery modes** for all message patterns: **Immediate** (synchronous) and **Inbox** (asynchronous). This unified routing model lets agents choose between real-time response and batch processing.
+
+**Delivery Modes:**
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| **Immediate** | Agent invoked synchronously, must respond immediately | Workflows, urgent alerts, blocking requests |
+| **Inbox** | Message queued, agent checks and responds when ready | FYI updates, batch processing, non-urgent feedback |
+
+**The Routing Decision:**
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MESSAGE ROUTING                           │
+├─────────────────────────────────────────────────────────────┤
+│  Sender ──► Coordination Layer ──► Delivery Decision        │
+│                                                              │
+│  Decision factors:                                           │
+│  • Explicit priority (CRITICAL, HIGH, NORMAL, LOW)          │
+│  • Target agent busy status                                  │
+│  • Pattern configuration (immediate vs inbox mode)          │
+│  • Message keywords/triggers                                 │
+│                                                              │
+│  Route to:                                                   │
+│  ┌─────────────────────┐    ┌─────────────────────┐         │
+│  │   IMMEDIATE PATH    │    │     INBOX PATH      │         │
+│  │  • Synchronous      │    │  • Asynchronous     │         │
+│  │  • Blocking         │    │  • Non-blocking     │         │
+│  │  • Timeout enforced │    │  • Agent polls      │         │
+│  └─────────────────────┘    └─────────────────────┘         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Inbox API:**
+```rust
+pub struct InboxMessage {
+    pub id: MsgId,
+    pub source: Source,  // Agent, Group, Workflow, Broadcast
+    pub content: String,
+    pub priority: Priority,  // CRITICAL, HIGH, NORMAL, LOW
+    pub delivery_mode: DeliveryMode,
+    pub timestamp: DateTime,
+    pub expires_at: Option<DateTime>,
+    pub inbox_notified: bool,  // Was agent notified?
+    pub inbox_read: bool,
+}
+
+pub trait AgentInbox {
+    /// Receive message into inbox (called by coordination layer)
+    async fn receive(&self, msg: InboxMessage) -> Result<()>;
+    
+    /// Check inbox (called by agent or scheduler)
+    async fn check(&self, filter: InboxFilter) -> Vec<InboxMessage>;
+    
+    /// Mark message as processed
+    async fn ack(&self, msg_id: MsgId) -> Result<()>;
+    
+    /// Get inbox statistics
+    async fn stats(&self) -> InboxStats;
+}
+
+pub enum DeliveryMode {
+    Immediate { timeout: Duration },
+    Inbox { notify: bool },  // notify=true sends notification
+}
+```
+
+**Integration with Coordination Patterns:**
+
+**A2A with Inbox:**
+```toml
+[coordination.a2a]
+# Default: immediate (synchronous)
+# Optional: inbox-based (asynchronous)
+allow_rules = [
+    { from = "researcher", to = ["writer"], mode = "immediate" },
+    { from = "monitor", to = ["oncall"], mode = "inbox", priority = "high" },
+    { from = "bot", to = ["archive"], mode = "inbox", priority = "low" },
+]
+```
+
+**Group Chat with Inbox:**
+```toml
+[group_chats.brainstorming]
+participants = ["researcher", "writer", "critic"]
+mode = "immediate"  # Real-time conversation
+
+[group_chats.weekly_review]
+participants = ["researcher", "writer", "critic"]
+mode = "inbox"
+check_interval = "1h"      # Each agent checks hourly
+batch_responses = true     # Reply to multiple messages at once
+
+[group_chats.hybrid_mode]
+participants = ["researcher", "writer", "critic"]
+mode = "hybrid"
+immediate_keywords = ["URGENT", "BLOCKING", "@all"]
+mention_patterns = ["@researcher", "@writer"]
+default_mode = "inbox"
+check_interval = "10m"
+```
+
+**Broadcast with Inbox:**
+```toml
+[coordination.broadcast]
+topics = [
+    { 
+        name = "critical_alerts",
+        subscribers = ["ops", "oncall"],
+        delivery = "immediate"
+    },
+    { 
+        name = "market_data",
+        subscribers = ["trader", "analyst", "reporter"],
+        delivery = "inbox",
+        default_priority = "normal"
+    },
+    { 
+        name = "daily_digest",
+        subscribers = ["*"],
+        delivery = "inbox",
+        default_priority = "low"
+    }
+]
+```
+
+**Workflows with Inbox:**
+```toml
+# Immediate workflow (current behavior)
+[workflows.sync_pipeline]
+steps = [
+    { agent = "researcher", mode = "immediate", timeout = "5m" },
+    { agent = "writer", mode = "immediate", timeout = "10m" },
+]
+
+# Async workflow with inbox
+[workflows.async_pipeline]
+steps = [
+    { agent = "researcher", mode = "inbox", deadline = "2h" },
+    { agent = "writer", mode = "inbox", deadline = "4h" },
+]
+# Writer checks inbox and processes when ready
+```
+
+**Scheduled Inbox Processing:**
+```toml
+# Agent checks inbox on schedule
+[scheduler.tasks.check_inbox]
+trigger = { type = "interval", minutes = 30 }
+action = { type = "inbox_check", priority = "normal", max_items = 5 }
+
+# Agent processes inbox when idle
+[scheduler.tasks.batch_reply]
+trigger = { type = "idle", minutes = 10 }
+action = { type = "inbox_process_all", max_messages = 3 }
+
+# Agent processes high priority immediately
+[scheduler.tasks.urgent_inbox]
+trigger = { type = "interval", minutes = 2 }
+action = { type = "inbox_check", priority = "high" }
+```
+
+**Unified Storage Schema:**
+```sql
+-- All coordination messages use unified table
+CREATE TABLE coordination_messages (
+    id TEXT PRIMARY KEY,
+    source_agent TEXT,
+    target_agent TEXT,
+    source_type TEXT,  -- 'direct', 'group', 'broadcast', 'workflow'
+    content TEXT,
+    priority TEXT,
+    delivery_mode TEXT,  -- 'immediate', 'inbox'
+    status TEXT,  -- 'pending', 'delivered', 'read', 'processed'
+    created_at TIMESTAMP,
+    expires_at TIMESTAMP,
+    -- Inbox-specific fields
+    inbox_notified BOOLEAN DEFAULT FALSE,
+    inbox_read_at TIMESTAMP,
+    -- Immediate-specific fields
+    timeout_seconds INTEGER,
+    response TEXT
+);
+
+-- Indexes for efficient routing
+CREATE INDEX idx_inbox_target ON coordination_messages(target_agent, status) 
+    WHERE delivery_mode = 'inbox';
+CREATE INDEX idx_priority ON coordination_messages(priority, created_at);
+CREATE INDEX idx_source ON coordination_messages(source_type, source_agent);
+```
+
+**Key Principle:** The inbox is not a separate system—it's a **delivery mode** within the coordination layer. All patterns (A2A, Group Chat, Broadcast, Workflows) can use either immediate or inbox delivery.
+
 ### 4.2 Communication Layer (Channels)
 
 **Channel Trait:**
@@ -1063,6 +1258,73 @@ action = {
     workflow = "auto_content",
     input = { topic = "Daily Tech News", tone = "casual" }
 }
+```
+
+### 7.6 Inbox-Based Coordination
+
+Agents with inbox enabled process messages asynchronously rather than responding immediately.
+
+```toml
+# Monitor agent drops alerts in ops inbox
+[[agents]]
+id = "monitor"
+name = "System Monitor"
+capabilities = { tools = ["fetch"] }
+
+[[agents]]
+id = "ops"
+name = "Ops Agent"
+capabilities = { tools = ["exec", "write"], mcp = ["email"] }
+inbox = { enabled = true, check_interval = "5m", max_batch = 5 }
+
+[[agents]]
+id = "oncall"
+name = "On-Call Agent"
+capabilities = { tools = ["exec", "message"] }
+inbox = { enabled = true, check_on = "idle", idle_timeout = "2m" }
+
+# Coordination with mixed delivery modes
+[coordination]
+enabled = true
+
+[coordination.a2a]
+# Critical: immediate, Normal: inbox
+allow_rules = [
+    { from = "monitor", to = ["ops"], mode = "inbox", priority = "normal" },
+    { from = "monitor", to = ["oncall"], mode = "inbox", priority = "high" },
+    { from = "ops", to = ["oncall"], mode = "immediate" },  # Escalation
+]
+
+# Broadcast with inbox delivery
+[coordination.broadcast]
+topics = [
+    { name = "alerts", subscribers = ["ops"], delivery = "inbox", default_priority = "normal" },
+    { name = "critical", subscribers = ["ops", "oncall"], delivery = "immediate" },
+]
+
+# Group chat with inbox mode
+[group_chats.incident_response]
+participants = ["monitor", "ops", "oncall"]
+mode = "hybrid"
+immediate_keywords = ["CRITICAL", "OUTAGE", "@all"]
+default_mode = "inbox"
+check_interval = "3m"
+
+# Scheduled inbox checks
+[scheduler.tasks.ops_inbox]
+trigger = { type = "interval", minutes = 5 }
+agent = "ops"
+action = { type = "inbox_process", max_items = 5 }
+
+[scheduler.tasks.oncall_urgent]
+trigger = { type = "interval", minutes = 2 }
+agent = "oncall"
+action = { type = "inbox_check", priority = "high" }
+
+[scheduler.tasks.oncall_batch]
+trigger = { type = "idle", minutes = 10 }
+agent = "oncall"
+action = { type = "inbox_process_all", max_messages = 10 }
 ```
 
 ## 8. Anti-Goals
