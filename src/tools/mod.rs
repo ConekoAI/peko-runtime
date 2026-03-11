@@ -30,7 +30,7 @@ pub use context::{
     wrap_tool, AbortSignal, AbortableTool, ToolAdapter, ToolContext, ToolWithContext,
 };
 pub use cron_tool::CronTool;
-pub use factory::{ToolFactory, ToolFactoryConfig};
+pub use factory::{McpFactoryConfig, ToolFactory, ToolFactoryConfig};
 pub use fetch::{FetchConfig, FetchTool};
 pub use filesystem::FileSystemTool;
 pub use http::{HttpMethod, HttpTool};

@@ -65,6 +65,7 @@ uuid = { version = "1.7", features = ["v4", "serde"] }
 dirs = "5.0"
 
 # URL encoding
+url = "2.5"
 urlencoding = "2.1"
 
 # Pattern matching for document parsing

@@ -412,19 +412,20 @@ impl AgentManager {
     }
 
     /// Create all essential tools for an agent, filtered by agent config
-    #[must_use]
-    pub fn create_all_tools_for_agent(
+    ///
+    /// This async version includes MCP tools from configured MCP servers.
+    pub async fn create_all_tools_for_agent(
         &self,
         agent: &crate::agent::Agent,
-    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+    ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
         use crate::tools::{ToolFactory, ToolFactoryConfig};
 
-        // Create essential tools using factory
+        // Create essential tools using factory (async version includes MCP)
         let factory_config = ToolFactoryConfig {
             workspace_dir: self.data_dir.clone(),
             ..Default::default()
         };
-        let mut tools = ToolFactory::create_tools(&factory_config);
+        let mut tools = ToolFactory::create_tools_async(&factory_config).await?;
 
         // Add communication tools
         tools.extend(self.create_communication_tools(&agent.identity.did));
@@ -436,7 +437,7 @@ impl AgentManager {
             }
         }
 
-        tools
+        Ok(tools)
     }
 
     /// Filter tools to only include enabled ones
@@ -451,12 +452,12 @@ impl AgentManager {
             .collect()
     }
 
-    /// Create all essential tools for an agent (legacy method - use create_all_tools_for_agent)
+    /// Create all essential tools for an agent (legacy method - use create_all_tools_for_agent_async)
     #[must_use]
     pub fn create_all_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{ToolFactory, ToolFactoryConfig};
 
-        // Create essential tools using factory
+        // Create essential tools using factory (sync version - no MCP)
         let factory_config = ToolFactoryConfig {
             workspace_dir: self.data_dir.clone(),
             ..Default::default()
@@ -467,6 +468,26 @@ impl AgentManager {
         tools.extend(self.create_communication_tools(agent_did));
 
         tools
+    }
+
+    /// Create all essential tools for an agent including MCP tools
+    pub async fn create_all_tools_async(
+        &self,
+        agent_did: &str,
+    ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
+        use crate::tools::{ToolFactory, ToolFactoryConfig};
+
+        // Create essential tools using factory (async version includes MCP)
+        let factory_config = ToolFactoryConfig {
+            workspace_dir: self.data_dir.clone(),
+            ..Default::default()
+        };
+        let mut tools = ToolFactory::create_tools_async(&factory_config).await?;
+
+        // Add communication tools
+        tools.extend(self.create_communication_tools(agent_did));
+
+        Ok(tools)
     }
 
     /// Create tools with custom configuration
@@ -490,5 +511,27 @@ impl AgentManager {
         }
 
         tools
+    }
+
+    /// Create tools with custom configuration including MCP tools
+    pub async fn create_tools_with_config_async(
+        &self,
+        agent_did: &str,
+        config: crate::tools::ToolFactoryConfig,
+        tool_config: Option<&crate::types::agent::ToolConfig>,
+    ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
+        use crate::tools::ToolFactory;
+
+        let mut tools = ToolFactory::create_tools_async(&config).await?;
+        tools.extend(self.create_communication_tools(agent_did));
+
+        // Filter if tool config specified
+        if let Some(tc) = tool_config {
+            if !tc.enabled.is_empty() {
+                return Ok(self.filter_tools(tools, &tc.enabled));
+            }
+        }
+
+        Ok(tools)
     }
 }

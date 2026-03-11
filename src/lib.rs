@@ -81,6 +81,9 @@ pub mod providers;
 /// Tool registry and management
 pub mod tool_registry;
 
+/// MCP (Model Context Protocol) support
+pub mod mcp;
+
 // ============================================================================
 // Data & State
 // ============================================================================

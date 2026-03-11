@@ -1,7 +1,7 @@
 use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, gateway, init_logging, provider, session, system, tool,
+    agent, auth, config, cron, daemon, gateway, init_logging, mcp, provider, session, system, tool,
     update, Cli, Commands, GlobalPaths,
 };
 
@@ -26,6 +26,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Daemon(cmd) => daemon::handle_daemon(cmd, &paths, cli.json).await,
         Commands::Cron(cmd) => cron::handle_cron(cmd, &paths, cli.json).await,
         Commands::Gateway(cmd) => gateway::handle_gateway(cmd, &paths, cli.json).await,
+        Commands::Mcp(cmd) => mcp::handle(cmd, paths.mcp_config()).await,
         Commands::Provider(cmd) => provider::execute(cmd).await,
         Commands::Update { check, force } => update::handle_update(check, force).await,
         Commands::Completions { shell } => {

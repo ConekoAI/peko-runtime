@@ -25,6 +25,9 @@ pub struct Agent {
 
 impl Agent {
     /// Create tools for this agent based on configuration
+    ///
+    /// This synchronous version creates built-in tools only (no MCP).
+    /// Use `create_tools_async` for full tool loading including MCP servers.
     fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::*;
 
@@ -52,6 +55,62 @@ impl Agent {
         }
 
         tools
+    }
+
+    /// Create tools for this agent including MCP tools
+    ///
+    /// This asynchronous version loads MCP tools from configured MCP servers
+    /// and adds them to the built-in tools.
+    async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
+        use crate::tools::*;
+
+        // Create all available built-in tools
+        let mut tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(WebSearchTool::new(WebSearchConfig::default())),
+            Arc::new(FetchTool::new(FetchConfig::default())),
+            Arc::new(FileSystemTool::new()),
+            Arc::new(ProcessTool::new()),
+        ];
+
+        // Add session introspection tools
+        let session_registry =
+            InMemorySessionRegistry::new(format!("agent:{}:cli:default", self.config.name));
+        tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
+
+        // Load MCP tools
+        tracing::info!("Loading MCP tools for agent '{}'...", self.config.name);
+        match ToolFactory::load_mcp_tools(&crate::tools::McpFactoryConfig::default()).await {
+            Ok(mcp_tools) => {
+                if !mcp_tools.is_empty() {
+                    tracing::info!(
+                        "✅ Agent loaded {} MCP tools: {:?}",
+                        mcp_tools.len(),
+                        mcp_tools.iter().map(|t| t.name()).collect::<Vec<_>>()
+                    );
+                    tools.extend(mcp_tools);
+                } else {
+                    tracing::info!("No MCP tools found (config may be missing or empty)");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("❌ Failed to load MCP tools for agent: {}", e);
+                // Continue without MCP tools
+            }
+        }
+
+        tracing::info!("Total tools available: {}", tools.len());
+
+        // Filter based on agent config if specified
+        if let Some(ref tool_config) = self.config.tools {
+            if !tool_config.enabled.is_empty() {
+                tools = tools
+                    .into_iter()
+                    .filter(|tool| tool_config.enabled.contains(&tool.name().to_string()))
+                    .collect();
+            }
+        }
+
+        Ok(tools)
     }
 
     /// Create a new agent with the given configuration
@@ -178,16 +237,24 @@ impl Agent {
         self.set_state(AgentState::Busy);
 
         let result = if let Some(provider) = &self.provider {
-            let tools = self.create_tools();
+            // Load tools including MCP tools
+            let tools = match self.create_tools_async().await {
+                Ok(tools) => tools,
+                Err(e) => {
+                    self.set_state(AgentState::Idle);
+                    return Err(anyhow::anyhow!("Failed to create tools: {}", e));
+                }
+            };
 
             let supports_native = provider.supports_native_tools();
             info!(
-                "Executing with {} tool calling",
+                "Executing with {} tool calling ({} tools available)",
                 if supports_native {
                     "native"
                 } else {
                     "text-based"
-                }
+                },
+                tools.len()
             );
 
             let agent_arc = Arc::new(self.clone_for_loop());
@@ -228,7 +295,11 @@ impl Agent {
 
         // We need to get the provider and tools into the task
         if let Some(provider) = &self.provider {
-            let tools = self.create_tools();
+            // Load tools including MCP tools before spawning
+            let tools = match self.create_tools_async().await {
+                Ok(tools) => tools,
+                Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {}", e)),
+            };
 
             let provider_arc = Arc::clone(provider);
             let event_tx_clone = event_tx.clone();
@@ -274,7 +345,11 @@ impl Agent {
 
         // We need to get the provider and tools into the task
         if let Some(provider) = &self.provider {
-            let tools = self.create_tools();
+            // Load tools including MCP tools before spawning
+            let tools = match self.create_tools_async().await {
+                Ok(tools) => tools,
+                Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {}", e)),
+            };
 
             let provider_arc = Arc::clone(provider);
             let event_tx_clone = event_tx.clone();

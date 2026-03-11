@@ -19,6 +19,7 @@ pub mod config;
 pub mod cron;
 pub mod daemon;
 pub mod gateway;
+pub mod mcp;
 pub mod provider;
 pub mod session;
 pub mod system;
@@ -103,6 +104,10 @@ pub enum Commands {
     #[command(subcommand)]
     Gateway(gateway::GatewayCommands),
 
+    /// MCP (Model Context Protocol) server management
+    #[command(subcommand)]
+    Mcp(mcp::McpCommands),
+
     /// LLM Provider management
     #[command(subcommand)]
     Provider(provider::ProviderCommands),
@@ -183,6 +188,12 @@ impl GlobalPaths {
     #[must_use]
     pub fn tools_dir(&self) -> PathBuf {
         self.data_dir.join("tools")
+    }
+
+    /// Get MCP configuration file path
+    #[must_use]
+    pub fn mcp_config(&self) -> PathBuf {
+        self.config_dir.join("mcp.toml")
     }
 }
 
