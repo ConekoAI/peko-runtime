@@ -5,18 +5,22 @@
 
 pub mod chunker;
 pub mod events;
+pub mod execution;
 pub mod loop_v4;
 pub mod runner;
 pub mod simple_session;
 pub mod state;
+pub mod task_manager;
 pub mod tool_stream;
 
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
 pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
+pub use execution::{ExecutionMode, TaskExecutor, TaskId, TaskStatus, TaskSummary};
 pub use loop_v4::{AgenticLoopV4, AgenticResult as AgenticResultV4, ToolCall};
 pub use runner::AgentRunner;
 pub use simple_session::SimpleSession;
 pub use state::{AgentState, StateMachine};
+pub use task_manager::{TaskManager, TaskManagerConfig, TaskManagerStats};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,
 };
@@ -41,6 +45,8 @@ pub struct Engine {
     config: EngineConfig,
     /// State machine
     state: Arc<RwLock<StateMachine>>,
+    /// Task manager for tool execution
+    task_manager: Arc<TaskManager>,
 }
 
 /// Engine configuration
@@ -54,6 +60,8 @@ pub struct EngineConfig {
     pub enable_memory: bool,
     /// Timeout for provider calls (seconds)
     pub provider_timeout_secs: u64,
+    /// Default tool timeout (seconds)
+    pub tool_timeout_secs: u64,
 }
 
 impl Default for EngineConfig {
@@ -63,6 +71,7 @@ impl Default for EngineConfig {
             enable_tools: true,
             enable_memory: true,
             provider_timeout_secs: 30,
+            tool_timeout_secs: 120,
         }
     }
 }
@@ -77,6 +86,9 @@ impl Engine {
     ) -> Self {
         let config = config.unwrap_or_default();
         let state = Arc::new(RwLock::new(StateMachine::new()));
+        let task_manager = Arc::new(TaskManager::with_config(TaskManagerConfig {
+            default_timeout: std::time::Duration::from_secs(config.tool_timeout_secs),
+        }));
 
         Self {
             agent,
@@ -84,6 +96,7 @@ impl Engine {
             tools,
             config,
             state,
+            task_manager,
         }
     }
 
@@ -128,6 +141,11 @@ impl Engine {
         state.set_idle();
         warn!("Engine stopping for agent: {}", self.agent.name());
         Ok(())
+    }
+
+    /// Get the task manager
+    pub fn task_manager(&self) -> &Arc<TaskManager> {
+        &self.task_manager
     }
 }
 

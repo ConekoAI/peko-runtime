@@ -7,7 +7,7 @@
 //! - Streaming support with incremental tool call construction
 
 use crate::agent::Agent;
-use crate::engine::{AgenticEvent, LifecyclePhase, SimpleSession};
+use crate::engine::{AgenticEvent, LifecyclePhase, SimpleSession, TaskManager};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
 use crate::tools::Tool;
@@ -48,6 +48,8 @@ pub struct AgenticLoopV4 {
     tools: Vec<Arc<dyn Tool>>,
     max_iterations: usize,
     system_prompt: String,
+    /// Task manager for tool execution
+    task_manager: Arc<TaskManager>,
 }
 
 impl AgenticLoopV4 {
@@ -65,6 +67,7 @@ impl AgenticLoopV4 {
             tools,
             max_iterations: 10,
             system_prompt,
+            task_manager: Arc::new(TaskManager::new()),
         }
     }
 
@@ -479,11 +482,20 @@ impl AgenticLoopV4 {
                             params: arguments.clone(),
                         });
 
-                        // Find and execute tool
+                        // Find and execute tool using the task manager
                         let start_time = std::time::Instant::now();
                         let tool_result =
                             if let Some(tool) = self.tools.iter().find(|t| t.name() == name) {
-                                match tool.execute(arguments.clone()).await {
+                                // Execute tool synchronously with default timeout
+                                match self
+                                    .task_manager
+                                    .execute(
+                                        Arc::clone(tool),
+                                        arguments.clone(),
+                                        None, // Use default timeout
+                                    )
+                                    .await
+                                {
                                     Ok(result) => {
                                         info!("Tool '{}' executed successfully", name);
                                         result.to_string()
@@ -588,6 +600,11 @@ impl AgenticLoopV4 {
                 parameters: tool.parameters(),
             })
             .collect()
+    }
+
+    /// Get the task manager
+    pub fn task_manager(&self) -> &Arc<TaskManager> {
+        &self.task_manager
     }
 
     /// Fallback for providers without native tool support

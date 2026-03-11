@@ -141,36 +141,35 @@ Pekobot separates concerns along three independent axes:
 
 **The user is the security boundary.** Core executes. Registry recommends. User decides. Audit logs for review.
 
-### 2.4 System-Managed Async Model
+### 2.4 Tool Execution Model
 
-The **system** manages sync/async execution, not the tools themselves. Tools are simple synchronous functions.
+Tools are **synchronous and blocking**. The agent loop waits for tool completion before continuing.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              SYSTEM-MANAGED ASYNC MODEL                      │
+│                 SYNCHRONOUS TOOL EXECUTION                   │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
-│  TOOL: Simple synchronous function                          │
+│  TOOL: Simple async function                                │
 │  pub async fn call(&self, args: Value) -> Result<Value>      │
 │                                                              │
-│  SYSTEM manages execution mode:                             │
-│  • sync  → Block until result                               │
-│  • async → Return receipt, run in background                │
+│  EXECUTION: Block until result                              │
+│  • Agent calls tool → Waits → Receives result → Continues   │
+│  • Timeout prevents runaway processes                       │
 │                                                              │
-│  ASYNC FLOW (managed by Execution Engine):                  │
-│  1. Agent requests async tool call                          │
-│  2. System spawns task, returns Receipt                     │
-│  3. Tool runs synchronously in background                   │
-│  4. Result stored, agent notified via MCP (optional)        │
+│  ASYNC PATTERNS (when needed):                              │
+│  • Shell background: command &                              │
+│  • MCP async: submit_task → poll status → get_result        │
+│  • Agent spawn: creates independent agent instance          │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Benefits:**
-- Tools are simple - no sync/async complexity
-- System handles all concurrency
-- Consistent behavior across all tools
-- Async inbox can be provided by MCP (not core)
+**Rationale:**
+- Agent loop is inherently sequential (needs tool result to continue reasoning)
+- Simpler mental model - no async complexity in core
+- Long-running tasks: use shell background (`&`) or MCP async patterns
+- True parallelism: use `agent_spawn` to create separate agent instances
 
 ### 2.5 Session-Centric State with Overlays
 
@@ -389,79 +388,45 @@ The Agent Runtime manages agent state, session context, and tool execution coord
 - **Invocation Router** - Route messages from Orchestration vs Communication
 - **AgentManager** - Pool, registry, lifecycle
 - **Individual Agent** - Identity, Session, Provider
-- **Async Task Manager** - System-managed background task tracking
-
-**Note:** Agent inbox/queue for async results is **not built into core** - agents needing inbox functionality should use an MCP (e.g., `inbox-sqlite`, `inbox-redis`). Simple async is handled by the Execution Engine.
+- **Tool Executor** - Synchronous tool execution with timeout support
 
 ### 4.4 Execution Engine
 
-The **AgenticLoopV4** handles tool invocation. Tools are simple synchronous functions; the system manages sync/async execution.
+The **AgenticLoopV4** handles tool invocation. Tools are simple synchronous functions that block until completion.
 
 ```rust
 pub struct AgenticLoopV4 {
-    /// Execute tool (system manages sync vs async)
+    /// Execute tool synchronously with timeout
     async fn execute(
         &self, 
         tool: &str, 
         args: Value,
-        mode: ExecutionMode,
-    ) -> Result<ExecutionResult>;
-}
-
-pub enum ExecutionMode {
-    /// Block until result
-    Sync { timeout: Duration },
-    /// Return immediately with handle
-    Async,
-}
-
-pub enum ExecutionResult {
-    /// Sync result
-    Value(Value),
-    /// Async handle
-    Handle(TaskHandle),
-}
-
-/// Handle for async operation (system-managed)
-pub struct TaskHandle {
-    pub id: String,
-    pub status: TaskStatus,
-}
-
-pub enum TaskStatus {
-    Pending,
-    Running,
-    Completed { result: Value },
-    Failed { error: String },
-    Timeout,
-}
-
-impl TaskHandle {
-    /// Check current status
-    pub async fn status(&self) -> TaskStatus;
-    
-    /// Block and wait for result
-    pub async fn wait(&self, timeout: Duration) -> Result<Value>;
+        timeout: Duration,
+    ) -> Result<Value>;
 }
 ```
 
-**Tool Trait (Simple):**
+**Tool Trait:**
 ```rust
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn schema(&self) -> ToolSchema;
     
-    /// Execute tool (always synchronous from tool's perspective)
+    /// Execute tool synchronously
+    /// Returns result or times out
     async fn call(&self, args: Value) -> Result<Value>;
 }
 ```
 
-**Key Point:** Tools don't know about sync/async. They just execute and return. The system manages:
-- Spawning async tasks
-- Tracking handles
-- Returning results
-- Timeouts and cancellation
+**Key Points:**
+- Tools execute synchronously (blocking)
+- Each tool can define its own timeout parameter
+- Agent waits for result before continuing
+- For long-running background tasks, use:
+  - Shell background execution: `command &`
+  - MCP async patterns: submit → poll → retrieve
+  - Agent spawn: independent agent instance
 
 ### 4.5 Capability Layer
 
@@ -704,80 +669,71 @@ agent.send_to("discord:general", response).await?;
 - `memory-files` - Simple files
 - `memory-none` - Disabled
 
-## 7. Async Flow Examples
+## 7. Long-Running Task Patterns
 
-### 8.1 Async Tool Call
+When agents need to execute long-running tasks without blocking indefinitely, several patterns are available:
 
-```rust
-// System executes tool asynchronously, returns handle immediately
-let handle = execution_engine.execute(
-    "web_search",
-    json!({ "query": "Rust async programming" }),
-    ExecutionMode::Async
-).await?;
+### 7.1 Shell Background Execution
 
-// Agent continues conversation while tool runs
-// ...
+Use shell to run commands in the background:
 
-// Later, check result
-if let TaskStatus::Completed { result } = handle.status().await {
-    // Process result
-}
-// Or block and wait
-let result = handle.wait(Duration::from_secs(30)).await?;
+```json
+// Start download in background
+{"command": "sh", "args": ["-c", "curl -O https://example.com/large.zip > /tmp/download.log 2>&1 &"]}
+
+// Result returns immediately: "[1] 12345"
+
+// Later, check progress:
+{"command": "cat", "args": ["/tmp/download.log"]}
+
+// Or check if process is still running:
+{"command": "ps", "args": ["-p", "12345"]}
 ```
 
-### 8.2 Async Agent Messaging
+### 7.2 MCP Async Patterns
 
-```rust
-// System sends message to another agent asynchronously
-let handle = execution_engine.execute(
-    "agent_send",
-    json!({ "target": "researcher", "message": "Research this topic" }),
-    ExecutionMode::Async
-).await?;
+MCPs provide native async workflows:
 
-// Continue working...
-// Result (if any) can be retrieved later via handle
+```json
+// Submit job to MCP
+{"mcp": "compute", "method": "submit_job", "params": {"task": "train_model", "dataset": "large.csv"}}
+// Returns: {"job_id": "job_abc123", "status": "queued"}
+
+// Check status later:
+{"mcp": "compute", "method": "get_job_status", "params": {"job_id": "job_abc123"}}
+// Returns: {"status": "running", "progress": 45}
+
+// Retrieve result when complete:
+{"mcp": "compute", "method": "get_result", "params": {"job_id": "job_abc123"}}
 ```
 
-### 8.3 Async Spawn (Multitasking)
+### 7.3 Agent Spawn (True Parallelism)
 
-```rust
-// System spawns 3 tasks in parallel
-let h1 = execution_engine.execute(
-    "agent_spawn",
-    json!({"task": "Research asyncio"}),
-    ExecutionMode::Async
-).await?;
-let h2 = execution_engine.execute(
-    "agent_spawn",
-    json!({"task": "Research trio"}),
-    ExecutionMode::Async
-).await?;
-let h3 = execution_engine.execute(
-    "agent_spawn",
-    json!({"task": "Research curio"}),
-    ExecutionMode::Async
-).await?;
+Spawn independent agents for parallel work:
 
-// Continue talking to user...
+```json
+// Spawn research agents for parallel tasks
+{"tool": "agent_spawn", "params": {"name": "ResearchAgent1", "task": "Research asyncio patterns"}}
+{"tool": "agent_spawn", "params": {"name": "ResearchAgent2", "task": "Research trio patterns"}}
+{"tool": "agent_spawn", "params": {"name": "ResearchAgent3", "task": "Research curio patterns"}}
 
-// Collect results later
-let results = vec![h1.wait().await?, h2.wait().await?, h3.wait().await?];
+// Each agent runs independently
+// Main agent can continue or wait for results via agent_send/agent_status
 ```
 
-### 8.4 Complex Coordination (External Skill)
+### 7.4 Tool Timeout Configuration
 
-```rust
-// Group chat manager skill (built on agent_send)
-group_chat_tool.call(json!({
-    "room": "engineering",
-    "action": "broadcast",
-    "message": "Deploying to production"
-}))?;
+Tools support configurable timeouts for long operations:
 
-// Internally uses agent_send to each participant
+```json
+// Quick command (default 120s timeout)
+{"tool": "process", "params": {"command": "date"}}
+
+// Build command with extended timeout
+{"tool": "process", "params": {"command": "cargo", "args": ["build", "--release"], "timeout": 300}}
+
+// Download with no timeout
+{"tool": "process", "params": {"command": "curl", "args": ["-O", "large.zip"], "timeout": 0}}
 ```
 
 ## 8. Configuration Examples

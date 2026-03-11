@@ -16,12 +16,17 @@ pub struct ProcessTool {
     allow_shell: bool,
 }
 
+/// Maximum allowed timeout in seconds (5 minutes)
+const MAX_TIMEOUT_SECS: u64 = 300;
+/// Default timeout in seconds (2 minutes)
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
+
 impl ProcessTool {
     /// Create a new process tool with default settings
     #[must_use]
     pub fn new() -> Self {
         Self {
-            default_timeout_secs: 30,
+            default_timeout_secs: DEFAULT_TIMEOUT_SECS,
             allow_shell: false,
         }
     }
@@ -30,7 +35,7 @@ impl ProcessTool {
     #[must_use]
     pub fn with_timeout(timeout_secs: u64) -> Self {
         Self {
-            default_timeout_secs: timeout_secs,
+            default_timeout_secs: timeout_secs.min(MAX_TIMEOUT_SECS),
             allow_shell: false,
         }
     }
@@ -153,6 +158,7 @@ Execute system commands with arguments, timeout, and working directory control. 
 - System diagnostics (df, ps, netstat, etc.)
 - File operations that need scripting (find with complex filters)
 - Running tests or linting tools
+- Long-running downloads (use timeout: 0)
 
 ## When NOT to Use
 - Simple file reads/writes (use `filesystem` instead)
@@ -165,15 +171,23 @@ Execute system commands with arguments, timeout, and working directory control. 
 {
   "command": "command-name",
   "args": ["arg1", "arg2"],
-  "timeout": 30,
+  "timeout": 120,
   "working_dir": "/optional/path"
 }
 ```
+
+## Timeout Behavior
+- **Default**: 120 seconds (suitable for most commands)
+- **Short tasks** (date, echo, ls): Use default or timeout: 5
+- **Build commands**: Use timeout: 120 or higher
+- **Long downloads**: Use timeout: 0 (disables timeout)
+- **Max**: 300 seconds (5 minutes) unless timeout is 0
 
 ## Returns
 - stdout and stderr output (truncated if >100KB)
 - Exit code
 - Success/failure status
+- Timeout error message if command times out
 
 ## Examples
 Check git status:
@@ -183,17 +197,22 @@ Check git status:
 
 Build a Rust project:
 ```json
-{"command": "cargo", "args": ["build", "--release"], "timeout": 120}
+{"command": "cargo", "args": ["build", "--release"], "timeout": 300}
 ```
 
 Run tests:
 ```json
-{"command": "cargo", "args": ["test"], "timeout": 60}
+{"command": "cargo", "args": ["test"], "timeout": 120}
+```
+
+Long download (no timeout):
+```json
+{"command": "curl", "args": ["-O", "https://example.com/large-file.zip"], "timeout": 0}
 ```
 
 ## Safety
 - Commands are validated for forbidden characters
-- Timeout prevents runaway processes (default: 30s, max: 300s)
+- Timeout prevents runaway processes (default: 120s, max: 300s, or unlimited with timeout: 0)
 - Output is truncated at 100KB to prevent memory issues
 - Prefer `trash` over `rm` for recoverable deletes
 - Ask before destructive operations"#.to_string()
@@ -214,8 +233,8 @@ Run tests:
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds",
-                    "minimum": 1,
+                    "description": "Timeout in seconds (default: 120). Set to 0 to disable timeout for long-running tasks like downloads. Max: 300 unless timeout is 0.",
+                    "minimum": 0,
                     "maximum": 300
                 },
                 "working_dir": {
@@ -275,6 +294,13 @@ Run tests:
         let timeout_secs = params
             .get("timeout")
             .and_then(serde_json::Value::as_u64)
+            .map(|t| {
+                if t == 0 {
+                    u64::MAX
+                } else {
+                    t.min(MAX_TIMEOUT_SECS)
+                }
+            })
             .unwrap_or(self.default_timeout_secs);
 
         let working_dir = params.get("working_dir").and_then(|v| v.as_str());
@@ -367,6 +393,40 @@ mod tests {
         let result = tool.execute(params).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_process_timeout_disabled() {
+        let tool = ProcessTool::new();
+        // timeout: 0 should disable timeout, allowing long commands to complete
+        let params = json!({
+            "command": "sleep",
+            "args": ["0.5"],
+            "timeout": 0
+        });
+
+        let result = tool.execute(params).await;
+        // Should succeed because timeout is disabled
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response.get("success").unwrap().as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_process_timeout_max_cap() {
+        let tool = ProcessTool::new();
+        // timeout > 300 should be capped at 300
+        let params = json!({
+            "command": "echo",
+            "args": ["hello"],
+            "timeout": 9999  // Way over max, should be capped
+        });
+
+        // Should still work (not timeout immediately)
+        let result = tool.execute(params).await;
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response.get("success").unwrap().as_bool().unwrap());
     }
 
     #[tokio::test]

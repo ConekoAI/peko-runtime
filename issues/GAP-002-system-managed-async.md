@@ -1,191 +1,115 @@
-# GAP-002: System-Managed Async Execution
+# GAP-002: System-Managed Execution (Simplified)
 
 **Priority:** 🔴 Critical  
-**Status:** Open  
+**Status:** ✅ **SIMPLIFIED** (Architecture Pivot)  
 **Target:** v0.5.0  
-**Est. Effort:** 1 week  
+**Date:** 2026-03-10
 
 ---
 
-## Problem Statement
+## Architecture Pivot
 
-The Grand Architecture specifies that the **system** manages sync/async execution, not tools themselves. Tools should be simple synchronous functions.
+**Original Design:** System-managed async execution with TaskHandle, OrphanPool, CleanupPolicy
 
-Currently:
-- Tools execute synchronously via `await`
-- No concept of fire-and-forget
-- No `TaskHandle` for async operations
-- No orphan pool for tasks that outlive their parent
+**New Design:** Synchronous-only tool execution with timeout support
+
+### Rationale for Pivot
+
+1. **Agent Loop is Inherently Blocking**
+   - Agent needs tool result to continue reasoning
+   - Async execution doesn't help - still must wait for result
+   - Adds unnecessary complexity with no benefit
+
+2. **Simpler Alternatives Exist**
+   - Shell background: `command &` for fire-and-forget
+   - MCP async: submit → poll → retrieve pattern
+   - Agent spawn: independent parallel agents
+
+3. **Maintainability**
+   - No TaskManager, OrphanPool complexity
+   - No CleanupPolicy decisions
+   - No async state management
 
 ---
 
-## Current State
+## Final Implementation
+
+### What Was Implemented
+
+Simple synchronous execution with timeout:
 
 ```rust
-// src/engine/loop_v4.rs:486
-let tool_result = if let Some(tool) = self.tools.iter().find(|t| t.name() == name) {
-    match tool.execute(arguments.clone()).await {  // Always sync/blocking
-        Ok(result) => result.to_string(),
-        Err(e) => format!("Error: {}", e),
-    }
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    async fn execute(&self, params: Value) -> Result<Value>;
+    // Tools can expose timeout parameter in their schema
 }
 ```
 
-No `ExecutionMode`, no `TaskHandle`, no async management.
+### What Was Removed
+
+- ❌ `ExecutionMode::Async` 
+- ❌ `TaskHandle` for async tracking
+- ❌ `OrphanPool` for orphaned tasks
+- ❌ `CleanupPolicy` 
+- ❌ `TaskManager` complexity
+
+### What Was Kept
+
+- ✅ Timeout parameter in `process` tool
+- ✅ `ExecutionMode::Sync { timeout }` (simplified to just timeout)
+- ✅ Task status tracking for observability (optional)
 
 ---
 
-## Target State
+## Usage Patterns
 
-Per [GRAND_ARCHITECTURE.md section 2.4](../GRAND_ARCHITECTURE.md#24-system-managed-async-model):
+### Synchronous Execution (Default)
 
 ```rust
-// System manages sync vs async
-let handle = execution_engine.execute(
-    "agent_spawn",
-    json!({"task": "Research asyncio"}),
-    ExecutionMode::Async  // Fire and forget, get handle
-).await?;
-
-// Continue conversation...
-
-// Check result later
-if let TaskStatus::Completed { result } = handle.status().await {
-    // Process result
-}
+// Tool executes synchronously, agent waits
+let result = tool.execute(params).await?;
 ```
 
----
+### Long-Running Tasks
 
-## Scope
+**Option 1: Shell Background**
+```bash
+# Start background task
+{"command": "sh", "args": ["-c", "long_task.sh > /tmp/log 2>&1 &"]}
 
-### In Scope
-- `ExecutionMode` enum (`Sync`, `Async`)
-- `TaskHandle` for async operation tracking
-- `TaskStatus` enum for state tracking
-- System-level task spawning (not tool-level)
-- Orphan pool for tasks that outlive parent
-- Cleanup policies (`CancelOnParentExit`, `Orphan`, `Transfer`)
-
-### Out of Scope (Future)
-- Distributed task execution
-- Task persistence across restarts
-- Complex retry/circuit breaker logic
-
----
-
-## Goals
-
-1. **Execution Engine**: Add sync/async modes to tool execution
-2. **Task Handles**: Return handles for async operations
-3. **Task Lifecycle**: Track pending, running, completed, failed states
-4. **Orphan Management**: Handle tasks when parent agent/session terminates
-
----
-
-## Proposed Implementation
-
-### Core Types
-```rust
-// src/engine/execution.rs
-pub enum ExecutionMode {
-    /// Block until result
-    Sync { timeout: Duration },
-    /// Return immediately with handle
-    Async,
-}
-
-pub enum ExecutionResult {
-    /// Sync result
-    Value(Value),
-    /// Async handle
-    Handle(TaskHandle),
-}
-
-pub struct TaskHandle {
-    pub id: String,
-    pub status: Arc<RwLock<TaskStatus>>,
-}
-
-pub enum TaskStatus {
-    Pending,
-    Running,
-    Completed { result: Value },
-    Failed { error: String },
-    Cancelled,
-}
-
-pub enum CleanupPolicy {
-    CancelOnParentExit,
-    Orphan,
-    TransferToOrphanPool,
-}
+# Check later
+{"command": "cat", "args": ["/tmp/log"]}
 ```
 
-### Execution Engine Extension
-```rust
-impl AgenticLoopV4 {
-    pub async fn execute(
-        &self,
-        tool: &str,
-        args: Value,
-        mode: ExecutionMode,
-        cleanup_policy: CleanupPolicy,
-    ) -> Result<ExecutionResult> {
-        match mode {
-            ExecutionMode::Sync { timeout } => {
-                // Current behavior
-                let result = tokio::time::timeout(
-                    timeout,
-                    self.execute_tool(tool, args)
-                ).await??;
-                Ok(ExecutionResult::Value(result))
-            }
-            ExecutionMode::Async => {
-                // Spawn and return handle
-                let handle = self.spawn_tool_task(tool, args, cleanup_policy).await?;
-                Ok(ExecutionResult::Handle(handle))
-            }
-        }
-    }
-}
+**Option 2: MCP Async**
+```json
+{"mcp": "compute", "method": "submit_job", "params": {...}}
+{"mcp": "compute", "method": "get_status", "params": {"job_id": "..."}}
 ```
 
-### Orphan Pool
-```rust
-pub struct OrphanPool {
-    tasks: HashMap<TaskId, OrphanedTask>,
-}
-
-impl OrphanPool {
-    pub fn adopt(&mut self, handle: TaskHandle) -> Result<()>;
-    pub fn get(&self, id: &str) -> Option<&OrphanedTask>;
-    pub fn cleanup_completed(&mut self);
-}
+**Option 3: Agent Spawn**
+```json
+{"tool": "agent_spawn", "params": {"name": "Worker", "task": "..."}}
 ```
 
 ---
 
-## Dependencies
+## Files Changed
 
-- **Required by:** GAP-003 (Spawn overlays need async execution)
-- **Related to:** GAP-005 (Agent messaging needs async delivery)
+### Removed
+- `src/engine/orphan_pool.rs` - Deleted
+- `src/engine/task_manager.rs` - Simplified
 
----
-
-## Success Criteria
-
-- [ ] Can execute tool in async mode and get `TaskHandle`
-- [ ] Can check task status via handle
-- [ ] Can wait for async task completion
-- [ ] Tasks are cancelled when parent exits (default policy)
-- [ ] Tasks can be orphaned to survive parent
-- [ ] Orphan pool is queryable via CLI
+### Modified
+- `src/engine/execution.rs` - Removed async types
+- `src/engine/loop_v4.rs` - Removed async execution
+- `src/tools/process.rs` - Added timeout parameter
+- `GRAND_ARCHITECTURE.md` - Updated documentation
 
 ---
 
 ## References
 
-- [GRAND_ARCHITECTURE.md - System Async Model](../GRAND_ARCHITECTURE.md#24-system-managed-async-model)
-- [GRAND_ARCHITECTURE.md - Async Flow Examples](../GRAND_ARCHITECTURE.md#8-async-flow-examples)
-- Current loop: `src/engine/loop_v4.rs`
+- [GRAND_ARCHITECTURE.md - Tool Execution Model](../GRAND_ARCHITECTURE.md#24-tool-execution-model)
+- [GRAND_ARCHITECTURE.md - Long-Running Task Patterns](../GRAND_ARCHITECTURE.md#7-long-running-task-patterns)
