@@ -15,7 +15,7 @@
 //! - `npm install -g @anthropic/mcp-filesystem-server`
 //! - `npm install -g @anthropic/mcp-browser-server`
 
-use pekobot::mcp::{create_tool_proxies, McpConfig, McpManager, McpServerConfig, TransportType};
+use pekobot::mcp::{McpConfig, McpManager, McpServerConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -162,8 +162,8 @@ async fn example_with_agent() -> anyhow::Result<()> {
     }
 
     // Get built-in tools
-    let mut tools =
-        pekobot::tools::ToolFactory::create_full_tools(agent_config.agent.workspace_dir.clone());
+    let workspace_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut tools = pekobot::tools::ToolFactory::create_full_tools(workspace_dir);
 
     // Add MCP tools
     let mcp_tools = {

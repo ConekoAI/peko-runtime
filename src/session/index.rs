@@ -179,6 +179,7 @@ impl MaintenanceReport {
 }
 
 /// Session index manager
+#[derive(Debug)]
 pub struct SessionIndex {
     /// Path to the index file (sessions.json)
     path: PathBuf,

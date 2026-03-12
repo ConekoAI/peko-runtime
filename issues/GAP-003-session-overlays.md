@@ -1,7 +1,7 @@
 # GAP-003: Session Overlays Architecture
 
 **Priority:** 🔴 Critical  
-**Status:** Open  
+**Status:** In Progress (Phase 3a Complete)  
 **Target:** v0.5.0  
 **Est. Effort:** 1-2 weeks  
 
@@ -187,14 +187,45 @@ pub fn derive_base_key(agent: &str, peer: &Peer) -> String {
 
 ---
 
+## Implementation Progress
+
+### Phase 1: Core Types ✅
+- [x] `Peer` enum (User/Agent)
+- [x] `ChannelType` enum
+- [x] `SessionOverlay` trait
+- [x] `ChannelOverlay` implementation
+- [x] `SpawnOverlay` implementation
+
+### Phase 2: Base + Manager ✅
+- [x] `BaseSession` - shared conversation context
+- [x] `SessionManager` - overlay lifecycle
+- [x] `HybridSession` - base + overlay combo
+- [x] Peer-based session key derivation
+- [x] Cross-channel session sharing
+
+### Phase 3a: Agent Integration ✅
+- [x] `SessionContext` - unified session interface
+- [x] `SessionRouter` - message routing
+- [x] Agent session manager integration
+- [x] Agent helper methods
+
+### Phase 3b: Channel Integration ⏳
+- [ ] Update CLI channel
+- [ ] Update Discord channel
+
+### Phase 3c: Tool Integration ⏳
+- [ ] Update agent_spawn tool
+
+---
+
 ## Success Criteria
 
-- [ ] Can create channel overlays with channel-specific state
-- [ ] Can create spawn overlays for task isolation
-- [ ] Same user on CLI and Discord shares base session context
-- [ ] Spawned tasks can run in isolated or inherited mode
-- [ ] Base session persists across overlays
-- [ ] Overlays can be ephemeral or persisted
+- [x] Can create channel overlays with channel-specific state
+- [x] Can create spawn overlays for task isolation
+- [x] Same user on CLI and Discord shares base session context
+- [x] Spawned tasks can run in isolated or inherited mode
+- [x] Base session persists across overlays
+- [x] Overlays can be ephemeral or persisted
 
 ---
 

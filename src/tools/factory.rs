@@ -215,7 +215,7 @@ impl ToolFactory {
 
         // Check if config exists
         if !config_path.exists() {
-            tracing::warn!(
+            tracing::debug!(
                 "MCP config not found at {:?}, skipping MCP tools",
                 config_path
             );

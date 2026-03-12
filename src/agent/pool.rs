@@ -236,6 +236,11 @@ impl AgentPool {
         None
     }
 
+    /// Get the raw agent Arc by DID
+    pub async fn get_agent(&self, did: &str) -> Option<Arc<Agent>> {
+        self.agents.get(did).map(|entry| entry.agent.clone())
+    }
+
     /// Stop an agent
     pub async fn stop(&mut self, did: &str) -> Result<()> {
         if let Some(channel) = self.channels.get(did) {

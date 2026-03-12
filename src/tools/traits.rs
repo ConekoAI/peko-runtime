@@ -2,9 +2,70 @@
 
 use crate::tools::context::ToolContext;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Errors that can occur during tool execution
 pub use crate::tools::context::ToolError;
+
+/// Result of a tool execution
+///
+/// This is a structured result that can represent success or failure,
+/// with optional metadata for async tool execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolResult {
+    /// Whether the tool execution succeeded
+    pub success: bool,
+    /// The result data (if success)
+    pub data: Option<Value>,
+    /// Error message (if failure)
+    pub error: Option<String>,
+    /// Optional metadata
+    pub metadata: Option<Value>,
+}
+
+impl ToolResult {
+    /// Create a successful tool result
+    pub fn success(data: impl Into<Value>) -> Self {
+        Self {
+            success: true,
+            data: Some(data.into()),
+            error: None,
+            metadata: None,
+        }
+    }
+
+    /// Create a failed tool result
+    pub fn failure(error: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            data: None,
+            error: Some(error.into()),
+            metadata: None,
+        }
+    }
+
+    /// Create a failed tool result with a standard error
+    pub fn error(err: anyhow::Error) -> Self {
+        Self::failure(err.to_string())
+    }
+
+    /// Add metadata to the result
+    pub fn with_metadata(mut self, metadata: impl Into<Value>) -> Self {
+        self.metadata = Some(metadata.into());
+        self
+    }
+
+    /// Convert to JSON value for LLM consumption
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).unwrap_or_else(|_| {
+            serde_json::json!({
+                "success": false,
+                "error": "Failed to serialize tool result"
+            })
+        })
+    }
+}
 
 /// Tool trait for agent capabilities
 #[async_trait]

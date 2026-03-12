@@ -103,6 +103,7 @@ pub struct MessageContent {
 }
 
 /// Session storage with OpenClaw-compatible JSONL format
+#[derive(Debug)]
 pub struct SessionStorage {
     storage_dir: PathBuf,
 }

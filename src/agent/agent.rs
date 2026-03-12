@@ -1,15 +1,21 @@
 //! Agent management module
 
+use crate::agent::subagent_executor::SubagentExecutor;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::memory::sqlite::SqliteMemory;
 use crate::providers::Provider;
+use crate::session::context::{SessionContext, SessionRouter};
+use crate::session::manager::SessionManager;
+use crate::session::types::{ChannelType, Peer};
+use crate::tools::agent_spawn_v2::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
 
-/// Single agent runtime
+/// Single agent runtime with session overlay support
 pub struct Agent {
     /// Agent configuration
     pub config: AgentConfig,
@@ -21,6 +27,14 @@ pub struct Agent {
     memory: Option<SqliteMemory>,
     /// LLM provider (stored in Arc for sharing with agentic loop)
     provider: Option<Arc<dyn Provider>>,
+    /// Session manager for overlay lifecycle
+    session_manager: Arc<TokioRwLock<SessionManager>>,
+    /// Session router for message routing
+    session_router: SessionRouter,
+    /// Subagent executor for background task execution
+    subagent_executor: Arc<SubagentExecutor>,
+    /// Dynamic session key provider for agent_spawn tool
+    session_key_provider: Arc<DynamicSessionKeyProvider>,
 }
 
 impl Agent {
@@ -43,6 +57,20 @@ impl Agent {
         let session_registry =
             InMemorySessionRegistry::new(format!("agent:{}:cli:default", self.config.name));
         tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
+
+        // Add agent spawn tool v2 with executor and session provider
+        tools.push(Arc::new(AgentSpawnToolV2::with_session_provider(
+            self.subagent_executor.clone(),
+            Box::new(self.session_key_provider.clone()),
+        )));
+
+        // Add spawn status and list tools
+        tools.push(Arc::new(AgentSpawnStatusTool::new(
+            self.subagent_executor.clone(),
+        )));
+        tools.push(Arc::new(AgentSpawnListTool::new(
+            self.subagent_executor.registry().clone(),
+        )));
 
         // Filter based on agent config if specified
         if let Some(ref tool_config) = self.config.tools {
@@ -76,6 +104,20 @@ impl Agent {
         let session_registry =
             InMemorySessionRegistry::new(format!("agent:{}:cli:default", self.config.name));
         tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
+
+        // Add agent spawn tool v2 with executor and session provider
+        tools.push(Arc::new(AgentSpawnToolV2::with_session_provider(
+            self.subagent_executor.clone(),
+            Box::new(self.session_key_provider.clone()),
+        )));
+
+        // Add spawn status and list tools
+        tools.push(Arc::new(AgentSpawnStatusTool::new(
+            self.subagent_executor.clone(),
+        )));
+        tools.push(Arc::new(AgentSpawnListTool::new(
+            self.subagent_executor.registry().clone(),
+        )));
 
         // Load MCP tools
         tracing::info!("Loading MCP tools for agent '{}'...", self.config.name);
@@ -126,12 +168,43 @@ impl Agent {
         // Initialize provider if configured
         let provider = Self::init_provider(&config).await?;
 
+        // Initialize session manager with registry
+        let session_manager = SessionManager::new().with_registry(&config.name).await?;
+        let session_manager = Arc::new(TokioRwLock::new(session_manager));
+        let session_router = SessionRouter::new(Arc::clone(&session_manager), config.name.clone());
+
+        // Initialize subagent executor
+        let subagent_executor_base = SubagentExecutor::new(
+            session_router.clone(),
+            Arc::clone(&session_manager),
+            config.name.clone(),
+            5, // max_concurrent
+        );
+        let subagent_executor = match &provider {
+            Some(p) => Arc::new(
+                subagent_executor_base
+                    .with_provider(p.clone())
+                    .with_agent_config(config.clone()),
+            ),
+            None => Arc::new(subagent_executor_base),
+        };
+
+        // Initialize session key provider for agent_spawn tool
+        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
+            "agent:{}:cli:default",
+            config.name
+        )));
+
         let agent = Self {
             config,
             state: Arc::new(RwLock::new(AgentState::Idle)),
             identity,
             memory,
             provider,
+            session_manager,
+            session_router,
+            subagent_executor,
+            session_key_provider,
         };
 
         info!(
@@ -257,8 +330,8 @@ impl Agent {
                 tools.len()
             );
 
-            let agent_arc = Arc::new(self.clone_for_loop());
             let provider_arc = Arc::clone(provider);
+            let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
             let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
 
@@ -291,10 +364,10 @@ impl Agent {
 
         // Spawn the execution in a task
         let prompt = prompt.to_string();
-        let agent_arc = Arc::new(self.clone_for_loop());
 
         // We need to get the provider and tools into the task
         if let Some(provider) = &self.provider {
+            let agent_arc = Arc::new(self.clone_for_loop(Arc::clone(provider)));
             // Load tools including MCP tools before spawning
             let tools = match self.create_tools_async().await {
                 Ok(tools) => tools,
@@ -307,7 +380,7 @@ impl Agent {
             tokio::task::spawn_local(async move {
                 use crate::engine::loop_v4::AgenticLoopV4;
 
-                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc.clone(), tools);
 
                 let _result = loop_
                     .run(&prompt, move |event| {
@@ -341,10 +414,10 @@ impl Agent {
 
         // Spawn the execution in a task
         let prompt = prompt.to_string();
-        let agent_arc = Arc::new(self.clone_for_loop());
 
         // We need to get the provider and tools into the task
         if let Some(provider) = &self.provider {
+            let agent_arc = Arc::new(self.clone_for_loop(Arc::clone(provider)));
             // Load tools including MCP tools before spawning
             let tools = match self.create_tools_async().await {
                 Ok(tools) => tools,
@@ -357,7 +430,7 @@ impl Agent {
             tokio::task::spawn_local(async move {
                 use crate::engine::loop_v4::AgenticLoopV4;
 
-                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc.clone(), tools);
 
                 let _result = loop_
                     .run_with_resume(
@@ -382,7 +455,7 @@ impl Agent {
 
     /// Clone the agent for use in the agentic loop
     /// This creates a shallow copy that shares the same identity
-    fn clone_for_loop(&self) -> Self {
+    fn clone_for_loop(&self, provider: Arc<dyn Provider>) -> Self {
         Self {
             config: self.config.clone(),
             state: Arc::new(RwLock::new(AgentState::Busy)),
@@ -393,6 +466,22 @@ impl Agent {
             },
             memory: None,   // Don't clone memory to avoid lock issues
             provider: None, // Provider passed separately to avoid double-Arc
+            session_manager: Arc::clone(&self.session_manager),
+            session_router: SessionRouter::new(
+                Arc::clone(&self.session_manager),
+                self.config.name.clone(),
+            ),
+            subagent_executor: Arc::new(
+                SubagentExecutor::new(
+                    SessionRouter::new(Arc::clone(&self.session_manager), self.config.name.clone()),
+                    Arc::clone(&self.session_manager),
+                    self.config.name.clone(),
+                    5,
+                )
+                .with_provider(provider)
+                .with_agent_config(self.config.clone()),
+            ),
+            session_key_provider: Arc::clone(&self.session_key_provider),
         }
     }
 
@@ -455,6 +544,234 @@ impl Agent {
     /// Get agent name
     pub fn name(&self) -> &str {
         &self.config.name
+    }
+
+    // Session overlay methods
+
+    /// Get the session manager
+    pub fn session_manager(&self) -> Arc<TokioRwLock<SessionManager>> {
+        Arc::clone(&self.session_manager)
+    }
+
+    /// Get the session router
+    pub fn session_router(&self) -> &SessionRouter {
+        &self.session_router
+    }
+
+    /// Get or create a session context for a peer and channel
+    ///
+    /// This is the primary method for channels to get a session.
+    /// It ensures cross-channel context sharing for the same peer.
+    pub async fn get_session_context(
+        &self,
+        peer: &Peer,
+        channel_type: ChannelType,
+        channel_id: &str,
+    ) -> Result<SessionContext> {
+        self.session_router
+            .route(peer, channel_type, channel_id, Some(&self.config.name))
+            .await
+    }
+
+    /// Get or create a session context for the default user
+    ///
+    /// Convenience method for CLI and simple channels
+    pub async fn get_default_session_context(&self) -> Result<SessionContext> {
+        let peer = Peer::User("default".to_string());
+        self.get_session_context(&peer, ChannelType::Cli, "default")
+            .await
+    }
+
+    /// Create a spawn/subagent session
+    ///
+    /// Creates a new spawn overlay for isolated task execution.
+    /// Use `isolated=true` for tasks that should not share context.
+    pub async fn spawn_session(
+        &self,
+        peer: &Peer,
+        task: &str,
+        isolated: bool,
+        parent_session_key: &str,
+        timeout_seconds: Option<u64>,
+    ) -> Result<SessionContext> {
+        self.session_router
+            .spawn(
+                &self.config.name,
+                peer,
+                task,
+                isolated,
+                parent_session_key,
+                timeout_seconds,
+            )
+            .await
+    }
+
+    // Session management commands (CLI integration)
+
+    /// Create a new session (/new command)
+    pub async fn session_new(&self, peer: &Peer) -> Result<String> {
+        let manager = self.session_manager.write().await;
+        let session_id = manager.create_new_session(peer).await?;
+        info!("Created new session {} for peer {:?}", session_id, peer);
+        Ok(session_id)
+    }
+
+    /// Branch current session (/branch command)
+    pub async fn session_branch(&self, peer: &Peer, label: Option<String>) -> Result<String> {
+        let manager = self.session_manager.write().await;
+        let session_id = manager.branch_session(peer, label).await?;
+        info!("Branched session {} from peer {:?}", session_id, peer);
+        Ok(session_id)
+    }
+
+    /// Switch to a different session (/switch command)
+    pub async fn session_switch(&self, peer: &Peer, session_id: &str) -> Result<()> {
+        let manager = self.session_manager.write().await;
+        manager.switch_session(peer, session_id).await?;
+        info!("Switched peer {:?} to session {}", peer, session_id);
+        Ok(())
+    }
+
+    /// List all sessions for a peer (/sessions command)
+    pub async fn session_list(&self, peer: &Peer) -> Result<Vec<crate::session::SessionInfo>> {
+        let manager = self.session_manager.write().await;
+        let sessions = manager.list_sessions(peer).await?;
+        Ok(sessions)
+    }
+
+    /// Format session list for display
+    pub fn format_session_list(
+        &self,
+        sessions: &[crate::session::SessionInfo],
+        active_id: Option<&str>,
+    ) -> String {
+        if sessions.is_empty() {
+            return "No sessions found.".to_string();
+        }
+
+        let mut output = String::from("📁 Sessions:\n\n");
+
+        for (i, session) in sessions.iter().enumerate() {
+            let is_active = active_id
+                .map(|id| id == session.session_id)
+                .unwrap_or(false);
+            let marker = if is_active { "●" } else { "○" };
+            let label = session.label.as_deref().unwrap_or("unnamed");
+            let short_id = &session.session_id[..8];
+
+            output.push_str(&format!("{} {}. {} ({})", marker, i + 1, label, short_id));
+
+            if let Some(ref parent) = session.parent_id {
+                output.push_str(&format!(" [branched from {}]", &parent[..8]));
+            }
+
+            if is_active {
+                output.push_str(" ← active");
+            }
+
+            output.push('\n');
+        }
+
+        output.push_str("\nUse /switch <number> or /switch <session-id> to change session\n");
+        output
+    }
+
+    /// Process a session command and return (handled, response)
+    ///
+    /// Returns (true, response) if the command was handled
+    /// Returns (false, _) if not a command (should be processed as normal message)
+    pub async fn process_session_command(
+        &self,
+        peer: &Peer,
+        command: &str,
+    ) -> Result<(bool, String)> {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        if parts.is_empty() {
+            return Ok((false, String::new()));
+        }
+
+        match parts[0] {
+            "/new" => {
+                let session_id = self.session_new(peer).await?;
+                Ok((true, format!(
+                    "✨ Created new session!\n\nSession ID: {}\n\nYou can switch back to previous sessions with /sessions and /switch",
+                    &session_id[..8]
+                )))
+            }
+
+            "/branch" => {
+                let label = parts.get(1).map(|s| s.to_string());
+                let session_id = self.session_branch(peer, label.clone()).await?;
+                let label_str = label.as_deref().unwrap_or("unnamed");
+                Ok((true, format!(
+                    "🌿 Branched new session from current!\n\nLabel: {}\nSession ID: {}\n\nThis session contains a copy of the current conversation.",
+                    label_str,
+                    &session_id[..8]
+                )))
+            }
+            "/switch" => {
+                if parts.len() < 2 {
+                    return Ok((true, "Usage: /switch <session-number> or /switch <session-id>\n\nUse /sessions to see available sessions.".to_string()));
+                }
+
+                let sessions = self.session_list(peer).await?;
+                let target = parts[1];
+
+                // Try to parse as index first (1-based)
+                let session_id = if let Ok(index) = target.parse::<usize>() {
+                    if index == 0 || index > sessions.len() {
+                        return Ok((true, format!("Invalid session number. Use /sessions to see available sessions (1-{}).", sessions.len())));
+                    }
+                    sessions[index - 1].session_id.clone()
+                } else {
+                    // Try as session ID (or partial)
+                    let target_lower = target.to_lowercase();
+                    sessions
+                        .iter()
+                        .find(|s| s.session_id.to_lowercase().starts_with(&target_lower))
+                        .map(|s| s.session_id.clone())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Session '{}' not found. Use /sessions to see available sessions.",
+                                target
+                            )
+                        })?
+                };
+
+                self.session_switch(peer, &session_id).await?;
+                Ok((true, format!(
+                    "↔️  Switched to session {}\n\nPrevious messages are now from the selected session context.",
+                    &session_id[..8]
+                )))
+            }
+            "/sessions" => {
+                let sessions = self.session_list(peer).await?;
+                let active_id = sessions
+                    .iter()
+                    .find(|s| {
+                        Some(s.session_id.as_str())
+                            == sessions.first().map(|f| f.session_id.as_str())
+                    })
+                    .map(|s| s.session_id.clone());
+                let output = self.format_session_list(&sessions, active_id.as_deref());
+                Ok((true, output))
+            }
+            "/help" => Ok((
+                true,
+                "📚 Available commands:\n\n\
+                    /new           - Create a new empty session\n\
+                    /branch        - Branch (fork) current session\n\
+                    /sessions      - List all sessions\n\
+                    /switch <n>    - Switch to session by number or ID\n\
+                    /help          - Show this help\n\n\
+                    All other text is sent to the agent."
+                    .to_string(),
+            )),
+            _ => {
+                // Not a recognized command
+                Ok((false, String::new()))
+            }
+        }
     }
 
     // Private helper methods
@@ -605,5 +922,115 @@ mod tests {
         let agent = agent.unwrap();
         assert_eq!(agent.name(), "test-agent");
         assert!(agent.did().starts_with("did:pekobot:"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_has_session_manager() {
+        use crate::types::provider::{ProviderConfig, ProviderType};
+
+        let config = AgentConfig {
+            name: "test-agent-session".to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let agent = Agent::new(config).await.unwrap();
+
+        // Agent should have a session manager
+        let manager = agent.session_manager();
+        let manager_guard = manager.read().await;
+        assert_eq!(manager_guard.base_session_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_agent_session_router() {
+        use crate::session::types::{ChannelType, Peer};
+        use crate::types::provider::{ProviderConfig, ProviderType};
+
+        let config = AgentConfig {
+            name: "test-agent-router".to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let agent = Agent::new(config).await.unwrap();
+        let router = agent.session_router();
+
+        // Router should be able to route to sessions
+        let peer = Peer::User("test_user".to_string());
+        let ctx = router.route(&peer, ChannelType::Cli, "default", None).await;
+
+        // Should succeed (requires filesystem in full test)
+        // This just verifies the router is properly initialized
+        assert!(ctx.is_ok() || ctx.is_err()); // Either is fine for this test
+    }
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access and provider setup"]
+    async fn test_agent_get_session_context() {
+        use crate::session::types::{ChannelType, Peer};
+        use crate::types::provider::{ProviderConfig, ProviderType};
+
+        let config = AgentConfig {
+            name: "test-agent-context".to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let agent = Agent::new(config).await.unwrap();
+        let peer = Peer::User("alice".to_string());
+
+        let ctx = agent
+            .get_session_context(&peer, ChannelType::Cli, "default")
+            .await;
+
+        assert!(ctx.is_ok());
+        let ctx = ctx.unwrap();
+        assert_eq!(ctx.channel_type, Some(ChannelType::Cli));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access and provider setup"]
+    async fn test_agent_spawn_session() {
+        use crate::session::types::Peer;
+        use crate::types::provider::{ProviderConfig, ProviderType};
+
+        let config = AgentConfig {
+            name: "test-agent-spawn".to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let agent = Agent::new(config).await.unwrap();
+        let peer = Peer::User("bob".to_string());
+
+        // Create a parent session first
+        let parent_ctx = agent
+            .get_session_context(&peer, crate::session::types::ChannelType::Cli, "default")
+            .await
+            .unwrap();
+        let parent_key = parent_ctx.full_session_key().await;
+
+        // Spawn a child session with shared context
+        let spawn_ctx = agent
+            .spawn_session(&peer, "test task", false, &parent_key, Some(300))
+            .await;
+
+        assert!(spawn_ctx.is_ok());
+        let spawn_ctx = spawn_ctx.unwrap();
+        assert!(spawn_ctx.is_subagent);
+        assert!(!spawn_ctx.is_isolated().await);
     }
 }

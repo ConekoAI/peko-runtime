@@ -1,7 +1,16 @@
 //! CLI channel - Interactive terminal interface
 //!
-//! Presentation layer for CLI output. Separated from agent/engine logic
-//! to allow easy extension to other channels (Discord, WhatsApp, etc.)
+//! Presentation layer for CLI output with session overlay support.
+//! Uses the hybrid session model for cross-channel context sharing.
+//!
+//! # Session Commands
+//!
+//! The CLI supports built-in session management commands:
+//! - `/new` - Create a new empty session
+//! - `/branch [label]` - Branch (fork) the current session  
+//! - `/sessions` - List all sessions
+//! - `/switch <n|id>` - Switch to a different session
+//! - `/help` - Show available commands
 
 use super::{Channel, StreamingConfig};
 use anyhow::Result;
@@ -11,8 +20,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::engine::SimpleSession;
-use crate::session::index::SessionIndex;
+use crate::session::context::SessionContext;
+use crate::session::types::{ChannelType, Peer};
+use crate::session::{HybridSession, SessionManager};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Command line interface channel with interactive input
 pub struct CliChannel {
@@ -55,6 +67,36 @@ impl CliChannel {
             _input_handle,
             streaming_config,
         }
+    }
+
+    /// Create a default session context for this CLI channel using the agent's session manager
+    ///
+    /// Uses peer-based session key: agent:{agent}:peer:user:default
+    pub async fn create_session_context(
+        &self,
+        agent: &crate::agent::Agent,
+    ) -> Result<SessionContext> {
+        self.create_session_context_for_user(agent, "default").await
+    }
+
+    /// Create a session context for a specific user
+    ///
+    /// This enables multi-user CLI scenarios (e.g., shared terminal with user identification)
+    pub async fn create_session_context_for_user(
+        &self,
+        agent: &crate::agent::Agent,
+        username: &str,
+    ) -> Result<SessionContext> {
+        let agent_name = agent.name().to_string();
+        let peer = Peer::User(username.to_string());
+        let manager = agent.session_manager();
+        let mut manager_guard = manager.write().await;
+
+        let hybrid = manager_guard
+            .get_session_for_channel(&agent_name, &peer, ChannelType::Cli, "default")
+            .await?;
+
+        Ok(SessionContext::new(hybrid).await)
     }
 
     /// Print a styled banner
@@ -188,6 +230,8 @@ pub async fn process_events(
 }
 
 /// Run interactive loop with streaming support
+///
+/// Uses the new session overlay architecture with peer-based session keys.
 pub async fn run_interactive_loop(
     mut channel: CliChannel,
     agent: std::sync::Arc<std::sync::Mutex<crate::agent::Agent>>,
@@ -196,52 +240,46 @@ pub async fn run_interactive_loop(
 
     channel.print_banner();
 
-    // Get agent name and session key for this interactive session
+    // Get agent name for logging
     let agent_name = {
-        let agent_lock = agent.lock().unwrap();
-        agent_lock.name().to_string()
+        let agent_guard = agent.lock().unwrap();
+        agent_guard.name().to_string()
     };
-    let session_key = format!("agent:{}:cli:default", agent_name);
 
-    // Open or create session once at startup (not on every message)
-    let (mut current_session, mut history) =
-        match SimpleSession::open_by_key(&agent_name, &session_key).await {
-            Ok(Some(session)) => {
-                info!("Resuming existing CLI session with key: {}", session_key);
-                match session.load_history().await {
-                    Ok(hist) => {
-                        if !hist.is_empty() {
-                            info!("📂 Resumed session with {} previous messages", hist.len());
-                        }
-                        (Some(session), Some(hist))
-                    }
-                    Err(e) => {
-                        warn!("Failed to load session history: {}", e);
-                        (Some(session), None)
-                    }
+    // Create session context for default user
+    let session_result = {
+        let agent_guard = agent.lock().unwrap();
+        channel.create_session_context(&*agent_guard).await
+    };
+
+    let mut session_ctx = match session_result {
+        Ok(ctx) => {
+            info!("Created CLI session context for agent: {}", agent_name);
+
+            // Load existing history if available
+            match ctx.load_history().await {
+                Ok(history) if !history.is_empty() => {
+                    info!(
+                        "📂 Resumed session with {} previous messages",
+                        history.len()
+                    );
+                }
+                _ => {
+                    info!("🆕 Started new session");
                 }
             }
-            Ok(None) => {
-                info!(
-                    "No existing CLI session found, creating new one with key: {}",
-                    session_key
-                );
-                match SimpleSession::open_or_create_by_key(&agent_name, &session_key).await {
-                    Ok(session) => {
-                        info!("🆕 Started new session");
-                        (Some(session), None)
-                    }
-                    Err(e) => {
-                        warn!("Failed to create session: {}", e);
-                        (None, None)
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("Failed to open session: {}", e);
-                (None, None)
-            }
-        };
+
+            ctx
+        }
+        Err(e) => {
+            warn!(
+                "Failed to create session context: {}. Continuing without persistence.",
+                e
+            );
+            // Create a fallback context without persistence
+            return run_interactive_loop_without_persistence(channel, agent).await;
+        }
+    };
 
     channel.print_prompt();
 
@@ -269,93 +307,82 @@ pub async fn run_interactive_loop(
                     continue;
                 }
 
-                // Handle /new command - start fresh session
-                if trimmed.eq_ignore_ascii_case("/new") {
-                    println!("\n🆕 Starting new session...");
-                    if let Err(e) = reset_cli_session_by_key(&agent_name, &session_key).await {
-                        eprintln!("❌ Failed to reset session: {}", e);
-                    } else {
-                        println!("✅ Session reset. Next message will start fresh.");
-                        // Reset local session tracking
-                        match SimpleSession::open_or_create_by_key(&agent_name, &session_key).await
-                        {
-                            Ok(session) => {
-                                current_session = Some(session);
-                                history = None;
-                            }
-                            Err(e) => {
-                                warn!("Failed to create new session: {}", e);
-                                current_session = None;
-                                history = None;
-                            }
+                // Handle session management commands
+                if let Some(cmd_result) = handle_cli_session_command(
+                    trimmed,
+                    &channel,
+                    &agent,
+                    &agent_name,
+                    &mut session_ctx,
+                )
+                .await
+                {
+                    match cmd_result {
+                        Ok(true) => {
+                            channel.print_prompt();
+                            continue;
+                        }
+                        Ok(false) => {
+                            // Not a session command, continue to normal processing
+                        }
+                        Err(e) => {
+                            eprintln!("\n❌ Session command error: {}", e);
+                            channel.print_prompt();
+                            continue;
                         }
                     }
-                    channel.print_prompt();
-                    continue;
                 }
 
-                // Handle /sessions command - list sessions
-                if trimmed.eq_ignore_ascii_case("/sessions") {
-                    if let Err(e) = list_cli_sessions().await {
-                        eprintln!("❌ Failed to list sessions: {}", e);
-                    }
-                    channel.print_prompt();
-                    continue;
+                // Add user message to session
+                if let Err(e) = session_ctx.add_user_message(trimmed).await {
+                    warn!("Failed to add user message to session: {}", e);
                 }
+
+                // Load history for the agent
+                let history = match session_ctx.load_history().await {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        warn!("Failed to load history: {}", e);
+                        None
+                    }
+                };
 
                 // Process the message with session persistence
-                // Use the session we opened at startup (or reload if needed)
                 let local = LocalSet::new();
                 let result = local
                     .run_until(async {
                         let agent_lock = agent.lock().unwrap();
-                        let event_rx = agent_lock
-                            .execute_streaming_with_session(
-                                trimmed,
-                                current_session.take(),
-                                history.take(),
+
+                        // Get the base session for resume
+                        let base_session = {
+                            let base = session_ctx.hybrid.base.read().await;
+                            // Convert to SimpleSession for compatibility with existing API
+                            crate::engine::SimpleSession::open_by_key(
+                                &agent_name,
+                                &base.session_key,
                             )
+                            .await
+                            .ok()
+                            .flatten()
+                        };
+
+                        let event_rx = agent_lock
+                            .execute_streaming_with_session(trimmed, base_session, history)
                             .await?;
                         process_events(event_rx, &agent_name).await
                     })
                     .await;
 
                 match result {
-                    Ok(_answer) => {
-                        // Response already printed by process_events
+                    Ok(answer) => {
+                        // Add assistant response to session
+                        if let Err(e) = session_ctx.add_assistant_message(&answer, None).await {
+                            warn!("Failed to add assistant message to session: {}", e);
+                        }
                     }
                     Err(e) => {
                         error!("Error in streaming: {}", e);
                         channel.print_error(&format!("Error: {}", e));
-                    }
-                }
-
-                // Reload session from disk for next message
-                // (execute_streaming_with_session takes ownership)
-                match SimpleSession::open_by_key(&agent_name, &session_key).await {
-                    Ok(Some(session)) => {
-                        current_session = Some(session);
-                        history = current_session.as_ref().unwrap().load_history().await.ok();
-                    }
-                    Ok(None) => {
-                        // Session was removed, create new
-                        match SimpleSession::open_or_create_by_key(&agent_name, &session_key).await
-                        {
-                            Ok(session) => {
-                                current_session = Some(session);
-                                history = None;
-                            }
-                            Err(e) => {
-                                warn!("Failed to recreate session: {}", e);
-                                current_session = None;
-                                history = None;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to reload session: {}", e);
-                        current_session = None;
-                        history = None;
                     }
                 }
 
@@ -381,8 +408,299 @@ pub async fn run_interactive_loop(
     Ok(())
 }
 
+/// Fallback interactive loop without persistence
+///
+/// Used when session context creation fails.
+async fn run_interactive_loop_without_persistence(
+    mut channel: CliChannel,
+    agent: std::sync::Arc<std::sync::Mutex<crate::agent::Agent>>,
+) -> Result<()> {
+    use tokio::task::LocalSet;
+
+    let agent_name = {
+        let agent_lock = agent.lock().unwrap();
+        agent_lock.name().to_string()
+    };
+
+    println!("⚠️  Running without session persistence\n");
+    channel.print_prompt();
+
+    loop {
+        match channel.stdin_rx.try_recv() {
+            Ok(line) => {
+                let trimmed = line.trim();
+
+                if trimmed.is_empty() {
+                    channel.print_prompt();
+                    continue;
+                }
+
+                if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
+                    println!("\n👋 Goodbye!");
+                    break;
+                }
+
+                let local = LocalSet::new();
+                let result = local
+                    .run_until(async {
+                        let agent_lock = agent.lock().unwrap();
+                        let event_rx = agent_lock.execute_streaming(trimmed).await?;
+                        process_events(event_rx, &agent_name).await
+                    })
+                    .await;
+
+                if let Err(e) = result {
+                    error!("Error in streaming: {}", e);
+                    channel.print_error(&format!("Error: {}", e));
+                }
+
+                {
+                    let agent_lock = agent.lock().unwrap();
+                    agent_lock.set_state(crate::types::agent::AgentState::Idle);
+                }
+
+                channel.print_prompt();
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle CLI session commands
+///
+/// Returns:
+/// - `Some(Ok(true))` - Command was handled (continue loop)
+/// - `Some(Ok(false))` - Not a session command (process normally)
+/// - `Some(Err(_))` - Error handling command
+/// - `None` - Should not happen (placeholder)
+async fn handle_cli_session_command(
+    trimmed: &str,
+    channel: &CliChannel,
+    agent: &std::sync::Arc<std::sync::Mutex<crate::agent::Agent>>,
+    agent_name: &str,
+    session_ctx: &mut SessionContext,
+) -> Option<Result<bool>> {
+    // Quick check if it looks like a session command
+    if !trimmed.starts_with('/') && trimmed != "help" {
+        return Some(Ok(false));
+    }
+
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.is_empty() {
+        return Some(Ok(false));
+    }
+
+    let cmd = parts[0].to_lowercase();
+    let peer_key = "default".to_string();
+
+    // Get session manager reference
+    let session_manager = {
+        let agent_guard = agent.lock().unwrap();
+        agent_guard.session_manager().clone()
+    };
+
+    // Get registry manager reference
+    let registry_manager = {
+        let manager = session_manager.read().await;
+        match manager.registry() {
+            Some(r) => Some(r.clone()),
+            None => None,
+        }
+    };
+
+    // If no registry, we can't handle session commands
+    let registry = match registry_manager {
+        Some(r) => r,
+        None => return Some(Ok(false)),
+    };
+
+    match cmd.as_str() {
+        "/new" => {
+            let new_session_id = match registry.create_new(&peer_key).await {
+                Ok(id) => id,
+                Err(e) => return Some(Err(e)),
+            };
+            println!(
+                "\n✅ Created and switched to new session: {}",
+                new_session_id
+            );
+
+            // Reload session context
+            {
+                let agent_guard = agent.lock().unwrap();
+                match channel.create_session_context(&*agent_guard).await {
+                    Ok(new_ctx) => {
+                        *session_ctx = new_ctx;
+                        println!("🆕 New session started");
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to reload session context: {}", e);
+                    }
+                }
+            }
+            Some(Ok(true))
+        }
+        "/branch" => {
+            let label = parts.get(1..).map(|s| s.join(" "));
+
+            let branch_id = match registry.branch(&peer_key, label.clone()).await {
+                Ok(id) => id,
+                Err(e) => {
+                    if e.to_string().contains("No active session") {
+                        println!("\n❌ No active session to branch from");
+                        return Some(Ok(true));
+                    }
+                    return Some(Err(e));
+                }
+            };
+
+            if let Some(lbl) = label {
+                println!(
+                    "\n✅ Branched to new session: {} (label: {})",
+                    branch_id, lbl
+                );
+            } else {
+                println!("\n✅ Branched to new session: {}", branch_id);
+            }
+
+            // Reload session context
+            {
+                let agent_guard = agent.lock().unwrap();
+                match channel.create_session_context(&*agent_guard).await {
+                    Ok(new_ctx) => {
+                        *session_ctx = new_ctx;
+                        println!("🌿 Branched session loaded");
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to reload session context: {}", e);
+                    }
+                }
+            }
+            Some(Ok(true))
+        }
+        "/sessions" => {
+            let sessions = match registry.list_sessions(&peer_key).await {
+                Ok(s) => s,
+                Err(e) => return Some(Err(e)),
+            };
+            let active = match registry.get_active_session_id(&peer_key).await {
+                Ok(id) => id,
+                Err(e) => return Some(Err(e)),
+            };
+
+            println!("\n📁 Sessions:");
+            if sessions.is_empty() {
+                println!("   No sessions found.");
+            } else {
+                for (i, session) in sessions.iter().enumerate() {
+                    let is_active = active.as_ref() == Some(&session.session_id);
+                    let marker = if is_active { "▶" } else { " " };
+                    let label_display = session
+                        .label
+                        .as_ref()
+                        .map(|l| format!(" [{}]", l))
+                        .unwrap_or_default();
+                    let short_id = if session.session_id.len() > 8 {
+                        &session.session_id[..8]
+                    } else {
+                        &session.session_id
+                    };
+                    println!(
+                        "   [{}] {}{} {}{}",
+                        i + 1,
+                        marker,
+                        short_id,
+                        label_display,
+                        if is_active { " (active)" } else { "" }
+                    );
+                }
+            }
+            println!();
+            Some(Ok(true))
+        }
+        "/switch" => {
+            if parts.len() < 2 {
+                println!("\n❌ Usage: /switch <n|id> - switch to session by number or ID");
+                return Some(Ok(true));
+            }
+
+            let target = parts[1];
+            let sessions = match registry.list_sessions(&peer_key).await {
+                Ok(s) => s,
+                Err(e) => return Some(Err(e)),
+            };
+
+            // Try to parse as number first
+            let session_id = if let Ok(num) = target.parse::<usize>() {
+                if num == 0 || num > sessions.len() {
+                    println!(
+                        "\n❌ Invalid session number. Use /sessions to see available sessions."
+                    );
+                    return Some(Ok(true));
+                }
+                sessions[num - 1].session_id.clone()
+            } else {
+                // Use as UUID directly
+                target.to_string()
+            };
+
+            if let Err(e) = registry.switch_session(&peer_key, &session_id).await {
+                return Some(Err(e));
+            }
+
+            println!("\n✅ Switched to session: {}", session_id);
+
+            // Reload session context
+            {
+                let agent_guard = agent.lock().unwrap();
+                match channel.create_session_context(&*agent_guard).await {
+                    Ok(new_ctx) => {
+                        *session_ctx = new_ctx;
+                        // Show session info
+                        match session_ctx.load_history().await {
+                            Ok(history) => {
+                                if history.is_empty() {
+                                    println!("📂 Empty session");
+                                } else {
+                                    println!("📂 Session with {} messages loaded", history.len());
+                                }
+                            }
+                            Err(_) => {
+                                println!("🆕 New session");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to reload session context: {}", e);
+                    }
+                }
+            }
+            Some(Ok(true))
+        }
+        "/help" => {
+            println!("\n📖 Session Commands:");
+            println!("   /new          - Create a new empty session");
+            println!("   /branch [lbl] - Fork the current session with optional label");
+            println!("   /sessions     - List all sessions");
+            println!("   /switch <n>   - Switch to session #n from /sessions list");
+            println!("   /help         - Show this help message\n");
+            Some(Ok(true))
+        }
+        _ => {
+            // Not a session command
+            Some(Ok(false))
+        }
+    }
+}
+
 /// Send a single message to the agent and get a response (non-interactive)
-/// Uses the same process_events as interactive mode
+///
+/// Uses the new session overlay architecture.
 pub async fn send_single_message(agent: &crate::agent::Agent, message: &str) -> Result<String> {
     send_single_message_with_session(agent, message, false).await
 }
@@ -400,208 +718,107 @@ pub async fn send_single_message_with_session(
 
     let agent_name = agent.name().to_string();
 
-    // CLI uses a consistent session key for persistence
-    // OpenClaw-compatible format: agent:{agent}:cli:default
-    let session_key = format!("agent:{}:cli:default", agent_name);
+    // Get or create session context
+    let session_ctx = if new_session {
+        info!("Starting new CLI session (explicit --new flag)");
+        // Create new context (replaces any existing)
+        let peer = Peer::User("default".to_string());
+        let manager = agent.session_manager();
+        let mut manager_guard = manager.write().await;
+
+        // Create a new session via registry (if available)
+        let new_session_id = manager_guard.create_new_session(&peer).await.ok();
+        if let Some(ref sid) = new_session_id {
+            info!("Created new session via registry: {}", sid);
+        }
+
+        // Remove existing CLI overlay if present
+        let base_key = crate::session::derive_base_session_key(&agent_name, &peer);
+        let overlay_key = format!("{}:overlay:channel:cli:default", base_key);
+        manager_guard.remove_channel_overlay(&overlay_key);
+
+        // Also remove from base_sessions cache to force re-creation
+        manager_guard.remove_base_session(&agent_name, &peer);
+
+        let hybrid = manager_guard
+            .get_session_for_channel(&agent_name, &peer, ChannelType::Cli, "default")
+            .await?;
+
+        println!("🆕 Created new session");
+        if let Some(sid) = new_session_id {
+            println!("   Session ID: {}", sid);
+        }
+        SessionContext::new(hybrid).await
+    } else {
+        // Use agent's method to get context
+        match agent.get_default_session_context().await {
+            Ok(ctx) => {
+                // Check if we have history
+                match ctx.load_history().await {
+                    Ok(history) if !history.is_empty() => {
+                        info!(
+                            "📂 Resumed session with {} previous messages",
+                            history.len()
+                        );
+                    }
+                    _ => {}
+                }
+                ctx
+            }
+            Err(e) => {
+                warn!("Failed to get session context: {}. Starting fresh.", e);
+                agent.get_default_session_context().await?
+            }
+        }
+    };
+
+    // Load history BEFORE executing - the engine will add the new message
+    let history = session_ctx.load_history().await.ok();
 
     // Create a LocalSet for the streaming execution
     let local = LocalSet::new();
 
-    local
+    let result = local
         .run_until(async {
-            let (existing_session, history) = if new_session {
-                info!("Starting new CLI session (explicit --new flag)");
-                // For --new, we want to create a fresh session even if one exists
-                // Remove the old index entry (file stays on disk for reference)
-                let storage_dir = SimpleSession::storage_dir(&agent_name);
-                let mut index = SessionIndex::open(&storage_dir);
-                if let Err(e) = index.remove(&session_key).await {
-                    debug!("Failed to remove old session index entry: {}", e);
-                }
-                // Now create new session
-                match SimpleSession::open_or_create_by_key(&agent_name, &session_key).await {
-                    Ok(session) => {
-                        println!("🆕 Created new session");
-                        (Some(session), None)
-                    }
-                    Err(e) => {
-                        warn!("Failed to create session: {}", e);
-                        (None, None)
-                    }
-                }
-            } else {
-                // Try to open existing session by key
-                match SimpleSession::open_by_key(&agent_name, &session_key).await {
-                    Ok(Some(session)) => {
-                        info!("Resuming existing CLI session with key: {}", session_key);
-                        match session.load_history().await {
-                            Ok(hist) => {
-                                if !hist.is_empty() {
-                                    println!(
-                                        "📂 Resumed session with {} previous messages",
-                                        hist.len()
-                                    );
-                                }
-                                (Some(session), Some(hist))
-                            }
-                            Err(e) => {
-                                warn!("Failed to load session history: {}", e);
-                                (Some(session), None)
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        info!(
-                            "No existing CLI session found, creating new one with key: {}",
-                            session_key
-                        );
-                        // Create new session
-                        match SimpleSession::open_or_create_by_key(&agent_name, &session_key).await
-                        {
-                            Ok(session) => (Some(session), None),
-                            Err(e) => {
-                                warn!("Failed to create session: {}", e);
-                                (None, None)
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to open session: {}", e);
-                        (None, None)
-                    }
-                }
+            // Get base session for resume
+            let base_session = {
+                let base = session_ctx.hybrid.base.read().await;
+                crate::engine::SimpleSession::open_by_key(&agent_name, &base.session_key)
+                    .await
+                    .ok()
+                    .flatten()
             };
 
+            // The engine handles adding user message and assistant response
+            // We don't need to manually add them here
             let event_rx = agent
-                .execute_streaming_with_session(message, existing_session, history)
+                .execute_streaming_with_session(message, base_session, history)
                 .await?;
             process_events(event_rx, &agent_name).await
         })
-        .await
+        .await?;
+
+    // Note: The engine (AgenticLoopV4) already adds both user and assistant messages
+    // to the session during execution, so we don't need to add them manually here.
+    // This fixes the message duplication issue.
+
+    Ok(result)
 }
 
-/// Reset the CLI session for an agent (delete the current session)
+/// Reset the CLI session for an agent (create new session)
 async fn reset_cli_session(agent: &crate::agent::Agent) -> Result<()> {
     let agent_name = agent.name();
-    // OpenClaw-compatible format: agent:{agent}:cli:default
-    let session_key = format!("agent:{}:cli:default", agent_name);
+    let peer = Peer::User("default".to_string());
 
-    reset_cli_session_by_key(agent_name, &session_key).await
-}
+    // Get session manager and remove the CLI overlay
+    let manager = agent.session_manager();
+    let mut manager_guard = manager.write().await;
 
-/// Reset the CLI session by key (delete the current session)
-async fn reset_cli_session_by_key(agent_name: &str, session_key: &str) -> Result<()> {
-    use crate::session::index::SessionIndex;
+    let base_key = crate::session::derive_base_session_key(agent_name, &peer);
+    let overlay_key = format!("{}:overlay:channel:cli:default", base_key);
 
-    // Get storage directory
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let storage_dir = home
-        .join(".pekobot")
-        .join("agents")
-        .join(agent_name)
-        .join("sessions");
-
-    let mut index = SessionIndex::open(&storage_dir);
-
-    // Find and remove the session entry from index
-    if let Some(entry) = index.get(session_key).await? {
-        let session_path = storage_dir.join(&entry.transcript_file);
-
-        if session_path.exists() {
-            tokio::fs::remove_file(&session_path).await?;
-            info!("Deleted session file: {:?}", session_path);
-        }
-
-        // Remove from index
-        index.remove(session_key).await?;
-        info!("Removed session key {} from index", session_key);
-    }
-
-    Ok(())
-}
-
-/// List CLI sessions for all agents or a specific agent
-async fn list_cli_sessions() -> Result<()> {
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-    let agents_dir = home.join(".pekobot").join("agents");
-
-    let mut all_sessions = Vec::new();
-
-    // List all agents
-    match tokio::fs::read_dir(&agents_dir).await {
-        Ok(mut entries) => {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Ok(metadata) = entry.metadata().await {
-                    if metadata.is_dir() {
-                        if let Some(agent_name) = entry.file_name().to_str() {
-                            let sessions_dir = entry.path().join("sessions");
-
-                            match tokio::fs::read_dir(&sessions_dir).await {
-                                Ok(mut session_entries) => {
-                                    while let Ok(Some(session_entry)) =
-                                        session_entries.next_entry().await
-                                    {
-                                        let path = session_entry.path();
-                                        if path.extension().map_or(false, |e| e == "jsonl") {
-                                            if let Some(session_id) =
-                                                path.file_stem().and_then(|s| s.to_str())
-                                            {
-                                                if let Ok(metadata) = session_entry.metadata().await
-                                                {
-                                                    if let Ok(modified) = metadata.modified() {
-                                                        let size = metadata.len();
-                                                        all_sessions.push((
-                                                            agent_name.to_string(),
-                                                            session_id.to_string(),
-                                                            modified,
-                                                            size,
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(_) => continue,
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            return Err(anyhow::anyhow!("Failed to read agents directory: {}", e));
-        }
-    }
-
-    // Sort by modification time (newest first)
-    all_sessions.sort_by(|a, b| b.2.cmp(&a.2));
-
-    if all_sessions.is_empty() {
-        println!("\n📭 No sessions found.");
-    } else {
-        println!("\n📋 Sessions ({} found):", all_sessions.len());
-        println!();
-
-        let mut current_agent = String::new();
-        for (agent, session_id, modified, size) in all_sessions {
-            if agent != current_agent {
-                println!("  🐱 {}", agent);
-                current_agent = agent;
-            }
-
-            let time_ago = format_time_ago(modified);
-            let size_str = format_size(size);
-
-            // Check if this is the CLI default session (OpenClaw format: agent:{agent}:cli:default)
-            let is_cli_default = session_id.ends_with(":cli:default");
-            let indicator = if is_cli_default { "→ " } else { "   " };
-
-            println!("{}   {} {} ({})", indicator, session_id, time_ago, size_str);
-        }
-
-        println!();
-        println!("  → = CLI default session (persistent)");
+    if manager_guard.remove_channel_overlay(&overlay_key).is_some() {
+        info!("Removed CLI session overlay for agent: {}", agent_name);
     }
 
     Ok(())
@@ -624,13 +841,26 @@ fn format_time_ago(time: std::time::SystemTime) -> String {
     }
 }
 
-/// Format byte size
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{}B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires tokio runtime and filesystem access"]
+    async fn test_cli_channel_creation() {
+        let channel = CliChannel::new("test");
+        assert_eq!(channel.name(), "test");
+    }
+
+    #[test]
+    fn test_format_time_ago() {
+        let now = std::time::SystemTime::now();
+        assert_eq!(format_time_ago(now), "just now");
+
+        let past = now - std::time::Duration::from_secs(120);
+        assert_eq!(format_time_ago(past), "2m ago");
+
+        let past = now - std::time::Duration::from_secs(7200);
+        assert_eq!(format_time_ago(past), "2h ago");
     }
 }

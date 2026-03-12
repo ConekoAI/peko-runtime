@@ -3,6 +3,7 @@
 //! Core tools only. On-demand tools are downloaded from Pekohub or installed locally.
 
 pub mod agent_management;
+pub mod agent_spawn_v2;
 pub mod apply_patch;
 pub mod browser;
 pub mod context; // Tool context with abort signals and progress callbacks
@@ -23,6 +24,7 @@ pub mod web_search;
 pub use agent_management::{
     AgentBroadcastTool, AgentInfoTool, AgentSpawnTool, AgentsListTool, ManagerCommand,
 };
+pub use agent_spawn_v2::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnToolV2};
 pub use apply_patch::{ApplyPatchConfig, ApplyPatchTool};
 pub use browser::BrowserTool;
 // Re-export context types for tool monitoring and abortion
@@ -43,5 +45,12 @@ pub use session_introspection::{
     SessionStatusTool, SessionsHistoryTool, SessionsListTool,
 };
 pub use session_messaging::{AgentInbox, SessionMessagingTool};
-pub use traits::{Tool, ToolError};
+pub use traits::{Tool, ToolError, ToolResult};
+
+// Async tool framework re-exports
+pub use crate::agent::async_tool_framework::{
+    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEventBus,
+    AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskStatus, AsyncTool, AsyncToolConfig,
+    SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
+};
 pub use web_search::{WebSearchConfig, WebSearchTool};

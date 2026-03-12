@@ -177,7 +177,7 @@ pub struct SessionKeyParts<'a> {
 
 /// Sanitize a component for use in a session key
 /// Replaces colons with underscores, limits length
-fn sanitize_key_component(s: &str) -> String {
+pub fn sanitize_key_component(s: &str) -> String {
     s.chars()
         .map(|c| if c == ':' { '_' } else { c })
         .take(64) // Limit component length
@@ -245,6 +245,106 @@ pub fn discord_session_key(
 /// Build a CLI session key
 pub fn cli_session_key(agent: &str) -> String {
     format!("agent:{}:cli:default", agent)
+}
+
+/// Derive a base session key from agent and peer
+/// Format: agent:{agent}:peer:{type}:{id}
+pub fn derive_base_session_key(agent: &str, peer: &super::Peer) -> String {
+    match peer {
+        super::Peer::User(id) => {
+            format!("agent:{}:peer:user:{}", agent, sanitize_key_component(id))
+        }
+        super::Peer::Agent(id) => {
+            format!("agent:{}:peer:agent:{}", agent, sanitize_key_component(id))
+        }
+    }
+}
+
+/// Derive an overlay key from base key and overlay info
+/// Format: {base_key}:overlay:{type}:{overlay_id}
+pub fn derive_overlay_key(base_key: &str, overlay_type: &str, overlay_id: &str) -> String {
+    format!("{}:overlay:{}:{}", base_key, overlay_type, overlay_id)
+}
+
+/// Parse a peer-based session key (v2 format)
+#[derive(Debug, Clone)]
+pub struct ParsedSessionKeyV2 {
+    pub agent: String,
+    pub peer_type: String,
+    pub peer_id: String,
+    pub overlay_type: Option<String>,
+    pub overlay_id: Option<String>,
+    pub is_overlay: bool,
+    pub raw: String,
+}
+
+/// Parse a session key (supports both v1 and v2 formats)
+pub fn parse_session_key_v2(key: &str) -> Option<ParsedSessionKeyV2> {
+    let parts: Vec<&str> = key.split(':').collect();
+
+    if parts.len() < 2 {
+        return None;
+    }
+
+    // Check for peer-based format (v2)
+    // Format: agent:{agent}:peer:{type}:{id}[:overlay:{type}:{id}]
+    if parts.len() >= 5 {
+        if let Some(peer_idx) = parts.iter().position(|&p| p == "peer") {
+            let agent = parts.get(1)?.to_string();
+            let peer_type = parts.get(peer_idx + 1)?.to_string();
+            let peer_id = parts
+                .iter()
+                .skip(peer_idx + 2)
+                .take_while(|&&p| p != "overlay")
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(":");
+
+            // Check for overlay
+            if let Some(overlay_idx) = parts.iter().position(|&p| p == "overlay") {
+                let overlay_type = parts.get(overlay_idx + 1)?.to_string();
+                let overlay_id = parts
+                    .iter()
+                    .skip(overlay_idx + 2)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(":");
+
+                return Some(ParsedSessionKeyV2 {
+                    agent,
+                    peer_type,
+                    peer_id,
+                    overlay_type: Some(overlay_type),
+                    overlay_id: Some(overlay_id),
+                    is_overlay: true,
+                    raw: key.to_string(),
+                });
+            }
+
+            return Some(ParsedSessionKeyV2 {
+                agent,
+                peer_type,
+                peer_id,
+                overlay_type: None,
+                overlay_id: None,
+                is_overlay: false,
+                raw: key.to_string(),
+            });
+        }
+    }
+
+    // Legacy format (v1) - not parsed by this function
+    None
+}
+
+/// Get the base session key from an overlay key
+pub fn base_key_from_overlay(overlay_key: &str) -> Option<String> {
+    // Format: agent:{agent}:peer:{type}:{id}:overlay:{overlay_type}:{overlay_id}
+    if let Some(pos) = overlay_key.find(":overlay:") {
+        Some(overlay_key[..pos].to_string())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -346,5 +446,82 @@ mod tests {
     fn test_sanitize_component() {
         assert_eq!(sanitize_key_component("hello:world"), "hello_world");
         assert_eq!(sanitize_key_component("a:b:c"), "a_b_c");
+    }
+
+    #[test]
+    fn test_derive_base_session_key() {
+        use super::super::Peer;
+
+        let user_peer = Peer::User("alice".to_string());
+        let key = derive_base_session_key("testagent", &user_peer);
+        assert_eq!(key, "agent:testagent:peer:user:alice");
+
+        let agent_peer = Peer::Agent("helper".to_string());
+        let key = derive_base_session_key("testagent", &agent_peer);
+        assert_eq!(key, "agent:testagent:peer:agent:helper");
+    }
+
+    #[test]
+    fn test_derive_overlay_key() {
+        let base = "agent:test:peer:user:alice";
+        let key = derive_overlay_key(base, "channel", "discord:guild123");
+        assert_eq!(
+            key,
+            "agent:test:peer:user:alice:overlay:channel:discord:guild123"
+        );
+    }
+
+    #[test]
+    fn test_parse_session_key_v2_base() {
+        use super::super::Peer;
+
+        let key = "agent:testagent:peer:user:alice";
+        let parsed = parse_session_key_v2(key).unwrap();
+
+        assert_eq!(parsed.agent, "testagent");
+        assert_eq!(parsed.peer_type, "user");
+        assert_eq!(parsed.peer_id, "alice");
+        assert!(!parsed.is_overlay);
+        assert_eq!(parsed.overlay_type, None);
+    }
+
+    #[test]
+    fn test_parse_session_key_v2_overlay() {
+        let key = "agent:testagent:peer:user:alice:overlay:channel:discord:guild123";
+        let parsed = parse_session_key_v2(key).unwrap();
+
+        assert_eq!(parsed.agent, "testagent");
+        assert_eq!(parsed.peer_type, "user");
+        assert_eq!(parsed.peer_id, "alice");
+        assert!(parsed.is_overlay);
+        assert_eq!(parsed.overlay_type, Some("channel".to_string()));
+        assert_eq!(parsed.overlay_id, Some("discord:guild123".to_string()));
+    }
+
+    #[test]
+    fn test_parse_session_key_v2_agent_peer() {
+        let key = "agent:testagent:peer:agent:helper";
+        let parsed = parse_session_key_v2(key).unwrap();
+
+        assert_eq!(parsed.agent, "testagent");
+        assert_eq!(parsed.peer_type, "agent");
+        assert_eq!(parsed.peer_id, "helper");
+    }
+
+    #[test]
+    fn test_base_key_from_overlay() {
+        let overlay = "agent:test:peer:user:alice:overlay:channel:discord:guild123";
+        let base = base_key_from_overlay(overlay).unwrap();
+        assert_eq!(base, "agent:test:peer:user:alice");
+
+        // Non-overlay key returns None
+        assert_eq!(base_key_from_overlay("agent:test:peer:user:alice"), None);
+    }
+
+    #[test]
+    fn test_legacy_key_returns_none() {
+        // Legacy format should not be parsed by v2 parser
+        let legacy = "agent:testagent:discord:123456";
+        assert!(parse_session_key_v2(legacy).is_none());
     }
 }

@@ -217,7 +217,7 @@ async fn list_sessions(agent_filter: Option<String>, json: bool) -> anyhow::Resu
                 };
 
                 println!(
-                    "{}   {}{} ({}{}{})",
+                    "{}   {} {} ({}{}{})",
                     indicator, display_id, time_ago, size_str, msg_info, token_info
                 );
             }
