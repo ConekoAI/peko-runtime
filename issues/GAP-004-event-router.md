@@ -1,7 +1,7 @@
 # GAP-004: Event Router (Orchestration Layer)
 
 **Priority:** 🟠 High  
-**Status:** Open  
+**Status:** In Progress  
 **Target:** v0.6.0  
 **Est. Effort:** 1 week  
 
@@ -199,14 +199,39 @@ pub struct WebhookRoute {
 
 ---
 
+## Implementation Phases
+
+### Phase 1: Core Event Types and Router ✅
+- Implemented `SystemEvent` enum with File, Webhook, Internal, Timer variants
+- Implemented `EventRouter` with handler registration per event type
+- Event history tracking (last 1000 events)
+- `AgentAction` enum for Invoke, Broadcast, Queue actions
+- 6 tests covering event routing and handler registration
+
+### Phase 2: File Watcher ✅
+- `FileWatcher` using `notify` crate for filesystem monitoring
+- `WatchConfig` builder pattern with filter, recursive, debounce options
+- Converts notify events to `SystemEvent::File`
+- Channel-based event emission (avoids Send issues with AgentManager)
+- 4 tests covering file watching configuration
+
+### Phase 3: Webhook Server ✅
+- `WebhookServer` using `axum` HTTP framework
+- `WebhookRoute` with source identifier and optional secret
+- Route registration: `/webhook/:route`
+- Health check and index endpoints
+- Channel-based event emission (consistent with FileWatcher)
+- `WebhookServerBuilder` for fluent configuration
+- 4 tests covering webhook routes and server builder
+
 ## Success Criteria
 
-- [ ] Can register event handlers for specific event types
-- [ ] File watcher emits events on file changes
-- [ ] Webhook server receives and routes webhooks
-- [ ] Events are dispatched to appropriate agents
-- [ ] Agents can register/unregister for event types
-- [ ] Event delivery is logged for audit
+- [x] Can register event handlers for specific event types
+- [x] File watcher emits events on file changes
+- [x] Webhook server receives and routes webhooks
+- [ ] Events are dispatched to appropriate agents (needs AgentManager integration)
+- [x] Agents can register/unregister for event types (via handlers)
+- [x] Event delivery is logged for audit (event history)
 
 ---
 
