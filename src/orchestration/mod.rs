@@ -15,7 +15,9 @@
 //! ```
 
 pub mod events;
+pub mod file_watcher;
 pub mod router;
 
 pub use events::{FileChangeType, SystemEvent};
+pub use file_watcher::{FileWatcher, FileWatcherBuilder, WatchConfig};
 pub use router::{AgentAction, EventRouter};
