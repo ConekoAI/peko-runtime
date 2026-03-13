@@ -410,7 +410,10 @@ mod tests {
         assert!(result.is_ok());
         let parsed = result.unwrap();
         assert!(matches!(parsed, ScheduleKind::Event { .. }));
-        if let ScheduleKind::Event { event_type, once, .. } = parsed {
+        if let ScheduleKind::Event {
+            event_type, once, ..
+        } = parsed
+        {
             assert_eq!(event_type, "webhook");
             assert!(once);
         }
@@ -425,7 +428,12 @@ mod tests {
         let result = parse_schedule(&schedule);
         assert!(result.is_ok());
         let parsed = result.unwrap();
-        if let ScheduleKind::Event { event_type, once, filter } = parsed {
+        if let ScheduleKind::Event {
+            event_type,
+            once,
+            filter,
+        } = parsed
+        {
             assert_eq!(event_type, "file");
             assert!(!once); // default
             assert!(filter.is_none()); // default
@@ -453,15 +461,17 @@ mod tests {
     #[tokio::test]
     async fn test_cron_tool_add_idle_job() {
         let (tool, _tmp) = create_test_tool();
-        let result = tool.execute(serde_json::json!({
-            "action": "add",
-            "name": "test-idle",
-            "schedule": {
-                "kind": "idle",
-                "minutes": 10
-            },
-            "message": "Idle cleanup task"
-        })).await;
+        let result = tool
+            .execute(serde_json::json!({
+                "action": "add",
+                "name": "test-idle",
+                "schedule": {
+                    "kind": "idle",
+                    "minutes": 10
+                },
+                "message": "Idle cleanup task"
+            }))
+            .await;
 
         assert!(result.is_ok());
         let response = result.unwrap();
@@ -472,17 +482,19 @@ mod tests {
     #[tokio::test]
     async fn test_cron_tool_add_event_job() {
         let (tool, _tmp) = create_test_tool();
-        let result = tool.execute(serde_json::json!({
-            "action": "add",
-            "name": "test-event",
-            "schedule": {
-                "kind": "event",
-                "event_type": "webhook",
-                "filter": {"source": "github"},
-                "once": true
-            },
-            "message": "Handle GitHub webhook"
-        })).await;
+        let result = tool
+            .execute(serde_json::json!({
+                "action": "add",
+                "name": "test-event",
+                "schedule": {
+                    "kind": "event",
+                    "event_type": "webhook",
+                    "filter": {"source": "github"},
+                    "once": true
+                },
+                "message": "Handle GitHub webhook"
+            }))
+            .await;
 
         assert!(result.is_ok());
         let response = result.unwrap();
@@ -492,19 +504,23 @@ mod tests {
     #[tokio::test]
     async fn test_cron_tool_list_idle() {
         let (tool, _tmp) = create_test_tool();
-        
+
         // Add an idle job first
         tool.execute(serde_json::json!({
             "action": "add",
             "name": "idle-job",
             "schedule": {"kind": "idle", "minutes": 5},
             "message": "test"
-        })).await.unwrap();
+        }))
+        .await
+        .unwrap();
 
         // List idle jobs
-        let result = tool.execute(serde_json::json!({
-            "action": "list_idle"
-        })).await;
+        let result = tool
+            .execute(serde_json::json!({
+                "action": "list_idle"
+            }))
+            .await;
 
         assert!(result.is_ok());
         let response = result.unwrap();
@@ -515,19 +531,23 @@ mod tests {
     #[tokio::test]
     async fn test_cron_tool_list_event() {
         let (tool, _tmp) = create_test_tool();
-        
+
         // Add an event job first
         tool.execute(serde_json::json!({
             "action": "add",
             "name": "event-job",
             "schedule": {"kind": "event", "event_type": "file"},
             "message": "test"
-        })).await.unwrap();
+        }))
+        .await
+        .unwrap();
 
         // List event jobs
-        let result = tool.execute(serde_json::json!({
-            "action": "list_event"
-        })).await;
+        let result = tool
+            .execute(serde_json::json!({
+                "action": "list_event"
+            }))
+            .await;
 
         assert!(result.is_ok());
         let response = result.unwrap();

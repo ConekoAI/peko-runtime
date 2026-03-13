@@ -310,10 +310,7 @@ impl Daemon {
                 }
 
                 // Execute the job
-                info!(
-                    "📡 Event '{}' matches job '{}'",
-                    event_type, job.name
-                );
+                info!("📡 Event '{}' matches job '{}'", event_type, job.name);
                 if let Err(e) = self.execute_job(job.clone()).await {
                     error!("Failed to execute event-triggered job: {}", e);
                     continue;
@@ -334,10 +331,7 @@ impl Daemon {
     }
 
     /// Check if an event matches a filter
-    fn event_matches_filter(
-        event: &SystemEvent,
-        filter: &serde_json::Value,
-    ) -> bool {
+    fn event_matches_filter(event: &SystemEvent, filter: &serde_json::Value) -> bool {
         // Convert event to JSON for filtering
         let event_json = match serde_json::to_value(event) {
             Ok(v) => v,
@@ -517,7 +511,10 @@ impl Daemon {
             job.name, agent_config.name, job.message
         );
 
-        info!("   Isolated execution prepared for agent: {}", agent_config.name);
+        info!(
+            "   Isolated execution prepared for agent: {}",
+            agent_config.name
+        );
 
         // For now, return success with note about future implementation
         Ok(("success".to_string(), Some(output)))
