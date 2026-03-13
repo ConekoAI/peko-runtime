@@ -226,6 +226,15 @@ pub struct PostgresBackend { /* Future */ }
   - 5 tests for EventTriggerService
   - 13 total tests in cron module
 
+### Daemon Integration ✅
+- `IdleDetector` integrated into Daemon (checks every 60s)
+- Event channel support via `with_event_receiver()` constructor
+- `check_idle_jobs()` method executes idle-triggered jobs
+- `handle_system_event()` method executes event-triggered jobs
+- JSON filter matching for event jobs
+- One-time event jobs automatically disabled after execution
+- 479 total tests passing
+
 ## References
 
 - [GRAND_ARCHITECTURE.md - Scheduler](../GRAND_ARCHITECTURE.md#411-scheduler)
