@@ -35,7 +35,7 @@ impl Tool for CronTool {
     }
 
     fn description(&self) -> &'static str {
-        "Manage scheduled cron jobs. Schedule one-time or recurring tasks."
+        "Manage scheduled cron jobs. Supports: at, every, cron, idle, and event triggers."
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
@@ -44,6 +44,8 @@ impl Tool for CronTool {
         match action {
             "add" => self.handle_add(params).await,
             "list" => self.handle_list(params).await,
+            "list_idle" => self.handle_list_idle(params).await,
+            "list_event" => self.handle_list_event(params).await,
             "remove" => self.handle_remove(params).await,
             "run" => self.handle_run(params).await,
             "history" => self.handle_history(params).await,
@@ -141,6 +143,54 @@ impl CronTool {
             "success": true,
             "jobs": job_list,
             "count": job_list.len()
+        }))
+    }
+
+    async fn handle_list_idle(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+        let jobs = self.scheduler.idle_jobs(false)?;
+
+        let job_list: Vec<serde_json::Value> = jobs
+            .into_iter()
+            .map(|j| {
+                serde_json::json!({
+                    "id": j.id,
+                    "name": j.name,
+                    "schedule": j.schedule.display(),
+                    "enabled": j.enabled,
+                    "run_count": j.run_count,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "success": true,
+            "jobs": job_list,
+            "count": job_list.len(),
+            "type": "idle"
+        }))
+    }
+
+    async fn handle_list_event(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+        let jobs = self.scheduler.event_jobs(false)?;
+
+        let job_list: Vec<serde_json::Value> = jobs
+            .into_iter()
+            .map(|j| {
+                serde_json::json!({
+                    "id": j.id,
+                    "name": j.name,
+                    "schedule": j.schedule.display(),
+                    "enabled": j.enabled,
+                    "run_count": j.run_count,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({
+            "success": true,
+            "jobs": job_list,
+            "count": job_list.len(),
+            "type": "event"
         }))
     }
 
@@ -246,6 +296,242 @@ fn parse_schedule(schedule: &serde_json::Value) -> Result<ScheduleKind> {
                 tz,
             })
         }
+        "idle" => {
+            let minutes = schedule["minutes"]
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("schedule.minutes is required for kind=idle"))?;
+            let agent_id = schedule["agent_id"].as_str().map(String::from);
+            Ok(ScheduleKind::Idle { minutes, agent_id })
+        }
+        "event" => {
+            let event_type = schedule["event_type"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("schedule.event_type is required for kind=event"))?
+                .to_string();
+            let filter = schedule.get("filter").cloned();
+            let once = schedule["once"].as_bool().unwrap_or(false);
+            Ok(ScheduleKind::Event {
+                event_type,
+                filter,
+                once,
+            })
+        }
         _ => Err(anyhow::anyhow!("Invalid schedule kind: {kind}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_test_tool() -> (CronTool, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cron.db");
+        let tool = CronTool::new(db_path).unwrap();
+        (tool, tmp)
+    }
+
+    #[test]
+    fn test_parse_schedule_at() {
+        let schedule = serde_json::json!({
+            "kind": "at",
+            "at": "2026-01-01T00:00:00Z"
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), ScheduleKind::At { .. }));
+    }
+
+    #[test]
+    fn test_parse_schedule_every() {
+        let schedule = serde_json::json!({
+            "kind": "every",
+            "every_ms": 60000
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), ScheduleKind::Every { .. }));
+    }
+
+    #[test]
+    fn test_parse_schedule_cron() {
+        let schedule = serde_json::json!({
+            "kind": "cron",
+            "expr": "0 9 * * *",
+            "tz": "America/New_York"
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), ScheduleKind::Cron { .. }));
+    }
+
+    #[test]
+    fn test_parse_schedule_idle() {
+        let schedule = serde_json::json!({
+            "kind": "idle",
+            "minutes": 10,
+            "agent_id": "test-agent"
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+        assert!(matches!(parsed, ScheduleKind::Idle { .. }));
+        if let ScheduleKind::Idle { minutes, agent_id } = parsed {
+            assert_eq!(minutes, 10);
+            assert_eq!(agent_id, Some("test-agent".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_parse_schedule_idle_without_agent() {
+        let schedule = serde_json::json!({
+            "kind": "idle",
+            "minutes": 5
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+        if let ScheduleKind::Idle { minutes, agent_id } = parsed {
+            assert_eq!(minutes, 5);
+            assert_eq!(agent_id, None);
+        }
+    }
+
+    #[test]
+    fn test_parse_schedule_event() {
+        let schedule = serde_json::json!({
+            "kind": "event",
+            "event_type": "webhook",
+            "filter": {"source": "github"},
+            "once": true
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+        assert!(matches!(parsed, ScheduleKind::Event { .. }));
+        if let ScheduleKind::Event { event_type, once, .. } = parsed {
+            assert_eq!(event_type, "webhook");
+            assert!(once);
+        }
+    }
+
+    #[test]
+    fn test_parse_schedule_event_defaults() {
+        let schedule = serde_json::json!({
+            "kind": "event",
+            "event_type": "file"
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+        if let ScheduleKind::Event { event_type, once, filter } = parsed {
+            assert_eq!(event_type, "file");
+            assert!(!once); // default
+            assert!(filter.is_none()); // default
+        }
+    }
+
+    #[test]
+    fn test_parse_schedule_invalid_kind() {
+        let schedule = serde_json::json!({
+            "kind": "invalid"
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_schedule_missing_kind() {
+        let schedule = serde_json::json!({
+            "at": "2026-01-01T00:00:00Z"
+        });
+        let result = parse_schedule(&schedule);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_add_idle_job() {
+        let (tool, _tmp) = create_test_tool();
+        let result = tool.execute(serde_json::json!({
+            "action": "add",
+            "name": "test-idle",
+            "schedule": {
+                "kind": "idle",
+                "minutes": 10
+            },
+            "message": "Idle cleanup task"
+        })).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response["success"].as_bool().unwrap());
+        assert!(response["job_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_add_event_job() {
+        let (tool, _tmp) = create_test_tool();
+        let result = tool.execute(serde_json::json!({
+            "action": "add",
+            "name": "test-event",
+            "schedule": {
+                "kind": "event",
+                "event_type": "webhook",
+                "filter": {"source": "github"},
+                "once": true
+            },
+            "message": "Handle GitHub webhook"
+        })).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(response["success"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_list_idle() {
+        let (tool, _tmp) = create_test_tool();
+        
+        // Add an idle job first
+        tool.execute(serde_json::json!({
+            "action": "add",
+            "name": "idle-job",
+            "schedule": {"kind": "idle", "minutes": 5},
+            "message": "test"
+        })).await.unwrap();
+
+        // List idle jobs
+        let result = tool.execute(serde_json::json!({
+            "action": "list_idle"
+        })).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response["count"].as_u64().unwrap(), 1);
+        assert_eq!(response["type"].as_str().unwrap(), "idle");
+    }
+
+    #[tokio::test]
+    async fn test_cron_tool_list_event() {
+        let (tool, _tmp) = create_test_tool();
+        
+        // Add an event job first
+        tool.execute(serde_json::json!({
+            "action": "add",
+            "name": "event-job",
+            "schedule": {"kind": "event", "event_type": "file"},
+            "message": "test"
+        })).await.unwrap();
+
+        // List event jobs
+        let result = tool.execute(serde_json::json!({
+            "action": "list_event"
+        })).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response["count"].as_u64().unwrap(), 1);
+        assert_eq!(response["type"].as_str().unwrap(), "event");
     }
 }
