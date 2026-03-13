@@ -80,14 +80,12 @@ impl EventTriggerService {
                 for job_id in job_ids {
                     // Check filter if present
                     if let Ok(Some(job)) = self.scheduler.get_job(&job_id) {
-                        if let crate::cron::ScheduleKind::Event { filter, once, .. } = &job.schedule {
+                        if let crate::cron::ScheduleKind::Event { filter, once, .. } = &job.schedule
+                        {
                             // Check if filter matches
                             if let Some(filter) = filter {
                                 if !Self::event_matches_filter(&event, filter) {
-                                    debug!(
-                                        "Job {} filter did not match event",
-                                        job_id
-                                    );
+                                    debug!("Job {} filter did not match event", job_id);
                                     continue;
                                 }
                             }
@@ -191,9 +189,15 @@ impl EventTriggerServiceBuilder {
 
     /// Build the service
     pub fn build(self) -> anyhow::Result<EventTriggerService> {
-        let scheduler = self.scheduler.ok_or_else(|| anyhow::anyhow!("Scheduler required"))?;
-        let event_rx = self.event_rx.ok_or_else(|| anyhow::anyhow!("Event receiver required"))?;
-        let trigger_tx = self.trigger_tx.ok_or_else(|| anyhow::anyhow!("Trigger sender required"))?;
+        let scheduler = self
+            .scheduler
+            .ok_or_else(|| anyhow::anyhow!("Scheduler required"))?;
+        let event_rx = self
+            .event_rx
+            .ok_or_else(|| anyhow::anyhow!("Event receiver required"))?;
+        let trigger_tx = self
+            .trigger_tx
+            .ok_or_else(|| anyhow::anyhow!("Trigger sender required"))?;
 
         Ok(EventTriggerService::new(scheduler, event_rx, trigger_tx))
     }

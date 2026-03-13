@@ -86,7 +86,9 @@ impl IdleDetector {
     /// Get duration since last activity for an agent
     pub async fn idle_duration(&self, agent_id: &str) -> Option<Duration> {
         let activity = self.last_activity.read().await;
-        activity.get(agent_id).map(|last| Instant::now().duration_since(*last))
+        activity
+            .get(agent_id)
+            .map(|last| Instant::now().duration_since(*last))
     }
 
     /// Get global idle duration

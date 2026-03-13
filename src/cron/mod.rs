@@ -78,7 +78,11 @@ impl ScheduleKind {
                     format!("idle {minutes}m (any agent)")
                 }
             }
-            ScheduleKind::Event { event_type, filter, once } => {
+            ScheduleKind::Event {
+                event_type,
+                filter,
+                once,
+            } => {
                 let filter_info = filter.as_ref().map(|_| " [filtered]").unwrap_or("");
                 let once_info = if *once { " (once)" } else { "" };
                 format!("event '{event_type}'{filter_info}{once_info}")
@@ -518,10 +522,15 @@ fn parse_job_from_row(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
             .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
         "cron" => serde_json::from_str(&schedule_data)
             .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
-        "idle" => serde_json::from_str(&schedule_data)
-            .unwrap_or(ScheduleKind::Idle { minutes: 5, agent_id: None }),
-        "event" => serde_json::from_str(&schedule_data)
-            .unwrap_or(ScheduleKind::Event { event_type: "webhook".to_string(), filter: None, once: false }),
+        "idle" => serde_json::from_str(&schedule_data).unwrap_or(ScheduleKind::Idle {
+            minutes: 5,
+            agent_id: None,
+        }),
+        "event" => serde_json::from_str(&schedule_data).unwrap_or(ScheduleKind::Event {
+            event_type: "webhook".to_string(),
+            filter: None,
+            once: false,
+        }),
         _ => ScheduleKind::Every { every_ms: 3600000 },
     };
 
