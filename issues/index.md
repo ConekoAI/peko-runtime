@@ -23,7 +23,7 @@ Before implementing architecture gaps, we must clean up technical debt:
 | [GAP-001](./GAP-001-mcp-support.md) | MCP (Model Context Protocol) Support | 🔴 Critical | Open | v0.5.0 |
 | [GAP-002](./GAP-002-system-managed-async.md) | System-Managed Execution (Simplified) | 🔴 Critical | **Simplified** | v0.5.0 |
 | [GAP-003](./GAP-003-session-overlays.md) | Session Overlays Architecture | 🔴 Critical | **Closed** | v0.5.0 |
-| [GAP-004](./GAP-004-event-router.md) | Event Router (Orchestration Layer) | 🟠 High | **In Progress** | v0.6.0 |
+| [GAP-004](./GAP-004-event-router.md) | Event Router (Orchestration Layer) | 🟠 High | **Closed** | v0.6.0 |
 | [GAP-005](./GAP-005-agent-messaging.md) | Agent-to-Agent Messaging | 🟠 High | Open | v0.6.0 |
 | [GAP-006](./GAP-006-scheduler-triggers.md) | Scheduler Missing Trigger Types | 🟠 High | Open | v0.6.0 |
 | [GAP-007](./GAP-007-skill-execution.md) | Skill System Execution Engine | 🟠 High | Open | v0.6.0 |

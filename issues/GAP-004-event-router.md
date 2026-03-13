@@ -224,12 +224,20 @@ pub struct WebhookRoute {
 - `WebhookServerBuilder` for fluent configuration
 - 4 tests covering webhook routes and server builder
 
+### Phase 4: AgentManager Integration ✅
+- Agent message processing loop in AgentPool (`PoolMessage::Execute` handler)
+- EventRouter `execute_invoke` uses `AgentHandle::execute()` for actual agent execution
+- EventRouter `execute_broadcast` for multi-agent dispatch
+- Full event-to-agent dispatch pipeline working end-to-end
+- 7 new tests covering handler registration, routing, and all action types
+- 18 total tests in orchestration module
+
 ## Success Criteria
 
 - [x] Can register event handlers for specific event types
 - [x] File watcher emits events on file changes
 - [x] Webhook server receives and routes webhooks
-- [ ] Events are dispatched to appropriate agents (needs AgentManager integration)
+- [x] Events are dispatched to appropriate agents (via AgentHandle)
 - [x] Agents can register/unregister for event types (via handlers)
 - [x] Event delivery is logged for audit (event history)
 
