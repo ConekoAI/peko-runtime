@@ -65,6 +65,9 @@ pub(crate) mod queue;
 /// Session storage (JSONL)
 pub mod session;
 
+/// Orchestration layer (event router, file watcher, webhooks)
+pub mod orchestration;
+
 // ============================================================================
 // External Interfaces
 // ============================================================================
