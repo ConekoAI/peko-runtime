@@ -25,7 +25,7 @@ Before implementing architecture gaps, we must clean up technical debt:
 | [GAP-003](./GAP-003-session-overlays.md) | Session Overlays Architecture | 🔴 Critical | **Closed** | v0.5.0 |
 | [GAP-004](./GAP-004-event-router.md) | Event Router (Orchestration Layer) | 🟠 High | **Closed** | v0.6.0 |
 | [GAP-005](./GAP-005-agent-messaging.md) | Agent-to-Agent Messaging | 🟠 High | Open | v0.6.0 |
-| [GAP-006](./GAP-006-scheduler-triggers.md) | Scheduler Missing Trigger Types | 🟠 High | Open | v0.6.0 |
+| [GAP-006](./GAP-006-scheduler-triggers.md) | Scheduler Missing Trigger Types | 🟠 High | **Closed** | v0.6.0 |
 | [GAP-007](./GAP-007-skill-execution.md) | Skill System Execution Engine | 🟠 High | Open | v0.6.0 |
 | [GAP-008](./GAP-008-tool-migration.md) | Tool Migration to Registry/MCPs | 🟡 Medium | Open | v0.7.0 |
 | [GAP-009](./GAP-009-cross-channel-sessions.md) | Cross-Channel Session Sharing | 🟡 Medium | **Closed** (part of GAP-003) | v0.7.0 |

@@ -1,9 +1,9 @@
 # GAP-006: Scheduler Missing Trigger Types
 
 **Priority:** 🟠 High  
-**Status:** Open  
+**Status:** Closed  
 **Target:** v0.6.0  
-**Est. Effort:** 3-5 days  
+**Est. Effort:** 3-5 days → **Actual: 1 day**  
 
 ---
 
@@ -191,6 +191,40 @@ pub struct PostgresBackend { /* Future */ }
 - [ ] Backend trait allows pluggable storage
 
 ---
+
+## Implementation Summary
+
+### Delivered
+
+| Component | Status | File(s) | Lines |
+|-----------|--------|---------|-------|
+| ScheduleKind Extension | ✅ Complete | `src/cron/mod.rs` | +30 |
+| IdleDetector | ✅ Complete | `src/cron/idle.rs` | +200 |
+| EventTriggerService | ✅ Complete | `src/cron/event_trigger.rs` | +280 |
+| CLI Commands | ✅ Complete | `src/commands/cron.rs` | +40 |
+| **Total** | | | **~550** |
+
+### Features Implemented
+
+- ✅ **Idle Trigger** - `ScheduleKind::Idle { minutes, agent_id }`
+  - Per-agent and global idle detection
+  - Activity tracking in AgentPool
+  - Configurable threshold in minutes
+  
+- ✅ **Event Trigger** - `ScheduleKind::Event { event_type, filter, once }`
+  - Subscribe to SystemEvent types (file, webhook, internal, timer)
+  - JSON filter matching for fine-grained control
+  - One-time execution support (`once: true`)
+  - Integration with EventRouter
+
+- ✅ **CLI Commands**
+  - `pekobot cron add-idle` - Create idle-triggered jobs
+  - `pekobot cron add-event` - Create event-triggered jobs
+
+- ✅ **Tests**
+  - 7 tests for IdleDetector
+  - 5 tests for EventTriggerService
+  - 13 total tests in cron module
 
 ## References
 

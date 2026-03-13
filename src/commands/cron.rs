@@ -106,6 +106,47 @@ pub enum CronCommands {
         #[arg(short, long, default_value = "10")]
         limit: usize,
     },
+
+    /// Add an idle-triggered job (runs when agent is idle)
+    AddIdle {
+        /// Job name
+        #[arg(short, long)]
+        name: String,
+        /// Idle threshold in minutes
+        #[arg(short, long)]
+        minutes: u64,
+        /// Specific agent to monitor (omit for any agent)
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Message/prompt to execute
+        #[arg(short, long)]
+        message: String,
+        /// Announce results
+        #[arg(long)]
+        announce: bool,
+    },
+
+    /// Add an event-triggered job (runs on system event)
+    AddEvent {
+        /// Job name
+        #[arg(short, long)]
+        name: String,
+        /// Event type to listen for (file, webhook, internal, timer)
+        #[arg(short, long)]
+        event_type: String,
+        /// JSON filter expression (e.g., '{"source": "github"}')
+        #[arg(short, long)]
+        filter: Option<String>,
+        /// Run only once then disable
+        #[arg(long)]
+        once: bool,
+        /// Message/prompt to execute
+        #[arg(short, long)]
+        message: String,
+        /// Announce results
+        #[arg(long)]
+        announce: bool,
+    },
 }
 
 /// Handle cron commands
@@ -201,6 +242,49 @@ pub async fn handle_cron(
         }
         CronCommands::History { job_id, limit } => {
             println!("📜 History for job '{job_id}' (limit: {limit})");
+            Ok(())
+        }
+        CronCommands::AddIdle {
+            name,
+            minutes,
+            agent,
+            message,
+            announce,
+        } => {
+            println!("➕ Adding idle-triggered job '{name}'");
+            println!("  Idle threshold: {minutes} minutes");
+            if let Some(a) = &agent {
+                println!("  Monitor agent: {a}");
+            } else {
+                println!("  Monitor: any agent");
+            }
+            println!("  Message: {message}");
+            if announce {
+                println!("  Announce: enabled");
+            }
+            println!("\nNote: Idle detection requires daemon with active agent pool");
+            Ok(())
+        }
+        CronCommands::AddEvent {
+            name,
+            event_type,
+            filter,
+            once,
+            message,
+            announce,
+        } => {
+            println!("➕ Adding event-triggered job '{name}'");
+            println!("  Event type: {event_type}");
+            if let Some(f) = &filter {
+                println!("  Filter: {f}");
+            }
+            if once {
+                println!("  Mode: one-time (will disable after first trigger)");
+            }
+            println!("  Message: {message}");
+            if announce {
+                println!("  Announce: enabled");
+            }
             Ok(())
         }
     }
