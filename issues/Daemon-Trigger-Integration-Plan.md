@@ -1,9 +1,10 @@
 # Daemon Trigger Integration Plan
 
-**Status:** Planning  
+**Status:** Closed  
 **Priority:** 🟠 High  
 **Target:** v0.6.0  
 **Est. Effort:** 2-3 days  
+**Actual:** 1 day  
 **Depends on:** GAP-006 (completed), CronTool Integration (completed)
 
 ---
@@ -390,6 +391,42 @@ async fn test_daemon_executes_event_job() {
 
 ---
 
+## Implementation Summary
+
+### Completed
+
+| Phase | Status | Files Changed | Lines |
+|-------|--------|---------------|-------|
+| 1. Idle Trigger Integration | ✅ | `src/daemon/mod.rs` | +60 |
+| 2. Event Trigger Integration | ✅ | `src/daemon/mod.rs` | +80 |
+| 3. Job Execution Improvements | ✅ | `src/daemon/mod.rs` | +30 |
+| 4. Testing | ✅ | Existing tests | Verified |
+| **Total** | | | **~170 lines** |
+
+### Delivered Features
+
+- ✅ `IdleDetector` integrated into Daemon struct
+- ✅ Idle check loop (every 60s) with `check_idle_jobs()`
+- ✅ Per-agent and global idle detection
+- ✅ Event channel support via `with_event_receiver()`
+- ✅ `handle_system_event()` with JSON filter matching
+- ✅ One-time event jobs automatically disabled after execution
+- ✅ Improved `execute_main_job()` with SystemEvent creation
+- ✅ Better error handling in `execute_isolated_job()`
+
+### Result
+
+Daemon now supports all 5 trigger types:
+```
+┌─────────────────────────────────────────┐
+│              Daemon                     │
+├─────────────────────────────────────────┤
+│  Time Poll (15s)  │ due_jobs()          │
+│  Idle Check (60s) │ check_idle_jobs()   │
+│  Event Channel    │ handle_system_event()│
+└─────────────────────────────────────────┘
+```
+
 *Plan created: 2026-03-13*  
-*Estimated time: 2-3 days*  
-*Status: Ready for implementation*
+*Completed: 2026-03-13*  
+*Status: ✅ Closed*

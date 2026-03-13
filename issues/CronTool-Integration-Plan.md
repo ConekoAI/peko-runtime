@@ -1,9 +1,10 @@
 # CronTool Integration Plan
 
-**Status:** Planning  
+**Status:** Closed  
 **Priority:** 🟠 High  
 **Target:** v0.6.0  
 **Est. Effort:** 1 day  
+**Actual:** 1 day  
 **Depends on:** GAP-006 (completed)
 
 ---
@@ -263,6 +264,42 @@ pekobot cron list
 
 ---
 
+## Implementation Summary
+
+### Completed
+
+| Phase | Status | Files Changed | Lines |
+|-------|--------|---------------|-------|
+| 1. ToolFactory Integration | ✅ | `src/tools/factory.rs` | +29 |
+| 2. CronTool Update | ✅ | `src/tools/cron_tool.rs` | +287 |
+| 3. AgentManager Integration | ✅ | `src/agent/manager.rs` | +3 |
+| 4. Testing | ✅ | Multiple test files | +13 tests |
+| **Total** | | | **~320 lines** |
+
+### Delivered Features
+
+- ✅ CronTool instantiated in ToolFactory (enabled by default)
+- ✅ Configurable cron DB path via `cron_db_path`
+- ✅ Agents can create all 5 schedule types (At, Every, Cron, Idle, Event)
+- ✅ `list_idle` and `list_event` actions for filtering
+- ✅ Comprehensive test coverage (13 new tests)
+- ✅ Full GAP-006 trigger support accessible to agents
+
+### Result
+
+Agents can now schedule cron jobs:
+```json
+{
+  "tool": "cron",
+  "params": {
+    "action": "add",
+    "name": "cleanup",
+    "schedule": {"kind": "idle", "minutes": 10},
+    "message": "Clean up temp files"
+  }
+}
+```
+
 *Plan created: 2026-03-13*  
-*Estimated time: 1 day*  
-*Status: Ready for implementation*
+*Completed: 2026-03-13*  
+*Status: ✅ Closed*
