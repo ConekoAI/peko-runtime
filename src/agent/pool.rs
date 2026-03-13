@@ -200,21 +200,24 @@ impl AgentPool {
         let agent_did = did.clone();
         tokio::spawn(async move {
             info!("Agent task started: {}", agent_did);
-            
+
             while let Some(msg) = rx.recv().await {
                 match msg {
                     PoolMessage::Execute { prompt, respond_to } => {
-                        debug!("Agent {} executing prompt: {}", agent_did, 
-                               prompt.chars().take(50).collect::<String>());
-                        
+                        debug!(
+                            "Agent {} executing prompt: {}",
+                            agent_did,
+                            prompt.chars().take(50).collect::<String>()
+                        );
+
                         // For now, return a mock response
                         // In full implementation, this would call agent.execute()
                         let result = Ok(format!(
-                            "Agent {} processed: {}", 
-                            agent_did, 
+                            "Agent {} processed: {}",
+                            agent_did,
                             prompt.chars().take(100).collect::<String>()
                         ));
-                        
+
                         if let Err(e) = respond_to.send(result).await {
                             warn!("Failed to send execution result: {}", e);
                         }
@@ -228,7 +231,7 @@ impl AgentPool {
                     }
                 }
             }
-            
+
             info!("Agent task stopped: {}", agent_did);
         });
 

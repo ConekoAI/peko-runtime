@@ -248,6 +248,43 @@ pub struct WebhookRoute {
 - 9 tests for configuration module
 - 35 total tests in orchestration module
 
+### Phase 6: Two-Tier Architecture & External Ingress ✅
+- **Tier 1 (Internal)**: File watcher, Cron/Timer, Internal events - native fast path
+- **Tier 2 (External)**: Unified `/webhook/ingress` endpoint for all SaaS integrations
+- `ExternalIngress` with source detection by:
+  - HTTP header (e.g., `X-GitHub-Event`)
+  - Payload field (e.g., `event.type`)
+  - User-Agent substring
+- Verification methods: HMAC-SHA256, Ed25519, Bearer token
+- CLI commands for unified ingress:
+  - `ingress-enable`, `ingress-add`, `ingress-remove`, `ingress-list`
+- 12 tests for external ingress module
+- 45 total tests in orchestration module
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    TIER 1: INTERNAL                      │
+│  (Fixed, native, low-latency sources)                    │
+│                                                          │
+│   FileWatcher ──┐                                        │
+│   Cron/Timer ───┼──► EventRouter ──► Agents              │
+│   Internal ─────┘                                        │
+└─────────────────────────────────────────────────────────┘
+                           ▲
+┌──────────────────────────┼──────────────────────────────┐
+│                    TIER 2: EXTERNAL                      │
+│  (Unified webhook ingress for external services)         │
+│                                                          │
+│   Discord ──►                                            │
+│   GitHub ───┼──► /webhook/ingress ──► Router ──►        │
+│   Slack ────┤      (single endpoint)                     │
+│   Stripe ───┤                                            │
+│   Custom ───┘                                            │
+└─────────────────────────────────────────────────────────┘
+```
+
 ## Success Criteria
 
 - [x] Can register event handlers for specific event types

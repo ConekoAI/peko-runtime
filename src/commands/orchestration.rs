@@ -6,12 +6,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-use crate::orchestration::config::{
-    FileWatchConfig, OrchestrationConfig, WebhookRouteConfig,
-};
-use crate::orchestration::external_ingress::{
-    ExternalSource, SourceDetection, VerificationConfig,
-};
+use crate::orchestration::config::{FileWatchConfig, OrchestrationConfig, WebhookRouteConfig};
+use crate::orchestration::external_ingress::{ExternalSource, SourceDetection, VerificationConfig};
 use crate::types::config::PekobotConfig;
 
 /// Orchestration management commands
@@ -296,10 +292,9 @@ pub async fn run(
                 println!("  (none)");
             } else {
                 for route in &config.orchestration.webhook.routes {
-                    println!("  {} -> {} (source: {})",
-                        route.path,
-                        route.agent_id,
-                        route.source
+                    println!(
+                        "  {} -> {} (source: {})",
+                        route.path, route.agent_id, route.source
                     );
                     if route.secret.is_some() {
                         println!("    [secret configured]");
@@ -307,7 +302,8 @@ pub async fn run(
                 }
             }
 
-            println!("\nWebhook server: {}",
+            println!(
+                "\nWebhook server: {}",
                 if config.orchestration.webhook.enabled {
                     format!("enabled on port {}", config.orchestration.webhook.port)
                 } else {
@@ -365,7 +361,8 @@ pub async fn run(
             println!("  Name: {}", name);
             println!("  Agent: {}", agent);
             println!("\nNote: External ingress will start on next daemon restart");
-            println!("  Configure external services to POST to: http://your-host:{}/webhook/ingress",
+            println!(
+                "  Configure external services to POST to: http://your-host:{}/webhook/ingress",
                 new_config.orchestration.external_ingress.port
             );
 
@@ -424,14 +421,21 @@ pub async fn run(
                 }
             }
 
-            println!("\nExternal ingress: {}",
+            println!(
+                "\nExternal ingress: {}",
                 if config.orchestration.external_ingress.enabled {
-                    format!("enabled on port {}", config.orchestration.external_ingress.port)
+                    format!(
+                        "enabled on port {}",
+                        config.orchestration.external_ingress.port
+                    )
                 } else {
                     "disabled".to_string()
                 }
             );
-            println!("  Endpoint: {}", config.orchestration.external_ingress.endpoint);
+            println!(
+                "  Endpoint: {}",
+                config.orchestration.external_ingress.endpoint
+            );
 
             Ok(())
         }
@@ -446,7 +450,10 @@ pub async fn run(
             new_config.to_file(config_path)?;
 
             println!("External ingress enabled on port {}", port);
-            println!("  Endpoint: {}", new_config.orchestration.external_ingress.endpoint);
+            println!(
+                "  Endpoint: {}",
+                new_config.orchestration.external_ingress.endpoint
+            );
             println!("\nConfigure external services to POST to:");
             println!("  http://your-host:{}/webhook/ingress", port);
             println!("\nAdd sources with: pekobot orchestration ingress-add");
@@ -517,7 +524,8 @@ pub async fn run(
                 println!("Orchestration Status:");
                 println!("  Enabled: {}", config.orchestration.enabled);
                 println!("\n  Webhook Server:");
-                println!("    Status: {}",
+                println!(
+                    "    Status: {}",
                     if config.orchestration.webhook.enabled {
                         "enabled"
                     } else {
@@ -527,7 +535,8 @@ pub async fn run(
                 println!("    Port: {}", config.orchestration.webhook.port);
                 println!("    Routes: {}", config.orchestration.webhook.routes.len());
                 println!("\n  External Ingress (Unified):");
-                println!("    Status: {}",
+                println!(
+                    "    Status: {}",
                     if config.orchestration.external_ingress.enabled {
                         "enabled"
                     } else {
@@ -535,19 +544,32 @@ pub async fn run(
                     }
                 );
                 println!("    Port: {}", config.orchestration.external_ingress.port);
-                println!("    Endpoint: {}", config.orchestration.external_ingress.endpoint);
-                println!("    Sources: {}", config.orchestration.external_ingress.sources.len());
+                println!(
+                    "    Endpoint: {}",
+                    config.orchestration.external_ingress.endpoint
+                );
+                println!(
+                    "    Sources: {}",
+                    config.orchestration.external_ingress.sources.len()
+                );
                 println!("\n  File Watcher:");
-                println!("    Status: {}",
+                println!(
+                    "    Status: {}",
                     if config.orchestration.file_watcher.enabled {
                         "enabled"
                     } else {
                         "disabled"
                     }
                 );
-                println!("    Watches: {}", config.orchestration.file_watcher.watches.len());
+                println!(
+                    "    Watches: {}",
+                    config.orchestration.file_watcher.watches.len()
+                );
                 println!("\n  Event Router:");
-                println!("    Max History: {}", config.orchestration.router.max_history);
+                println!(
+                    "    Max History: {}",
+                    config.orchestration.router.max_history
+                );
                 println!("    Log Events: {}", config.orchestration.router.log_events);
             }
 

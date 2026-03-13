@@ -40,9 +40,7 @@ pub enum SourceDetection {
         value: Option<String>,
     },
     /// Detect by User-Agent header
-    UserAgent {
-        contains: String,
-    },
+    UserAgent { contains: String },
 }
 
 /// External source configuration
@@ -64,19 +62,11 @@ pub struct ExternalSource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VerificationConfig {
     /// HMAC-SHA256 signature verification
-    HmacSha256 {
-        header: String,
-        secret: String,
-    },
+    HmacSha256 { header: String, secret: String },
     /// Ed25519 signature verification (Discord style)
-    Ed25519 {
-        public_key: String,
-    },
+    Ed25519 { public_key: String },
     /// Static token in header
-    BearerToken {
-        header: String,
-        token: String,
-    },
+    BearerToken { header: String, token: String },
 }
 
 /// External ingress configuration
@@ -123,16 +113,9 @@ impl ExternalIngressConfig {
     }
 
     /// Check if detection matches
-    fn matches_detection(
-        detection: &SourceDetection,
-        headers: &HeaderMap,
-        body: &str,
-    ) -> bool {
+    fn matches_detection(detection: &SourceDetection, headers: &HeaderMap, body: &str) -> bool {
         match detection {
-            SourceDetection::Header {
-                name,
-                value_prefix,
-            } => {
+            SourceDetection::Header { name, value_prefix } => {
                 if let Some(header_value) = headers.get(name) {
                     if let Ok(value_str) = header_value.to_str() {
                         if let Some(prefix) = value_prefix {
@@ -146,10 +129,10 @@ impl ExternalIngressConfig {
             SourceDetection::PayloadField { path, value } => {
                 // Simple JSON path extraction (supports dot notation like "event.type")
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
-                    let field_value = path.split('.').fold(Some(&json), |acc, key| {
-                        acc.and_then(|v| v.get(key))
-                    });
-                    
+                    let field_value = path
+                        .split('.')
+                        .fold(Some(&json), |acc, key| acc.and_then(|v| v.get(key)));
+
                     if let Some(expected) = value {
                         field_value
                             .and_then(|v| v.as_str())
@@ -162,13 +145,11 @@ impl ExternalIngressConfig {
                     false
                 }
             }
-            SourceDetection::UserAgent { contains } => {
-                headers
-                    .get("user-agent")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|ua| ua.to_lowercase().contains(&contains.to_lowercase()))
-                    .unwrap_or(false)
-            }
+            SourceDetection::UserAgent { contains } => headers
+                .get("user-agent")
+                .and_then(|v| v.to_str().ok())
+                .map(|ua| ua.to_lowercase().contains(&contains.to_lowercase()))
+                .unwrap_or(false),
         }
     }
 }
@@ -343,7 +324,7 @@ async fn health_check(State(state): State<IngressState>) -> impl IntoResponse {
 /// List all configured sources
 async fn list_sources(State(state): State<IngressState>) -> impl IntoResponse {
     let config = state.config.read().await;
-    
+
     let sources: Vec<_> = config
         .sources
         .iter()
@@ -365,7 +346,7 @@ async fn get_source(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     let config = state.config.read().await;
-    
+
     match config.sources.iter().find(|s| s.name == name) {
         Some(source) => Json(serde_json::json!({
             "name": source.name,
@@ -424,10 +405,10 @@ impl ExternalIngressBuilder {
 
     /// Build the ingress server
     pub fn build(self) -> anyhow::Result<ExternalIngress> {
-        let event_tx = self.event_tx.ok_or_else(|| {
-            anyhow::anyhow!("Event channel required")
-        })?;
-        
+        let event_tx = self
+            .event_tx
+            .ok_or_else(|| anyhow::anyhow!("Event channel required"))?;
+
         Ok(ExternalIngress::new(self.config, event_tx))
     }
 }
@@ -581,7 +562,7 @@ mod tests {
     #[test]
     fn test_builder_pattern() {
         let (tx, _rx) = mpsc::channel(10);
-        
+
         let ingress = ExternalIngressBuilder::new()
             .port(3000)
             .endpoint("/ingress")
@@ -603,9 +584,7 @@ mod tests {
 
     #[test]
     fn test_builder_requires_channel() {
-        let result = ExternalIngressBuilder::new()
-            .port(3000)
-            .build();
+        let result = ExternalIngressBuilder::new().port(3000).build();
 
         assert!(result.is_err());
     }

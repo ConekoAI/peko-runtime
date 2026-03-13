@@ -1,10 +1,10 @@
 use clap::Parser;
 use clap_complete::generate;
-use pekobot::types::config::PekobotConfig;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, gateway, init_logging, mcp, orchestration, provider, session,
-    system, tool, update, Cli, Commands, GlobalPaths,
+    agent, auth, config, cron, daemon, gateway, init_logging, mcp, orchestration, provider,
+    session, system, tool, update, Cli, Commands, GlobalPaths,
 };
+use pekobot::types::config::PekobotConfig;
 
 /// Pekobot - Lightweight Multi-Agent Runtime
 #[tokio::main]

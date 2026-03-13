@@ -243,11 +243,7 @@ impl OrchestrationConfigBuilder {
     }
 
     /// Add file watch
-    pub fn add_file_watch(
-        mut self,
-        path: impl Into<PathBuf>,
-        agent_id: impl Into<String>,
-    ) -> Self {
+    pub fn add_file_watch(mut self, path: impl Into<PathBuf>, agent_id: impl Into<String>) -> Self {
         self.config.file_watcher.watches.push(FileWatchConfig {
             path: path.into(),
             agent_id: agent_id.into(),
