@@ -2,8 +2,13 @@
 //!
 //! Stores cron jobs in `SQLite` and provides scheduling functionality.
 //! Supports both main session (system event) and isolated execution modes.
+//!
+//! Includes idle detection and event-based triggers.
 
 #![allow(dead_code)]
+
+pub mod event_trigger;
+pub mod idle;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -13,6 +18,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::info;
+
+pub use event_trigger::{EventTriggerService, EventTriggerServiceBuilder};
+pub use idle::IdleDetector;
 
 /// Schedule kinds for cron jobs
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +32,20 @@ pub enum ScheduleKind {
     Every { every_ms: u64 },
     /// Cron expression with optional timezone
     Cron { expr: String, tz: Option<String> },
+    /// Trigger when agent has been idle for N minutes
+    Idle {
+        minutes: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent_id: Option<String>,
+    },
+    /// Trigger when specific system event occurs
+    Event {
+        event_type: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filter: Option<serde_json::Value>,
+        #[serde(default)]
+        once: bool,
+    },
 }
 
 impl ScheduleKind {
@@ -48,6 +70,18 @@ impl ScheduleKind {
                 } else {
                     format!("cron '{expr}'")
                 }
+            }
+            ScheduleKind::Idle { minutes, agent_id } => {
+                if let Some(agent) = agent_id {
+                    format!("idle {minutes}m (agent: {agent})")
+                } else {
+                    format!("idle {minutes}m (any agent)")
+                }
+            }
+            ScheduleKind::Event { event_type, filter, once } => {
+                let filter_info = filter.as_ref().map(|_| " [filtered]").unwrap_or("");
+                let once_info = if *once { " (once)" } else { "" };
+                format!("event '{event_type}'{filter_info}{once_info}")
             }
         }
     }
@@ -439,7 +473,33 @@ impl CronScheduler {
                     Err(anyhow::anyhow!("No next occurrence found"))
                 }
             }
+            // Idle and Event triggers don't have a predictable next run time
+            // They return a far-future date to avoid being picked up by due_jobs
+            ScheduleKind::Idle { .. } => {
+                Ok(after + chrono::Duration::days(365 * 100)) // 100 years in the future
+            }
+            ScheduleKind::Event { .. } => {
+                Ok(after + chrono::Duration::days(365 * 100)) // 100 years in the future
+            }
         }
+    }
+
+    /// Get idle-triggered jobs
+    pub fn idle_jobs(&self, include_disabled: bool) -> Result<Vec<CronJob>> {
+        let jobs = self.list_jobs(include_disabled)?;
+        Ok(jobs
+            .into_iter()
+            .filter(|j| matches!(j.schedule, ScheduleKind::Idle { .. }))
+            .collect())
+    }
+
+    /// Get event-triggered jobs
+    pub fn event_jobs(&self, include_disabled: bool) -> Result<Vec<CronJob>> {
+        let jobs = self.list_jobs(include_disabled)?;
+        Ok(jobs
+            .into_iter()
+            .filter(|j| matches!(j.schedule, ScheduleKind::Event { .. }))
+            .collect())
     }
 }
 
@@ -458,6 +518,10 @@ fn parse_job_from_row(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
             .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
         "cron" => serde_json::from_str(&schedule_data)
             .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
+        "idle" => serde_json::from_str(&schedule_data)
+            .unwrap_or(ScheduleKind::Idle { minutes: 5, agent_id: None }),
+        "event" => serde_json::from_str(&schedule_data)
+            .unwrap_or(ScheduleKind::Event { event_type: "webhook".to_string(), filter: None, once: false }),
         _ => ScheduleKind::Every { every_ms: 3600000 },
     };
 
@@ -533,6 +597,8 @@ fn schedule_kind_str(schedule: &ScheduleKind) -> &'static str {
         ScheduleKind::At { .. } => "at",
         ScheduleKind::Every { .. } => "every",
         ScheduleKind::Cron { .. } => "cron",
+        ScheduleKind::Idle { .. } => "idle",
+        ScheduleKind::Event { .. } => "event",
     }
 }
 
