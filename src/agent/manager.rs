@@ -423,6 +423,7 @@ impl AgentManager {
         // Create essential tools using factory (async version includes MCP)
         let factory_config = ToolFactoryConfig {
             workspace_dir: self.data_dir.clone(),
+            cron_db_path: Some(self.data_dir.join("cron.db")),
             ..Default::default()
         };
         let mut tools = ToolFactory::create_tools_async(&factory_config).await?;
@@ -460,6 +461,7 @@ impl AgentManager {
         // Create essential tools using factory (sync version - no MCP)
         let factory_config = ToolFactoryConfig {
             workspace_dir: self.data_dir.clone(),
+            cron_db_path: Some(self.data_dir.join("cron.db")),
             ..Default::default()
         };
         let mut tools = ToolFactory::create_tools(&factory_config);
@@ -480,6 +482,7 @@ impl AgentManager {
         // Create essential tools using factory (async version includes MCP)
         let factory_config = ToolFactoryConfig {
             workspace_dir: self.data_dir.clone(),
+            cron_db_path: Some(self.data_dir.join("cron.db")),
             ..Default::default()
         };
         let mut tools = ToolFactory::create_tools_async(&factory_config).await?;
