@@ -5,9 +5,9 @@
 
 use crate::security::SecurityPolicy;
 use crate::tools::{
-    ApplyPatchConfig, ApplyPatchTool, BrowserTool, FetchConfig, FetchTool, FileSystemTool,
-    HttpTool, ProcessTool, SessionStatusTool, SessionsHistoryTool, SessionsListTool,
-    WebSearchConfig, WebSearchTool,
+    ApplyPatchConfig, ApplyPatchTool, BrowserTool, CronTool, FetchConfig, FetchTool,
+    FileSystemTool, HttpTool, ProcessTool, SessionStatusTool, SessionsHistoryTool,
+    SessionsListTool, WebSearchConfig, WebSearchTool,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,6 +53,10 @@ pub struct ToolFactoryConfig {
     pub enable_memory: bool,
     /// Enable session introspection tools
     pub enable_session_tools: bool,
+    /// Enable cron tool
+    pub enable_cron: bool,
+    /// Path to cron database (defaults to workspace_dir/cron.db)
+    pub cron_db_path: Option<PathBuf>,
     /// Web search configuration
     pub web_search_config: Option<WebSearchConfig>,
     /// Fetch configuration
@@ -76,6 +80,8 @@ impl Default for ToolFactoryConfig {
             enable_process: true,
             enable_memory: true,
             enable_session_tools: true,
+            enable_cron: true,
+            cron_db_path: None,
             web_search_config: None,
             fetch_config: None,
             apply_patch_config: None,
@@ -164,6 +170,23 @@ impl ToolFactory {
             tools.push(Arc::new(SessionStatusTool::new(Box::new(
                 crate::tools::InMemorySessionRegistry::new("main".to_string()),
             ))));
+        }
+
+        // Cron tool for scheduled jobs
+        if config.enable_cron {
+            let db_path = config
+                .cron_db_path
+                .clone()
+                .unwrap_or_else(|| config.workspace_dir.join("cron.db"));
+            match CronTool::new(db_path) {
+                Ok(cron_tool) => {
+                    tools.push(Arc::new(cron_tool));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to create CronTool: {}", e);
+                    // Continue without cron tool - don't fail whole tool creation
+                }
+            }
         }
 
         tools
