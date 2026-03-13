@@ -14,12 +14,19 @@
 //! EventSubscriber─┘
 //! ```
 
+pub mod config;
 pub mod events;
 pub mod file_watcher;
 pub mod router;
+pub mod subscriber;
 pub mod webhook;
 
+pub use config::{
+    FileWatchConfig, FileWatcherConfig, OrchestrationConfig, OrchestrationConfigBuilder,
+    RouterConfig, WebhookConfig, WebhookRouteConfig,
+};
 pub use events::{FileChangeType, SystemEvent};
 pub use file_watcher::{FileWatcher, FileWatcherBuilder, WatchConfig};
 pub use router::{AgentAction, EventRouter};
+pub use subscriber::{EventSubscriber, EventSubscriberBuilder};
 pub use webhook::{WebhookRoute, WebhookServer, WebhookServerBuilder};

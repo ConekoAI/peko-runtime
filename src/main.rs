@@ -1,8 +1,9 @@
 use clap::Parser;
 use clap_complete::generate;
+use pekobot::types::config::PekobotConfig;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, gateway, init_logging, mcp, provider, session, system, tool,
-    update, Cli, Commands, GlobalPaths,
+    agent, auth, config, cron, daemon, gateway, init_logging, mcp, orchestration, provider, session,
+    system, tool, update, Cli, Commands, GlobalPaths,
 };
 
 /// Pekobot - Lightweight Multi-Agent Runtime
@@ -27,6 +28,16 @@ async fn main() -> anyhow::Result<()> {
         Commands::Cron(cmd) => cron::handle_cron(cmd, &paths, cli.json).await,
         Commands::Gateway(cmd) => gateway::handle_gateway(cmd, &paths, cli.json).await,
         Commands::Mcp(cmd) => mcp::handle(cmd, paths.mcp_config()).await,
+        Commands::Orchestration(cmd) => {
+            // Load configuration for orchestration commands
+            let config_path = paths.config_dir.join("config.toml");
+            let config = if config_path.exists() {
+                PekobotConfig::from_file(&config_path)?
+            } else {
+                PekobotConfig::default()
+            };
+            orchestration::run(cmd, &config, &config_path).await
+        }
         Commands::Provider(cmd) => provider::execute(cmd).await,
         Commands::Update { check, force } => update::handle_update(check, force).await,
         Commands::Completions { shell } => {

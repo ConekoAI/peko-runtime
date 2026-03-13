@@ -20,6 +20,7 @@ pub mod cron;
 pub mod daemon;
 pub mod gateway;
 pub mod mcp;
+pub mod orchestration;
 pub mod provider;
 pub mod session;
 pub mod system;
@@ -107,6 +108,10 @@ pub enum Commands {
     /// MCP (Model Context Protocol) server management
     #[command(subcommand)]
     Mcp(mcp::McpCommands),
+
+    /// Orchestration layer management (event routing, webhooks, file watching)
+    #[command(subcommand)]
+    Orchestration(orchestration::OrchestrationCommands),
 
     /// LLM Provider management
     #[command(subcommand)]

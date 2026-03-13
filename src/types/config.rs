@@ -1,5 +1,6 @@
 //! Pekobot global configuration
 
+use crate::orchestration::config::OrchestrationConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -14,6 +15,8 @@ pub struct PekobotConfig {
     pub network: NetworkConfig,
     /// Logging configuration
     pub logging: LogConfig,
+    /// Orchestration layer configuration
+    pub orchestration: OrchestrationConfig,
 }
 
 impl Default for PekobotConfig {
@@ -23,6 +26,7 @@ impl Default for PekobotConfig {
             storage: StorageConfig::default(),
             network: NetworkConfig::default(),
             logging: LogConfig::default(),
+            orchestration: OrchestrationConfig::default(),
         }
     }
 }
@@ -142,6 +146,12 @@ impl PekobotConfig {
             },
             ..Self::default()
         }
+    }
+
+    /// Load orchestration configuration section
+    #[must_use]
+    pub fn orchestration(&self) -> &OrchestrationConfig {
+        &self.orchestration
     }
 }
 
