@@ -16,6 +16,7 @@
 
 pub mod config;
 pub mod events;
+pub mod external_ingress;
 pub mod file_watcher;
 pub mod router;
 pub mod subscriber;
@@ -26,6 +27,10 @@ pub use config::{
     RouterConfig, WebhookConfig, WebhookRouteConfig,
 };
 pub use events::{FileChangeType, SystemEvent};
+pub use external_ingress::{
+    ExternalIngress, ExternalIngressBuilder, ExternalIngressConfig, ExternalSource,
+    SourceDetection, VerificationConfig,
+};
 pub use file_watcher::{FileWatcher, FileWatcherBuilder, WatchConfig};
 pub use router::{AgentAction, EventRouter};
 pub use subscriber::{EventSubscriber, EventSubscriberBuilder};

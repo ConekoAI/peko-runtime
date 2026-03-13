@@ -1,145 +1,156 @@
-# Pekobot Grand Architecture
+# Pekobot Grand Architecture v2.0
 
-> A minimal-core, multi-agent runtime with pluggable channels, tools, MCPs, and skills. Zero security guarantees from core—audit trail only.
+> A **containerized multi-agent runtime** with portable agent packages, team composition, and shared service fabric. Zero security guarantees from core—audit trail only.
 
 ## 1. Vision
 
-Pekobot is a **runtime shell for AI agents** that executes what you give it, logs everything, and guarantees nothing. It prioritizes:
+Pekobot is a **runtime for containerized AI agent systems** that enables:
 
-- **Minimal core**: ~2MB runtime, everything else is user-installed
-- **Maximum flexibility**: No sandboxing, no restrictions, full user control
-- **Explicit trust**: Security comes from external registries (reputation, reviews), not runtime enforcement
-- **Auditability**: Complete execution trail for post-hoc review
-- **Developer ergonomics**: Simple TOML config, CLI-first, clear abstractions
+- **Agent Packaging**: Bundle agents into portable, versioned, shareable containers
+- **Team Composition**: Orchestrate multi-agent teams with defined coordination patterns  
+- **Shared Services**: Efficiently share heavy resources (MCPs, memory, databases) across agents
+- **Minimal Core**: ~5MB runtime, everything else packaged and distributed
+- **Explicit Trust**: Security through registry reputation, signing, and user review—not runtime enforcement
+
+### 1.1 The "Docker for Agents" Model
+
+| Docker Concept | Pekobot Equivalent |
+|----------------|-------------------|
+| Docker Image | **Agent Package** - Portable agent definition |
+| Dockerfile | `agent.toml` + build context |
+| Docker Hub | **Pekohub** - Agent registry |
+| Container | **Agent Instance** - Running agent process |
+| Docker Compose | **Team** - Multi-agent composition |
+| Volume | **Shared Service** - Team-wide resources |
+| dockerd | **Pekobot Runtime** - Execution engine |
 
 ## 2. Design Philosophy
 
-### 2.1 Core Provides Mechanisms, Not Policy
+### 2.1 Four-Layer Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     COMPOSITION LAYER                            │
+│                    (Multi-Agent Teams)                           │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Team Specification (team.toml)                          │   │
+│  │ • Agent definitions and scaling                         │   │
+│  │ • Shared service configuration                          │   │
+│  │ • Coordination patterns (hierarchy, pipeline, mesh)    │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Team Runtime                                            │   │
+│  │ • Agent lifecycle management                            │   │
+│  │ • Shared service fabric                                 │   │
+│  │ • Inter-agent message bus                               │   │
+│  │ • Service discovery                                     │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     PACKAGING LAYER                              │
+│                   (Agent Container System)                       │
+│                                                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐    │
+│  │   Package   │  │    Build    │  │     Registry         │    │
+│  │   Format    │  │   System    │  │   Integration        │    │
+│  │             │  │             │  │                      │    │
+│  │• Manifest   │  │• Build ctx  │  │• Push/Pull           │    │
+│  │• Layers     │  │• Layer cache│  │• Search              │    │
+│  │• Base imgs  │  │• Export     │  │• Signing             │    │
+│  └─────────────┘  └─────────────┘  └──────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     EXECUTION LAYER                              │
+│                    (Agent Runtime Core)                          │
+│                                                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐    │
+│  │   Agent     │  │  Invocation │  │   Session            │    │
+│  │   Runtime   │  │   Router    │  │   Manager            │    │
+│  │             │  │             │  │                      │    │
+│  │• Identity   │  │• Channel    │  │• Session overlays    │    │
+│  │• Provider   │  │  routing    │  │• Persistence         │    │
+│  │• Tool loop  │  │• Scheduling │  │• Portability         │    │
+│  └─────────────┘  └─────────────┘  └──────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  CAPABILITY LAYER                                │
+│                                                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐    │
+│  │   Tools     │  │    MCPs     │  │       Skills         │    │
+│  │  (atomic)   │  │  (bundled)  │  │    (workflows)       │    │
+│  │             │  │             │  │                      │    │
+│  │• agent_send │  │• browser    │  │• coding_assistant    │    │
+│  │• agent_spawn│  │• database   │  │• group_chat_manager   │    │
+│  │• read/write│  │• memory-*    │  │• workflow_engine     │    │
+│  └─────────────┘  └─────────────┘  └──────────────────────┘    │
+│                                                                  │
+│  Sources: Built-in | Registry | Package-bundled                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Core Provides Mechanisms, Not Policy
 
 The core runtime is **deliberately agnostic** about security:
 
 | Aspect | Core Stance |
 |--------|-------------|
-| Sandboxing | None |
-| Permission system | None |
+| Sandboxing | Optional (configurable per agent/team) |
+| Permission system | None at core (team-level capability grants) |
 | Content filtering | None |
-| Execution limits | None (user-configurable timeouts) |
-| Audit trail | **Complete** (session JSONL, tool call logs) |
+| Execution limits | User-configurable (timeouts, resources) |
+| Audit trail | **Complete** (session JSONL, tool logs, inter-agent messages) |
 
-**Security is the user's responsibility** after reviewing tool/MCP/skill/channel manifests and external registry reputation.
-
-### 2.2 Three Orthogonal Extension Layers
-
-Pekobot separates concerns along three independent axes:
-
-| Axis | Direction | Who Controls | Purpose |
-|------|-----------|--------------|---------|
-| **Orchestration** | System → Agent | Core/System | *When* agents run |
-| **Communication** | External → Agent | Users | *How* users talk to agents |
-| **Capabilities** | Agent → Service | Agents | *What* agents can do |
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│         ORCHESTRATION LAYER (System → Agent)               │
-│                                                             │
-│  • Scheduler     - Time/idle-based invocation              │
-│  • Event Router  - Event-driven agent dispatch             │
-│  • Lifecycle     - Spawn/stop/manage agents                │
-│                                                             │
-│  The system PROACTIVELY invokes agents.                    │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              │ Scheduled invocations
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│           COMMUNICATION LAYER (External → Agent)           │
-│                                                             │
-│  • CLI        - Terminal interface (built-in)              │
-│  • HTTP       - Webhook/REST (built-in)                    │
-│  • Discord    - Discord bot (plugin)                       │
-│  • WhatsApp   - WhatsApp Business (plugin)                 │
-│                                                             │
-│  Users PROACTIVELY talk to agents.                         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              │ Messages flow through
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                      AGENT RUNTIME                           │
-│                                                             │
-│  Agents are PASSIVE - they receive from:                   │
-│  - Orchestration layer (scheduled runs)                    │
-│  - Communication layer (user messages)                     │
-│                                                             │
-│  Agents are ACTIVE when calling:                           │
-│  - Capability layer (tools/MCPs/skills)                    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              │ Agent invokes
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│            CAPABILITY LAYER (Agent → Service)              │
-│                                                             │
-│  Three-Tier Model:                                         │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ TIER 1: Tools (atomic, stateless)                   │   │
-│  │ • web_search • calculator • apply_patch             │   │
-│  │ • agent_send • agent_spawn                          │   │
-│  └─────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ TIER 2: MCPs (bundled, stateful)                    │   │
-│  │ • browser • database • email • memory-*             │   │
-│  └─────────────────────────────────────────────────────┘   │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ TIER 3: Skills (workflows)                          │   │
-│  │ • coding_assistant • research_pipeline              │   │
-│  │ • group_chat_manager • broadcast_hub                │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-│  Agents PROACTIVELY invoke capabilities.                   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Key Insight:** Complex coordination patterns (group chat, broadcast, workflows) are **built as tools/skills**, not core features. Core only provides basic 1-to-1 messaging primitives.
-
-**Orthogonality Examples:**
-- Scheduler invokes agent → agent uses `web_search` (Tool)
-- Discord message invokes agent → agent uses `browser` (MCP)
-- Agent uses `agent_send` tool to message another agent (1-to-1)
-- Agent uses `agent_spawn` tool to multitask (sync/async)
-- Complex group chat? Use `group_chat_manager` skill built on `agent_send`
+**Security is the user's responsibility** after reviewing package manifests, registry reputation, and team policies.
 
 ### 2.3 Trust Model
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ EXTERNAL REGISTRY (e.g., Pekohub)                          │
-│ • Code signing                                              │
+│ • Package signing and verification                          │
+│ • Content-addressable layers (digest verification)         │
 │ • Community reputation / reviews                           │
-│ • Download statistics                                       │
-│ • Security audits (3rd party)                              │
+│ • Vulnerability scanning                                    │
+│ • Security audit attestations                              │
 └─────────────────────────────────────────────────────────────┘
-                            ↓ User decides to install
+                            ↓ User decides to pull
 ┌─────────────────────────────────────────────────────────────┐
-│ PEKOBOT CORE                                                │
-│ • Downloads channel/tool/MCP/skill                          │
-│ • Verifies checksum (if provided)                          │
-│ • Logs installation event                                   │
-│ • Executes without restrictions                            │
+│ PACKAGE MANAGER                                             │
+│ • Signature verification                                    │
+│ • Layer integrity checks (sha256)                          │
+│ • Provenance tracking                                       │
+│ • Local layer caching                                       │
+└─────────────────────────────────────────────────────────────┘
+                            ↓ User decides to run
+┌─────────────────────────────────────────────────────────────┐
+│ TEAM RUNTIME                                                │
+│ • Optional container sandboxing (if configured)            │
+│ • Network policy enforcement                               │
+│ • Resource limits (cgroup/systemd)                         │
+│ • Inter-agent authentication                               │
 └─────────────────────────────────────────────────────────────┘
                             ↓ Runtime
 ┌─────────────────────────────────────────────────────────────┐
 │ AUDIT TRAIL                                                 │
-│ • Every channel message logged                             │
+│ • Every package installation logged                        │
+│ • Every agent spawn/stop logged                            │
+│ • Every inter-agent message logged                         │
 │ • Every tool call logged with full arguments               │
 │ • Session transcripts in JSONL                             │
 │ • Queryable via `pekobot audit`                            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**The user is the security boundary.** Core executes. Registry recommends. User decides. Audit logs for review.
+**The user is the security boundary.** Registry verifies. Manager validates. Runtime isolates (if configured). User decides. Audit logs for review.
 
 ### 2.4 Tool Execution Model
 
@@ -161,6 +172,7 @@ Tools are **synchronous and blocking**. The agent loop waits for tool completion
 │  • Shell background: command &                              │
 │  • MCP async: submit_task → poll status → get_result        │
 │  • Agent spawn: creates independent agent instance          │
+│  • Team broadcast: fire-and-forget via message bus          │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -168,691 +180,538 @@ Tools are **synchronous and blocking**. The agent loop waits for tool completion
 **Rationale:**
 - Agent loop is inherently sequential (needs tool result to continue reasoning)
 - Simpler mental model - no async complexity in core
-- Long-running tasks: use shell background (`&`) or MCP async patterns
+- Long-running tasks: use shell background, MCP async patterns, or spawn agents
 - True parallelism: use `agent_spawn` to create separate agent instances
+- Team coordination: use message bus for async inter-agent communication
 
-### 2.5 Session-Centric State with Overlays
+## 3. System Architecture
 
-- **Agents are stateless runtime instances**
-- **Base sessions hold shared conversation context** (JSONL files)
-- **Overlays hold context-specific state** (isolated or linked)
-  - *Channel overlays* - Communication-specific (Discord guild, CLI terminal)
-  - *Orchestration overlays* - Scheduled task context
-  - *Spawn overlays* - Sub-session isolation
-- **Tools/MCPs are stateless/stateful independently**
-- Sessions are portable, inspectable, long-lived
+### 3.1 Composition Layer (Teams)
 
-**Hybrid Session Model:**
+The **Team Runtime** orchestrates multi-agent systems:
+
 ```
-Agent Session Structure:
+┌─────────────────────────────────────────────────────────────────┐
+│                      TEAM RUNTIME                                │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Team Controller                                           │   │
+│  │ • Parses team.toml                                        │   │
+│  │ • Manages agent lifecycle                                 │   │
+│  │ • Handles scaling events                                  │   │
+│  │ • Monitors health                                         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                              │                                    │
+│  ┌───────────────────────────▼──────────────────────────┐       │
+│  │              Shared Services Fabric                   │       │
+│  │                                                       │       │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │       │
+│  │  │  Shared  │  │  Shared  │  │  Message Bus     │   │       │
+│  │  │   MCPs   │  │  Memory  │  │  (inter-agent)   │   │       │
+│  │  │  (pool)  │  │ (vector) │  │                  │   │       │
+│  │  └──────────┘  └──────────┘  └──────────────────┘   │       │
+│  │                                                       │       │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐   │       │
+│  │  │  Shared  │  │  Shared  │  │  Service         │   │       │
+│  │  │ Database │  │Filesystem│  │  Registry        │   │       │
+│  │  │          │  │ (volume) │  │  (discovery)     │   │       │
+│  │  └──────────┘  └──────────┘  └──────────────────┘   │       │
+│  └──────────────────────────────────────────────────────┘       │
+│                              │                                    │
+│  ┌───────────────────────────▼──────────────────────────┐       │
+│  │              Agent Instances                          │       │
+│  │                                                       │       │
+│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐        │       │
+│  │  │Agent 1 │ │Agent 2 │ │Agent 3 │ │Agent 4 │ ...    │       │
+│  │  │(coord) │ │(worker)│ │(worker)│ │(worker)│        │       │
+│  │  └────────┘ └────────┘ └────────┘ └────────┘        │       │
+│  │                                                       │       │
+│  └──────────────────────────────────────────────────────┘       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Team Communication Patterns
+
+**Hierarchical (Manager-Worker):**
+```
+┌─────────────┐
+│ Coordinator │ (Manager)
+│  spawns and │
+│  delegates  │
+└──────┬──────┘
+       │ agent_spawn / agent_send
+       ▼
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ Researcher  │  │   Writer    │  │   Analyst   │
+│     x3      │  │     x2      │  │     x1      │
+└─────────────┘  └─────────────┘  └─────────────┘
+```
+
+**Pipeline:**
+```
+Input ──► [Research] ──► [Analyze] ──► [Write] ──► Output
+              │              │            │
+              └──────────────┴────────────┘
+                    Shared Memory
+```
+
+**Pub-Sub:**
+```
+         ┌─────────────┐
+         │  Publisher  │
+         │  (emits     │
+         │   events)   │
+         └──────┬──────┘
+                │ publish(topic="results")
+       ┌────────┼────────┐
+       ▼        ▼        ▼
+┌─────────┐ ┌─────────┐ ┌─────────┐
+│  Sub 1  │ │  Sub 2  │ │  Sub 3  │
+└─────────┘ └─────────┘ └─────────┘
+```
+
+### 3.2 Packaging Layer
+
+**Agent Package Format** (inspired by OCI):
+
+```
+agent-package.tar
+├── manifest.toml          # Package manifest
+├── config.toml            # Default runtime configuration  
+├── layers/
+│   ├── 00-base.tar.gz     # Base image layer
+│   ├── 01-system.tar.gz   # System layer (prompts, identity)
+│   ├── 02-capabilities.tar.gz  # Tools, MCPs, skills
+│   ├── 03-knowledge.tar.gz     # Memory, documents, graphs
+│   └── 04-writable.tar.gz      # Runtime state (ephemeral)
+└── signatures/
+    └── manifest.sig
+```
+
+**Layer Types:**
+
+| Layer | Media Type | Content | Mutable |
+|-------|------------|---------|---------|
+| System | `application/vnd.pekobot.layer.system.v1` | Identity, prompts, bootstrap | No |
+| Capabilities | `application/vnd.pekobot.layer.capabilities.v1` | Tools, MCPs, skills | No |
+| Knowledge | `application/vnd.pekobot.layer.knowledge.v1` | Memory, documents, graphs | No |
+| Writable | `application/vnd.pekobot.layer.writable.v1` | Sessions, state, cache | Yes |
+
+### 3.3 Execution Layer
+
+```rust
+pub struct AgentRuntime {
+    /// Agent identity (DID)
+    identity: AgentIdentity,
+    
+    /// Session management
+    session_manager: SessionManager,
+    
+    /// Tool registry (built-in + package-bundled)
+    tools: ToolRegistry,
+    
+    /// MCP connections (shared or per-agent)
+    mcps: McpManager,
+    
+    /// LLM provider
+    provider: Arc<dyn Provider>,
+    
+    /// Execution engine
+    engine: AgenticLoopV4,
+    
+    /// Inter-agent communication (if part of team)
+    team_bus: Option<Arc<dyn MessageBus>>,
+}
+
+impl AgentRuntime {
+    /// Main agent loop
+    pub async fn run(&mut self) -> Result<()>;
+    
+    /// Handle incoming message (from channel or another agent)
+    pub async fn handle_message(&mut self, msg: AgentMessage) -> Result<Response>;
+    
+    /// Send message to another agent (via team bus)
+    pub async fn send_to(&self, target: &AgentId, msg: MessageContent) -> Result<()>;
+}
+```
+
+### 3.4 Capability Layer
+
+**Three-Tier Model:**
+
+| Tier | Scope | Examples | Source |
+|------|-------|----------|--------|
+| **Tools** | Atomic, stateless | `read`, `write`, `agent_send`, `agent_spawn` | Built-in, package |
+| **MCPs** | Bundled, stateful | `browser`, `database`, `memory-*` | Package, shared |
+| **Skills** | Workflows | `coding_assistant`, `research_pipeline` | Package |
+
+**Capability Sources:**
+
+1. **Built-in**: Core primitives (`agent_send`, `agent_spawn`, filesystem)
+2. **Package-bundled**: Included in agent package layers
+3. **Shared**: Team-level singletons (efficient for heavy MCPs)
+4. **Registry**: Dynamically fetched from Pekohub
+
+## 4. Component Details
+
+### 4.1 Team Specification
+
+```toml
+# team.toml
+team_version = "1.0.0"
+
+[metadata]
+name = "research-team"
+description = "Multi-agent research team"
+
+# Agent definitions
+[[agents]]
+name = "coordinator"
+package = "pekohub.com/agents/coordinator:v3.0"
+instance_count = 1
+
+[agents.role]
+type = "manager"
+can_spawn = ["researcher", "writer"]
+
+[[agents]]
+name = "researcher"
+package = "pekohub.com/agents/researcher:v2.5"
+instance_count = 3  # Scale-out
+
+[agents.role]
+type = "worker"
+accepts_from = ["coordinator"]
+
+# Shared resources
+[shared]
+
+[shared.memory]
+type = "chroma"
+persistent_volume = "team-memory"
+
+[shared.message_bus]
+type = "in-memory"
+
+# Shared MCPs (singletons)
+[[shared.mcps]]
+name = "shared-browser"
+package = "pekohub.com/mcps/browser:v3"
+max_instances = 2
+
+# Coordination patterns
+[coordination]
+default_pattern = "hierarchical"
+
+[[coordination.pipelines]]
+name = "research_workflow"
+steps = [
+    { agent = "coordinator", action = "decompose" },
+    { agent = "researcher", action = "gather", parallel = true },
+    { agent = "writer", action = "draft" },
+]
+```
+
+### 4.2 Agent Package Manifest
+
+```toml
+# manifest.toml
+[package]
+name = "research-assistant"
+version = "2.1.0"
+author = "pekohub.com/user/researcher"
+
+# Base image (inheritance)
+[base]
+image = "pekohub.com/agents/minimal:v1.2.0"
+digest = "sha256:abc123..."
+
+# Provider configuration
+[provider]
+provider_type = "anthropic"
+model = "claude-3-5-sonnet-20241022"
+
+# Layer definitions
+[[layers]]
+index = 1
+digest = "sha256:layer1abc..."
+media_type = "application/vnd.pekobot.layer.system.v1"
+
+# Capability requirements
+[capabilities]
+tools = [
+    { name = "web_search", source = "pekohub.com/tools/web-search:v1" },
+]
+
+mcps = [
+    { name = "browser", source = "pekohub.com/mcps/browser:v2" },
+]
+
+skills = [
+    { name = "research_pipeline", source = "pekohub.com/skills/research:v1" },
+]
+
+# Exposed interfaces (for team composition)
+[interfaces]
+channels = ["cli", "http", "agent_protocol"]
+exposed_tools = ["research", "summarize"]
+events = ["research.complete", "research.error"]
+```
+
+### 4.3 Package Manager
+
+```rust
+pub trait PackageManager {
+    /// Pull from registry
+    async fn pull(&self, ref: PackageRef) -> Result<LocalPackage>;
+    
+    /// Push to registry
+    async fn push(&self, pkg: LocalPackage, registry: &str) -> Result<()>;
+    
+    /// Build from directory
+    async fn build(&self, context: &Path, tag: &str) -> Result<Package>;
+    
+    /// Export running agent
+    async fn export(&self, agent_id: &str, name: &str) -> Result<Package>;
+    
+    /// List local packages
+    async fn list(&self) -> Vec<LocalPackage>;
+}
+```
+
+### 4.4 Session-Centric State
+
+**Agent Session Structure:**
+
+```
+Agent Session:
 ├── Base Session (shared across all invocation sources)
-│   └── Tool history, user preferences, core context
+│   ├── Conversation history (JSONL)
+│   ├── Tool execution history
+│   └── User preferences
 │
 ├── Channel Overlays (Communication Layer)
 │   ├── CLI: Terminal formatting, local paths
 │   ├── Discord: Guild IDs, user mappings
-│   └── WhatsApp: Phone numbers, message IDs
+│   └── HTTP: Request context, headers
+│
+├── Team Overlay (Team Layer)
+│   ├── Team context (shared knowledge)
+│   ├── Agent role state
+│   └── Inter-agent message history
 │
 └── Spawn Overlays (from agent_spawn)
-    ├── spawn_abc123: Isolated research task
-    └── spawn_def456: Isolated writing task
+    ├── Isolated sub-task context
+    └── Can be promoted to base or merged back
 ```
 
-## 3. System Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                   ORCHESTRATION LAYER                            │
-│              (System-Proactive Agent Invocation)                 │
-│                                                                  │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐    │
-│  │  Scheduler  │  │   Event     │  │    Lifecycle         │    │
-│  │             │  │   Router    │  │    Manager           │    │
-│  │ • Interval  │  │             │  │                      │    │
-│  │ • Idle      │  │ • File      │  │ • Spawn agents       │    │
-│  │ • Cron      │  │ • Webhook   │  │ • Stop/Restart       │    │
-│  │ • Once      │  │ • Internal  │  │ • Health checks      │    │
-│  └──────┬──────┘  └──────┬──────┘  └──────────┬───────────┘    │
-│         │                │                    │                │
-│         └────────────────┴────────────────────┘                │
-│                          │                                     │
-│                    Invokes agent                               │
-└──────────────────────────┼─────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    COMMUNICATION LAYER                           │
-│              (User-Proactive Agent Invocation)                   │
-│                                                                  │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐    │
-│  │   Built-in  │  │   Registry  │  │       Custom         │    │
-│  │             │  │   Channels  │  │      Channels        │    │
-│  │ • CLI       │  │             │  │                      │    │
-│  │ • HTTP      │  │ • Discord   │  │ • TUI (user-built)   │    │
-│  │             │  │ • WhatsApp  │  │ • Game integration   │    │
-│  │             │  │ • Telegram  │  │ • Web dashboard      │    │
-│  │             │  │ • Slack     │  │ • IoT interface      │    │
-│  └──────┬──────┘  └──────┬──────┘  └──────────┬───────────┘    │
-│         │                │                    │                │
-│         └────────────────┴────────────────────┘                │
-│                          │                                     │
-│                    Messages to agent                           │
-└──────────────────────────┼─────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      AGENT RUNTIME                               │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Invocation Router                                          │   │
-│  │  ├─ Route from Orchestration (scheduled runs)            │   │
-│  │  ├─ Route from Communication (user messages)             │   │
-│  │  └─ Manage session overlays                              │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                              │                                    │
-│  ┌───────────────────────────▼──────────────────────────┐       │
-│  │              AgentManager                             │       │
-│  │  ├─ AgentPool (running agents)                       │       │
-│  │  ├─ LocalRegistry (agent metadata)                   │       │
-│  │  └─ LifecycleManager (spawn/stop/restart)            │       │
-│  └──────────────────────────────────────────────────────┘       │
-│                              │                                    │
-│  ┌───────────────────────────▼──────────────────────────┐       │
-│  │              Individual Agent                         │       │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────────┐       │       │
-│  │  │ Identity │  │  Session │  │   Provider   │       │       │
-│  │  │  (DID)   │  │  (JSONL) │  │   (LLM)      │       │       │
-│  │  └──────────┘  └──────────┘  └──────────────┘       │       │
-│  └──────────────────────────────────────────────────────┘       │
-│                              │                                    │
-└─────────────────────────────────────────────────────────────────┘
-                           │
-                           │ Agent invokes tools
-                           ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     EXECUTION ENGINE                             │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  AgenticLoopV4 (native tool calling)                     │   │
-│  │  ├─ Tool/MCP dispatch                                    │   │
-│  │  ├─ Sync/Async handling                                  │   │
-│  │  ├─ Streaming event generation                           │   │
-│  │  └─ Session persistence (JSONL)                         │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                  CAPABILITY LAYER                                │
-│                                                                  │
-│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐    │
-│  │   Tools     │  │    MCPs     │  │       Skills         │    │
-│  │  (atomic)   │  │  (bundled)  │  │    (workflows)       │    │
-│  │             │  │             │  │                      │    │
-│  │• web_search│  │• browser    │  │• coding_assistant    │    │
-│  │• agent_send│  │• database   │  │• group_chat_manager   │    │
-│  │• agent_spawn│ │• email      │  │• broadcast_hub       │    │
-│  └─────────────┘  └─────────────┘  └──────────────────────┘    │
-│                                                                  │
-│  Sources: Built-in | Registry | User-created                    │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## 4. Component Details
-
-### 4.1 Orchestration Layer
-
-The Orchestration Layer **proactively invokes agents** based on time, events, or system state.
-
-#### 4.1.1 Scheduler
-
-Time-based and event-driven agent invocation.
-
-**Trigger Types:**
-
-| Trigger | Description | Use Case |
-|---------|-------------|----------|
-| `interval` | Every X minutes/seconds | Health checks, polling |
-| `idle` | Every X minutes when idling | Cleanup, background sync |
-| `cron` | Calendar-based (cron syntax) | Daily reports, weekly digests |
-| `once` | One-shot at specific time | Reminders, delayed tasks |
-| `event` | React to system events | File changes, webhooks |
-
-**Scheduler Core:**
-```rust
-pub trait Scheduler {
-    async fn schedule(&self, task: ScheduledTask) -> Result<TaskId>;
-    async fn cancel(&self, id: TaskId) -> Result<()>;
-    async fn list(&self) -> Vec<ScheduledTask>;
-}
-
-pub struct ScheduledTask {
-    pub id: TaskId,
-    pub trigger: Trigger,
-    pub action: Action,  // Invoke agent with context
-    pub enabled: bool,
-}
-
-pub enum Action {
-    Tool { name: String, args: Value },
-    Mcp { mcp: String, method: String, args: Value },
-    Skill { name: String, input: Value },
-    Message { channel: String, content: String },
-}
-```
-
-**Pluggable Backends:**
-- `sqlite` (default) - Single-node, embedded
-- `postgres` - Multi-agent, distributed
-
-#### 4.1.2 Event Router
-
-Routes external events to agents:
-- File system events
-- Webhook deliveries
-- Internal system events
-
-#### 4.1.3 Lifecycle Manager
-
-Manages agent lifecycle:
-- Spawn new agents
-- Stop/restart agents
-- Health checks
-- Resource limits
-
-### 4.2 Communication Layer
-
-**Channel Trait:**
-```rust
-#[async_trait]
-pub trait Channel: Send + Sync {
-    fn id(&self) -> &str;
-    async fn recv(&mut self) -> Result<Option<Message>>;
-    async fn send(&mut self, response: Response) -> Result<()>;
-    async fn stream(&mut self, events: EventStream) -> Result<()>;
-}
-```
-
-**Channel Types:**
-
-| Type | Examples | Source |
-|------|----------|--------|
-| Built-in | CLI, HTTP | Core |
-| Registry | Discord, WhatsApp | Pekohub |
-| Custom | TUI, Game mods | User-built |
-
-### 4.3 Agent Runtime
-
-The Agent Runtime manages agent state, session context, and tool execution coordination.
-
-**Components:**
-- **Invocation Router** - Route messages from Orchestration vs Communication
-- **AgentManager** - Pool, registry, lifecycle
-- **Individual Agent** - Identity, Session, Provider
-- **Tool Executor** - Synchronous tool execution with timeout support
-
-### 4.4 Execution Engine
-
-The **AgenticLoopV4** handles tool invocation. Tools are simple synchronous functions that block until completion.
+### 4.5 Inter-Agent Protocol
 
 ```rust
-pub struct AgenticLoopV4 {
-    /// Execute tool synchronously with timeout
-    async fn execute(
-        &self, 
-        tool: &str, 
-        args: Value,
-        timeout: Duration,
-    ) -> Result<Value>;
-}
-```
-
-**Tool Trait:**
-```rust
-#[async_trait]
-pub trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-    fn schema(&self) -> ToolSchema;
+pub enum AgentMessage {
+    /// Direct message
+    Direct {
+        from: AgentId,
+        to: AgentId,
+        content: MessageContent,
+        correlation_id: Option<String>,
+    },
     
-    /// Execute tool synchronously
-    /// Returns result or times out
-    async fn call(&self, args: Value) -> Result<Value>;
-}
-```
-
-**Key Points:**
-- Tools execute synchronously (blocking)
-- Each tool can define its own timeout parameter
-- Agent waits for result before continuing
-- For long-running background tasks, use:
-  - Shell background execution: `command &`
-  - MCP async patterns: submit → poll → retrieve
-  - Agent spawn: independent agent instance
-
-### 4.5 Capability Layer
-
-#### 4.5.1 Tools (Atomic, Stateless)
-
-**Core Built-in Tools:**
-
-| Tool | Category | Purpose |
-|------|----------|---------|
-| `read` | Filesystem | Read file contents from workspace |
-| `write` | Filesystem | Write/create files in workspace |
-| `edit` | Filesystem | Apply search/replace edits to files |
-| `exec` | Process | Execute shell commands with optional sandboxing |
-| `process` | Process | Manage background processes (list, kill, send signals) |
-| `apply_patch` | Code | Apply unified diff patches to codebase |
-| `agents_list` | Agent | List available agents in the system |
-| `agent_send` | Agent | Send message to another agent (1-to-1 communication) |
-| `agent_spawn` | Agent | Spawn sub-session for parallel/multitasking workflows |
-| `subagents` | Agent | Manage and interact with running subagents |
-| `sessions_list` | Session | List active and historical sessions |
-| `sessions_history` | Session | Retrieve conversation history for a session |
-| `session_status` | Session | Check current session state and metadata |
-| `cron` | Scheduling | Schedule recurring tasks and delayed one-time jobs |
-
-**Design Rationale:** Only fundamental primitives are built-in. Everything else is provided via MCPs or skills. Complex tools like `web_search`, `browser`, `memory_*`, and platform-specific actions are externalized to MCPs.
-
-**Not Built-in (MCP/Skill candidates):**
-| Tool Type | Moved to | Reason |
-|-----------|----------|--------|
-| Web tools (`web_search`, `web_fetch`) | **MCP: `web`** | Requires external API keys, rate limits |
-| Browser | **MCP: `browser`** | Heavy dependency, optional use |
-| Media (`image`, `tts`, `canvas`) | **MCP: `media`** | Optional capabilities, heavy deps |
-| Memory | **MCP: `memory-*`** | Pluggable memory backends |
-| Platform actions | **Channel plugins** | Platform-specific, not core |
-| Gateway/Nodes | **MCP: `infrastructure`** | External service integration, distributed execution |
-
-**Tool Trait (Simple):**
-```rust
-#[async_trait]
-pub trait Tool: Send + Sync {
-    fn name(&self) -> &str;
-    fn schema(&self) -> ToolSchema;
+    /// Task assignment
+    Task {
+        from: AgentId,
+        to: AgentId,
+        task_id: String,
+        task_type: String,
+        parameters: Value,
+        deadline: Option<DateTime<Utc>>,
+    },
     
-    /// Execute tool - the system manages sync/async, not the tool
-    async fn call(&self, args: Value) -> Result<Value>;
-}
-```
-
-**Example: agent_send Tool:**
-```rust
-pub struct AgentSendTool;
-
-impl Tool for AgentSendTool {
-    fn name(&self) -> &str { "agent_send" }
+    /// Task result
+    TaskResult {
+        from: AgentId,
+        to: AgentId,
+        task_id: String,
+        status: TaskStatus,
+        result: Option<Value>,
+        error: Option<String>,
+    },
     
-    async fn call(&self, args: Value) -> Result<Value> {
-        let target = args["target"].as_str().unwrap();
-        let message = args["message"].as_str().unwrap();
-        
-        send_message(target, message).await?;
-        Ok(json!({ "status": "sent" }))
-    }
-}
-```
-
-**Example: agent_spawn Tool:**
-```rust
-pub struct AgentSpawnTool;
-
-impl Tool for AgentSpawnTool {
-    fn name(&self) -> &str { "agent_spawn" }
+    /// Event broadcast
+    Event {
+        from: AgentId,
+        topic: String,
+        event_type: String,
+        payload: Value,
+    },
     
-    async fn call(&self, args: Value) -> Result<Value> {
-        let task = args["task"].as_str().unwrap();
-        
-        let result = spawn_task(task).await?;
-        Ok(json!({ "result": result }))
-    }
+    /// Heartbeat
+    Heartbeat {
+        from: AgentId,
+        status: HealthStatus,
+    },
 }
 ```
 
-**Note:** Tools are simple synchronous functions. The system (Execution Engine) manages whether to run them synchronously (blocking) or asynchronously (returning a handle). Tools don't need to implement separate sync/async paths.
+## 5. CLI Interface
 
-#### 4.5.2 MCPs (Bundled, Stateful)
+### 5.1 Package Commands
 
-Stateful service connections:
-- `browser` - Browser automation
-- `database` - Database connections
-- `email` - Email IMAP/SMTP
-- `memory-*` - Pluggable memory backends
+```bash
+# Pull an agent package
+pekobot pull pekohub.com/agents/researcher:v2.0
 
-#### 4.5.3 Skills (Workflows)
+# Build from directory
+pekobot build -t my-agent:v1.0 .
 
-Multi-step workflows. **Complex coordination patterns are skills:**
+# Push to registry
+pekobot push my-agent:v1.0 pekohub.com/user/my-agent:v1.0
 
-| Skill | Built On | Purpose |
-|-------|----------|---------|
-| `coding_assistant` | Tools + MCPs | Code generation workflow |
-| `group_chat_manager` | `agent_send` tool | Multi-agent conversations |
-| `broadcast_hub` | `agent_send` tool | Pub-sub messaging |
-| `workflow_engine` | `agent_spawn` tool | Sequential/parallel chains |
+# List local packages
+pekobot packages list
 
-**Why externalize?**
-- Core stays minimal
-- Patterns can evolve independently
-- Users can customize
-- No core bloat
+# Inspect package
+pekobot packages inspect pekohub.com/agents/researcher:v2.0
 
-### 4.6 Channel & Session Routing
-
-**Core Principles:**
-1. **Session per peer** - Each unique peer gets their own session
-2. **Peer = user or agent** - Both treated the same for session purposes
-3. **Default user** - If no username specified, use "default"
-4. **Reply to source channel** - Agent responds on the channel where message was received
-5. **Cross-channel same session** - Same peer on different channels = same session context
-
-**Session Key Format:**
-```
-{agent_id}:{peer_type}:{peer_id}:{session_id}
-
-Examples:
-- main:user:default:session_abc123     (default user)
-- main:user:alice:session_def456       (user "alice")
-- main:agent:researcher:session_ghi789 (agent "researcher")
+# Export running agent
+pekobot export coordinator my-coordinator:v1.0-backup
 ```
 
-**Routing Logic:**
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     MESSAGE ROUTING                              │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  INCOMING:                                                       │
-│  Channel receives message ──► Identify peer                      │
-│                               ├── User: extract username         │
-│                               ├── Agent: agent ID from envelope  │
-│                               └── None: "default"                │
-│                                                                  │
-│  ├───► Get or create session for (agent, peer)                   │
-│  │                                                                │
-│  └───► Invoke agent with (session, message, source_channel)      │
-│                                                                  │
-│  OUTGOING:                                                       │
-│  Agent generates response ──► Route to source_channel            │
-│                                                                  │
-│  Special cases:                                                  │
-│  - Agent-to-agent via tool: return via tool result               │
-│  - Explicit channel override: use specified channel              │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+### 5.2 Team Commands
+
+```bash
+# Deploy team
+pekobot team deploy -f research-team.toml
+
+# Scale agent type
+pekobot team scale research-team researcher 5
+
+# View team status
+pekobot team status research-team
+
+# Send message to agent
+pekobot team send research-team coordinator "Start research"
+
+# View logs
+pekobot team logs research-team --follow
+
+# Stop team
+pekobot team stop research-team
 ```
 
-**Cross-Channel Same Session:**
+### 5.3 Run Commands
+
+```bash
+# Run single agent
+pekobot run pekohub.com/agents/researcher:v2.0
+
+# Run with custom config
+pekobot run -e API_KEY=secret -v ./workspace:/workspace pekohub.com/agents/researcher:v2.0
+
+# Run and save session
+pekobot run --save-session ./session.jsonl pekohub.com/agents/researcher:v2.0
 ```
-User "alice"
-     │
-     ├──► CLI ──► Session A ──► Agent ──► Reply CLI
-     │
-     ├──► Discord ──► Session A ──► Agent ──► Reply Discord
-     │
-     └──► WhatsApp ──► Session A ──► Agent ──► Reply WhatsApp
-
-Same session context across all channels!
-Agent remembers context from previous channel.
-```
-
-**Implementation:**
-```rust
-pub struct SessionManager {
-    /// Active sessions: (agent_id, peer) -> session
-    sessions: HashMap<(String, Peer), Session>,
-}
-
-pub enum Peer {
-    User(String),   // username
-    Agent(String),  // agent_id
-}
-
-pub struct IncomingMessage {
-    pub content: String,
-    pub source: Source,
-    pub peer: Peer,
-}
-
-pub struct Source {
-    pub channel: String,      // "cli", "discord", "whatsapp"
-    pub channel_specific_id: Option<String>,
-}
-
-impl SessionManager {
-    /// Get or create session for peer
-    pub fn get_session(&mut self, agent: &str, peer: &Peer) -> &mut Session {
-        let key = (agent.to_string(), peer.clone());
-        self.sessions.entry(key).or_insert_with(|| {
-            Session::new(agent, peer)
-        })
-    }
-}
-```
-
-**Channel Override:**
-Agents can explicitly send to a different channel:
-```rust
-// Default: reply to source channel
-agent.reply(response).await?;
-
-// Override: send to specific channel
-agent.send_to("discord:general", response).await?;
-```
-
-**Example Scenarios:**
-
-| # | Scenario | Session | Reply To |
-|---|----------|---------|----------|
-| 1 | User (default) on CLI | Session A (user:default) | CLI |
-| 2 | User (default) on Discord | Session A (same user) | Discord |
-| 3 | User (default) on CLI with `/new` | Session B (new session, same user) | CLI |
-| 4 | Agent B via tool call | Session C (peer=agent:researcher) | Tool result |
-| 5 | User (default) on WhatsApp | Session A (same user) | WhatsApp |
-| 6 | User "X" on any channel | Session D (user:X) | Same channel |
 
 ## 6. Memory Architecture
 
-### 6.1 1st Order Memory (Context)
+### 6.1 First-Order Memory (Context)
 
 **Built-in, always present:**
 - Session JSONL files
 - Immediate conversation history
-- Automatic LLM context injection
-- Stored in: `~/.pekobot/agents/{agent}/sessions/`
+- Team context overlay
 
-### 6.2 2nd Order Memory (Long-term)
+### 6.2 Second-Order Memory (Long-term)
 
-**Pluggable MCP, optional:**
+**Package-bundled or Shared:**
 - `memory-markdown` - MD files + SQLite vectors
-- `memory-postgres` - PostgreSQL + pgvector
-- `memory-chroma` - ChromaDB
-- `memory-pinecone` - Pinecone
-- `memory-files` - Simple files
-- `memory-none` - Disabled
+- `memory-postgres` - PostgreSQL + pgvector (shared)
+- `memory-chroma` - ChromaDB (shared)
+- `memory-pinecone` - Pinecone (shared)
 
-## 7. Long-Running Task Patterns
+### 6.3 Third-Order Memory (Team)
 
-When agents need to execute long-running tasks without blocking indefinitely, several patterns are available:
+**Shared across team agents:**
+- Team knowledge graph
+- Shared vector embeddings
+- Collaborative memory spaces
 
-### 7.1 Shell Background Execution
+## 7. Migration from v1.x
 
-Use shell to run commands in the background:
+### 7.1 Backward Compatibility
 
-```json
-// Start download in background
-{"command": "sh", "args": ["-c", "curl -O https://example.com/large.zip > /tmp/download.log 2>&1 &"]}
-
-// Result returns immediately: "[1] 12345"
-
-// Later, check progress:
-{"command": "cat", "args": ["/tmp/download.log"]}
-
-// Or check if process is still running:
-{"command": "ps", "args": ["-p", "12345"]}
-```
-
-### 7.2 MCP Async Patterns
-
-MCPs provide native async workflows:
-
-```json
-// Submit job to MCP
-{"mcp": "compute", "method": "submit_job", "params": {"task": "train_model", "dataset": "large.csv"}}
-// Returns: {"job_id": "job_abc123", "status": "queued"}
-
-// Check status later:
-{"mcp": "compute", "method": "get_job_status", "params": {"job_id": "job_abc123"}}
-// Returns: {"status": "running", "progress": 45}
-
-// Retrieve result when complete:
-{"mcp": "compute", "method": "get_result", "params": {"job_id": "job_abc123"}}
-```
-
-### 7.3 Agent Spawn (True Parallelism)
-
-Spawn independent agents for parallel work:
-
-```json
-// Spawn research agents for parallel tasks
-{"tool": "agent_spawn", "params": {"name": "ResearchAgent1", "task": "Research asyncio patterns"}}
-{"tool": "agent_spawn", "params": {"name": "ResearchAgent2", "task": "Research trio patterns"}}
-{"tool": "agent_spawn", "params": {"name": "ResearchAgent3", "task": "Research curio patterns"}}
-
-// Each agent runs independently
-// Main agent can continue or wait for results via agent_send/agent_status
-```
-
-### 7.4 Tool Timeout Configuration
-
-Tools support configurable timeouts for long operations:
-
-```json
-// Quick command (default 120s timeout)
-{"tool": "process", "params": {"command": "date"}}
-
-// Build command with extended timeout
-{"tool": "process", "params": {"command": "cargo", "args": ["build", "--release"], "timeout": 300}}
-
-// Download with no timeout
-{"tool": "process", "params": {"command": "curl", "args": ["-O", "large.zip"], "timeout": 0}}
-```
-
-## 8. Configuration Examples
-
-### 8.1 Minimal Agent
+Existing TOML agent configs remain valid and are automatically wrapped:
 
 ```toml
-name = "minimal"
-
-[provider]
-provider_type = "kimi"
-
-[capabilities]
-tools = ["filesystem", "process"]
-builtin = ["agent_send", "agent_spawn"]
-
-[[channels]]
-id = "cli"
-type = "builtin"
-```
-
-### 8.2 Agent with External Coordination
-
-```toml
-name = "coordinator"
-
+# v1 format - still supported
+name = "my-agent"
 [provider]
 provider_type = "anthropic"
 
-[capabilities]
-tools = ["web_search", "filesystem"]
-builtin = ["agent_send", "agent_spawn"]
-skills = ["group_chat_manager", "broadcast_hub"]
-
-[[channels]]
-id = "cli"
-type = "builtin"
-
-[[channels]]
-id = "discord"
-type = "registry"
-plugin = "discord"
+# Internally converted to package format:
+# manifest.toml with implicit base image
 ```
 
-### 8.3 Multi-Tasking Agent
+### 7.2 Upgrade Path
 
-```toml
-name = "research_assistant"
+```bash
+# Convert existing agent to package
+pekobot package convert ./my-agent.toml -t my-agent:v1.0
 
-[provider]
-provider_type = "anthropic"
-
-[capabilities]
-tools = ["web_search", "write", "read"]
-builtin = ["agent_spawn"]
-
-# Spawn configuration
-[spawn]
-max_concurrent = 3
+# Convert and push
+pekobot package convert ./my-agent.toml -t my-agent:v1.0 --push
 ```
 
-### 8.4 Scheduled Async Tasks
-
-```toml
-[scheduler.tasks.poll_inbox]
-trigger = { type = "interval", minutes = 5 }
-action = { type = "tool", name = "inbox_poll", args = { max_items = 5 } }
-
-[scheduler.tasks.cleanup_spawns]
-trigger = { type = "idle", minutes = 30 }
-action = { type = "tool", name = "spawn_cleanup" }
-```
-
-## 9. Anti-Goals
+## 8. Anti-Goals
 
 What Pekobot explicitly avoids:
 
-- **Sandboxing**: Use OS-level isolation (containers, VMs) if needed
-- **Enterprise RBAC**: Role-based access is organization-specific
+- **Enterprise RBAC**: Role-based access is organization-specific (team-level only)
 - **Content moderation**: Speech is the user's responsibility
-- **Vendor lock-in**: Open protocols, portable sessions
+- **Vendor lock-in**: Open protocols, portable sessions, standard formats
 - **Cloud dependency**: Self-hosted by design, cloud optional
-- **Complex coordination in core**: Group chat, broadcast are skills, not core
-- **Agent inbox in core**: Use inbox MCP if needed
+- **Heavy coordination in core**: Complex patterns are team configurations, not core features
+- **Automatic trust**: Users must explicitly review and approve packages
 
-## 10. Related Concepts
+## 9. Related Concepts
 
 | Concept | Analogy | Pekobot Equivalent |
 |---------|---------|-------------------|
-| Unix shell | Command execution | Core runtime |
-| apt/npm | Package manager | Extension registry |
-| Docker | Isolation | Not provided - use external |
+| Unix shell | Command execution | Agent runtime |
+| apt/npm | Package manager | `pekobot pull/push` |
+| Docker | Containerization | Agent packages |
+| Docker Compose | Multi-container apps | Teams |
+| Kubernetes | Container orchestration | Team runtime (lightweight) |
 | IRC bouncer | Multi-client presence | Multi-channel agent |
-| X11/Wayland | Display server | Channel layer |
 | Shell script | Automation | Skills |
-| Thread pool | Parallel execution | Async spawn tool |
-| Message queue | Async communication | Inbox MCP (optional) |
+| Thread pool | Parallel execution | Agent spawn / team workers |
 
-## 11. Future Directions
+## 10. Future Directions
 
 ### Near-term (3-6 months)
-- Pekohub production with reputation system
-- Channel plugin architecture stabilization
-- Tool/MCP migration from core to registry
-- Multi-channel session management
-- Scheduler with pluggable backends
+- PACS specification stabilization
+- Pekohub agent registry launch
+- Base agent images (minimal, standard, full)
+- Basic team composition (hierarchical patterns)
 
 ### Medium-term (6-12 months)
-- External trust layer (signed extensions, audits)
-- Memory MCP ecosystem (markdown, postgres, chroma, pinecone)
-- Web dashboard channel
-- Advanced scheduler (Kubernetes CronJob, AWS EventBridge backends)
+- Advanced coordination patterns (mesh, pipeline, pub-sub)
+- WASM-based tool sandboxing
+- Distributed team runtime (multi-node)
+- Web dashboard for team monitoring
 
 ### Long-term (12+ months)
-- Distributed agent clusters
-- WASM-based extensions
-- Cross-runtime session portability
+- Autonomous team scaling based on load
+- Cross-runtime team composition
+- Agent package marketplace with ratings/reviews
+- Formal verification of agent capabilities
 
 ---
 
-*Status: Simplified Architecture - Core provides primitives, complex coordination externalized*
-*Last updated: 2026-03-10*
+*Version: 2.0*  
+*Status: Proposed Architecture*  
+*Last updated: 2026-03-13*
+
+## Related Documents
+
+- [Agent Container Specification (PACS)](./AGENT_CONTAINER_SPEC.md) - Detailed package format specification

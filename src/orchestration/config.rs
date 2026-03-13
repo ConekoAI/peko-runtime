@@ -2,6 +2,7 @@
 //!
 //! Configuration for event routing, file watching, and webhook server.
 
+use crate::orchestration::external_ingress::ExternalIngressConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -10,8 +11,10 @@ use std::path::PathBuf;
 pub struct OrchestrationConfig {
     /// Enable orchestration layer
     pub enabled: bool,
-    /// Webhook server configuration
+    /// Traditional path-based webhook server
     pub webhook: WebhookConfig,
+    /// Unified external ingress (newer, recommended for SaaS integrations)
+    pub external_ingress: ExternalIngressConfig,
     /// File watcher configuration
     pub file_watcher: FileWatcherConfig,
     /// Event router configuration
@@ -23,6 +26,7 @@ impl Default for OrchestrationConfig {
         Self {
             enabled: true,
             webhook: WebhookConfig::default(),
+            external_ingress: ExternalIngressConfig::default(),
             file_watcher: FileWatcherConfig::default(),
             router: RouterConfig::default(),
         }
@@ -152,6 +156,14 @@ impl OrchestrationConfig {
         self.file_watcher.watches.push(watch);
     }
 
+    /// Add an external source
+    pub fn add_external_source(
+        &mut self,
+        source: crate::orchestration::external_ingress::ExternalSource,
+    ) {
+        self.external_ingress.add_source(source);
+    }
+
     /// Validate the configuration
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.webhook.enabled {
@@ -249,6 +261,22 @@ impl OrchestrationConfigBuilder {
     /// Set router config
     pub fn with_router_config(mut self, config: RouterConfig) -> Self {
         self.config.router = config;
+        self
+    }
+
+    /// Enable external ingress
+    pub fn with_external_ingress(mut self, port: u16) -> Self {
+        self.config.external_ingress.enabled = true;
+        self.config.external_ingress.port = port;
+        self
+    }
+
+    /// Add external source
+    pub fn add_external_source(
+        mut self,
+        source: crate::orchestration::external_ingress::ExternalSource,
+    ) -> Self {
+        self.config.external_ingress.add_source(source);
         self
     }
 

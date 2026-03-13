@@ -9,6 +9,9 @@ use tracing::{info, warn};
 use crate::orchestration::config::{
     FileWatchConfig, OrchestrationConfig, WebhookRouteConfig,
 };
+use crate::orchestration::external_ingress::{
+    ExternalSource, SourceDetection, VerificationConfig,
+};
 use crate::types::config::PekobotConfig;
 
 /// Orchestration management commands
@@ -74,6 +77,48 @@ pub enum OrchestrationCommands {
 
     /// List webhook routes
     WebhookList,
+
+    /// Add an external source (unified ingress)
+    IngressAdd {
+        /// Source name (e.g., "github", "discord")
+        name: String,
+
+        /// Agent to invoke
+        #[arg(short, long)]
+        agent: String,
+
+        /// Detection header name
+        #[arg(long)]
+        header: Option<String>,
+
+        /// Detection payload field path (e.g., "event.type")
+        #[arg(long)]
+        payload_field: Option<String>,
+
+        /// User-Agent substring to match
+        #[arg(long)]
+        user_agent: Option<String>,
+
+        /// Expected header/payload value (optional)
+        #[arg(long)]
+        value: Option<String>,
+    },
+
+    /// Remove an external source
+    IngressRemove {
+        /// Source name to remove
+        name: String,
+    },
+
+    /// List external sources
+    IngressList,
+
+    /// Enable unified external ingress
+    IngressEnable {
+        /// Port to listen on
+        #[arg(short, long, default_value = "8080")]
+        port: u16,
+    },
 
     /// View recent events
     Events {
@@ -273,6 +318,142 @@ pub async fn run(
             Ok(())
         }
 
+        OrchestrationCommands::IngressAdd {
+            name,
+            agent,
+            header,
+            payload_field,
+            user_agent,
+            value,
+        } => {
+            info!("Adding external source: {} -> agent: {}", name, agent);
+
+            // Determine detection method
+            let detection = if let Some(header_name) = header {
+                SourceDetection::Header {
+                    name: header_name,
+                    value_prefix: value,
+                }
+            } else if let Some(field_path) = payload_field {
+                SourceDetection::PayloadField {
+                    path: field_path,
+                    value,
+                }
+            } else if let Some(ua) = user_agent {
+                SourceDetection::UserAgent { contains: ua }
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Must specify one of: --header, --payload-field, or --user-agent"
+                ));
+            };
+
+            let source = ExternalSource {
+                name: name.clone(),
+                detection,
+                agent_id: agent.clone(),
+                verification: None,
+                transform: None,
+            };
+
+            let mut new_config = config.clone();
+            new_config.orchestration.add_external_source(source);
+            new_config.orchestration.external_ingress.enabled = true;
+
+            new_config.to_file(config_path)?;
+
+            println!("Added external source:");
+            println!("  Name: {}", name);
+            println!("  Agent: {}", agent);
+            println!("\nNote: External ingress will start on next daemon restart");
+            println!("  Configure external services to POST to: http://your-host:{}/webhook/ingress",
+                new_config.orchestration.external_ingress.port
+            );
+
+            Ok(())
+        }
+
+        OrchestrationCommands::IngressRemove { name } => {
+            info!("Removing external source: {}", name);
+
+            let mut new_config = config.clone();
+            new_config
+                .orchestration
+                .external_ingress
+                .sources
+                .retain(|s| s.name != name);
+
+            // Disable if no sources remain
+            if new_config.orchestration.external_ingress.sources.is_empty() {
+                new_config.orchestration.external_ingress.enabled = false;
+            }
+
+            new_config.to_file(config_path)?;
+
+            println!("Removed external source: {}", name);
+
+            Ok(())
+        }
+
+        OrchestrationCommands::IngressList => {
+            println!("Registered external sources (unified ingress):");
+
+            if config.orchestration.external_ingress.sources.is_empty() {
+                println!("  (none)");
+            } else {
+                for source in &config.orchestration.external_ingress.sources {
+                    println!("  {} -> {}", source.name, source.agent_id);
+                    match &source.detection {
+                        SourceDetection::Header { name, value_prefix } => {
+                            if let Some(prefix) = value_prefix {
+                                println!("    [header: {}={}*]", name, prefix);
+                            } else {
+                                println!("    [header: {}]", name);
+                            }
+                        }
+                        SourceDetection::PayloadField { path, value } => {
+                            if let Some(val) = value {
+                                println!("    [payload: {}={}]", path, val);
+                            } else {
+                                println!("    [payload: {}]", path);
+                            }
+                        }
+                        SourceDetection::UserAgent { contains } => {
+                            println!("    [user-agent: contains '{}']", contains);
+                        }
+                    }
+                }
+            }
+
+            println!("\nExternal ingress: {}",
+                if config.orchestration.external_ingress.enabled {
+                    format!("enabled on port {}", config.orchestration.external_ingress.port)
+                } else {
+                    "disabled".to_string()
+                }
+            );
+            println!("  Endpoint: {}", config.orchestration.external_ingress.endpoint);
+
+            Ok(())
+        }
+
+        OrchestrationCommands::IngressEnable { port } => {
+            info!("Enabling external ingress on port {}", port);
+
+            let mut new_config = config.clone();
+            new_config.orchestration.external_ingress.enabled = true;
+            new_config.orchestration.external_ingress.port = port;
+
+            new_config.to_file(config_path)?;
+
+            println!("External ingress enabled on port {}", port);
+            println!("  Endpoint: {}", new_config.orchestration.external_ingress.endpoint);
+            println!("\nConfigure external services to POST to:");
+            println!("  http://your-host:{}/webhook/ingress", port);
+            println!("\nAdd sources with: pekobot orchestration ingress-add");
+
+            Ok(())
+        }
+
         OrchestrationCommands::Events {
             limit,
             event_type,
@@ -314,6 +495,12 @@ pub async fn run(
                     "port": config.orchestration.webhook.port,
                     "routes_count": config.orchestration.webhook.routes.len(),
                 },
+                "external_ingress": {
+                    "enabled": config.orchestration.external_ingress.enabled,
+                    "port": config.orchestration.external_ingress.port,
+                    "endpoint": config.orchestration.external_ingress.endpoint,
+                    "sources_count": config.orchestration.external_ingress.sources.len(),
+                },
                 "file_watcher": {
                     "enabled": config.orchestration.file_watcher.enabled,
                     "watches_count": config.orchestration.file_watcher.watches.len(),
@@ -339,6 +526,17 @@ pub async fn run(
                 );
                 println!("    Port: {}", config.orchestration.webhook.port);
                 println!("    Routes: {}", config.orchestration.webhook.routes.len());
+                println!("\n  External Ingress (Unified):");
+                println!("    Status: {}",
+                    if config.orchestration.external_ingress.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
+                println!("    Port: {}", config.orchestration.external_ingress.port);
+                println!("    Endpoint: {}", config.orchestration.external_ingress.endpoint);
+                println!("    Sources: {}", config.orchestration.external_ingress.sources.len());
                 println!("\n  File Watcher:");
                 println!("    Status: {}",
                     if config.orchestration.file_watcher.enabled {
