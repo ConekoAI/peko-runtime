@@ -232,6 +232,22 @@ pub struct WebhookRoute {
 - 7 new tests covering handler registration, routing, and all action types
 - 18 total tests in orchestration module
 
+### Phase 4b: Event Subscriber ✅
+- `EventSubscriber` with broadcast-based internal event bus
+- Cross-module event publication and subscription
+- Bidirectional forwarding between mpsc and broadcast channels
+- 8 tests for publish/subscribe, forwarding scenarios
+
+### Phase 5: Configuration & CLI ✅
+- `OrchestrationConfig` with TOML serialization
+- Webhook and file watcher route configuration
+- `pekobot orchestration` CLI commands:
+  - `handlers`, `watch`, `unwatch`
+  - `webhook-add`, `webhook-remove`, `webhook-list`
+  - `events`, `replay`, `status`, `validate`
+- 9 tests for configuration module
+- 35 total tests in orchestration module
+
 ## Success Criteria
 
 - [x] Can register event handlers for specific event types
