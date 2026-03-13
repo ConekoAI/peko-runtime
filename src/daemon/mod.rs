@@ -8,7 +8,8 @@
 //! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
 
-use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget};
+use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
+use crate::orchestration::events::SystemEvent;
 use crate::session::index::{MaintenanceConfig, MaintenanceMode, SessionIndex};
 use crate::types::agent::AgentConfig;
 use anyhow::Result;
@@ -82,11 +83,24 @@ pub struct Daemon {
     scheduler: Arc<CronScheduler>,
     command_rx: mpsc::Receiver<DaemonCommand>,
     status: Arc<Mutex<DaemonStatus>>,
+    /// Idle detector for idle-triggered jobs
+    idle_detector: Arc<IdleDetector>,
+    /// Event receiver for event-triggered jobs
+    event_rx: Option<mpsc::Receiver<SystemEvent>>,
 }
 
 impl Daemon {
     /// Create a new daemon
     pub fn new(config: DaemonConfig, command_rx: mpsc::Receiver<DaemonCommand>) -> Result<Self> {
+        Self::with_event_receiver(config, command_rx, None)
+    }
+
+    /// Create a new daemon with event receiver for event-triggered jobs
+    pub fn with_event_receiver(
+        config: DaemonConfig,
+        command_rx: mpsc::Receiver<DaemonCommand>,
+        event_rx: Option<mpsc::Receiver<SystemEvent>>,
+    ) -> Result<Self> {
         let scheduler = Arc::new(CronScheduler::new(&config.cron_db_path)?);
 
         let status = Arc::new(Mutex::new(DaemonStatus {
@@ -96,11 +110,15 @@ impl Daemon {
             last_check: None,
         }));
 
+        let idle_detector = Arc::new(IdleDetector::new());
+
         Ok(Self {
             config,
             scheduler,
             command_rx,
             status,
+            idle_detector,
+            event_rx,
         })
     }
 
@@ -124,15 +142,26 @@ impl Daemon {
         // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);
         let mut maintenance_tick = interval(self.config.maintenance_interval);
+        let mut idle_check_tick = interval(Duration::from_secs(60)); // Check idle jobs every minute
 
         info!("✅ Daemon ready. Waiting for cron jobs...");
 
+        // Clone event receiver if present
+        let mut event_rx = self.event_rx.take();
+
         loop {
             tokio::select! {
-                // Periodic cron check
+                // Periodic cron check (time-based jobs)
                 _ = poll_tick.tick() => {
                     if let Err(e) = self.check_and_run_jobs().await {
                         error!("Error checking cron jobs: {}", e);
+                    }
+                }
+
+                // Periodic idle check (idle-triggered jobs)
+                _ = idle_check_tick.tick() => {
+                    if let Err(e) = self.check_idle_jobs().await {
+                        error!("Error checking idle jobs: {}", e);
                     }
                 }
 
@@ -140,6 +169,18 @@ impl Daemon {
                 _ = maintenance_tick.tick() => {
                     if let Err(e) = self.run_session_maintenance().await {
                         error!("Error running session maintenance: {}", e);
+                    }
+                }
+
+                // Handle system events (event-triggered jobs)
+                Some(event) = async {
+                    match &mut event_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Err(e) = self.handle_system_event(event).await {
+                        error!("Error handling system event: {}", e);
                     }
                 }
 
@@ -199,6 +240,132 @@ impl Daemon {
         }
 
         Ok(())
+    }
+
+    /// Check for idle-triggered jobs and execute if conditions are met
+    async fn check_idle_jobs(&self) -> Result<()> {
+        use crate::cron::ScheduleKind;
+
+        // Get all idle-triggered jobs
+        let idle_jobs = self.scheduler.idle_jobs(false)?;
+
+        if idle_jobs.is_empty() {
+            return Ok(());
+        }
+
+        debug!("Checking {} idle-triggered jobs", idle_jobs.len());
+
+        for job in idle_jobs {
+            if let ScheduleKind::Idle { minutes, agent_id } = &job.schedule {
+                let should_execute = if let Some(agent) = agent_id {
+                    // Check if specific agent is idle
+                    self.idle_detector.is_idle(agent, *minutes).await
+                } else {
+                    // Check if any agent is idle (global)
+                    self.idle_detector.is_global_idle(*minutes).await
+                };
+
+                if should_execute {
+                    info!(
+                        "⏸️  Agent idle for {} minutes, executing job '{}'",
+                        minutes, job.name
+                    );
+                    if let Err(e) = self.execute_job(job).await {
+                        error!("Failed to execute idle job: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle system event and trigger matching event-triggered jobs
+    async fn handle_system_event(&self, event: SystemEvent) -> Result<()> {
+        use crate::cron::ScheduleKind;
+
+        let event_type = event.event_type().to_string();
+        debug!("Handling system event: {}", event_type);
+
+        // Get event-triggered jobs
+        let event_jobs = self.scheduler.event_jobs(false)?;
+
+        for job in event_jobs {
+            if let ScheduleKind::Event {
+                event_type: job_event_type,
+                filter,
+                once,
+            } = &job.schedule
+            {
+                // Check if event type matches
+                if job_event_type != &event_type {
+                    continue;
+                }
+
+                // Check if filter matches (if present)
+                if let Some(filter) = filter {
+                    if !Self::event_matches_filter(&event, filter) {
+                        continue;
+                    }
+                }
+
+                // Execute the job
+                info!(
+                    "📡 Event '{}' matches job '{}'",
+                    event_type, job.name
+                );
+                if let Err(e) = self.execute_job(job.clone()).await {
+                    error!("Failed to execute event-triggered job: {}", e);
+                    continue;
+                }
+
+                // Disable if once flag is set
+                if *once {
+                    if let Err(e) = self.scheduler.set_job_enabled(&job.id, false) {
+                        warn!("Failed to disable one-time job {}: {}", job.id, e);
+                    } else {
+                        info!("🔄 Disabled one-time event job: {}", job.name);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if an event matches a filter
+    fn event_matches_filter(
+        event: &SystemEvent,
+        filter: &serde_json::Value,
+    ) -> bool {
+        // Convert event to JSON for filtering
+        let event_json = match serde_json::to_value(event) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+
+        // Check if filter is a subset of event JSON
+        Self::json_subset(&event_json, filter)
+    }
+
+    /// Check if target JSON contains all fields from filter with matching values
+    fn json_subset(target: &serde_json::Value, filter: &serde_json::Value) -> bool {
+        match (target, filter) {
+            (serde_json::Value::Object(target_obj), serde_json::Value::Object(filter_obj)) => {
+                for (key, filter_val) in filter_obj {
+                    match target_obj.get(key) {
+                        Some(target_val) => {
+                            if !Self::json_subset(target_val, filter_val) {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                }
+                true
+            }
+            (a, b) => a == b,
+        }
     }
 
     /// Execute a single cron job
