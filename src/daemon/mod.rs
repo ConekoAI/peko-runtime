@@ -453,19 +453,29 @@ impl Daemon {
     async fn execute_main_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         info!("📨 Main session job: '{}'", job.message);
 
-        // For main session jobs, we would enqueue a system event
-        // to be processed on the next agent interaction
-        // For now, we log and mark as success
+        // Create a SystemEvent::Internal for the job
+        // This can be consumed by agents via EventSubscriber
+        let _event = SystemEvent::Internal {
+            event_type: "cron_job".to_string(),
+            source: format!("cron:{}", job.id),
+            payload: serde_json::json!({
+                "job_id": job.id,
+                "job_name": job.name,
+                "message": job.message,
+                "agent_id": job.agent_id,
+            }),
+            timestamp: Utc::now(),
+        };
 
-        // TODO: Implement system event queue for main session jobs
-        // This would integrate with the agent's event loop
+        // TODO: Deliver event to agent's session
+        // For now, we mark as success with the event details
 
         let output = format!(
-            "[cron:{}] System event enqueued:\n{}",
-            job.name, job.message
+            "[cron:{}] System event created:\n{}\n\nEvent: cron_job from {} for agent {:?}",
+            job.name, job.message, job.id, job.agent_id
         );
 
-        info!("   Event enqueued for main session processing");
+        info!("   System event created for main session processing");
 
         Ok(("success".to_string(), Some(output)))
     }
@@ -474,31 +484,42 @@ impl Daemon {
     async fn execute_isolated_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         info!("🔧 Isolated job: '{}'", job.message);
 
-        // Load agent config if specified
-        let _agent_config = if let Some(ref agent_id) = job.agent_id {
-            self.load_agent_config(agent_id).await.ok()
-        } else {
-            None
+        // Check if agent is specified
+        let agent_id = match &job.agent_id {
+            Some(id) => id,
+            None => {
+                let msg = "Isolated job requires agent_id".to_string();
+                warn!("   {}", msg);
+                return Ok(("failed".to_string(), Some(msg)));
+            }
         };
 
-        // For isolated execution, we would spawn a new agent instance
-        // and run it with the job's message as the prompt
+        // Load agent config
+        let agent_config = match self.load_agent_config(agent_id).await {
+            Ok(config) => config,
+            Err(e) => {
+                let msg = format!("Failed to load agent config for {}: {}", agent_id, e);
+                warn!("   {}", msg);
+                return Ok(("failed".to_string(), Some(msg)));
+            }
+        };
 
-        // TODO: Implement isolated agent spawning
-        // This requires:
-        // 1. Loading agent config
-        // 2. Creating temporary agent instance
-        // 3. Running with job message
-        // 4. Capturing output
+        // TODO: Implement actual isolated agent execution
+        // This would require:
+        // 1. Creating AgentManager reference in Daemon
+        // 2. Spawning agent with the config
+        // 3. Executing the job message
+        // 4. Capturing and returning output
         // 5. Cleanup
 
         let output = format!(
-            "[cron:{} {}] Isolated execution:\n{}",
-            job.id, job.name, job.message
+            "[cron:{}] Isolated execution prepared for agent '{}':\n{}\n\nNote: Full isolated execution requires AgentManager integration",
+            job.name, agent_config.name, job.message
         );
 
-        info!("   Isolated execution completed");
+        info!("   Isolated execution prepared for agent: {}", agent_config.name);
 
+        // For now, return success with note about future implementation
         Ok(("success".to_string(), Some(output)))
     }
 
