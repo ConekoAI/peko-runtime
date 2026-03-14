@@ -4,7 +4,10 @@
 **Status:** Planning (Reassessed 2026-03-14)  
 **Target:** v0.7.0  
 **Est. Effort:** 2-3 weeks  
-**Implementation Plan:** [GAP-008-Implementation-Plan.md](./GAP-008-Implementation-Plan.md)  
+**Implementation Plans:**
+- [GAP-008-Implementation-Plan.md](./GAP-008-Implementation-Plan.md) - Original comprehensive plan
+- [GAP-008-MCP-Migration-Implementation-Plan.md](./GAP-008-MCP-Migration-Implementation-Plan.md) - **MCP Migration Focus** (Recommended)
+- [TOOL_INVENTORY_ANALYSIS.md](./TOOL_INVENTORY_ANALYSIS.md) - Tool analysis and gaps  
 
 ---
 
