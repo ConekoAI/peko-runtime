@@ -1,9 +1,10 @@
 # GAP-008: Tool Migration to Registry/MCPs
 
 **Priority:** 🟡 Medium  
-**Status:** Open  
+**Status:** Planning (Reassessed 2026-03-14)  
 **Target:** v0.7.0  
 **Est. Effort:** 2-3 weeks  
+**Implementation Plan:** [GAP-008-Implementation-Plan.md](./GAP-008-Implementation-Plan.md)  
 
 ---
 
