@@ -11,6 +11,7 @@ use crate::tools::agent_spawn_v2::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use std::sync::Mutex as StdMutex;
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
@@ -23,8 +24,8 @@ pub struct Agent {
     state: Arc<RwLock<AgentState>>,
     /// Agent identity
     pub identity: Identity,
-    /// Memory store
-    memory: Option<SqliteMemory>,
+    /// Memory store (wrapped in Mutex for thread safety)
+    memory: Option<Arc<StdMutex<SqliteMemory>>>,
     /// LLM provider (stored in Arc for sharing with agentic loop)
     provider: Option<Arc<dyn Provider>>,
     /// Session manager for overlay lifecycle
@@ -224,7 +225,7 @@ impl Agent {
 
         // Store startup message in memory
         if let Some(memory) = &self.memory {
-            let _ = memory.store(
+            let _ = memory.lock().unwrap().store(
                 &format!(
                     "Agent {} started at {}",
                     self.config.name,
@@ -247,7 +248,7 @@ impl Agent {
 
         // Store shutdown message in memory
         if let Some(memory) = &self.memory {
-            let _ = memory.store(
+            let _ = memory.lock().unwrap().store(
                 &format!(
                     "Agent {} stopped at {}",
                     self.config.name,
@@ -500,7 +501,7 @@ impl Agent {
     ) -> Result<Vec<crate::types::memory::MemoryEntry>> {
         match &self.memory {
             Some(memory) => {
-                let entries = memory.search(query, limit)?;
+                let entries = memory.lock().unwrap().search(query, limit)?;
                 Ok(entries
                     .into_iter()
                     .map(|e| crate::types::memory::MemoryEntry {
@@ -531,7 +532,7 @@ impl Agent {
         metadata: Option<serde_json::Value>,
     ) -> Result<String> {
         match &self.memory {
-            Some(memory) => memory.store(content, metadata),
+            Some(memory) => memory.lock().unwrap().store(content, metadata),
             None => Err(anyhow::anyhow!("Memory not initialized")),
         }
     }
@@ -801,7 +802,7 @@ impl Agent {
     async fn init_memory(
         config: &AgentConfig,
         identity: &Identity,
-    ) -> Result<Option<SqliteMemory>> {
+    ) -> Result<Option<Arc<StdMutex<SqliteMemory>>>> {
         if let Some(memory_config) = &config.memory {
             let path = memory_config
                 .database_path
@@ -824,7 +825,7 @@ impl Agent {
                 .context("Failed to initialize SQLite memory")?;
 
             info!("Memory initialized at: {:?}", path);
-            Ok(Some(memory))
+            Ok(Some(Arc::new(StdMutex::new(memory))))
         } else {
             Ok(None)
         }

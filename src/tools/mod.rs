@@ -2,6 +2,11 @@
 //!
 //! Core tools only. On-demand tools are downloaded from Pekohub or installed locally.
 
+pub mod agent_invoke;
+pub use agent_invoke::{
+    create_shared_registry, AgentInvokeTool, ExecuteHandler, InvocationMessage, InvocationRegistry,
+    InvocationResponse, InvocationService, InvokeCommand, SharedInvocationRegistry,
+};
 pub mod agent_management;
 pub mod agent_spawn_v2;
 pub mod apply_patch;

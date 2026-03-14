@@ -1,9 +1,31 @@
 # GAP-005: Agent-to-Agent Messaging
 
 **Priority:** 🟠 High  
-**Status:** Open  
+**Status:** ✅ **COMPLETE**  
 **Target:** v0.6.0  
 **Est. Effort:** 3-5 days  
+**Actual:** 2 days
+
+---
+
+## ✅ Implementation Complete
+
+**Tool:** `agent_invoke` (replaces inbox-based `agent_send` concept)
+
+**See:**
+- Implementation Plan: `GAP-005-Implementation-Plan.md`
+- Documentation: `docs/reference/agent-invoke-tool.md`
+- Tests: `tests/agent_invoke_integration.rs`
+- E2E Test: `test_scripts/tools/test_agent_invoke_e2e.sh`
+
+**Features Delivered:**
+- ✅ Sync mode (blocks for result)
+- ✅ Async mode (receipt + events)
+- ✅ Timeout handling
+- ✅ Error handling (missing targets, timeouts)
+- ✅ Thread-safe Agent (Mutex wrapped SqliteMemory)
+- ✅ 26 total tests (9 unit + 9 integration + 8 E2E scenarios)
+- ✅ Full documentation  
 
 ---
 

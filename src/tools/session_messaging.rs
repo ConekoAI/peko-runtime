@@ -1,7 +1,14 @@
-//! Simple Session-based Messaging Tool
+//! Simple Session-based Messaging Tool (DEPRECATED)
 //!
-//! Provides lightweight agent-to-agent communication without the full
-//! A2A protocol ceremony. For simple delegation and messaging.
+//! ⚠️ **DEPRECATED**: This module is deprecated in favor of `agent_invoke` tool.
+//!
+//! Use `agent_invoke` instead:
+//! - Sync mode: Blocks for result, returns directly
+//! - Async mode: Returns receipt, result via EventSubscriber
+//!
+//! See: `src/tools/agent_invoke.rs` for the new implementation (GAP-005)
+//!
+//! This module will be removed in a future version.
 
 use async_trait::async_trait;
 use serde_json::json;
