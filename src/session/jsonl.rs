@@ -1,6 +1,6 @@
 //! OpenClaw-compatible Session JSONL Format
 //!
-//! Matches OpenClaw's format with proper content blocks:
+//! Matches `OpenClaw`'s format with proper content blocks:
 //! - session entry (metadata)
 //! - message entries (user/assistant/tool with content blocks)
 //! - toolCall entries
@@ -110,6 +110,7 @@ pub struct SessionStorage {
 
 impl SessionStorage {
     /// Create new session storage
+    #[must_use] 
     pub fn new(storage_dir: PathBuf) -> Self {
         Self { storage_dir }
     }
@@ -149,7 +150,7 @@ impl SessionStorage {
         // Acquire lock for concurrent access protection
         let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
 
-        let entry_id = format!("msg_{}", uuid::Uuid::new_v4().to_string().replace("-", ""));
+        let entry_id = format!("msg_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
 
         let entry = SessionEntry::Message {
             id: entry_id.clone(),
@@ -232,7 +233,7 @@ impl SessionStorage {
 
         let entry_id = format!(
             "model_{}",
-            uuid::Uuid::new_v4().to_string().replace("-", "")
+            uuid::Uuid::new_v4().to_string().replace('-', "")
         );
 
         let entry = SessionEntry::ModelChange {
@@ -276,7 +277,7 @@ impl SessionStorage {
 
         let entry_id = format!(
             "compact_{}",
-            uuid::Uuid::new_v4().to_string().replace("-", "")
+            uuid::Uuid::new_v4().to_string().replace('-', "")
         );
 
         let entry = SessionEntry::Compaction {
@@ -340,7 +341,7 @@ impl SessionStorage {
 
     /// Get session file path
     fn session_path(&self, session_id: &str) -> PathBuf {
-        self.storage_dir.join(format!("{}.jsonl", session_id))
+        self.storage_dir.join(format!("{session_id}.jsonl"))
     }
 
     /// List all sessions

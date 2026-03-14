@@ -10,21 +10,21 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     let current_version = crate::VERSION;
 
     println!("🔍 Checking for updates...");
-    println!("   Current version: v{}", current_version);
+    println!("   Current version: v{current_version}");
 
     // Query GitHub for latest version
     let latest_version = match query_latest_version().await {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("❌ Failed to check for updates: {}", e);
+            eprintln!("❌ Failed to check for updates: {e}");
             eprintln!("   Make sure you're connected to the internet");
             eprintln!("   You can also manually download from:");
-            eprintln!("   https://github.com/{}/releases", GITHUB_REPO);
+            eprintln!("   https://github.com/{GITHUB_REPO}/releases");
             return Ok(());
         }
     };
 
-    println!("   Latest version:  v{}", latest_version);
+    println!("   Latest version:  v{latest_version}");
 
     if current_version == latest_version && !force {
         println!("✅ Pekobot is up to date!");
@@ -33,8 +33,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 
     if check_only {
         println!(
-            "⚠️  Update available: v{} → v{}",
-            current_version, latest_version
+            "⚠️  Update available: v{current_version} → v{latest_version}"
         );
         println!("   Run 'pekobot update' to install");
         return Ok(());
@@ -42,7 +41,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 
     // Confirm update
     if !force {
-        print!("\nDo you want to update to v{}? [y/N] ", latest_version);
+        print!("\nDo you want to update to v{latest_version}? [y/N] ");
         std::io::Write::flush(&mut std::io::stdout())?;
 
         let mut input = String::new();
@@ -58,7 +57,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     println!("\n📥 Downloading update...");
     perform_update(&latest_version).await?;
 
-    println!("\n✅ Pekobot updated successfully to v{}", latest_version);
+    println!("\n✅ Pekobot updated successfully to v{latest_version}");
     println!("   Restart any running agents to use the new version");
 
     Ok(())
@@ -67,8 +66,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 /// Query GitHub for latest version
 async fn query_latest_version() -> Result<String> {
     let api_url = format!(
-        "https://api.github.com/repos/{}/releases/latest",
-        GITHUB_REPO
+        "https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     );
 
     // Use curl to query the GitHub API
@@ -108,15 +106,14 @@ async fn query_latest_version() -> Result<String> {
 /// Perform the actual update
 async fn perform_update(version: &str) -> Result<()> {
     let platform = detect_platform()?;
-    let asset_name = format!("pekobot-{}.tar.gz", platform);
+    let asset_name = format!("pekobot-{platform}.tar.gz");
 
     let download_url = format!(
-        "https://github.com/{}/releases/download/v{}/{}",
-        GITHUB_REPO, version, asset_name
+        "https://github.com/{GITHUB_REPO}/releases/download/v{version}/{asset_name}"
     );
 
     println!("   Downloading from GitHub...");
-    println!("   {}", download_url);
+    println!("   {download_url}");
 
     // Create temp directory
     let tmp_dir = std::env::temp_dir().join("pekobot-update");
@@ -141,8 +138,7 @@ async fn perform_update(version: &str) -> Result<()> {
     if !status.success() {
         // Try without 'v' prefix
         let alt_url = format!(
-            "https://github.com/{}/releases/download/{}/{}",
-            GITHUB_REPO, version, asset_name
+            "https://github.com/{GITHUB_REPO}/releases/download/{version}/{asset_name}"
         );
 
         println!("   Trying alternative URL...");
@@ -223,24 +219,21 @@ async fn perform_update(version: &str) -> Result<()> {
 
     // Replace binary (may need sudo if installed system-wide)
     println!("🔄 Installing new version...");
-    match std::fs::rename(&new_binary, &current_exe) {
-        Ok(_) => {}
-        Err(_) => {
-            // Try with sudo
-            println!("   Requesting elevated permissions...");
-            let status = Command::new("sudo")
-                .args([
-                    "mv",
-                    new_binary.to_str().unwrap(),
-                    current_exe.to_str().unwrap(),
-                ])
-                .status()?;
+    if let Ok(()) = std::fs::rename(&new_binary, &current_exe) {} else {
+        // Try with sudo
+        println!("   Requesting elevated permissions...");
+        let status = Command::new("sudo")
+            .args([
+                "mv",
+                new_binary.to_str().unwrap(),
+                current_exe.to_str().unwrap(),
+            ])
+            .status()?;
 
-            if !status.success() {
-                // Restore backup
-                std::fs::copy(&backup_path, &current_exe)?;
-                anyhow::bail!("Failed to install new binary");
-            }
+        if !status.success() {
+            // Restore backup
+            std::fs::copy(&backup_path, &current_exe)?;
+            anyhow::bail!("Failed to install new binary");
         }
     }
 
@@ -273,5 +266,5 @@ fn detect_platform() -> Result<String> {
         anyhow::bail!("Unsupported operating system")
     };
 
-    Ok(format!("{}-{}", os, arch))
+    Ok(format!("{os}-{arch}"))
 }

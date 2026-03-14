@@ -1,6 +1,6 @@
 //! System prompt builder with multi-section support
 //!
-//! Matches OpenClaw's section-based prompt assembly
+//! Matches `OpenClaw`'s section-based prompt assembly
 
 use crate::prompt::bootstrap::{default_workspace_dir, inject_bootstrap_files, BootstrapConfig};
 use crate::skills::{build_skills_prompt, Skill};
@@ -240,7 +240,7 @@ impl SystemPromptBuilder {
         // 10. Current Date & Time (OpenClaw-compatible: timezone only for cache stability)
         lines.push("## Current Date & Time".to_string());
         lines.push(format!("Timezone: {}", Local::now().format("%:z")));
-        lines.push("".to_string());
+        lines.push(String::new());
         lines.push(
             "Use the `session_status` tool when you need the current date and time.".to_string(),
         );
@@ -350,7 +350,7 @@ impl SystemPromptBuilder {
             lines.push("## Model Aliases".to_string());
             lines.push("Prefer aliases when specifying model overrides; full provider/model is also accepted.".to_string());
             for alias in &self.model_aliases {
-                lines.push(format!("- {}", alias));
+                lines.push(format!("- {alias}"));
             }
             lines.push(String::new());
         }
@@ -427,7 +427,7 @@ impl SystemPromptBuilder {
             .or_else(|_| std::env::var("COMPUTERNAME"))
             .unwrap_or_else(|_| "unknown".to_string());
         lines.push(format!("Agent: {}", self.agent_name));
-        lines.push(format!("Host: {}", hostname));
+        lines.push(format!("Host: {hostname}"));
         lines.push(format!("OS: {}", std::env::consts::OS));
         lines.push(format!("Model: {}", self.model));
         lines.push(format!("Channel: {}", self.channel));

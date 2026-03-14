@@ -16,6 +16,7 @@ pub struct AgentBootstrap {
 }
 
 impl AgentBootstrap {
+    #[must_use] 
     pub fn new(name: &str, workspace_dir: std::path::PathBuf) -> Self {
         Self {
             name: name.to_string(),
@@ -59,7 +60,7 @@ impl AgentBootstrap {
         Ok(())
     }
 
-    /// Run non-interactive bootstrap (creates all files with OpenClaw placeholders)
+    /// Run non-interactive bootstrap (creates all files with `OpenClaw` placeholders)
     pub fn run_non_interactive(&self) -> anyhow::Result<()> {
         println!("🌱 Bootstrapping agent workspace (non-interactive)...\n");
 
@@ -85,7 +86,7 @@ impl AgentBootstrap {
         Ok(())
     }
 
-    /// Seed AGENTS.md template (OpenClaw format)
+    /// Seed AGENTS.md template (`OpenClaw` format)
     fn seed_agents_md(&self) -> anyhow::Result<()> {
         let content = format!(
             r#"# AGENTS.md — {name} Personal Assistant
@@ -165,9 +166,9 @@ This is a starting point. Add your own conventions, style, and rules.
         Ok(())
     }
 
-    /// Seed TOOLS.md template (OpenClaw format)
+    /// Seed TOOLS.md template (`OpenClaw` format)
     fn seed_tools_md(&self) -> anyhow::Result<()> {
-        let content = r#"# TOOLS.md — Local Notes
+        let content = r"# TOOLS.md — Local Notes
 
 Skills define HOW tools work. This file is for YOUR specifics —
 the stuff that's unique to your setup.
@@ -197,7 +198,7 @@ Things like:
 
 ---
 *Add whatever helps you do your job. This is your cheat sheet.*
-"#;
+";
 
         let path = self.workspace_dir.join("TOOLS.md");
         std::fs::write(&path, content)?;
@@ -207,8 +208,7 @@ Things like:
 
     /// Seed BOOTSTRAP.md (one-time onboarding file)
     fn seed_bootstrap_md(&self) -> anyhow::Result<()> {
-        let content = format!(
-            r#"# BOOTSTRAP.md - Hello, World
+        let content = r#"# BOOTSTRAP.md - Hello, World
 
 *You just woke up. Time to figure out who you are.*
 
@@ -245,8 +245,7 @@ Delete this file. You don't need a bootstrap script anymore — you're you now.
 ---
 
 *Good luck out there. Make it count.*
-"#
-        );
+"#.to_string();
 
         let path = self.workspace_dir.join("BOOTSTRAP.md");
         std::fs::write(&path, content)?;
@@ -254,7 +253,7 @@ Delete this file. You don't need a bootstrap script anymore — you're you now.
         Ok(())
     }
 
-    /// Seed BOOTSTRAP.md with OpenClaw template (placeholders)
+    /// Seed BOOTSTRAP.md with `OpenClaw` template (placeholders)
     fn seed_bootstrap_md_openclaw(&self) -> anyhow::Result<()> {
         let content = r#"# BOOTSTRAP.md — Hello, World
 
@@ -305,10 +304,10 @@ Delete this file. You don't need a bootstrap script anymore — you're you now.
         Ok(())
     }
 
-    /// Seed IDENTITY.md with OpenClaw template (placeholders)
+    /// Seed IDENTITY.md with `OpenClaw` template (placeholders)
     fn seed_identity_md_openclaw(&self) -> anyhow::Result<()> {
         let content = format!(
-            r#"# IDENTITY.md — Who Am I?
+            r"# IDENTITY.md — Who Am I?
 
 - **Name:** {name}
 - **Creature:** AI assistant built in Rust
@@ -323,7 +322,7 @@ I'm {name}, a fast and efficient AI assistant. I help with code, research, and a
 
 ---
 *This isn't just metadata. It's the start of figuring out who you are.*
-"#,
+",
             name = self.name
         );
 
@@ -333,10 +332,10 @@ I'm {name}, a fast and efficient AI assistant. I help with code, research, and a
         Ok(())
     }
 
-    /// Seed USER.md with OpenClaw template (placeholders)
+    /// Seed USER.md with `OpenClaw` template (placeholders)
     fn seed_user_md_openclaw(&self) -> anyhow::Result<()> {
         let content = format!(
-            r#"# USER.md — Who You're Helping
+            r"# USER.md — Who You're Helping
 
 *{name} reads this file every session to understand you.*
 
@@ -357,7 +356,7 @@ I'm {name}, a fast and efficient AI assistant. I help with code, research, and a
 
 ---
 *Update this anytime. The more {name} knows, the better it helps.*
-"#,
+",
             name = self.name
         );
 
@@ -367,7 +366,7 @@ I'm {name}, a fast and efficient AI assistant. I help with code, research, and a
         Ok(())
     }
 
-    /// Seed SOUL.md with OpenClaw template
+    /// Seed SOUL.md with `OpenClaw` template
     fn seed_soul_md_openclaw(&self) -> anyhow::Result<()> {
         let content = format!(
             r#"# SOUL.md — Who You Are
@@ -430,9 +429,9 @@ Read them. Update them. They're how you persist.
         Ok(())
     }
 
-    /// Seed MEMORY.md with OpenClaw template
+    /// Seed MEMORY.md with `OpenClaw` template
     fn seed_memory_md_openclaw(&self) -> anyhow::Result<()> {
-        let content = r#"# MEMORY.md — Long-Term Memory
+        let content = r"# MEMORY.md — Long-Term Memory
 
 *Your curated memories. The distilled essence, not raw logs.*
 
@@ -459,7 +458,7 @@ Read them. Update them. They're how you persist.
 
 ## Open Loops
 (Track unfinished tasks and follow-ups here)
-"#;
+";
 
         let path = self.workspace_dir.join("MEMORY.md");
         std::fs::write(&path, content)?;
@@ -467,9 +466,9 @@ Read them. Update them. They're how you persist.
         Ok(())
     }
 
-    /// Seed HEARTBEAT.md with OpenClaw template
+    /// Seed HEARTBEAT.md with `OpenClaw` template
     fn seed_heartbeat_md_openclaw(&self) -> anyhow::Result<()> {
-        let content = r#"# HEARTBEAT.md
+        let content = r"# HEARTBEAT.md
 
 # Keep this file empty (or with only comments) to skip heartbeat work.
 # Add tasks below when you want the agent to check something periodically.
@@ -478,7 +477,7 @@ Read them. Update them. They're how you persist.
 # - Check my email for important messages
 # - Review my calendar for upcoming events
 # - Run `git status` on my active projects
-"#;
+";
 
         let path = self.workspace_dir.join("HEARTBEAT.md");
         std::fs::write(&path, content)?;
@@ -514,7 +513,7 @@ Read them. Update them. They're how you persist.
 
     /// Ask a question and get response
     fn ask(&self, question: &str) -> anyhow::Result<String> {
-        print!("  ❓ {}: ", question);
+        print!("  ❓ {question}: ");
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -596,7 +595,7 @@ Projects are confidential. I do not disclose or publish anything without explici
     /// Write USER.md
     fn write_user_md(&self, identity: &IdentityAnswers) -> anyhow::Result<()> {
         let content = format!(
-            r#"# USER.md - About Your Human
+            r"# USER.md - About Your Human
 
 *Learn about the person you're helping. Update this as you go.*
 
@@ -643,7 +642,7 @@ Projects are confidential. I do not disclose or publish anything without explici
 ---
 
 *Updated: {}*
-"#,
+",
             identity.user_name,
             identity.user_title,
             identity.pronouns,

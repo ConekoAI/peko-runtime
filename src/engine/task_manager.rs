@@ -1,6 +1,6 @@
 //! Task Manager for synchronous tool execution
 //!
-//! The TaskManager provides a simple interface for executing tools
+//! The `TaskManager` provides a simple interface for executing tools
 //! with timeout support. All execution is synchronous - the agent
 //! waits for tool completion before continuing.
 //!
@@ -31,7 +31,7 @@ impl Default for TaskManagerConfig {
     }
 }
 
-/// The TaskManager handles tool execution with timeout support
+/// The `TaskManager` handles tool execution with timeout support
 #[derive(Debug, Clone)]
 pub struct TaskManager {
     /// Configuration
@@ -42,11 +42,13 @@ pub struct TaskManager {
 
 impl TaskManager {
     /// Create a new task manager with default configuration
+    #[must_use] 
     pub fn new() -> Self {
         Self::with_config(TaskManagerConfig::default())
     }
 
     /// Create a new task manager with custom configuration
+    #[must_use] 
     pub fn with_config(config: TaskManagerConfig) -> Self {
         Self {
             config,
@@ -66,8 +68,7 @@ impl TaskManager {
         mode: Option<ExecutionMode>,
     ) -> Result<serde_json::Value> {
         let timeout = mode
-            .map(|m| m.timeout)
-            .unwrap_or(self.config.default_timeout);
+            .map_or(self.config.default_timeout, |m| m.timeout);
         let tool_name = tool.name().to_string();
         let task_id = TaskId::new();
 
@@ -121,6 +122,7 @@ impl TaskManager {
     }
 
     /// Get default timeout
+    #[must_use] 
     pub fn default_timeout(&self) -> std::time::Duration {
         self.config.default_timeout
     }

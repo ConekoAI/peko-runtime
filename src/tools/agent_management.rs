@@ -321,22 +321,21 @@ Examples:
 
         let isolated = params
             .get("isolated")
-            .and_then(|i| i.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
         let timeout_seconds = params
             .get("timeout_seconds")
-            .and_then(|t| t.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .or(Some(300)); // Default 5 minutes
 
         let cleanup = params
             .get("cleanup")
             .and_then(|c| c.as_str())
-            .map(|s| match s.to_lowercase().as_str() {
+            .map_or(SpawnCleanupPolicy::Keep, |s| match s.to_lowercase().as_str() {
                 "delete" => SpawnCleanupPolicy::Delete,
                 _ => SpawnCleanupPolicy::Keep,
-            })
-            .unwrap_or(SpawnCleanupPolicy::Keep);
+            });
 
         // Get parent session key and peer
         let (parent_session_key, peer, agent_name) = if let Some(ref ctx) = self.current_session {
@@ -359,7 +358,7 @@ Examples:
             let (tx, mut rx) = mpsc::channel(1);
             command_tx
                 .send(ManagerCommand::SpawnSession {
-                    agent_did: format!("did:pekobot:local:default:{}", agent_name),
+                    agent_did: format!("did:pekobot:local:default:{agent_name}"),
                     peer: peer.clone(),
                     task: task.clone(),
                     isolated,

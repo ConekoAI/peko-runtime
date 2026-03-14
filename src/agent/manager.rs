@@ -36,7 +36,7 @@ pub struct AgentManager {
     data_dir: PathBuf,
     /// Command channel for agent tools
     command_tx: mpsc::Sender<ManagerCommand>,
-    /// Invocation service command channel for agent_invoke tool
+    /// Invocation service command channel for `agent_invoke` tool
     invocation_tx: mpsc::Sender<InvokeCommand>,
 }
 
@@ -334,7 +334,7 @@ impl AgentManager {
 
         // Agent invoke tool (session-based messaging, GAP-005)
         // Note: agent_name is extracted from agent_did for now
-        let agent_name = agent_did.split(':').last().unwrap_or(agent_did);
+        let agent_name = agent_did.split(':').next_back().unwrap_or(agent_did);
         tools.push(Arc::new(AgentInvokeTool::new(
             agent_did.to_string(),
             agent_name.to_string(),
@@ -387,7 +387,7 @@ impl AgentManager {
             .collect()
     }
 
-    /// Create all essential tools for an agent (legacy method - use create_all_tools_for_agent_async)
+    /// Create all essential tools for an agent (legacy method - use `create_all_tools_for_agent_async`)
     #[must_use]
     pub fn create_all_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{ToolFactory, ToolFactoryConfig};
@@ -473,12 +473,13 @@ impl AgentManager {
     }
 
     /// Get the invocation command channel
+    #[must_use] 
     pub fn invocation_tx(&self) -> &mpsc::Sender<InvokeCommand> {
         &self.invocation_tx
     }
 }
 
-/// ExecuteHandler that uses the AgentPool to execute on target agents
+/// `ExecuteHandler` that uses the `AgentPool` to execute on target agents
 pub struct PoolExecuteHandler {
     pool: Arc<RwLock<AgentPool>>,
 }
@@ -519,7 +520,7 @@ impl ExecuteHandler for PoolExecuteHandler {
                     content: String::new(),
                     duration_ms: 0,
                     success: false,
-                    error: Some(format!("Target agent '{}' not found", target)),
+                    error: Some(format!("Target agent '{target}' not found")),
                 });
             }
         };
@@ -552,7 +553,7 @@ impl ExecuteHandler for PoolExecuteHandler {
                     content: String::new(),
                     duration_ms,
                     success: false,
-                    error: Some(format!("Execution failed: {}", e)),
+                    error: Some(format!("Execution failed: {e}")),
                 }
             }
             Err(_) => {
@@ -563,7 +564,7 @@ impl ExecuteHandler for PoolExecuteHandler {
                     content: String::new(),
                     duration_ms,
                     success: false,
-                    error: Some(format!("Timeout after {}ms", timeout_ms)),
+                    error: Some(format!("Timeout after {timeout_ms}ms")),
                 }
             }
         };

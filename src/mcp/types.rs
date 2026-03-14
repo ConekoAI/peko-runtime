@@ -1,7 +1,7 @@
 //! MCP (Model Context Protocol) types
 //!
 //! Defines the core types for the Model Context Protocol based on the
-//! official specification: https://modelcontextprotocol.io/specification/
+//! official specification: <https://modelcontextprotocol.io/specification>/
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,8 +24,8 @@ pub enum RequestId {
 impl fmt::Display for RequestId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RequestId::String(s) => write!(f, "{}", s),
-            RequestId::Number(n) => write!(f, "{}", n),
+            RequestId::String(s) => write!(f, "{s}"),
+            RequestId::Number(n) => write!(f, "{n}"),
         }
     }
 }
@@ -114,6 +114,7 @@ pub enum JsonRpcResponse {
 }
 
 impl JsonRpcResponse {
+    #[must_use] 
     pub fn id(&self) -> &RequestId {
         match self {
             JsonRpcResponse::Success(r) => &r.id,

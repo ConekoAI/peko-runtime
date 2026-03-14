@@ -179,18 +179,21 @@ impl SubagentExecutor {
     }
 
     /// Set the agent configuration
+    #[must_use] 
     pub fn with_agent_config(mut self, config: AgentConfig) -> Self {
         self.agent_config = Some(config);
         self
     }
 
     /// Set the announcement channel
+    #[must_use] 
     pub fn with_announcement_channel(mut self, tx: AnnouncementSender) -> Self {
         self.announcement_tx = Some(tx);
         self
     }
 
     /// Create announcement channel
+    #[must_use] 
     pub fn create_announcement_channel() -> (AnnouncementSender, AnnouncementReceiver) {
         mpsc::channel(100)
     }
@@ -215,11 +218,11 @@ impl SubagentExecutor {
 
     /// Spawn and execute a subagent
     ///
-    /// Returns the run_id immediately. The execution happens in the background.
+    /// Returns the `run_id` immediately. The execution happens in the background.
     pub async fn spawn_and_execute(
         &self,
         task: &str,
-        parent_ctx: Option<&SessionContext>,
+        _parent_ctx: Option<&SessionContext>,
         isolated: bool,
         parent_session_key: &str,
         config: ExecutionConfig,
@@ -345,7 +348,7 @@ impl SubagentExecutor {
 
             // Execute with timeout
             let result = if timeout > 0 {
-                match tokio::time::timeout(
+                if let Ok(r) = tokio::time::timeout(
                     tokio::time::Duration::from_secs(timeout),
                     execute_subagent_task(
                         &agent_name,
@@ -357,19 +360,14 @@ impl SubagentExecutor {
                         session_manager_clone,
                     ),
                 )
-                .await
-                {
-                    Ok(r) => r,
-                    Err(_) => {
-                        warn!(
-                            "Subagent timed out: run_id={} timeout={}s",
-                            run_id_clone, timeout
-                        );
-                        Err(anyhow::anyhow!(
-                            "Subagent execution timed out after {} seconds",
-                            timeout
-                        ))
-                    }
+                .await { r } else {
+                    warn!(
+                        "Subagent timed out: run_id={} timeout={}s",
+                        run_id_clone, timeout
+                    );
+                    Err(anyhow::anyhow!(
+                        "Subagent execution timed out after {timeout} seconds"
+                    ))
                 }
             } else {
                 execute_subagent_task(
@@ -398,7 +396,7 @@ impl SubagentExecutor {
 
             // Complete the run in registry
             let subagent_result = SubagentResult {
-                status: status.clone(),
+                status,
                 output: output.clone(),
                 error: error.clone(),
                 token_usage: None, // TODO: Track token usage
@@ -538,8 +536,7 @@ impl SubagentExecutor {
                 .filter(|run_id| {
                     registry
                         .get(run_id)
-                        .map(|run| run.status.is_terminal())
-                        .unwrap_or(true)
+                        .is_none_or(|run| run.status.is_terminal())
                 })
                 .cloned()
                 .collect()
@@ -646,7 +643,7 @@ impl Clone for SubagentExecutor {
 /// 1. Loads the child session
 /// 2. Adds system prompt and user task message
 /// 3. Creates a minimal agent with tools
-/// 4. Runs AgenticLoopV4 to execute the task
+/// 4. Runs `AgenticLoopV4` to execute the task
 /// 5. Returns the assistant's response
 async fn execute_subagent_task(
     agent_name: &str,
@@ -654,7 +651,7 @@ async fn execute_subagent_task(
     system_prompt: &str,
     task_message: &str,
     provider: Option<Arc<dyn crate::providers::Provider>>,
-    agent_config: Option<AgentConfig>,
+    _agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
 ) -> Result<String> {
     info!(
@@ -668,8 +665,7 @@ async fn execute_subagent_task(
         None => {
             // Fallback to simplified response
             return Ok(format!(
-                "# Subagent Task\n\n**Task:** {}\n\n**Status:** Completed (no provider configured)\n\nThe subagent executed without an LLM provider.",
-                task_message
+                "# Subagent Task\n\n**Task:** {task_message}\n\n**Status:** Completed (no provider configured)\n\nThe subagent executed without an LLM provider."
             ));
         }
     };
@@ -767,8 +763,7 @@ fn format_subagent_result(
 
     // Add metadata
     message.push_str(&format!(
-        "[runId: {} | session: {}]",
-        run_id, child_session_key
+        "[runId: {run_id} | session: {child_session_key}]"
     ));
 
     // Add instruction for parent agent

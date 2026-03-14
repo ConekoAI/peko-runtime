@@ -26,8 +26,8 @@ impl std::fmt::Display for ToolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ToolError::Aborted => write!(f, "Tool execution aborted"),
-            ToolError::Timeout(d) => write!(f, "Tool execution timed out after {:?}", d),
-            ToolError::Other(msg) => write!(f, "{}", msg),
+            ToolError::Timeout(d) => write!(f, "Tool execution timed out after {d:?}"),
+            ToolError::Other(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -147,6 +147,7 @@ impl ToolContext {
     ///     Ok(Value::Null)
     /// }
     /// ```
+    #[must_use] 
     pub fn is_aborted(&self) -> bool {
         *self.abort_rx.borrow()
     }
@@ -154,6 +155,7 @@ impl ToolContext {
     /// Subscribe to abort signal changes
     ///
     /// Useful for tools that want to await on abort rather than poll
+    #[must_use] 
     pub fn abort_signal(&self) -> tokio::sync::watch::Receiver<bool> {
         self.abort_rx.clone()
     }
@@ -167,20 +169,17 @@ impl ToolContext {
         let mut last = self.last_progress_update.lock().await;
         let now = Instant::now();
 
-        match *last {
-            Some(last_time) => {
-                let elapsed = now.duration_since(last_time).as_millis() as u64;
-                if elapsed >= self.progress_throttle_ms {
-                    *last = Some(now);
-                    true
-                } else {
-                    false
-                }
-            }
-            None => {
+        if let Some(last_time) = *last {
+            let elapsed = now.duration_since(last_time).as_millis() as u64;
+            if elapsed >= self.progress_throttle_ms {
                 *last = Some(now);
                 true
+            } else {
+                false
             }
+        } else {
+            *last = Some(now);
+            true
         }
     }
 
@@ -211,7 +210,7 @@ impl ToolContext {
                 None
             };
 
-            let output = message.unwrap_or_else(|| format!("Progress: {}/{}", current, total));
+            let output = message.unwrap_or_else(|| format!("Progress: {current}/{total}"));
 
             let event = AgenticEvent::ToolUpdate {
                 run_id: self.run_id.clone(),
@@ -250,6 +249,7 @@ impl ToolContext {
     }
 
     /// Get the configured timeout
+    #[must_use] 
     pub fn timeout(&self) -> Option<Duration> {
         self.timeout
     }
@@ -279,6 +279,7 @@ pub struct AbortSignal {
 
 impl AbortSignal {
     /// Create a new abort signal (initially not aborted)
+    #[must_use] 
     pub fn new() -> Self {
         let (tx, _rx) = tokio::sync::watch::channel(false);
         Self { tx }
@@ -290,6 +291,7 @@ impl AbortSignal {
     }
 
     /// Check if already aborted
+    #[must_use] 
     pub fn is_aborted(&self) -> bool {
         *self.tx.borrow()
     }
@@ -316,6 +318,7 @@ impl AbortSignal {
     }
 
     /// Get a receiver for the abort signal
+    #[must_use] 
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<bool> {
         self.tx.subscribe()
     }
@@ -329,7 +332,7 @@ impl Default for AbortSignal {
 
 /// Wrapper for tools that adds abort signal support
 ///
-/// Similar to OpenClaw's `wrapToolWithAbortSignal`, this wrapper
+/// Similar to `OpenClaw`'s `wrapToolWithAbortSignal`, this wrapper
 /// intercepts tool execution and passes an abort signal to the tool.
 pub struct AbortableTool<T: ToolWithContext> {
     inner: T,
@@ -380,7 +383,7 @@ pub trait ToolWithContext: Send + Sync {
     }
 }
 
-/// Adapter to wrap a basic Tool as a ToolWithContext
+/// Adapter to wrap a basic Tool as a `ToolWithContext`
 pub struct ToolAdapter<T> {
     inner: T,
 }
@@ -436,8 +439,8 @@ impl<T: super::Tool + Send + Sync> ToolWithContext for ToolAdapter<T> {
 
 /// Wrap a basic tool with abort signal support
 ///
-/// This is the Pekobot equivalent of OpenClaw's `wrapToolWithAbortSignal`.
-/// It returns a tuple of (AbortableTool, AbortSignal) where the signal
+/// This is the Pekobot equivalent of `OpenClaw`'s `wrapToolWithAbortSignal`.
+/// It returns a tuple of (`AbortableTool`, `AbortSignal`) where the signal
 /// can be used to abort the tool from outside.
 pub fn wrap_tool<T: ToolWithContext>(tool: T) -> (AbortableTool<T>, AbortSignal) {
     let abortable = AbortableTool::new(tool);

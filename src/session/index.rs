@@ -15,7 +15,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
-/// Default cache TTL (45 seconds, same as OpenClaw)
+/// Default cache TTL (45 seconds, same as `OpenClaw`)
 pub const DEFAULT_CACHE_TTL_MS: u64 = 45_000;
 
 /// Default maintenance settings
@@ -75,6 +75,7 @@ pub struct IndexEntry {
 
 impl IndexEntry {
     /// Create a new index entry
+    #[must_use] 
     pub fn new(session_id: String, agent_name: String, transcript_file: String) -> Self {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -111,6 +112,7 @@ impl IndexEntry {
     }
 
     /// Get the absolute path to the transcript file
+    #[must_use] 
     pub fn transcript_path(&self, index_dir: &Path) -> PathBuf {
         index_dir.join(&self.transcript_file)
     }
@@ -173,6 +175,7 @@ pub struct MaintenanceReport {
 }
 
 impl MaintenanceReport {
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.pruned == 0 && self.capped == 0 && !self.rotated
     }
@@ -233,6 +236,7 @@ impl SessionIndex {
     }
 
     /// Set custom cache TTL
+    #[must_use] 
     pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
         self.cache_ttl = ttl;
         self
@@ -505,7 +509,7 @@ impl SessionIndex {
             .unwrap()
             .as_millis();
 
-        let backup_path = self.path.with_extension(format!("json.bak.{}", timestamp));
+        let backup_path = self.path.with_extension(format!("json.bak.{timestamp}"));
         fs::rename(&self.path, backup_path).await?;
 
         // Create new empty index
@@ -561,7 +565,7 @@ impl SessionIndex {
 
         while let Some(entry) = dir_entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "jsonl") {
+            if path.extension().is_some_and(|e| e == "jsonl") {
                 let filename = path.file_stem().unwrap().to_string_lossy().to_string();
 
                 // Check if already indexed
@@ -599,7 +603,7 @@ impl SessionIndex {
                     last_error: None,
                 };
 
-                let key = format!("agent:{}:session:{}", agent_name, filename);
+                let key = format!("agent:{agent_name}:session:{filename}");
                 entries.insert(key, index_entry);
             }
         }

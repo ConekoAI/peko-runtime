@@ -315,7 +315,7 @@ impl Compactor {
                 .iter()
                 .filter_map(|b| match b {
                     ContentBlock::Text { text } => Some(text.clone()),
-                    ContentBlock::ToolCall { name, .. } => Some(format!("[Tool: {}]", name)),
+                    ContentBlock::ToolCall { name, .. } => Some(format!("[Tool: {name}]")),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -328,7 +328,7 @@ impl Compactor {
                 content
             };
 
-            formatted.push_str(&format!("{}: {}\n\n", role_label, display));
+            formatted.push_str(&format!("{role_label}: {display}\n\n"));
         }
 
         formatted
@@ -346,8 +346,7 @@ impl Compactor {
         let (base_prompt, is_update) = if let Some(ref prev) = self.previous_summary {
             (
                 format!(
-                    "<previous-summary>\n{}\n</previous-summary>\n\n{}",
-                    prev, UPDATE_SUMMARIZATION_PROMPT
+                    "<previous-summary>\n{prev}\n</previous-summary>\n\n{UPDATE_SUMMARIZATION_PROMPT}"
                 ),
                 true,
             )
@@ -356,8 +355,7 @@ impl Compactor {
         };
 
         let prompt = format!(
-            "<conversation>\n{}\n</conversation>\n\n{}",
-            history, base_prompt
+            "<conversation>\n{history}\n</conversation>\n\n{base_prompt}"
         );
 
         debug!(

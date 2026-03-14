@@ -85,6 +85,7 @@ pub enum PromptMode {
 
 impl PromptMode {
     /// Parse from string
+    #[must_use] 
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "minimal" => Self::Minimal,

@@ -114,7 +114,7 @@ pub struct SessionStatusArgs {
     /// Session key or ID (defaults to current session)
     #[serde(default)]
     pub session_key: Option<String>,
-    /// Optional timezone for timestamp formatting (e.g., "America/New_York", "UTC")
+    /// Optional timezone for timestamp formatting (e.g., "`America/New_York`", "UTC")
     /// If not provided, uses machine's local timezone
     #[serde(default)]
     pub timezone: Option<String>,

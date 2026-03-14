@@ -2,8 +2,8 @@
 //!
 //! This is a complete rewrite using the native tool calling approach:
 //! - No text parsing for tool calls
-//! - Structured ContentBlock types throughout
-//! - Unified event callback API (no separate run/run_streaming)
+//! - Structured `ContentBlock` types throughout
+//! - Unified event callback API (no separate `run/run_streaming`)
 //! - Streaming support with incremental tool call construction
 
 use crate::agent::Agent;
@@ -92,18 +92,15 @@ impl AgenticLoopV4 {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
 
         // Use existing session or create new one
-        let mut session = match existing_session {
-            Some(s) => {
-                info!("Resuming session: {}", s.id);
-                s
-            }
-            None => {
-                let s = SimpleSession::create(&self.agent.name())
-                    .await
-                    .context("Failed to create session")?;
-                info!("Created new session: {}", s.id);
-                s
-            }
+        let mut session = if let Some(s) = existing_session {
+            info!("Resuming session: {}", s.id);
+            s
+        } else {
+            let s = SimpleSession::create(self.agent.name())
+                .await
+                .context("Failed to create session")?;
+            info!("Created new session: {}", s.id);
+            s
         };
 
         // Emit start event
@@ -120,27 +117,24 @@ impl AgenticLoopV4 {
         );
 
         // Build messages - either from history or fresh start
-        let mut messages = match history {
-            Some(h) => {
-                info!("Loaded {} messages from history", h.len());
-                h
-            }
-            None => {
-                // Fresh start - add system prompt
-                let msgs = vec![ChatMessage {
-                    role: MessageRole::System,
-                    content: vec![ContentBlock::Text {
-                        text: self.system_prompt.clone(),
-                    }],
-                    tool_calls: None,
-                    tool_call_id: None,
-                }];
+        let mut messages = if let Some(h) = history {
+            info!("Loaded {} messages from history", h.len());
+            h
+        } else {
+            // Fresh start - add system prompt
+            let msgs = vec![ChatMessage {
+                role: MessageRole::System,
+                content: vec![ContentBlock::Text {
+                    text: self.system_prompt.clone(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+            }];
 
-                // Add system prompt to session
-                session.add_system(&self.system_prompt).await?;
+            // Add system prompt to session
+            session.add_system(&self.system_prompt).await?;
 
-                msgs
-            }
+            msgs
         };
 
         // Add user message
@@ -346,13 +340,13 @@ impl AgenticLoopV4 {
                             format!("[Text: {}]", text.chars().take(50).collect::<String>())
                         }
                         crate::types::message::ContentBlock::ToolCall { id, name, .. } => {
-                            format!("[ToolCall: {} ({})]", name, id)
+                            format!("[ToolCall: {name} ({id})]")
                         }
                         crate::types::message::ContentBlock::ToolResult {
                             tool_call_id,
                             name,
                             ..
-                        } => format!("[ToolResult: {} -> {}]", tool_call_id, name),
+                        } => format!("[ToolResult: {tool_call_id} -> {name}]"),
                         _ => "[Other]".to_string(),
                     })
                     .collect();
@@ -503,11 +497,11 @@ impl AgenticLoopV4 {
                                     Err(e) => {
                                         // Tool errors are informational - agent can handle them
                                         info!("Tool '{}' failed: {}", name, e);
-                                        format!("Error: {}", e)
+                                        format!("Error: {e}")
                                     }
                                 }
                             } else {
-                                format!("Tool '{}' not found", name)
+                                format!("Tool '{name}' not found")
                             };
 
                         let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -603,6 +597,7 @@ impl AgenticLoopV4 {
     }
 
     /// Get the task manager
+    #[must_use] 
     pub fn task_manager(&self) -> &Arc<TaskManager> {
         &self.task_manager
     }
@@ -650,7 +645,7 @@ impl AgenticLoopV4 {
     }
 }
 
-/// Build system prompt from agent and tools using SystemPromptBuilder
+/// Build system prompt from agent and tools using `SystemPromptBuilder`
 /// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.) and skills
 fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
     // Use configured workspace if specified, otherwise use default
@@ -715,15 +710,14 @@ fn messages_to_prompt(messages: &[ChatMessage]) -> String {
                     ContentBlock::Text { text } => Some(text.clone()),
                     _ => None,
                 })
-                .collect::<Vec<_>>()
-                .join("");
-            format!("{}: {}", role, content)
+                .collect::<String>();
+            format!("{role}: {content}")
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// Extract tool calls from ContentBlock for session storage
+/// Extract tool calls from `ContentBlock` for session storage
 fn extract_tool_calls(blocks: &[ContentBlock]) -> Vec<ToolCall> {
     blocks
         .iter()
@@ -778,7 +772,7 @@ fn parse_content_block(value: &serde_json::Value) -> Option<ContentBlock> {
             let signature = value
                 .get("signature")
                 .and_then(|s| s.as_str())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             Some(ContentBlock::Thinking { text, signature })
         }
         "tool_call" => {

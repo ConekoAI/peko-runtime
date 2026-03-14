@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::info;
 
-pub use event_trigger::{EventTriggerService, EventTriggerServiceBuilder};
 pub use idle::IdleDetector;
 
 /// Schedule kinds for cron jobs
@@ -83,7 +82,7 @@ impl ScheduleKind {
                 filter,
                 once,
             } => {
-                let filter_info = filter.as_ref().map(|_| " [filtered]").unwrap_or("");
+                let filter_info = filter.as_ref().map_or("", |_| " [filtered]");
                 let once_info = if *once { " (once)" } else { "" };
                 format!("event '{event_type}'{filter_info}{once_info}")
             }

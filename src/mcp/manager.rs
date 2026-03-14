@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{info, trace, warn};
 
 /// Errors that can occur in the MCP manager
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +98,7 @@ pub struct McpManager {
 
 impl McpManager {
     /// Create a new MCP manager with the given configuration
+    #[must_use] 
     pub fn new(config: McpConfig) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -209,7 +210,7 @@ impl McpManager {
         let tools = if client.supports_capability("tools") {
             match client.list_tools().await {
                 Ok(tools) => tools,
-                Err(e) => Vec::new(),
+                Err(_e) => Vec::new(),
             }
         } else {
             Vec::new()
@@ -338,7 +339,7 @@ impl McpManager {
     /// Get all tools as Pekobot Tool trait objects
     ///
     /// This allows MCP tools to be used seamlessly with Pekobot's agent system.
-    /// The tools are wrapped in McpToolProxy which implements the Tool trait.
+    /// The tools are wrapped in `McpToolProxy` which implements the Tool trait.
     ///
     /// # Returns
     /// A vector of Arc<dyn Tool> containing all MCP tools from running servers

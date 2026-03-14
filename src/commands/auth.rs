@@ -65,9 +65,10 @@ pub struct CredentialsStore {
 
 impl CredentialsStore {
     fn key(provider: &str, profile: &str) -> String {
-        format!("{}:{}", provider, profile)
+        format!("{provider}:{profile}")
     }
 
+    #[must_use] 
     pub fn get(&self, provider: &str, profile: &str) -> Option<&Credential> {
         self.credentials.get(&Self::key(provider, profile))
     }
@@ -89,6 +90,7 @@ impl CredentialsStore {
             .is_some()
     }
 
+    #[must_use] 
     pub fn list_for_provider(&self, provider: &str) -> Vec<&Credential> {
         self.credentials
             .values()
@@ -96,10 +98,12 @@ impl CredentialsStore {
             .collect()
     }
 
+    #[must_use] 
     pub fn list_all(&self) -> Vec<&Credential> {
         self.credentials.values().collect()
     }
 
+    #[must_use] 
     pub fn providers(&self) -> Vec<String> {
         let mut providers: Vec<String> = self
             .credentials
@@ -171,15 +175,12 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             let profile = profile.unwrap_or_else(|| "default".to_string());
 
             // Get API key interactively if not provided
-            let api_key = match key {
-                Some(k) => k,
-                None => {
-                    print!("Enter API key for {} (profile: {}): ", provider, profile);
-                    std::io::stdout().flush()?;
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    input.trim().to_string()
-                }
+            let api_key = if let Some(k) = key { k } else {
+                print!("Enter API key for {provider} (profile: {profile}): ");
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                input.trim().to_string()
             };
 
             if api_key.is_empty() {
@@ -191,7 +192,7 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             store.set(&provider, &profile, api_key);
             save_credentials(paths, &store)?;
 
-            println!("✓ API key saved for {} (profile: {})", provider, profile);
+            println!("✓ API key saved for {provider} (profile: {profile})");
             println!(
                 "  Location: {}",
                 paths.config_dir.join("credentials.json").display()
@@ -213,7 +214,7 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             println!();
 
             for provider in store.providers() {
-                println!("  {}:", provider);
+                println!("  {provider}:");
                 let creds = store.list_for_provider(&provider);
                 for cred in creds {
                     let key_display = if show {
@@ -240,13 +241,11 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             if store.remove(&provider, &profile) {
                 save_credentials(paths, &store)?;
                 println!(
-                    "✓ Removed credential for {} (profile: {})",
-                    provider, profile
+                    "✓ Removed credential for {provider} (profile: {profile})"
                 );
             } else {
                 println!(
-                    "✗ No credential found for {} (profile: {})",
-                    provider, profile
+                    "✗ No credential found for {provider} (profile: {profile})"
                 );
             }
 
@@ -282,13 +281,13 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
                         };
 
                         if valid {
-                            println!("  ✓ {} ({}): Valid format", provider, profile_name);
+                            println!("  ✓ {provider} ({profile_name}): Valid format");
                         } else {
-                            println!("  ⚠ {} ({}): Invalid key format", provider, profile_name);
+                            println!("  ⚠ {provider} ({profile_name}): Invalid key format");
                         }
                     }
                     None => {
-                        println!("  ✗ {} ({}): Not found", provider, profile_name);
+                        println!("  ✗ {provider} ({profile_name}): Not found");
                     }
                 }
             }

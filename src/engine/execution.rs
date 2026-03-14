@@ -11,6 +11,7 @@ pub struct TaskId(pub String);
 
 impl TaskId {
     /// Generate a new unique task ID
+    #[must_use] 
     pub fn new() -> Self {
         Self(format!(
             "task_{}",
@@ -40,6 +41,7 @@ pub struct ExecutionMode {
 
 impl ExecutionMode {
     /// Create a sync mode with the given timeout
+    #[must_use] 
     pub fn with_timeout(timeout_secs: u64) -> Self {
         Self {
             timeout: std::time::Duration::from_secs(timeout_secs),
@@ -47,6 +49,7 @@ impl ExecutionMode {
     }
 
     /// Create a sync mode with default 120s timeout
+    #[must_use] 
     pub fn default() -> Self {
         Self::with_timeout(120)
     }
@@ -87,6 +90,7 @@ pub struct TaskExecutor;
 
 impl TaskExecutor {
     /// Create a new task executor
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
@@ -105,9 +109,7 @@ impl TaskExecutor {
         match tokio::time::timeout(timeout, f()).await {
             Ok(result) => result,
             Err(_) => Err(anyhow::anyhow!(
-                "Task '{}' timed out after {:?}",
-                name,
-                timeout
+                "Task '{name}' timed out after {timeout:?}"
             )),
         }
     }

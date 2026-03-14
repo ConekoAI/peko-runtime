@@ -8,7 +8,6 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::agent::subagent_executor::{AnnouncementReceiver, SubagentExecutor};
-use crate::agent::subagent_registry::SubagentStatus;
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 
@@ -147,7 +146,7 @@ impl AnnouncementService {
     /// Run announcement processing once (for testing)
     pub async fn process_once(&self) -> usize {
         match self.process_completed_runs().await {
-            Ok(_) => {
+            Ok(()) => {
                 // Return count of processed runs
                 self.executor.get_completed_for_announcement().await.len()
             }

@@ -128,7 +128,7 @@ async fn spawn_session_for_agent(
     let agent = pool_guard
         .get_agent(agent_did)
         .await
-        .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_did))?;
+        .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_did}"))?;
 
     // Spawn the session using the agent's session router
     let spawn_ctx = agent

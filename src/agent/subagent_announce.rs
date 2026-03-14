@@ -9,14 +9,15 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 
 /// Format a subagent result as an announcement message
+#[must_use] 
 pub fn format_announcement(run: &SubagentRun) -> String {
     let label_part = run
         .label
         .as_ref()
-        .map(|l| format!(" [{}]", l))
+        .map(|l| format!(" [{l}]"))
         .unwrap_or_default();
 
-    let header = format!("## Subagent Result{}\n\n", label_part);
+    let header = format!("## Subagent Result{label_part}\n\n");
 
     let status_emoji = match run.status {
         SubagentStatus::Completed => "✅",
@@ -32,14 +33,14 @@ pub fn format_announcement(run: &SubagentRun) -> String {
         Some(result) => match run.status {
             SubagentStatus::Completed => {
                 if let Some(output) = &result.output {
-                    format!("**Output:**\n\n{}\n", output)
+                    format!("**Output:**\n\n{output}\n")
                 } else {
                     "**Output:** (no content)\n".to_string()
                 }
             }
             SubagentStatus::Failed => {
                 if let Some(error) = &result.error {
-                    format!("**Error:** {}\n", error)
+                    format!("**Error:** {error}\n")
                 } else {
                     "**Error:** Unknown error occurred\n".to_string()
                 }
@@ -56,7 +57,7 @@ pub fn format_announcement(run: &SubagentRun) -> String {
         run.run_id, run.child_session_key
     );
 
-    format!("{}{}{}{}", header, status_line, content, metadata)
+    format!("{header}{status_line}{content}{metadata}")
 }
 
 /// Announce a subagent result to its parent session
@@ -96,6 +97,7 @@ pub async fn announce_to_parent(parent_ctx: &SessionContext, run: &SubagentRun) 
 /// Build a system prompt for a subagent
 ///
 /// This provides context to the subagent about its task and relationship to the parent.
+#[must_use] 
 pub fn build_subagent_system_prompt(
     parent_session_key: &str,
     child_session_key: &str,
@@ -105,46 +107,45 @@ pub fn build_subagent_system_prompt(
     max_depth: u32,
 ) -> String {
     let label_part = label
-        .map(|l| format!(" with label '{}'", l))
+        .map(|l| format!(" with label '{l}'"))
         .unwrap_or_default();
 
     format!(
-        r#"[Subagent Context]
-You are running as a subagent (depth {}/{}).
+        r"[Subagent Context]
+You are running as a subagent (depth {depth}/{max_depth}).
 
-**Your Task:** {}
+**Your Task:** {task}
 
 **Key Information:**
-- You are executing in a subagent session: {}
-- Your parent session is: {}
-- Your results will be automatically announced back to the parent when you complete{}
+- You are executing in a subagent session: {child_session_key}
+- Your parent session is: {parent_session_key}
+- Your results will be automatically announced back to the parent when you complete{label_part}
 
 **Important Instructions:**
 1. Focus solely on the task provided above
-2. Do NOT spawn additional subagents unless absolutely necessary (you are at depth {} of {} max)
+2. Do NOT spawn additional subagents unless absolutely necessary (you are at depth {depth} of {max_depth} max)
 3. Complete your task efficiently and provide clear output
 4. Do NOT busy-poll for status - the system will handle result announcement automatically
 5. Return your results as normal assistant responses - they will be captured and announced
 
 **Result Announcement:**
 When you complete your work, the result will be automatically sent back to your requester. You do not need to do anything special for this to happen.
-"#,
-        depth, max_depth, task, child_session_key, parent_session_key, label_part, depth, max_depth
+"
     )
 }
 
 /// Build the task message for a subagent
 ///
 /// This is the actual user message that contains the task.
+#[must_use] 
 pub fn build_subagent_task_message(task: &str, depth: u32, max_depth: u32) -> String {
     format!(
-        r#"[Subagent Task]
+        r"[Subagent Task]
 
-{}
+{task}
 
 ---
-Remember: You are running as a subagent (depth {}/{}). Results auto-announce to your requester; do not busy-poll for status."#,
-        task, depth, max_depth
+Remember: You are running as a subagent (depth {depth}/{max_depth}). Results auto-announce to your requester; do not busy-poll for status."
     )
 }
 

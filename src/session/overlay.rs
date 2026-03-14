@@ -123,6 +123,7 @@ impl ChannelOverlay {
     }
 
     /// Get a state value by key
+    #[must_use] 
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.state.get(key)
     }
@@ -143,11 +144,13 @@ impl ChannelOverlay {
     }
 
     /// Check if a key exists in state
+    #[must_use] 
     pub fn contains(&self, key: &str) -> bool {
         self.state.contains_key(key)
     }
 
     /// Get state as JSON object
+    #[must_use] 
     pub fn state_json(&self) -> Value {
         serde_json::to_value(&self.state).unwrap_or_else(|_| Value::Object(Default::default()))
     }

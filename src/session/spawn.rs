@@ -70,6 +70,7 @@ pub enum SpawnStatus {
 
 impl SpawnStatus {
     /// Get the status as a string
+    #[must_use] 
     pub const fn as_str(&self) -> &'static str {
         match self {
             SpawnStatus::Created => "created",
@@ -81,6 +82,7 @@ impl SpawnStatus {
     }
 
     /// Check if the spawn is in a terminal state
+    #[must_use] 
     pub const fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -89,6 +91,7 @@ impl SpawnStatus {
     }
 
     /// Check if the spawn is active
+    #[must_use] 
     pub const fn is_active(&self) -> bool {
         matches!(self, SpawnStatus::Created | SpawnStatus::Running)
     }
@@ -173,18 +176,21 @@ impl SpawnOverlay {
     }
 
     /// Set the timeout
+    #[must_use] 
     pub fn with_timeout(mut self, seconds: u64) -> Self {
         self.timeout_seconds = Some(seconds);
         self
     }
 
     /// Set the cleanup policy
+    #[must_use] 
     pub fn with_cleanup(mut self, cleanup: SpawnCleanupPolicy) -> Self {
         self.cleanup = cleanup;
         self
     }
 
     /// Set the spawn depth
+    #[must_use] 
     pub fn with_depth(mut self, depth: u32) -> Self {
         self.depth = depth;
         self
@@ -240,6 +246,7 @@ impl SpawnOverlay {
     }
 
     /// Get the duration if the spawn has ended
+    #[must_use] 
     pub fn duration(&self) -> Option<chrono::Duration> {
         match (self.started_at, self.ended_at) {
             (Some(start), Some(end)) => Some(end - start),
@@ -248,11 +255,13 @@ impl SpawnOverlay {
     }
 
     /// Get elapsed time since creation
+    #[must_use] 
     pub fn elapsed(&self) -> chrono::Duration {
         Utc::now() - self.created_at
     }
 
     /// Check if this spawn should be cleaned up
+    #[must_use] 
     pub fn should_cleanup(&self) -> bool {
         match self.cleanup {
             SpawnCleanupPolicy::Delete => self.status.is_terminal(),

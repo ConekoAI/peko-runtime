@@ -24,7 +24,14 @@ pub struct ProgressDemoTool {
     description: String,
 }
 
+impl Default for ProgressDemoTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProgressDemoTool {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             name: "progress_demo".to_string(),
@@ -49,7 +56,7 @@ impl ProgressDemoTool {
         let start_time = Instant::now();
 
         // Report initial status
-        ctx.report_status(format!("Starting batch processing of {} items", total))
+        ctx.report_status(format!("Starting batch processing of {total} items"))
             .await;
 
         for (idx, chunk) in items.chunks(batch_size).enumerate() {
@@ -144,12 +151,12 @@ impl Tool for ProgressDemoTool {
 
         let batch_size = params
             .get("batch_size")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(5) as usize;
 
         let delay_ms = params
             .get("delay_ms")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(100);
 
         let total = items.len();
@@ -190,12 +197,12 @@ impl Tool for ProgressDemoTool {
 
         let batch_size = params
             .get("batch_size")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(5) as usize;
 
         let delay_ms = params
             .get("delay_ms")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(100);
 
         if items.is_empty() {
@@ -216,12 +223,11 @@ impl Tool for ProgressDemoTool {
         let items = params
             .get("items")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.len())
-            .unwrap_or(0);
+            .map_or(0, std::vec::Vec::len);
 
         let delay_ms = params
             .get("delay_ms")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(100);
 
         (items as u64) * delay_ms + 500 // Base overhead

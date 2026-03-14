@@ -4,10 +4,10 @@
 //!
 //! Supports two modes:
 //! - **Sync**: Blocks until target agent returns result
-//! - **Async**: Returns receipt, result delivered via EventSubscriber (GAP-004)
+//! - **Async**: Returns receipt, result delivered via `EventSubscriber` (GAP-004)
 //!
 //! This tool replaces the inbox-based approach with direct session messaging,
-//! leveraging the existing SessionRouter (GAP-003) and EventSubscriber (GAP-004).
+//! leveraging the existing `SessionRouter` (GAP-003) and `EventSubscriber` (GAP-004).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::timeout;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::orchestration::events::SystemEvent;
@@ -93,6 +93,7 @@ pub struct InvocationRegistry {
 
 impl InvocationRegistry {
     /// Create new registry
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             pending: HashMap::new(),
@@ -111,6 +112,7 @@ impl InvocationRegistry {
     }
 
     /// Get a pending invocation
+    #[must_use] 
     pub fn get(&self, id: &str) -> Option<&PendingInvocation> {
         self.pending.get(id)
     }
@@ -126,6 +128,7 @@ impl InvocationRegistry {
     }
 
     /// Get an agent's response channel
+    #[must_use] 
     pub fn get_agent_channel(&self, agent_did: &str) -> Option<mpsc::Sender<InvocationResponse>> {
         self.agent_response_channels.get(agent_did).cloned()
     }
@@ -157,6 +160,7 @@ impl InvocationRegistry {
 pub type SharedInvocationRegistry = Arc<RwLock<InvocationRegistry>>;
 
 /// Create a shared invocation registry
+#[must_use] 
 pub fn create_shared_registry() -> SharedInvocationRegistry {
     Arc::new(RwLock::new(InvocationRegistry::new()))
 }
@@ -164,7 +168,7 @@ pub fn create_shared_registry() -> SharedInvocationRegistry {
 /// Tool for invoking another agent via session-based messaging
 ///
 /// MODE: sync - blocks until target agent returns result
-/// MODE: async - returns receipt, result delivered via EventSubscriber
+/// MODE: async - returns receipt, result delivered via `EventSubscriber`
 pub struct AgentInvokeTool {
     /// This agent's DID
     agent_did: String,
@@ -329,13 +333,13 @@ Don't use when: the task is simple enough to do yourself or you don't need to co
             .ok_or_else(|| anyhow!("Missing required parameter 'message'"))?;
         let mode = params["mode"].as_str().unwrap_or("sync");
         let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(30000);
-        let context = params.get("context").cloned().unwrap_or(json!({}));
+        let _context = params.get("context").cloned().unwrap_or(json!({}));
 
         // Validate mode
         let is_async = match mode {
             "sync" => false,
             "async" => true,
-            _ => return Err(anyhow!("Invalid mode '{}'. Use 'sync' or 'async'", mode)),
+            _ => return Err(anyhow!("Invalid mode '{mode}'. Use 'sync' or 'async'")),
         };
 
         // Cap timeout at 5 minutes
@@ -380,7 +384,7 @@ Don't use when: the task is simple enough to do yourself or you don't need to co
                     respond_to: tx,
                 })
                 .await
-                .map_err(|e| anyhow!("Failed to send execute command: {}", e))?;
+                .map_err(|e| anyhow!("Failed to send execute command: {e}"))?;
 
             // Wait for result with timeout
             match timeout(Duration::from_millis(timeout_ms), rx.recv()).await {
@@ -392,12 +396,10 @@ Don't use when: the task is simple enough to do yourself or you don't need to co
                     "from": response.from,
                     "invocation_id": response.invocation_id,
                 })),
-                Ok(Some(Err(e))) => Err(anyhow!("Invocation failed: {}", e)),
+                Ok(Some(Err(e))) => Err(anyhow!("Invocation failed: {e}")),
                 Ok(None) => Err(anyhow!("Invocation channel closed")),
                 Err(_) => Err(anyhow!(
-                    "Timeout waiting for response from '{}' after {}ms",
-                    target,
-                    timeout_ms
+                    "Timeout waiting for response from '{target}' after {timeout_ms}ms"
                 )),
             }
         }
@@ -419,7 +421,7 @@ pub struct InvocationService {
     command_rx: RwLock<mpsc::Receiver<InvokeCommand>>,
     /// Event subscriber for async notifications
     event_subscriber: Option<Arc<EventSubscriber>>,
-    /// Handler for executing on target agent - set by AgentManager
+    /// Handler for executing on target agent - set by `AgentManager`
     execute_handler: Option<Arc<dyn ExecuteHandler>>,
 }
 
@@ -437,6 +439,7 @@ pub trait ExecuteHandler: Send + Sync {
 
 impl InvocationService {
     /// Create a new invocation service
+    #[must_use] 
     pub fn new(
         event_subscriber: Option<Arc<EventSubscriber>>,
     ) -> (Self, mpsc::Sender<InvokeCommand>) {

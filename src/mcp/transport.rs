@@ -1,8 +1,8 @@
 //! MCP transport layer
 //!
 //! Provides transport abstractions for MCP communication:
-//! - StdioTransport: Local subprocess communication
-//! - SseTransport: HTTP+SSE remote communication (Phase 2)
+//! - `StdioTransport`: Local subprocess communication
+//! - `SseTransport`: HTTP+SSE remote communication (Phase 2)
 
 use crate::mcp::types::JsonRpcMessage;
 use async_trait::async_trait;
@@ -127,7 +127,7 @@ impl StdioTransport {
     /// * `cwd` - Working directory (optional)
     ///
     /// # Returns
-    /// A new StdioTransport connected to the spawned process
+    /// A new `StdioTransport` connected to the spawned process
     pub async fn spawn(
         command: &str,
         args: &[String],
@@ -157,7 +157,7 @@ impl StdioTransport {
 
         let mut child = cmd.spawn().map_err(|e| {
             error!("Failed to spawn MCP server '{}': {}", command, e);
-            TransportError::Process(format!("Failed to spawn '{}': {}", command, e))
+            TransportError::Process(format!("Failed to spawn '{command}': {e}"))
         })?;
 
         let pid = child
@@ -201,6 +201,7 @@ impl StdioTransport {
     }
 
     /// Get the process ID of the child process
+    #[must_use] 
     pub fn pid(&self) -> u32 {
         self.pid
     }
@@ -384,6 +385,7 @@ impl InMemoryTransport {
     ///
     /// Returns two transports that are connected to each other.
     /// Messages sent on one will be received on the other.
+    #[must_use] 
     pub fn pair() -> (Self, Self) {
         let (tx1, rx1) = tokio::sync::mpsc::channel(100);
         let (tx2, rx2) = tokio::sync::mpsc::channel(100);
@@ -478,7 +480,7 @@ impl SseTransport {
     /// * `endpoint` - The MCP server endpoint URL
     ///
     /// # Returns
-    /// A new SseTransport connected to the server
+    /// A new `SseTransport` connected to the server
     pub async fn connect(endpoint: impl AsRef<str>) -> Result<Self> {
         let endpoint = Url::parse(endpoint.as_ref())?;
         debug!("Connecting to MCP server at: {}", endpoint);
@@ -519,7 +521,7 @@ impl SseTransport {
     /// * `endpoint` - The MCP server endpoint URL
     ///
     /// # Returns
-    /// A new SseTransport connected to the server
+    /// A new `SseTransport` connected to the server
     pub async fn with_client(client: Client, endpoint: impl AsRef<str>) -> Result<Self> {
         let endpoint = Url::parse(endpoint.as_ref())?;
 
@@ -589,7 +591,7 @@ impl SseTransport {
             .headers(headers)
             .send()
             .await
-            .map_err(|e| TransportError::Http(e))?;
+            .map_err(TransportError::Http)?;
 
         if !response.status().is_success() {
             return Err(TransportError::Sse(format!(
@@ -606,7 +608,7 @@ impl SseTransport {
         let mut buffer = String::new();
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| TransportError::Http(e))?;
+            let chunk = chunk.map_err(TransportError::Http)?;
             let text = String::from_utf8_lossy(&chunk);
             buffer.push_str(&text);
 
@@ -627,7 +629,7 @@ impl SseTransport {
         Ok(())
     }
 
-    /// Parse an SSE event into a JsonRpcMessage
+    /// Parse an SSE event into a `JsonRpcMessage`
     fn parse_sse_event(event: &str) -> Option<JsonRpcMessage> {
         let mut data = None;
 
@@ -687,7 +689,7 @@ impl McpTransport for SseTransport {
             headers.insert(
                 "Mcp-Session-Id",
                 HeaderValue::from_str(&session_id)
-                    .map_err(|e| TransportError::Sse(format!("Invalid session ID: {}", e)))?,
+                    .map_err(|e| TransportError::Sse(format!("Invalid session ID: {e}")))?,
             );
         }
 
@@ -699,12 +701,12 @@ impl McpTransport for SseTransport {
             .body(json)
             .send()
             .await
-            .map_err(|e| TransportError::Http(e))?;
+            .map_err(TransportError::Http)?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(TransportError::Sse(format!("HTTP {}: {}", status, body)));
+            return Err(TransportError::Sse(format!("HTTP {status}: {body}")));
         }
 
         Ok(())

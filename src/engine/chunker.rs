@@ -7,22 +7,19 @@
 
 /// Break preference for block boundaries
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum BreakPreference {
     /// Break at paragraph boundaries (double newline)
     Paragraph,
     /// Break at sentence boundaries (period + space)
+    #[default]
     Sentence,
     /// Break at whitespace
     Whitespace,
-    /// Hard break at max_chars
+    /// Hard break at `max_chars`
     Hard,
 }
 
-impl Default for BreakPreference {
-    fn default() -> Self {
-        BreakPreference::Sentence
-    }
-}
 
 /// Block chunker configuration
 #[derive(Debug, Clone)]
@@ -59,11 +56,13 @@ pub struct BlockChunker {
 
 impl BlockChunker {
     /// Create a new block chunker with default config
+    #[must_use] 
     pub fn new() -> Self {
         Self::with_config(ChunkerConfig::default())
     }
 
     /// Create a new block chunker with custom config
+    #[must_use] 
     pub fn with_config(config: ChunkerConfig) -> Self {
         Self {
             config,
@@ -98,6 +97,7 @@ impl BlockChunker {
     }
 
     /// Get the current buffer size
+    #[must_use] 
     pub fn buffer_len(&self) -> usize {
         self.buffer.len()
     }
@@ -175,8 +175,7 @@ impl BlockChunker {
                 if next_char
                     .chars()
                     .next()
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false)
+                    .is_some_and(char::is_uppercase)
                 {
                     return Some(pos + 2);
                 }
@@ -199,6 +198,7 @@ impl BlockChunker {
     }
 
     /// Get total emitted character count
+    #[must_use] 
     pub fn emitted_chars(&self) -> usize {
         self.emitted_chars
     }
@@ -228,11 +228,13 @@ pub struct CoalescingChunker {
 
 impl CoalescingChunker {
     /// Create a new coalescing chunker
+    #[must_use] 
     pub fn new() -> Self {
         Self::with_config(ChunkerConfig::default(), 1500, 3000)
     }
 
     /// Create with custom config
+    #[must_use] 
     pub fn with_config(
         chunker_config: ChunkerConfig,
         min_coalesce: usize,
@@ -284,12 +286,12 @@ impl CoalescingChunker {
 
     /// Check if there's pending content to flush after idle
     pub fn check_idle_flush(&mut self) -> Option<String> {
-        if !self.coalesce_buffer.is_empty() {
+        if self.coalesce_buffer.is_empty() {
+            None
+        } else {
             let result = self.coalesce_buffer.clone();
             self.coalesce_buffer.clear();
             Some(result)
-        } else {
-            None
         }
     }
 }

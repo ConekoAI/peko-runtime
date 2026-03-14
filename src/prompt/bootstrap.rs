@@ -1,6 +1,6 @@
 //! Bootstrap file injection for system prompts
 //!
-//! Matches OpenClaw's AGENTS.md, SOUL.md, TOOLS.md, etc. injection
+//! Matches `OpenClaw`'s AGENTS.md, SOUL.md, TOOLS.md, etc. injection
 
 use std::path::PathBuf;
 use tracing::{debug, warn};

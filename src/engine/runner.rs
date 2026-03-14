@@ -181,7 +181,7 @@ impl AgentRunner {
 
     /// Run with streaming support
     ///
-    /// Returns a channel receiver that emits AgenticEvents during execution.
+    /// Returns a channel receiver that emits `AgenticEvents` during execution.
     /// The channel has a large buffer (10,000) to prevent event loss.
     ///
     /// # Note
@@ -299,6 +299,7 @@ impl AgentRunnerBuilder {
     }
 
     /// Set the agent
+    #[must_use] 
     pub fn agent(mut self, agent: Arc<Agent>) -> Self {
         self.agent = Some(agent);
         self

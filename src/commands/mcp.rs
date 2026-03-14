@@ -150,6 +150,7 @@ pub struct McpCommandHandler {
 
 impl McpCommandHandler {
     /// Create a new handler
+    #[must_use] 
     pub fn new(config_path: PathBuf) -> Self {
         Self { config_path }
     }
@@ -220,7 +221,7 @@ impl McpCommandHandler {
 
         let server = config
             .get_server(name)
-            .ok_or_else(|| anyhow::anyhow!("Server '{}' not found", name))?;
+            .ok_or_else(|| anyhow::anyhow!("Server '{name}' not found"))?;
 
         println!("Name: {}", server.name);
         println!("Transport: {:?}", server.transport);
@@ -236,7 +237,7 @@ impl McpCommandHandler {
         match server.transport {
             TransportType::Stdio => {
                 if let Some(cmd) = &server.command {
-                    println!("Command: {}", cmd);
+                    println!("Command: {cmd}");
                 }
                 if !server.args.is_empty() {
                     println!("Args: {:?}", server.args);
@@ -244,7 +245,7 @@ impl McpCommandHandler {
             }
             TransportType::Sse => {
                 if let Some(endpoint) = &server.endpoint {
-                    println!("Endpoint: {}", endpoint);
+                    println!("Endpoint: {endpoint}");
                 }
             }
         }
@@ -256,7 +257,7 @@ impl McpCommandHandler {
         if !server.env.is_empty() {
             println!("Environment variables:");
             for (key, value) in &server.env {
-                println!("  {}={}", key, value);
+                println!("  {key}={value}");
             }
         }
 
@@ -278,7 +279,7 @@ impl McpCommandHandler {
         let mut config = self.load_config()?;
 
         if config.get_server(&name).is_some() {
-            anyhow::bail!("Server '{}' already exists", name);
+            anyhow::bail!("Server '{name}' already exists");
         }
 
         // Parse environment variables
@@ -288,8 +289,7 @@ impl McpCommandHandler {
                 env_map.insert(key.to_string(), value.to_string());
             } else {
                 anyhow::bail!(
-                    "Invalid environment variable format: {} (expected KEY=VALUE)",
-                    env_var
+                    "Invalid environment variable format: {env_var} (expected KEY=VALUE)"
                 );
             }
         }
@@ -313,9 +313,9 @@ impl McpCommandHandler {
         config.add_server(server_config);
         self.save_config(&config)?;
 
-        println!("Added MCP server '{}'", name);
+        println!("Added MCP server '{name}'");
         if !no_auto_start {
-            println!("Use 'pekobot mcp start {}' to start the server", name);
+            println!("Use 'pekobot mcp start {name}' to start the server");
         }
 
         Ok(())
@@ -326,7 +326,7 @@ impl McpCommandHandler {
         let mut config = self.load_config()?;
 
         if config.get_server(name).is_none() {
-            anyhow::bail!("Server '{}' not found", name);
+            anyhow::bail!("Server '{name}' not found");
         }
 
         // TODO: Check if server is running (requires runtime)
@@ -338,7 +338,7 @@ impl McpCommandHandler {
         config.remove_server(name);
         self.save_config(&config)?;
 
-        println!("Removed MCP server '{}'", name);
+        println!("Removed MCP server '{name}'");
         Ok(())
     }
 
@@ -378,9 +378,9 @@ impl McpCommandHandler {
 
         // Print results
         for (server_name, tools) in by_server {
-            println!("{}:", server_name);
+            println!("{server_name}:");
             for tool_name in tools {
-                println!("  - {}", tool_name);
+                println!("  - {tool_name}");
             }
         }
 
@@ -395,10 +395,10 @@ impl McpCommandHandler {
         let config = self.load_config()?;
 
         if config.get_server(name).is_none() {
-            anyhow::bail!("Server '{}' not found", name);
+            anyhow::bail!("Server '{name}' not found");
         }
 
-        println!("Testing MCP server '{}'...", name);
+        println!("Testing MCP server '{name}'...");
 
         let manager = McpManager::new(config);
         manager.init().await?;
@@ -410,7 +410,7 @@ impl McpCommandHandler {
                 let client = client.read().await;
                 match client.ping().await {
                     Ok(()) => {
-                        println!("✓ Server '{}' is healthy", name);
+                        println!("✓ Server '{name}' is healthy");
 
                         // Show capabilities
                         if let Some(info) = client.server_info() {
@@ -431,12 +431,12 @@ impl McpCommandHandler {
                         }
                     }
                     Err(e) => {
-                        println!("✗ Server '{}' ping failed: {}", name, e);
+                        println!("✗ Server '{name}' ping failed: {e}");
                     }
                 }
             }
             Err(e) => {
-                println!("✗ Failed to start server '{}': {}", name, e);
+                println!("✗ Failed to start server '{name}': {e}");
             }
         }
 
@@ -455,7 +455,7 @@ impl McpCommandHandler {
             // Show current config
             if self.config_path.exists() {
                 let content = std::fs::read_to_string(&self.config_path)?;
-                println!("{}", content);
+                println!("{content}");
             } else {
                 println!(
                     "# No MCP configuration file found at {}",
@@ -496,20 +496,20 @@ pub async fn handle(command: McpCommands, config_path: PathBuf) -> anyhow::Resul
         ),
         McpCommands::Remove { name, force } => handler.remove(&name, force),
         McpCommands::Start { name } => {
-            println!("Starting server '{}'...", name);
+            println!("Starting server '{name}'...");
             // TODO: Implement runtime server management
             println!("Note: Runtime server management not yet implemented.");
             println!("Servers are started automatically when used.");
             Ok(())
         }
         McpCommands::Stop { name, force: _ } => {
-            println!("Stopping server '{}'...", name);
+            println!("Stopping server '{name}'...");
             // TODO: Implement runtime server management
             println!("Note: Runtime server management not yet implemented.");
             Ok(())
         }
         McpCommands::Restart { name } => {
-            println!("Restarting server '{}'...", name);
+            println!("Restarting server '{name}'...");
             // TODO: Implement runtime server management
             println!("Note: Runtime server management not yet implemented.");
             Ok(())
@@ -517,9 +517,9 @@ pub async fn handle(command: McpCommands, config_path: PathBuf) -> anyhow::Resul
         McpCommands::Test { name } => handler.test(&name).await,
         McpCommands::Tools { server } => handler.tools(server.as_deref()).await,
         McpCommands::Call { server, tool, args } => {
-            println!("Calling {}::{}...", server, tool);
+            println!("Calling {server}::{tool}...");
             if let Some(args) = args {
-                println!("Arguments: {}", args);
+                println!("Arguments: {args}");
             }
             // TODO: Implement tool calling
             println!("Note: Direct tool calling not yet implemented.");

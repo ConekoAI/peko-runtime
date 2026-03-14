@@ -18,13 +18,10 @@ use async_trait::async_trait;
 use std::io::Write;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::session::context::SessionContext;
 use crate::session::types::{ChannelType, Peer};
-use crate::session::{HybridSession, SessionManager};
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 /// Command line interface channel with interactive input
 pub struct CliChannel {
@@ -126,7 +123,7 @@ impl Channel for CliChannel {
     }
 
     async fn send(&mut self, message: &str) -> Result<()> {
-        println!("{}", message);
+        println!("{message}");
         Ok(())
     }
 
@@ -148,7 +145,7 @@ impl Channel for CliChannel {
 /// Process events and return final answer
 ///
 /// Unified event handling for both interactive and non-interactive modes.
-/// All output uses the same format: {agent_name}: {content}
+/// All output uses the same format: {`agent_name}`: {content}
 pub async fn process_events(
     mut event_rx: tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>,
     agent_name: &str,
@@ -178,7 +175,7 @@ pub async fn process_events(
                 if !text.is_empty() {
                     if !has_started_line {
                         // First thinking of this turn
-                        print!("\n{}: ", agent_name);
+                        print!("\n{agent_name}: ");
                         has_started_line = true;
                     } else if last_was_thinking {
                         // Continuing from previous thinking - add space
@@ -186,7 +183,7 @@ pub async fn process_events(
                     }
                     // Replace newlines with spaces for clean output
                     let single_line = text.replace('\n', " ");
-                    print!("{}", single_line);
+                    print!("{single_line}");
                     std::io::stdout().flush().unwrap();
                     last_was_thinking = true;
                 }
@@ -197,18 +194,18 @@ pub async fn process_events(
                     if is_final {
                         // Final answer - ensure newline and finish
                         if !has_started_line {
-                            print!("\n{}: ", agent_name);
+                            print!("\n{agent_name}: ");
                         }
-                        println!("{}", text);
+                        println!("{text}");
                         final_answer = text;
                         has_started_line = false;
                     } else {
                         // Streaming delta - continue inline
                         if !has_started_line {
-                            print!("\n{}: ", agent_name);
+                            print!("\n{agent_name}: ");
                             has_started_line = true;
                         }
-                        print!("{}", text);
+                        print!("{text}");
                         std::io::stdout().flush().unwrap();
                     }
                 }
@@ -249,7 +246,7 @@ pub async fn run_interactive_loop(
     // Create session context for default user
     let session_result = {
         let agent_guard = agent.lock().unwrap();
-        channel.create_session_context(&*agent_guard).await
+        channel.create_session_context(&agent_guard).await
     };
 
     let mut session_ctx = match session_result {
@@ -326,7 +323,7 @@ pub async fn run_interactive_loop(
                             // Not a session command, continue to normal processing
                         }
                         Err(e) => {
-                            eprintln!("\n❌ Session command error: {}", e);
+                            eprintln!("\n❌ Session command error: {e}");
                             channel.print_prompt();
                             continue;
                         }
@@ -382,7 +379,7 @@ pub async fn run_interactive_loop(
                     }
                     Err(e) => {
                         error!("Error in streaming: {}", e);
-                        channel.print_error(&format!("Error: {}", e));
+                        channel.print_error(&format!("Error: {e}"));
                     }
                 }
 
@@ -451,7 +448,7 @@ async fn run_interactive_loop_without_persistence(
 
                 if let Err(e) = result {
                     error!("Error in streaming: {}", e);
-                    channel.print_error(&format!("Error: {}", e));
+                    channel.print_error(&format!("Error: {e}"));
                 }
 
                 {
@@ -482,7 +479,7 @@ async fn handle_cli_session_command(
     trimmed: &str,
     channel: &CliChannel,
     agent: &std::sync::Arc<std::sync::Mutex<crate::agent::Agent>>,
-    agent_name: &str,
+    _agent_name: &str,
     session_ctx: &mut SessionContext,
 ) -> Option<Result<bool>> {
     // Quick check if it looks like a session command
@@ -507,10 +504,7 @@ async fn handle_cli_session_command(
     // Get registry manager reference
     let registry_manager = {
         let manager = session_manager.read().await;
-        match manager.registry() {
-            Some(r) => Some(r.clone()),
-            None => None,
-        }
+        manager.registry().cloned()
     };
 
     // If no registry, we can't handle session commands
@@ -526,20 +520,19 @@ async fn handle_cli_session_command(
                 Err(e) => return Some(Err(e)),
             };
             println!(
-                "\n✅ Created and switched to new session: {}",
-                new_session_id
+                "\n✅ Created and switched to new session: {new_session_id}"
             );
 
             // Reload session context
             {
                 let agent_guard = agent.lock().unwrap();
-                match channel.create_session_context(&*agent_guard).await {
+                match channel.create_session_context(&agent_guard).await {
                     Ok(new_ctx) => {
                         *session_ctx = new_ctx;
                         println!("🆕 New session started");
                     }
                     Err(e) => {
-                        eprintln!("❌ Failed to reload session context: {}", e);
+                        eprintln!("❌ Failed to reload session context: {e}");
                     }
                 }
             }
@@ -561,23 +554,22 @@ async fn handle_cli_session_command(
 
             if let Some(lbl) = label {
                 println!(
-                    "\n✅ Branched to new session: {} (label: {})",
-                    branch_id, lbl
+                    "\n✅ Branched to new session: {branch_id} (label: {lbl})"
                 );
             } else {
-                println!("\n✅ Branched to new session: {}", branch_id);
+                println!("\n✅ Branched to new session: {branch_id}");
             }
 
             // Reload session context
             {
                 let agent_guard = agent.lock().unwrap();
-                match channel.create_session_context(&*agent_guard).await {
+                match channel.create_session_context(&agent_guard).await {
                     Ok(new_ctx) => {
                         *session_ctx = new_ctx;
                         println!("🌿 Branched session loaded");
                     }
                     Err(e) => {
-                        eprintln!("❌ Failed to reload session context: {}", e);
+                        eprintln!("❌ Failed to reload session context: {e}");
                     }
                 }
             }
@@ -603,7 +595,7 @@ async fn handle_cli_session_command(
                     let label_display = session
                         .label
                         .as_ref()
-                        .map(|l| format!(" [{}]", l))
+                        .map(|l| format!(" [{l}]"))
                         .unwrap_or_default();
                     let short_id = if session.session_id.len() > 8 {
                         &session.session_id[..8]
@@ -653,12 +645,12 @@ async fn handle_cli_session_command(
                 return Some(Err(e));
             }
 
-            println!("\n✅ Switched to session: {}", session_id);
+            println!("\n✅ Switched to session: {session_id}");
 
             // Reload session context
             {
                 let agent_guard = agent.lock().unwrap();
-                match channel.create_session_context(&*agent_guard).await {
+                match channel.create_session_context(&agent_guard).await {
                     Ok(new_ctx) => {
                         *session_ctx = new_ctx;
                         // Show session info
@@ -676,7 +668,7 @@ async fn handle_cli_session_command(
                         }
                     }
                     Err(e) => {
-                        eprintln!("❌ Failed to reload session context: {}", e);
+                        eprintln!("❌ Failed to reload session context: {e}");
                     }
                 }
             }
@@ -734,7 +726,7 @@ pub async fn send_single_message_with_session(
 
         // Remove existing CLI overlay if present
         let base_key = crate::session::derive_base_session_key(&agent_name, &peer);
-        let overlay_key = format!("{}:overlay:channel:cli:default", base_key);
+        let overlay_key = format!("{base_key}:overlay:channel:cli:default");
         manager_guard.remove_channel_overlay(&overlay_key);
 
         // Also remove from base_sessions cache to force re-creation
@@ -746,7 +738,7 @@ pub async fn send_single_message_with_session(
 
         println!("🆕 Created new session");
         if let Some(sid) = new_session_id {
-            println!("   Session ID: {}", sid);
+            println!("   Session ID: {sid}");
         }
         SessionContext::new(hybrid).await
     } else {
@@ -815,7 +807,7 @@ async fn reset_cli_session(agent: &crate::agent::Agent) -> Result<()> {
     let mut manager_guard = manager.write().await;
 
     let base_key = crate::session::derive_base_session_key(agent_name, &peer);
-    let overlay_key = format!("{}:overlay:channel:cli:default", base_key);
+    let overlay_key = format!("{base_key}:overlay:channel:cli:default");
 
     if manager_guard.remove_channel_overlay(&overlay_key).is_some() {
         info!("Removed CLI session overlay for agent: {}", agent_name);

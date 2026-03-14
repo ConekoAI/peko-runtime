@@ -5,7 +5,7 @@
 //! - Background task executes the actual work
 //! - Result is queued and delivered when the agent is ready
 //!
-//! Design inspired by OpenClaw's subagent announcement queue, but generalized
+//! Design inspired by `OpenClaw`'s subagent announcement queue, but generalized
 //! for any async tool operation.
 
 use crate::tools::traits::ToolResult;
@@ -15,7 +15,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, error, info, warn};
 
 /// Unique identifier for an async task
 pub type AsyncTaskId = String;
@@ -31,6 +30,7 @@ pub enum AsyncTaskStatus {
 }
 
 impl AsyncTaskStatus {
+    #[must_use] 
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -50,10 +50,12 @@ pub struct AsyncTaskReceipt {
     pub check_status_tool: String, // Tool name to check status
 }
 
-/// Result delivery modes (inspired by OpenClaw)
+/// Result delivery modes (inspired by `OpenClaw`)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
 pub enum AsyncResultDeliveryMode {
     /// Queue result and deliver when agent is idle (default)
+    #[default]
     QueueWhenBusy,
     /// Interrupt current agent execution with result
     Interrupt,
@@ -63,11 +65,6 @@ pub enum AsyncResultDeliveryMode {
     Steer,
 }
 
-impl Default for AsyncResultDeliveryMode {
-    fn default() -> Self {
-        AsyncResultDeliveryMode::QueueWhenBusy
-    }
-}
 
 /// Configuration for async tool execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +124,7 @@ pub struct AsyncTaskRegistry {
 }
 
 impl AsyncTaskRegistry {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             tasks: HashMap::new(),
@@ -138,6 +136,7 @@ impl AsyncTaskRegistry {
         self.tasks.insert(entry.task_id.clone(), entry);
     }
 
+    #[must_use] 
     pub fn get(&self, task_id: &AsyncTaskId) -> Option<&AsyncTaskEntry> {
         self.tasks.get(task_id)
     }
@@ -186,11 +185,11 @@ impl AsyncTaskRegistry {
     }
 
     /// Get count of pending announcements for a session
+    #[must_use] 
     pub fn pending_count(&self, session_key: &str) -> usize {
         self.pending_announcements
             .get(session_key)
-            .map(|v| v.len())
-            .unwrap_or(0)
+            .map_or(0, std::vec::Vec::len)
     }
 
     pub fn cleanup_completed(&mut self) -> usize {
@@ -200,7 +199,7 @@ impl AsyncTaskRegistry {
             .filter(|(_, entry)| {
                 entry.status.is_terminal()
                     && entry.config.cleanup_after_delivery
-                    && entry.completed_at.map_or(false, |t| {
+                    && entry.completed_at.is_some_and(|t| {
                         chrono::Utc::now().signed_duration_since(t).num_seconds() > 300
                     })
             })
@@ -225,6 +224,7 @@ pub struct AsyncTaskEventBus {
 }
 
 impl AsyncTaskEventBus {
+    #[must_use] 
     pub fn new() -> (Self, mpsc::UnboundedReceiver<AsyncTaskCompletionEvent>) {
         let (sender, receiver) = mpsc::unbounded_channel();
         (Self { sender }, receiver)
@@ -262,7 +262,7 @@ pub trait AsyncTool: Send + Sync {
     fn format_result(&self, entry: &AsyncTaskEntry) -> String;
 }
 
-/// Queue for managing async result delivery (inspired by OpenClaw)
+/// Queue for managing async result delivery (inspired by `OpenClaw`)
 #[derive(Debug)]
 pub struct AsyncResultQueue {
     session_key: String,
@@ -273,6 +273,7 @@ pub struct AsyncResultQueue {
 }
 
 impl AsyncResultQueue {
+    #[must_use] 
     pub fn new(session_key: String, mode: AsyncResultDeliveryMode) -> Self {
         Self {
             session_key,
@@ -348,10 +349,12 @@ impl AsyncResultQueue {
         self.is_parent_busy = busy;
     }
 
+    #[must_use] 
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -364,6 +367,7 @@ pub struct AsyncResultQueueManager {
 }
 
 impl AsyncResultQueueManager {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             queues: HashMap::new(),
@@ -397,7 +401,7 @@ impl AsyncResultQueueManager {
     pub fn process_queue(&mut self, session_key: &str) -> Vec<AsyncTaskCompletionEvent> {
         self.queues
             .get_mut(session_key)
-            .map(|q| q.process())
+            .map(AsyncResultQueue::process)
             .unwrap_or_default()
     }
 

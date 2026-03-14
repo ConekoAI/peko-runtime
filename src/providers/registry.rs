@@ -3,7 +3,7 @@
 //! This module provides a unified way to create providers based on metadata.
 //! Instead of separate implementations for each provider, we have:
 //!
-//! 1. **Base implementations**: OpenAI and Anthropic providers handle the actual API calls
+//! 1. **Base implementations**: `OpenAI` and Anthropic providers handle the actual API calls
 //! 2. **Metadata registry**: Maps provider names to their API type, base URL, and auth config
 //! 3. **Factory function**: Routes provider requests to the appropriate base implementation
 //!
@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// Provider API types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiType {
-    /// OpenAI Chat Completions API (most common)
+    /// `OpenAI` Chat Completions API (most common)
     OpenAICompletions,
     /// Anthropic Messages API
     AnthropicMessages,
@@ -31,6 +31,7 @@ pub enum ApiType {
 
 impl ApiType {
     /// Parse API type from string
+    #[must_use] 
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "openai-completions" => Some(ApiType::OpenAICompletions),
@@ -40,6 +41,7 @@ impl ApiType {
     }
 
     /// Convert to string
+    #[must_use] 
     pub fn as_str(&self) -> &'static str {
         match self {
             ApiType::OpenAICompletions => "openai-completions",
@@ -82,6 +84,7 @@ impl Default for ProviderRegistry {
 
 impl ProviderRegistry {
     /// Create a new registry with all built-in providers
+    #[must_use] 
     pub fn new() -> Self {
         let providers: HashMap<String, &'static ProviderMetadata> = BUILT_IN_PROVIDERS
             .iter()
@@ -98,16 +101,19 @@ impl ProviderRegistry {
     }
 
     /// Look up provider metadata by name
+    #[must_use] 
     pub fn get(&self, name: &str) -> Option<&ProviderMetadata> {
         self.providers.get(name).copied()
     }
 
     /// Check if a provider is supported
+    #[must_use] 
     pub fn has(&self, name: &str) -> bool {
         self.providers.contains_key(name)
     }
 
     /// Get API key from environment variables
+    #[must_use] 
     pub fn get_api_key(&self, metadata: &ProviderMetadata) -> Option<String> {
         for env_var in metadata.api_key_env {
             if let Ok(key) = std::env::var(env_var) {
@@ -292,7 +298,7 @@ pub fn create_provider(
     // Look up metadata
     let metadata = registry
         .get(&provider_name)
-        .with_context(|| format!("Unknown provider: {}", provider_name))?;
+        .with_context(|| format!("Unknown provider: {provider_name}"))?;
 
     // Get API key
     // Priority: 1) Config API key, 2) Environment variable
@@ -320,9 +326,7 @@ pub fn create_provider(
 
     // Get model
     let model = config
-        .default_model_config()
-        .map(|m| m.name.clone())
-        .unwrap_or_else(|| metadata.default_model.to_string());
+        .default_model_config().map_or_else(|| metadata.default_model.to_string(), |m| m.name.clone());
 
     // Create provider based on API type
     match metadata.api_type {
@@ -333,12 +337,10 @@ pub fn create_provider(
                 model,
                 max_tokens: config
                     .default_model_config()
-                    .map(|m| m.max_tokens)
-                    .unwrap_or(4096),
+                    .map_or(4096, |m| m.max_tokens),
                 temperature: config
                     .default_model_config()
-                    .map(|m| m.temperature)
-                    .unwrap_or(0.7),
+                    .map_or(0.7, |m| m.temperature),
                 timeout_seconds: config.timeout_seconds,
             };
 
@@ -351,12 +353,10 @@ pub fn create_provider(
                 model,
                 max_tokens: config
                     .default_model_config()
-                    .map(|m| m.max_tokens)
-                    .unwrap_or(4096),
+                    .map_or(4096, |m| m.max_tokens),
                 temperature: config
                     .default_model_config()
-                    .map(|m| m.temperature)
-                    .unwrap_or(0.7),
+                    .map_or(0.7, |m| m.temperature),
                 timeout_seconds: config.timeout_seconds,
             };
 
@@ -366,6 +366,7 @@ pub fn create_provider(
 }
 
 /// Get provider metadata by name
+#[must_use] 
 pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
     // Direct lookup in BUILT_IN_PROVIDERS to avoid lifetime issues
     let name_lower = name.to_lowercase();
@@ -390,6 +391,7 @@ pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
 }
 
 /// List all available providers
+#[must_use] 
 pub fn list_providers() -> Vec<&'static ProviderMetadata> {
     BUILT_IN_PROVIDERS.iter().collect()
 }

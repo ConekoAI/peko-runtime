@@ -265,23 +265,20 @@ impl FetchTool {
         // Create a dummy URL for extraction
         let url = reqwest::Url::parse("http://example.com").unwrap();
 
-        match extractor::extract(&mut html.as_bytes(), &url) {
-            Ok(product) => {
-                let title = if product.title.is_empty() {
-                    None
-                } else {
-                    Some(product.title.clone())
-                };
-                // Convert readability text to simple markdown
-                let markdown = Self::text_to_markdown(&product.text);
-                (title, markdown)
-            }
-            Err(_) => {
-                // Fallback to simple extraction
-                let title = Self::extract_title(html);
-                let markdown = Self::html_to_markdown(html);
-                (title, markdown)
-            }
+        if let Ok(product) = extractor::extract(&mut html.as_bytes(), &url) {
+            let title = if product.title.is_empty() {
+                None
+            } else {
+                Some(product.title.clone())
+            };
+            // Convert readability text to simple markdown
+            let markdown = Self::text_to_markdown(&product.text);
+            (title, markdown)
+        } else {
+            // Fallback to simple extraction
+            let title = Self::extract_title(html);
+            let markdown = Self::html_to_markdown(html);
+            (title, markdown)
         }
     }
 
@@ -434,7 +431,7 @@ impl FetchTool {
         }
 
         Err(last_error
-            .unwrap_or_else(|| anyhow::anyhow!("Fetch failed after {} retries", max_retries)))
+            .unwrap_or_else(|| anyhow::anyhow!("Fetch failed after {max_retries} retries")))
     }
 
     /// Single fetch attempt
@@ -446,7 +443,7 @@ impl FetchTool {
             } else if e.is_connect() {
                 anyhow::anyhow!("Connection failed - could not connect to the server")
             } else {
-                anyhow::anyhow!("Request failed: {}", e)
+                anyhow::anyhow!("Request failed: {e}")
             }
         })?;
 
@@ -458,11 +455,11 @@ impl FetchTool {
 
             // Provide helpful messages for common errors
             let message = match status_code {
-                403 => format!("HTTP 403 Forbidden - access denied (may be blocked by robots.txt or require authentication)"),
-                429 => format!("HTTP 429 Too Many Requests - rate limited, please try again later"),
-                404 => format!("HTTP 404 Not Found - page does not exist"),
-                500..=599 => format!("HTTP {} {} - server error", status_code, status_text),
-                _ => format!("HTTP error {}: {}", status_code, status_text),
+                403 => "HTTP 403 Forbidden - access denied (may be blocked by robots.txt or require authentication)".to_string(),
+                429 => "HTTP 429 Too Many Requests - rate limited, please try again later".to_string(),
+                404 => "HTTP 404 Not Found - page does not exist".to_string(),
+                500..=599 => format!("HTTP {status_code} {status_text} - server error"),
+                _ => format!("HTTP error {status_code}: {status_text}"),
             };
 
             return Err(anyhow::anyhow!(message));
@@ -478,7 +475,7 @@ impl FetchTool {
         let body = response
             .text()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to read response body: {e}"))?;
 
         // Extract content based on content type
         let (title, content) =

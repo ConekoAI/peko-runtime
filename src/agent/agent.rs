@@ -34,7 +34,7 @@ pub struct Agent {
     session_router: SessionRouter,
     /// Subagent executor for background task execution
     subagent_executor: Arc<SubagentExecutor>,
-    /// Dynamic session key provider for agent_spawn tool
+    /// Dynamic session key provider for `agent_spawn` tool
     session_key_provider: Arc<DynamicSessionKeyProvider>,
 }
 
@@ -44,7 +44,7 @@ impl Agent {
     /// This synchronous version creates built-in tools only (no MCP).
     /// Use `create_tools_async` for full tool loading including MCP servers.
     fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::tools::*;
+        use crate::tools::{Tool, WebSearchTool, WebSearchConfig, FetchTool, FetchConfig, FileSystemTool, ProcessTool, InMemorySessionRegistry, ToolWithContext, AsyncTool, SessionStatusTool, AgentSpawnToolV2, AgentSpawnStatusTool, AgentSpawnListTool};
 
         // Create all available tools
         let mut tools: Vec<Arc<dyn Tool>> = vec![
@@ -76,10 +76,7 @@ impl Agent {
         // Filter based on agent config if specified
         if let Some(ref tool_config) = self.config.tools {
             if !tool_config.enabled.is_empty() {
-                tools = tools
-                    .into_iter()
-                    .filter(|tool| tool_config.enabled.contains(&tool.name().to_string()))
-                    .collect();
+                tools.retain(|tool| tool_config.enabled.contains(&tool.name().to_string()));
             }
         }
 
@@ -91,7 +88,7 @@ impl Agent {
     /// This asynchronous version loads MCP tools from configured MCP servers
     /// and adds them to the built-in tools.
     async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
-        use crate::tools::*;
+        use crate::tools::{Tool, WebSearchTool, WebSearchConfig, FetchTool, FetchConfig, FileSystemTool, ProcessTool, InMemorySessionRegistry, ToolWithContext, AsyncTool, SessionStatusTool, AgentSpawnToolV2, AgentSpawnStatusTool, AgentSpawnListTool, ToolFactory};
 
         // Create all available built-in tools
         let mut tools: Vec<Arc<dyn Tool>> = vec![
@@ -124,15 +121,15 @@ impl Agent {
         tracing::info!("Loading MCP tools for agent '{}'...", self.config.name);
         match ToolFactory::load_mcp_tools(&crate::tools::McpFactoryConfig::default()).await {
             Ok(mcp_tools) => {
-                if !mcp_tools.is_empty() {
+                if mcp_tools.is_empty() {
+                    tracing::info!("No MCP tools found (config may be missing or empty)");
+                } else {
                     tracing::info!(
                         "✅ Agent loaded {} MCP tools: {:?}",
                         mcp_tools.len(),
                         mcp_tools.iter().map(|t| t.name()).collect::<Vec<_>>()
                     );
                     tools.extend(mcp_tools);
-                } else {
-                    tracing::info!("No MCP tools found (config may be missing or empty)");
                 }
             }
             Err(e) => {
@@ -146,10 +143,7 @@ impl Agent {
         // Filter based on agent config if specified
         if let Some(ref tool_config) = self.config.tools {
             if !tool_config.enabled.is_empty() {
-                tools = tools
-                    .into_iter()
-                    .filter(|tool| tool_config.enabled.contains(&tool.name().to_string()))
-                    .collect();
+                tools.retain(|tool| tool_config.enabled.contains(&tool.name().to_string()));
             }
         }
 
@@ -265,11 +259,13 @@ impl Agent {
     }
 
     /// Get current state
+    #[must_use] 
     pub fn state(&self) -> AgentState {
         self.state.read().unwrap().clone()
     }
 
     /// Get provider reference
+    #[must_use] 
     pub fn get_provider(&self) -> Option<&dyn Provider> {
         self.provider.as_deref()
     }
@@ -316,7 +312,7 @@ impl Agent {
                 Ok(tools) => tools,
                 Err(e) => {
                     self.set_state(AgentState::Idle);
-                    return Err(anyhow::anyhow!("Failed to create tools: {}", e));
+                    return Err(anyhow::anyhow!("Failed to create tools: {e}"));
                 }
             };
 
@@ -372,7 +368,7 @@ impl Agent {
             // Load tools including MCP tools before spawning
             let tools = match self.create_tools_async().await {
                 Ok(tools) => tools,
-                Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {}", e)),
+                Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {e}")),
             };
 
             let provider_arc = Arc::clone(provider);
@@ -386,7 +382,7 @@ impl Agent {
                 let _result = loop_
                     .run(&prompt, move |event| {
                         // Try to send event - log if dropped (buffer full means consumer is slow)
-                        if let Err(_) = event_tx_clone.try_send(event) {
+                        if event_tx_clone.try_send(event).is_err() {
                             warn!("Agent event dropped (channel full)");
                         }
                     })
@@ -422,7 +418,7 @@ impl Agent {
             // Load tools including MCP tools before spawning
             let tools = match self.create_tools_async().await {
                 Ok(tools) => tools,
-                Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {}", e)),
+                Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {e}")),
             };
 
             let provider_arc = Arc::clone(provider);
@@ -438,7 +434,7 @@ impl Agent {
                         &prompt,
                         move |event| {
                             // Try to send event - log if dropped (buffer full means consumer is slow)
-                            if let Err(_) = event_tx_clone.try_send(event) {
+                            if event_tx_clone.try_send(event).is_err() {
                                 warn!("Agent event dropped (channel full)");
                             }
                         },
@@ -488,10 +484,10 @@ impl Agent {
 
     /// Execute with streaming support
     ///
-    /// Returns a channel receiver for AgenticEvents. The caller can
+    /// Returns a channel receiver for `AgenticEvents`. The caller can
     /// display these events as they arrive for a responsive UI.
     ///
-    /// Note: This method must be called within a tokio::task::LocalSet
+    /// Note: This method must be called within a `tokio::task::LocalSet`
     /// because Agent contains non-Send types (rusqlite connections).
     /// Search memory
     pub fn search_memory(
@@ -538,11 +534,13 @@ impl Agent {
     }
 
     /// Get agent DID
+    #[must_use] 
     pub fn did(&self) -> &str {
         &self.identity.did
     }
 
     /// Get agent name
+    #[must_use] 
     pub fn name(&self) -> &str {
         &self.config.name
     }
@@ -550,11 +548,13 @@ impl Agent {
     // Session overlay methods
 
     /// Get the session manager
+    #[must_use] 
     pub fn session_manager(&self) -> Arc<TokioRwLock<SessionManager>> {
         Arc::clone(&self.session_manager)
     }
 
     /// Get the session router
+    #[must_use] 
     pub fn session_router(&self) -> &SessionRouter {
         &self.session_router
     }
@@ -641,6 +641,7 @@ impl Agent {
     }
 
     /// Format session list for display
+    #[must_use] 
     pub fn format_session_list(
         &self,
         sessions: &[crate::session::SessionInfo],
@@ -654,8 +655,7 @@ impl Agent {
 
         for (i, session) in sessions.iter().enumerate() {
             let is_active = active_id
-                .map(|id| id == session.session_id)
-                .unwrap_or(false);
+                .is_some_and(|id| id == session.session_id);
             let marker = if is_active { "●" } else { "○" };
             let label = session.label.as_deref().unwrap_or("unnamed");
             let short_id = &session.session_id[..8];
@@ -701,7 +701,7 @@ impl Agent {
             }
 
             "/branch" => {
-                let label = parts.get(1).map(|s| s.to_string());
+                let label = parts.get(1).map(std::string::ToString::to_string);
                 let session_id = self.session_branch(peer, label.clone()).await?;
                 let label_str = label.as_deref().unwrap_or("unnamed");
                 Ok((true, format!(
@@ -733,8 +733,7 @@ impl Agent {
                         .map(|s| s.session_id.clone())
                         .ok_or_else(|| {
                             anyhow::anyhow!(
-                                "Session '{}' not found. Use /sessions to see available sessions.",
-                                target
+                                "Session '{target}' not found. Use /sessions to see available sessions."
                             )
                         })?
                 };
@@ -880,22 +879,22 @@ impl Agent {
             }
         }
     }
-    /// Execute with native tool calling using AgenticLoopV4 (unified API).
+    /// Execute with native tool calling using `AgenticLoopV4` (unified API).
     ///
     /// This is the recommended method for agent execution with native tool calling support.
     /// The `on_event` callback receives all streaming events (text deltas, tool calls, etc.).
 
     /// Execute with native tool calling and return a channel receiver for events.
     ///
-    /// This is a convenience wrapper around execute_native() that provides
+    /// This is a convenience wrapper around `execute_native()` that provides
     /// a channel-based interface for code that expects async event streaming.
 
     /// Check if the configured provider supports native tool calling
+    #[must_use] 
     pub fn supports_native_tools(&self) -> bool {
         self.provider
             .as_ref()
-            .map(|p| p.supports_native_tools())
-            .unwrap_or(false)
+            .is_some_and(|p| p.supports_native_tools())
     }
 }
 

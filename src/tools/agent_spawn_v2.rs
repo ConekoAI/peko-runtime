@@ -18,7 +18,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::agent::subagent_registry::{SharedSubagentRegistry, SubagentStatus};
+use crate::agent::subagent_registry::SharedSubagentRegistry;
 use crate::session::context::SessionContext;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::Tool;
@@ -223,26 +223,25 @@ Examples:
         let label = params
             .get("label")
             .and_then(|l| l.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let isolated = params
             .get("isolated")
-            .and_then(|i| i.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
         let timeout_seconds = params
             .get("timeout_seconds")
-            .and_then(|t| t.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(300);
 
         let cleanup = params
             .get("cleanup")
             .and_then(|c| c.as_str())
-            .map(|s| match s.to_lowercase().as_str() {
+            .map_or(SpawnCleanupPolicy::Keep, |s| match s.to_lowercase().as_str() {
                 "delete" => SpawnCleanupPolicy::Delete,
                 _ => SpawnCleanupPolicy::Keep,
-            })
-            .unwrap_or(SpawnCleanupPolicy::Keep);
+            });
 
         // Get parent session key - from params, session provider, or current session context
         let parent_session_key = if let Some(key) =
@@ -285,7 +284,7 @@ Examples:
                 // Get the run info to return the child session key
                 let registry = self.executor.registry().read().await;
                 let run = registry.get(&run_id).ok_or_else(|| {
-                    anyhow::anyhow!("Run {} not found in registry after spawn", run_id)
+                    anyhow::anyhow!("Run {run_id} not found in registry after spawn")
                 })?;
 
                 let child_session_key = run.child_session_key.clone();
@@ -356,12 +355,12 @@ impl Tool for AgentSpawnStatusTool {
     }
 
     fn description(&self) -> &'static str {
-        r#"Check the status of a previously spawned subagent.
+        r"Check the status of a previously spawned subagent.
 
 Parameters:
 - run_id: The run ID returned by agent_spawn (required)
 
-Returns the current status and result if complete."#
+Returns the current status and result if complete."
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {

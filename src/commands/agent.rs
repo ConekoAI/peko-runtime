@@ -16,7 +16,7 @@ pub enum AgentCommands {
         /// Custom configuration file path (optional, defaults to ~/.pekobot/agents/{name}/config.toml)
         #[arg(short, long)]
         config: Option<String>,
-        /// LLM provider (openai, anthropic, ollama, kimi, kimi_code) - only used when creating default config
+        /// LLM provider (openai, anthropic, ollama, kimi, `kimi_code`) - only used when creating default config
         #[arg(short, long, default_value = "kimi_code")]
         provider: String,
         /// Model name - only used when creating default config
@@ -190,7 +190,7 @@ pub mod handlers {
         } else {
             // Look up in default location: ~/.pekobot/agents/{name}/config.toml
             let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            format!("{}/.pekobot/agents/{}/config.toml", home, agent_name)
+            format!("{home}/.pekobot/agents/{agent_name}/config.toml")
         };
 
         info!("Starting Pekobot agent: {}", agent_name);
@@ -212,7 +212,7 @@ pub mod handlers {
                     return Err(e);
                 }
 
-                println!("\n🐱 Agent '{}' started successfully!", agent_name);
+                println!("\n🐱 Agent '{agent_name}' started successfully!");
                 println!("   DID: {}", agent.identity.did);
                 println!("   State: {:?}", agent.state());
 
@@ -257,7 +257,7 @@ pub mod handlers {
                     }
                 }
 
-                println!("\n👋 Agent '{}' stopped. Goodbye!", agent_name);
+                println!("\n👋 Agent '{agent_name}' stopped. Goodbye!");
                 Ok(())
             }
             Err(e) => {

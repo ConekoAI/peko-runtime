@@ -5,7 +5,7 @@
 //! configurable source detection rules.
 //!
 //! This complements the native event sources (file watcher, cron, internal)
-//! by providing a unified HTTP ingress for external SaaS integrations.
+//! by providing a unified HTTP ingress for external `SaaS` integrations.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -103,13 +103,9 @@ impl ExternalIngressConfig {
     }
 
     /// Find source by detection
+    #[must_use] 
     pub fn detect_source(&self, headers: &HeaderMap, body: &str) -> Option<&ExternalSource> {
-        for source in &self.sources {
-            if Self::matches_detection(&source.detection, headers, body) {
-                return Some(source);
-            }
-        }
-        None
+        self.sources.iter().find(|&source| Self::matches_detection(&source.detection, headers, body)).map(|v| v as _)
     }
 
     /// Check if detection matches
@@ -136,8 +132,7 @@ impl ExternalIngressConfig {
                     if let Some(expected) = value {
                         field_value
                             .and_then(|v| v.as_str())
-                            .map(|v| v == expected)
-                            .unwrap_or(false)
+                            .is_some_and(|v| v == expected)
                     } else {
                         field_value.is_some()
                     }
@@ -148,8 +143,7 @@ impl ExternalIngressConfig {
             SourceDetection::UserAgent { contains } => headers
                 .get("user-agent")
                 .and_then(|v| v.to_str().ok())
-                .map(|ua| ua.to_lowercase().contains(&contains.to_lowercase()))
-                .unwrap_or(false),
+                .is_some_and(|ua| ua.to_lowercase().contains(&contains.to_lowercase())),
         }
     }
 }
@@ -171,6 +165,7 @@ pub struct ExternalIngress {
 
 impl ExternalIngress {
     /// Create a new external ingress server
+    #[must_use] 
     pub fn new(config: ExternalIngressConfig, event_tx: mpsc::Sender<SystemEvent>) -> Self {
         Self { config, event_tx }
     }
@@ -215,6 +210,7 @@ impl ExternalIngress {
     }
 
     /// Spawn in background
+    #[must_use] 
     pub fn spawn(self) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         tokio::spawn(async move { self.start().await })
     }
@@ -238,20 +234,17 @@ async fn handle_ingress(
     let config = state.config.read().await;
 
     // Detect source
-    let source = match config.detect_source(&headers, &body) {
-        Some(s) => s.clone(),
-        None => {
-            warn!("Could not detect source from request");
-            debug!("Headers: {:?}", headers);
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Unknown source",
-                    "message": "Could not detect event source from request"
-                })),
-            )
-                .into_response();
-        }
+    let source = if let Some(s) = config.detect_source(&headers, &body) { s.clone() } else {
+        warn!("Could not detect source from request");
+        debug!("Headers: {:?}", headers);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Unknown source",
+                "message": "Could not detect event source from request"
+            })),
+        )
+            .into_response();
     };
     drop(config);
 
@@ -364,7 +357,7 @@ async fn get_source(
     }
 }
 
-/// Builder for ExternalIngress
+/// Builder for `ExternalIngress`
 pub struct ExternalIngressBuilder {
     config: ExternalIngressConfig,
     event_tx: Option<mpsc::Sender<SystemEvent>>,
@@ -372,6 +365,7 @@ pub struct ExternalIngressBuilder {
 
 impl ExternalIngressBuilder {
     /// Create new builder
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             config: ExternalIngressConfig::default(),
@@ -380,6 +374,7 @@ impl ExternalIngressBuilder {
     }
 
     /// Set port
+    #[must_use] 
     pub fn port(mut self, port: u16) -> Self {
         self.config.port = port;
         self
@@ -392,12 +387,14 @@ impl ExternalIngressBuilder {
     }
 
     /// Set event sender
+    #[must_use] 
     pub fn with_event_channel(mut self, tx: mpsc::Sender<SystemEvent>) -> Self {
         self.event_tx = Some(tx);
         self
     }
 
     /// Add external source
+    #[must_use] 
     pub fn add_source(mut self, source: ExternalSource) -> Self {
         self.config.sources.push(source);
         self

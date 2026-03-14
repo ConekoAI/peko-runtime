@@ -230,6 +230,7 @@ impl AgentMessage {
     }
 
     /// Check if this message should be sent to the LLM
+    #[must_use] 
     pub fn is_llm_visible(&self) -> bool {
         match self {
             Self::Llm(_) => true,
@@ -241,6 +242,7 @@ impl AgentMessage {
     }
 
     /// Get timestamp if available
+    #[must_use] 
     pub fn timestamp(&self) -> Option<DateTime<Utc>> {
         match self {
             Self::Llm(msg) => Some(msg.timestamp),
@@ -249,6 +251,7 @@ impl AgentMessage {
     }
 
     /// Convert to a simple text representation
+    #[must_use] 
     pub fn to_text(&self) -> String {
         match self {
             Self::Llm(msg) => {
@@ -278,6 +281,7 @@ impl AgentMessage {
     /// - Text content: ~4 chars per token
     /// - Images: 1000 tokens each (provider varies)
     /// - Tool calls/results: JSON token count
+    #[must_use] 
     pub fn estimate_tokens(&self) -> usize {
         match self {
             Self::Llm(msg) => {
@@ -347,10 +351,10 @@ impl Default for AgentMessage {
     }
 }
 
-/// Message converter trait for transforming AgentMessage to LLM format
+/// Message converter trait for transforming `AgentMessage` to LLM format
 #[async_trait::async_trait]
 pub trait MessageConverter: Send + Sync {
-    /// Convert AgentMessage to provider-specific format
+    /// Convert `AgentMessage` to provider-specific format
     async fn convert(&self, messages: Vec<AgentMessage>) -> anyhow::Result<Vec<Value>>;
 }
 
@@ -365,7 +369,7 @@ impl MessageConverter for JsonMessageConverter {
         for msg in messages {
             if let AgentMessage::Llm(llm_msg) = msg {
                 let content = match llm_msg.content.len() {
-                    0 => Value::String("".to_string()),
+                    0 => Value::String(String::new()),
                     1 => {
                         if let ContentBlock::Text { text } = &llm_msg.content[0] {
                             Value::String(text.clone())
@@ -424,6 +428,7 @@ impl AgentContext {
     }
 
     /// Get only LLM-visible messages
+    #[must_use] 
     pub fn llm_messages(&self) -> Vec<AgentMessage> {
         self.messages
             .iter()
@@ -433,6 +438,7 @@ impl AgentContext {
     }
 
     /// Get messages for a specific role
+    #[must_use] 
     pub fn messages_by_role(&self, role: MessageRole) -> Vec<&LlmMessage> {
         self.messages
             .iter()
@@ -450,8 +456,9 @@ impl AgentContext {
     /// - 1 token per word for whitespace-separated text
     /// - Additional overhead for message formatting (role, metadata)
     /// - Image content estimated at 1k tokens each (varies by provider)
+    #[must_use] 
     pub fn estimate_tokens(&self) -> usize {
-        self.messages.iter().map(|m| m.estimate_tokens()).sum()
+        self.messages.iter().map(AgentMessage::estimate_tokens).sum()
     }
 
     /// Clear messages except system prompt
@@ -540,6 +547,7 @@ pub struct DefaultContextTransformer {
 }
 
 impl DefaultContextTransformer {
+    #[must_use] 
     pub fn new(config: ContextWindowConfig) -> Self {
         Self { config }
     }

@@ -1,6 +1,6 @@
 //! Kimi (Moonshot) provider implementation with native tool calling
 //!
-//! Kimi uses OpenAI-compatible API, so we can reuse most of the OpenAI provider logic.
+//! Kimi uses OpenAI-compatible API, so we can reuse most of the `OpenAI` provider logic.
 
 use crate::providers::{
     ChatMessage, ChatOptions, ChatResponse, MessageRole, Provider, StopReason, StreamEvent,
@@ -86,7 +86,7 @@ impl KimiProvider {
         messages
     }
 
-    /// Convert ChatMessage to Kimi format (OpenAI-compatible)
+    /// Convert `ChatMessage` to Kimi format (OpenAI-compatible)
     fn convert_chat_messages(&self, messages: &[ChatMessage]) -> Vec<serde_json::Value> {
         messages
             .iter()
@@ -105,8 +105,7 @@ impl KimiProvider {
                         crate::types::message::ContentBlock::Text { text } => Some(text.clone()),
                         _ => None,
                     })
-                    .collect::<Vec<_>>()
-                    .join("");
+                    .collect::<String>();
 
                 let mut msg = json!({
                     "role": role,
@@ -122,7 +121,7 @@ impl KimiProvider {
             .collect()
     }
 
-    /// Convert ToolDefinition to Kimi tool format (OpenAI-compatible)
+    /// Convert `ToolDefinition` to Kimi tool format (OpenAI-compatible)
     fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<serde_json::Value> {
         tools
             .iter()
@@ -151,7 +150,7 @@ impl KimiProvider {
         let mut request = json!({
             "model": self.model,
             "messages": kimi_messages,
-            "temperature": options.temperature.unwrap_or(0.7) as f64,
+            "temperature": f64::from(options.temperature.unwrap_or(0.7)),
             "stream": false,
         });
 
@@ -319,12 +318,12 @@ impl Provider for KimiProvider {
         let usage = result
             .get("usage")
             .map(|u| TokenUsage {
-                input: u.get("prompt_tokens").and_then(|t| t.as_u64()).unwrap_or(0),
+                input: u.get("prompt_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0),
                 output: u
                     .get("completion_tokens")
-                    .and_then(|t| t.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0),
-                total: u.get("total_tokens").and_then(|t| t.as_u64()).unwrap_or(0),
+                total: u.get("total_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0),
             })
             .unwrap_or_default();
 
@@ -470,7 +469,7 @@ impl KimiStreamState {
             if let Some(tool_calls_delta) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 for tc_delta in tool_calls_delta {
                     let index =
-                        tc_delta.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                        tc_delta.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
 
                     let tc_state =
                         if let Some(tc) = self.tool_calls.iter_mut().find(|t| t.index == index) {
@@ -518,7 +517,7 @@ impl KimiStreamState {
                 }
 
                 // Emit tool call ends
-                for tc in &self.tool_calls {
+                if let Some(tc) = self.tool_calls.first() {
                     let arguments = serde_json::from_str(&tc.arguments)
                         .unwrap_or_else(|_| serde_json::json!({}));
                     return Ok(Some(StreamEvent::ToolCallEnd {

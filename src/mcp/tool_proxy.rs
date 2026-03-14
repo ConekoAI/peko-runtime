@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, trace};
 
 /// An MCP tool wrapped as a Pekobot Tool
 pub struct McpToolProxy {
@@ -61,11 +61,13 @@ impl McpToolProxy {
     }
 
     /// Get the server name
+    #[must_use] 
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
 
     /// Get the original MCP tool definition
+    #[must_use] 
     pub fn mcp_tool(&self) -> &McpTool {
         &self.tool
     }
@@ -147,7 +149,7 @@ impl Tool for McpToolProxy {
             Err(crate::mcp::manager::ManagerError::ServerNotRunning(_)) => {
                 // Server not running, try to start it
                 drop(manager); // Drop read lock before starting server
-                let mut manager = self.manager.write().await;
+                let manager = self.manager.write().await;
                 if let Err(e) = manager.start_server(&self.server_name).await {
                     return Err(anyhow::anyhow!(
                         "MCP server '{}' failed to start: {}",
@@ -162,10 +164,10 @@ impl Tool for McpToolProxy {
                 manager
                     .call_tool(&self.server_name, &self.tool.name, params)
                     .await
-                    .map_err(|e| anyhow::anyhow!("MCP tool error: {}", e))?
+                    .map_err(|e| anyhow::anyhow!("MCP tool error: {e}"))?
             }
             Err(e) => {
-                return Err(anyhow::anyhow!("MCP tool error: {}", e));
+                return Err(anyhow::anyhow!("MCP tool error: {e}"));
             }
         };
 

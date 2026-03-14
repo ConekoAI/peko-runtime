@@ -1,8 +1,8 @@
 //! `OpenAI` provider implementation with native tool calling
 //!
 //! Supports:
-//! - OpenAI direct API (api.openai.com)
-//! - Azure OpenAI
+//! - `OpenAI` direct API (api.openai.com)
+//! - Azure `OpenAI`
 //! - Any OpenAI-compatible API (Groq, Together, etc.)
 
 use super::traits::{
@@ -102,7 +102,7 @@ impl OpenAIProvider {
         messages
     }
 
-    /// Convert ChatMessage to OpenAI format
+    /// Convert `ChatMessage` to `OpenAI` format
     fn convert_chat_messages(&self, messages: &[ChatMessage]) -> Vec<OpenAIMessage> {
         messages
             .iter()
@@ -122,8 +122,7 @@ impl OpenAIProvider {
                         crate::types::message::ContentBlock::Text { text } => Some(text.clone()),
                         _ => None,
                     })
-                    .collect::<Vec<_>>()
-                    .join("");
+                    .collect::<String>();
 
                 OpenAIMessage {
                     role: role.to_string(),
@@ -135,7 +134,7 @@ impl OpenAIProvider {
             .collect()
     }
 
-    /// Convert ToolDefinition to OpenAI tool format
+    /// Convert `ToolDefinition` to `OpenAI` tool format
     fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<OpenAITool> {
         tools
             .iter()
@@ -318,9 +317,9 @@ impl Provider for OpenAIProvider {
             tool_calls,
             stop_reason,
             usage: TokenUsage {
-                input: completion.usage.prompt_tokens as u64,
-                output: completion.usage.completion_tokens as u64,
-                total: completion.usage.total_tokens as u64,
+                input: u64::from(completion.usage.prompt_tokens),
+                output: u64::from(completion.usage.completion_tokens),
+                total: u64::from(completion.usage.total_tokens),
             },
             provider: self.name().to_string(),
             model: self.config.model.clone(),
@@ -518,7 +517,7 @@ impl StreamState {
                 }
 
                 // Emit tool call ends
-                for tc in &self.tool_calls {
+                if let Some(tc) = self.tool_calls.first() {
                     let arguments = serde_json::from_str(&tc.arguments)
                         .unwrap_or_else(|_| serde_json::json!({}));
                     return Ok(Some(StreamEvent::ToolCallEnd {

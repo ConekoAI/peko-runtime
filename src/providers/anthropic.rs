@@ -80,7 +80,7 @@ impl AnthropicProvider {
         Self::new(AnthropicConfig::from_env()?)
     }
 
-    /// Convert ChatMessage to Anthropic format
+    /// Convert `ChatMessage` to Anthropic format
     fn convert_messages(&self, messages: &[ChatMessage]) -> Vec<AnthropicMessage> {
         messages
             .iter()
@@ -114,8 +114,7 @@ impl AnthropicProvider {
                                     }
                                     _ => None,
                                 })
-                                .collect::<Vec<_>>()
-                                .join("");
+                                .collect::<String>();
 
                             debug!(
                                 "  Found ToolResult: tool_call_id={}, content_len={}",
@@ -144,8 +143,7 @@ impl AnthropicProvider {
                             }
                             _ => None,
                         })
-                        .collect::<Vec<_>>()
-                        .join("");
+                        .collect::<String>();
 
                     let tool_use_id = m.tool_call_id.clone().unwrap_or_default();
                     debug!(
@@ -230,7 +228,7 @@ impl AnthropicProvider {
             .collect()
     }
 
-    /// Convert ToolDefinition to Anthropic format
+    /// Convert `ToolDefinition` to Anthropic format
     fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
         tools
             .iter()
@@ -267,7 +265,7 @@ impl AnthropicProvider {
                                 format!("[Text: {}]", text.chars().take(30).collect::<String>())
                             }
                             ContentBlock::ToolUse { id: _, name, .. } => {
-                                format!("[ToolUse: {}]", name)
+                                format!("[ToolUse: {name}]")
                             }
                             ContentBlock::ToolResult {
                                 tool_use_id,
@@ -424,9 +422,9 @@ impl Provider for AnthropicProvider {
             tool_calls,
             stop_reason,
             usage: TokenUsage {
-                input: result.usage.input_tokens as u64,
-                output: result.usage.output_tokens as u64,
-                total: (result.usage.input_tokens + result.usage.output_tokens) as u64,
+                input: u64::from(result.usage.input_tokens),
+                output: u64::from(result.usage.output_tokens),
+                total: u64::from(result.usage.input_tokens + result.usage.output_tokens),
             },
             provider: self.name().to_string(),
             model: self.config.model.clone(),

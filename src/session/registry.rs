@@ -19,16 +19,14 @@
 //! }
 //! ```
 
-use crate::session::jsonl::SessionStorage;
 use crate::session::lock::FileLock;
-use crate::session::Peer;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Information about a single session file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +54,7 @@ pub struct SessionInfo {
 
 impl SessionInfo {
     /// Create new session info
+    #[must_use] 
     pub fn new(session_id: String, transcript_file: String) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -75,6 +74,7 @@ impl SessionInfo {
     }
 
     /// Create a branched session
+    #[must_use] 
     pub fn branched(session_id: String, transcript_file: String, parent_id: String) -> Self {
         let mut info = Self::new(session_id, transcript_file);
         info.parent_id = Some(parent_id);
@@ -95,12 +95,13 @@ impl SessionInfo {
 pub struct PeerRegistryEntry {
     /// Currently active session ID
     pub active_session_id: String,
-    /// All sessions for this peer (session_id -> info)
+    /// All sessions for this peer (`session_id` -> info)
     pub sessions: HashMap<String, SessionInfo>,
 }
 
 impl PeerRegistryEntry {
     /// Create new entry with initial session
+    #[must_use] 
     pub fn new(active_session_id: String, session_info: SessionInfo) -> Self {
         let mut sessions = HashMap::new();
         sessions.insert(active_session_id.clone(), session_info);
@@ -121,13 +122,14 @@ impl PeerRegistryEntry {
     /// Switch to a different session
     pub fn switch_to(&mut self, session_id: &str) -> Result<()> {
         if !self.sessions.contains_key(session_id) {
-            return Err(anyhow::anyhow!("Session {} not found", session_id));
+            return Err(anyhow::anyhow!("Session {session_id} not found"));
         }
         self.active_session_id = session_id.to_string();
         Ok(())
     }
 
     /// Get active session info
+    #[must_use] 
     pub fn active(&self) -> Option<&SessionInfo> {
         self.sessions.get(&self.active_session_id)
     }
@@ -138,11 +140,13 @@ impl PeerRegistryEntry {
     }
 
     /// Get session by ID
+    #[must_use] 
     pub fn get(&self, session_id: &str) -> Option<&SessionInfo> {
         self.sessions.get(session_id)
     }
 
     /// List all non-archived sessions
+    #[must_use] 
     pub fn list_active(&self) -> Vec<&SessionInfo> {
         self.sessions.values().filter(|s| !s.archived).collect()
     }
@@ -153,7 +157,7 @@ impl PeerRegistryEntry {
             session.archived = true;
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Session {} not found", session_id))
+            Err(anyhow::anyhow!("Session {session_id} not found"))
         }
     }
 }
@@ -169,6 +173,7 @@ pub struct SessionRegistry {
 
 impl SessionRegistry {
     /// Create empty registry
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             peers: HashMap::new(),
@@ -181,13 +186,14 @@ impl SessionRegistry {
         self.peers.entry(peer_key.to_string()).or_insert_with(|| {
             // Create initial session
             let session_id = generate_session_id();
-            let transcript_file = format!("{}.jsonl", session_id);
+            let transcript_file = format!("{session_id}.jsonl");
             let session_info = SessionInfo::new(session_id.clone(), transcript_file);
             PeerRegistryEntry::new(session_id, session_info)
         })
     }
 
     /// Get entry for a peer (returns None if not exists)
+    #[must_use] 
     pub fn get(&self, peer_key: &str) -> Option<&PeerRegistryEntry> {
         self.peers.get(peer_key)
     }
@@ -198,6 +204,7 @@ impl SessionRegistry {
     }
 
     /// Get active session ID for a peer
+    #[must_use] 
     pub fn active_session_id(&self, peer_key: &str) -> Option<String> {
         self.peers
             .get(peer_key)
@@ -205,6 +212,7 @@ impl SessionRegistry {
     }
 
     /// Get active session transcript file for a peer
+    #[must_use] 
     pub fn active_transcript_file(&self, peer_key: &str) -> Option<String> {
         self.peers
             .get(peer_key)
@@ -219,14 +227,14 @@ impl SessionRegistry {
             info!("Switched {} to session {}", peer_key, session_id);
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Peer {} not found in registry", peer_key))
+            Err(anyhow::anyhow!("Peer {peer_key} not found in registry"))
         }
     }
 
     /// Create new session for a peer (/new)
     pub fn create_new_session(&mut self, peer_key: &str) -> String {
         let session_id = generate_session_id();
-        let transcript_file = format!("{}.jsonl", session_id);
+        let transcript_file = format!("{session_id}.jsonl");
         let session_info = SessionInfo::new(session_id.clone(), transcript_file);
 
         if let Some(entry) = self.peers.get_mut(peer_key) {
@@ -245,7 +253,7 @@ impl SessionRegistry {
     /// Branch current session (/branch)
     pub fn branch_session(&mut self, peer_key: &str, parent_id: &str) -> Result<String> {
         let session_id = generate_session_id();
-        let transcript_file = format!("{}.jsonl", session_id);
+        let transcript_file = format!("{session_id}.jsonl");
         let session_info =
             SessionInfo::branched(session_id.clone(), transcript_file, parent_id.to_string());
 
@@ -257,11 +265,12 @@ impl SessionRegistry {
             );
             Ok(session_id)
         } else {
-            Err(anyhow::anyhow!("Peer {} not found", peer_key))
+            Err(anyhow::anyhow!("Peer {peer_key} not found"))
         }
     }
 
     /// List all sessions for a peer
+    #[must_use] 
     pub fn list_sessions(&self, peer_key: &str) -> Vec<&SessionInfo> {
         self.peers
             .get(peer_key)
@@ -270,6 +279,7 @@ impl SessionRegistry {
     }
 
     /// Get all peers
+    #[must_use] 
     pub fn list_peers(&self) -> Vec<&String> {
         self.peers.keys().collect()
     }
@@ -378,7 +388,7 @@ impl SessionRegistryManager {
     /// Create new session (/new)
     ///
     /// Note: This only updates the registry. The actual session file
-    /// should be created by BaseSession::create_with_key.
+    /// should be created by `BaseSession::create_with_key`.
     pub async fn create_new(&self, peer_key: &str) -> Result<String> {
         let mut registry = self.load().await?;
         let session_id = registry.create_new_session(peer_key);
@@ -421,7 +431,7 @@ impl SessionRegistryManager {
             .map(|s| s.transcript_file.clone())
             .ok_or_else(|| anyhow::anyhow!("Parent session not found"))?;
 
-        let new_file = format!("{}.jsonl", session_id);
+        let new_file = format!("{session_id}.jsonl");
         let parent_path = self.sessions_dir.join(&parent_file);
         let new_path = self.sessions_dir.join(&new_file);
 
@@ -445,6 +455,7 @@ impl SessionRegistryManager {
     }
 
     /// Get sessions directory
+    #[must_use] 
     pub fn sessions_dir(&self) -> &Path {
         &self.sessions_dir
     }

@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 
 /// Queue mode for handling inbound messages
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum QueueMode {
     /// Inject immediately into current run (cancels pending tool calls)
     /// Falls back to followup if not streaming
@@ -26,6 +27,7 @@ pub enum QueueMode {
     /// Queue for next agent turn after current run ends
     Followup,
     /// Coalesce all queued messages into a single followup turn (default)
+    #[default]
     Collect,
     /// Steer now AND preserve message for followup turn
     SteerBacklog,
@@ -33,11 +35,6 @@ pub enum QueueMode {
     Interrupt,
 }
 
-impl Default for QueueMode {
-    fn default() -> Self {
-        QueueMode::Collect
-    }
-}
 
 impl QueueMode {
     /// Parse from string
@@ -208,7 +205,7 @@ impl MessageQueue {
         message_id: Option<String>,
     ) -> Result<EnqueueResult, QueueError> {
         let mode = mode.unwrap_or(self.config.mode);
-        let lane_key = format!("session:{}", session_key);
+        let lane_key = format!("session:{session_key}");
 
         let msg = QueuedMessage {
             content,
@@ -390,15 +387,15 @@ impl MessageQueue {
 
             // No messages ready, wait for notification
             tokio::select! {
-                _ = self.notify.notified() => continue,
-                _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                () = self.notify.notified() => continue,
+                () = tokio::time::sleep(Duration::from_secs(1)) => continue,
             }
         }
     }
 
     /// Coalesce messages from queue that are within debounce window
     fn coalesce_messages(queue: &mut VecDeque<QueuedMessage>, debounce_ms: u64) -> Vec<String> {
-        let cutoff = Instant::now() - Duration::from_millis(debounce_ms);
+        let cutoff = Instant::now().checked_sub(Duration::from_millis(debounce_ms)).unwrap();
         let mut coalesced = Vec::new();
 
         // Take messages that arrived within debounce window
@@ -430,7 +427,7 @@ impl MessageQueue {
 
     /// Set queue mode for a session (per-session override)
     pub async fn set_session_mode(&self, session_key: &str, mode: QueueMode) {
-        let lane_key = format!("session:{}", session_key);
+        let lane_key = format!("session:{session_key}");
         let mut lanes = self.lanes.lock().await;
 
         if let Some(lane) = lanes.get_mut(&lane_key) {

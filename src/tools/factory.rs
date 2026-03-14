@@ -55,7 +55,7 @@ pub struct ToolFactoryConfig {
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
-    /// Path to cron database (defaults to workspace_dir/cron.db)
+    /// Path to cron database (defaults to `workspace_dir/cron.db`)
     pub cron_db_path: Option<PathBuf>,
     /// Web search configuration
     pub web_search_config: Option<WebSearchConfig>,

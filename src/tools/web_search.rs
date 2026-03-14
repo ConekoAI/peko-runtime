@@ -5,8 +5,8 @@
 //! web content ready for LLM consumption—no scraping needed.
 //!
 //! # Configuration
-//! Requires `BRAVE_API_KEY` environment variable or api_key in config.
-//! Get a free API key at: https://api.search.brave.com/
+//! Requires `BRAVE_API_KEY` environment variable or `api_key` in config.
+//! Get a free API key at: <https://api.search.brave.com>/
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -23,7 +23,7 @@ pub struct WebSearchConfig {
     /// Enable the tool
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// API key for Brave Search (or use BRAVE_API_KEY env var)
+    /// API key for Brave Search (or use `BRAVE_API_KEY` env var)
     pub api_key: Option<String>,
     /// Maximum URLs to include in context (1-50)
     #[serde(default = "default_max_urls")]
@@ -119,6 +119,7 @@ pub struct WebSearchTool {
 
 impl WebSearchTool {
     /// Create a new web search tool
+    #[must_use] 
     pub fn new(config: WebSearchConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -209,8 +210,8 @@ impl WebSearchTool {
             let message = match status.as_u16() {
                 401 => "Invalid Brave API key. Please check your BRAVE_API_KEY.".to_string(),
                 429 => "Brave API rate limit exceeded. Please try again later.".to_string(),
-                422 => format!("Validation error: {}", error_text),
-                _ => format!("Brave API error: {} - {}", status, error_text),
+                422 => format!("Validation error: {error_text}"),
+                _ => format!("Brave API error: {status} - {error_text}"),
             };
 
             return Err(anyhow::anyhow!(message));
@@ -373,7 +374,7 @@ Get a free API key at: https://api.search.brave.com/
 fn extract_domain(url: &str) -> String {
     url.parse::<reqwest::Url>()
         .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .and_then(|u| u.host_str().map(std::string::ToString::to_string))
         .unwrap_or_else(|| "unknown".to_string())
 }
 

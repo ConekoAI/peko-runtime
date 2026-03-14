@@ -1,7 +1,7 @@
 //! Subagent Session Key Utilities
 //!
 //! Provides standardized key formats for subagent sessions,
-//! following OpenClaw's pattern: `agent:{agent}:subagent:{uuid}`
+//! following `OpenClaw`'s pattern: `agent:{agent}:subagent:{uuid}`
 
 use uuid::Uuid;
 
@@ -21,7 +21,7 @@ pub fn generate_subagent_key(agent_name: &str) -> String {
 
 /// Parse a subagent session key to extract components
 ///
-/// Returns (agent_name, subagent_uuid) if valid, None otherwise
+/// Returns (`agent_name`, `subagent_uuid`) if valid, None otherwise
 #[must_use]
 pub fn parse_subagent_key(key: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = key.split(':').collect();
@@ -73,7 +73,7 @@ pub fn get_parent_key(_subagent_key: &str) -> Option<String> {
 pub fn format_display_key(key: &str) -> String {
     if is_subagent_key(key) {
         if let Some((agent, uuid)) = parse_subagent_key(key) {
-            format!("{}:subagent:{:.8}...", agent, uuid)
+            format!("{agent}:subagent:{uuid:.8}...")
         } else {
             key.to_string()
         }
@@ -87,13 +87,13 @@ pub fn format_display_key(key: &str) -> String {
 /// This is an alternative format that includes parent information:
 /// `agent:{agent}:peer:{type}:{id}:subagent:{uuid}`
 #[must_use]
-pub fn generate_subagent_key_with_parent(agent_name: &str, parent_session_key: &str) -> String {
+pub fn generate_subagent_key_with_parent(_agent_name: &str, parent_session_key: &str) -> String {
     format!("{}:subagent:{}", parent_session_key, Uuid::new_v4())
 }
 
 /// Parse a hybrid subagent key with parent info
 ///
-/// Returns (agent_name, parent_key, subagent_uuid) if valid
+/// Returns (`agent_name`, `parent_key`, `subagent_uuid`) if valid
 #[must_use]
 pub fn parse_hybrid_subagent_key(key: &str) -> Option<(String, String, String)> {
     // Check if it contains :subagent:

@@ -144,6 +144,7 @@ impl Engine {
     }
 
     /// Get the task manager
+    #[must_use] 
     pub fn task_manager(&self) -> &Arc<TaskManager> {
         &self.task_manager
     }

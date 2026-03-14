@@ -2,9 +2,8 @@
 //!
 //! Provides a broadcast-based event bus for internal system events.
 
-use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::orchestration::events::SystemEvent;
 
@@ -12,7 +11,7 @@ use crate::orchestration::events::SystemEvent;
 pub struct EventSubscriber {
     /// Broadcast sender for internal events
     sender: broadcast::Sender<SystemEvent>,
-    /// Event channel receiver (for integration with EventRouter)
+    /// Event channel receiver (for integration with `EventRouter`)
     event_rx: Option<mpsc::Receiver<SystemEvent>>,
 }
 
@@ -29,7 +28,7 @@ impl EventSubscriber {
         }
     }
 
-    /// Create with an mpsc channel for EventRouter integration
+    /// Create with an mpsc channel for `EventRouter` integration
     pub fn with_event_channel(event_rx: mpsc::Receiver<SystemEvent>) -> Self {
         let (sender, _receiver) = broadcast::channel(100);
 
@@ -60,22 +59,25 @@ impl EventSubscriber {
     }
 
     /// Subscribe to internal events
+    #[must_use] 
     pub fn subscribe(&self) -> broadcast::Receiver<SystemEvent> {
         self.sender.subscribe()
     }
 
     /// Get the sender for external use
+    #[must_use] 
     pub fn sender(&self) -> broadcast::Sender<SystemEvent> {
         self.sender.clone()
     }
 
     /// Get the number of active subscribers
+    #[must_use] 
     pub fn subscriber_count(&self) -> usize {
         self.sender.receiver_count()
     }
 
     /// Start forwarding events from the mpsc channel to broadcast
-    /// This bridges EventRouter events to internal subscribers
+    /// This bridges `EventRouter` events to internal subscribers
     pub fn start_forwarding(&mut self) {
         if let Some(mut rx) = self.event_rx.take() {
             let sender = self.sender.clone();
@@ -86,7 +88,7 @@ impl EventSubscriber {
                 while let Some(event) = rx.recv().await {
                     let event_type = event.event_type().to_string();
 
-                    if let Err(e) = sender.send(event) {
+                    if let Err(_e) = sender.send(event) {
                         warn!("Failed to forward {} event: no receivers", event_type);
                     } else {
                         debug!("Forwarded {} event to broadcast", event_type);
@@ -124,7 +126,7 @@ impl Default for EventSubscriber {
     }
 }
 
-/// Builder for creating EventSubscriber with multiple sources
+/// Builder for creating `EventSubscriber` with multiple sources
 pub struct EventSubscriberBuilder {
     event_rx: Option<mpsc::Receiver<SystemEvent>>,
     capacity: usize,
@@ -132,6 +134,7 @@ pub struct EventSubscriberBuilder {
 
 impl EventSubscriberBuilder {
     /// Create a new builder
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             event_rx: None,
@@ -139,19 +142,22 @@ impl EventSubscriberBuilder {
         }
     }
 
-    /// Set the event channel for EventRouter integration
+    /// Set the event channel for `EventRouter` integration
+    #[must_use] 
     pub fn with_event_channel(mut self, rx: mpsc::Receiver<SystemEvent>) -> Self {
         self.event_rx = Some(rx);
         self
     }
 
     /// Set the broadcast channel capacity
+    #[must_use] 
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.capacity = capacity;
         self
     }
 
-    /// Build the EventSubscriber
+    /// Build the `EventSubscriber`
+    #[must_use] 
     pub fn build(self) -> EventSubscriber {
         let (sender, _receiver) = broadcast::channel(self.capacity);
 

@@ -2,12 +2,12 @@
 //!
 //! Commands for managing event routing, file watching, and webhooks.
 
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-use crate::orchestration::config::{FileWatchConfig, OrchestrationConfig, WebhookRouteConfig};
-use crate::orchestration::external_ingress::{ExternalSource, SourceDetection, VerificationConfig};
+use crate::orchestration::config::{FileWatchConfig, WebhookRouteConfig};
+use crate::orchestration::external_ingress::{ExternalSource, SourceDetection};
 use crate::types::config::PekobotConfig;
 
 /// Orchestration management commands
@@ -159,7 +159,7 @@ pub async fn run(
             info!("Listing event handlers");
 
             if let Some(et) = event_type {
-                println!("Handlers for event type: {}", et);
+                println!("Handlers for event type: {et}");
             } else {
                 println!("Registered event handlers:");
             }
@@ -196,13 +196,13 @@ pub async fn run(
             new_config.to_file(config_path)?;
 
             println!("Added watch:");
-            println!("  Path: {:?}", path);
-            println!("  Agent: {}", agent);
+            println!("  Path: {path:?}");
+            println!("  Agent: {agent}");
             if let Some(p) = pattern {
-                println!("  Pattern: {}", p);
+                println!("  Pattern: {p}");
             }
-            println!("  Recursive: {}", recursive);
-            println!("  Debounce: {}ms", debounce_ms);
+            println!("  Recursive: {recursive}");
+            println!("  Debounce: {debounce_ms}ms");
             println!("\nNote: File watcher will start on next daemon restart");
 
             Ok(())
@@ -225,7 +225,7 @@ pub async fn run(
 
             new_config.to_file(config_path)?;
 
-            println!("Removed watch: {:?}", path);
+            println!("Removed watch: {path:?}");
 
             Ok(())
         }
@@ -252,9 +252,9 @@ pub async fn run(
             new_config.to_file(config_path)?;
 
             println!("Added webhook route:");
-            println!("  Path: {}", path);
-            println!("  Agent: {}", agent);
-            println!("  Source: {}", source);
+            println!("  Path: {path}");
+            println!("  Agent: {agent}");
+            println!("  Source: {source}");
             if secret.is_some() {
                 println!("  Secret: [configured]");
             }
@@ -280,7 +280,7 @@ pub async fn run(
 
             new_config.to_file(config_path)?;
 
-            println!("Removed webhook route: {}", path);
+            println!("Removed webhook route: {path}");
 
             Ok(())
         }
@@ -358,8 +358,8 @@ pub async fn run(
             new_config.to_file(config_path)?;
 
             println!("Added external source:");
-            println!("  Name: {}", name);
-            println!("  Agent: {}", agent);
+            println!("  Name: {name}");
+            println!("  Agent: {agent}");
             println!("\nNote: External ingress will start on next daemon restart");
             println!(
                 "  Configure external services to POST to: http://your-host:{}/webhook/ingress",
@@ -386,7 +386,7 @@ pub async fn run(
 
             new_config.to_file(config_path)?;
 
-            println!("Removed external source: {}", name);
+            println!("Removed external source: {name}");
 
             Ok(())
         }
@@ -402,20 +402,20 @@ pub async fn run(
                     match &source.detection {
                         SourceDetection::Header { name, value_prefix } => {
                             if let Some(prefix) = value_prefix {
-                                println!("    [header: {}={}*]", name, prefix);
+                                println!("    [header: {name}={prefix}*]");
                             } else {
-                                println!("    [header: {}]", name);
+                                println!("    [header: {name}]");
                             }
                         }
                         SourceDetection::PayloadField { path, value } => {
                             if let Some(val) = value {
-                                println!("    [payload: {}={}]", path, val);
+                                println!("    [payload: {path}={val}]");
                             } else {
-                                println!("    [payload: {}]", path);
+                                println!("    [payload: {path}]");
                             }
                         }
                         SourceDetection::UserAgent { contains } => {
-                            println!("    [user-agent: contains '{}']", contains);
+                            println!("    [user-agent: contains '{contains}']");
                         }
                     }
                 }
@@ -449,13 +449,13 @@ pub async fn run(
 
             new_config.to_file(config_path)?;
 
-            println!("External ingress enabled on port {}", port);
+            println!("External ingress enabled on port {port}");
             println!(
                 "  Endpoint: {}",
                 new_config.orchestration.external_ingress.endpoint
             );
             println!("\nConfigure external services to POST to:");
-            println!("  http://your-host:{}/webhook/ingress", port);
+            println!("  http://your-host:{port}/webhook/ingress");
             println!("\nAdd sources with: pekobot orchestration ingress-add");
 
             Ok(())
@@ -476,7 +476,7 @@ pub async fn run(
             } else {
                 println!("Recent events:");
                 if let Some(et) = event_type {
-                    println!("  (filtered by type: {})", et);
+                    println!("  (filtered by type: {et})");
                 }
                 println!("  (Event history requires active daemon connection)");
             }
@@ -488,7 +488,7 @@ pub async fn run(
             info!("Replaying event: {}", event_id);
 
             // TODO: Query event history and replay
-            println!("Replaying event: {}", event_id);
+            println!("Replaying event: {event_id}");
             println!("  (Event replay requires active daemon)");
 
             Ok(())
@@ -586,7 +586,7 @@ pub async fn run(
                 }
                 Err(e) => {
                     warn!("Configuration validation failed: {}", e);
-                    println!("✗ Configuration error: {}", e);
+                    println!("✗ Configuration error: {e}");
                     Err(e)
                 }
             }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
-use crate::cron::{CronJob, CronScheduler};
+use crate::cron::CronScheduler;
 use crate::orchestration::events::SystemEvent;
 
 /// Service that listens for system events and triggers matching jobs
@@ -152,7 +152,7 @@ impl EventTriggerService {
     }
 }
 
-/// Builder for EventTriggerService
+/// Builder for `EventTriggerService`
 pub struct EventTriggerServiceBuilder {
     scheduler: Option<Arc<CronScheduler>>,
     event_rx: Option<mpsc::Receiver<SystemEvent>>,

@@ -53,6 +53,7 @@ pub enum FileChangeType {
 
 impl SystemEvent {
     /// Get the event type as a string for routing
+    #[must_use] 
     pub fn event_type(&self) -> &'static str {
         match self {
             SystemEvent::File { .. } => "file",
@@ -63,6 +64,7 @@ impl SystemEvent {
     }
 
     /// Get event timestamp
+    #[must_use] 
     pub fn timestamp(&self) -> DateTime<Utc> {
         match self {
             SystemEvent::File { timestamp, .. } => *timestamp,
@@ -93,15 +95,15 @@ impl std::fmt::Display for SystemEvent {
                 write!(f, "File {}: {}", change_type, path.display())
             }
             SystemEvent::Webhook { source, route, .. } => {
-                write!(f, "Webhook from {} on {}", source, route)
+                write!(f, "Webhook from {source} on {route}")
             }
             SystemEvent::Internal {
                 event_type, source, ..
             } => {
-                write!(f, "Internal {} from {}", event_type, source)
+                write!(f, "Internal {event_type} from {source}")
             }
             SystemEvent::Timer { schedule_id, .. } => {
-                write!(f, "Timer for schedule {}", schedule_id)
+                write!(f, "Timer for schedule {schedule_id}")
             }
         }
     }

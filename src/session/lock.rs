@@ -57,9 +57,7 @@ impl FileLock {
                     let elapsed = start.elapsed().unwrap_or(Duration::MAX);
                     if elapsed >= timeout {
                         return Err(anyhow::anyhow!(
-                            "Lock acquisition timeout after {}ms: {}",
-                            timeout_ms,
-                            e
+                            "Lock acquisition timeout after {timeout_ms}ms: {e}"
                         ));
                     }
 
@@ -139,7 +137,7 @@ impl FileLock {
                 return Err(anyhow::anyhow!("Lock file not found (race condition)"));
             }
             Err(e) => {
-                return Err(anyhow::anyhow!("Failed to read lock file: {}", e));
+                return Err(anyhow::anyhow!("Failed to read lock file: {e}"));
             }
         };
 
@@ -227,6 +225,7 @@ pub struct LockManager {
 }
 
 impl LockManager {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             held: Mutex::new(HashMap::new()),

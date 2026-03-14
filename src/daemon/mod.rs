@@ -479,20 +479,17 @@ impl Daemon {
         info!("🔧 Isolated job: '{}'", job.message);
 
         // Check if agent is specified
-        let agent_id = match &job.agent_id {
-            Some(id) => id,
-            None => {
-                let msg = "Isolated job requires agent_id".to_string();
-                warn!("   {}", msg);
-                return Ok(("failed".to_string(), Some(msg)));
-            }
+        let agent_id = if let Some(id) = &job.agent_id { id } else {
+            let msg = "Isolated job requires agent_id".to_string();
+            warn!("   {}", msg);
+            return Ok(("failed".to_string(), Some(msg)));
         };
 
         // Load agent config
         let agent_config = match self.load_agent_config(agent_id).await {
             Ok(config) => config,
             Err(e) => {
-                let msg = format!("Failed to load agent config for {}: {}", agent_id, e);
+                let msg = format!("Failed to load agent config for {agent_id}: {e}");
                 warn!("   {}", msg);
                 return Ok(("failed".to_string(), Some(msg)));
             }

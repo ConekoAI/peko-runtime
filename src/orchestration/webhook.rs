@@ -1,6 +1,6 @@
 //! Webhook Server for orchestration layer
 //!
-//! HTTP server that receives external webhooks and emits SystemEvent::Webhook events.
+//! HTTP server that receives external webhooks and emits `SystemEvent::Webhook` events.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -13,7 +13,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -72,6 +71,7 @@ pub struct WebhookServer {
 
 impl WebhookServer {
     /// Create a new webhook server
+    #[must_use] 
     pub fn new(port: u16, event_tx: mpsc::Sender<SystemEvent>) -> Self {
         Self {
             port,
@@ -122,6 +122,7 @@ impl WebhookServer {
     }
 
     /// Start the server in a background task
+    #[must_use] 
     pub fn spawn(self) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         tokio::spawn(async move { self.start().await })
     }
@@ -171,12 +172,9 @@ async fn handle_webhook(
 
     // Look up route configuration
     let routes = state.routes.read().await;
-    let route_config = match routes.get(&format!("/{}", route)) {
-        Some(config) => config.clone(),
-        None => {
-            warn!("Unknown webhook route: {}", route);
-            return (StatusCode::NOT_FOUND, "Unknown route").into_response();
-        }
+    let route_config = if let Some(config) = routes.get(&format!("/{route}")) { config.clone() } else {
+        warn!("Unknown webhook route: {}", route);
+        return (StatusCode::NOT_FOUND, "Unknown route").into_response();
     };
     drop(routes);
 
@@ -229,6 +227,7 @@ pub struct WebhookServerBuilder {
 
 impl WebhookServerBuilder {
     /// Create a new builder
+    #[must_use] 
     pub fn new(port: u16, event_tx: mpsc::Sender<SystemEvent>) -> Self {
         Self {
             port,
@@ -238,6 +237,7 @@ impl WebhookServerBuilder {
     }
 
     /// Add a webhook route
+    #[must_use] 
     pub fn add_route(mut self, route: WebhookRoute) -> Self {
         self.routes.push(route);
         self
@@ -250,6 +250,7 @@ impl WebhookServerBuilder {
     }
 
     /// Build the webhook server
+    #[must_use] 
     pub fn build(self) -> WebhookServer {
         let mut server = WebhookServer::new(self.port, self.event_tx);
         for route in self.routes {

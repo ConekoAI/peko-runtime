@@ -1,9 +1,9 @@
 //! Session manager for overlay lifecycle
 //!
-//! The SessionManager is responsible for:
+//! The `SessionManager` is responsible for:
 //! - Managing base sessions (create, open, cache)
 //! - Creating and tracking overlays (channel, spawn)
-//! - Providing HybridSession views
+//! - Providing `HybridSession` views
 //! - Cross-channel session sharing
 
 use super::base::BaseSession;
@@ -12,9 +12,8 @@ use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::registry::SessionRegistryManager;
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -32,21 +31,25 @@ pub enum OverlayRef {
 
 impl OverlayRef {
     /// Check if this is a channel overlay
+    #[must_use] 
     pub fn is_channel(&self) -> bool {
         matches!(self, OverlayRef::Channel(_))
     }
 
     /// Check if this is a spawn overlay
+    #[must_use] 
     pub fn is_spawn(&self) -> bool {
         matches!(self, OverlayRef::Spawn(_))
     }
 
     /// Check if this is None
+    #[must_use] 
     pub fn is_none(&self) -> bool {
         matches!(self, OverlayRef::None)
     }
 
     /// Get as channel overlay if applicable
+    #[must_use] 
     pub fn as_channel(&self) -> Option<Arc<RwLock<ChannelOverlay>>> {
         match self {
             OverlayRef::Channel(arc) => Some(arc.clone()),
@@ -55,6 +58,7 @@ impl OverlayRef {
     }
 
     /// Get as spawn overlay if applicable
+    #[must_use] 
     pub fn as_spawn(&self) -> Option<Arc<RwLock<SpawnOverlay>>> {
         match self {
             OverlayRef::Spawn(arc) => Some(arc.clone()),
@@ -91,11 +95,13 @@ impl HybridSession {
     }
 
     /// Check if this session has a channel overlay
+    #[must_use] 
     pub fn has_channel_overlay(&self) -> bool {
         self.overlay.is_channel()
     }
 
     /// Check if this session has a spawn overlay
+    #[must_use] 
     pub fn has_spawn_overlay(&self) -> bool {
         self.overlay.is_spawn()
     }
@@ -159,11 +165,11 @@ impl HybridSession {
 /// - Session registry for UUID-based file naming and switching
 #[derive(Debug)]
 pub struct SessionManager {
-    /// Base sessions: (agent_id, peer) -> BaseSession
+    /// Base sessions: (`agent_id`, peer) -> `BaseSession`
     base_sessions: HashMap<(String, Peer), Arc<RwLock<BaseSession>>>,
-    /// Channel overlays: overlay_key -> ChannelOverlay
+    /// Channel overlays: `overlay_key` -> `ChannelOverlay`
     channel_overlays: HashMap<String, Arc<RwLock<ChannelOverlay>>>,
-    /// Spawn overlays: overlay_key -> SpawnOverlay
+    /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
     spawn_overlays: HashMap<String, Arc<RwLock<SpawnOverlay>>>,
     /// Session registry manager for UUID-based sessions
     registry: Option<SessionRegistryManager>,
@@ -173,6 +179,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Create a new session manager
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             base_sessions: HashMap::new(),
@@ -191,11 +198,13 @@ impl SessionManager {
     }
 
     /// Get the registry manager if initialized
+    #[must_use] 
     pub fn registry(&self) -> Option<&SessionRegistryManager> {
         self.registry.as_ref()
     }
 
     /// Check if registry is initialized
+    #[must_use] 
     pub fn has_registry(&self) -> bool {
         self.registry.is_some()
     }
@@ -306,7 +315,7 @@ impl SessionManager {
                 };
 
             // Check if session file exists by looking for it directly
-            let transcript_file = format!("{}.jsonl", session_id);
+            let transcript_file = format!("{session_id}.jsonl");
             let transcript_path = registry.sessions_dir().join(&transcript_file);
 
             let session = if transcript_path.exists() {
@@ -343,6 +352,7 @@ impl SessionManager {
     }
 
     /// Get an existing base session if it exists
+    #[must_use] 
     pub fn get_existing_base(&self, agent: &str, peer: &Peer) -> Option<Arc<RwLock<BaseSession>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.get(&key).cloned()
@@ -389,6 +399,7 @@ impl SessionManager {
     }
 
     /// Get an existing channel overlay
+    #[must_use] 
     pub fn get_channel_overlay(&self, overlay_key: &str) -> Option<Arc<RwLock<ChannelOverlay>>> {
         self.channel_overlays.get(overlay_key).cloned()
     }
@@ -401,7 +412,7 @@ impl SessionManager {
     pub async fn create_spawn_overlay(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        _peer: &Peer,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
@@ -426,7 +437,7 @@ impl SessionManager {
         };
 
         // Create spawn overlay
-        let mut overlay =
+        let overlay =
             SpawnOverlay::new(&base_key, spawn_peer, parent_session_key, task, isolated);
         let spawn_id = overlay.spawn_id.clone();
         let overlay_key = derive_overlay_key(&base_key, "spawn", &spawn_id);
@@ -447,7 +458,7 @@ impl SessionManager {
     pub async fn create_spawn_overlay_with_config(
         &mut self,
         agent: &str,
-        peer: &Peer,
+        _peer: &Peer,
         task: &str,
         isolated: bool,
         parent_session_key: &str,
@@ -528,6 +539,7 @@ impl SessionManager {
     }
 
     /// Get an existing spawn overlay
+    #[must_use] 
     pub fn get_spawn_overlay(&self, overlay_key: &str) -> Option<Arc<RwLock<SpawnOverlay>>> {
         self.spawn_overlays.get(overlay_key).cloned()
     }
@@ -571,6 +583,7 @@ impl SessionManager {
     }
 
     /// Get all overlays for a base session
+    #[must_use] 
     pub fn get_overlays_for_base(
         &self,
         base_key: &str,
@@ -605,26 +618,31 @@ impl SessionManager {
     }
 
     /// Get all channel overlays
+    #[must_use] 
     pub fn channel_overlays(&self) -> &HashMap<String, Arc<RwLock<ChannelOverlay>>> {
         &self.channel_overlays
     }
 
     /// Get all spawn overlays
+    #[must_use] 
     pub fn spawn_overlays(&self) -> &HashMap<String, Arc<RwLock<SpawnOverlay>>> {
         &self.spawn_overlays
     }
 
     /// Get base session count
+    #[must_use] 
     pub fn base_session_count(&self) -> usize {
         self.base_sessions.len()
     }
 
     /// Get channel overlay count
+    #[must_use] 
     pub fn channel_overlay_count(&self) -> usize {
         self.channel_overlays.len()
     }
 
     /// Get spawn overlay count
+    #[must_use] 
     pub fn spawn_overlay_count(&self) -> usize {
         self.spawn_overlays.len()
     }

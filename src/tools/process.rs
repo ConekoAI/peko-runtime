@@ -294,14 +294,13 @@ Long download (no timeout):
         let timeout_secs = params
             .get("timeout")
             .and_then(serde_json::Value::as_u64)
-            .map(|t| {
+            .map_or(self.default_timeout_secs, |t| {
                 if t == 0 {
                     u64::MAX
                 } else {
                     t.min(MAX_TIMEOUT_SECS)
                 }
-            })
-            .unwrap_or(self.default_timeout_secs);
+            });
 
         let working_dir = params.get("working_dir").and_then(|v| v.as_str());
 

@@ -103,14 +103,14 @@ impl SkillsRegistry {
     /// Load a skill from a SKILL.md file
     fn load_skill(&self, path: &Path) -> Result<Skill> {
         let content =
-            std::fs::read_to_string(path).with_context(|| format!("Failed to read {:?}", path))?;
+            std::fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
 
         // Parse YAML frontmatter between --- markers
         let (frontmatter, _body) = parse_frontmatter(&content)
-            .with_context(|| format!("Failed to parse frontmatter in {:?}", path))?;
+            .with_context(|| format!("Failed to parse frontmatter in {path:?}"))?;
 
         let meta: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
-            .with_context(|| format!("Failed to parse YAML frontmatter in {:?}", path))?;
+            .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
 
         // Validate required fields
         if meta.name.is_empty() {
@@ -211,7 +211,7 @@ fn parse_frontmatter(content: &str) -> Result<(String, String)> {
 }
 
 /// Format skills for inclusion in system prompt
-/// Matches OpenClaw's formatSkillsForPrompt
+/// Matches `OpenClaw`'s formatSkillsForPrompt
 pub fn format_skills_for_prompt(skills: &[&Skill]) -> String {
     if skills.is_empty() {
         return String::new();
@@ -240,14 +240,14 @@ pub fn build_skills_prompt(skills: &[&Skill]) -> String {
     }
 
     format!(
-        r##"## Skills (mandatory)
+        r"## Skills (mandatory)
 Before replying: scan <available_skills> <description> entries.
 - If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
 - If multiple could apply: choose the most specific one, then read/follow it.
 - If none clearly apply: do not read any SKILL.md.
 Constraints: never read more than one skill up front; only read after selecting.
 
-{skills_block}"##
+{skills_block}"
     )
 }
 

@@ -4,7 +4,7 @@
 //!
 //! Use `agent_invoke` instead:
 //! - Sync mode: Blocks for result, returns directly
-//! - Async mode: Returns receipt, result via EventSubscriber
+//! - Async mode: Returns receipt, result via `EventSubscriber`
 //!
 //! See: `src/tools/agent_invoke.rs` for the new implementation (GAP-005)
 //!

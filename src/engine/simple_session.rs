@@ -39,6 +39,7 @@ pub struct SimpleSession {
 
 impl SimpleSession {
     /// Get the storage directory for an agent
+    #[must_use] 
     pub fn storage_dir(agent_name: &str) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -73,7 +74,7 @@ impl SimpleSession {
         index
             .migrate_from_directory(agent_name)
             .await
-            .with_context(|| format!("Failed to migrate index for agent: {}", agent_name))?;
+            .with_context(|| format!("Failed to migrate index for agent: {agent_name}"))?;
 
         // Create session entry
         let cwd = std::env::current_dir()
@@ -91,7 +92,7 @@ impl SimpleSession {
             })?;
 
         // Create index entry
-        let transcript_file = format!("{}.jsonl", session_id);
+        let transcript_file = format!("{session_id}.jsonl");
         let mut entry = IndexEntry::new(
             session_id.to_string(),
             agent_name.to_string(),
@@ -103,7 +104,7 @@ impl SimpleSession {
         // Insert into index
         let index_key = session_key
             .clone()
-            .unwrap_or_else(|| format!("agent:{}:session:{}", agent_name, session_id));
+            .unwrap_or_else(|| format!("agent:{agent_name}:session:{session_id}"));
         index
             .insert(index_key, entry)
             .await
@@ -252,6 +253,7 @@ impl SimpleSession {
     }
 
     /// Get current token usage
+    #[must_use] 
     pub fn token_usage(&self) -> (usize, usize, usize) {
         (
             self.input_tokens,
@@ -261,6 +263,7 @@ impl SimpleSession {
     }
 
     /// Get current provider and model
+    #[must_use] 
     pub fn current_model(&self) -> Option<(&str, &str)> {
         match (&self.current_provider, &self.current_model) {
             (Some(p), Some(m)) => Some((p.as_str(), m.as_str())),
@@ -269,7 +272,7 @@ impl SimpleSession {
     }
 
     /// Load conversation history for resumption
-    /// Returns ChatMessages that can be fed to the LLM
+    /// Returns `ChatMessages` that can be fed to the LLM
     pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
         use crate::providers::MessageRole;
 
@@ -329,7 +332,7 @@ impl SimpleSession {
         if let Ok(mut entries) = tokio::fs::read_dir(&storage_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
-                if path.extension().map_or(false, |e| e == "jsonl") {
+                if path.extension().is_some_and(|e| e == "jsonl") {
                     let session_id = path
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -547,7 +550,7 @@ impl SimpleSession {
                             } => {
                                 let args_str =
                                     serde_json::to_string(&arguments).unwrap_or_default();
-                                parts.push(format!("[ToolCall: {}({})]", name, args_str));
+                                parts.push(format!("[ToolCall: {name}({args_str})]"));
                             }
                             ContentBlock::ToolResult { content, .. } => {
                                 let result_text: String = content
@@ -557,7 +560,7 @@ impl SimpleSession {
                                         _ => None,
                                     })
                                     .collect();
-                                parts.push(format!("[ToolResult: {}]", result_text));
+                                parts.push(format!("[ToolResult: {result_text}]"));
                             }
                             _ => {}
                         }
@@ -565,7 +568,7 @@ impl SimpleSession {
 
                     let content_text = parts.join("\n");
                     if !content_text.is_empty() {
-                        context.push_str(&format!("{}: {}\n\n", role, content_text));
+                        context.push_str(&format!("{role}: {content_text}\n\n"));
                     }
                 }
                 crate::session::jsonl::SessionEntry::ToolResult {
@@ -579,8 +582,7 @@ impl SimpleSession {
                         })
                         .collect();
                     context.push_str(&format!(
-                        "tool: [{} result: {}]\n\n",
-                        tool_name, result_text
+                        "tool: [{tool_name} result: {result_text}]\n\n"
                     ));
                 }
                 _ => {}

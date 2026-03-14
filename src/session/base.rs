@@ -1,6 +1,6 @@
 //! Base session implementation
 //!
-//! The BaseSession provides shared conversation context that is accessible
+//! The `BaseSession` provides shared conversation context that is accessible
 //! across all overlays for a given peer. It stores:
 //! - Conversation history (messages)
 //! - Token usage
@@ -20,7 +20,7 @@ use tokio::fs;
 
 /// Base session shared across all overlays for a peer
 ///
-/// The BaseSession maintains the core conversation history and metadata
+/// The `BaseSession` maintains the core conversation history and metadata
 /// that is shared between all channel overlays and spawn overlays
 /// (for non-isolated spawns).
 #[derive(Debug)]
@@ -53,6 +53,7 @@ pub struct BaseSession {
 
 impl BaseSession {
     /// Get the storage directory for an agent
+    #[must_use] 
     pub fn storage_dir(agent_name: &str) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -94,7 +95,7 @@ impl BaseSession {
         index
             .migrate_from_directory(agent_name)
             .await
-            .with_context(|| format!("Failed to migrate index for agent: {}", agent_name))?;
+            .with_context(|| format!("Failed to migrate index for agent: {agent_name}"))?;
 
         // Create session file
         let cwd = std::env::current_dir()
@@ -113,7 +114,7 @@ impl BaseSession {
             })?;
 
         // Create index entry
-        let transcript_file = format!("{}.jsonl", session_id);
+        let transcript_file = format!("{session_id}.jsonl");
         let mut entry = IndexEntry::new(
             session_id.to_string(),
             agent_name.to_string(),
@@ -326,6 +327,7 @@ impl BaseSession {
     }
 
     /// Get token usage
+    #[must_use] 
     pub fn token_usage(&self) -> (usize, usize, usize) {
         (
             self.input_tokens,
@@ -542,7 +544,7 @@ impl BaseSession {
                             } => {
                                 let args_str =
                                     serde_json::to_string(&arguments).unwrap_or_default();
-                                parts.push(format!("[ToolCall: {}({})]", name, args_str));
+                                parts.push(format!("[ToolCall: {name}({args_str})]"));
                             }
                             ContentBlock::ToolResult { content, .. } => {
                                 let result_text: String = content
@@ -552,7 +554,7 @@ impl BaseSession {
                                         _ => None,
                                     })
                                     .collect();
-                                parts.push(format!("[ToolResult: {}]", result_text));
+                                parts.push(format!("[ToolResult: {result_text}]"));
                             }
                             _ => {}
                         }
@@ -560,7 +562,7 @@ impl BaseSession {
 
                     let content_text = parts.join("\n");
                     if !content_text.is_empty() {
-                        context.push_str(&format!("{}: {}\n\n", role, content_text));
+                        context.push_str(&format!("{role}: {content_text}\n\n"));
                     }
                 }
                 super::SessionEntry::ToolResult {
@@ -574,8 +576,7 @@ impl BaseSession {
                         })
                         .collect();
                     context.push_str(&format!(
-                        "tool: [{} result: {}]\n\n",
-                        tool_name, result_text
+                        "tool: [{tool_name} result: {result_text}]\n\n"
                     ));
                 }
                 _ => {}
@@ -596,7 +597,7 @@ fn parse_peer_from_key(key: &str) -> Result<Peer> {
     let parts: Vec<&str> = key.split(':').collect();
 
     if parts.len() < 5 {
-        return Err(anyhow::anyhow!("Invalid base session key format: {}", key));
+        return Err(anyhow::anyhow!("Invalid base session key format: {key}"));
     }
 
     // Find "peer" in the key
@@ -606,7 +607,7 @@ fn parse_peer_from_key(key: &str) -> Result<Peer> {
             .iter()
             .skip(peer_idx + 2)
             .take_while(|&&p| p != "overlay")
-            .cloned()
+            .copied()
             .collect();
         let peer_id = peer_id_parts.join(":");
 

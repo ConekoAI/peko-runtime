@@ -82,7 +82,7 @@ pub trait Channel: Send + Sync {
     /// Handle a streaming event receiver
     ///
     /// This is where chunking and presentation happens.
-    /// The channel receives raw AgenticEvents and handles:
+    /// The channel receives raw `AgenticEvents` and handles:
     /// - Block chunking based on channel config
     /// - Coalescing small blocks
     /// - Human-like delays between blocks
@@ -108,7 +108,7 @@ pub trait Channel: Send + Sync {
                     crate::engine::LifecyclePhase::End => break,
                     crate::engine::LifecyclePhase::Error => {
                         if let Some(err) = error {
-                            eprintln!("Stream error: {}", err);
+                            eprintln!("Stream error: {err}");
                         }
                         break;
                     }

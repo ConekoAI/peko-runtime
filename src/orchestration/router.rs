@@ -179,7 +179,7 @@ impl EventRouter {
     /// Get handler count for a specific type
     pub async fn get_handler_count(&self, event_type: &str) -> usize {
         let handlers = self.handlers.read().await;
-        handlers.get(event_type).map(|h| h.len()).unwrap_or(0)
+        handlers.get(event_type).map_or(0, std::vec::Vec::len)
     }
 
     /// Execute invoke action (helper to avoid recursion)
@@ -213,7 +213,7 @@ impl EventRouter {
             }
         } else {
             warn!("Agent {} not found for invocation", agent_id);
-            return Err(anyhow::anyhow!("Agent {} not found", agent_id));
+            return Err(anyhow::anyhow!("Agent {agent_id} not found"));
         }
 
         Ok(())

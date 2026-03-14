@@ -284,8 +284,7 @@ impl SubagentRegistry {
                 run.status.is_terminal()
                     && run
                         .completed_at
-                        .map(|t| now.signed_duration_since(t) > max_age)
-                        .unwrap_or(false)
+                        .is_some_and(|t| now.signed_duration_since(t) > max_age)
             })
             .map(|run| run.run_id.clone())
             .collect();
@@ -302,7 +301,7 @@ impl SubagentRegistry {
     }
 }
 
-/// Thread-safe wrapper for SubagentRegistry
+/// Thread-safe wrapper for `SubagentRegistry`
 pub type SharedSubagentRegistry = Arc<RwLock<SubagentRegistry>>;
 
 /// Create a new shared registry

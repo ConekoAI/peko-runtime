@@ -171,60 +171,54 @@ async fn list_sessions(agent_filter: Option<String>, json: bool) -> anyhow::Resu
             })
             .collect();
         println!("{}", serde_json::json!({ "sessions": sessions_json }));
+    } else if all_sessions.is_empty() {
+        println!("📭 No sessions found.");
+        println!("   Start chatting with an agent to create sessions.");
     } else {
-        if all_sessions.is_empty() {
-            println!("📭 No sessions found.");
-            println!("   Start chatting with an agent to create sessions.");
-        } else {
-            println!("📋 Sessions ({} found):", all_sessions.len());
-            println!();
+        println!("📋 Sessions ({} found):", all_sessions.len());
+        println!();
 
-            // Group by agent
-            let mut current_agent = String::new();
-            for (agent, session_id, session_key, modified, size, msg_count, tokens) in all_sessions
-            {
-                if agent != current_agent {
-                    println!("  🐱 {}", agent);
-                    current_agent = agent;
-                }
-
-                let time_ago = format_time_ago(modified);
-                let size_str = format_size(size);
-
-                // Check if this is the CLI default session
-                let is_cli_default = session_key
-                    .as_ref()
-                    .map(|k| k == &cli_session_key(&current_agent))
-                    .unwrap_or(false);
-                let indicator = if is_cli_default { "→ " } else { "   " };
-
-                // Show session key if available, otherwise session_id
-                let display_id = session_key
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or(&session_id);
-
-                let msg_info = if msg_count > 0 {
-                    format!(" | {} msgs", msg_count)
-                } else {
-                    String::new()
-                };
-
-                let token_info = if let Some(t) = tokens {
-                    format!(" | {} tokens", t)
-                } else {
-                    String::new()
-                };
-
-                println!(
-                    "{}   {} {} ({}{}{})",
-                    indicator, display_id, time_ago, size_str, msg_info, token_info
-                );
+        // Group by agent
+        let mut current_agent = String::new();
+        for (agent, session_id, session_key, modified, size, msg_count, tokens) in all_sessions
+        {
+            if agent != current_agent {
+                println!("  🐱 {agent}");
+                current_agent = agent;
             }
 
-            println!();
-            println!("  → = CLI default session (persistent)");
+            let time_ago = format_time_ago(modified);
+            let size_str = format_size(size);
+
+            // Check if this is the CLI default session
+            let is_cli_default = session_key
+                .as_ref()
+                .is_some_and(|k| k == &cli_session_key(&current_agent));
+            let indicator = if is_cli_default { "→ " } else { "   " };
+
+            // Show session key if available, otherwise session_id
+            let display_id = session_key.as_deref()
+                .unwrap_or(&session_id);
+
+            let msg_info = if msg_count > 0 {
+                format!(" | {msg_count} msgs")
+            } else {
+                String::new()
+            };
+
+            let token_info = if let Some(t) = tokens {
+                format!(" | {t} tokens")
+            } else {
+                String::new()
+            };
+
+            println!(
+                "{indicator}   {display_id} {time_ago} ({size_str}{msg_info}{token_info})"
+            );
         }
+
+        println!();
+        println!("  → = CLI default session (persistent)");
     }
 
     Ok(())
@@ -290,7 +284,7 @@ async fn run_maintenance(
                 total_bytes += report.bytes_reclaimed;
             }
             Err(e) => {
-                eprintln!("⚠️  Maintenance failed for {}: {}", agent_name, e);
+                eprintln!("⚠️  Maintenance failed for {agent_name}: {e}");
             }
         }
     }
@@ -308,10 +302,10 @@ async fn run_maintenance(
         );
     } else {
         let mode_str = if execute { "Executed" } else { "Would execute" };
-        println!("🔧 {} maintenance:", mode_str);
-        println!("   Sessions pruned: {}", total_pruned);
-        println!("   Sessions capped: {}", total_capped);
-        println!("   Indexes rotated: {}", total_rotated);
+        println!("🔧 {mode_str} maintenance:");
+        println!("   Sessions pruned: {total_pruned}");
+        println!("   Sessions capped: {total_capped}");
+        println!("   Indexes rotated: {total_rotated}");
         println!("   Space reclaimed: {}", format_size(total_bytes));
 
         if !execute && (total_pruned > 0 || total_capped > 0) {
@@ -358,12 +352,9 @@ async fn show_session(session_id: &str, show_history: bool, json: bool) -> anyho
         }
     }
 
-    let (entry, agent_name) = match (found_entry, found_agent) {
-        (Some(e), Some(a)) => (e, a),
-        _ => {
-            eprintln!("❌ Session '{}' not found", session_id);
-            return Ok(());
-        }
+    let (entry, agent_name) = if let (Some(e), Some(a)) = (found_entry, found_agent) { (e, a) } else {
+        eprintln!("❌ Session '{session_id}' not found");
+        return Ok(());
     };
 
     let session_path = agents_dir
@@ -390,18 +381,18 @@ async fn show_session(session_id: &str, show_history: bool, json: bool) -> anyho
         );
     } else {
         println!("📊 Session Details");
-        println!("   Agent: {}", agent_name);
+        println!("   Agent: {agent_name}");
         println!("   Session ID: {}", entry.session_id);
         if let Some(ref key) = entry.session_key {
-            println!("   Session Key: {}", key);
+            println!("   Session Key: {key}");
         }
         println!("   Messages: {}", entry.message_count);
         if let Some(tokens) = entry.total_tokens {
-            println!("   Tokens: {}", tokens);
+            println!("   Tokens: {tokens}");
         }
         if let Some(ref provider) = entry.provider {
             if let Some(ref model) = entry.model {
-                println!("   Model: {}/{}", provider, model);
+                println!("   Model: {provider}/{model}");
             }
         }
         println!("   Path: {}", session_path.display());
@@ -435,11 +426,11 @@ async fn show_session(session_id: &str, show_history: bool, json: bool) -> anyho
                                 .collect();
 
                             if !preview.is_empty() {
-                                println!("  [{}] {}: {}", i, role, preview);
+                                println!("  [{i}] {role}: {preview}");
                             }
                         }
                     }
-                    Err(e) => println!("  Error loading history: {}", e),
+                    Err(e) => println!("  Error loading history: {e}"),
                 },
                 _ => println!("  Could not load session"),
             }
@@ -453,7 +444,7 @@ async fn show_session(session_id: &str, show_history: bool, json: bool) -> anyho
 fn format_duration(duration: Duration) -> String {
     let secs = duration.as_secs();
     if secs < 60 {
-        format!("{}s", secs)
+        format!("{secs}s")
     } else if secs < 3600 {
         format!("{}m", secs / 60)
     } else if secs < 86400 {
@@ -463,7 +454,7 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
-/// Format a SystemTime as "X ago"
+/// Format a `SystemTime` as "X ago"
 fn format_time_ago(time: SystemTime) -> String {
     match time.elapsed() {
         Ok(duration) => format!("{} ago", format_duration(duration)),
@@ -474,7 +465,7 @@ fn format_time_ago(time: SystemTime) -> String {
 /// Format bytes as human-readable string
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     } else if bytes < 1024 * 1024 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {

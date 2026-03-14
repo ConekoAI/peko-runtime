@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 /// Tool definition for native tool calling
 ///
 /// Providers translate this into their native tool schema format
-/// (e.g., OpenAI's function calling format, Anthropic's tool use)
+/// (e.g., `OpenAI`'s function calling format, Anthropic's tool use)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// Tool name (must match the tool's registered name)
@@ -355,9 +355,8 @@ fn messages_to_prompt(messages: &[ChatMessage]) -> String {
                     crate::types::message::ContentBlock::Text { text } => text.clone(),
                     _ => String::new(),
                 })
-                .collect::<Vec<_>>()
-                .join("");
-            format!("{}: {}", role, content)
+                .collect::<String>();
+            format!("{role}: {content}")
         })
         .collect::<Vec<_>>()
         .join("\n")
