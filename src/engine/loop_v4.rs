@@ -651,7 +651,7 @@ impl AgenticLoopV4 {
 }
 
 /// Build system prompt from agent and tools using SystemPromptBuilder
-/// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.)
+/// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.) and skills
 fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
     // Use configured workspace if specified, otherwise use default
     let workspace_dir = agent
@@ -668,11 +668,33 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
         })
         .unwrap_or_else(|| PathBuf::from("."));
 
+    // Load skills from the skills directory
+    let skills = load_agent_skills(agent.name());
+
     SystemPromptBuilder::new(agent.name())
         .with_mode(PromptMode::Full)
         .with_workspace(&workspace_dir)
         .with_tools(tools.to_vec())
+        .with_skills(skills)
         .build()
+}
+
+/// Load skills for an agent from the skills directory
+fn load_agent_skills(agent_name: &str) -> Vec<crate::skills::Skill> {
+    // Try agent-specific skills first, then global skills
+    let skills_dir = dirs::home_dir()
+        .map(|h| h.join(".pekobot").join("skills"))
+        .or_else(|| dirs::data_dir().map(|d| d.join("pekobot").join("skills")))
+        .unwrap_or_else(|| PathBuf::from("./skills"));
+
+    let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
+
+    if let Err(e) = registry.load_all() {
+        tracing::warn!("Failed to load skills for agent {}: {}", agent_name, e);
+        return Vec::new();
+    }
+
+    registry.list().into_iter().cloned().collect()
 }
 
 /// Convert chat messages to prompt string (fallback)

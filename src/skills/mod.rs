@@ -1,7 +1,17 @@
 //! Skills system for agents
 //!
-//! Skills are modular capabilities that can be loaded from TOML manifests.
-//! Each skill can define tools, prompts, and configuration.
+//! Skills are documentation that teach the LLM how to perform specific tasks.
+//! Each skill is a markdown file (SKILL.md) with YAML frontmatter containing
+//! metadata like name and description.
+//!
+//! The LLM uses skills by:
+//! 1. Seeing available skills in the system prompt
+//! 2. Deciding which skill applies to the current task
+//! 3. Using the `read` tool to fetch the full SKILL.md content
+//! 4. Following the instructions in the skill using existing tools (exec, etc.)
+//!
+//! Skills format follows the Anthropic Skills specification:
+//! https://github.com/anthropics/skills
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -9,72 +19,33 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
-/// A skill is a user-defined capability with tools and prompts
+/// A skill is documentation that teaches the LLM how to do something
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
-    /// Skill name (unique identifier)
+    /// Skill name (from frontmatter)
     pub name: String,
-    /// Human-readable description
+    /// Description (from frontmatter)
     pub description: String,
-    /// Version (semver)
-    pub version: String,
-    /// Optional author
-    #[serde(default)]
-    pub author: Option<String>,
-    /// Tags for categorization
+    /// Full path to SKILL.md
+    pub file_path: PathBuf,
+    /// Skill directory (for relative references)
+    pub base_dir: PathBuf,
+    /// Optional metadata (tags, author, etc.)
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Tools defined by this skill
     #[serde(default)]
-    pub tools: Vec<SkillTool>,
-    /// System prompts provided by this skill
-    #[serde(default)]
-    pub prompts: Vec<String>,
-    /// File path where skill was loaded from
-    #[serde(skip)]
-    pub location: Option<PathBuf>,
+    pub author: Option<String>,
 }
 
-/// A tool defined by a skill
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillTool {
-    /// Tool name
-    pub name: String,
-    /// Human-readable description
-    pub description: String,
-    /// Tool kind: "shell", "http", "script"
-    pub kind: String,
-    /// Command/URL/script to execute
-    pub command: String,
-    /// Additional arguments
-    #[serde(default)]
-    pub args: HashMap<String, String>,
-}
-
-/// Skill manifest (SKILL.toml structure)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SkillManifest {
-    skill: SkillMeta,
-    #[serde(default)]
-    tools: Vec<SkillTool>,
-    #[serde(default)]
-    prompts: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SkillMeta {
+/// YAML frontmatter from SKILL.md
+#[derive(Debug, Deserialize)]
+struct SkillFrontmatter {
     name: String,
     description: String,
-    #[serde(default = "default_version")]
-    version: String,
-    #[serde(default)]
-    author: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
-}
-
-fn default_version() -> String {
-    "0.1.0".to_string()
+    #[serde(default)]
+    author: Option<String>,
 }
 
 /// Skills registry - manages loading and accessing skills
@@ -105,15 +76,21 @@ impl SkillsRegistry {
         let mut count = 0;
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                match self.load_skill_from_dir(&path) {
+            if !path.is_dir() {
+                continue;
+            }
+
+            // Only support SKILL.md format
+            let skill_md = path.join("SKILL.md");
+            if skill_md.exists() {
+                match self.load_skill(&skill_md) {
                     Ok(skill) => {
-                        info!("Loaded skill: {} v{}", skill.name, skill.version);
+                        info!("Loaded skill: {}", skill.name);
                         self.skills.insert(skill.name.clone(), skill);
                         count += 1;
                     }
                     Err(e) => {
-                        warn!("Failed to load skill from {:?}: {}", path, e);
+                        warn!("Failed to load skill from {:?}: {}", skill_md, e);
                     }
                 }
             }
@@ -123,32 +100,37 @@ impl SkillsRegistry {
         Ok(count)
     }
 
-    /// Load a single skill from a directory
-    fn load_skill_from_dir(&self, dir: &Path) -> Result<Skill> {
-        let manifest_path = dir.join("SKILL.toml");
+    /// Load a skill from a SKILL.md file
+    fn load_skill(&self, path: &Path) -> Result<Skill> {
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("Failed to read {:?}", path))?;
 
-        if !manifest_path.exists() {
-            anyhow::bail!("SKILL.toml not found in {dir:?}");
+        // Parse YAML frontmatter between --- markers
+        let (frontmatter, _body) = parse_frontmatter(&content)
+            .with_context(|| format!("Failed to parse frontmatter in {:?}", path))?;
+
+        let meta: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
+            .with_context(|| format!("Failed to parse YAML frontmatter in {:?}", path))?;
+
+        // Validate required fields
+        if meta.name.is_empty() {
+            anyhow::bail!("Skill name cannot be empty");
+        }
+        if meta.description.is_empty() {
+            anyhow::bail!("Skill description cannot be empty");
         }
 
-        let content = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("Failed to read {manifest_path:?}"))?;
-
-        let manifest: SkillManifest = toml::from_str(&content)
-            .with_context(|| format!("Failed to parse {manifest_path:?}"))?;
-
-        let skill = Skill {
-            name: manifest.skill.name,
-            description: manifest.skill.description,
-            version: manifest.skill.version,
-            author: manifest.skill.author,
-            tags: manifest.skill.tags,
-            tools: manifest.tools,
-            prompts: manifest.prompts,
-            location: Some(dir.to_path_buf()),
-        };
-
-        Ok(skill)
+        Ok(Skill {
+            name: meta.name,
+            description: meta.description,
+            file_path: path.to_path_buf(),
+            base_dir: path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf(),
+            tags: meta.tags,
+            author: meta.author,
+        })
     }
 
     /// Get a skill by name
@@ -157,10 +139,12 @@ impl SkillsRegistry {
         self.skills.get(name)
     }
 
-    /// Get all loaded skills
+    /// Get all loaded skills sorted by name
     #[must_use]
     pub fn list(&self) -> Vec<&Skill> {
-        self.skills.values().collect()
+        let mut skills: Vec<_> = self.skills.values().collect();
+        skills.sort_by_key(|s| &s.name);
+        skills
     }
 
     /// Get skills by tag
@@ -169,15 +153,6 @@ impl SkillsRegistry {
         self.skills
             .values()
             .filter(|s| s.tags.contains(&tag.to_string()))
-            .collect()
-    }
-
-    /// Get all tools from all skills
-    #[must_use]
-    pub fn all_tools(&self) -> Vec<(&str, &SkillTool)> {
-        self.skills
-            .values()
-            .flat_map(|s| s.tools.iter().map(move |t| (s.name.as_str(), t)))
             .collect()
     }
 
@@ -192,23 +167,106 @@ impl SkillsRegistry {
     pub fn skills_dir(&self) -> &Path {
         &self.skills_dir
     }
+
+    /// Get the number of loaded skills
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.skills.len()
+    }
 }
 
-/// Load a skill from a TOML string (for testing)
-pub fn parse_skill_manifest(content: &str) -> Result<Skill> {
-    let manifest: SkillManifest =
-        toml::from_str(content).context("Failed to parse skill manifest")?;
+/// Parse YAML frontmatter from markdown content
+/// Format:
+/// ---
+/// name: skill-name
+/// description: What this skill does
+/// ---
+/// # Rest of content
+fn parse_frontmatter(content: &str) -> Result<(String, String)> {
+    let mut lines = content.lines().peekable();
 
-    Ok(Skill {
-        name: manifest.skill.name,
-        description: manifest.skill.description,
-        version: manifest.skill.version,
-        author: manifest.skill.author,
-        tags: manifest.skill.tags,
-        tools: manifest.tools,
-        prompts: manifest.prompts,
-        location: None,
-    })
+    // Must start with ---
+    match lines.next() {
+        Some("---") => {}
+        _ => anyhow::bail!("SKILL.md must start with --- frontmatter delimiter"),
+    }
+
+    let mut frontmatter_lines = Vec::new();
+    let mut found_end = false;
+
+    for line in lines.by_ref() {
+        if line == "---" {
+            found_end = true;
+            break;
+        }
+        frontmatter_lines.push(line);
+    }
+
+    if !found_end {
+        anyhow::bail!("Frontmatter must end with ---");
+    }
+
+    let body = lines.collect::<Vec<_>>().join("\n");
+    Ok((frontmatter_lines.join("\n"), body))
+}
+
+/// Format skills for inclusion in system prompt
+/// Matches OpenClaw's formatSkillsForPrompt
+pub fn format_skills_for_prompt(skills: &[&Skill]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec!["<available_skills>".to_string()];
+
+    for skill in skills {
+        // Use relative path from home directory to save tokens
+        let path_display = compact_skill_path(&skill.file_path);
+        lines.push(format!(
+            "- {}: {} (location: {})",
+            skill.name, skill.description, path_display
+        ));
+    }
+
+    lines.push("</available_skills>".to_string());
+    lines.join("\n")
+}
+
+/// Build the skills section for system prompt
+pub fn build_skills_prompt(skills: &[&Skill]) -> String {
+    let skills_block = format_skills_for_prompt(skills);
+    if skills_block.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        r##"## Skills (mandatory)
+Before replying: scan <available_skills> <description> entries.
+- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
+- If multiple could apply: choose the most specific one, then read/follow it.
+- If none clearly apply: do not read any SKILL.md.
+Constraints: never read more than one skill up front; only read after selecting.
+
+{skills_block}"##
+    )
+}
+
+/// Replace home directory with ~ to save tokens
+fn compact_skill_path(path: &Path) -> String {
+    let path_str = path.to_string_lossy();
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if path_str.starts_with(home_str.as_ref()) {
+            return path_str.replacen(home_str.as_ref(), "~", 1);
+        }
+    }
+    path_str.to_string()
+}
+
+/// Read the full content of a skill file
+pub fn read_skill_content(skill: &Skill) -> Result<String> {
+    std::fs::read_to_string(&skill.file_path)
+        .with_context(|| format!("Failed to read skill content from {:?}", skill.file_path))
 }
 
 #[cfg(test)]
@@ -217,66 +275,174 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_parse_skill_manifest() {
-        let toml = r#"
-[skill]
-name = "test-skill"
-description = "A test skill"
-version = "1.0.0"
-author = "Test Author"
-tags = ["test", "example"]
+    fn test_parse_frontmatter() {
+        let content = r#"---
+name: test-skill
+description: A test skill
+tags: [test, example]
+author: Test Author
+---
+# Test Skill
 
-[[tools]]
-name = "echo"
-description = "Echo a message"
-kind = "shell"
-command = "echo"
-
-prompts = ["You are a helpful assistant."]
+This is the body content.
 "#;
 
-        let result = parse_skill_manifest(toml);
-        assert!(result.is_ok());
-        let skill = result.unwrap();
-        assert_eq!(skill.name, "test-skill");
-        assert_eq!(skill.version, "1.0.0");
-        assert_eq!(skill.tools.len(), 1);
+        let (frontmatter, body) = parse_frontmatter(content).unwrap();
+        assert!(frontmatter.contains("name: test-skill"));
+        assert!(frontmatter.contains("description: A test skill"));
+        assert!(body.contains("# Test Skill"));
+        assert!(body.contains("This is the body content."));
     }
 
     #[test]
-    fn test_skills_registry() {
+    fn test_parse_frontmatter_missing_delimiter() {
+        let content = "name: test\ndescription: Test";
+        assert!(parse_frontmatter(content).is_err());
+    }
+
+    #[test]
+    fn test_parse_frontmatter_missing_end() {
+        let content = "---\nname: test\ndescription: Test";
+        assert!(parse_frontmatter(content).is_err());
+    }
+
+    #[test]
+    fn test_format_skills_for_prompt() {
+        // Use actual home directory for this test
+        let home_dir = dirs::home_dir().expect("Should have home dir");
+        let skill_path = home_dir.join(".pekobot/skills/docker/SKILL.md");
+
+        let skill = Skill {
+            name: "docker".to_string(),
+            description: "Docker container operations".to_string(),
+            file_path: skill_path.clone(),
+            base_dir: home_dir.join(".pekobot/skills/docker"),
+            tags: vec!["devops".to_string()],
+            author: Some("Pekora".to_string()),
+        };
+
+        let skills = vec![&skill];
+        let prompt = format_skills_for_prompt(&skills);
+
+        assert!(prompt.contains("<available_skills>"));
+        assert!(prompt.contains("</available_skills>"));
+        assert!(prompt.contains("docker: Docker container operations"));
+        // Should use ~ instead of full home path
+        assert!(
+            prompt.contains("~/.pekobot/skills/docker/SKILL.md"),
+            "Expected path with ~, got: {}",
+            prompt
+        );
+    }
+
+    #[test]
+    fn test_format_skills_empty() {
+        let skills: Vec<&Skill> = vec![];
+        let prompt = format_skills_for_prompt(&skills);
+        assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn test_build_skills_prompt() {
+        let skill = Skill {
+            name: "deploy".to_string(),
+            description: "Production deployment workflow".to_string(),
+            file_path: PathBuf::from("/tmp/skills/deploy/SKILL.md"),
+            base_dir: PathBuf::from("/tmp/skills/deploy"),
+            tags: vec![],
+            author: None,
+        };
+
+        let skills = vec![&skill];
+        let prompt = build_skills_prompt(&skills);
+
+        assert!(prompt.contains("## Skills (mandatory)"));
+        assert!(prompt.contains("<available_skills>"));
+        assert!(prompt.contains("deploy: Production deployment workflow"));
+    }
+
+    #[test]
+    fn test_build_skills_prompt_empty() {
+        let skills: Vec<&Skill> = vec![];
+        let prompt = build_skills_prompt(&skills);
+        assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn test_skills_registry_load() {
         let temp = TempDir::new().unwrap();
         let skill_dir = temp.path().join("test-skill");
         std::fs::create_dir(&skill_dir).unwrap();
 
-        let manifest = r#"
-[skill]
-name = "test-skill"
-description = "A test skill"
-version = "0.1.0"
+        let skill_md = r#"---
+name: test-skill
+description: A test skill for unit testing
+tags: [test, unit]
+author: Test Suite
+---
+
+# Test Skill
+
+This is a test skill used for unit testing.
+
+## Usage
+
+Run the tests with `cargo test`.
 "#;
-        std::fs::write(skill_dir.join("SKILL.toml"), manifest).unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), skill_md).unwrap();
 
         let mut registry = SkillsRegistry::new(temp.path());
         let count = registry.load_all().unwrap();
 
         assert_eq!(count, 1);
         assert!(registry.has("test-skill"));
-        assert!(registry.get("test-skill").is_some());
+
+        let skill = registry.get("test-skill").unwrap();
+        assert_eq!(skill.name, "test-skill");
+        assert_eq!(skill.description, "A test skill for unit testing");
+        assert_eq!(skill.tags, vec!["test", "unit"]);
+        assert_eq!(skill.author, Some("Test Suite".to_string()));
     }
 
     #[test]
-    fn test_find_by_tag() {
+    fn test_skills_registry_list_sorted() {
+        let temp = TempDir::new().unwrap();
+
+        for name in ["zebra", "alpha", "mike"] {
+            let skill_dir = temp.path().join(name);
+            std::fs::create_dir(&skill_dir).unwrap();
+            let skill_md = format!(
+                r#"---
+name: {}
+description: Test skill {}
+---
+"#,
+                name, name
+            );
+            std::fs::write(skill_dir.join("SKILL.md"), skill_md).unwrap();
+        }
+
+        let mut registry = SkillsRegistry::new(temp.path());
+        registry.load_all().unwrap();
+
+        let skills = registry.list();
+        let names: Vec<_> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "mike", "zebra"]);
+    }
+
+    #[test]
+    fn test_skills_registry_find_by_tag() {
         let temp = TempDir::new().unwrap();
 
         let skill1_dir = temp.path().join("skill1");
         std::fs::create_dir(&skill1_dir).unwrap();
         std::fs::write(
-            skill1_dir.join("SKILL.toml"),
-            r#"[skill]
-name = "skill1"
-description = "Test"
-tags = ["utility"]
+            skill1_dir.join("SKILL.md"),
+            r#"---
+name: skill1
+description: Test
+tags: [utility]
+---
 "#,
         )
         .unwrap();
@@ -284,11 +450,12 @@ tags = ["utility"]
         let skill2_dir = temp.path().join("skill2");
         std::fs::create_dir(&skill2_dir).unwrap();
         std::fs::write(
-            skill2_dir.join("SKILL.toml"),
-            r#"[skill]
-name = "skill2"
-description = "Test"
-tags = ["utility", "network"]
+            skill2_dir.join("SKILL.md"),
+            r#"---
+name: skill2
+description: Test
+tags: [utility, network]
+---
 "#,
         )
         .unwrap();
@@ -301,5 +468,56 @@ tags = ["utility", "network"]
 
         let network_skills = registry.find_by_tag("network");
         assert_eq!(network_skills.len(), 1);
+    }
+
+    #[test]
+    fn test_read_skill_content() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join("test-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+
+        let content = r#"---
+name: test-skill
+description: Test
+---
+# Full Content
+
+This is the complete skill documentation.
+"#;
+        std::fs::write(skill_dir.join("SKILL.md"), content).unwrap();
+
+        let mut registry = SkillsRegistry::new(temp.path());
+        registry.load_all().unwrap();
+
+        let skill = registry.get("test-skill").unwrap();
+        let full_content = read_skill_content(skill).unwrap();
+
+        assert!(full_content.contains("# Full Content"));
+        assert!(full_content.contains("This is the complete skill documentation."));
+    }
+
+    #[test]
+    fn test_skills_registry_ignores_toml() {
+        // TOML files should be ignored - only SKILL.md is supported
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join("legacy-skill");
+        std::fs::create_dir(&skill_dir).unwrap();
+
+        let skill_toml = r#"
+[skill]
+name = "legacy-skill"
+description = "A legacy TOML skill"
+version = "1.0.0"
+author = "Legacy Author"
+tags = ["legacy"]
+"#;
+        std::fs::write(skill_dir.join("SKILL.toml"), skill_toml).unwrap();
+
+        let mut registry = SkillsRegistry::new(temp.path());
+        let count = registry.load_all().unwrap();
+
+        // Should NOT load TOML skills
+        assert_eq!(count, 0);
+        assert!(!registry.has("legacy-skill"));
     }
 }

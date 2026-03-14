@@ -3,6 +3,7 @@
 //! Matches OpenClaw's section-based prompt assembly
 
 use crate::prompt::bootstrap::{default_workspace_dir, inject_bootstrap_files, BootstrapConfig};
+use crate::skills::{build_skills_prompt, Skill};
 use crate::tools::Tool;
 use chrono::Local;
 use std::path::PathBuf;
@@ -45,6 +46,7 @@ pub struct SystemPromptBuilder {
     sandbox_enabled: bool,
     channel: String,
     capabilities: Vec<String>,
+    skills: Vec<Skill>,
 }
 
 impl SystemPromptBuilder {
@@ -62,6 +64,7 @@ impl SystemPromptBuilder {
             sandbox_enabled: false,
             channel: "discord".to_string(),
             capabilities: vec![],
+            skills: vec![],
         }
     }
 
@@ -103,6 +106,11 @@ impl SystemPromptBuilder {
 
     pub fn with_model_aliases(mut self, aliases: Vec<String>) -> Self {
         self.model_aliases = aliases;
+        self
+    }
+
+    pub fn with_skills(mut self, skills: Vec<Skill>) -> Self {
+        self.skills = skills;
         self
     }
 
@@ -209,22 +217,12 @@ impl SystemPromptBuilder {
         lines.push(String::new());
 
         // 7. Skills (mandatory)
-        lines.push("## Skills (mandatory)".to_string());
-        lines.push(
-            "Before doing anything else: scan <available_skills> <description> entries."
-                .to_string(),
-        );
-        lines.push("- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.".to_string());
-        lines.push(
-            "- If multiple could apply: choose the most specific one, then read/follow it."
-                .to_string(),
-        );
-        lines.push("- If none clearly apply: do not read any SKILL.md.".to_string());
-        lines.push(
-            "Constraints: never read more than one skill up front; only read after selecting."
-                .to_string(),
-        );
-        lines.push(String::new());
+        let skill_refs: Vec<&Skill> = self.skills.iter().collect();
+        let skills_prompt = build_skills_prompt(&skill_refs);
+        if !skills_prompt.is_empty() {
+            lines.push(skills_prompt);
+            lines.push(String::new());
+        }
 
         // 8. Memory Recall (only if memory tools available and not minimal)
         if !is_minimal {
@@ -475,7 +473,6 @@ mod tests {
         assert!(prompt.contains("## Rules"));
         assert!(prompt.contains("## Output Format"));
         assert!(prompt.contains("## What You DON'T Do"));
-        assert!(prompt.contains("## Skills (mandatory)"));
         assert!(prompt.contains("## Memory Recall"));
         assert!(prompt.contains("## Safety"));
         assert!(prompt.contains("## Available Tools"));
@@ -485,6 +482,44 @@ mod tests {
 
         // Check for content
         assert!(prompt.contains("test-agent"));
+    }
+
+    #[test]
+    fn test_builder_with_skills() {
+        use crate::skills::Skill;
+        use std::path::PathBuf;
+
+        let skills = vec![
+            Skill {
+                name: "docker".to_string(),
+                description: "Docker operations".to_string(),
+                file_path: PathBuf::from("/tmp/skills/docker/SKILL.md"),
+                base_dir: PathBuf::from("/tmp/skills/docker"),
+                tags: vec![],
+                author: None,
+            },
+            Skill {
+                name: "deploy".to_string(),
+                description: "Deployment workflow".to_string(),
+                file_path: PathBuf::from("/tmp/skills/deploy/SKILL.md"),
+                base_dir: PathBuf::from("/tmp/skills/deploy"),
+                tags: vec![],
+                author: None,
+            },
+        ];
+
+        let builder = SystemPromptBuilder::new("test-agent")
+            .with_mode(PromptMode::Full)
+            .with_skills(skills);
+
+        let prompt = builder.build();
+
+        // Should include skills section when skills are provided
+        assert!(prompt.contains("## Skills (mandatory)"));
+        assert!(prompt.contains("<available_skills>"));
+        assert!(prompt.contains("docker: Docker operations"));
+        assert!(prompt.contains("deploy: Deployment workflow"));
+        assert!(prompt.contains("Before replying: scan <available_skills>"));
     }
 
     #[test]

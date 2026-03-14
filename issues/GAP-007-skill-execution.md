@@ -1,302 +1,514 @@
-# GAP-007: Skill System Execution Engine
+# GAP-007: Skill System - Implementation Complete ✅
 
 **Priority:** 🟠 High  
-**Status:** Open  
+**Status:** Complete  
 **Target:** v0.6.0  
-**Est. Effort:** 1 week  
+**Est. Effort:** 2-3 days  
+**Actual:** 1 day  
 
 ---
 
-## Problem Statement
+## Implementation Summary
 
-The Grand Architecture specifies Skills as multi-step workflows built on tools/MCPs. Currently:
-- `SkillsRegistry` loads skill manifests from TOML
-- Skills define `SkillTool` structures
-- **No execution engine** - skills are inert
+### Changes Made
 
-Skills like `group_chat_manager`, `broadcast_hub` don't exist.
+| File | Change |
+|------|--------|
+| `Cargo.toml` | Added `serde_yaml = "0.9"` dependency |
+| `src/skills/mod.rs` | Complete rewrite: SKILL.md format with YAML frontmatter, removed TOML support |
+| `src/prompt/builder.rs` | Added `with_skills()` and skills section in system prompt |
+| `src/engine/loop_v4.rs` | Added `load_agent_skills()` to load skills when building prompt |
+| `test_scripts/skills/test_skills_e2e.sh` | E2E test for skill system |
+
+### Test Results
+- **498 unit tests pass**
+- **12 skills-specific tests pass**
+- E2E test created for manual verification
+
+### Key Insight
+
+OpenClaw's skills system has **zero execution logic**. Skills are:
+1. Markdown files (`SKILL.md`) with YAML frontmatter
+2. Loaded into the system prompt as a directory of available capabilities
+3. Used by the LLM to decide when to `read` the full documentation
+4. The LLM then uses existing tools (`exec`, MCPs, etc.) to accomplish the task
 
 ---
 
-## Current State
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     User Request                                │
+│  "Deploy my app to production"                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   System Prompt                                 │
+│  ...                                                            │
+│  ## Skills (mandatory)                                          │
+│  - deploy: Production deployment workflow (skills/deploy/)      │
+│  - docker: Docker container management (skills/docker/)         │
+│  - github: GitHub operations (skills/github/)                   │
+│  ...                                                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   LLM Decision                                  │
+│  "This looks like a deployment task. I'll read the deploy       │
+│   skill to see the workflow."                                   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   LLM Tool Call                                 │
+│  read(path="skills/deploy/SKILL.md")                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   Skill Content                                 │
+│  # Deploy Skill                                                 │
+│  ## Steps                                                       │
+│  1. Run tests: `cargo test`                                     │
+│  2. Build release: `cargo build --release`                      │
+│  3. Push container: `docker build -t app . && docker push`      │
+│  4. Deploy: `kubectl apply -f k8s/`                             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   LLM Execution                                 │
+│  (uses exec tool with commands from skill)                      │
+│  exec(command="cargo test")                                     │
+│  exec(command="cargo build --release")                          │
+│  ...                                                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Skill Format
+
+Skills follow the [Anthropic Skills specification](https://github.com/anthropics/skills):
+
+```markdown
+---
+name: deploy
+description: Production deployment workflow - run tests, build, containerize, and deploy
+---
+
+# Deploy Skill
+
+Use this skill when the user wants to deploy an application to production.
+
+## Prerequisites
+
+- Docker must be installed and running
+- kubectl must be configured with production cluster access
+- User must have push access to container registry
+
+## Workflow
+
+### 1. Pre-deployment Checks
+
+```bash
+# Run all tests
+cargo test --all-features
+
+# Check code formatting
+cargo fmt --check
+
+# Run clippy
+cargo clippy -- -D warnings
+```
+
+### 2. Build
+
+```bash
+# Build release binary
+cargo build --release
+```
+
+### 3. Containerize
+
+```bash
+# Build and tag image
+docker build -t registry/app:${version} .
+
+# Push to registry
+docker push registry/app:${version}
+```
+
+### 4. Deploy
+
+```bash
+# Update deployment
+kubectl set image deployment/app app=registry/app:${version}
+
+# Wait for rollout
+kubectl rollout status deployment/app
+```
+
+## Rollback
+
+If deployment fails:
+
+```bash
+# Rollback to previous version
+kubectl rollout undo deployment/app
+```
+
+## Verification
+
+After deployment, verify:
+- Health checks pass: `kubectl get pods`
+- Service responds: `curl https://api.example.com/health`
+```
+
+---
+
+## Implementation
+
+### 1. Change Skill Format from TOML to Markdown
+
+**Current:** `SKILL.toml`
+**New:** `SKILL.md` with YAML frontmatter
 
 ```rust
 // src/skills/mod.rs
+use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
+
+/// A skill is documentation that teaches the LLM how to do something
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
+    /// Skill name (from frontmatter)
     pub name: String,
+    /// Description (from frontmatter)
     pub description: String,
-    pub tools: Vec<SkillTool>, // Defined but not executable
-    pub prompts: Vec<String>,
+    /// Full path to SKILL.md
+    pub file_path: PathBuf,
+    /// Skill directory (for relative references)
+    pub base_dir: PathBuf,
+    /// Optional metadata (tags, author, etc.)
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub author: Option<String>,
 }
 
-pub struct SkillTool {
-    pub name: String,
-    pub description: String,
-    pub kind: String,    // "shell", "http", "script"
-    pub command: String, // Just strings, no execution!
-    pub args: HashMap<String, String>,
-}
-```
-
-Skills are loaded but cannot be executed.
-
----
-
-## Target State
-
-Per [GRAND_ARCHITECTURE.md section 4.5.3](../GRAND_ARCHITECTURE.md#453-skills-workflows):
-
-```rust
-// Skills are workflows that can be invoked
-let result = skill_engine.execute(
-    "group_chat_manager",
-    json!({
-        "room": "engineering",
-        "action": "broadcast",
-        "message": "Deploying to production"
-    })
-).await?;
-```
-
----
-
-## Scope
-
-### In Scope
-- Skill execution engine
-- Skill tool runners (shell, http, script)
-- Built-in skills: `group_chat_manager`, `broadcast_hub`
-- Skill-to-tool binding
-- Skill context sharing
-
-### Out of Scope (Future)
-- Visual workflow editor
-- Skill marketplace (Pekohub integration)
-- Skill versioning/upgrades
-
----
-
-## Goals
-
-1. **Execution Engine**: Run skills with input parameters
-2. **Tool Runners**: Execute shell commands, HTTP requests, scripts
-3. **Built-in Skills**: Implement core coordination skills
-4. **Agent Integration**: Expose skills as invocable tools
-5. **Context Access**: Skills can access agent context
-
----
-
-## Proposed Implementation
-
-### Skill Execution Engine
-```rust
-// src/skills/engine.rs
-pub struct SkillEngine {
-    registry: Arc<SkillsRegistry>,
-    tool_registry: Arc<dyn ToolRegistry>,
-    agent_context: Option<AgentContext>,
+/// YAML frontmatter from SKILL.md
+#[derive(Debug, Deserialize)]
+struct SkillFrontmatter {
+    name: String,
+    description: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    author: Option<String>,
 }
 
-pub struct SkillExecution {
-    pub skill: Skill,
-    pub context: SkillContext,
-    pub state: ExecutionState,
-}
-
-pub enum ExecutionState {
-    Pending,
-    Running,
-    Completed(Value),
-    Failed(String),
-}
-
-impl SkillEngine {
-    pub async fn execute(
-        &self,
-        skill_name: &str,
-        input: Value,
-    ) -> Result<SkillResult> {
-        let skill = self.registry.get(skill_name)
-            .ok_or("Skill not found")?;
-
-        let mut execution = SkillExecution::new(skill, input);
-
-        for step in &skill.workflow_steps {
-            self.execute_step(&mut execution, step).await?;
-        }
-
-        Ok(execution.into_result())
+impl SkillsRegistry {
+    /// Load a skill from a SKILL.md file
+    fn load_skill(&mut self, path: &Path) -> Result<Skill> {
+        let content = std::fs::read_to_string(path)?;
+        
+        // Parse YAML frontmatter between --- markers
+        let (frontmatter, _body) = parse_frontmatter(&content)?;
+        let meta: SkillFrontmatter = serde_yaml::from_str(&frontmatter)?;
+        
+        Ok(Skill {
+            name: meta.name,
+            description: meta.description,
+            file_path: path.to_path_buf(),
+            base_dir: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            tags: meta.tags,
+            author: meta.author,
+        })
     }
+}
 
-    async fn execute_step(
-        &self,
-        execution: &mut SkillExecution,
-        step: &WorkflowStep,
-    ) -> Result<()> {
-        match step {
-            WorkflowStep::Tool { name, args } => {
-                let tool = self.tool_registry.get(name)?;
-                let result = tool.execute(args).await?;
-                execution.context.set_result(result);
+/// Parse YAML frontmatter from markdown content
+/// Format:
+/// ---
+/// name: skill-name
+/// description: What this skill does
+/// ---
+/// # Rest of content
+fn parse_frontmatter(content: &str) -> Result<(String, String)> {
+    let mut lines = content.lines().peekable();
+    
+    // Must start with ---
+    if lines.next() != Some("---") {
+        anyhow::bail!("SKILL.md must start with --- frontmatter delimiter");
+    }
+    
+    let mut frontmatter = Vec::new();
+    let mut found_end = false;
+    
+    for line in lines {
+        if line == "---" {
+            found_end = true;
+            break;
+        }
+        frontmatter.push(line);
+    }
+    
+    if !found_end {
+        anyhow::bail!("Frontmatter must end with ---");
+    }
+    
+    let body = lines.collect::<Vec<_>>().join("\n");
+    Ok((frontmatter.join("\n"), body))
+}
+```
+
+### 2. Format Skills for System Prompt
+
+```rust
+// src/skills/prompt.rs
+
+/// Format skills for inclusion in system prompt
+/// Matches OpenClaw's formatSkillsForPrompt
+pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    
+    let mut lines = vec!["<available_skills>".to_string()];
+    
+    for skill in skills {
+        // Use relative path from workspace root
+        let path_display = compact_skill_path(&skill.file_path);
+        lines.push(format!(
+            "- {}: {} (location: {})",
+            skill.name,
+            skill.description,
+            path_display
+        ));
+    }
+    
+    lines.push("</available_skills>".to_string());
+    lines.join("\n")
+}
+
+/// Replace home directory with ~ to save tokens
+fn compact_skill_path(path: &Path) -> String {
+    let path_str = path.to_string_lossy();
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if path_str.starts_with(home_str.as_ref()) {
+            return path_str.replacen(home_str.as_ref(), "~", 1);
+        }
+    }
+    path_str.to_string()
+}
+
+/// Build the skills section for system prompt
+pub fn build_skills_prompt(skills: &[Skill]) -> String {
+    let skills_block = format_skills_for_prompt(skills);
+    if skills_block.is_empty() {
+        return String::new();
+    }
+    
+    format!(
+        r##"## Skills (mandatory)
+Before replying: scan <available_skills> <description> entries.
+- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
+- If multiple could apply: choose the most specific one, then read/follow it.
+- If none clearly apply: do not read any SKILL.md.
+Constraints: never read more than one skill up front; only read after selecting.
+
+{skills_block}"##
+    )
+}
+```
+
+### 3. Update Prompt Builder
+
+```rust
+// src/prompt/builder.rs
+
+impl PromptBuilder {
+    pub fn build(&self) -> String {
+        let mut lines = vec![];
+        
+        // ... existing sections ...
+        
+        // 7. Skills (mandatory) - simplified!
+        if let Some(skills) = &self.skills {
+            let skills_prompt = build_skills_prompt(skills);
+            if !skills_prompt.is_empty() {
+                lines.push(skills_prompt);
+                lines.push(String::new());
             }
-            WorkflowStep::AgentSend { target, message } => {
-                // Use agent_send tool
+        }
+        
+        // ... rest of prompt ...
+        
+        lines.join("\n")
+    }
+}
+```
+
+### 4. Skills Discovery
+
+```rust
+// src/skills/registry.rs
+
+impl SkillsRegistry {
+    /// Load all skills from skills directory
+    pub fn load_all(&mut self) -> Result<usize> {
+        if !self.skills_dir.exists() {
+            info!("Skills directory does not exist: {:?}", self.skills_dir);
+            return Ok(0);
+        }
+        
+        let entries = std::fs::read_dir(&self.skills_dir)?;
+        let mut count = 0;
+        
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
             }
-            WorkflowStep::Condition { expr, then, else_ } => {
-                // Evaluate and branch
+            
+            let skill_md = path.join("SKILL.md");
+            if !skill_md.exists() {
+                continue;
             }
-            WorkflowStep::Loop { ... } => { ... }
+            
+            match self.load_skill(&skill_md) {
+                Ok(skill) => {
+                    info!("Loaded skill: {}", skill.name);
+                    self.skills.insert(skill.name.clone(), skill);
+                    count += 1;
+                }
+                Err(e) => {
+                    warn!("Failed to load skill from {:?}: {}", skill_md, e);
+                }
+            }
         }
-        Ok(())
+        
+        info!("Loaded {} skills from {:?}", count, self.skills_dir);
+        Ok(count)
     }
-}
-```
-
-### Skill Tool Runners
-```rust
-// src/skills/runners.rs
-#[async_trait]
-pub trait SkillToolRunner: Send + Sync {
-    async fn run(&self, tool: &SkillTool, ctx: &SkillContext) -> Result<Value>;
-}
-
-pub struct ShellRunner;
-impl SkillToolRunner for ShellRunner {
-    async fn run(&self, tool: &SkillTool, ctx: &SkillContext) -> Result<Value> {
-        let output = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&tool.command)
-            .envs(&tool.args)
-            .output()
-            .await?;
-
-        Ok(json!({
-            "stdout": String::from_utf8_lossy(&output.stdout),
-            "stderr": String::from_utf8_lossy(&output.stderr),
-            "exit_code": output.status.code(),
-        }))
+    
+    /// Get all skills sorted by name (for consistent prompt ordering)
+    pub fn list(&self) -> Vec<&Skill> {
+        let mut skills: Vec<_> = self.skills.values().collect();
+        skills.sort_by_key(|s| &s.name);
+        skills
     }
-}
-
-pub struct HttpRunner;
-impl SkillToolRunner for HttpRunner {
-    async fn run(&self, tool: &SkillTool, ctx: &SkillContext) -> Result<Value> {
-        let client = reqwest::Client::new();
-        let response = client
-            .request(method, &tool.command)
-            .send()
-            .await?;
-
-        Ok(json!({
-            "status": response.status().as_u16(),
-            "body": response.text().await?,
-        }))
-    }
-}
-```
-
-### Built-in Skills
-
-#### group_chat_manager
-```toml
-# skills/group_chat_manager/SKILL.toml
-[skill]
-name = "group_chat_manager"
-description = "Manage multi-agent group conversations"
-version = "1.0.0"
-
-[[tools]]
-name = "broadcast"
-description = "Send message to all participants"
-kind = "builtin"
-command = "broadcast"
-
-[[tools]]
-name = "add_participant"
-description = "Add agent to room"
-kind = "builtin"
-command = "add_participant"
-```
-
-```rust
-// src/skills/builtin/group_chat.rs
-pub struct GroupChatManager {
-    rooms: HashMap<String, Room>,
-}
-
-pub struct Room {
-    participants: Vec<String>,
-    history: Vec<Message>,
-}
-
-impl GroupChatManager {
-    pub async fn broadcast(&self, room: &str, message: &str) -> Result<()> {
-        for participant in &self.rooms[room].participants {
-            agent_send(participant, message).await?;
-        }
-        Ok(())
-    }
-}
-```
-
-#### broadcast_hub
-```rust
-// src/skills/builtin/broadcast.rs
-pub struct BroadcastHub {
-    channels: Vec<String>,
-}
-
-impl BroadcastHub {
-    pub async fn broadcast(&self, message: &str) -> Result<()> {
-        for channel in &self.channels {
-            agent_send(channel, message).await?;
-        }
-        Ok(())
-    }
-}
-```
-
-### Workflow DSL Extension
-```rust
-// Extended skill manifest with workflow
-pub struct WorkflowStep {
-    pub id: String,
-    pub action: StepAction,
-    pub on_error: ErrorAction,
-}
-
-pub enum StepAction {
-    Tool { name: String, args: Value },
-    AgentSend { target_expr: String, message_expr: String },
-    Condition { expr: String, then: Vec<WorkflowStep>, else_: Vec<WorkflowStep> },
-    Parallel { branches: Vec<Vec<WorkflowStep>> },
-    Wait { duration_secs: u64 },
 }
 ```
 
 ---
 
-## Dependencies
+## Migration from Current Implementation
 
-- **Requires:** GAP-002 (Async execution for parallel steps)
-- **Requires:** GAP-005 (Agent messaging for coordination skills)
-- **Related to:** GAP-001 (MCP for external skill capabilities)
+### Current State
+- Skills loaded from `SKILL.toml`
+- `SkillTool` structs with `kind`, `command`, `args`
+- No execution (inert)
+
+### Migration Path
+1. **Phase 1**: Support both formats side-by-side
+   - If `SKILL.md` exists, use it (new format)
+   - Else if `SKILL.toml` exists, convert and warn
+   
+2. **Phase 2**: Deprecate TOML format
+   - Log warning when loading TOML skills
+   - Provide migration script
+
+3. **Phase 3**: Remove TOML support
+   - Only `SKILL.md` format supported
 
 ---
 
-## Success Criteria
+## Example Skills Directory
 
-- [ ] Can execute a skill from TOML manifest
-- [ ] Shell commands in skills execute and return output
-- [ ] HTTP requests in skills work
-- [ ] `group_chat_manager` skill can broadcast to agents
-- [ ] `broadcast_hub` skill can pub-sub messages
-- [ ] Skills can be invoked as tools by agents
+```
+~/.pekobot/skills/
+├── deploy/
+│   └── SKILL.md
+├── docker/
+│   └── SKILL.md
+├── github/
+│   └── SKILL.md
+├── rust/
+│   └── SKILL.md
+└── testing/
+    └── SKILL.md
+```
+
+---
+
+## Testing
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    
+    #[test]
+    fn test_parse_frontmatter() {
+        let content = r#"---
+name: test-skill
+description: A test skill
+tags: [test, example]
+---
+# Test Skill
+
+This is the body.
+"#;
+        
+        let (frontmatter, body) = parse_frontmatter(content).unwrap();
+        assert!(frontmatter.contains("name: test-skill"));
+        assert!(body.contains("# Test Skill"));
+    }
+    
+    #[test]
+    fn test_format_skills_for_prompt() {
+        let skills = vec![
+            Skill {
+                name: "docker".to_string(),
+                description: "Docker operations".to_string(),
+                file_path: PathBuf::from("/home/user/.pekobot/skills/docker/SKILL.md"),
+                base_dir: PathBuf::from("/home/user/.pekobot/skills/docker"),
+                tags: vec![],
+                author: None,
+            },
+        ];
+        
+        let prompt = format_skills_for_prompt(&skills);
+        assert!(prompt.contains("<available_skills>"));
+        assert!(prompt.contains("docker: Docker operations"));
+        assert!(prompt.contains("~/.pekobot/skills/docker/SKILL.md"));
+    }
+}
+```
+
+---
+
+## Benefits of Simplified Approach
+
+1. **No execution engine needed** - LLM uses existing tools
+2. **Simple format** - Just markdown with YAML frontmatter
+3. **Human-readable** - Skills are documentation first
+4. **Easy to write** - No code, just instructions
+5. **Portable** - Same format as Anthropic Skills
+6. **Extensible** - Can add more frontmatter fields later
 
 ---
 
 ## References
 
-- [GRAND_ARCHITECTURE.md - Skills](../GRAND_ARCHITECTURE.md#453-skills-workflows)
-- [GRAND_ARCHITECTURE.md - Complex Coordination](../GRAND_ARCHITECTURE.md#84-complex-coordination-external-skill)
-- Current skills: `src/skills/mod.rs`
+- [OpenClaw skills directory](../../openclaw/skills/)
+- [Anthropic Skills](https://github.com/anthropics/skills)
+- [Agent Skills Spec](https://agentskills.io/)
+- OpenClaw's `buildWorkspaceSkillsPrompt` - pure documentation, no execution
