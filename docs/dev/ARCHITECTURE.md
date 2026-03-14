@@ -2,16 +2,25 @@
 
 This document describes the internal architecture of Pekobot, explaining how the different components work together.
 
+**Last Updated:** 2026-03-14  
+**Version:** v0.6.0 (post GAP-007)
+
+---
+
 ## Table of Contents
 
 1. [High-Level Architecture](#high-level-architecture)
 2. [Component Overview](#component-overview)
-3. [Data Flow](#data-flow)
-4. [Module Details](#module-details)
-5. [Agent Lifecycle](#agent-lifecycle)
-6. [A2A Protocol](#a2a-protocol)
-7. [Memory System](#memory-system)
-8. [Identity System](#identity-system)
+3. [Recent Architecture Changes](#recent-architecture-changes)
+4. [Data Flow](#data-flow)
+5. [Module Details](#module-details)
+6. [Agent Lifecycle](#agent-lifecycle)
+7. [A2A Protocol & Agent Messaging](#a2a-protocol--agent-messaging)
+8. [Session System](#session-system)
+9. [MCP Integration](#mcp-integration)
+10. [Skills System](#skills-system)
+11. [Memory System](#memory-system)
+12. [Identity System](#identity-system)
 
 ---
 
@@ -22,55 +31,191 @@ graph TB
     subgraph "User Interface"
         CLI[CLI Channel]
         HTTP[HTTP Channel]
+        DISCORD[Discord]
+        TELEGRAM[Telegram]
     end
 
     subgraph "Pekobot Runtime"
         AGENT[Agent]
-        ORCH[Orchestrator]
-        A2A[A2A Protocol]
-        REG[Registry]
+        POOL[Agent Pool]
+        ROUTER[Event Router]
+        SESSION[Session Manager]
+        SKILLS[Skills Registry]
     end
 
     subgraph "Core Services"
         ID[Identity System]
         MEM[SQLite Memory]
-        TOOLS[Tools]
+        TOOLS[Tool Registry]
+        MCP[MCP Manager]
     end
 
     subgraph "External"
-        LLM[LLM Provider
-        OpenAI/etc]
-        CONEKO[Coneko Network
-        Optional]
+        LLM[LLM Provider]
+        MCPS[MCP Servers]
     end
 
     CLI --> AGENT
     HTTP --> AGENT
-    AGENT --> ORCH
-    ORCH --> A2A
-    A2A --> REG
+    DISCORD --> AGENT
+    TELEGRAM --> AGENT
+    AGENT --> POOL
+    AGENT --> ROUTER
+    AGENT --> SESSION
+    AGENT --> SKILLS
     AGENT --> ID
     AGENT --> MEM
     AGENT --> TOOLS
     AGENT --> LLM
-    A2A --> CONEKO
+    TOOLS --> MCP
+    MCP --> MCPS
 ```
 
 ---
 
 ## Component Overview
 
-| Component | Purpose | Key Files |
-|-----------|---------|-----------|
-| **Agent** | Single agent runtime with lifecycle | `src/agent/mod.rs` |
-| **Orchestrator** | Multi-agent coordination | `src/agent/mod.rs` |
-| **A2A Protocol** | Agent-to-agent messaging | `src/a2a/` |
-| **Identity** | DID and key management | `src/identity/` |
-| **Memory** | SQLite persistence | `src/memory/` |
-| **Providers** | LLM integrations | `src/providers/` |
-| **Tools** | Agent capabilities | `src/tools/` |
-| **Channels** | User interfaces | `src/channels/` |
-| **Coneko** | Network adapter | `src/coneko/` |
+| Component | Purpose | Key Files | Status |
+|-----------|---------|-----------|--------|
+| **Agent** | Single agent runtime with lifecycle | `src/agent/` | ✅ Stable |
+| **Agent Pool** | Multi-agent management | `src/agent/pool.rs` | ✅ GAP-005 |
+| **Event Router** | Event routing and subscription | `src/orchestration/router.rs` | ✅ GAP-004 |
+| **Session Manager** | Session lifecycle and routing | `src/session/` | ✅ GAP-003 |
+| **MCP Manager** | Model Context Protocol | `src/mcp/` | ✅ GAP-001 |
+| **Skills Registry** | Documentation-driven skills | `src/skills/` | ✅ GAP-007 |
+| **Identity** | DID and key management | `src/identity/` | ✅ Stable |
+| **Memory** | SQLite persistence | `src/memory/` | ✅ Stable |
+| **Providers** | LLM integrations | `src/providers/` | ✅ 15 providers |
+| **Tools** | Agent capabilities | `src/tools/` | ✅ 18 tools |
+| **Channels** | User interfaces | `src/channels/` | ✅ 7 channels |
+| **Cron/Daemon** | Scheduled execution | `src/cron/`, `src/daemon/` | ✅ GAP-006 |
+
+---
+
+## Recent Architecture Changes
+
+### GAP-001: MCP Support (Completed)
+
+Pekobot now supports the Model Context Protocol (MCP) for external tool capabilities:
+
+```mermaid
+graph LR
+    subgraph "Pekobot"
+        MANAGER[MCP Manager]
+        CLIENT[MCP Client]
+        PROXY[Tool Proxy]
+    end
+    
+    subgraph "External MCP Servers"
+        WEB[mcp-web]
+        BROWSER[mcp-browser]
+        MEMORY[mcp-memory]
+    end
+    
+    MANAGER --> CLIENT
+    CLIENT --> WEB
+    CLIENT --> BROWSER
+    CLIENT --> MEMORY
+    PROXY --> CLIENT
+```
+
+**Key Features:**
+- Stdio and SSE transport
+- Automatic tool discovery
+- Health monitoring and reconnection
+- Full CLI management
+
+### GAP-003: Session Overlays (Completed)
+
+Advanced session management with overlay system:
+
+```mermaid
+graph TB
+    subgraph "Session Architecture"
+        BASE[Base Session]
+        SPAWN[Spawn Overlay]
+        FORK[Fork Overlay]
+        MERGE[Merge Overlay]
+    end
+    
+    BASE --> SPAWN
+    BASE --> FORK
+    SPAWN --> MERGE
+    FORK --> MERGE
+```
+
+**Key Features:**
+- Session forking for parallel exploration
+- Session spawning for sub-agents
+- Session merging for result consolidation
+- JSONL-based storage
+
+### GAP-004: Event Router (Completed)
+
+Central event routing system:
+
+```mermaid
+graph TB
+    subgraph "Event Flow"
+        PUBLISH[Publishers]
+        ROUTER[Event Router]
+        SUB[Subscribers]
+    end
+    
+    PUBLISH --> ROUTER
+    ROUTER --> SUB
+```
+
+### GAP-005: Agent-to-Agent Messaging (Completed)
+
+Direct agent invocation via `agent_invoke` tool:
+
+```mermaid
+sequenceDiagram
+    participant A1 as Agent 1
+    participant POOL as Agent Pool
+    participant A2 as Agent 2
+    
+    A1->>POOL: agent_invoke(target=A2)
+    POOL->>A2: Execute prompt
+    A2-->>POOL: Response
+    POOL-->>A1: Return result
+```
+
+**Modes:**
+- **Sync:** Block until response (with timeout)
+- **Async:** Return receipt, result via event
+
+### GAP-007: Skills System (Completed)
+
+Documentation-driven skills:
+
+```mermaid
+graph TB
+    subgraph "Skills Flow"
+        PROMPT[System Prompt]
+        SKILL[SKILL.md]
+        LLM[LLM Decision]
+        EXEC[Tool Execution]
+    end
+    
+    PROMPT --> LLM
+    LLM -->|read| SKILL
+    SKILL --> LLM
+    LLM --> EXEC
+```
+
+**Format:**
+```yaml
+---
+name: github
+description: GitHub CLI operations
+tags: [devops]
+---
+
+# GitHub Skill
+...
+```
 
 ---
 
@@ -83,171 +228,124 @@ sequenceDiagram
     participant User
     participant CLI as CLI Channel
     participant Agent
-    participant Memory as SQLite Memory
-    participant Provider as LLM Provider
+    participant Session
+    participant Skills
+    participant Memory
+    participant Provider
 
     User->>CLI: Type message
     CLI->>Agent: receive()
     Agent->>Agent: set_state(Busy)
     
+    Agent->>Session: get_or_create()
+    Agent->>Skills: load_for_prompt()
+    
     alt Memory Enabled
         Agent->>Memory: store(prompt)
     end
     
-    Agent->>Provider: complete(prompt)
+    Agent->>Provider: complete(prompt + skills)
     Provider-->>Agent: response
+    
+    alt Tool Calls
+        Agent->>Agent: execute_tools()
+        Agent->>Provider: continue
+    end
     
     alt Memory Enabled
         Agent->>Memory: store(response)
     end
     
+    Agent->>Session: persist()
     Agent->>Agent: set_state(Idle)
     Agent-->>CLI: response
-    CLI-->>User: Display response
+    CLI-->>User: Display
 ```
 
-### Multi-Agent Orchestration
+### Multi-Agent with Invoke
 
 ```mermaid
 sequenceDiagram
     participant User
-    participant Orchestrator
-    participant Registry
-    participant Agent1 as Agent 1
-    participant Agent2 as Agent 2
-    participant A2A as A2A Protocol
+    participant A1 as Agent 1 (Orchestrator)
+    participant Pool
+    participant A2 as Agent 2 (Worker)
+    participant A3 as Agent 3 (Worker)
 
-    User->>Orchestrator: Create orchestrator
-    Orchestrator->>Registry: Create registry
+    User->>A1: "Analyze and summarize"
     
-    User->>Orchestrator: add_agent(Agent1)
-    Orchestrator->>Registry: register(Agent1)
+    A1->>A1: Plan tasks
     
-    User->>Orchestrator: add_agent(Agent2)
-    Orchestrator->>Registry: register(Agent2)
+    par Parallel Execution
+        A1->>Pool: agent_invoke(A2, "Analyze data")
+        Pool->>A2: Execute
+        A2-->>Pool: Analysis result
+        Pool-->>A1: Result 1
+    and
+        A1->>Pool: agent_invoke(A3, "Find sources")
+        Pool->>A3: Execute
+        A3-->>Pool: Sources
+        Pool-->>A1: Result 2
+    end
     
-    User->>Orchestrator: start_all()
-    Orchestrator->>Registry: start_all()
-    Registry->>Agent1: start()
-    Registry->>Agent2: start()
-    
-    User->>Orchestrator: Send message
-    Orchestrator->>A2A: Route message
-    A2A->>Agent1: handle_message()
-    Agent1->>A2A: Response
-    A2A->>Orchestrator: Forward response
+    A1->>A1: Synthesize results
+    A1-->>User: Final summary
 ```
 
 ---
 
 ## Module Details
 
-### Agent Module
+### Agent Pool
 
-```mermaid
-classDiagram
-    class Agent {
-        +AgentConfig config
-        +Identity identity
-        -AgentState state
-        -Option~SqliteMemory~ memory
-        -Option~Box~Provider~~ provider
-        +new(config) Result~Self~
-        +start() Result
-        +stop() Result
-        +execute(prompt) Result~String~
-        +store_memory(content, metadata) Result~String~
-        +search_memory(query, limit) Result~Vec~MemoryEntry~~
-        +did() ~str
-        +name() ~str
-        +state() AgentState
-    }
+The agent pool manages multiple agent lifecycles:
 
-    class Orchestrator {
-        -Option~A2AProtocol~ protocol
-        -Option~SharedRegistry~ registry
-        +new() Self
-        +with_registry(registry) Self
-        +add_agent(agent) Result
-        +start_all() Result
-        +stop_all() Result
-        +list_agents() Vec~String, String~
-        +find_by_did(did) Option~ArcAgent~
-        +find_by_name(name) Option~ArcAgent~
-    }
+```rust
+pub struct AgentPool {
+    agents: HashMap<String, PoolAgentEntry>,
+    channels: HashMap<String, mpsc::Channel>,
+}
 
-    class AgentState {
-        <<enumeration>>
-        Initializing
-        Idle
-        Busy
-        Paused
-        Error
-        ShuttingDown
-    }
-
-    Agent --> AgentState : manages
-    Orchestrator --> Agent : coordinates
+impl AgentPool {
+    pub fn get(&self, did: &str) -> Option<AgentHandle>;
+    pub fn list(&self) -> Vec<PoolAgentInfo>;
+    pub async fn stop(&mut self, did: &str) -> Result<()>;
+}
 ```
 
-### Identity System
+### MCP Manager
 
-```mermaid
-graph LR
-    subgraph "Identity Module"
-        DID[DID Parser
-        did.rs]
-        KEYS[Key Manager
-        keys.rs]
-        STORAGE[Key Storage
-        storage.rs]
-        RESOLVER[DID Resolver
-        resolver.rs]
-    end
+Manages external MCP server lifecycle:
 
-    DID --> KEYS
-    KEYS --> STORAGE
-    RESOLVER --> DID
-    RESOLVER --> STORAGE
+```rust
+pub struct McpManager {
+    clients: HashMap<String, McpClient>,
+    config: McpConfig,
+}
+
+impl McpManager {
+    pub async fn start_server(&self, name: &str) -> Result<()>;
+    pub async fn list_tools(&self) -> Vec<Tool>;
+    pub async fn call_tool(&self, name: &str, params: Value) -> Result<Value>;
+}
 ```
 
-**DID Format:**
+### Skills Registry
 
-```
-did:pekobot:{scope}:{tenant}:{identifier}
+Loads and manages skills from SKILL.md files:
 
-Examples:
-- did:pekobot:local:default:abc123...
-- did:pekobot:tenant:acme:def456...
-- did:pekobot:global::ghi789...
-```
+```rust
+pub struct SkillsRegistry {
+    skills: HashMap<String, Skill>,
+    skills_dir: PathBuf,
+}
 
-### Memory System
-
-```mermaid
-graph TB
-    subgraph "Memory Module"
-        SQL[SQLite
-        sqlite.rs]
-        TYPES[Memory Types
-        types.rs]
-    end
-
-    subgraph "Database Schema"
-        TABLE[memories table]
-        TABLE -->|has columns| COLUMNS[id, namespace, content, metadata, timestamp]
-    end
-
-    subgraph "Features"
-        FTS[Full-Text Search]
-        NS[Namespace Isolation]
-        META[JSON Metadata]
-    end
-
-    SQL --> TABLE
-    SQL --> FTS
-    SQL --> NS
-    SQL --> META
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub file_path: PathBuf,
+    pub tags: Vec<String>,
+}
 ```
 
 ---
@@ -282,257 +380,222 @@ stateDiagram-v2
 
 | From | To | Trigger | Description |
 |------|-----|---------|-------------|
-| `Initializing` | `Idle` | `start()` | Agent ready for tasks |
-| `Idle` | `Busy` | `execute()` | Processing a prompt |
-| `Busy` | `Idle` | Task complete | Ready for next task |
-| `Idle` | `ShuttingDown` | `stop()` | Graceful shutdown |
-| `Busy` | `ShuttingDown` | `stop()` | Emergency shutdown |
+| `Initializing` | `Idle` | `start()` | Agent ready |
+| `Idle` | `Busy` | `execute()` | Processing |
+| `Busy` | `Idle` | Complete | Ready next |
+| `Busy` | `ShuttingDown` | `stop()` | Emergency stop |
 
 ---
 
-## A2A Protocol
-
-The Agent-to-Agent (A2A) protocol enables standardized communication between agents.
+## A2A Protocol & Agent Messaging
 
 ### Message Types
 
-```mermaid
-graph TB
-    subgraph "A2A Messages"
-        INTENT[Intent
-        Initiate action]
-        QUOTE[Quote
-        Pricing/estimate]
-        ACCEPT[Accept
-        Accept quote]
-        REJECT[Reject
-        Reject quote]
-        CONTRACT[Contract
-        Formal agreement]
-        TASK[Task
-        Execute work]
-        UPDATE[Update
-        Progress update]
-        COMPLETE[Complete
-        Task done]
-        CANCEL[Cancel
-        Cancel workflow]
-        ESCALATE[Escalate
-        Human help]
-        QUERY[Query
-        Information request]
-        RESPONSE[Response
-        Query answer]
-    end
+| Type | Purpose | Direction |
+|------|---------|-----------|
+| `Intent` | Initiate action | Any → Any |
+| `Task` | Execute work | Parent → Child |
+| `Update` | Progress update | Child → Parent |
+| `Complete` | Task done | Child → Parent |
+| `Query` | Information request | Any → Any |
+| `Response` | Query answer | Any → Any |
 
-    subgraph "Workflows"
-        NEG[Negotiation]
-        EXEC[Execution]
-        QUERY_FLOW[Query/Response]
-    end
+### Agent Invoke Tool
 
-    INTENT --> QUOTE --> ACCEPT --> CONTRACT --> TASK --> UPDATE --> COMPLETE
-    QUOTE --> REJECT
-    CONTRACT --> CANCEL
-    TASK --> ESCALATE
-    QUERY --> RESPONSE
+The `agent_invoke` tool provides direct agent-to-agent communication:
+
+```json
+{
+  "tool": "agent_invoke",
+  "params": {
+    "target": "agent-did-or-name",
+    "message": "Task description",
+    "mode": "sync",
+    "timeout_ms": 30000
+  }
+}
 ```
 
-### Registry Architecture
+---
 
-```mermaid
-graph TB
-    subgraph "Registry"
-        SHARED[SharedRegistry
-        Arc~Mutex~Registry~]
-        REG[Registry
-        HashMap~DID, ArcAgent~]
-        TX[Message Sender]
-        RX[Message Receiver]
-    end
+## Session System
 
-    subgraph "Agents"
-        A1[Agent 1]
-        A2[Agent 2]
-        A3[Agent 3]
-    end
+### Session Types
 
-    SHARED --> REG
-    REG --> A1
-    REG --> A2
-    REG --> A3
-    TX -->|messages| RX
+| Type | Use Case | Persistence |
+|------|----------|-------------|
+| `Base` | Normal conversation | Yes |
+| `Spawn` | Sub-agent execution | Configurable |
+| `Fork` | Parallel exploration | No |
+| `Merge` | Result consolidation | Yes |
+
+### Session Key Format
+
+```
+{agent_did}:{peer_type}:{peer_id}:{scope}:{date}
+
+Examples:
+- did:pekobot:...:main:dm:owner:2026-03-14
+- did:pekobot:...:spawn:task-123:2026-03-14
+- did:pekobot:...:fork:exploration-1:2026-03-14
+```
+
+---
+
+## MCP Integration
+
+### Supported Transports
+
+| Transport | Use Case | Status |
+|-----------|----------|--------|
+| Stdio | Local subprocess | ✅ |
+| SSE | HTTP+Server-Sent Events | ✅ |
+| In-Memory | Testing | ✅ |
+
+### MCP CLI Commands
+
+```bash
+pekobot mcp list          # List configured servers
+pekobot mcp add <name>    # Add MCP server
+pekobot mcp start <name>  # Start server
+pekobot mcp stop <name>   # Stop server
+pekobot mcp test <name>   # Test connection
+```
+
+---
+
+## Skills System
+
+### Skill Discovery
+
+Skills are loaded from `~/.pekobot/skills/`:
+
+```
+~/.pekobot/skills/
+├── github/SKILL.md
+├── docker/SKILL.md
+└── deploy/SKILL.md
+```
+
+### Skill Format
+
+```markdown
+---
+name: github
+description: GitHub CLI operations
+tags: [devops, git]
+---
+
+# GitHub Skill
+
+Use this skill when working with GitHub.
+
+## Common Commands
+
+```bash
+gh pr list
+gh issue create --title "Bug" --body "Description"
+```
+```
+
+### System Prompt Integration
+
+Skills appear in system prompt as:
+
+```
+## Skills (mandatory)
+Before replying: scan <available_skills> <description> entries.
+
+<available_skills>
+- github: GitHub CLI operations (location: ~/.pekobot/skills/github/SKILL.md)
+- docker: Docker container management (location: ~/.pekobot/skills/docker/SKILL.md)
+</available_skills>
 ```
 
 ---
 
 ## Memory System
 
-### Database Schema
-
-```mermaid
-erDiagram
-    MEMORY {
-        string id PK
-        string namespace
-        text content
-        text metadata JSON
-        datetime timestamp
-    }
-```
-
-### Memory Operations
-
-```mermaid
-sequenceDiagram
-    participant Agent
-    participant SqliteMemory
-    participant SQLite
-
-    Note over Agent,SQLite: Store Operation
-    Agent->>SqliteMemory: store(content, metadata)
-    SqliteMemory->>SQLite: INSERT INTO memories
-    SQLite-->>SqliteMemory: row_id
-    SqliteMemory-->>Agent: id
-
-    Note over Agent,SQLite: Search Operation
-    Agent->>SqliteMemory: search(query, limit)
-    SqliteMemory->>SQLite: SELECT with MATCH
-    SQLite-->>SqliteMemory: results
-    SqliteMemory-->>Agent: Vec~MemoryEntry~
-```
-
----
-
-## Coneko Integration
+### Architecture
 
 ```mermaid
 graph TB
-    subgraph "Pekobot"
-        ADAPTER[ConekoAdapter]
-        CLIENT[ConekoClient]
-        UNIFIED[UnifiedRegistry
-        Local + Coneko]
+    subgraph "Memory Module"
+        SQL[SQLite
+        sqlite.rs]
+        HYBRID[Hybrid Memory
+        hybrid.rs]
     end
-
-    subgraph "Coneko Network"
-        SERVER[Coneko Server]
-        DISCO[Discovery Service]
-        MSG[Message Router]
+    
+    subgraph "Storage"
+        TABLE[memories table]
+        INDEX[vector index]
     end
-
-    subgraph "Remote Agents"
-        RA1[Remote Agent 1]
-        RA2[Remote Agent 2]
-    end
-
-    ADAPTER --> CLIENT
-    CLIENT -->|HTTP| SERVER
-    UNIFIED --> ADAPTER
-    SERVER --> DISCO
-    SERVER --> MSG
-    MSG -->|WebSocket/HTTP| RA1
-    MSG -->|WebSocket/HTTP| RA2
+    
+    SQL --> TABLE
+    HYBRID --> SQL
+    HYBRID --> INDEX
 ```
+
+### Memory Scopes
+
+| Scope | Visibility | Use Case |
+|-------|------------|----------|
+| `Agent` | Single agent | Agent-specific knowledge |
+| `Tenant` | Tenant-wide | Shared within organization |
+| `Local` | Instance | Local-only data |
+| `Network` | Coneko network | Cross-network shared |
+| `System` | Global | System-wide defaults |
 
 ---
 
-## Project Structure
+## Identity System
+
+### DID Format
 
 ```
-pekobot/
-├── src/
-│   ├── main.rs           # CLI entry point
-│   ├── lib.rs            # Library exports
-│   ├── agent/            # Agent runtime & orchestrator
-│   │   └── mod.rs
-│   ├── a2a/              # A2A protocol
-│   │   ├── mod.rs
-│   │   ├── message.rs    # Message types
-│   │   ├── protocol.rs   # Protocol handler
-│   │   ├── registry.rs   # Agent registry
-│   │   └── flows.rs      # Workflow definitions
-│   ├── channels/         # User interfaces
-│   │   ├── mod.rs
-│   │   ├── cli.rs        # Terminal interface
-│   │   └── http.rs       # HTTP webhook
-│   ├── coneko/           # Coneko network
-│   │   ├── mod.rs
-│   │   ├── client.rs     # HTTP client
-│   │   └── registry.rs   # Unified registry
-│   ├── config/           # Configuration
-│   │   └── mod.rs
-│   ├── identity/         # DID & keys
-│   │   ├── mod.rs
-│   │   ├── did.rs        # DID parsing
-│   │   ├── keys.rs       # Key management
-│   │   ├── storage.rs    # Key storage
-│   │   └── resolver.rs   # DID resolution
-│   ├── memory/           # SQLite persistence
-│   │   ├── mod.rs
-│   │   ├── sqlite.rs     # Implementation
-│   │   └── types.rs      # Memory types
-│   ├── providers/        # LLM integrations
-│   │   ├── mod.rs
-│   │   ├── traits.rs     # Provider trait
-│   │   └── openai.rs     # OpenAI provider
-│   ├── tools/            # Agent tools
-│   │   ├── mod.rs
-│   │   ├── traits.rs     # Tool trait
-│   │   ├── http.rs       # HTTP tool
-│   │   └── memory_tool.rs # Memory tool
-│   └── types/            # Core types
-│       ├── mod.rs
-│       ├── agent.rs      # Agent config/state
-│       ├── config.rs     # General config
-│       ├── memory.rs     # Memory types
-│       ├── provider.rs   # Provider types
-│       └── task.rs       # Task types
-├── examples/             # Example code
-├── tests/                # Integration tests
-└── docs/                 # Documentation
+did:pekobot:{scope}:{tenant}:{identifier}
+
+Examples:
+- did:pekobot:local:default:abc123...
+- did:pekobot:tenant:acme:def456...
+- did:pekobot:global::ghi789...
 ```
 
----
+### Key Management
 
-## Configuration Flow
-
-```mermaid
-graph LR
-    CLI[CLI Args]
-    ENV[Environment]
-    FILE[Config File]
-    DEFAULT[Defaults]
-    CONFIG[AgentConfig]
-
-    CLI -->|highest priority| CONFIG
-    ENV --> CONFIG
-    FILE --> CONFIG
-    DEFAULT -->|lowest priority| CONFIG
-```
-
----
-
-## Security Considerations
-
-### Identity
-
-- ed25519 keys for cryptographic identity
+- ed25519 key pairs
+- SQLite-backed storage
+- Password-protected (optional)
 - DID-based addressing
-- Keys stored in platform-specific secure storage
-
-### Network
-
-- HTTPS required for production
-- Authentication tokens for Coneko
-- Request timeouts configured
-
-### Memory
-
-- Namespace isolation per agent DID
-- SQLite with bundled library
-- No sensitive data in logs
 
 ---
 
-*For implementation details, see the source code and [API Documentation](API.md)*
+## Development Guidelines
+
+### Adding New Features
+
+1. Check existing GAPs in `issues/`
+2. Follow the architecture patterns above
+3. Maintain test coverage (aim for >80%)
+4. Update documentation
+
+### Code Quality
+
+```bash
+# Before committing
+cargo fmt
+cargo clippy --lib
+cargo test --lib
+```
+
+See [REFACTOR-002](../issues/REFACTOR-002-code-quality-plan.md) for current code quality initiatives.
+
+---
+
+## References
+
+- [Grand Architecture](../../GRAND_ARCHITECTURE.md)
+- [GAP Registry](../../issues/index.md)
+- [MCP Documentation](../MCP.md)
+- [OpenClaw Comparison](./OPENCLAW_COMPARISON.md)

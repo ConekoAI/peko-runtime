@@ -14,25 +14,41 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 
 ## Features
 
+### Core Architecture
 - ✅ **DID Identity System** — ed25519-based decentralized identifiers
 - ✅ **A2A Protocol** — Full Agent-to-Agent messaging (12 message types)
 - ✅ **Multi-Agent Orchestration** — Local registry and message routing
-- ✅ **SQLite Memory** — Persistent memory with semantic search
+- ✅ **Session Overlays** — Fork, spawn, and merge sessions for complex workflows
+- ✅ **Event Router** — Central event routing and subscription system
+- ✅ **Agent-to-Agent Messaging** — Direct agent invocation with sync/async modes
+
+### LLM & Providers
 - ✅ **15 LLM Providers** — OpenAI, Anthropic, Kimi, OpenRouter, and more
-- ✅ **7 Communication Channels** — CLI, HTTP, Telegram, Discord, Slack, Matrix, WhatsApp
-- ✅ **Calendar Integration** — Google Calendar and Outlook support
-- ✅ **Document Processing** — PDF text extraction, OCR, invoice parsing
-- ✅ **Social Media** — Twitter/X and LinkedIn posting and scheduling
-- ✅ **Inventory Management** — Shopify and WooCommerce monitoring with alerts
-- ✅ **Expense Tracking** — Receipt OCR, categorization, and accounting exports
-- ✅ **Email Assistant** — Gmail and Outlook integration with smart replies
-- ✅ **Research Agent** — Web search with source assessment and citations
-- ✅ **HTTP Tools** — Built-in web request capabilities
-- ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
-- ✅ **Cron/Daemon** — Scheduled task execution with daemon mode
-- ✅ **Coneko Adapter** — Optional network integration
-- ✅ **Portable Agents** — Export/import agents as `.agent` packages
 - ✅ **Streaming Output** — Real-time progressive output with tool visibility
+
+### Communication
+- ✅ **7 Communication Channels** — CLI, HTTP, Telegram, Discord, Slack, Matrix, WhatsApp
+
+### Tools & Capabilities
+- ✅ **MCP Support** — Model Context Protocol for external tool integration
+- ✅ **Skills System** — Documentation-driven agent capabilities
+- ✅ **18 Built-in Tools** — Calendar, email, social media, documents, inventory, expenses
+- ✅ **HTTP Tools** — Built-in web request capabilities
+- ✅ **Research Agent** — Web search with source assessment and citations
+
+### Memory & Persistence
+- ✅ **SQLite Memory** — Persistent memory with semantic search
+- ✅ **Hybrid Memory** — SQLite + vector search for better retrieval
+
+### Scheduling & Execution
+- ✅ **Cron/Daemon** — Scheduled task execution with daemon mode
+- ✅ **Event Triggers** — React to idle state and system events
+- ✅ **Session-Based Scheduling** — Schedule relative to session activity
+
+### Security & Portability
+- ✅ **Security Sandbox** — Filesystem restrictions, command allowlisting
+- ✅ **Portable Agents** — Export/import agents as `.agent` packages
+- ✅ **Coneko Adapter** — Optional network integration
 
 ## Tool Architecture
 
@@ -87,6 +103,57 @@ cargo build --release
 | `inventory` | Shopify/WooCommerce | ~90KB |
 | `research` | Web search | ~110KB |
 | `social_media` | Twitter/X, LinkedIn | ~150KB |
+
+## MCP Support
+
+Pekobot supports the Model Context Protocol (MCP) for integrating external tool servers:
+
+```bash
+# Add an MCP server
+pekobot mcp add filesystem --command "npx -y @modelcontextprotocol/server-filesystem /tmp"
+
+# Start the server
+pekobot mcp start filesystem
+
+# List available MCP tools
+pekobot mcp tools
+```
+
+MCP servers provide capabilities like:
+- File system access
+- Web browser automation
+- Database queries
+- Custom business logic
+
+## Skills System
+
+Skills are documentation-driven capabilities that teach agents how to perform specific tasks:
+
+```bash
+# Create skills directory
+mkdir -p ~/.pekobot/skills/github
+
+# Add a skill
+cat > ~/.pekobot/skills/github/SKILL.md << 'EOF'
+---
+name: github
+description: GitHub CLI operations - manage repos, issues, PRs
+---
+
+# GitHub Skill
+
+Use this skill when working with GitHub repositories.
+
+## Common Commands
+
+```bash
+gh pr list --repo owner/repo
+gh issue create --title "Bug" --body "Description"
+```
+EOF
+```
+
+Agents automatically detect skills and use them when appropriate.
 
 ---
 
