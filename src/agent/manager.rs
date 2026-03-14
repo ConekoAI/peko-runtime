@@ -155,7 +155,7 @@ impl AgentManager {
 
         // Start the agent
         self.lifecycle.start(&did).await?;
-        handle.start().await?;
+        handle.start()?;
 
         // Emit event
         let _ = self
@@ -197,19 +197,19 @@ impl AgentManager {
     /// Get an agent handle by DID
     pub async fn get(&self, did: &str) -> Option<AgentHandle> {
         let pool = self.pool.read().await;
-        pool.get(did).await
+        pool.get(did)
     }
 
     /// Get an agent handle by name
     pub async fn get_by_name(&self, name: &str) -> Option<AgentHandle> {
         let pool = self.pool.read().await;
-        pool.get_by_name(name).await
+        pool.get_by_name(name)
     }
 
     /// List all agents
     pub async fn list_agents(&self) -> Vec<AgentInfo> {
         let pool = self.pool.read().await;
-        let pool_agents = pool.list().await;
+        let pool_agents = pool.list();
 
         pool_agents
             .into_iter()
@@ -280,7 +280,7 @@ impl AgentManager {
     /// Send message to specific agent
     pub async fn send(&self, target_did: &str, message: &str) -> Result<()> {
         if let Some(handle) = self.get(target_did).await {
-            handle.send(message).await
+            handle.send(message)
         } else {
             Err(anyhow::anyhow!("Agent not found: {target_did}"))
         }
@@ -291,7 +291,7 @@ impl AgentManager {
         info!("Shutting down agent manager");
 
         let pool = self.pool.read().await;
-        let agents = pool.list().await;
+        let agents = pool.list();
         drop(pool);
 
         for agent in agents {
@@ -504,10 +504,10 @@ impl ExecuteHandler for PoolExecuteHandler {
         // Look up target agent in pool - scope the lock to drop before await
         let handle = {
             let pool = self.pool.read().await;
-            if let Some(h) = pool.get(target).await {
+            if let Some(h) = pool.get(target) {
                 Some(h)
             } else {
-                pool.get_by_name(target).await
+                pool.get_by_name(target)
             }
         };
 

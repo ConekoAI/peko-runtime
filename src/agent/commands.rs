@@ -27,7 +27,7 @@ pub async fn command_handler_loop(
         match cmd {
             ManagerCommand::ListAgents { respond_to } => {
                 // Need to await while holding the lock due to lifetime issues
-                let basic_list = pool.read().await.list().await;
+                let basic_list = pool.read().await.list();
 
                 // Convert PoolAgentInfo to AgentInfo
                 let agents: Vec<AgentInfo> = basic_list
@@ -127,7 +127,6 @@ async fn spawn_session_for_agent(
     // Find agent by DID
     let agent = pool_guard
         .get_agent(agent_did)
-        .await
         .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_did}"))?;
 
     // Spawn the session using the agent's session router

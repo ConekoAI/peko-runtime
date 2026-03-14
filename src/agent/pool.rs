@@ -90,7 +90,7 @@ impl AgentHandle {
     }
 
     /// Start the agent
-    pub async fn start(&self) -> Result<()> {
+    pub fn start(&self) -> Result<()> {
         // In a real implementation, this would spawn the agent task
         info!("Starting agent: {}", self.did);
         Ok(())
@@ -122,7 +122,7 @@ impl AgentHandle {
     }
 
     /// Send a message
-    pub async fn send(&self, _message: &str) -> Result<()> {
+    pub fn send(&self, _message: &str) -> Result<()> {
         // For now, just log
         debug!("Message to {}: {}", self.did, _message);
         Ok(())
@@ -249,7 +249,7 @@ impl AgentPool {
     }
 
     /// Get agent by DID
-    pub async fn get(&self, did: &str) -> Option<AgentHandle> {
+    pub fn get(&self, did: &str) -> Option<AgentHandle> {
         self.agents.get(did).map(|entry| AgentHandle {
             did: did.to_string(),
             name: entry.agent.name().to_string(),
@@ -258,7 +258,7 @@ impl AgentPool {
     }
 
     /// Get agent by name
-    pub async fn get_by_name(&self, name: &str) -> Option<AgentHandle> {
+    pub fn get_by_name(&self, name: &str) -> Option<AgentHandle> {
         for (did, entry) in &self.agents {
             if entry.agent.name() == name {
                 return Some(AgentHandle {
@@ -272,7 +272,7 @@ impl AgentPool {
     }
 
     /// Get the raw agent Arc by DID
-    pub async fn get_agent(&self, did: &str) -> Option<Arc<Agent>> {
+    pub fn get_agent(&self, did: &str) -> Option<Arc<Agent>> {
         self.agents.get(did).map(|entry| entry.agent.clone())
     }
 
@@ -293,7 +293,7 @@ impl AgentPool {
     }
 
     /// List all agents
-    pub async fn list(&self) -> Vec<PoolAgentInfo> {
+    pub fn list(&self) -> Vec<PoolAgentInfo> {
         self.agents
             .iter()
             .map(|(did, entry)| {
@@ -308,7 +308,7 @@ impl AgentPool {
     }
 
     /// Get agent states
-    pub async fn get_states(&self) -> HashMap<String, String> {
+    pub fn get_states(&self) -> HashMap<String, String> {
         self.agents
             .keys()
             .map(|did| (did.clone(), "idle".to_string()))

@@ -42,20 +42,20 @@ impl Tool for CronTool {
         let action = params["action"].as_str().unwrap_or("list");
 
         match action {
-            "add" => self.handle_add(params).await,
-            "list" => self.handle_list(params).await,
-            "list_idle" => self.handle_list_idle(params).await,
-            "list_event" => self.handle_list_event(params).await,
-            "remove" => self.handle_remove(params).await,
-            "run" => self.handle_run(params).await,
-            "history" => self.handle_history(params).await,
+            "add" => self.handle_add(params),
+            "list" => self.handle_list(params),
+            "list_idle" => self.handle_list_idle(params),
+            "list_event" => self.handle_list_event(params),
+            "remove" => self.handle_remove(params),
+            "run" => self.handle_run(params),
+            "history" => self.handle_history(params),
             _ => Err(anyhow::anyhow!("Unknown action: {action}")),
         }
     }
 }
 
 impl CronTool {
-    async fn handle_add(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+    fn handle_add(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let name = params["name"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("name is required"))?;
@@ -118,7 +118,7 @@ impl CronTool {
         }))
     }
 
-    async fn handle_list(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+    fn handle_list(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
         let jobs = self.scheduler.list_jobs(false)?;
 
         let job_list: Vec<serde_json::Value> = jobs
@@ -146,7 +146,7 @@ impl CronTool {
         }))
     }
 
-    async fn handle_list_idle(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+    fn handle_list_idle(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
         let jobs = self.scheduler.idle_jobs(false)?;
 
         let job_list: Vec<serde_json::Value> = jobs
@@ -170,7 +170,7 @@ impl CronTool {
         }))
     }
 
-    async fn handle_list_event(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
+    fn handle_list_event(&self, _params: serde_json::Value) -> Result<serde_json::Value> {
         let jobs = self.scheduler.event_jobs(false)?;
 
         let job_list: Vec<serde_json::Value> = jobs
@@ -194,7 +194,7 @@ impl CronTool {
         }))
     }
 
-    async fn handle_remove(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+    fn handle_remove(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let job_id = params["job_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("job_id is required"))?;
@@ -211,7 +211,7 @@ impl CronTool {
         }
     }
 
-    async fn handle_run(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+    fn handle_run(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let job_id = params["job_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("job_id is required"))?;
@@ -235,7 +235,7 @@ impl CronTool {
         }))
     }
 
-    async fn handle_history(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+    fn handle_history(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let job_id = params["job_id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("job_id is required"))?;
