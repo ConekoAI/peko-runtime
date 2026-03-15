@@ -1,3 +1,12 @@
+# DEPRECATED - This document is outdated
+
+> **Status:** DEPRECATED as of 2026-03-15  
+> **Superseded by:** [UNIFIED_ARCHITECTURE_SPEC.md](./UNIFIED_ARCHITECTURE_SPEC.md) (v3.1)
+
+This document is kept for historical reference. For current architecture guidance, please refer to the Unified Architecture Specification.
+
+---
+
 # Pekobot Grand Architecture v2.0
 
 > A **containerized multi-agent runtime** with portable agent packages, team composition, and shared service fabric. Zero security guarantees from core—audit trail only.

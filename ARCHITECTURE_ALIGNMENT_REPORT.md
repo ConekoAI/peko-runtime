@@ -1,3 +1,12 @@
+# DEPRECATED - This document is outdated
+
+> **Status:** DEPRECATED as of 2026-03-15  
+> **Superseded by:** [UNIFIED_ARCHITECTURE_SPEC.md](./UNIFIED_ARCHITECTURE_SPEC.md) (v3.1)
+
+This document is kept for historical reference. For current architecture guidance, please refer to the Unified Architecture Specification.
+
+---
+
 # Session Registry Implementation - Architecture Alignment Report
 
 **Date:** 2026-03-12  
