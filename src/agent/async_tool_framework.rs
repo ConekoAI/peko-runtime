@@ -165,8 +165,10 @@ pub enum AsyncResultDeliveryMode {
 /// Configuration for async tool execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsyncToolConfig {
-    /// How to deliver results to the parent agent
+    /// How to deliver results to the parent agent (queue mode)
     pub delivery_mode: AsyncResultDeliveryMode,
+    /// Which delivery mechanism to use (optional, defaults to executor default)
+    pub delivery_target: Option<DeliveryTarget>,
     /// Maximum time to wait for task completion
     pub timeout_secs: u64,
     /// Whether to delete task record after delivery
@@ -179,6 +181,7 @@ impl Default for AsyncToolConfig {
     fn default() -> Self {
         Self {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
+            delivery_target: None,
             timeout_secs: 300,
             cleanup_after_delivery: true,
             label: None,
@@ -725,6 +728,245 @@ pub trait AsyncTool: Send + Sync {
 
     /// Format the result for delivery to parent agent
     fn format_result(&self, entry: &AsyncTaskEntry) -> String;
+}
+
+/// Unified executor for all async tool operations
+/// 
+/// This provides a single entry point for executing async tasks with:
+/// - Task registration and tracking
+/// - Pluggable delivery mechanisms
+/// - Automatic status updates
+/// - Result formatting and caching
+#[derive(Clone)]
+pub struct UnifiedAsyncExecutor {
+    /// Task registry for tracking all async operations
+    registry: SharedAsyncTaskRegistry,
+    /// Queue manager for queue-based delivery
+    queue_manager: SharedAsyncResultQueueManager,
+    /// Registered delivery mechanisms by target type
+    deliveries: Arc<RwLock<HashMap<DeliveryTarget, Box<dyn ResultDelivery>>>>,
+    /// Default delivery target
+    default_delivery: DeliveryTarget,
+}
+
+impl UnifiedAsyncExecutor {
+    /// Create a new unified async executor
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
+            queue_manager: Arc::new(RwLock::new(AsyncResultQueueManager::new())),
+            deliveries: Arc::new(RwLock::new(HashMap::new())),
+            default_delivery: DeliveryTarget::AsyncQueue,
+        }
+    }
+
+    /// Create with existing registries (for sharing with other components)
+    #[must_use]
+    pub fn with_registries(
+        registry: SharedAsyncTaskRegistry,
+        queue_manager: SharedAsyncResultQueueManager,
+    ) -> Self {
+        Self {
+            registry,
+            queue_manager,
+            deliveries: Arc::new(RwLock::new(HashMap::new())),
+            default_delivery: DeliveryTarget::AsyncQueue,
+        }
+    }
+
+    /// Register a delivery mechanism for a target type
+    pub async fn register_delivery(
+        &self,
+        target: DeliveryTarget,
+        delivery: Box<dyn ResultDelivery>,
+    ) {
+        let mut deliveries = self.deliveries.write().await;
+        deliveries.insert(target, delivery);
+    }
+
+    /// Set the default delivery target
+    pub fn with_default_delivery(mut self, target: DeliveryTarget) -> Self {
+        self.default_delivery = target;
+        self
+    }
+
+    /// Get a reference to the task registry
+    #[must_use]
+    pub fn registry(&self) -> &SharedAsyncTaskRegistry {
+        &self.registry
+    }
+
+    /// Get a reference to the queue manager
+    #[must_use]
+    pub fn queue_manager(&self) -> &SharedAsyncResultQueueManager {
+        &self.queue_manager
+    }
+
+    /// Execute an async task with the unified executor
+    /// 
+    /// # Arguments
+    /// * `task_id` - Unique identifier for this task
+    /// * `tool_name` - Name of the tool executing the task
+    /// * `params` - Parameters for the task
+    /// * `parent_session_key` - Session key for result routing
+    /// * `config` - Async tool configuration
+    /// * `execution_fn` - The actual async work to execute
+    /// 
+    /// # Returns
+    /// Receipt with task_id and initial status
+    pub async fn execute<F, Fut>(
+        &self,
+        task_id: AsyncTaskId,
+        tool_name: impl Into<String>,
+        params: Value,
+        parent_session_key: impl Into<String>,
+        config: AsyncToolConfig,
+        execution_fn: F,
+    ) -> Result<AsyncTaskReceipt>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<AsyncTaskResult>> + Send + 'static,
+    {
+        let tool_name = tool_name.into();
+        let parent_session_key = parent_session_key.into();
+
+        // Create task entry
+        let entry = AsyncTaskEntry::new(
+            task_id.clone(),
+            tool_name.clone(),
+            params,
+            parent_session_key.clone(),
+            config.clone(),
+        );
+
+        // Register task
+        {
+            let mut registry = self.registry.write().await;
+            registry.register(entry);
+        }
+
+        // Determine delivery target and mechanism
+        let delivery_target = config.delivery_target.unwrap_or(self.default_delivery);
+        let delivery = {
+            let deliveries = self.deliveries.read().await;
+            deliveries.get(&delivery_target).cloned()
+        };
+
+        // Fall back to queue delivery if no specific mechanism registered
+        let delivery: Box<dyn ResultDelivery> = match delivery {
+            Some(d) => d,
+            None => Box::new(QueueDelivery::new(self.queue_manager.clone())),
+        };
+
+        // Clone what we need for the spawned task
+        let registry_clone = self.registry.clone();
+        let task_id_clone = task_id.clone();
+
+        // Spawn the background execution
+        tokio::spawn(async move {
+            // Update status to running
+            {
+                let mut registry = registry_clone.write().await;
+                registry.update_status(&task_id_clone, AsyncTaskStatus::Running);
+            }
+
+            // Execute the work
+            let result = execution_fn().await;
+
+            // Update registry with result
+            let status = match &result {
+                Ok(_) => AsyncTaskStatus::Completed {
+                    result: ToolResult::success(serde_json::json!({"completed": true})),
+                },
+                Err(e) => AsyncTaskStatus::Failed {
+                    error: e.to_string(),
+                },
+            };
+
+            {
+                let mut registry = registry_clone.write().await;
+                registry.update_status(&task_id_clone, status);
+                
+                // Store the unified result
+                if let Ok(async_result) = result {
+                    if let Some(entry) = registry.get_mut(&task_id_clone) {
+                        entry.set_result(async_result);
+                    }
+                }
+            }
+
+            // Deliver the result
+            if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
+                if let Err(e) = delivery.deliver(entry).await {
+                    tracing::error!(
+                        "Failed to deliver result for task {}: {}",
+                        task_id_clone,
+                        e
+                    );
+                }
+            }
+        });
+
+        // Return receipt immediately
+        Ok(AsyncTaskReceipt {
+            task_id: task_id.clone(),
+            status: AsyncTaskStatus::Pending,
+            estimated_duration_secs: None,
+            check_status_tool: "async_task_status".to_string(),
+        })
+    }
+
+    /// Wait for a task to complete (sync mode)
+    /// 
+    /// This is a convenience method for tools that need to wait for completion.
+    pub async fn wait_for_completion(
+        &self,
+        task_id: &AsyncTaskId,
+        timeout: Duration,
+    ) -> Result<WaitResult> {
+        let registry = self.registry.read().await;
+        registry.wait_for_completion(task_id, timeout).await
+    }
+
+    /// Get the current status of a task
+    pub async fn check_status(&self, task_id: &AsyncTaskId) -> Option<AsyncTaskStatus> {
+        let registry = self.registry.read().await;
+        registry.check_status(task_id)
+    }
+
+    /// Cancel a running task
+    pub async fn cancel(&self, task_id: &AsyncTaskId) -> Result<bool> {
+        // Note: Actual cancellation would need the task handle
+        // For now, just mark as cancelled in registry
+        let mut registry = self.registry.write().await;
+        if let Some(entry) = registry.get_mut(task_id) {
+            if !entry.status.is_terminal() {
+                entry.status = AsyncTaskStatus::Cancelled;
+                entry.completed_at = Some(chrono::Utc::now());
+                entry.notify_completion();
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
+impl std::fmt::Debug for UnifiedAsyncExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UnifiedAsyncExecutor")
+            .field("registry", &"<AsyncTaskRegistry>")
+            .field("queue_manager", &"<AsyncResultQueueManager>")
+            .field("deliveries", &"<HashMap<DeliveryTarget, Box<dyn ResultDelivery>>>")
+            .field("default_delivery", &self.default_delivery)
+            .finish()
+    }
+}
+
+impl Default for UnifiedAsyncExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Queue for managing async result delivery (inspired by `OpenClaw`)
@@ -1314,5 +1556,247 @@ mod tests {
     fn test_delivery_target_default() {
         let target: DeliveryTarget = Default::default();
         assert_eq!(target, DeliveryTarget::AsyncQueue);
+    }
+
+    // Tests for UnifiedAsyncExecutor (Phase 3)
+
+    #[tokio::test]
+    async fn test_unified_executor_creation() {
+        let executor = UnifiedAsyncExecutor::new();
+        
+        // Should be able to access registry and queue manager
+        let _registry = executor.registry();
+        let _queue_manager = executor.queue_manager();
+        
+        // Debug should work
+        let debug_str = format!("{:?}", executor);
+        assert!(debug_str.contains("UnifiedAsyncExecutor"));
+    }
+
+    #[tokio::test]
+    async fn test_unified_executor_default_delivery() {
+        let executor = UnifiedAsyncExecutor::new()
+            .with_default_delivery(DeliveryTarget::SessionAnnouncement);
+        
+        let debug_str = format!("{:?}", executor);
+        assert!(debug_str.contains("SessionAnnouncement"));
+    }
+
+    #[tokio::test]
+    async fn test_unified_executor_execute() {
+        let executor = UnifiedAsyncExecutor::new();
+        let task_id = "test_task_001".to_string();
+
+        // Execute a simple async task
+        let receipt = executor
+            .execute(
+                task_id.clone(),
+                "test_tool",
+                serde_json::json!({"param": "value"}),
+                "session:test",
+                AsyncToolConfig::default(),
+                || async {
+                    // Simulate some work
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    Ok(AsyncTaskResult::Generic {
+                        data: serde_json::json!({"result": "success"}),
+                    })
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(receipt.task_id, task_id);
+        assert!(matches!(receipt.status, AsyncTaskStatus::Pending));
+
+        // Wait a bit for the task to complete
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Check that the task completed
+        let status = executor.check_status(&task_id).await;
+        assert!(status.is_some());
+        assert!(status.unwrap().is_terminal());
+    }
+
+    #[tokio::test]
+    async fn test_unified_executor_check_status() {
+        let executor = UnifiedAsyncExecutor::new();
+        let task_id = "status_check_task".to_string();
+
+        // Check non-existent task
+        assert!(executor.check_status(&task_id).await.is_none());
+
+        // Execute a task
+        executor
+            .execute(
+                task_id.clone(),
+                "test_tool",
+                serde_json::json!({}),
+                "session:test",
+                AsyncToolConfig::default(),
+                || async {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok(AsyncTaskResult::Generic {
+                        data: serde_json::json!({}),
+                    })
+                },
+            )
+            .await
+            .unwrap();
+
+        // Should be pending or running immediately after spawn
+        let status = executor.check_status(&task_id).await;
+        assert!(status.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_unified_executor_cancel() {
+        let executor = UnifiedAsyncExecutor::new();
+        let task_id = "cancel_task".to_string();
+
+        // Execute a long-running task
+        executor
+            .execute(
+                task_id.clone(),
+                "test_tool",
+                serde_json::json!({}),
+                "session:test",
+                AsyncToolConfig::default(),
+                || async {
+                    // Long running task
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    Ok(AsyncTaskResult::Generic {
+                        data: serde_json::json!({}),
+                    })
+                },
+            )
+            .await
+            .unwrap();
+
+        // Cancel it
+        let cancelled = executor.cancel(&task_id).await.unwrap();
+        assert!(cancelled);
+
+        // Check it's now cancelled
+        let status = executor.check_status(&task_id).await;
+        assert!(matches!(status, Some(AsyncTaskStatus::Cancelled)));
+
+        // Cancel again should return false (already terminal)
+        let cancelled_again = executor.cancel(&task_id).await.unwrap();
+        assert!(!cancelled_again);
+    }
+
+    #[tokio::test]
+    async fn test_unified_executor_queue_delivery() {
+        let executor = UnifiedAsyncExecutor::new();
+        let task_id = "queue_delivery_task".to_string();
+
+        // Execute a task
+        executor
+            .execute(
+                task_id.clone(),
+                "process",
+                serde_json::json!({"command": "echo hello"}),
+                "session:abc",
+                AsyncToolConfig {
+                    delivery_target: Some(DeliveryTarget::AsyncQueue),
+                    ..Default::default()
+                },
+                || async {
+                    Ok(AsyncTaskResult::Process {
+                        stdout: "hello".to_string(),
+                        stderr: "".to_string(),
+                        exit_code: 0,
+                    })
+                },
+            )
+            .await
+            .unwrap();
+
+        // Wait for completion
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Check queue for result
+        let mut manager = executor.queue_manager().write().await;
+        let events = manager.process_queue("session:abc");
+        
+        assert_eq!(events.len(), 1);
+        assert!(events[0].result_message.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_unified_executor_custom_callback_delivery() {
+        let executor = UnifiedAsyncExecutor::new();
+        let delivered = Arc::new(RwLock::new(false));
+        let delivered_clone = delivered.clone();
+
+        // Register custom callback delivery
+        let callback_delivery = CallbackDelivery::new(move |_entry: &AsyncTaskEntry| {
+            let flag = delivered_clone.clone();
+            async move {
+                *flag.write().await = true;
+                Ok(())
+            }
+        });
+
+        executor
+            .register_delivery(
+                DeliveryTarget::SessionAnnouncement,
+                Box::new(callback_delivery),
+            )
+            .await;
+
+        let task_id = "callback_task".to_string();
+
+        // Execute with custom delivery
+        executor
+            .execute(
+                task_id.clone(),
+                "test_tool",
+                serde_json::json!({}),
+                "session:test",
+                AsyncToolConfig {
+                    delivery_target: Some(DeliveryTarget::SessionAnnouncement),
+                    ..Default::default()
+                },
+                || async {
+                    Ok(AsyncTaskResult::Generic {
+                        data: serde_json::json!({"done": true}),
+                    })
+                },
+            )
+            .await
+            .unwrap();
+
+        // Wait for completion
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Verify callback was invoked
+        assert!(*delivered.read().await);
+    }
+
+    #[tokio::test]
+    async fn test_unified_executor_default() {
+        let executor: UnifiedAsyncExecutor = Default::default();
+        
+        // Should work the same as new()
+        let task_id = "default_exec_task".to_string();
+        let receipt = executor
+            .execute(
+                task_id.clone(),
+                "test_tool",
+                serde_json::json!({}),
+                "session:test",
+                AsyncToolConfig::default(),
+                || async {
+                    Ok(AsyncTaskResult::Generic {
+                        data: serde_json::json!({}),
+                    })
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(receipt.task_id, task_id);
     }
 }

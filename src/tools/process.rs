@@ -227,6 +227,7 @@ impl ProcessTool {
         // Register task
         let config = AsyncToolConfig {
             delivery_mode,
+            delivery_target: None,
             timeout_secs,
             cleanup_after_delivery: true,
             label: label.clone(),
