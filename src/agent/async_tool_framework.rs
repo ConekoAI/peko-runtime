@@ -51,6 +51,102 @@ pub struct AsyncTaskReceipt {
     pub check_status_tool: String, // Tool name to check status
 }
 
+/// Unified result type for all async operations
+/// 
+/// This enum normalizes results from different async tools (process, agent_spawn, agent_invoke)
+/// into a single format that can be handled uniformly by the delivery infrastructure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AsyncTaskResult {
+    /// Shell command result (from process tool)
+    Process {
+        stdout: String,
+        stderr: String,
+        exit_code: i32,
+    },
+    /// Subagent execution result
+    Subagent {
+        output: Option<String>,
+        error: Option<String>,
+        token_usage: Option<(u32, u32, u32)>,
+    },
+    /// Agent-to-agent invocation result
+    Invocation {
+        content: String,
+        from: String,
+        success: bool,
+        error: Option<String>,
+    },
+    /// Generic tool result for extensibility
+    Generic {
+        data: serde_json::Value,
+    },
+}
+
+impl AsyncTaskResult {
+    /// Format the result for display/announcement to users
+    #[must_use]
+    pub fn format_for_announcement(&self, tool_name: &str) -> String {
+        match self {
+            Self::Process { stdout, stderr, exit_code } => {
+                format!(
+                    "## Process Result\n\n**Command:** {}\n**Exit Code:** {}\n\n**Stdout:**\n```\n{}\n```\n\n**Stderr:**\n```\n{}\n```",
+                    tool_name, exit_code, stdout, stderr
+                )
+            }
+            Self::Subagent { output, error, .. } => {
+                let label_part = if tool_name == "agent_spawn" {
+                    "Subagent".to_string()
+                } else {
+                    format!("Subagent [{}]", tool_name)
+                };
+                
+                let status_emoji = if error.is_some() { "❌" } else { "✅" };
+                let content = error.as_deref()
+                    .or(output.as_deref())
+                    .unwrap_or("(no content)");
+                
+                format!(
+                    "## {} Result {}\n\n{}",
+                    label_part, status_emoji, content
+                )
+            }
+            Self::Invocation { content, from, success, error } => {
+                let status = if *success { "✅ Success" } else { "❌ Failed" };
+                let display_content = error.as_deref().unwrap_or(content);
+                
+                format!(
+                    "## Message from {}\n\n**Status:** {}\n\n{}",
+                    from, status, display_content
+                )
+            }
+            Self::Generic { data } => {
+                format!(
+                    "## {} Result\n\n```json\n{}\n```",
+                    tool_name,
+                    serde_json::to_string_pretty(data).unwrap_or_default()
+                )
+            }
+        }
+    }
+    
+    /// Get a short summary of the result for logging/metrics
+    #[must_use]
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Process { exit_code, .. } => format!("process: exit_code={}", exit_code),
+            Self::Subagent { output, error, .. } => {
+                if error.is_some() {
+                    "subagent: failed".to_string()
+                } else {
+                    format!("subagent: {} chars output", output.as_ref().map(|s| s.len()).unwrap_or(0))
+                }
+            }
+            Self::Invocation { success, .. } => format!("invocation: success={}", success),
+            Self::Generic { .. } => "generic: completed".to_string(),
+        }
+    }
+}
+
 /// Result delivery modes (inspired by `OpenClaw`)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum AsyncResultDeliveryMode {
@@ -105,11 +201,13 @@ pub struct AsyncTaskEntry {
     pub tool_name: String,
     pub params: Value,
     pub status: AsyncTaskStatus,
+    /// Unified result from the async operation (available when status is terminal)
+    pub result: Option<AsyncTaskResult>,
     pub parent_session_key: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
     pub config: AsyncToolConfig,
-    /// The formatted result message ready for delivery
+    /// The formatted result message ready for delivery (cached from result)
     pub formatted_result: Option<String>,
     /// Completion notification channel for sync waiting
     completion_tx: Option<mpsc::Sender<AsyncTaskStatus>>,
@@ -130,6 +228,7 @@ impl AsyncTaskEntry {
             tool_name,
             params,
             status: AsyncTaskStatus::Pending,
+            result: None,
             parent_session_key,
             created_at: chrono::Utc::now(),
             completed_at: None,
@@ -137,6 +236,12 @@ impl AsyncTaskEntry {
             formatted_result: None,
             completion_tx: None,
         }
+    }
+
+    /// Set the unified result and update formatted_result cache
+    pub fn set_result(&mut self, result: AsyncTaskResult) {
+        self.formatted_result = Some(result.format_for_announcement(&self.tool_name));
+        self.result = Some(result);
     }
 
     /// Set the completion notification channel
@@ -160,6 +265,7 @@ impl Clone for AsyncTaskEntry {
             tool_name: self.tool_name.clone(),
             params: self.params.clone(),
             status: self.status.clone(),
+            result: self.result.clone(),
             parent_session_key: self.parent_session_key.clone(),
             created_at: self.created_at,
             completed_at: self.completed_at,
@@ -776,5 +882,127 @@ mod tests {
         let delivered = queue.process();
         assert_eq!(delivered.len(), 1); // Batched into one
         assert!(delivered[0].result_message.contains("Multiple async tasks"));
+    }
+
+    // Tests for AsyncTaskResult (Phase 1 of unified infrastructure)
+
+    #[test]
+    fn test_async_task_result_process() {
+        let result = AsyncTaskResult::Process {
+            stdout: "Hello World".to_string(),
+            stderr: "".to_string(),
+            exit_code: 0,
+        };
+
+        let formatted = result.format_for_announcement("echo");
+        assert!(formatted.contains("Process Result"));
+        assert!(formatted.contains("Hello World"));
+        assert!(formatted.contains("Exit Code:** 0"));
+        
+        assert_eq!(result.summary(), "process: exit_code=0");
+    }
+
+    #[test]
+    fn test_async_task_result_subagent() {
+        let result = AsyncTaskResult::Subagent {
+            output: Some("Analysis complete".to_string()),
+            error: None,
+            token_usage: Some((100, 200, 300)),
+        };
+
+        let formatted = result.format_for_announcement("analyzer");
+        assert!(formatted.contains("Subagent [analyzer]"));
+        assert!(formatted.contains("✅"));
+        assert!(formatted.contains("Analysis complete"));
+        
+        assert_eq!(result.summary(), "subagent: 17 chars output");
+    }
+
+    #[test]
+    fn test_async_task_result_subagent_error() {
+        let result = AsyncTaskResult::Subagent {
+            output: None,
+            error: Some("Task failed".to_string()),
+            token_usage: None,
+        };
+
+        let formatted = result.format_for_announcement("agent_spawn");
+        assert!(formatted.contains("Subagent"));
+        assert!(formatted.contains("❌"));
+        assert!(formatted.contains("Task failed"));
+        
+        assert_eq!(result.summary(), "subagent: failed");
+    }
+
+    #[test]
+    fn test_async_task_result_invocation() {
+        let result = AsyncTaskResult::Invocation {
+            content: "Here is the research result".to_string(),
+            from: "researcher_agent".to_string(),
+            success: true,
+            error: None,
+        };
+
+        let formatted = result.format_for_announcement("agent_invoke");
+        assert!(formatted.contains("Message from researcher_agent"));
+        assert!(formatted.contains("✅ Success"));
+        assert!(formatted.contains("Here is the research result"));
+        
+        assert_eq!(result.summary(), "invocation: success=true");
+    }
+
+    #[test]
+    fn test_async_task_result_invocation_failed() {
+        let result = AsyncTaskResult::Invocation {
+            content: "".to_string(),
+            from: "helper_agent".to_string(),
+            success: false,
+            error: Some("Agent not available".to_string()),
+        };
+
+        let formatted = result.format_for_announcement("agent_invoke");
+        assert!(formatted.contains("❌ Failed"));
+        assert!(formatted.contains("Agent not available"));
+        
+        assert_eq!(result.summary(), "invocation: success=false");
+    }
+
+    #[test]
+    fn test_async_task_result_generic() {
+        let data = serde_json::json!({"key": "value", "count": 42});
+        let result = AsyncTaskResult::Generic { data };
+
+        let formatted = result.format_for_announcement("custom_tool");
+        assert!(formatted.contains("custom_tool Result"));
+        assert!(formatted.contains("key"));
+        assert!(formatted.contains("value"));
+        
+        assert_eq!(result.summary(), "generic: completed");
+    }
+
+    #[test]
+    fn test_async_task_entry_set_result() {
+        let mut entry = AsyncTaskEntry::new(
+            "task_123".to_string(),
+            "test_process".to_string(),
+            serde_json::json!({"command": "echo"}),
+            "session:abc".to_string(),
+            AsyncToolConfig::default(),
+        );
+
+        assert!(entry.result.is_none());
+        assert!(entry.formatted_result.is_none());
+
+        let result = AsyncTaskResult::Process {
+            stdout: "output".to_string(),
+            stderr: "".to_string(),
+            exit_code: 0,
+        };
+
+        entry.set_result(result);
+
+        assert!(entry.result.is_some());
+        assert!(entry.formatted_result.is_some());
+        assert!(entry.formatted_result.as_ref().unwrap().contains("Process Result"));
     }
 }
