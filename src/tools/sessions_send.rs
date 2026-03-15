@@ -292,16 +292,62 @@ impl SessionsSendTool {
         }
     }
 
-    /// Resolve agent ID to session key
+    /// Resolve agent ID to session key using SessionManager
     ///
-    /// In a full implementation, this would:
-    /// 1. Check if agent has an active session
-    /// 2. Create ephemeral session if needed
-    /// 3. Return the session key
-    async fn resolve_agent_session(&self, agent_id: &str) -> Result<String> {
-        // For now, construct a standard session key
-        // In production, this would query the session manager
-        Ok(format!("agent:{}", agent_id))
+    /// This method:
+    /// 1. Checks if the input is already a session key (contains ':')
+    /// 2. If agent ID, uses SessionManager to find/create session
+    /// 3. Creates ephemeral A2A session if needed
+    ///
+    /// # Arguments
+    /// * `target` - Agent ID or session key
+    ///
+    /// # Returns
+    /// Session key for messaging
+    async fn resolve_agent_session(&self, target: &str) -> Result<String> {
+        // If target already looks like a session key, use it directly
+        if target.contains(':') {
+            return Ok(target.to_string());
+        }
+
+        // Otherwise, treat as agent ID and resolve via SessionManager
+        if let Some(session_manager) = &self.session_manager {
+            let manager = session_manager.read().await;
+            let caller_session = self.current_session_key.as_deref();
+
+            manager.resolve_agent_session(target, caller_session).await
+        } else {
+            // Fallback: construct standard session key
+            // Format: agent:{agent_id}:a2a:{caller_id}:{uuid}
+            let caller_id = self
+                .current_session_key
+                .as_deref()
+                .and_then(|key| key.split(':').nth(1))
+                .unwrap_or("unknown");
+
+            Ok(format!(
+                "agent:{}:a2a:{}:{}",
+                target,
+                caller_id,
+                Uuid::new_v4().simple()
+            ))
+        }
+    }
+
+    /// Ensure a session exists for the target agent
+    ///
+    /// Similar to resolve_agent_session but guarantees the session
+    /// is created and tracked by the runtime.
+    async fn ensure_agent_session(&self, agent_id: &str) -> Result<String> {
+        if let Some(session_manager) = &self.session_manager {
+            let mut manager = session_manager.write().await;
+            let caller_session = self.current_session_key.as_deref();
+
+            manager.ensure_agent_session(agent_id, caller_session).await
+        } else {
+            // Fallback to simple resolution
+            self.resolve_agent_session(agent_id).await
+        }
     }
 }
 

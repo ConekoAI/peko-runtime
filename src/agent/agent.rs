@@ -46,7 +46,7 @@ impl Agent {
     fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            InMemorySessionRegistry, ProcessTool, SessionStatusTool, Tool,
+            InMemorySessionRegistry, ProcessTool, SessionStatusTool, SessionsSendTool, Tool,
         };
 
         // Create core tools only (web tools now provided via MCP)
@@ -73,6 +73,16 @@ impl Agent {
         tools.push(Arc::new(AgentSpawnListTool::new(
             self.subagent_executor.registry().clone(),
         )));
+
+        // Add sessions_send tool for A2A messaging
+        tools.push(Arc::new(
+            SessionsSendTool::new()
+                .with_session_context(format!("agent:{}", self.config.name), &self.config.name)
+                .with_executor(
+                    self.subagent_executor.unified_executor().clone(),
+                    format!("agent:{}", self.config.name),
+                ),
+        ));
 
         // Filter based on agent config if specified
         if let Some(ref tool_config) = self.config.tools {
@@ -91,7 +101,8 @@ impl Agent {
     async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            InMemorySessionRegistry, ProcessTool, SessionStatusTool, Tool, ToolFactory,
+            InMemorySessionRegistry, ProcessTool, SessionStatusTool, SessionsSendTool, Tool,
+            ToolFactory,
         };
 
         // Create core tools only (web tools now provided via MCP)
@@ -118,6 +129,16 @@ impl Agent {
         tools.push(Arc::new(AgentSpawnListTool::new(
             self.subagent_executor.registry().clone(),
         )));
+
+        // Add sessions_send tool for A2A messaging
+        tools.push(Arc::new(
+            SessionsSendTool::new()
+                .with_session_context(format!("agent:{}", self.config.name), &self.config.name)
+                .with_executor(
+                    self.subagent_executor.unified_executor().clone(),
+                    format!("agent:{}", self.config.name),
+                ),
+        ));
 
         // Load MCP tools
         tracing::info!("Loading MCP tools for agent '{}'...", self.config.name);

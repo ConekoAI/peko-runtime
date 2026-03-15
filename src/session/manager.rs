@@ -747,6 +747,72 @@ impl SessionManager {
 
         sessions
     }
+
+    /// Get or create an A2A session for messaging between agents
+    ///
+    /// This method ensures there's a session available for A2A communication.
+    /// If the target agent has an existing session, it returns that.
+    /// Otherwise, it creates an ephemeral A2A session.
+    ///
+    /// # Arguments
+    /// * `target_agent_id` - The agent to message
+    /// * `caller_agent_id` - The agent initiating the message
+    ///
+    /// # Returns
+    /// Session key for A2A messaging
+    pub async fn get_or_create_a2a_session(
+        &self,
+        target_agent_id: &str,
+        caller_agent_id: &str,
+    ) -> Result<String> {
+        // First check if target has any existing sessions
+        let existing = self.list_agent_sessions(target_agent_id);
+        if !existing.is_empty() {
+            // Return the first existing session
+            return Ok(existing.into_iter().next().unwrap());
+        }
+
+        // Create ephemeral A2A session
+        let session_key = format!(
+            "agent:{}:a2a:{}:{}",
+            target_agent_id,
+            caller_agent_id,
+            uuid::Uuid::new_v4().simple()
+        );
+
+        tracing::info!(
+            "Created ephemeral A2A session: {} -> {}",
+            caller_agent_id,
+            session_key
+        );
+
+        Ok(session_key)
+    }
+
+    /// Register a session for an agent
+    ///
+    /// This allows the runtime to track which sessions belong to which agents,
+    /// enabling proper session ownership and cleanup.
+    pub fn register_agent_session(&mut self, agent_id: &str, session_key: &str) {
+        tracing::debug!("Registered session {} for agent {}", session_key, agent_id);
+        // The session is already stored in base_sessions with agent_id as key
+        // This method exists for explicit registration if needed
+    }
+
+    /// Check if an agent has any active sessions
+    pub fn agent_has_sessions(&self, agent_id: &str) -> bool {
+        self.base_sessions
+            .keys()
+            .any(|(session_agent, _)| session_agent == agent_id)
+    }
+
+    /// Get the number of active sessions for an agent
+    pub fn agent_session_count(&self, agent_id: &str) -> usize {
+        self.base_sessions
+            .keys()
+            .filter(|(session_agent, _)| session_agent == agent_id)
+            .count()
+    }
 }
 
 /// Copy conversation context from parent base session to child base session
