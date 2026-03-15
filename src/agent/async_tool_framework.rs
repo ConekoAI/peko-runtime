@@ -10,6 +10,7 @@
 
 use crate::tools::traits::ToolResult;
 use anyhow::Result;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -499,6 +500,205 @@ impl AsyncTaskEventBus {
         self.sender
             .send(event)
             .map_err(|_| anyhow::anyhow!("Failed to send async task event - no listeners"))
+    }
+}
+
+/// Delivery target types for async task results
+/// 
+/// Defines where and how the result should be delivered
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryTarget {
+    /// Deliver to session via announcement (adds message to parent session)
+    SessionAnnouncement,
+    /// Deliver to async result queue
+    AsyncQueue,
+    /// Deliver via EventSubscriber broadcast
+    EventBroadcast,
+    /// Deliver via direct channel (for sync waiting)
+    DirectChannel,
+}
+
+impl Default for DeliveryTarget {
+    fn default() -> Self {
+        DeliveryTarget::AsyncQueue
+    }
+}
+
+/// Trait for result delivery mechanisms
+/// 
+/// Implementations define how async task results are delivered to their recipients.
+/// This enables pluggable delivery strategies for different use cases.
+#[async_trait::async_trait]
+pub trait ResultDelivery: Send + Sync {
+    /// Deliver result for a completed task
+    /// 
+    /// # Arguments
+    /// * `task` - The completed async task entry with result
+    /// 
+    /// # Returns
+    /// Ok(()) on successful delivery, Err otherwise
+    async fn deliver(&self, task: &AsyncTaskEntry) -> Result<()>;
+    
+    /// Clone this delivery mechanism into a Box
+    /// 
+    /// Required because ResultDelivery is a trait object and needs
+    /// to be cloneable for use in spawned tasks.
+    fn clone_box(&self) -> Box<dyn ResultDelivery>;
+}
+
+impl Clone for Box<dyn ResultDelivery> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+/// Queue-based delivery mechanism
+/// 
+/// Delivers results via the AsyncResultQueueManager for later retrieval.
+/// Used by process tool and agent_spawn in queue mode.
+#[derive(Debug, Clone)]
+pub struct QueueDelivery {
+    queue_manager: SharedAsyncResultQueueManager,
+}
+
+impl QueueDelivery {
+    /// Create a new queue delivery mechanism
+    #[must_use]
+    pub fn new(queue_manager: SharedAsyncResultQueueManager) -> Self {
+        Self { queue_manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl ResultDelivery for QueueDelivery {
+    async fn deliver(&self, task: &AsyncTaskEntry) -> Result<()> {
+        let result_message = task.formatted_result.clone()
+            .or_else(|| task.result.as_ref().map(|r| r.format_for_announcement(&task.tool_name)))
+            .unwrap_or_else(|| format!("Task {} completed with no result", task.task_id));
+        
+        let event = AsyncTaskCompletionEvent {
+            task_id: task.task_id.clone(),
+            tool_name: task.tool_name.clone(),
+            result_message,
+            parent_session_key: task.parent_session_key.clone(),
+            label: task.config.label.clone(),
+        };
+        
+        let mut manager = self.queue_manager.write().await;
+        manager.enqueue(event);
+        
+        tracing::debug!(
+            "Queued result for task {} in session {}",
+            task.task_id,
+            task.parent_session_key
+        );
+        
+        Ok(())
+    }
+    
+    fn clone_box(&self) -> Box<dyn ResultDelivery> {
+        Box::new(self.clone())
+    }
+}
+
+/// Direct channel delivery mechanism
+/// 
+/// Delivers results via an mpsc channel for immediate consumption.
+/// Used for sync-wait scenarios where a task waits for completion.
+#[derive(Debug)]
+pub struct ChannelDelivery {
+    sender: mpsc::Sender<AsyncTaskCompletionEvent>,
+}
+
+impl ChannelDelivery {
+    /// Create a new channel delivery mechanism
+    #[must_use]
+    pub fn new(sender: mpsc::Sender<AsyncTaskCompletionEvent>) -> Self {
+        Self { sender }
+    }
+}
+
+#[async_trait::async_trait]
+impl ResultDelivery for ChannelDelivery {
+    async fn deliver(&self, task: &AsyncTaskEntry) -> Result<()> {
+        let result_message = task.formatted_result.clone()
+            .or_else(|| task.result.as_ref().map(|r| r.format_for_announcement(&task.tool_name)))
+            .unwrap_or_else(|| format!("Task {} completed", task.task_id));
+        
+        let event = AsyncTaskCompletionEvent {
+            task_id: task.task_id.clone(),
+            tool_name: task.tool_name.clone(),
+            result_message,
+            parent_session_key: task.parent_session_key.clone(),
+            label: task.config.label.clone(),
+        };
+        
+        self.sender
+            .send(event)
+            .await
+            .map_err(|_| anyhow::anyhow!("Failed to send result via channel - receiver dropped"))?;
+        
+        Ok(())
+    }
+    
+    fn clone_box(&self) -> Box<dyn ResultDelivery> {
+        // Channel cannot be cloned in the traditional sense
+        // This is a limitation - ChannelDelivery is typically used for sync waiting
+        // where the sender stays in the spawned task
+        panic!("ChannelDelivery cannot be cloned - use QueueDelivery for multi-consumer scenarios");
+    }
+}
+
+/// Callback-based delivery mechanism
+/// 
+/// Delivers results via a user-provided async callback function.
+/// Used for session announcements and other custom delivery mechanisms.
+pub struct CallbackDelivery {
+    callback: Arc<dyn Fn(&AsyncTaskEntry) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>,
+}
+
+impl std::fmt::Debug for CallbackDelivery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallbackDelivery")
+            .field("callback", &"<async fn>")
+            .finish()
+    }
+}
+
+impl CallbackDelivery {
+    /// Create a new callback delivery mechanism
+    pub fn new<F, Fut>(callback: F) -> Self
+    where
+        F: Fn(&AsyncTaskEntry) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    {
+        let callback = Arc::new(move |entry: &AsyncTaskEntry| {
+            let fut = callback(entry);
+            Box::pin(fut) as futures::future::BoxFuture<'static, Result<()>>
+        });
+        
+        Self { callback }
+    }
+}
+
+// Manual Clone implementation for CallbackDelivery
+impl Clone for CallbackDelivery {
+    fn clone(&self) -> Self {
+        Self {
+            callback: Arc::clone(&self.callback),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ResultDelivery for CallbackDelivery {
+    async fn deliver(&self, task: &AsyncTaskEntry) -> Result<()> {
+        (self.callback)(task).await
+    }
+    
+    fn clone_box(&self) -> Box<dyn ResultDelivery> {
+        Box::new(self.clone())
     }
 }
 
@@ -1004,5 +1204,115 @@ mod tests {
         assert!(entry.result.is_some());
         assert!(entry.formatted_result.is_some());
         assert!(entry.formatted_result.as_ref().unwrap().contains("Process Result"));
+    }
+
+    // Tests for Delivery Mechanisms (Phase 2)
+
+    #[tokio::test]
+    async fn test_queue_delivery() {
+        let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+        let delivery = QueueDelivery::new(queue_manager.clone());
+
+        let mut entry = AsyncTaskEntry::new(
+            "task_123".to_string(),
+            "test_tool".to_string(),
+            serde_json::json!({}),
+            "session:abc".to_string(),
+            AsyncToolConfig::default(),
+        );
+
+        entry.set_result(AsyncTaskResult::Process {
+            stdout: "Hello".to_string(),
+            stderr: "".to_string(),
+            exit_code: 0,
+        });
+
+        // Deliver the result
+        delivery.deliver(&entry).await.unwrap();
+
+        // Verify it was queued
+        let mut manager = queue_manager.write().await;
+        let events = manager.process_queue("session:abc");
+        
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].task_id, "task_123");
+        assert!(events[0].result_message.contains("Hello"));
+    }
+
+    #[tokio::test]
+    async fn test_channel_delivery() {
+        let (tx, mut rx) = mpsc::channel(10);
+        let delivery = ChannelDelivery::new(tx);
+
+        let mut entry = AsyncTaskEntry::new(
+            "task_456".to_string(),
+            "test_tool".to_string(),
+            serde_json::json!({}),
+            "session:xyz".to_string(),
+            AsyncToolConfig::default(),
+        );
+
+        entry.set_result(AsyncTaskResult::Generic {
+            data: serde_json::json!({"status": "done"}),
+        });
+
+        // Deliver the result
+        delivery.deliver(&entry).await.unwrap();
+
+        // Verify it was received
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.task_id, "task_456");
+        assert_eq!(event.parent_session_key, "session:xyz");
+    }
+
+    #[tokio::test]
+    async fn test_callback_delivery() {
+        let delivered = Arc::new(RwLock::new(false));
+        let delivered_clone = delivered.clone();
+
+        let delivery = CallbackDelivery::new(move |_entry: &AsyncTaskEntry| {
+            let flag = delivered_clone.clone();
+            async move {
+                *flag.write().await = true;
+                Ok(())
+            }
+        });
+
+        let entry = AsyncTaskEntry::new(
+            "task_789".to_string(),
+            "test_tool".to_string(),
+            serde_json::json!({}),
+            "session:def".to_string(),
+            AsyncToolConfig::default(),
+        );
+
+        // Deliver the result
+        delivery.deliver(&entry).await.unwrap();
+
+        // Verify callback was invoked
+        assert!(*delivered.read().await);
+    }
+
+    #[tokio::test]
+    async fn test_delivery_target_serialization() {
+        // Test serialization/deserialization
+        let targets = vec![
+            DeliveryTarget::SessionAnnouncement,
+            DeliveryTarget::AsyncQueue,
+            DeliveryTarget::EventBroadcast,
+            DeliveryTarget::DirectChannel,
+        ];
+
+        for target in targets {
+            let json = serde_json::to_string(&target).unwrap();
+            let deserialized: DeliveryTarget = serde_json::from_str(&json).unwrap();
+            assert_eq!(target, deserialized);
+        }
+    }
+
+    #[test]
+    fn test_delivery_target_default() {
+        let target: DeliveryTarget = Default::default();
+        assert_eq!(target, DeliveryTarget::AsyncQueue);
     }
 }
