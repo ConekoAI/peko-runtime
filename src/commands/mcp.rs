@@ -181,7 +181,7 @@ pub struct McpCommandHandler {
 
 impl McpCommandHandler {
     /// Create a new handler
-    #[must_use] 
+    #[must_use]
     pub fn new(config_path: PathBuf) -> Self {
         Self { config_path }
     }
@@ -501,7 +501,7 @@ impl McpCommandHandler {
     /// Handle install command
     pub async fn install(&self, name: &str, force: bool, build: bool) -> anyhow::Result<()> {
         let valid_servers = ["web", "browser", "memory"];
-        
+
         if !valid_servers.contains(&name) {
             anyhow::bail!(
                 "Unknown MCP server '{}'. Valid servers: {}",
@@ -536,7 +536,10 @@ impl McpCommandHandler {
         ensure_default_config().await?;
 
         println!("✓ MCP server '{}' installed successfully", name);
-        println!("  Binary: {}", install_dir.join(format!("mcp-{}", name)).display());
+        println!(
+            "  Binary: {}",
+            install_dir.join(format!("mcp-{}", name)).display()
+        );
         println!("  Config: {}", mcp_config_path().display());
         println!("\nTest the installation with:");
         println!("  pekobot mcp test {}", name);
@@ -582,7 +585,7 @@ impl McpCommandHandler {
             .join("target")
             .join("release")
             .join(&binary_name);
-        
+
         // Also check workspace target
         let workspace_binary = PathBuf::from("mcp-servers")
             .join("target")
@@ -619,7 +622,7 @@ impl McpCommandHandler {
         // Show config path
         let config_path = mcp_config_path();
         println!("Config: {}", config_path.display());
-        
+
         if !config_path.exists() {
             println!("  Status: Not configured");
             println!("\nRun 'pekobot mcp install <server>' to get started.");
@@ -635,7 +638,10 @@ impl McpCommandHandler {
                     return Ok(());
                 }
 
-                println!("\n{:<15} {:<12} {:<10} {}", "NAME", "STATUS", "TOOLS", "BINARY");
+                println!(
+                    "\n{:<15} {:<12} {:<10} {}",
+                    "NAME", "STATUS", "TOOLS", "BINARY"
+                );
                 println!("{}", "-".repeat(60));
 
                 for server in &servers {
@@ -761,7 +767,7 @@ impl McpCommandHandler {
         match result {
             Ok(tool_result) => {
                 println!("\n✓ Tool executed successfully");
-                
+
                 // Print results
                 for content in &tool_result.content {
                     match content {
@@ -841,9 +847,12 @@ pub async fn handle(command: McpCommands, config_path: PathBuf) -> anyhow::Resul
         }
         McpCommands::Test { name } => handler.test(&name).await,
         McpCommands::Tools { server } => handler.tools(server.as_deref()).await,
-        McpCommands::Call { server, tool, args, kv } => {
-            handler.call(&server, &tool, args.as_deref(), &kv).await
-        }
+        McpCommands::Call {
+            server,
+            tool,
+            args,
+            kv,
+        } => handler.call(&server, &tool, args.as_deref(), &kv).await,
         McpCommands::Config { edit } => handler.config(edit),
     }
 }

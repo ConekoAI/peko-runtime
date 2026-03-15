@@ -14,8 +14,8 @@
 
 use crate::security::SecurityPolicy;
 use crate::tools::{
-    ApplyPatchConfig, ApplyPatchTool, CronTool, FileSystemTool, ProcessTool,
-    SessionStatusTool, SessionsHistoryTool, SessionsListTool,
+    ApplyPatchConfig, ApplyPatchTool, CronTool, FileSystemTool, ProcessTool, SessionStatusTool,
+    SessionsHistoryTool, SessionsListTool,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -197,7 +197,7 @@ impl ToolFactory {
         // Try to discover and load MCP tools if enabled
         if config.mcp.enabled {
             tracing::info!("Discovering MCP servers...");
-            
+
             match Self::load_mcp_tools_with_discovery(&config.mcp).await {
                 Ok((mcp_tools, result)) => {
                     if !mcp_tools.is_empty() {
@@ -241,12 +241,15 @@ impl ToolFactory {
         // Check if config exists
         if !config_path.exists() {
             tracing::debug!("MCP config not found at {:?}", config_path);
-            return Ok((Vec::new(), McpDiscoveryResult {
-                servers_found: 0,
-                tools_available: 0,
-                failed_servers: Vec::new(),
-                auto_install_attempted: false,
-            }));
+            return Ok((
+                Vec::new(),
+                McpDiscoveryResult {
+                    servers_found: 0,
+                    tools_available: 0,
+                    failed_servers: Vec::new(),
+                    auto_install_attempted: false,
+                },
+            ));
         }
 
         // Load MCP configuration
@@ -255,12 +258,15 @@ impl ToolFactory {
 
         if config.servers.is_empty() {
             tracing::debug!("No MCP servers configured");
-            return Ok((Vec::new(), McpDiscoveryResult {
-                servers_found: 0,
-                tools_available: 0,
-                failed_servers: Vec::new(),
-                auto_install_attempted: false,
-            }));
+            return Ok((
+                Vec::new(),
+                McpDiscoveryResult {
+                    servers_found: 0,
+                    tools_available: 0,
+                    failed_servers: Vec::new(),
+                    auto_install_attempted: false,
+                },
+            ));
         }
 
         let servers_configured = config.servers.len();
@@ -268,27 +274,34 @@ impl ToolFactory {
 
         // Initialize MCP manager
         let manager = Arc::new(RwLock::new(McpManager::new(config)));
-        
+
         // Try to initialize (connect to servers)
         let init_result = {
             let mut manager_guard = manager.write().await;
             manager_guard.init().await
         };
-        
+
         match init_result {
             Ok(()) => {
                 // Create tool proxies
                 let mcp_tools = create_tool_proxies(manager).await;
                 let tools_count = mcp_tools.len();
-                
-                tracing::info!("Connected to {} MCP server(s) with {} tools", servers_configured, tools_count);
-                
-                Ok((mcp_tools, McpDiscoveryResult {
-                    servers_found: servers_configured,
-                    tools_available: tools_count,
-                    failed_servers: Vec::new(),
-                    auto_install_attempted: mcp_config.auto_install,
-                }))
+
+                tracing::info!(
+                    "Connected to {} MCP server(s) with {} tools",
+                    servers_configured,
+                    tools_count
+                );
+
+                Ok((
+                    mcp_tools,
+                    McpDiscoveryResult {
+                        servers_found: servers_configured,
+                        tools_available: tools_count,
+                        failed_servers: Vec::new(),
+                        auto_install_attempted: mcp_config.auto_install,
+                    },
+                ))
             }
             Err(e) => {
                 tracing::warn!("Failed to initialize MCP manager: {}", e);
@@ -324,7 +337,7 @@ impl ToolFactory {
 
         let manager = Arc::new(RwLock::new(McpManager::new(config)));
         manager.write().await.init().await?;
-        
+
         let tools = create_tool_proxies(manager).await;
         Ok(tools)
     }
@@ -399,11 +412,11 @@ impl ToolFactory {
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pekobot")
             .join("mcp.toml");
-        
+
         if !config_path.exists() {
             return false;
         }
-        
+
         match tokio::fs::read_to_string(&config_path).await {
             Ok(content) => {
                 if let Ok(config) = toml::from_str::<crate::mcp::McpConfig>(&content) {

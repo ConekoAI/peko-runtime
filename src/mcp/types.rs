@@ -114,7 +114,7 @@ pub enum JsonRpcResponse {
 }
 
 impl JsonRpcResponse {
-    #[must_use] 
+    #[must_use]
     pub fn id(&self) -> &RequestId {
         match self {
             JsonRpcResponse::Success(r) => &r.id,

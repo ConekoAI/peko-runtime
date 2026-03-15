@@ -42,13 +42,13 @@ pub struct TaskManager {
 
 impl TaskManager {
     /// Create a new task manager with default configuration
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(TaskManagerConfig::default())
     }
 
     /// Create a new task manager with custom configuration
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: TaskManagerConfig) -> Self {
         Self {
             config,
@@ -67,8 +67,7 @@ impl TaskManager {
         params: serde_json::Value,
         mode: Option<ExecutionMode>,
     ) -> Result<serde_json::Value> {
-        let timeout = mode
-            .map_or(self.config.default_timeout, |m| m.timeout);
+        let timeout = mode.map_or(self.config.default_timeout, |m| m.timeout);
         let tool_name = tool.name().to_string();
         let task_id = TaskId::new();
 
@@ -122,7 +121,7 @@ impl TaskManager {
     }
 
     /// Get default timeout
-    #[must_use] 
+    #[must_use]
     pub fn default_timeout(&self) -> std::time::Duration {
         self.config.default_timeout
     }

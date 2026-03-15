@@ -39,7 +39,7 @@ pub struct SimpleSession {
 
 impl SimpleSession {
     /// Get the storage directory for an agent
-    #[must_use] 
+    #[must_use]
     pub fn storage_dir(agent_name: &str) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -253,7 +253,7 @@ impl SimpleSession {
     }
 
     /// Get current token usage
-    #[must_use] 
+    #[must_use]
     pub fn token_usage(&self) -> (usize, usize, usize) {
         (
             self.input_tokens,
@@ -263,7 +263,7 @@ impl SimpleSession {
     }
 
     /// Get current provider and model
-    #[must_use] 
+    #[must_use]
     pub fn current_model(&self) -> Option<(&str, &str)> {
         match (&self.current_provider, &self.current_model) {
             (Some(p), Some(m)) => Some((p.as_str(), m.as_str())),
@@ -581,9 +581,7 @@ impl SimpleSession {
                             _ => None,
                         })
                         .collect();
-                    context.push_str(&format!(
-                        "tool: [{tool_name} result: {result_text}]\n\n"
-                    ));
+                    context.push_str(&format!("tool: [{tool_name} result: {result_text}]\n\n"));
                 }
                 _ => {}
             }

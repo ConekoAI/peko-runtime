@@ -98,12 +98,7 @@ async fn test_agent_manager_creates_all_tools() {
         tool_names.contains(&"agent_spawn".to_string()),
         "Missing agent_spawn tool"
     );
-    assert!(
-        tool_names.contains(&"agent_broadcast".to_string()),
-        "Missing agent_broadcast tool"
-    );
-
-    println!("✅ All 14 tools verified in AgentManager!");
+    println!("✅ All 13 tools verified in AgentManager!");
 }
 
 #[tokio::test]
@@ -123,7 +118,10 @@ async fn test_tool_factory_presets() {
 
     // Coding tools
     let coding = ToolFactory::create_coding_tools(PathBuf::from("/tmp"));
-    assert!(coding.len() >= 4, "Coding should have at least 4 tools (filesystem, apply_patch, process, cron)");
+    assert!(
+        coding.len() >= 4,
+        "Coding should have at least 4 tools (filesystem, apply_patch, process, cron)"
+    );
     println!("  ✓ Coding tools: {}", coding.len());
 
     // Full tools

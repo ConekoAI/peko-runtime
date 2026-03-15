@@ -53,7 +53,7 @@ pub enum FileChangeType {
 
 impl SystemEvent {
     /// Get the event type as a string for routing
-    #[must_use] 
+    #[must_use]
     pub fn event_type(&self) -> &'static str {
         match self {
             SystemEvent::File { .. } => "file",
@@ -64,7 +64,7 @@ impl SystemEvent {
     }
 
     /// Get event timestamp
-    #[must_use] 
+    #[must_use]
     pub fn timestamp(&self) -> DateTime<Utc> {
         match self {
             SystemEvent::File { timestamp, .. } => *timestamp,

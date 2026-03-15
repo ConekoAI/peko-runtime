@@ -45,14 +45,14 @@ impl WatchConfig {
     }
 
     /// Set debounce duration
-    #[must_use] 
+    #[must_use]
     pub fn with_debounce(mut self, ms: u64) -> Self {
         self.debounce_ms = ms;
         self
     }
 
     /// Set recursive mode
-    #[must_use] 
+    #[must_use]
     pub fn with_recursive(mut self, recursive: bool) -> Self {
         self.recursive = recursive;
         self
@@ -90,9 +90,7 @@ impl FileWatcher {
 
         // Check if path exists
         if !path.exists() {
-            return Err(anyhow::anyhow!(
-                "Cannot watch non-existent path: {path:?}"
-            ));
+            return Err(anyhow::anyhow!("Cannot watch non-existent path: {path:?}"));
         }
 
         // Create watcher for this path
@@ -173,19 +171,19 @@ impl FileWatcher {
     }
 
     /// Get active watch configurations
-    #[must_use] 
+    #[must_use]
     pub fn get_watches(&self) -> &HashMap<PathBuf, WatchConfig> {
         &self.configs
     }
 
     /// Get count of active watches
-    #[must_use] 
+    #[must_use]
     pub fn watch_count(&self) -> usize {
         self.configs.len()
     }
 
     /// Check if a path is being watched
-    #[must_use] 
+    #[must_use]
     pub fn is_watching(&self, path: &Path) -> bool {
         self.configs.contains_key(path)
     }
@@ -199,7 +197,7 @@ pub struct FileWatcherBuilder {
 
 impl FileWatcherBuilder {
     /// Create a new builder with an event sender
-    #[must_use] 
+    #[must_use]
     pub fn new(event_tx: mpsc::Sender<SystemEvent>) -> Self {
         Self {
             event_tx,
@@ -208,7 +206,7 @@ impl FileWatcherBuilder {
     }
 
     /// Add a watch configuration
-    #[must_use] 
+    #[must_use]
     pub fn add_watch(mut self, config: WatchConfig) -> Self {
         self.configs.push(config);
         self

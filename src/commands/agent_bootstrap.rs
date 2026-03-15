@@ -16,7 +16,7 @@ pub struct AgentBootstrap {
 }
 
 impl AgentBootstrap {
-    #[must_use] 
+    #[must_use]
     pub fn new(name: &str, workspace_dir: std::path::PathBuf) -> Self {
         Self {
             name: name.to_string(),

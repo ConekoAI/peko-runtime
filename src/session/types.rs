@@ -22,7 +22,7 @@ pub enum Peer {
 
 impl Peer {
     /// Get the peer's ID string
-    #[must_use] 
+    #[must_use]
     pub fn id(&self) -> &str {
         match self {
             Peer::User(id) | Peer::Agent(id) => id,
@@ -30,7 +30,7 @@ impl Peer {
     }
 
     /// Get the peer type as a string
-    #[must_use] 
+    #[must_use]
     pub fn peer_type(&self) -> &'static str {
         match self {
             Peer::User(_) => "user",
@@ -39,13 +39,13 @@ impl Peer {
     }
 
     /// Check if this peer is a user
-    #[must_use] 
+    #[must_use]
     pub fn is_user(&self) -> bool {
         matches!(self, Peer::User(_))
     }
 
     /// Check if this peer is an agent
-    #[must_use] 
+    #[must_use]
     pub fn is_agent(&self) -> bool {
         matches!(self, Peer::Agent(_))
     }
@@ -64,8 +64,7 @@ impl fmt::Display for Peer {
 ///
 /// Each variant represents a different communication medium that
 /// can have its own overlay with channel-specific state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ChannelType {
     /// Command line interface
     #[default]
@@ -90,7 +89,7 @@ pub enum ChannelType {
 
 impl ChannelType {
     /// Get the channel type as a string slice
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             ChannelType::Cli => "cli",
@@ -106,7 +105,7 @@ impl ChannelType {
     }
 
     /// Parse a channel type from a string
-    #[must_use] 
+    #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "cli" => Some(ChannelType::Cli),
@@ -123,7 +122,7 @@ impl ChannelType {
     }
 
     /// Check if this channel type supports rich formatting
-    #[must_use] 
+    #[must_use]
     pub const fn supports_rich_formatting(&self) -> bool {
         matches!(
             self,
@@ -132,7 +131,7 @@ impl ChannelType {
     }
 
     /// Check if this channel type supports threaded conversations
-    #[must_use] 
+    #[must_use]
     pub const fn supports_threads(&self) -> bool {
         matches!(
             self,
@@ -147,7 +146,6 @@ impl fmt::Display for ChannelType {
     }
 }
 
-
 /// Types of session overlays
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverlayType {
@@ -159,7 +157,7 @@ pub enum OverlayType {
 
 impl OverlayType {
     /// Get the overlay type as a string
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             OverlayType::Channel(_) => "channel",
@@ -168,19 +166,19 @@ impl OverlayType {
     }
 
     /// Check if this is a channel overlay
-    #[must_use] 
+    #[must_use]
     pub const fn is_channel(&self) -> bool {
         matches!(self, OverlayType::Channel(_))
     }
 
     /// Check if this is a spawn overlay
-    #[must_use] 
+    #[must_use]
     pub const fn is_spawn(&self) -> bool {
         matches!(self, OverlayType::Spawn)
     }
 
     /// Get the channel type if this is a channel overlay
-    #[must_use] 
+    #[must_use]
     pub const fn channel_type(&self) -> Option<ChannelType> {
         match self {
             OverlayType::Channel(ct) => Some(*ct),
@@ -210,7 +208,7 @@ pub enum SpawnCleanupPolicy {
 
 impl SpawnCleanupPolicy {
     /// Get the policy as a string
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             SpawnCleanupPolicy::Keep => "keep",
@@ -219,7 +217,7 @@ impl SpawnCleanupPolicy {
     }
 
     /// Parse from string
-    #[must_use] 
+    #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "keep" => Some(SpawnCleanupPolicy::Keep),
@@ -229,7 +227,7 @@ impl SpawnCleanupPolicy {
     }
 
     /// Check if this policy means persist
-    #[must_use] 
+    #[must_use]
     pub const fn should_persist(&self) -> bool {
         matches!(self, SpawnCleanupPolicy::Keep)
     }

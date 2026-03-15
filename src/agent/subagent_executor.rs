@@ -179,21 +179,21 @@ impl SubagentExecutor {
     }
 
     /// Set the agent configuration
-    #[must_use] 
+    #[must_use]
     pub fn with_agent_config(mut self, config: AgentConfig) -> Self {
         self.agent_config = Some(config);
         self
     }
 
     /// Set the announcement channel
-    #[must_use] 
+    #[must_use]
     pub fn with_announcement_channel(mut self, tx: AnnouncementSender) -> Self {
         self.announcement_tx = Some(tx);
         self
     }
 
     /// Create announcement channel
-    #[must_use] 
+    #[must_use]
     pub fn create_announcement_channel() -> (AnnouncementSender, AnnouncementReceiver) {
         mpsc::channel(100)
     }
@@ -360,7 +360,10 @@ impl SubagentExecutor {
                         session_manager_clone,
                     ),
                 )
-                .await { r } else {
+                .await
+                {
+                    r
+                } else {
                     warn!(
                         "Subagent timed out: run_id={} timeout={}s",
                         run_id_clone, timeout
@@ -762,9 +765,7 @@ fn format_subagent_result(
     message.push_str("\n\n");
 
     // Add metadata
-    message.push_str(&format!(
-        "[runId: {run_id} | session: {child_session_key}]"
-    ));
+    message.push_str(&format!("[runId: {run_id} | session: {child_session_key}]"));
 
     // Add instruction for parent agent
     message.push_str("\n\n");

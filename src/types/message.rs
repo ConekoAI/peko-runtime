@@ -230,7 +230,7 @@ impl AgentMessage {
     }
 
     /// Check if this message should be sent to the LLM
-    #[must_use] 
+    #[must_use]
     pub fn is_llm_visible(&self) -> bool {
         match self {
             Self::Llm(_) => true,
@@ -242,7 +242,7 @@ impl AgentMessage {
     }
 
     /// Get timestamp if available
-    #[must_use] 
+    #[must_use]
     pub fn timestamp(&self) -> Option<DateTime<Utc>> {
         match self {
             Self::Llm(msg) => Some(msg.timestamp),
@@ -251,7 +251,7 @@ impl AgentMessage {
     }
 
     /// Convert to a simple text representation
-    #[must_use] 
+    #[must_use]
     pub fn to_text(&self) -> String {
         match self {
             Self::Llm(msg) => {
@@ -281,7 +281,7 @@ impl AgentMessage {
     /// - Text content: ~4 chars per token
     /// - Images: 1000 tokens each (provider varies)
     /// - Tool calls/results: JSON token count
-    #[must_use] 
+    #[must_use]
     pub fn estimate_tokens(&self) -> usize {
         match self {
             Self::Llm(msg) => {
@@ -428,7 +428,7 @@ impl AgentContext {
     }
 
     /// Get only LLM-visible messages
-    #[must_use] 
+    #[must_use]
     pub fn llm_messages(&self) -> Vec<AgentMessage> {
         self.messages
             .iter()
@@ -438,7 +438,7 @@ impl AgentContext {
     }
 
     /// Get messages for a specific role
-    #[must_use] 
+    #[must_use]
     pub fn messages_by_role(&self, role: MessageRole) -> Vec<&LlmMessage> {
         self.messages
             .iter()
@@ -456,9 +456,12 @@ impl AgentContext {
     /// - 1 token per word for whitespace-separated text
     /// - Additional overhead for message formatting (role, metadata)
     /// - Image content estimated at 1k tokens each (varies by provider)
-    #[must_use] 
+    #[must_use]
     pub fn estimate_tokens(&self) -> usize {
-        self.messages.iter().map(AgentMessage::estimate_tokens).sum()
+        self.messages
+            .iter()
+            .map(AgentMessage::estimate_tokens)
+            .sum()
     }
 
     /// Clear messages except system prompt
@@ -547,7 +550,7 @@ pub struct DefaultContextTransformer {
 }
 
 impl DefaultContextTransformer {
-    #[must_use] 
+    #[must_use]
     pub fn new(config: ContextWindowConfig) -> Self {
         Self { config }
     }

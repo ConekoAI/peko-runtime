@@ -4,7 +4,14 @@
 //! Handles JSON-RPC request/response correlation, initialization, and lifecycle.
 
 use crate::mcp::transport::{McpTransport, TransportError};
-use crate::mcp::types::{ServerInfo, ClientCapabilities, Implementation, InitializeRequest, MCP_PROTOCOL_VERSION, InitializeResult, Tool, ListToolsRequest, ListToolsResult, CallToolResult, CallToolRequest, Resource, ListResourcesRequest, ListResourcesResult, ResourceContents, ReadResourceRequest, ReadResourceResult, Prompt, ListPromptsRequest, ListPromptsResult, GetPromptResult, GetPromptRequest, JsonRpcMessage, JsonRpcRequest, JsonRpcNotification, RequestId};
+use crate::mcp::types::{
+    CallToolRequest, CallToolResult, ClientCapabilities, GetPromptRequest, GetPromptResult,
+    Implementation, InitializeRequest, InitializeResult, JsonRpcMessage, JsonRpcNotification,
+    JsonRpcRequest, ListPromptsRequest, ListPromptsResult, ListResourcesRequest,
+    ListResourcesResult, ListToolsRequest, ListToolsResult, Prompt, ReadResourceRequest,
+    ReadResourceResult, RequestId, Resource, ResourceContents, ServerInfo, Tool,
+    MCP_PROTOCOL_VERSION,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tracing::{debug, trace, warn};
@@ -86,7 +93,7 @@ impl McpClient {
     ///
     /// # Returns
     /// A new un-initialized MCP client
-    #[must_use] 
+    #[must_use]
     pub fn new(transport: Box<dyn McpTransport>) -> Self {
         Self {
             transport,
@@ -108,7 +115,7 @@ impl McpClient {
     /// * `transport` - The transport to use
     /// * `capabilities` - Client capabilities to advertise
     /// * `client_info` - Client implementation information
-    #[must_use] 
+    #[must_use]
     pub fn with_capabilities(
         transport: Box<dyn McpTransport>,
         capabilities: ClientCapabilities,

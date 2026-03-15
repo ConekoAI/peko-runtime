@@ -30,7 +30,7 @@ pub enum AsyncTaskStatus {
 }
 
 impl AsyncTaskStatus {
-    #[must_use] 
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -51,8 +51,7 @@ pub struct AsyncTaskReceipt {
 }
 
 /// Result delivery modes (inspired by `OpenClaw`)
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum AsyncResultDeliveryMode {
     /// Queue result and deliver when agent is idle (default)
     #[default]
@@ -64,7 +63,6 @@ pub enum AsyncResultDeliveryMode {
     /// Try to inject into running session (advanced)
     Steer,
 }
-
 
 /// Configuration for async tool execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,7 +122,7 @@ pub struct AsyncTaskRegistry {
 }
 
 impl AsyncTaskRegistry {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tasks: HashMap::new(),
@@ -136,7 +134,7 @@ impl AsyncTaskRegistry {
         self.tasks.insert(entry.task_id.clone(), entry);
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, task_id: &AsyncTaskId) -> Option<&AsyncTaskEntry> {
         self.tasks.get(task_id)
     }
@@ -185,7 +183,7 @@ impl AsyncTaskRegistry {
     }
 
     /// Get count of pending announcements for a session
-    #[must_use] 
+    #[must_use]
     pub fn pending_count(&self, session_key: &str) -> usize {
         self.pending_announcements
             .get(session_key)
@@ -224,7 +222,7 @@ pub struct AsyncTaskEventBus {
 }
 
 impl AsyncTaskEventBus {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> (Self, mpsc::UnboundedReceiver<AsyncTaskCompletionEvent>) {
         let (sender, receiver) = mpsc::unbounded_channel();
         (Self { sender }, receiver)
@@ -273,7 +271,7 @@ pub struct AsyncResultQueue {
 }
 
 impl AsyncResultQueue {
-    #[must_use] 
+    #[must_use]
     pub fn new(session_key: String, mode: AsyncResultDeliveryMode) -> Self {
         Self {
             session_key,
@@ -349,12 +347,12 @@ impl AsyncResultQueue {
         self.is_parent_busy = busy;
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.items.len()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
@@ -367,7 +365,7 @@ pub struct AsyncResultQueueManager {
 }
 
 impl AsyncResultQueueManager {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             queues: HashMap::new(),

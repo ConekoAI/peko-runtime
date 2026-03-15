@@ -93,7 +93,7 @@ pub struct InvocationRegistry {
 
 impl InvocationRegistry {
     /// Create new registry
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pending: HashMap::new(),
@@ -112,7 +112,7 @@ impl InvocationRegistry {
     }
 
     /// Get a pending invocation
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, id: &str) -> Option<&PendingInvocation> {
         self.pending.get(id)
     }
@@ -128,7 +128,7 @@ impl InvocationRegistry {
     }
 
     /// Get an agent's response channel
-    #[must_use] 
+    #[must_use]
     pub fn get_agent_channel(&self, agent_did: &str) -> Option<mpsc::Sender<InvocationResponse>> {
         self.agent_response_channels.get(agent_did).cloned()
     }
@@ -160,7 +160,7 @@ impl InvocationRegistry {
 pub type SharedInvocationRegistry = Arc<RwLock<InvocationRegistry>>;
 
 /// Create a shared invocation registry
-#[must_use] 
+#[must_use]
 pub fn create_shared_registry() -> SharedInvocationRegistry {
     Arc::new(RwLock::new(InvocationRegistry::new()))
 }
@@ -439,7 +439,7 @@ pub trait ExecuteHandler: Send + Sync {
 
 impl InvocationService {
     /// Create a new invocation service
-    #[must_use] 
+    #[must_use]
     pub fn new(
         event_subscriber: Option<Arc<EventSubscriber>>,
     ) -> (Self, mpsc::Sender<InvokeCommand>) {

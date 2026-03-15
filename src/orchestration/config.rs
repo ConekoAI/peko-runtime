@@ -71,15 +71,13 @@ pub struct WebhookRouteConfig {
 }
 
 /// File watcher configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FileWatcherConfig {
     /// Enable file watcher
     pub enabled: bool,
     /// Watch configurations
     pub watches: Vec<FileWatchConfig>,
 }
-
 
 /// Individual file watch configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,7 +193,7 @@ pub struct OrchestrationConfigBuilder {
 
 impl OrchestrationConfigBuilder {
     /// Create a new builder with defaults
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: OrchestrationConfig::default(),
@@ -203,14 +201,14 @@ impl OrchestrationConfigBuilder {
     }
 
     /// Enable/disable orchestration
-    #[must_use] 
+    #[must_use]
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.config.enabled = enabled;
         self
     }
 
     /// Enable webhook server
-    #[must_use] 
+    #[must_use]
     pub fn with_webhook(mut self, port: u16) -> Self {
         self.config.webhook.enabled = true;
         self.config.webhook.port = port;
@@ -233,7 +231,7 @@ impl OrchestrationConfigBuilder {
     }
 
     /// Enable file watcher
-    #[must_use] 
+    #[must_use]
     pub fn with_file_watcher(mut self) -> Self {
         self.config.file_watcher.enabled = true;
         self
@@ -252,14 +250,14 @@ impl OrchestrationConfigBuilder {
     }
 
     /// Set router config
-    #[must_use] 
+    #[must_use]
     pub fn with_router_config(mut self, config: RouterConfig) -> Self {
         self.config.router = config;
         self
     }
 
     /// Enable external ingress
-    #[must_use] 
+    #[must_use]
     pub fn with_external_ingress(mut self, port: u16) -> Self {
         self.config.external_ingress.enabled = true;
         self.config.external_ingress.port = port;
@@ -267,7 +265,7 @@ impl OrchestrationConfigBuilder {
     }
 
     /// Add external source
-    #[must_use] 
+    #[must_use]
     pub fn add_external_source(
         mut self,
         source: crate::orchestration::external_ingress::ExternalSource,
@@ -277,7 +275,7 @@ impl OrchestrationConfigBuilder {
     }
 
     /// Build the configuration
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> OrchestrationConfig {
         self.config
     }

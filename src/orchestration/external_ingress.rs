@@ -103,9 +103,12 @@ impl ExternalIngressConfig {
     }
 
     /// Find source by detection
-    #[must_use] 
+    #[must_use]
     pub fn detect_source(&self, headers: &HeaderMap, body: &str) -> Option<&ExternalSource> {
-        self.sources.iter().find(|&source| Self::matches_detection(&source.detection, headers, body)).map(|v| v as _)
+        self.sources
+            .iter()
+            .find(|&source| Self::matches_detection(&source.detection, headers, body))
+            .map(|v| v as _)
     }
 
     /// Check if detection matches
@@ -165,7 +168,7 @@ pub struct ExternalIngress {
 
 impl ExternalIngress {
     /// Create a new external ingress server
-    #[must_use] 
+    #[must_use]
     pub fn new(config: ExternalIngressConfig, event_tx: mpsc::Sender<SystemEvent>) -> Self {
         Self { config, event_tx }
     }
@@ -210,7 +213,7 @@ impl ExternalIngress {
     }
 
     /// Spawn in background
-    #[must_use] 
+    #[must_use]
     pub fn spawn(self) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         tokio::spawn(async move { self.start().await })
     }
@@ -234,7 +237,9 @@ async fn handle_ingress(
     let config = state.config.read().await;
 
     // Detect source
-    let source = if let Some(s) = config.detect_source(&headers, &body) { s.clone() } else {
+    let source = if let Some(s) = config.detect_source(&headers, &body) {
+        s.clone()
+    } else {
         warn!("Could not detect source from request");
         debug!("Headers: {:?}", headers);
         return (
@@ -365,7 +370,7 @@ pub struct ExternalIngressBuilder {
 
 impl ExternalIngressBuilder {
     /// Create new builder
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: ExternalIngressConfig::default(),
@@ -374,7 +379,7 @@ impl ExternalIngressBuilder {
     }
 
     /// Set port
-    #[must_use] 
+    #[must_use]
     pub fn port(mut self, port: u16) -> Self {
         self.config.port = port;
         self
@@ -387,14 +392,14 @@ impl ExternalIngressBuilder {
     }
 
     /// Set event sender
-    #[must_use] 
+    #[must_use]
     pub fn with_event_channel(mut self, tx: mpsc::Sender<SystemEvent>) -> Self {
         self.event_tx = Some(tx);
         self
     }
 
     /// Add external source
-    #[must_use] 
+    #[must_use]
     pub fn add_source(mut self, source: ExternalSource) -> Self {
         self.config.sources.push(source);
         self

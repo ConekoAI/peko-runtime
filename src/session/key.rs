@@ -78,7 +78,7 @@ pub enum ChatType {
 /// let key = derive_session_key("myagent", SessionScope::PerSender, &ctx);
 /// assert_eq!(key, "agent:myagent:discord:123456");
 /// ```
-#[must_use] 
+#[must_use]
 pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionContext) -> String {
     match scope {
         SessionScope::Global => {
@@ -137,7 +137,7 @@ pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionContext
 /// assert_eq!(parts.context, "discord");
 /// assert_eq!(parts.identifier, "123456");
 /// ```
-#[must_use] 
+#[must_use]
 pub fn parse_session_key(key: &str) -> SessionKeyParts<'_> {
     let parts: Vec<&str> = key.split(':').collect();
 
@@ -179,7 +179,7 @@ pub struct SessionKeyParts<'a> {
 
 /// Sanitize a component for use in a session key
 /// Replaces colons with underscores, limits length
-#[must_use] 
+#[must_use]
 pub fn sanitize_key_component(s: &str) -> String {
     s.chars()
         .map(|c| if c == ':' { '_' } else { c })
@@ -188,7 +188,7 @@ pub fn sanitize_key_component(s: &str) -> String {
 }
 
 /// Get the scope from a session key
-#[must_use] 
+#[must_use]
 pub fn scope_from_key(key: &str) -> Option<SessionScope> {
     let parts = parse_session_key(key);
 
@@ -209,7 +209,7 @@ pub fn scope_from_key(key: &str) -> Option<SessionScope> {
 }
 
 /// Build a Discord-specific session key
-#[must_use] 
+#[must_use]
 pub fn discord_session_key(
     agent: &str,
     user_id: Option<&str>,
@@ -230,15 +230,11 @@ pub fn discord_session_key(
         }
         // Thread in guild
         (_, Some(guild), Some(channel), Some(thread)) => {
-            format!(
-                "agent:{agent}:discord:guild:{guild}:channel:{channel}:thread:{thread}"
-            )
+            format!("agent:{agent}:discord:guild:{guild}:channel:{channel}:thread:{thread}")
         }
         // Channel in guild
         (_, Some(guild), Some(channel), None) => {
-            format!(
-                "agent:{agent}:discord:guild:{guild}:channel:{channel}"
-            )
+            format!("agent:{agent}:discord:guild:{guild}:channel:{channel}")
         }
         // Fallback to global
         _ => format!("agent:{agent}:global"),
@@ -246,14 +242,14 @@ pub fn discord_session_key(
 }
 
 /// Build a CLI session key
-#[must_use] 
+#[must_use]
 pub fn cli_session_key(agent: &str) -> String {
     format!("agent:{agent}:cli:default")
 }
 
 /// Derive a base session key from agent and peer
 /// Format: agent:{agent}:peer:{type}:{id}
-#[must_use] 
+#[must_use]
 pub fn derive_base_session_key(agent: &str, peer: &super::Peer) -> String {
     match peer {
         super::Peer::User(id) => {
@@ -267,7 +263,7 @@ pub fn derive_base_session_key(agent: &str, peer: &super::Peer) -> String {
 
 /// Derive an overlay key from base key and overlay info
 /// Format: {`base_key}:overlay:{type}:{overlay_id`}
-#[must_use] 
+#[must_use]
 pub fn derive_overlay_key(base_key: &str, overlay_type: &str, overlay_id: &str) -> String {
     format!("{base_key}:overlay:{overlay_type}:{overlay_id}")
 }
@@ -285,7 +281,7 @@ pub struct ParsedSessionKeyV2 {
 }
 
 /// Parse a session key (supports both v1 and v2 formats)
-#[must_use] 
+#[must_use]
 pub fn parse_session_key_v2(key: &str) -> Option<ParsedSessionKeyV2> {
     let parts: Vec<&str> = key.split(':').collect();
 
@@ -345,10 +341,12 @@ pub fn parse_session_key_v2(key: &str) -> Option<ParsedSessionKeyV2> {
 }
 
 /// Get the base session key from an overlay key
-#[must_use] 
+#[must_use]
 pub fn base_key_from_overlay(overlay_key: &str) -> Option<String> {
     // Format: agent:{agent}:peer:{type}:{id}:overlay:{overlay_type}:{overlay_id}
-    overlay_key.find(":overlay:").map(|pos| overlay_key[..pos].to_string())
+    overlay_key
+        .find(":overlay:")
+        .map(|pos| overlay_key[..pos].to_string())
 }
 
 #[cfg(test)]

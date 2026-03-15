@@ -98,7 +98,7 @@ pub struct McpManager {
 
 impl McpManager {
     /// Create a new MCP manager with the given configuration
-    #[must_use] 
+    #[must_use]
     pub fn new(config: McpConfig) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),

@@ -270,13 +270,6 @@ impl AgentManager {
         reg.get_capability(capability)
     }
 
-    /// Broadcast message to all agents
-    pub async fn broadcast(&self, message: &str) -> Result<()> {
-        let message = message.to_string();
-        let pool = self.pool.read().await;
-        pool.broadcast(&message).await
-    }
-
     /// Send message to specific agent
     pub async fn send(&self, target_did: &str, message: &str) -> Result<()> {
         if let Some(handle) = self.get(target_did).await {
@@ -313,9 +306,7 @@ impl AgentManager {
     /// Create agent communication tools
     #[must_use]
     pub fn create_communication_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::tools::{
-            AgentBroadcastTool, AgentInfoTool, AgentInvokeTool, AgentsListTool,
-        };
+        use crate::tools::{AgentInfoTool, AgentInvokeTool, AgentsListTool};
         use std::sync::Arc;
 
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = vec![];
@@ -328,9 +319,6 @@ impl AgentManager {
 
         // Agent spawn tool
         // AgentSpawnTool is registered by the agent module with SubagentExecutor
-
-        // Agent broadcast tool
-        tools.push(Arc::new(AgentBroadcastTool::new(self.command_tx.clone())));
 
         // Agent invoke tool (session-based messaging, GAP-005)
         // Note: agent_name is extracted from agent_did for now
@@ -473,7 +461,7 @@ impl AgentManager {
     }
 
     /// Get the invocation command channel
-    #[must_use] 
+    #[must_use]
     pub fn invocation_tx(&self) -> &mpsc::Sender<InvokeCommand> {
         &self.invocation_tx
     }

@@ -46,7 +46,7 @@ impl ToolResult {
     }
 
     /// Create a failed tool result with a standard error
-    #[must_use] 
+    #[must_use]
     pub fn error(err: anyhow::Error) -> Self {
         Self::failure(err.to_string())
     }
@@ -58,7 +58,7 @@ impl ToolResult {
     }
 
     /// Convert to JSON value for LLM consumption
-    #[must_use] 
+    #[must_use]
     pub fn to_json(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| {
             serde_json::json!({

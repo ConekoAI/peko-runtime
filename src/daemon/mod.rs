@@ -479,7 +479,9 @@ impl Daemon {
         info!("🔧 Isolated job: '{}'", job.message);
 
         // Check if agent is specified
-        let agent_id = if let Some(id) = &job.agent_id { id } else {
+        let agent_id = if let Some(id) = &job.agent_id {
+            id
+        } else {
             let msg = "Isolated job requires agent_id".to_string();
             warn!("   {}", msg);
             return Ok(("failed".to_string(), Some(msg)));

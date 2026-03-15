@@ -111,13 +111,13 @@ impl StreamingToolCall {
     }
 
     /// Check if we have enough to show a preview
-    #[must_use] 
+    #[must_use]
     pub fn has_preview(&self) -> bool {
         self.name.is_some() || !self.arguments_json.is_empty()
     }
 
     /// Get a preview of the tool call for display
-    #[must_use] 
+    #[must_use]
     pub fn preview(&self) -> String {
         let name = self.name.as_deref().unwrap_or("unknown");
         if self.arguments_json.is_empty() {
@@ -169,7 +169,7 @@ pub struct ToolCallStreamParser {
 
 impl ToolCallStreamParser {
     /// Create a new parser
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             calls: HashMap::new(),
@@ -220,19 +220,19 @@ impl ToolCallStreamParser {
     }
 
     /// Get all completed tool calls
-    #[must_use] 
+    #[must_use]
     pub fn completed_calls(&self) -> &[StreamingToolCall] {
         &self.completed
     }
 
     /// Get active (incomplete) tool calls
-    #[must_use] 
+    #[must_use]
     pub fn active_calls(&self) -> &HashMap<String, StreamingToolCall> {
         &self.calls
     }
 
     /// Check if all calls are complete
-    #[must_use] 
+    #[must_use]
     pub fn is_complete(&self) -> bool {
         self.calls.is_empty() && !self.completed.is_empty()
     }
@@ -253,7 +253,7 @@ impl ToolCallStreamParser {
 }
 
 /// Parse tool calls from complete text (non-streaming fallback)
-#[must_use] 
+#[must_use]
 pub fn parse_tool_calls_from_text(text: &str) -> Vec<StreamingToolCall> {
     let mut results = Vec::new();
 
@@ -333,9 +333,10 @@ fn value_to_tool_call(value: Value) -> Option<StreamingToolCall> {
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
 
-    let id = obj
-        .get("id")
-        .and_then(|v| v.as_str()).map_or_else(|| format!("tc_{}", chrono::Utc::now().timestamp_millis()), std::string::ToString::to_string);
+    let id = obj.get("id").and_then(|v| v.as_str()).map_or_else(
+        || format!("tc_{}", chrono::Utc::now().timestamp_millis()),
+        std::string::ToString::to_string,
+    );
 
     let mut call = StreamingToolCall::new(id);
     call.set_name(name);

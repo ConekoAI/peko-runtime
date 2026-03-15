@@ -1,6 +1,6 @@
 //! Tools for agents
 //!
-//! Core tools only. Heavy tools (web_search, fetch, http, browser, memory) 
+//! Core tools only. Heavy tools (web_search, fetch, http, browser, memory)
 //! have been migrated to standalone MCP servers:
 //! - mcp-web: web_search, fetch, http
 //! - mcp-browser: browser automation  
@@ -23,9 +23,7 @@ pub mod process;
 pub mod session_introspection;
 pub mod traits;
 
-pub use agent_management::{
-    AgentBroadcastTool, AgentInfoTool, AgentsListTool, ManagerCommand,
-};
+pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
 pub use agent_spawn::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool};
 pub use apply_patch::{ApplyPatchConfig, ApplyPatchTool};
 pub use context::{

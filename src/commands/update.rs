@@ -32,9 +32,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
     }
 
     if check_only {
-        println!(
-            "⚠️  Update available: v{current_version} → v{latest_version}"
-        );
+        println!("⚠️  Update available: v{current_version} → v{latest_version}");
         println!("   Run 'pekobot update' to install");
         return Ok(());
     }
@@ -65,9 +63,7 @@ pub async fn handle_update(check_only: bool, force: bool) -> Result<()> {
 
 /// Query GitHub for latest version
 async fn query_latest_version() -> Result<String> {
-    let api_url = format!(
-        "https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-    );
+    let api_url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
 
     // Use curl to query the GitHub API
     let output = Command::new("curl")
@@ -108,9 +104,8 @@ async fn perform_update(version: &str) -> Result<()> {
     let platform = detect_platform()?;
     let asset_name = format!("pekobot-{platform}.tar.gz");
 
-    let download_url = format!(
-        "https://github.com/{GITHUB_REPO}/releases/download/v{version}/{asset_name}"
-    );
+    let download_url =
+        format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{asset_name}");
 
     println!("   Downloading from GitHub...");
     println!("   {download_url}");
@@ -137,9 +132,8 @@ async fn perform_update(version: &str) -> Result<()> {
 
     if !status.success() {
         // Try without 'v' prefix
-        let alt_url = format!(
-            "https://github.com/{GITHUB_REPO}/releases/download/{version}/{asset_name}"
-        );
+        let alt_url =
+            format!("https://github.com/{GITHUB_REPO}/releases/download/{version}/{asset_name}");
 
         println!("   Trying alternative URL...");
         let status = Command::new("curl")
@@ -219,7 +213,8 @@ async fn perform_update(version: &str) -> Result<()> {
 
     // Replace binary (may need sudo if installed system-wide)
     println!("🔄 Installing new version...");
-    if let Ok(()) = std::fs::rename(&new_binary, &current_exe) {} else {
+    if let Ok(()) = std::fs::rename(&new_binary, &current_exe) {
+    } else {
         // Try with sudo
         println!("   Requesting elevated permissions...");
         let status = Command::new("sudo")

@@ -180,8 +180,7 @@ async fn list_sessions(agent_filter: Option<String>, json: bool) -> anyhow::Resu
 
         // Group by agent
         let mut current_agent = String::new();
-        for (agent, session_id, session_key, modified, size, msg_count, tokens) in all_sessions
-        {
+        for (agent, session_id, session_key, modified, size, msg_count, tokens) in all_sessions {
             if agent != current_agent {
                 println!("  🐱 {agent}");
                 current_agent = agent;
@@ -197,8 +196,7 @@ async fn list_sessions(agent_filter: Option<String>, json: bool) -> anyhow::Resu
             let indicator = if is_cli_default { "→ " } else { "   " };
 
             // Show session key if available, otherwise session_id
-            let display_id = session_key.as_deref()
-                .unwrap_or(&session_id);
+            let display_id = session_key.as_deref().unwrap_or(&session_id);
 
             let msg_info = if msg_count > 0 {
                 format!(" | {msg_count} msgs")
@@ -212,9 +210,7 @@ async fn list_sessions(agent_filter: Option<String>, json: bool) -> anyhow::Resu
                 String::new()
             };
 
-            println!(
-                "{indicator}   {display_id} {time_ago} ({size_str}{msg_info}{token_info})"
-            );
+            println!("{indicator}   {display_id} {time_ago} ({size_str}{msg_info}{token_info})");
         }
 
         println!();
@@ -352,7 +348,9 @@ async fn show_session(session_id: &str, show_history: bool, json: bool) -> anyho
         }
     }
 
-    let (entry, agent_name) = if let (Some(e), Some(a)) = (found_entry, found_agent) { (e, a) } else {
+    let (entry, agent_name) = if let (Some(e), Some(a)) = (found_entry, found_agent) {
+        (e, a)
+    } else {
         eprintln!("❌ Session '{session_id}' not found");
         return Ok(());
     };

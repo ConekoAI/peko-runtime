@@ -299,7 +299,7 @@ impl AgentRunnerBuilder {
     }
 
     /// Set the agent
-    #[must_use] 
+    #[must_use]
     pub fn agent(mut self, agent: Arc<Agent>) -> Self {
         self.agent = Some(agent);
         self

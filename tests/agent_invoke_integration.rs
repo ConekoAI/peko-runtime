@@ -148,7 +148,6 @@ async fn test_manager_creates_invoke_tool() {
     assert!(tool_names.contains(&"agents_list"));
     assert!(tool_names.contains(&"agent_info"));
     assert!(tool_names.contains(&"agent_spawn"));
-    assert!(tool_names.contains(&"agent_broadcast"));
 }
 
 /// Test that agent invocation ID is generated uniquely

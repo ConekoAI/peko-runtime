@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 
 /// Format a subagent result as an announcement message
-#[must_use] 
+#[must_use]
 pub fn format_announcement(run: &SubagentRun) -> String {
     let label_part = run
         .label
@@ -97,7 +97,7 @@ pub async fn announce_to_parent(parent_ctx: &SessionContext, run: &SubagentRun) 
 /// Build a system prompt for a subagent
 ///
 /// This provides context to the subagent about its task and relationship to the parent.
-#[must_use] 
+#[must_use]
 pub fn build_subagent_system_prompt(
     parent_session_key: &str,
     child_session_key: &str,
@@ -137,7 +137,7 @@ When you complete your work, the result will be automatically sent back to your 
 /// Build the task message for a subagent
 ///
 /// This is the actual user message that contains the task.
-#[must_use] 
+#[must_use]
 pub fn build_subagent_task_message(task: &str, depth: u32, max_depth: u32) -> String {
     format!(
         r"[Subagent Task]

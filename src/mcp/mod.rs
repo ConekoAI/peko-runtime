@@ -62,7 +62,10 @@
 // Public exports
 pub use client::{ClientError, McpClient};
 pub use config::{McpConfig, McpServerConfig, TransportType};
-pub use discovery::{should_use_mcp_tools, DiscoveredServer, McpServerStatus, discover_servers, is_server_installed, list_available_servers, mcp_config_path, mcp_install_dir, ensure_default_config};
+pub use discovery::{
+    discover_servers, ensure_default_config, is_server_installed, list_available_servers,
+    mcp_config_path, mcp_install_dir, should_use_mcp_tools, DiscoveredServer, McpServerStatus,
+};
 pub use manager::{ManagerError, McpManager, ServerState};
 pub use tool_proxy::{create_tool_proxies, McpToolProxy};
 pub use transport::{

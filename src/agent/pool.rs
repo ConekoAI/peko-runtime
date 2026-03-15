@@ -315,17 +315,6 @@ impl AgentPool {
             .collect()
     }
 
-    /// Broadcast message to all agents
-    pub async fn broadcast(&self, message: &str) -> Result<()> {
-        for (did, channel) in &self.channels {
-            if let Err(e) = channel.send(PoolMessage::Ping).await {
-                warn!("Failed to broadcast to {}: {}", did, e);
-            }
-        }
-        debug!("Broadcast to {} agents: {}", self.channels.len(), message);
-        Ok(())
-    }
-
     /// Get pool size
     #[must_use]
     pub fn size(&self) -> usize {

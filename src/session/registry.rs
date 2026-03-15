@@ -54,7 +54,7 @@ pub struct SessionInfo {
 
 impl SessionInfo {
     /// Create new session info
-    #[must_use] 
+    #[must_use]
     pub fn new(session_id: String, transcript_file: String) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -74,7 +74,7 @@ impl SessionInfo {
     }
 
     /// Create a branched session
-    #[must_use] 
+    #[must_use]
     pub fn branched(session_id: String, transcript_file: String, parent_id: String) -> Self {
         let mut info = Self::new(session_id, transcript_file);
         info.parent_id = Some(parent_id);
@@ -101,7 +101,7 @@ pub struct PeerRegistryEntry {
 
 impl PeerRegistryEntry {
     /// Create new entry with initial session
-    #[must_use] 
+    #[must_use]
     pub fn new(active_session_id: String, session_info: SessionInfo) -> Self {
         let mut sessions = HashMap::new();
         sessions.insert(active_session_id.clone(), session_info);
@@ -129,7 +129,7 @@ impl PeerRegistryEntry {
     }
 
     /// Get active session info
-    #[must_use] 
+    #[must_use]
     pub fn active(&self) -> Option<&SessionInfo> {
         self.sessions.get(&self.active_session_id)
     }
@@ -140,13 +140,13 @@ impl PeerRegistryEntry {
     }
 
     /// Get session by ID
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, session_id: &str) -> Option<&SessionInfo> {
         self.sessions.get(session_id)
     }
 
     /// List all non-archived sessions
-    #[must_use] 
+    #[must_use]
     pub fn list_active(&self) -> Vec<&SessionInfo> {
         self.sessions.values().filter(|s| !s.archived).collect()
     }
@@ -173,7 +173,7 @@ pub struct SessionRegistry {
 
 impl SessionRegistry {
     /// Create empty registry
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             peers: HashMap::new(),
@@ -193,7 +193,7 @@ impl SessionRegistry {
     }
 
     /// Get entry for a peer (returns None if not exists)
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, peer_key: &str) -> Option<&PeerRegistryEntry> {
         self.peers.get(peer_key)
     }
@@ -204,7 +204,7 @@ impl SessionRegistry {
     }
 
     /// Get active session ID for a peer
-    #[must_use] 
+    #[must_use]
     pub fn active_session_id(&self, peer_key: &str) -> Option<String> {
         self.peers
             .get(peer_key)
@@ -212,7 +212,7 @@ impl SessionRegistry {
     }
 
     /// Get active session transcript file for a peer
-    #[must_use] 
+    #[must_use]
     pub fn active_transcript_file(&self, peer_key: &str) -> Option<String> {
         self.peers
             .get(peer_key)
@@ -270,7 +270,7 @@ impl SessionRegistry {
     }
 
     /// List all sessions for a peer
-    #[must_use] 
+    #[must_use]
     pub fn list_sessions(&self, peer_key: &str) -> Vec<&SessionInfo> {
         self.peers
             .get(peer_key)
@@ -279,7 +279,7 @@ impl SessionRegistry {
     }
 
     /// Get all peers
-    #[must_use] 
+    #[must_use]
     pub fn list_peers(&self) -> Vec<&String> {
         self.peers.keys().collect()
     }
@@ -455,7 +455,7 @@ impl SessionRegistryManager {
     }
 
     /// Get sessions directory
-    #[must_use] 
+    #[must_use]
     pub fn sessions_dir(&self) -> &Path {
         &self.sessions_dir
     }

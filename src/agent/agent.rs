@@ -44,7 +44,10 @@ impl Agent {
     /// This synchronous version creates built-in tools only (no MCP).
     /// Use `create_tools_async` for full tool loading including MCP servers.
     fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::tools::{Tool, FileSystemTool, ProcessTool, InMemorySessionRegistry, SessionStatusTool, AgentSpawnTool, AgentSpawnStatusTool, AgentSpawnListTool};
+        use crate::tools::{
+            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
+            InMemorySessionRegistry, ProcessTool, SessionStatusTool, Tool,
+        };
 
         // Create core tools only (web tools now provided via MCP)
         let mut tools: Vec<Arc<dyn Tool>> = vec![
@@ -86,7 +89,10 @@ impl Agent {
     /// This asynchronous version loads MCP tools from configured MCP servers
     /// and adds them to the built-in tools.
     async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
-        use crate::tools::{Tool, FileSystemTool, ProcessTool, InMemorySessionRegistry, SessionStatusTool, AgentSpawnTool, AgentSpawnStatusTool, AgentSpawnListTool, ToolFactory};
+        use crate::tools::{
+            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
+            InMemorySessionRegistry, ProcessTool, SessionStatusTool, Tool, ToolFactory,
+        };
 
         // Create core tools only (web tools now provided via MCP)
         let mut tools: Vec<Arc<dyn Tool>> = vec![
@@ -255,13 +261,13 @@ impl Agent {
     }
 
     /// Get current state
-    #[must_use] 
+    #[must_use]
     pub fn state(&self) -> AgentState {
         self.state.read().unwrap().clone()
     }
 
     /// Get provider reference
-    #[must_use] 
+    #[must_use]
     pub fn get_provider(&self) -> Option<&dyn Provider> {
         self.provider.as_deref()
     }
@@ -530,13 +536,13 @@ impl Agent {
     }
 
     /// Get agent DID
-    #[must_use] 
+    #[must_use]
     pub fn did(&self) -> &str {
         &self.identity.did
     }
 
     /// Get agent name
-    #[must_use] 
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.config.name
     }
@@ -544,13 +550,13 @@ impl Agent {
     // Session overlay methods
 
     /// Get the session manager
-    #[must_use] 
+    #[must_use]
     pub fn session_manager(&self) -> Arc<TokioRwLock<SessionManager>> {
         Arc::clone(&self.session_manager)
     }
 
     /// Get the session router
-    #[must_use] 
+    #[must_use]
     pub fn session_router(&self) -> &SessionRouter {
         &self.session_router
     }
@@ -637,7 +643,7 @@ impl Agent {
     }
 
     /// Format session list for display
-    #[must_use] 
+    #[must_use]
     pub fn format_session_list(
         &self,
         sessions: &[crate::session::SessionInfo],
@@ -650,8 +656,7 @@ impl Agent {
         let mut output = String::from("📁 Sessions:\n\n");
 
         for (i, session) in sessions.iter().enumerate() {
-            let is_active = active_id
-                .is_some_and(|id| id == session.session_id);
+            let is_active = active_id.is_some_and(|id| id == session.session_id);
             let marker = if is_active { "●" } else { "○" };
             let label = session.label.as_deref().unwrap_or("unnamed");
             let short_id = &session.session_id[..8];
@@ -886,7 +891,7 @@ impl Agent {
     /// a channel-based interface for code that expects async event streaming.
 
     /// Check if the configured provider supports native tool calling
-    #[must_use] 
+    #[must_use]
     pub fn supports_native_tools(&self) -> bool {
         self.provider
             .as_ref()

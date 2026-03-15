@@ -23,11 +23,6 @@ pub enum ManagerCommand {
         config: crate::types::agent::AgentConfig,
         respond_to: mpsc::Sender<anyhow::Result<crate::agent::AgentHandle>>,
     },
-    /// Broadcast message
-    Broadcast {
-        message: String,
-        respond_to: mpsc::Sender<anyhow::Result<()>>,
-    },
     /// Spawn a subagent session (session overlay architecture)
     SpawnSession {
         agent_did: String,
@@ -200,56 +195,6 @@ Example:
                     "scope": format!("{:?}", agent.identity_info.scope)
                 }
             }
-        }))
-    }
-}
-
-pub struct AgentBroadcastTool {
-    command_tx: mpsc::Sender<ManagerCommand>,
-}
-
-impl AgentBroadcastTool {
-    #[must_use]
-    pub fn new(command_tx: mpsc::Sender<ManagerCommand>) -> Self {
-        Self { command_tx }
-    }
-}
-
-#[async_trait]
-impl Tool for AgentBroadcastTool {
-    fn name(&self) -> &'static str {
-        "agent_broadcast"
-    }
-
-    fn description(&self) -> &'static str {
-        r#"Broadcast a message to all agents.
-
-Example:
-{"message": "System shutdown in 5 min"}"#
-    }
-
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let message = params
-            .get("message")
-            .and_then(|m| m.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'message' parameter"))?
-            .to_string();
-
-        let (tx, mut rx) = mpsc::channel(1);
-        self.command_tx
-            .send(ManagerCommand::Broadcast {
-                message,
-                respond_to: tx,
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
-        rx.recv()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Manager channel closed"))??;
-
-        Ok(json!({
-            "success": true,
-            "message": "Broadcast sent"
         }))
     }
 }

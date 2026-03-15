@@ -318,12 +318,18 @@ impl Provider for KimiProvider {
         let usage = result
             .get("usage")
             .map(|u| TokenUsage {
-                input: u.get("prompt_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                input: u
+                    .get("prompt_tokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
                 output: u
                     .get("completion_tokens")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0),
-                total: u.get("total_tokens").and_then(serde_json::Value::as_u64).unwrap_or(0),
+                total: u
+                    .get("total_tokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
             })
             .unwrap_or_default();
 
@@ -468,8 +474,10 @@ impl KimiStreamState {
             // Handle tool calls
             if let Some(tool_calls_delta) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 for tc_delta in tool_calls_delta {
-                    let index =
-                        tc_delta.get("index").and_then(serde_json::Value::as_u64).unwrap_or(0) as usize;
+                    let index = tc_delta
+                        .get("index")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0) as usize;
 
                     let tc_state =
                         if let Some(tc) = self.tool_calls.iter_mut().find(|t| t.index == index) {

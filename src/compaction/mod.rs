@@ -354,9 +354,7 @@ impl Compactor {
             (INITIAL_SUMMARIZATION_PROMPT.to_string(), false)
         };
 
-        let prompt = format!(
-            "<conversation>\n{history}\n</conversation>\n\n{base_prompt}"
-        );
+        let prompt = format!("<conversation>\n{history}\n</conversation>\n\n{base_prompt}");
 
         debug!(
             "Requesting {} summary from LLM ({} messages)",

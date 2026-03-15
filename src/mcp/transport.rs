@@ -201,7 +201,7 @@ impl StdioTransport {
     }
 
     /// Get the process ID of the child process
-    #[must_use] 
+    #[must_use]
     pub fn pid(&self) -> u32 {
         self.pid
     }
@@ -385,7 +385,7 @@ impl InMemoryTransport {
     ///
     /// Returns two transports that are connected to each other.
     /// Messages sent on one will be received on the other.
-    #[must_use] 
+    #[must_use]
     pub fn pair() -> (Self, Self) {
         let (tx1, rx1) = tokio::sync::mpsc::channel(100);
         let (tx2, rx2) = tokio::sync::mpsc::channel(100);

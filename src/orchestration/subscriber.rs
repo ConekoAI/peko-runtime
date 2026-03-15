@@ -59,19 +59,19 @@ impl EventSubscriber {
     }
 
     /// Subscribe to internal events
-    #[must_use] 
+    #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<SystemEvent> {
         self.sender.subscribe()
     }
 
     /// Get the sender for external use
-    #[must_use] 
+    #[must_use]
     pub fn sender(&self) -> broadcast::Sender<SystemEvent> {
         self.sender.clone()
     }
 
     /// Get the number of active subscribers
-    #[must_use] 
+    #[must_use]
     pub fn subscriber_count(&self) -> usize {
         self.sender.receiver_count()
     }
@@ -134,7 +134,7 @@ pub struct EventSubscriberBuilder {
 
 impl EventSubscriberBuilder {
     /// Create a new builder
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             event_rx: None,
@@ -143,21 +143,21 @@ impl EventSubscriberBuilder {
     }
 
     /// Set the event channel for `EventRouter` integration
-    #[must_use] 
+    #[must_use]
     pub fn with_event_channel(mut self, rx: mpsc::Receiver<SystemEvent>) -> Self {
         self.event_rx = Some(rx);
         self
     }
 
     /// Set the broadcast channel capacity
-    #[must_use] 
+    #[must_use]
     pub fn with_capacity(mut self, capacity: usize) -> Self {
         self.capacity = capacity;
         self
     }
 
     /// Build the `EventSubscriber`
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> EventSubscriber {
         let (sender, _receiver) = broadcast::channel(self.capacity);
 

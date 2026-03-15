@@ -225,7 +225,7 @@ pub struct LockManager {
 }
 
 impl LockManager {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             held: Mutex::new(HashMap::new()),

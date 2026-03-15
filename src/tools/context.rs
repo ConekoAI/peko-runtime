@@ -147,7 +147,7 @@ impl ToolContext {
     ///     Ok(Value::Null)
     /// }
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn is_aborted(&self) -> bool {
         *self.abort_rx.borrow()
     }
@@ -155,7 +155,7 @@ impl ToolContext {
     /// Subscribe to abort signal changes
     ///
     /// Useful for tools that want to await on abort rather than poll
-    #[must_use] 
+    #[must_use]
     pub fn abort_signal(&self) -> tokio::sync::watch::Receiver<bool> {
         self.abort_rx.clone()
     }
@@ -249,7 +249,7 @@ impl ToolContext {
     }
 
     /// Get the configured timeout
-    #[must_use] 
+    #[must_use]
     pub fn timeout(&self) -> Option<Duration> {
         self.timeout
     }
@@ -279,7 +279,7 @@ pub struct AbortSignal {
 
 impl AbortSignal {
     /// Create a new abort signal (initially not aborted)
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let (tx, _rx) = tokio::sync::watch::channel(false);
         Self { tx }
@@ -291,7 +291,7 @@ impl AbortSignal {
     }
 
     /// Check if already aborted
-    #[must_use] 
+    #[must_use]
     pub fn is_aborted(&self) -> bool {
         *self.tx.borrow()
     }
@@ -318,7 +318,7 @@ impl AbortSignal {
     }
 
     /// Get a receiver for the abort signal
-    #[must_use] 
+    #[must_use]
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<bool> {
         self.tx.subscribe()
     }

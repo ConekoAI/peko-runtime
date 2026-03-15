@@ -6,8 +6,7 @@
 //! - Breaks at natural boundaries (paragraph/sentence/whitespace)
 
 /// Break preference for block boundaries
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BreakPreference {
     /// Break at paragraph boundaries (double newline)
     Paragraph,
@@ -19,7 +18,6 @@ pub enum BreakPreference {
     /// Hard break at `max_chars`
     Hard,
 }
-
 
 /// Block chunker configuration
 #[derive(Debug, Clone)]
@@ -56,13 +54,13 @@ pub struct BlockChunker {
 
 impl BlockChunker {
     /// Create a new block chunker with default config
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(ChunkerConfig::default())
     }
 
     /// Create a new block chunker with custom config
-    #[must_use] 
+    #[must_use]
     pub fn with_config(config: ChunkerConfig) -> Self {
         Self {
             config,
@@ -97,7 +95,7 @@ impl BlockChunker {
     }
 
     /// Get the current buffer size
-    #[must_use] 
+    #[must_use]
     pub fn buffer_len(&self) -> usize {
         self.buffer.len()
     }
@@ -172,11 +170,7 @@ impl BlockChunker {
         for (pos, _) in search_area.match_indices(". ") {
             if pos + 2 < search_area.len() {
                 let next_char = &search_area[pos + 2..pos + 3];
-                if next_char
-                    .chars()
-                    .next()
-                    .is_some_and(char::is_uppercase)
-                {
+                if next_char.chars().next().is_some_and(char::is_uppercase) {
                     return Some(pos + 2);
                 }
             }
@@ -198,7 +192,7 @@ impl BlockChunker {
     }
 
     /// Get total emitted character count
-    #[must_use] 
+    #[must_use]
     pub fn emitted_chars(&self) -> usize {
         self.emitted_chars
     }
@@ -228,13 +222,13 @@ pub struct CoalescingChunker {
 
 impl CoalescingChunker {
     /// Create a new coalescing chunker
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(ChunkerConfig::default(), 1500, 3000)
     }
 
     /// Create with custom config
-    #[must_use] 
+    #[must_use]
     pub fn with_config(
         chunker_config: ChunkerConfig,
         min_coalesce: usize,

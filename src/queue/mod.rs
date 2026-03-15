@@ -18,8 +18,7 @@ use tokio::sync::{mpsc, Mutex, Notify};
 use tracing::{debug, warn};
 
 /// Queue mode for handling inbound messages
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueueMode {
     /// Inject immediately into current run (cancels pending tool calls)
     /// Falls back to followup if not streaming
@@ -34,7 +33,6 @@ pub enum QueueMode {
     /// Abort active run for that session, then run newest message
     Interrupt,
 }
-
 
 impl QueueMode {
     /// Parse from string
@@ -395,7 +393,9 @@ impl MessageQueue {
 
     /// Coalesce messages from queue that are within debounce window
     fn coalesce_messages(queue: &mut VecDeque<QueuedMessage>, debounce_ms: u64) -> Vec<String> {
-        let cutoff = Instant::now().checked_sub(Duration::from_millis(debounce_ms)).unwrap();
+        let cutoff = Instant::now()
+            .checked_sub(Duration::from_millis(debounce_ms))
+            .unwrap();
         let mut coalesced = Vec::new();
 
         // Take messages that arrived within debounce window

@@ -172,7 +172,7 @@ pub enum AgenticEvent {
 
 impl AgenticEvent {
     /// Get the run ID for this event
-    #[must_use] 
+    #[must_use]
     pub fn run_id(&self) -> &str {
         match self {
             AgenticEvent::Lifecycle { run_id, .. } => run_id,
@@ -188,7 +188,7 @@ impl AgenticEvent {
     }
 
     /// Returns true if this is a lifecycle end event
-    #[must_use] 
+    #[must_use]
     pub fn is_end(&self) -> bool {
         matches!(
             self,
@@ -200,7 +200,7 @@ impl AgenticEvent {
     }
 
     /// Returns true if this is an error event
-    #[must_use] 
+    #[must_use]
     pub fn is_error(&self) -> bool {
         matches!(
             self,
@@ -231,7 +231,7 @@ pub struct EventRouter {
 
 impl EventRouter {
     /// Create a new event router
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             subscribers: Vec::new(),

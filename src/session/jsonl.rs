@@ -110,7 +110,7 @@ pub struct SessionStorage {
 
 impl SessionStorage {
     /// Create new session storage
-    #[must_use] 
+    #[must_use]
     pub fn new(storage_dir: PathBuf) -> Self {
         Self { storage_dir }
     }

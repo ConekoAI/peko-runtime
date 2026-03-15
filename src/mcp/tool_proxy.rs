@@ -61,13 +61,13 @@ impl McpToolProxy {
     }
 
     /// Get the server name
-    #[must_use] 
+    #[must_use]
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
 
     /// Get the original MCP tool definition
-    #[must_use] 
+    #[must_use]
     pub fn mcp_tool(&self) -> &McpTool {
         &self.tool
     }

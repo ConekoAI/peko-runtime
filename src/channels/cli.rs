@@ -519,9 +519,7 @@ async fn handle_cli_session_command(
                 Ok(id) => id,
                 Err(e) => return Some(Err(e)),
             };
-            println!(
-                "\n✅ Created and switched to new session: {new_session_id}"
-            );
+            println!("\n✅ Created and switched to new session: {new_session_id}");
 
             // Reload session context
             {
@@ -553,9 +551,7 @@ async fn handle_cli_session_command(
             };
 
             if let Some(lbl) = label {
-                println!(
-                    "\n✅ Branched to new session: {branch_id} (label: {lbl})"
-                );
+                println!("\n✅ Branched to new session: {branch_id} (label: {lbl})");
             } else {
                 println!("\n✅ Branched to new session: {branch_id}");
             }

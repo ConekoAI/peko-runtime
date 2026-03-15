@@ -130,7 +130,7 @@ impl McpServerConfig {
     }
 
     /// Set environment variables
-    #[must_use] 
+    #[must_use]
     pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
         self.env = env;
         self
@@ -143,7 +143,7 @@ impl McpServerConfig {
     }
 
     /// Set auto-start
-    #[must_use] 
+    #[must_use]
     pub fn with_auto_start(mut self, auto_start: bool) -> Self {
         self.auto_start = auto_start;
         self
@@ -200,13 +200,13 @@ fn default_global_health_check_interval_secs() -> u64 {
 
 impl McpConfig {
     /// Create a new empty configuration
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a configuration with the given servers
-    #[must_use] 
+    #[must_use]
     pub fn with_servers(servers: Vec<McpServerConfig>) -> Self {
         Self {
             servers,
@@ -221,7 +221,7 @@ impl McpConfig {
     }
 
     /// Get a server configuration by name
-    #[must_use] 
+    #[must_use]
     pub fn get_server(&self, name: &str) -> Option<&McpServerConfig> {
         self.servers.iter().find(|s| s.name == name)
     }

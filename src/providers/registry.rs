@@ -31,7 +31,7 @@ pub enum ApiType {
 
 impl ApiType {
     /// Parse API type from string
-    #[must_use] 
+    #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "openai-completions" => Some(ApiType::OpenAICompletions),
@@ -41,7 +41,7 @@ impl ApiType {
     }
 
     /// Convert to string
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             ApiType::OpenAICompletions => "openai-completions",
@@ -84,7 +84,7 @@ impl Default for ProviderRegistry {
 
 impl ProviderRegistry {
     /// Create a new registry with all built-in providers
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         let providers: HashMap<String, &'static ProviderMetadata> = BUILT_IN_PROVIDERS
             .iter()
@@ -101,19 +101,19 @@ impl ProviderRegistry {
     }
 
     /// Look up provider metadata by name
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&ProviderMetadata> {
         self.providers.get(name).copied()
     }
 
     /// Check if a provider is supported
-    #[must_use] 
+    #[must_use]
     pub fn has(&self, name: &str) -> bool {
         self.providers.contains_key(name)
     }
 
     /// Get API key from environment variables
-    #[must_use] 
+    #[must_use]
     pub fn get_api_key(&self, metadata: &ProviderMetadata) -> Option<String> {
         for env_var in metadata.api_key_env {
             if let Ok(key) = std::env::var(env_var) {
@@ -326,7 +326,8 @@ pub fn create_provider(
 
     // Get model
     let model = config
-        .default_model_config().map_or_else(|| metadata.default_model.to_string(), |m| m.name.clone());
+        .default_model_config()
+        .map_or_else(|| metadata.default_model.to_string(), |m| m.name.clone());
 
     // Create provider based on API type
     match metadata.api_type {
@@ -335,12 +336,8 @@ pub fn create_provider(
                 api_key,
                 base_url,
                 model,
-                max_tokens: config
-                    .default_model_config()
-                    .map_or(4096, |m| m.max_tokens),
-                temperature: config
-                    .default_model_config()
-                    .map_or(0.7, |m| m.temperature),
+                max_tokens: config.default_model_config().map_or(4096, |m| m.max_tokens),
+                temperature: config.default_model_config().map_or(0.7, |m| m.temperature),
                 timeout_seconds: config.timeout_seconds,
             };
 
@@ -351,12 +348,8 @@ pub fn create_provider(
                 api_key,
                 base_url,
                 model,
-                max_tokens: config
-                    .default_model_config()
-                    .map_or(4096, |m| m.max_tokens),
-                temperature: config
-                    .default_model_config()
-                    .map_or(0.7, |m| m.temperature),
+                max_tokens: config.default_model_config().map_or(4096, |m| m.max_tokens),
+                temperature: config.default_model_config().map_or(0.7, |m| m.temperature),
                 timeout_seconds: config.timeout_seconds,
             };
 
@@ -366,7 +359,7 @@ pub fn create_provider(
 }
 
 /// Get provider metadata by name
-#[must_use] 
+#[must_use]
 pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
     // Direct lookup in BUILT_IN_PROVIDERS to avoid lifetime issues
     let name_lower = name.to_lowercase();
@@ -391,7 +384,7 @@ pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
 }
 
 /// List all available providers
-#[must_use] 
+#[must_use]
 pub fn list_providers() -> Vec<&'static ProviderMetadata> {
     BUILT_IN_PROVIDERS.iter().collect()
 }

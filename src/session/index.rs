@@ -75,7 +75,7 @@ pub struct IndexEntry {
 
 impl IndexEntry {
     /// Create a new index entry
-    #[must_use] 
+    #[must_use]
     pub fn new(session_id: String, agent_name: String, transcript_file: String) -> Self {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -112,7 +112,7 @@ impl IndexEntry {
     }
 
     /// Get the absolute path to the transcript file
-    #[must_use] 
+    #[must_use]
     pub fn transcript_path(&self, index_dir: &Path) -> PathBuf {
         index_dir.join(&self.transcript_file)
     }
@@ -175,7 +175,7 @@ pub struct MaintenanceReport {
 }
 
 impl MaintenanceReport {
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pruned == 0 && self.capped == 0 && !self.rotated
     }
@@ -236,7 +236,7 @@ impl SessionIndex {
     }
 
     /// Set custom cache TTL
-    #[must_use] 
+    #[must_use]
     pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
         self.cache_ttl = ttl;
         self
@@ -485,6 +485,15 @@ impl SessionIndex {
             }
 
             self.save(&entries).await?;
+
+            // Update cache after pruning
+            let mtime = self.get_mtime().await?;
+            self.cache = Some(CachedIndex {
+                data: entries,
+                loaded_at: SystemTime::now(),
+                mtime_ms: mtime,
+            });
+
             info!(
                 "Session maintenance complete: pruned={}, capped={}, reclaimed={} bytes",
                 report.pruned, report.capped, report.bytes_reclaimed

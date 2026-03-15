@@ -25,7 +25,7 @@ impl SseEvent {
     }
 
     /// Check if this is a "done" event (`OpenAI` format)
-    #[must_use] 
+    #[must_use]
     pub fn is_done(&self) -> bool {
         self.data.trim() == "[DONE]"
     }
@@ -46,7 +46,7 @@ pub struct SseParser {
 
 impl SseParser {
     /// Create a new SSE parser
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
@@ -77,7 +77,7 @@ impl SseParser {
     }
 
     /// Get any remaining data (incomplete event)
-    #[must_use] 
+    #[must_use]
     pub fn into_remaining(self) -> String {
         self.buffer
     }
@@ -131,7 +131,7 @@ fn parse_event_text(text: &str) -> Option<SseEvent> {
 /// Parse a streaming response line (simple format used by some providers)
 ///
 /// Format: `data: {...}\n\n`
-#[must_use] 
+#[must_use]
 pub fn parse_sse_line(line: &str) -> Option<SseEvent> {
     if line.is_empty() {
         return None;

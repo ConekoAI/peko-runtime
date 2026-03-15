@@ -235,13 +235,16 @@ Examples:
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(300);
 
-        let cleanup = params
-            .get("cleanup")
-            .and_then(|c| c.as_str())
-            .map_or(SpawnCleanupPolicy::Keep, |s| match s.to_lowercase().as_str() {
-                "delete" => SpawnCleanupPolicy::Delete,
-                _ => SpawnCleanupPolicy::Keep,
-            });
+        let cleanup =
+            params
+                .get("cleanup")
+                .and_then(|c| c.as_str())
+                .map_or(SpawnCleanupPolicy::Keep, |s| {
+                    match s.to_lowercase().as_str() {
+                        "delete" => SpawnCleanupPolicy::Delete,
+                        _ => SpawnCleanupPolicy::Keep,
+                    }
+                });
 
         // Get parent session key - from params, session provider, or current session context
         let parent_session_key = if let Some(key) =

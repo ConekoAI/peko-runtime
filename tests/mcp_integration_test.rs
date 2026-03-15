@@ -22,7 +22,7 @@ async fn test_tool_factory_core_only() {
 
     // Should have core tools
     assert!(!tools.is_empty(), "Should have core tools");
-    
+
     // MCP should not be used
     assert!(!discovery.has_mcp_tools());
     assert_eq!(discovery.servers_found, 0);
@@ -49,7 +49,7 @@ async fn test_tool_factory_mcp_enabled_no_config() {
 
     // Should still have core tools
     assert!(!tools.is_empty(), "Should have core tools even without MCP");
-    
+
     // No MCP servers should be found (no config)
     assert_eq!(discovery.servers_found, 0);
 }
@@ -97,17 +97,28 @@ fn test_create_minimal_tools() {
     use pekobot::tools::ToolFactory;
 
     let tools = ToolFactory::create_minimal_tools(PathBuf::from("."));
-    
+
     // Minimal tools should only have filesystem and process
     let tool_names: Vec<_> = tools.iter().map(|t| t.name().to_string()).collect();
-    
+
     // Should have filesystem
-    assert!(tool_names.iter().any(|n| n.contains("filesystem") || n == "fs" || n == "read_file" || n == "FileSystem"),
-        "Should have filesystem tool, got: {:?}", tool_names);
-    
-    // Should have process  
-    assert!(tool_names.iter().any(|n| n.contains("process") || n.contains("shell") || n.contains("bash")),
-        "Should have process tool, got: {:?}", tool_names);
+    assert!(
+        tool_names.iter().any(|n| n.contains("filesystem")
+            || n == "fs"
+            || n == "read_file"
+            || n == "FileSystem"),
+        "Should have filesystem tool, got: {:?}",
+        tool_names
+    );
+
+    // Should have process
+    assert!(
+        tool_names
+            .iter()
+            .any(|n| n.contains("process") || n.contains("shell") || n.contains("bash")),
+        "Should have process tool, got: {:?}",
+        tool_names
+    );
 }
 
 /// Test that create_coding_tools works
@@ -116,7 +127,7 @@ fn test_create_coding_tools() {
     use pekobot::tools::ToolFactory;
 
     let tools = ToolFactory::create_coding_tools(PathBuf::from("."));
-    
+
     // Should have more tools than minimal
     assert!(!tools.is_empty(), "Should have coding tools");
 }

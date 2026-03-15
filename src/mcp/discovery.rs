@@ -43,11 +43,11 @@ pub struct DiscoveredServer {
 /// Check if MCP tools should be used (config exists and has servers)
 pub async fn should_use_mcp_tools() -> bool {
     let config_path = mcp_config_path();
-    
+
     if !config_path.exists() {
         return false;
     }
-    
+
     match tokio::fs::read_to_string(&config_path).await {
         Ok(content) => {
             if let Ok(config) = toml::from_str::<McpConfig>(&content) {
@@ -79,13 +79,13 @@ pub fn mcp_install_dir() -> PathBuf {
 /// Find MCP server binary in PATH or install dir
 pub async fn find_server_binary(name: &str) -> Option<PathBuf> {
     let binary_name = format!("mcp-{}", name);
-    
+
     // Check install dir first
     let install_path = mcp_install_dir().join(&binary_name);
     if install_path.exists() {
         return Some(install_path);
     }
-    
+
     // Check PATH
     which::which(&binary_name).ok()
 }
@@ -123,36 +123,36 @@ description = "Memory and knowledge storage"
 /// Create default MCP config if it doesn't exist
 pub async fn ensure_default_config() -> anyhow::Result<PathBuf> {
     let config_path = mcp_config_path();
-    
+
     if config_path.exists() {
         return Ok(config_path);
     }
-    
+
     // Ensure parent directory exists
     if let Some(parent) = config_path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    
+
     tokio::fs::write(&config_path, default_mcp_config()).await?;
     info!("Created default MCP config at {:?}", config_path);
-    
+
     Ok(config_path)
 }
 
 /// Discover MCP servers from config
 pub async fn discover_servers() -> anyhow::Result<Vec<DiscoveredServer>> {
     let config_path = mcp_config_path();
-    
+
     if !config_path.exists() {
         debug!("MCP config not found at {:?}", config_path);
         return Ok(Vec::new());
     }
-    
+
     let content = tokio::fs::read_to_string(&config_path).await?;
     let config: McpConfig = toml::from_str(&content)?;
-    
+
     let mut discovered = Vec::new();
-    
+
     for server_config in config.servers {
         let name = server_config.name.clone();
         let status = if is_server_installed(&name).await {
@@ -162,33 +162,36 @@ pub async fn discover_servers() -> anyhow::Result<Vec<DiscoveredServer>> {
         } else {
             McpServerStatus::NotInstalled
         };
-        
+
         discovered.push(DiscoveredServer {
             name: name.clone(),
             config: server_config,
             status,
             tools_count: 0, // Would need to connect to get actual count
             error: if status == McpServerStatus::NotInstalled {
-                Some(format!("Server '{}' not found. Install with: pekobot mcp install {}", name, name))
+                Some(format!(
+                    "Server '{}' not found. Install with: pekobot mcp install {}",
+                    name, name
+                ))
             } else {
                 None
             },
         });
     }
-    
+
     Ok(discovered)
 }
 
 /// Get list of available MCP server names
 pub async fn list_available_servers() -> Vec<String> {
     let mut servers = Vec::new();
-    
+
     for name in ["web", "browser", "memory"] {
         if is_server_installed(name).await {
             servers.push(name.to_string());
         }
     }
-    
+
     servers
 }
 
@@ -240,12 +243,12 @@ mod tests {
     #[tokio::test]
     async fn test_default_mcp_config() {
         let config = default_mcp_config();
-        
+
         // Should contain server definitions
         assert!(config.contains("[servers.web]"));
         assert!(config.contains("[servers.browser]"));
         assert!(config.contains("[servers.memory]"));
-        
+
         // Should have commands
         assert!(config.contains("command = \"mcp-web\""));
         assert!(config.contains("command = \"mcp-browser\""));
@@ -256,16 +259,20 @@ mod tests {
     async fn test_ensure_default_config() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join(".pekobot").join("mcp.toml");
-        
+
         // Ensure parent directory exists
-        tokio::fs::create_dir_all(config_path.parent().unwrap()).await.unwrap();
-        
+        tokio::fs::create_dir_all(config_path.parent().unwrap())
+            .await
+            .unwrap();
+
         // Write default config directly
-        tokio::fs::write(&config_path, default_mcp_config()).await.unwrap();
-        
+        tokio::fs::write(&config_path, default_mcp_config())
+            .await
+            .unwrap();
+
         // Verify file was created
         assert!(config_path.exists());
-        
+
         // Read and verify content
         let content = tokio::fs::read_to_string(&config_path).await.unwrap();
         assert!(content.contains("[servers.web]"));
@@ -275,10 +282,10 @@ mod tests {
     async fn test_should_use_mcp_tools_no_config() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join(".pekobot").join("mcp.toml");
-        
+
         // Ensure the file doesn't exist
         assert!(!config_path.exists());
-        
+
         // Temporarily override the config path by creating a helper that uses a different path
         // For this test, we just verify the file doesn't exist
         assert!(!config_path.exists());
@@ -295,11 +302,11 @@ mod tests {
             McpServerStatus::NotRunning,
             McpServerStatus::Failed,
         ];
-        
+
         // Verify they can be compared
         assert_ne!(McpServerStatus::Available, McpServerStatus::Failed);
         assert_eq!(McpServerStatus::Available, McpServerStatus::Available);
-        
+
         // Just to use the variable
         assert_eq!(statuses.len(), 6);
     }

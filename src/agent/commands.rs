@@ -14,8 +14,7 @@ use tracing::{debug, warn};
 ///
 /// This runs in a separate task and handles:
 /// - Listing agents (for `agent_info` tool)
-/// - Spawning agents (for `agent_spawn` tool)  
-/// - Broadcasting messages (for `agent_broadcast` tool)
+/// - Spawning agents (for `agent_spawn` tool)
 pub async fn command_handler_loop(
     pool: Arc<RwLock<AgentPool>>,
     _registry: Arc<RwLock<LocalRegistry>>,
@@ -63,18 +62,6 @@ pub async fn command_handler_loop(
                 ));
                 if let Err(e) = respond_to.send(result).await {
                     warn!("Failed to send spawn response: {}", e);
-                }
-            }
-
-            ManagerCommand::Broadcast {
-                message,
-                respond_to,
-            } => {
-                // Need to await while holding the lock due to lifetime issues
-                let result = pool.read().await.broadcast(&message).await;
-
-                if let Err(e) = respond_to.send(result).await {
-                    warn!("Failed to send broadcast response: {}", e);
                 }
             }
 

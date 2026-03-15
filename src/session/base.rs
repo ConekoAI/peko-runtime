@@ -53,7 +53,7 @@ pub struct BaseSession {
 
 impl BaseSession {
     /// Get the storage directory for an agent
-    #[must_use] 
+    #[must_use]
     pub fn storage_dir(agent_name: &str) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -327,7 +327,7 @@ impl BaseSession {
     }
 
     /// Get token usage
-    #[must_use] 
+    #[must_use]
     pub fn token_usage(&self) -> (usize, usize, usize) {
         (
             self.input_tokens,
@@ -575,9 +575,7 @@ impl BaseSession {
                             _ => None,
                         })
                         .collect();
-                    context.push_str(&format!(
-                        "tool: [{tool_name} result: {result_text}]\n\n"
-                    ));
+                    context.push_str(&format!("tool: [{tool_name} result: {result_text}]\n\n"));
                 }
                 _ => {}
             }

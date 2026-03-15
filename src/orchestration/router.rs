@@ -23,11 +23,6 @@ pub enum AgentAction {
         prompt: String,
         context: HashMap<String, serde_json::Value>,
     },
-    /// Broadcast to multiple agents
-    Broadcast {
-        agent_ids: Vec<String>,
-        message: String,
-    },
     /// Queue for later processing
     Queue {
         queue_name: String,
@@ -115,30 +110,6 @@ impl EventRouter {
                 prompt,
                 context: _context,
             } => self.execute_invoke(agent_id, prompt).await,
-            AgentAction::Broadcast { agent_ids, message } => {
-                info!("Broadcasting to {} agents", agent_ids.len());
-
-                // Get the manager handle
-                let manager = self.agent_manager.read().await;
-
-                for agent_id in agent_ids {
-                    // Try to find by name first, then by DID
-                    let agent_handle = if let Some(agent) = manager.get_by_name(&agent_id).await {
-                        Some(agent)
-                    } else {
-                        manager.get(&agent_id).await
-                    };
-
-                    if let Some(agent) = agent_handle {
-                        if let Err(e) = agent.execute(&message).await {
-                            error!("Failed to broadcast to agent {}: {}", agent_id, e);
-                        }
-                    } else {
-                        warn!("Agent {} not found for broadcast", agent_id);
-                    }
-                }
-                Ok(())
-            }
             AgentAction::Queue {
                 queue_name,
                 event: _,
@@ -253,31 +224,6 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_action_broadcast() {
-        let action = AgentAction::Broadcast {
-            agent_ids: vec!["agent1".to_string(), "agent2".to_string()],
-            message: "Hello all".to_string(),
-        };
-
-        match &action {
-            AgentAction::Broadcast { agent_ids, message } => {
-                assert_eq!(agent_ids.len(), 2);
-                assert_eq!(message, "Hello all");
-            }
-            _ => panic!("Wrong action type"),
-        }
-
-        // Test clone
-        let cloned = action.clone();
-        match cloned {
-            AgentAction::Broadcast { agent_ids, .. } => {
-                assert_eq!(agent_ids.len(), 2);
-            }
-            _ => panic!("Wrong action type"),
-        }
-    }
-
-    #[test]
     fn test_agent_action_queue() {
         let event = SystemEvent::Internal {
             event_type: "test".to_string(),
@@ -324,24 +270,12 @@ mod tests {
             })
             .await;
 
-        // Register a handler for file events
-        router
-            .register_handler("file", |_event| {
-                Some(AgentAction::Broadcast {
-                    agent_ids: vec!["file-processor".to_string()],
-                    message: "File changed".to_string(),
-                })
-            })
-            .await;
-
         // Verify handlers are registered
         let handler_types = router.get_handler_types().await;
         assert!(handler_types.contains(&"webhook".to_string()));
-        assert!(handler_types.contains(&"file".to_string()));
 
         // Verify handler counts
         assert_eq!(router.get_handler_count("webhook").await, 1);
-        assert_eq!(router.get_handler_count("file").await, 1);
         assert_eq!(router.get_handler_count("unknown").await, 0);
 
         // Route a webhook event (agent won't exist, but we test the routing path)

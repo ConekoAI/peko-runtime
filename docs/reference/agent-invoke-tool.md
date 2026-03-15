@@ -225,7 +225,6 @@ Tests cover:
 - **GAP-004**: Event Router (async result delivery)
 - **GAP-005**: Agent-to-Agent Messaging (this implementation)
 - `AgentSpawnTool`: For spawning subagents (different use case)
-- `AgentBroadcastTool`: For broadcasting to all agents
 
 ## Future Enhancements
 

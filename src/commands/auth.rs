@@ -68,7 +68,7 @@ impl CredentialsStore {
         format!("{provider}:{profile}")
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, provider: &str, profile: &str) -> Option<&Credential> {
         self.credentials.get(&Self::key(provider, profile))
     }
@@ -90,7 +90,7 @@ impl CredentialsStore {
             .is_some()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn list_for_provider(&self, provider: &str) -> Vec<&Credential> {
         self.credentials
             .values()
@@ -98,12 +98,12 @@ impl CredentialsStore {
             .collect()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn list_all(&self) -> Vec<&Credential> {
         self.credentials.values().collect()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn providers(&self) -> Vec<String> {
         let mut providers: Vec<String> = self
             .credentials
@@ -175,7 +175,9 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             let profile = profile.unwrap_or_else(|| "default".to_string());
 
             // Get API key interactively if not provided
-            let api_key = if let Some(k) = key { k } else {
+            let api_key = if let Some(k) = key {
+                k
+            } else {
                 print!("Enter API key for {provider} (profile: {profile}): ");
                 std::io::stdout().flush()?;
                 let mut input = String::new();
@@ -240,13 +242,9 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             let mut store = load_credentials(paths)?;
             if store.remove(&provider, &profile) {
                 save_credentials(paths, &store)?;
-                println!(
-                    "✓ Removed credential for {provider} (profile: {profile})"
-                );
+                println!("✓ Removed credential for {provider} (profile: {profile})");
             } else {
-                println!(
-                    "✗ No credential found for {provider} (profile: {profile})"
-                );
+                println!("✗ No credential found for {provider} (profile: {profile})");
             }
 
             Ok(())
