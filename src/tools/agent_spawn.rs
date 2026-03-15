@@ -48,9 +48,7 @@ pub enum SpawnMode {
     /// Asynchronous: return receipt immediately (default)
     Async,
     /// Synchronous: wait for subagent completion with timeout
-    Sync {
-        timeout_secs: u64,
-    },
+    Sync { timeout_secs: u64 },
 }
 
 impl<'de> Deserialize<'de> for SpawnMode {
@@ -743,29 +741,30 @@ mod tests {
     #[tokio::test]
     async fn test_async_mode_error_response_formatting() {
         // Test depth error
-        let response = AgentSpawnTool::format_error_response(
-            "Maximum spawn depth exceeded: 5".to_string()
-        ).unwrap();
+        let response =
+            AgentSpawnTool::format_error_response("Maximum spawn depth exceeded: 5".to_string())
+                .unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("depth"));
 
         // Test concurrent error
         let response = AgentSpawnTool::format_error_response(
-            "Maximum concurrent subagent runs exceeded".to_string()
-        ).unwrap();
+            "Maximum concurrent subagent runs exceeded".to_string(),
+        )
+        .unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("concurrent"));
 
         // Test timeout error
         let response = AgentSpawnTool::format_error_response(
-            "Subagent execution timed out after 60s".to_string()
-        ).unwrap();
+            "Subagent execution timed out after 60s".to_string(),
+        )
+        .unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "timeout");
 
         // Test generic error
-        let response = AgentSpawnTool::format_error_response(
-            "Something went wrong".to_string()
-        ).unwrap();
+        let response =
+            AgentSpawnTool::format_error_response("Something went wrong".to_string()).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "error");
     }
 }

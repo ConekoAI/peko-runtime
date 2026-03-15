@@ -582,11 +582,17 @@ Run tests without blocking:
         let env_vars = params.get("env").and_then(|v| v.as_object()).cloned();
 
         // Determine execution mode
-        let mode_str = params.get("mode").and_then(|v| v.as_str()).unwrap_or("sync");
+        let mode_str = params
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("sync");
 
         match mode_str {
             "async" => {
-                let label = params.get("label").and_then(|v| v.as_str()).map(String::from);
+                let label = params
+                    .get("label")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
                 let delivery_mode = AsyncResultDeliveryMode::default();
 
                 self.execute_async(
@@ -627,8 +633,11 @@ mod tests {
         let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
 
-        let tool = ProcessTool::new()
-            .with_async_support(registry, queue_manager, "test_session".to_string());
+        let tool = ProcessTool::new().with_async_support(
+            registry,
+            queue_manager,
+            "test_session".to_string(),
+        );
 
         assert!(tool.async_registry.is_some());
         assert!(tool.queue_manager.is_some());
@@ -640,8 +649,11 @@ mod tests {
         let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
 
-        let tool = ProcessTool::new()
-            .with_async_support(registry.clone(), queue_manager.clone(), "test_session".to_string());
+        let tool = ProcessTool::new().with_async_support(
+            registry.clone(),
+            queue_manager.clone(),
+            "test_session".to_string(),
+        );
 
         let params = json!({
             "command": "echo",
@@ -651,13 +663,20 @@ mod tests {
         });
 
         let result = tool.execute(params).await;
-        assert!(result.is_ok(), "Async process execution failed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Async process execution failed: {:?}",
+            result
+        );
 
         let response = result.unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "accepted");
         assert_eq!(response["mode"].as_str().unwrap(), "async");
         assert!(response["task_id"].as_str().is_some());
-        assert_eq!(response["check_status_tool"].as_str().unwrap(), "async_task_status");
+        assert_eq!(
+            response["check_status_tool"].as_str().unwrap(),
+            "async_task_status"
+        );
 
         let task_id = response["task_id"].as_str().unwrap().to_string();
 
@@ -684,7 +703,10 @@ mod tests {
 
         let result = tool.execute(params).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Async mode not configured"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Async mode not configured"));
     }
 
     #[tokio::test]
@@ -692,8 +714,11 @@ mod tests {
         let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
 
-        let tool = ProcessTool::new()
-            .with_async_support(registry.clone(), queue_manager.clone(), "test_session".to_string());
+        let tool = ProcessTool::new().with_async_support(
+            registry.clone(),
+            queue_manager.clone(),
+            "test_session".to_string(),
+        );
 
         let params = json!({
             "command": "sleep",

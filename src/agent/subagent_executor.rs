@@ -510,9 +510,7 @@ impl SubagentExecutor {
 
         match wait_result {
             Ok(WaitResult::Completed { .. }) => Ok(run),
-            Ok(WaitResult::Failed { error }) => {
-                Err(anyhow::anyhow!("Subagent failed: {}", error))
-            }
+            Ok(WaitResult::Failed { error }) => Err(anyhow::anyhow!("Subagent failed: {}", error)),
             Ok(WaitResult::Cancelled) => Err(anyhow::anyhow!("Subagent was cancelled")),
             Ok(WaitResult::Timeout) => {
                 // Cancel the run on timeout

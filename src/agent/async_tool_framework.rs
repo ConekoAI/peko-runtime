@@ -222,7 +222,7 @@ impl AsyncTaskRegistry {
     }
 
     /// Wait for a task to complete with a timeout
-    /// 
+    ///
     /// This is used for sync-mode execution of async tools.
     /// Returns immediately if the task is already in a terminal state.
     pub async fn wait_for_completion(
@@ -245,7 +245,7 @@ impl AsyncTaskRegistry {
             // Clone the entry, set the channel, and re-insert
             let mut entry_with_channel = entry.clone();
             entry_with_channel.set_completion_channel(tx);
-            
+
             // We need to modify through a mutable reference
             // Since we can't easily do this, we'll poll instead
             drop(entry);
@@ -297,7 +297,7 @@ impl AsyncTaskRegistry {
     }
 
     /// Register a completion waiter for a task
-    /// 
+    ///
     /// This is an alternative to `wait_for_completion` that uses a channel
     /// for more efficient notification.
     pub async fn register_waiter(
@@ -629,8 +629,9 @@ mod tests {
         // Test timeout when task doesn't complete
         let timeout_result = tokio::time::timeout(
             Duration::from_millis(100),
-            registry.wait_for_completion(&task_id, Duration::from_millis(50))
-        ).await;
+            registry.wait_for_completion(&task_id, Duration::from_millis(50)),
+        )
+        .await;
 
         // Should timeout or return WaitResult::Timeout
         match timeout_result {
@@ -640,12 +641,18 @@ mod tests {
         }
 
         // Now complete the task
-        registry.update_status(&task_id, AsyncTaskStatus::Completed {
-            result: ToolResult::success(serde_json::json!({"done": true})),
-        });
+        registry.update_status(
+            &task_id,
+            AsyncTaskStatus::Completed {
+                result: ToolResult::success(serde_json::json!({"done": true})),
+            },
+        );
 
         // Now wait should return immediately with completed result
-        let result = registry.wait_for_completion(&task_id, Duration::from_secs(1)).await.unwrap();
+        let result = registry
+            .wait_for_completion(&task_id, Duration::from_secs(1))
+            .await
+            .unwrap();
         match result {
             WaitResult::Completed { result } => {
                 assert!(result.success);
@@ -670,11 +677,17 @@ mod tests {
         registry.register(entry);
 
         // Mark as failed
-        registry.update_status(&task_id, AsyncTaskStatus::Failed {
-            error: "Something went wrong".to_string(),
-        });
+        registry.update_status(
+            &task_id,
+            AsyncTaskStatus::Failed {
+                error: "Something went wrong".to_string(),
+            },
+        );
 
-        let result = registry.wait_for_completion(&task_id, Duration::from_secs(1)).await.unwrap();
+        let result = registry
+            .wait_for_completion(&task_id, Duration::from_secs(1))
+            .await
+            .unwrap();
         match result {
             WaitResult::Failed { error } => {
                 assert_eq!(error, "Something went wrong");
@@ -699,10 +712,16 @@ mod tests {
         );
 
         registry.register(entry);
-        assert_eq!(registry.check_status(&task_id), Some(AsyncTaskStatus::Pending));
+        assert_eq!(
+            registry.check_status(&task_id),
+            Some(AsyncTaskStatus::Pending)
+        );
 
         registry.update_status(&task_id, AsyncTaskStatus::Running);
-        assert_eq!(registry.check_status(&task_id), Some(AsyncTaskStatus::Running));
+        assert_eq!(
+            registry.check_status(&task_id),
+            Some(AsyncTaskStatus::Running)
+        );
     }
 
     #[test]
