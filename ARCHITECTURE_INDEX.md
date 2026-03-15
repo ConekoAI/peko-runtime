@@ -4,6 +4,16 @@
 
 ---
 
+## Document Overview
+
+### Required Reading Order
+
+1. **REQUIREMENTS_SPEC.md** - What we're building
+2. **UNIFIED_ARCHITECTURE_SPEC.md** - How we're building it
+3. **AGENTS.md** - Quick reference for development
+
+---
+
 ## Current Architecture: v3.1 (Filesystem-First)
 
 **Status:** Minimal requirements, maximum flexibility
@@ -24,38 +34,49 @@
 ## Document Hierarchy
 
 ```
+REQUIREMENTS_SPEC.md
+        │
+        ▼ (informs)
 UNIFIED_ARCHITECTURE_SPEC.md v3.1 (Current)
-├── Aligned with current implementation:
-│   ├── config.toml (not agent.toml)
-│   ├── Markdown files in root (not bootstrap/)
-│   ├── Optional content loading
-│   └── Minimal requirements
-│
-└── Previous documents (context):
-    ├── GRAND_ARCHITECTURE.md (vision)
-    ├── TECHNICAL_EXECUTIVE_SPEC.md (components)
-    └── AGENT_CONTAINER_SPEC.md (packaging format)
+        │
+        ├── Aligned with current implementation:
+        │   ├── config.toml (not agent.toml)
+        │   ├── Markdown files in root (not bootstrap/)
+        │   ├── Optional content loading
+        │   └── Minimal requirements
+        │
+        └── Previous documents (context/historical):
+            ├── GRAND_ARCHITECTURE.md [DEPRECATED]
+            ├── TECHNICAL_EXECUTIVE_SPEC.md [DEPRECATED]
+            └── ARCHITECTURE_ALIGNMENT_REPORT.md [DEPRECATED]
 ```
 
 ---
 
 ## Document Reference
 
-### Primary Document
+### Primary Documents
 
-| Document | Version | Status |
-|----------|---------|--------|
-| **UNIFIED_ARCHITECTURE_SPEC.md** | v3.1 | **Current** |
+| Document | Version | Purpose | Status |
+|----------|---------|---------|--------|
+| **REQUIREMENTS_SPEC.md** | 1.0 | Business → Technical requirements | Current |
+| **UNIFIED_ARCHITECTURE_SPEC.md** | 3.1 | Technical architecture | Current |
+| **AGENTS.md** | 3.1 | Developer quick reference | Current |
 
-### Supporting Documents
+### Navigation
+
+| Document | Version | Purpose | Status |
+|----------|---------|---------|--------|
+| **ARCHITECTURE_INDEX.md** | 3.1 | This document | Current |
+
+### Historical Context (Deprecated)
 
 | Document | Purpose | Status |
 |----------|---------|--------|
-| **AGENTS.md** | Development guide | v3.1 Updated |
-| **ARCHITECTURE_INDEX.md** | This document | v3.1 Updated |
-| **GRAND_ARCHITECTURE.md** | Vision | Valid context |
-| **TECHNICAL_EXECUTIVE_SPEC.md** | Components | Valid context |
-| **AGENT_CONTAINER_SPEC.md** | Package format | Valid for distribution |
+| **GRAND_ARCHITECTURE.md** | Original vision | Deprecated |
+| **TECHNICAL_EXECUTIVE_SPEC.md** | Original tech spec | Deprecated |
+| **ARCHITECTURE_ALIGNMENT_REPORT.md** | Implementation analysis | Deprecated |
+| **EXECUTIVE_SUMMARY.md** | Business summary | Superseded by REQUIREMENTS_SPEC.md |
 
 ---
 
@@ -93,11 +114,24 @@ echo "# Project docs" > projects/README.md
 
 ---
 
-## Reading Path
+## Reading Paths
 
-1. **UNIFIED_ARCHITECTURE_SPEC.md** v3.1 - Current architecture
-2. **AGENTS.md** - Development guide
-3. **GRAND_ARCHITECTURE.md** - Vision and context
+### For Understanding the Project
+
+1. **REQUIREMENTS_SPEC.md** - Understand what we're building
+2. **UNIFIED_ARCHITECTURE_SPEC.md** - Understand technical approach
+3. **AGENTS.md** - Get started with development
+
+### For Development Work
+
+1. **AGENTS.md** - Quick reference
+2. **UNIFIED_ARCHITECTURE_SPEC.md** - Architecture details
+3. **REQUIREMENTS_SPEC.md** - Success criteria and constraints
+
+### For Architecture Decisions
+
+1. **REQUIREMENTS_SPEC.md** - Constraints and requirements
+2. **UNIFIED_ARCHITECTURE_SPEC.md** - Authoritative guidance
 
 ---
 
@@ -117,9 +151,13 @@ echo "# Project docs" > projects/README.md
 
 | Document | Version | Date |
 |----------|---------|------|
+| REQUIREMENTS_SPEC.md | 1.0 | 2026-03-15 |
 | UNIFIED_ARCHITECTURE_SPEC.md | 3.1 | 2026-03-15 |
 | AGENTS.md | 3.1 | 2026-03-15 |
 | ARCHITECTURE_INDEX.md | 3.1 | 2026-03-15 |
+| GRAND_ARCHITECTURE.md | 2.0 | 2026-03-13 | [DEPRECATED] |
+| TECHNICAL_EXECUTIVE_SPEC.md | 1.0 | 2026-03-13 | [DEPRECATED] |
+| ARCHITECTURE_ALIGNMENT_REPORT.md | 1.0 | 2026-03-12 | [DEPRECATED] |
 
 ---
 
