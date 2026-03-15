@@ -1,12 +1,48 @@
 //! Process execution tool for running commands
+//!
+//! Supports both sync and async execution modes:
+//! - **Sync mode** (default): Blocks until command completes, returns result immediately
+//! - **Async mode**: Returns receipt immediately, executes in background, delivers result via event queue
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Arc;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
+use uuid::Uuid;
 
+use crate::agent::async_tool_framework::{
+    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEntry,
+    AsyncTaskRegistry, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
+    SharedAsyncTaskRegistry,
+};
 use crate::tools::Tool;
+
+/// Execution mode for process tool
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessMode {
+    /// Synchronous: block until completion (default)
+    Sync {
+        #[serde(default = "default_timeout")]
+        timeout_secs: u64,
+    },
+    /// Asynchronous: return receipt, execute in background
+    Async {
+        /// Optional label for the task
+        #[serde(default)]
+        label: Option<String>,
+        /// Delivery mode for result
+        #[serde(default)]
+        delivery_mode: AsyncResultDeliveryMode,
+    },
+}
+
+fn default_timeout() -> u64 {
+    120
+}
 
 /// Process execution tool for running shell commands
 pub struct ProcessTool {
@@ -14,6 +50,12 @@ pub struct ProcessTool {
     default_timeout_secs: u64,
     /// Whether to allow shell commands (sh -c)
     allow_shell: bool,
+    /// Async task registry (for async mode)
+    async_registry: Option<SharedAsyncTaskRegistry>,
+    /// Result queue manager (for async mode)
+    queue_manager: Option<SharedAsyncResultQueueManager>,
+    /// Parent session key (for async result routing)
+    session_key: Option<String>,
 }
 
 /// Maximum allowed timeout in seconds (5 minutes)
@@ -28,6 +70,9 @@ impl ProcessTool {
         Self {
             default_timeout_secs: DEFAULT_TIMEOUT_SECS,
             allow_shell: false,
+            async_registry: None,
+            queue_manager: None,
+            session_key: None,
         }
     }
 
@@ -37,6 +82,9 @@ impl ProcessTool {
         Self {
             default_timeout_secs: timeout_secs.min(MAX_TIMEOUT_SECS),
             allow_shell: false,
+            async_registry: None,
+            queue_manager: None,
+            session_key: None,
         }
     }
 
@@ -46,7 +94,24 @@ impl ProcessTool {
         Self {
             default_timeout_secs: 30,
             allow_shell: true,
+            async_registry: None,
+            queue_manager: None,
+            session_key: None,
         }
+    }
+
+    /// Enable async mode with registry and queue manager
+    #[must_use]
+    pub fn with_async_support(
+        mut self,
+        registry: SharedAsyncTaskRegistry,
+        queue_manager: SharedAsyncResultQueueManager,
+        session_key: impl Into<String>,
+    ) -> Self {
+        self.async_registry = Some(registry);
+        self.queue_manager = Some(queue_manager);
+        self.session_key = Some(session_key.into());
+        self
     }
 
     /// Execute a command with arguments
@@ -130,6 +195,153 @@ impl ProcessTool {
         )
         .await
     }
+
+    /// Execute command in async mode
+    async fn execute_async(
+        &self,
+        command: String,
+        args: Vec<String>,
+        timeout_secs: u64,
+        working_dir: Option<String>,
+        env_vars: Option<serde_json::Map<String, serde_json::Value>>,
+        label: Option<String>,
+        delivery_mode: AsyncResultDeliveryMode,
+    ) -> Result<serde_json::Value> {
+        let registry = self
+            .async_registry
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Async mode not configured for process tool"))?;
+
+        let queue_manager = self
+            .queue_manager
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Async mode not configured for process tool"))?;
+
+        let session_key = self
+            .session_key
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+
+        let task_id = format!("process_{}", Uuid::new_v4().simple());
+
+        // Register task
+        let config = AsyncToolConfig {
+            delivery_mode,
+            timeout_secs,
+            cleanup_after_delivery: true,
+            label: label.clone(),
+        };
+
+        let entry = AsyncTaskEntry::new(
+            task_id.clone(),
+            "process".to_string(),
+            json!({
+                "command": &command,
+                "args": &args,
+                "working_dir": &working_dir,
+            }),
+            session_key.clone(),
+            config,
+        );
+
+        {
+            let mut reg = registry.write().await;
+            reg.register(entry);
+        }
+
+        // Spawn background task - clone all values that will be moved into the async block
+        let registry_clone = registry.clone();
+        let queue_manager_clone = queue_manager.clone();
+        let session_key_clone = session_key.clone();
+        let task_id_clone = task_id.clone();
+        let command_clone = command.clone();
+        let label_clone = label.clone();
+
+        tokio::spawn(async move {
+            // Update status to Running
+            {
+                let mut reg = registry_clone.write().await;
+                reg.update_status(&task_id_clone, AsyncTaskStatus::Running);
+            }
+
+            // Execute command
+            let result = Self::execute_command(
+                &command_clone,
+                args,
+                timeout_secs,
+                working_dir.as_deref(),
+                env_vars,
+            )
+            .await;
+
+            // Format result and update registry
+            let (status, result_message) = match result {
+                Ok(output) => {
+                    let success = output["success"].as_bool().unwrap_or(false);
+                    let stdout = output["stdout"].as_str().unwrap_or("");
+                    let stderr = output["stderr"].as_str().unwrap_or("");
+                    let exit_code = output["exit_code"].as_i64().unwrap_or(-1);
+
+                    let message = format!(
+                        "Process completed: {}\nExit code: {}\nStdout:\n{}\nStderr:\n{}",
+                        command_clone, exit_code, stdout, stderr
+                    );
+
+                    if success {
+                        (
+                            AsyncTaskStatus::Completed {
+                                result: crate::tools::traits::ToolResult::success(output.clone()),
+                            },
+                            message,
+                        )
+                    } else {
+                        (
+                            AsyncTaskStatus::Failed {
+                                error: format!("Exit code: {}", exit_code),
+                            },
+                            message,
+                        )
+                    }
+                }
+                Err(e) => {
+                    let error_msg = e.to_string();
+                    (
+                        AsyncTaskStatus::Failed {
+                            error: error_msg.clone(),
+                        },
+                        format!("Process failed: {}", error_msg),
+                    )
+                }
+            };
+
+            // Update registry
+            {
+                let mut reg = registry_clone.write().await;
+                reg.update_status(&task_id_clone, status);
+            }
+
+            // Queue for delivery
+            {
+                let mut manager = queue_manager_clone.write().await;
+                manager.enqueue(AsyncTaskCompletionEvent {
+                    task_id: task_id_clone,
+                    tool_name: "process".to_string(),
+                    result_message,
+                    parent_session_key: session_key_clone,
+                    label: label_clone,
+                });
+            }
+        });
+
+        // Return receipt immediately
+        Ok(json!({
+            "task_id": task_id,
+            "status": "accepted",
+            "mode": "async",
+            "command": command,
+            "check_status_tool": "async_task_status",
+        }))
+    }
 }
 
 impl Default for ProcessTool {
@@ -150,7 +362,27 @@ impl Tool for ProcessTool {
 
     fn llm_description(&self) -> String {
         r#"## Purpose
-Execute system commands with arguments, timeout, and working directory control. For build commands, git operations, and system diagnostics.
+Execute system commands with sync or async support. For build commands, git operations, system diagnostics, and long-running tasks.
+
+## Modes
+
+### Sync Mode (default)
+Blocks until command completes. Use for quick commands that return immediately.
+```json
+{"command": "git", "args": ["status"]}
+```
+
+### Async Mode
+Returns immediately with task ID. Command runs in background, result delivered via event system.
+Use for long-running builds, tests, downloads, or when you need to run multiple commands in parallel.
+```json
+{
+    "command": "cargo",
+    "args": ["build", "--release"],
+    "mode": "async",
+    "label": "release-build"
+}
+```
 
 ## When to Use
 - Running build commands (cargo build, npm install, make, etc.)
@@ -158,7 +390,7 @@ Execute system commands with arguments, timeout, and working directory control. 
 - System diagnostics (df, ps, netstat, etc.)
 - File operations that need scripting (find with complex filters)
 - Running tests or linting tools
-- Long-running downloads (use timeout: 0)
+- Long-running downloads (use async mode or timeout: 0)
 
 ## When NOT to Use
 - Simple file reads/writes (use `filesystem` instead)
@@ -166,30 +398,53 @@ Execute system commands with arguments, timeout, and working directory control. 
 - Destructive operations without explicit user confirmation
 - Commands with unbounded output (may be truncated)
 
-## Input
+## Input (Sync Mode)
 ```json
 {
   "command": "command-name",
   "args": ["arg1", "arg2"],
   "timeout": 120,
-  "working_dir": "/optional/path"
+  "working_dir": "/optional/path",
+  "env": {"KEY": "value"}
+}
+```
+
+## Input (Async Mode)
+```json
+{
+  "command": "command-name",
+  "args": ["arg1", "arg2"],
+  "mode": "async",
+  "label": "optional-label",
+  "timeout": 300
 }
 ```
 
 ## Timeout Behavior
 - **Default**: 120 seconds (suitable for most commands)
 - **Short tasks** (date, echo, ls): Use default or timeout: 5
-- **Build commands**: Use timeout: 120 or higher
-- **Long downloads**: Use timeout: 0 (disables timeout)
+- **Build commands**: Use timeout: 120 or higher (or async mode)
+- **Long downloads**: Use async mode or timeout: 0 (disables timeout)
 - **Max**: 300 seconds (5 minutes) unless timeout is 0
 
-## Returns
+## Returns (Sync Mode)
 - stdout and stderr output (truncated if >100KB)
 - Exit code
 - Success/failure status
 - Timeout error message if command times out
 
+## Returns (Async Mode)
+- task_id: Unique identifier for tracking
+- status: "accepted"
+- mode: "async"
+- check_status_tool: Tool name to check status later
+
+## Result Delivery (Async Mode)
+Results are delivered via the async event system when the command completes.
+
 ## Examples
+
+### Sync Mode Examples
 Check git status:
 ```json
 {"command": "git", "args": ["status"]}
@@ -200,14 +455,26 @@ Build a Rust project:
 {"command": "cargo", "args": ["build", "--release"], "timeout": 300}
 ```
 
-Run tests:
+### Async Mode Examples
+Long build in background:
 ```json
-{"command": "cargo", "args": ["test"], "timeout": 120}
+{
+    "command": "cargo",
+    "args": ["build", "--release"],
+    "mode": "async",
+    "label": "building-release"
+}
 ```
 
-Long download (no timeout):
+Run tests without blocking:
 ```json
-{"command": "curl", "args": ["-O", "https://example.com/large-file.zip"], "timeout": 0}
+{
+    "command": "cargo",
+    "args": ["test", "--all"],
+    "mode": "async",
+    "label": "running-tests",
+    "timeout": 300
+}
 ```
 
 ## Safety
@@ -244,6 +511,15 @@ Long download (no timeout):
                 "env": {
                     "type": "object",
                     "description": "Environment variables"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["sync", "async"],
+                    "description": "Execution mode: 'sync' blocks for result, 'async' returns receipt and runs in background (default: sync)"
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional label for async mode (for identifying the task)"
                 }
             },
             "required": ["command"]
@@ -303,10 +579,32 @@ Long download (no timeout):
             });
 
         let working_dir = params.get("working_dir").and_then(|v| v.as_str());
-
         let env_vars = params.get("env").and_then(|v| v.as_object()).cloned();
 
-        Self::execute_command(command, args, timeout_secs, working_dir, env_vars).await
+        // Determine execution mode
+        let mode_str = params.get("mode").and_then(|v| v.as_str()).unwrap_or("sync");
+
+        match mode_str {
+            "async" => {
+                let label = params.get("label").and_then(|v| v.as_str()).map(String::from);
+                let delivery_mode = AsyncResultDeliveryMode::default();
+
+                self.execute_async(
+                    command.to_string(),
+                    args,
+                    timeout_secs,
+                    working_dir.map(String::from),
+                    env_vars,
+                    label,
+                    delivery_mode,
+                )
+                .await
+            }
+            "sync" | _ => {
+                // Default sync mode
+                Self::execute_command(command, args, timeout_secs, working_dir, env_vars).await
+            }
+        }
     }
 }
 
@@ -314,12 +612,109 @@ Long download (no timeout):
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     #[test]
     fn test_process_tool_creation() {
         let tool = ProcessTool::new();
         assert_eq!(tool.name(), "process");
         assert!(!tool.description().is_empty());
+    }
+
+    #[test]
+    fn test_process_tool_with_async_support() {
+        let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
+        let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+
+        let tool = ProcessTool::new()
+            .with_async_support(registry, queue_manager, "test_session".to_string());
+
+        assert!(tool.async_registry.is_some());
+        assert!(tool.queue_manager.is_some());
+        assert_eq!(tool.session_key, Some("test_session".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_process_async_mode() {
+        let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
+        let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+
+        let tool = ProcessTool::new()
+            .with_async_support(registry.clone(), queue_manager.clone(), "test_session".to_string());
+
+        let params = json!({
+            "command": "echo",
+            "args": ["Hello from async"],
+            "mode": "async",
+            "label": "test-echo"
+        });
+
+        let result = tool.execute(params).await;
+        assert!(result.is_ok(), "Async process execution failed: {:?}", result);
+
+        let response = result.unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "accepted");
+        assert_eq!(response["mode"].as_str().unwrap(), "async");
+        assert!(response["task_id"].as_str().is_some());
+        assert_eq!(response["check_status_tool"].as_str().unwrap(), "async_task_status");
+
+        let task_id = response["task_id"].as_str().unwrap().to_string();
+
+        // Wait a bit for the task to complete
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Verify task was registered and completed
+        let reg = registry.read().await;
+        let status = reg.check_status(&task_id);
+        assert!(status.is_some());
+        assert!(status.unwrap().is_terminal());
+    }
+
+    #[tokio::test]
+    async fn test_process_async_mode_not_configured() {
+        // Tool without async support should fail in async mode
+        let tool = ProcessTool::new();
+
+        let params = json!({
+            "command": "echo",
+            "args": ["test"],
+            "mode": "async"
+        });
+
+        let result = tool.execute(params).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Async mode not configured"));
+    }
+
+    #[tokio::test]
+    async fn test_process_async_with_timeout() {
+        let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
+        let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+
+        let tool = ProcessTool::new()
+            .with_async_support(registry.clone(), queue_manager.clone(), "test_session".to_string());
+
+        let params = json!({
+            "command": "sleep",
+            "args": ["0.5"],
+            "mode": "async",
+            "timeout": 1,
+            "label": "short-sleep"
+        });
+
+        let result = tool.execute(params).await;
+        assert!(result.is_ok());
+
+        let task_id = result.unwrap()["task_id"].as_str().unwrap().to_string();
+
+        // Wait for task to complete
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let reg = registry.read().await;
+        let entry = reg.get(&task_id);
+        assert!(entry.is_some());
+        assert!(entry.unwrap().status.is_terminal());
     }
 
     #[tokio::test]
