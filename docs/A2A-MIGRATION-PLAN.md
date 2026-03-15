@@ -407,13 +407,13 @@ async fn test_bidirectional_a2a() {
 
 ## Implementation Checklist
 
-- [ ] Add `SessionMessage` variant to `AsyncTaskResult`
-- [ ] Create `SessionsSendTool` 
-- [ ] Update `QueueDelivery` for A2A messages
-- [ ] Add session resolution logic
-- [ ] Deprecate `AgentInvokeTool`
-- [ ] Add migration shim for backward compatibility
-- [ ] Update documentation
+- [x] Add `SessionMessage` variant to `AsyncTaskResult` (Phase 1 ✓)
+- [x] Create `SessionsSendTool` (Phase 1 ✓)
+- [x] Update `QueueDelivery` for A2A messages (Phase 1 ✓)
+- [x] Add session resolution logic (Phase 3 ✓)
+- [x] Deprecate `AgentInvokeTool` (Phase 2 ✓)
+- [x] Add migration shim for backward compatibility (Phase 2 ✓)
+- [x] Update documentation (Phase 2 ✓)
 - [ ] Add comprehensive tests
 - [ ] Remove deprecated code in v0.4.0
 

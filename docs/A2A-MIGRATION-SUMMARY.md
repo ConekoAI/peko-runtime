@@ -65,17 +65,17 @@ SessionsSendTool::execute() {
 ## Migration Plan Overview
 
 ```
-Phase 1 (Week 1): Foundation
+Phase 1 (Week 1): Foundation ✅ COMPLETE
 ├── Add SessionMessage to AsyncTaskResult
 ├── Create SessionsSendTool
 └── Update QueueDelivery for A2A
 
-Phase 2 (Week 2): Migration  
+Phase 2 (Week 2): Migration ✅ COMPLETE
 ├── Deprecate agent_invoke
 ├── Add backward compatibility shim
 └── Update tests
 
-Phase 3 (Week 3): Session Management
+Phase 3 (Week 3): Session Management ✅ COMPLETE
 ├── Ensure runtime owns all sessions
 ├── Add session resolution
 └── Update session key format
