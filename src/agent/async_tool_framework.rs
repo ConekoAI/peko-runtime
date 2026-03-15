@@ -71,14 +71,58 @@ pub enum AsyncTaskResult {
         token_usage: Option<(u32, u32, u32)>,
     },
     /// Agent-to-agent invocation result
+    ///
+    /// # Deprecated
+    /// Use `SessionMessage` instead for unified A2A handling.
+    #[deprecated(since = "0.3.0", note = "Use SessionMessage instead")]
     Invocation {
         content: String,
         from: String,
         success: bool,
         error: Option<String>,
     },
+    /// Session-to-session message (A2A unified)
+    ///
+    /// Used for agent-to-agent messaging through the same queue mechanism
+    /// as subagent_spawn. This enables bidirectional A2A with consistent
+    /// delivery modes (steer, collect, interrupt, queue_when_busy).
+    SessionMessage {
+        /// Source session key
+        from_session: String,
+        /// Target session key
+        to_session: String,
+        /// Message content
+        content: String,
+        /// Message type for routing
+        message_type: SessionMessageType,
+        /// Conversation/correlation ID for threading
+        conversation_id: String,
+        /// Token usage if applicable
+        token_usage: Option<(u32, u32, u32)>,
+    },
     /// Generic tool result for extensibility
     Generic { data: serde_json::Value },
+}
+
+/// Message types for session-to-session communication (A2A)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SessionMessageType {
+    /// Initial request to another agent
+    Request,
+    /// Response to a request
+    Response,
+    /// Fire-and-forget announcement
+    Announcement,
+    /// Subagent completion notification
+    Completion,
+    /// Error/timeout notification
+    Error,
+}
+
+impl Default for SessionMessageType {
+    fn default() -> Self {
+        Self::Request
+    }
 }
 
 impl AsyncTaskResult {
@@ -111,6 +155,7 @@ impl AsyncTaskResult {
 
                 format!("## {} Result {}\n\n{}", label_part, status_emoji, content)
             }
+            #[allow(deprecated)]
             Self::Invocation {
                 content,
                 from,
@@ -127,6 +172,27 @@ impl AsyncTaskResult {
                 format!(
                     "## Message from {}\n\n**Status:** {}\n\n{}",
                     from, status, display_content
+                )
+            }
+            Self::SessionMessage {
+                from_session,
+                to_session,
+                content,
+                message_type,
+                conversation_id,
+                ..
+            } => {
+                let (emoji, type_label) = match message_type {
+                    SessionMessageType::Request => ("📤", "Request"),
+                    SessionMessageType::Response => ("📥", "Response"),
+                    SessionMessageType::Announcement => ("📢", "Announcement"),
+                    SessionMessageType::Completion => ("✅", "Completed"),
+                    SessionMessageType::Error => ("❌", "Error"),
+                };
+
+                format!(
+                    "## {} A2A Message {}\n\n**From:** `{}`\n**To:** `{}`\n**Conversation:** `{}`\n\n{}",
+                    type_label, emoji, from_session, to_session, conversation_id, content
                 )
             }
             Self::Generic { data } => {
@@ -154,7 +220,13 @@ impl AsyncTaskResult {
                     )
                 }
             }
+            #[allow(deprecated)]
             Self::Invocation { success, .. } => format!("invocation: success={}", success),
+            Self::SessionMessage {
+                message_type,
+                content,
+                ..
+            } => format!("a2a: {:?} ({} chars)", message_type, content.len()),
             Self::Generic { .. } => "generic: completed".to_string(),
         }
     }

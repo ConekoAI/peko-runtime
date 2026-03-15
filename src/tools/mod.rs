@@ -7,6 +7,7 @@
 //! - mcp-memory: persistent memory storage
 
 pub mod agent_invoke;
+#[allow(deprecated)]
 pub use agent_invoke::{
     create_shared_registry, AgentInvokeTool, ExecuteHandler, InvocationMessage, InvocationRegistry,
     InvocationResponse, InvocationService, InvokeCommand, SharedInvocationRegistry,
@@ -21,7 +22,10 @@ pub mod filesystem;
 pub mod message_tool;
 pub mod process;
 pub mod session_introspection;
+pub mod sessions_send;
 pub mod traits;
+
+pub use sessions_send::{SendMode, SessionsSendTool};
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
 pub use agent_spawn::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool};
@@ -45,7 +49,8 @@ pub use crate::agent::async_tool_framework::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEventBus,
     AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
     CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery, ResultDelivery,
-    SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, UnifiedAsyncExecutor, WaitResult,
+    SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
+    UnifiedAsyncExecutor, WaitResult,
 };
 
 // Deprecated: AsyncTool trait is deprecated, use UnifiedAsyncExecutor directly

@@ -40,7 +40,8 @@ pub use async_tool_framework::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEventBus,
     AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
     CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery, ResultDelivery,
-    SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, UnifiedAsyncExecutor, WaitResult,
+    SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
+    UnifiedAsyncExecutor, WaitResult,
 };
 
 // Deprecated: AsyncTool trait is deprecated, use UnifiedAsyncExecutor directly

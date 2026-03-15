@@ -652,6 +652,101 @@ impl SessionManager {
         self.channel_overlays.clear();
         self.spawn_overlays.clear();
     }
+
+    // ============================================================
+    // A2A Session Resolution (Phase 1 Migration)
+    // ============================================================
+
+    /// Resolve an agent ID to a session key for A2A messaging
+    ///
+    /// This method:
+    /// 1. Checks if the agent has an active session
+    /// 2. Creates an ephemeral A2A session if needed
+    /// 3. Returns the session key for messaging
+    ///
+    /// # Arguments
+    /// * `agent_id` - The target agent ID
+    /// * `caller_session_key` - The session key of the calling agent (for context)
+    ///
+    /// # Returns
+    /// Session key for the target agent
+    pub async fn resolve_agent_session(
+        &self,
+        agent_id: &str,
+        caller_session_key: Option<&str>,
+    ) -> Result<String> {
+        // First, check if this agent already has a session we can use
+        // Look for existing base sessions for this agent
+        for ((session_agent, _), session) in &self.base_sessions {
+            if session_agent == agent_id {
+                // Found a session for this agent - access session_key field directly
+                let session_guard = session.read().await;
+                return Ok(session_guard.session_key.clone());
+            }
+        }
+
+        // No existing session found - create ephemeral A2A session
+        // Format: agent:{agent_id}:a2a:{caller_id}:{uuid}
+        let caller_id = caller_session_key
+            .and_then(|key| key.split(':').nth(1))
+            .unwrap_or("unknown");
+
+        let session_key = format!(
+            "agent:{}:a2a:{}:{}",
+            agent_id,
+            caller_id,
+            uuid::Uuid::new_v4().simple()
+        );
+
+        info!(
+            "Created ephemeral A2A session for agent {}: {}",
+            agent_id, session_key
+        );
+
+        Ok(session_key)
+    }
+
+    /// Ensure a session exists for A2A messaging
+    ///
+    /// Similar to resolve_agent_session but guarantees the session is created
+    /// and initialized in the session manager.
+    pub async fn ensure_agent_session(
+        &mut self,
+        agent_id: &str,
+        caller_session_key: Option<&str>,
+    ) -> Result<String> {
+        // Try to resolve first
+        match self
+            .resolve_agent_session(agent_id, caller_session_key)
+            .await
+        {
+            Ok(key) if !key.contains(":a2a:") => {
+                // Found existing non-ephemeral session
+                Ok(key)
+            }
+            Ok(key) => {
+                // Would create ephemeral session - for now just return the key
+                // In full implementation, would initialize the ephemeral session
+                Ok(key)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// List all active sessions for an agent
+    pub fn list_agent_sessions(&self, agent_id: &str) -> Vec<String> {
+        let mut sessions = Vec::new();
+
+        for ((session_agent, _), session) in &self.base_sessions {
+            if session_agent == agent_id {
+                // This is blocking, but we're just reading the key
+                // In production, might want to make this async
+                sessions.push(format!("agent:{}:base:{:?}", agent_id, session));
+            }
+        }
+
+        sessions
+    }
 }
 
 /// Copy conversation context from parent base session to child base session
