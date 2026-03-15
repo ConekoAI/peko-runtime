@@ -1,8 +1,12 @@
 //! Agent Spawn Tool (OpenClaw-Style)
 //!
 //! Spawns subagent sessions for isolated task execution.
-//! Results are announced back to the parent session asynchronously.
+//! Supports both async (default) and sync execution modes.
 //!
+//! ## Modes
+//!
+//! ### Async Mode (default)
+//! Returns immediately with run_id. Results announced back via event system.
 //! OpenClaw-compatible response format:
 //! ```json
 //! {
@@ -12,16 +16,105 @@
 //!   "note": "auto-announces on completion, do not poll/sleep"
 //! }
 //! ```
+//!
+//! ### Sync Mode
+//! Blocks until subagent completes and returns result directly.
+//! Use for sequential decomposition patterns.
+//! ```json
+//! {
+//!   "status": "completed",
+//!   "runId": "run_uuid",
+//!   "result": { ... },
+//!   "mode": "sync"
+//! }
+//! ```
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 
+use crate::agent::async_tool_framework::WaitResult;
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::agent::subagent_registry::SharedSubagentRegistry;
 use crate::session::context::SessionContext;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::Tool;
+
+/// Execution mode for agent spawn
+#[derive(Debug, Clone, Serialize)]
+pub enum SpawnMode {
+    /// Asynchronous: return receipt immediately (default)
+    Async,
+    /// Synchronous: wait for subagent completion with timeout
+    Sync {
+        timeout_secs: u64,
+    },
+}
+
+impl<'de> Deserialize<'de> for SpawnMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+        use std::fmt;
+
+        struct SpawnModeVisitor;
+
+        impl<'de> Visitor<'de> for SpawnModeVisitor {
+            type Value = SpawnMode;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("'async', 'sync', or a map with mode and optional timeout_secs")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "async" => Ok(SpawnMode::Async),
+                    "sync" => Ok(SpawnMode::Sync { timeout_secs: 300 }),
+                    _ => Err(de::Error::unknown_variant(value, &["async", "sync"])),
+                }
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut mode: Option<String> = None;
+                let mut timeout_secs: u64 = 300;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "mode" => mode = Some(map.next_value()?),
+                        "timeout_secs" => timeout_secs = map.next_value()?,
+                        _ => {
+                            // Skip unknown fields
+                            let _: serde_json::Value = map.next_value()?;
+                        }
+                    }
+                }
+
+                match mode.as_deref() {
+                    Some("async") => Ok(SpawnMode::Async),
+                    Some("sync") => Ok(SpawnMode::Sync { timeout_secs }),
+                    Some(other) => Err(de::Error::unknown_variant(other, &["async", "sync"])),
+                    None => Err(de::Error::missing_field("mode")),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(SpawnModeVisitor)
+    }
+}
+
+fn default_sync_timeout() -> u64 {
+    300 // 5 minutes default for sync mode
+}
 
 /// Maximum allowed spawn depth (safety limit)
 const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
@@ -180,6 +273,156 @@ impl AgentSpawnTool {
     pub fn executor(&self) -> &Arc<SubagentExecutor> {
         &self.executor
     }
+
+    /// Execute subagent in async mode (default)
+    async fn execute_async(
+        &self,
+        task: &str,
+        isolated: bool,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        label: Option<String>,
+        cleanup: SpawnCleanupPolicy,
+    ) -> anyhow::Result<serde_json::Value> {
+        // Extract timeout before config is moved
+        let timeout_seconds = config.timeout_seconds;
+
+        match self
+            .executor
+            .spawn_and_execute(
+                task,
+                self.current_session.as_ref(),
+                isolated,
+                parent_session_key,
+                config,
+            )
+            .await
+        {
+            Ok(run_id) => {
+                // Get the run info to return the child session key
+                let registry = self.executor.registry().read().await;
+                let run = registry.get(&run_id).ok_or_else(|| {
+                    anyhow::anyhow!("Run {run_id} not found in registry after spawn")
+                })?;
+
+                let child_session_key = run.child_session_key.clone();
+
+                // Return OpenClaw-style response
+                Ok(json!({
+                    "status": "accepted",
+                    "childSessionKey": child_session_key,
+                    "runId": run_id,
+                    "note": "auto-announces on completion, do not poll/sleep. The response will be sent back as an agent message.",
+                    "label": label,
+                    "isolated": isolated,
+                    "timeout_seconds": timeout_seconds,
+                    "cleanup": match cleanup {
+                        SpawnCleanupPolicy::Keep => "keep",
+                        SpawnCleanupPolicy::Delete => "delete",
+                    }
+                }))
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                Self::format_error_response(error_msg)
+            }
+        }
+    }
+
+    /// Execute subagent in sync mode (wait for completion)
+    async fn execute_sync(
+        &self,
+        task: &str,
+        isolated: bool,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        sync_timeout_secs: u64,
+    ) -> anyhow::Result<serde_json::Value> {
+        match self
+            .executor
+            .execute_and_wait(
+                task,
+                self.current_session.as_ref(),
+                isolated,
+                parent_session_key,
+                config,
+                sync_timeout_secs,
+            )
+            .await
+        {
+            Ok(run) => {
+                // Format successful completion response
+                let status_str = run.status.as_str();
+                let is_terminal = run.status.is_terminal();
+
+                let mut response = json!({
+                    "status": status_str,
+                    "runId": run.run_id,
+                    "mode": "sync",
+                    "childSessionKey": run.child_session_key,
+                    "isolated": isolated,
+                    "is_terminal": is_terminal,
+                });
+
+                // Add result if available
+                if let Some(result) = run.result {
+                    if let Some(obj) = response.as_object_mut() {
+                        obj.insert("output".to_string(), json!(result.output));
+                        if let Some(error) = result.error {
+                            obj.insert("error".to_string(), json!(error));
+                        }
+                    }
+                }
+
+                // Add label if present
+                if let Some(label) = run.label {
+                    if let Some(obj) = response.as_object_mut() {
+                        obj.insert("label".to_string(), json!(label));
+                    }
+                }
+
+                Ok(response)
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                Self::format_error_response(error_msg)
+            }
+        }
+    }
+
+    /// Format error response for both sync and async modes
+    fn format_error_response(error_msg: String) -> anyhow::Result<serde_json::Value> {
+        let lower_msg = error_msg.to_lowercase();
+        // Check for specific error types
+        if lower_msg.contains("depth") {
+            // Depth limit exceeded
+            Ok(json!({
+                "status": "forbidden",
+                "error": error_msg,
+                "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
+            }))
+        } else if lower_msg.contains("concurrent") {
+            // Max concurrent runs exceeded
+            Ok(json!({
+                "status": "forbidden",
+                "error": error_msg,
+                "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
+            }))
+        } else if lower_msg.contains("timeout") || lower_msg.contains("timed out") {
+            // Timeout
+            Ok(json!({
+                "status": "timeout",
+                "error": error_msg,
+                "note": "Subagent execution timed out."
+            }))
+        } else {
+            // Other error
+            Ok(json!({
+                "status": "error",
+                "error": error_msg
+            }))
+        }
+    }
 }
 
 #[async_trait]
@@ -189,12 +432,17 @@ impl Tool for AgentSpawnTool {
     }
 
     fn description(&self) -> &'static str {
-        r#"Spawn a background sub-agent run in an isolated session and announce the result back to the requester chat.
+        r#"Spawn a sub-agent run in an isolated session.
 
-This creates a spawn overlay - either isolated (new base session) or shared (inherits parent's base session). The subagent runs asynchronously and its results are automatically announced when complete. Do NOT poll or wait for results.
+Supports two execution modes:
+- **Async** (default): Returns immediately, results announced via event system
+- **Sync**: Blocks until completion, returns result directly
+
+This creates a spawn overlay - either isolated (new base session) or shared (inherits parent's base session).
 
 Parameters:
 - task: Description of the task to execute (required)
+- mode: "async" or "sync" - execution mode (default: "async")
 - label: Label for this spawn (optional)
 - isolated: If true, creates isolated session without parent context (default: false)
 - timeout_seconds: Maximum runtime in seconds (optional, default: 300)
@@ -202,14 +450,17 @@ Parameters:
 - parent_session_key: Parent session key (optional - auto-detected if not provided)
 
 Examples:
-// Shared context - can see parent's conversation history
+// Async mode (default) - shared context
 {"task": "Continue research on Rust", "isolated": false}
 
-// Isolated context - fresh session for sensitive work
-{"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}
+// Async mode with label
+{"task": "Long running analysis", "label": "analysis", "timeout_seconds": 600}
 
-// With timeout and label
-{"task": "Long running analysis", "label": "analysis", "timeout_seconds": 600}"#
+// Sync mode - wait for completion
+{"task": "Quick analysis", "mode": "sync", "timeout_seconds": 60}
+
+// Isolated context - fresh session
+{"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}"#
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -246,6 +497,12 @@ Examples:
                     }
                 });
 
+        // Parse execution mode (default to async for backward compatibility)
+        let mode: SpawnMode = params
+            .get("mode")
+            .and_then(|m| serde_json::from_value(m.clone()).ok())
+            .unwrap_or(SpawnMode::Async);
+
         // Get parent session key - from params, session provider, or current session context
         let parent_session_key = if let Some(key) =
             params.get("parent_session_key").and_then(|k| k.as_str())
@@ -271,67 +528,17 @@ Examples:
             max_depth: self.max_depth,
         };
 
-        // Spawn and execute the subagent
-        match self
-            .executor
-            .spawn_and_execute(
-                &task,
-                self.current_session.as_ref(),
-                isolated,
-                &parent_session_key,
-                config,
-            )
-            .await
-        {
-            Ok(run_id) => {
-                // Get the run info to return the child session key
-                let registry = self.executor.registry().read().await;
-                let run = registry.get(&run_id).ok_or_else(|| {
-                    anyhow::anyhow!("Run {run_id} not found in registry after spawn")
-                })?;
-
-                let child_session_key = run.child_session_key.clone();
-
-                // Return OpenClaw-style response
-                Ok(json!({
-                    "status": "accepted",
-                    "childSessionKey": child_session_key,
-                    "runId": run_id,
-                    "note": "auto-announces on completion, do not poll/sleep. The response will be sent back as an agent message.",
-                    "label": label,
-                    "isolated": isolated,
-                    "timeout_seconds": timeout_seconds,
-                    "cleanup": match cleanup {
-                        SpawnCleanupPolicy::Keep => "keep",
-                        SpawnCleanupPolicy::Delete => "delete",
-                    }
-                }))
+        // Execute based on mode
+        match mode {
+            SpawnMode::Async => {
+                // Async mode: spawn and return immediately
+                self.execute_async(&task, isolated, &parent_session_key, config, label, cleanup)
+                    .await
             }
-            Err(e) => {
-                let error_msg = e.to_string();
-
-                // Check for specific error types
-                if error_msg.contains("depth") {
-                    // Depth limit exceeded
-                    Ok(json!({
-                        "status": "forbidden",
-                        "error": error_msg,
-                        "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
-                    }))
-                } else if error_msg.contains("concurrent") {
-                    // Max concurrent runs exceeded
-                    Ok(json!({
-                        "status": "forbidden",
-                        "error": error_msg,
-                        "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
-                    }))
-                } else {
-                    // Other error
-                    Ok(json!({
-                        "status": "error",
-                        "error": error_msg
-                    }))
-                }
+            SpawnMode::Sync { timeout_secs } => {
+                // Sync mode: wait for completion
+                self.execute_sync(&task, isolated, &parent_session_key, config, timeout_secs)
+                    .await
             }
         }
     }
@@ -507,5 +714,58 @@ mod tests {
     #[test]
     fn test_default_max_concurrent() {
         assert_eq!(DEFAULT_MAX_CONCURRENT, 5);
+    }
+
+    #[test]
+    fn test_spawn_mode_default_sync_timeout() {
+        assert_eq!(default_sync_timeout(), 300);
+    }
+
+    #[test]
+    fn test_spawn_mode_deserialization() {
+        // Test async mode
+        let json = serde_json::json!("async");
+        let mode: SpawnMode = serde_json::from_value(json).unwrap();
+        match mode {
+            SpawnMode::Async => {}
+            _ => panic!("Expected Async mode"),
+        }
+
+        // Test sync mode with default timeout
+        let json = serde_json::json!("sync");
+        let mode: SpawnMode = serde_json::from_value(json).unwrap();
+        match mode {
+            SpawnMode::Sync { timeout_secs } => assert_eq!(timeout_secs, 300),
+            _ => panic!("Expected Sync mode"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_async_mode_error_response_formatting() {
+        // Test depth error
+        let response = AgentSpawnTool::format_error_response(
+            "Maximum spawn depth exceeded: 5".to_string()
+        ).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "forbidden");
+        assert!(response["note"].as_str().unwrap().contains("depth"));
+
+        // Test concurrent error
+        let response = AgentSpawnTool::format_error_response(
+            "Maximum concurrent subagent runs exceeded".to_string()
+        ).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "forbidden");
+        assert!(response["note"].as_str().unwrap().contains("concurrent"));
+
+        // Test timeout error
+        let response = AgentSpawnTool::format_error_response(
+            "Subagent execution timed out after 60s".to_string()
+        ).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "timeout");
+
+        // Test generic error
+        let response = AgentSpawnTool::format_error_response(
+            "Something went wrong".to_string()
+        ).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "error");
     }
 }

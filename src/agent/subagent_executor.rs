@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -19,7 +20,7 @@ use tracing::{error, info, warn};
 use crate::agent::async_tool_framework::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEntry,
     AsyncTaskRegistry, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
-    SharedAsyncTaskRegistry,
+    SharedAsyncTaskRegistry, WaitResult,
 };
 use crate::agent::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agent::subagent_registry::{
@@ -471,6 +472,58 @@ impl SubagentExecutor {
         );
 
         Ok(run_id)
+    }
+
+    /// Execute a subagent and wait for completion (sync mode)
+    ///
+    /// This is similar to `spawn_and_execute` but blocks until the subagent
+    /// completes or times out. Used for sequential decomposition patterns.
+    ///
+    /// Returns the completed run on success, or an error if the run fails or times out.
+    pub async fn execute_and_wait(
+        &self,
+        task: &str,
+        parent_ctx: Option<&SessionContext>,
+        isolated: bool,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        timeout_secs: u64,
+    ) -> Result<SubagentRun> {
+        // Start the subagent (async mode initially)
+        let run_id = self
+            .spawn_and_execute(task, parent_ctx, isolated, parent_session_key, config)
+            .await?;
+
+        // Wait for completion using the async registry
+        let wait_result = {
+            let registry = self.async_registry.read().await;
+            registry
+                .wait_for_completion(&run_id, Duration::from_secs(timeout_secs))
+                .await
+        };
+
+        // Get the final run state
+        let run = self
+            .get_run(&run_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Run {} not found after completion", run_id))?;
+
+        match wait_result {
+            Ok(WaitResult::Completed { .. }) => Ok(run),
+            Ok(WaitResult::Failed { error }) => {
+                Err(anyhow::anyhow!("Subagent failed: {}", error))
+            }
+            Ok(WaitResult::Cancelled) => Err(anyhow::anyhow!("Subagent was cancelled")),
+            Ok(WaitResult::Timeout) => {
+                // Cancel the run on timeout
+                self.cancel(&run_id).await.ok();
+                Err(anyhow::anyhow!(
+                    "Subagent execution timed out after {}s",
+                    timeout_secs
+                ))
+            }
+            Err(e) => Err(anyhow::anyhow!("Error waiting for subagent: {}", e)),
+        }
     }
 
     /// Get the current depth for a parent session
