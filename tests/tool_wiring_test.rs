@@ -123,12 +123,12 @@ async fn test_tool_factory_presets() {
 
     // Coding tools
     let coding = ToolFactory::create_coding_tools(PathBuf::from("/tmp"));
-    assert!(coding.len() >= 5, "Coding should have at least 5 tools");
+    assert!(coding.len() >= 4, "Coding should have at least 4 tools (filesystem, apply_patch, process, cron)");
     println!("  ✓ Coding tools: {}", coding.len());
 
     // Full tools
     let full = ToolFactory::create_full_tools(PathBuf::from("/tmp"));
-    assert!(full.len() >= 10, "Full should have at least 10 tools");
+    assert!(full.len() >= 7, "Full should have at least 7 tools (filesystem, apply_patch, process, 3 session tools, cron)");
     println!("  ✓ Full tools: {}", full.len());
 
     println!("✅ ToolFactory presets working!");

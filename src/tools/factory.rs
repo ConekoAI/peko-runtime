@@ -2,15 +2,24 @@
 //!
 //! This module provides centralized tool creation with proper configuration
 //! from the agent config or environment.
+//!
+//! Note: Heavy tools (web_search, fetch, http, browser, memory) have been
+//! migrated to standalone MCP servers. Use MCP configuration to enable them.
+//!
+//! # Tool Loading Strategy (MCP-First)
+//!
+//! 1. Try to load tools from MCP servers first (external processes)
+//! 2. If MCP unavailable, log warning and continue with core tools only
+//! 3. Users can install MCP servers via `pekobot mcp install <server>`
 
 use crate::security::SecurityPolicy;
 use crate::tools::{
-    ApplyPatchConfig, ApplyPatchTool, BrowserTool, CronTool, FetchConfig, FetchTool,
-    FileSystemTool, HttpTool, ProcessTool, SessionStatusTool, SessionsHistoryTool,
-    SessionsListTool, WebSearchConfig, WebSearchTool,
+    ApplyPatchConfig, ApplyPatchTool, CronTool, FileSystemTool, ProcessTool,
+    SessionStatusTool, SessionsHistoryTool, SessionsListTool,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// MCP configuration for tool factory
 #[derive(Debug, Clone)]
@@ -19,6 +28,10 @@ pub struct McpFactoryConfig {
     pub enabled: bool,
     /// Path to MCP config file
     pub config_path: Option<PathBuf>,
+    /// Auto-install missing MCP servers
+    pub auto_install: bool,
+    /// MCP-first mode: prefer MCP over embedded tools
+    pub mcp_first: bool,
 }
 
 impl Default for McpFactoryConfig {
@@ -26,6 +39,8 @@ impl Default for McpFactoryConfig {
         Self {
             enabled: true,
             config_path: None,
+            auto_install: false, // Disabled by default for security
+            mcp_first: true,     // MCP-first by default
         }
     }
 }
@@ -37,30 +52,16 @@ pub struct ToolFactoryConfig {
     pub workspace_dir: PathBuf,
     /// Enable filesystem tool
     pub enable_filesystem: bool,
-    /// Enable HTTP tool
-    pub enable_http: bool,
-    /// Enable fetch tool
-    pub enable_fetch: bool,
-    /// Enable browser tool
-    pub enable_browser: bool,
-    /// Enable web search tool
-    pub enable_web_search: bool,
     /// Enable apply patch tool
     pub enable_apply_patch: bool,
     /// Enable process tool
     pub enable_process: bool,
-    /// Enable memory tool
-    pub enable_memory: bool,
     /// Enable session introspection tools
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
     /// Path to cron database (defaults to `workspace_dir/cron.db`)
     pub cron_db_path: Option<PathBuf>,
-    /// Web search configuration
-    pub web_search_config: Option<WebSearchConfig>,
-    /// Fetch configuration
-    pub fetch_config: Option<FetchConfig>,
     /// Apply patch configuration
     pub apply_patch_config: Option<ApplyPatchConfig>,
     /// MCP configuration
@@ -72,18 +73,11 @@ impl Default for ToolFactoryConfig {
         Self {
             workspace_dir: PathBuf::from("."),
             enable_filesystem: true,
-            enable_http: true,
-            enable_fetch: true,
-            enable_browser: true,
-            enable_web_search: true,
             enable_apply_patch: true,
             enable_process: true,
-            enable_memory: true,
             enable_session_tools: true,
             enable_cron: true,
             cron_db_path: None,
-            web_search_config: None,
-            fetch_config: None,
             apply_patch_config: None,
             mcp: McpFactoryConfig::default(),
         }
@@ -92,6 +86,27 @@ impl Default for ToolFactoryConfig {
 
 /// Tool factory for creating configured tool instances
 pub struct ToolFactory;
+
+/// Result of MCP discovery
+#[derive(Debug)]
+pub struct McpDiscoveryResult {
+    /// Number of MCP servers discovered
+    pub servers_found: usize,
+    /// Number of tools available via MCP
+    pub tools_available: usize,
+    /// Server names that failed to connect
+    pub failed_servers: Vec<String>,
+    /// Whether auto-install was attempted
+    pub auto_install_attempted: bool,
+}
+
+impl McpDiscoveryResult {
+    /// Check if any MCP servers were found
+    #[must_use]
+    pub fn has_mcp_tools(&self) -> bool {
+        self.tools_available > 0
+    }
+}
 
 impl ToolFactory {
     /// Create all essential tools based on configuration (synchronous version)
@@ -112,30 +127,6 @@ impl ToolFactory {
             tools.push(Arc::new(FileSystemTool::with_policy(policy)));
         }
 
-        // HTTP tool
-        if config.enable_http {
-            if let Ok(tool) = HttpTool::new() {
-                tools.push(Arc::new(tool));
-            }
-        }
-
-        // Fetch tool
-        if config.enable_fetch {
-            let fetch_config = config.fetch_config.clone().unwrap_or_default();
-            tools.push(Arc::new(FetchTool::new(fetch_config)));
-        }
-
-        // Browser tool
-        if config.enable_browser {
-            tools.push(Arc::new(BrowserTool::new(vec![], None)));
-        }
-
-        // Web search tool
-        if config.enable_web_search {
-            let ws_config = config.web_search_config.clone().unwrap_or_default();
-            tools.push(Arc::new(WebSearchTool::new(ws_config)));
-        }
-
         // Apply patch tool
         if config.enable_apply_patch {
             let patch_config = config.apply_patch_config.clone().unwrap_or_default();
@@ -148,13 +139,6 @@ impl ToolFactory {
         // Process tool
         if config.enable_process {
             tools.push(Arc::new(ProcessTool::new()));
-        }
-
-        // Memory tool
-        if config.enable_memory {
-            // Memory tool needs a memory backend - for now we'll skip it
-            // as it requires proper initialization with the agent's memory store
-            // tools.push(Arc::new(MemoryToolFactory::create()));
         }
 
         // Session introspection tools
@@ -194,39 +178,59 @@ impl ToolFactory {
 
     /// Create all essential tools including MCP tools (asynchronous version)
     ///
-    /// This version loads MCP tools from configured MCP servers.
+    /// This version uses MCP-first loading:
+    /// 1. Discover and connect to MCP servers
+    /// 2. Load tools from MCP servers
+    /// 3. Fall back to core tools if MCP unavailable
     pub async fn create_tools_async(
         config: &ToolFactoryConfig,
-    ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
-        // Start with built-in tools
+    ) -> anyhow::Result<(Vec<Arc<dyn crate::tools::Tool>>, McpDiscoveryResult)> {
+        // Start with core built-in tools
         let mut tools = Self::create_tools(config);
+        let mut discovery_result = McpDiscoveryResult {
+            servers_found: 0,
+            tools_available: 0,
+            failed_servers: Vec::new(),
+            auto_install_attempted: false,
+        };
 
-        // Load MCP tools if enabled
+        // Try to discover and load MCP tools if enabled
         if config.mcp.enabled {
-            match Self::load_mcp_tools(&config.mcp).await {
-                Ok(mcp_tools) => {
+            tracing::info!("Discovering MCP servers...");
+            
+            match Self::load_mcp_tools_with_discovery(&config.mcp).await {
+                Ok((mcp_tools, result)) => {
                     if !mcp_tools.is_empty() {
-                        tracing::info!("Loaded {} MCP tools", mcp_tools.len());
+                        tracing::info!(
+                            "✅ Loaded {} tools from {} MCP servers",
+                            mcp_tools.len(),
+                            result.servers_found
+                        );
                         tools.extend(mcp_tools);
+                    } else {
+                        tracing::info!("ℹ️ No MCP servers configured or available");
                     }
+                    discovery_result = result;
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to load MCP tools: {}", e);
-                    // Continue without MCP tools - don't fail the whole tool creation
+                    tracing::warn!("❌ MCP discovery failed: {}", e);
+                    tracing::info!("💡 Continuing with core tools only. Install MCP servers with:");
+                    tracing::info!("   pekobot mcp install <web|browser|memory>");
                 }
             }
+        } else {
+            tracing::debug!("MCP tools disabled, using core tools only");
         }
 
-        Ok(tools)
+        Ok((tools, discovery_result))
     }
 
-    /// Load MCP tools from configured MCP servers
-    pub async fn load_mcp_tools(
+    /// Load MCP tools with discovery metadata
+    async fn load_mcp_tools_with_discovery(
         mcp_config: &McpFactoryConfig,
-    ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
-        use crate::mcp::{McpConfig, McpManager};
+    ) -> anyhow::Result<(Vec<Arc<dyn crate::tools::Tool>>, McpDiscoveryResult)> {
+        use crate::mcp::{create_tool_proxies, McpConfig, McpManager};
 
-        // Determine config path - use pekobot config dir (not system config dir)
         let config_path = mcp_config.config_path.clone().unwrap_or_else(|| {
             dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
@@ -234,49 +238,95 @@ impl ToolFactory {
                 .join("mcp.toml")
         });
 
-        // DEBUG
-
         // Check if config exists
         if !config_path.exists() {
-            tracing::debug!(
-                "MCP config not found at {:?}, skipping MCP tools",
-                config_path
-            );
-            return Ok(Vec::new());
+            tracing::debug!("MCP config not found at {:?}", config_path);
+            return Ok((Vec::new(), McpDiscoveryResult {
+                servers_found: 0,
+                tools_available: 0,
+                failed_servers: Vec::new(),
+                auto_install_attempted: false,
+            }));
         }
-
-        tracing::info!("Loading MCP config from {:?}", config_path);
 
         // Load MCP configuration
         let content = tokio::fs::read_to_string(&config_path).await?;
-        let config = McpConfig::from_toml(&content)?;
+        let config: McpConfig = toml::from_str(&content)?;
 
         if config.servers.is_empty() {
             tracing::debug!("No MCP servers configured");
+            return Ok((Vec::new(), McpDiscoveryResult {
+                servers_found: 0,
+                tools_available: 0,
+                failed_servers: Vec::new(),
+                auto_install_attempted: false,
+            }));
+        }
 
+        let servers_configured = config.servers.len();
+        tracing::info!("Found {} MCP server(s) in config", servers_configured);
+
+        // Initialize MCP manager
+        let manager = Arc::new(RwLock::new(McpManager::new(config)));
+        
+        // Try to initialize (connect to servers)
+        let init_result = {
+            let mut manager_guard = manager.write().await;
+            manager_guard.init().await
+        };
+        
+        match init_result {
+            Ok(()) => {
+                // Create tool proxies
+                let mcp_tools = create_tool_proxies(manager).await;
+                let tools_count = mcp_tools.len();
+                
+                tracing::info!("Connected to {} MCP server(s) with {} tools", servers_configured, tools_count);
+                
+                Ok((mcp_tools, McpDiscoveryResult {
+                    servers_found: servers_configured,
+                    tools_available: tools_count,
+                    failed_servers: Vec::new(),
+                    auto_install_attempted: mcp_config.auto_install,
+                }))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize MCP manager: {}", e);
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Legacy: Load MCP tools from configured MCP servers using manager
+    pub async fn load_mcp_tools(
+        mcp_config: &McpFactoryConfig,
+    ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
+        use crate::mcp::{create_tool_proxies, McpConfig, McpManager};
+
+        let config_path = mcp_config.config_path.clone().unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".pekobot")
+                .join("mcp.toml")
+        });
+
+        if !config_path.exists() {
+            tracing::debug!("MCP config not found at {:?}", config_path);
             return Ok(Vec::new());
         }
 
-        tracing::info!(
-            "Initializing MCP manager with {} servers",
-            config.servers.len()
-        );
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        let config: McpConfig = toml::from_str(&content)?;
 
-        // Initialize MCP manager
-        let manager = McpManager::new(config);
-
-        manager.init().await?;
-
-        // Get tools from all servers
-
-        let mcp_tools = manager.get_tools().await;
-
-        // Shutdown manager (tools hold their own client references)
-        if let Err(e) = manager.shutdown().await {
-            tracing::warn!("Error shutting down MCP manager: {}", e);
+        if config.servers.is_empty() {
+            return Ok(Vec::new());
         }
 
-        Ok(mcp_tools)
+        let manager = Arc::new(RwLock::new(McpManager::new(config)));
+        manager.write().await.init().await?;
+        
+        let tools = create_tool_proxies(manager).await;
+        Ok(tools)
     }
 
     /// Create minimal tools (filesystem + process only)
@@ -284,32 +334,26 @@ impl ToolFactory {
     pub fn create_minimal_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
             workspace_dir,
-            enable_http: false,
-            enable_fetch: false,
-            enable_browser: false,
-            enable_web_search: false,
             enable_apply_patch: false,
-            enable_memory: false,
             enable_session_tools: false,
+            enable_cron: false,
             ..Default::default()
         };
         Self::create_tools(&config)
     }
 
-    /// Create coding tools (filesystem + `apply_patch` + process + `web_search`)
+    /// Create coding tools (filesystem + `apply_patch` + process)
     #[must_use]
     pub fn create_coding_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
             workspace_dir,
-            enable_browser: false,
-            enable_memory: false,
             enable_session_tools: false,
             ..Default::default()
         };
         Self::create_tools(&config)
     }
 
-    /// Create full toolset
+    /// Create full toolset (core tools only, sync version)
     #[must_use]
     pub fn create_full_tools(workspace_dir: PathBuf) -> Vec<Arc<dyn crate::tools::Tool>> {
         let config = ToolFactoryConfig {
@@ -327,7 +371,8 @@ impl ToolFactory {
             workspace_dir,
             ..Default::default()
         };
-        Self::create_tools_async(&config).await
+        let (tools, _) = Self::create_tools_async(&config).await?;
+        Ok(tools)
     }
 
     /// Create full toolset with custom MCP config path
@@ -340,9 +385,42 @@ impl ToolFactory {
             mcp: McpFactoryConfig {
                 enabled: true,
                 config_path: Some(mcp_config_path),
+                ..Default::default()
             },
             ..Default::default()
         };
-        Self::create_tools_async(&config).await
+        let (tools, _) = Self::create_tools_async(&config).await?;
+        Ok(tools)
+    }
+
+    /// Check if MCP tools should be used (config exists)
+    pub async fn should_use_mcp() -> bool {
+        let config_path = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".pekobot")
+            .join("mcp.toml");
+        
+        if !config_path.exists() {
+            return false;
+        }
+        
+        match tokio::fs::read_to_string(&config_path).await {
+            Ok(content) => {
+                if let Ok(config) = toml::from_str::<crate::mcp::McpConfig>(&content) {
+                    !config.servers.is_empty()
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Get MCP config path
+    pub fn mcp_config_path() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".pekobot")
+            .join("mcp.toml")
     }
 }

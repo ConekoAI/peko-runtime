@@ -7,7 +7,7 @@ use crate::providers::Provider;
 use crate::session::context::{SessionContext, SessionRouter};
 use crate::session::manager::SessionManager;
 use crate::session::types::{ChannelType, Peer};
-use crate::tools::agent_spawn_v2::DynamicSessionKeyProvider;
+use crate::tools::agent_spawn::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -44,12 +44,10 @@ impl Agent {
     /// This synchronous version creates built-in tools only (no MCP).
     /// Use `create_tools_async` for full tool loading including MCP servers.
     fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::tools::{Tool, WebSearchTool, WebSearchConfig, FetchTool, FetchConfig, FileSystemTool, ProcessTool, InMemorySessionRegistry, ToolWithContext, AsyncTool, SessionStatusTool, AgentSpawnToolV2, AgentSpawnStatusTool, AgentSpawnListTool};
+        use crate::tools::{Tool, FileSystemTool, ProcessTool, InMemorySessionRegistry, SessionStatusTool, AgentSpawnTool, AgentSpawnStatusTool, AgentSpawnListTool};
 
-        // Create all available tools
+        // Create core tools only (web tools now provided via MCP)
         let mut tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(WebSearchTool::new(WebSearchConfig::default())),
-            Arc::new(FetchTool::new(FetchConfig::default())),
             Arc::new(FileSystemTool::new()),
             Arc::new(ProcessTool::new()),
         ];
@@ -60,7 +58,7 @@ impl Agent {
         tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
 
         // Add agent spawn tool v2 with executor and session provider
-        tools.push(Arc::new(AgentSpawnToolV2::with_session_provider(
+        tools.push(Arc::new(AgentSpawnTool::with_session_provider(
             self.subagent_executor.clone(),
             Box::new(self.session_key_provider.clone()),
         )));
@@ -88,12 +86,10 @@ impl Agent {
     /// This asynchronous version loads MCP tools from configured MCP servers
     /// and adds them to the built-in tools.
     async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
-        use crate::tools::{Tool, WebSearchTool, WebSearchConfig, FetchTool, FetchConfig, FileSystemTool, ProcessTool, InMemorySessionRegistry, ToolWithContext, AsyncTool, SessionStatusTool, AgentSpawnToolV2, AgentSpawnStatusTool, AgentSpawnListTool, ToolFactory};
+        use crate::tools::{Tool, FileSystemTool, ProcessTool, InMemorySessionRegistry, SessionStatusTool, AgentSpawnTool, AgentSpawnStatusTool, AgentSpawnListTool, ToolFactory};
 
-        // Create all available built-in tools
+        // Create core tools only (web tools now provided via MCP)
         let mut tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(WebSearchTool::new(WebSearchConfig::default())),
-            Arc::new(FetchTool::new(FetchConfig::default())),
             Arc::new(FileSystemTool::new()),
             Arc::new(ProcessTool::new()),
         ];
@@ -104,7 +100,7 @@ impl Agent {
         tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
 
         // Add agent spawn tool v2 with executor and session provider
-        tools.push(Arc::new(AgentSpawnToolV2::with_session_provider(
+        tools.push(Arc::new(AgentSpawnTool::with_session_provider(
             self.subagent_executor.clone(),
             Box::new(self.session_key_provider.clone()),
         )));

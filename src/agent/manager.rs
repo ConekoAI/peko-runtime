@@ -314,7 +314,7 @@ impl AgentManager {
     #[must_use]
     pub fn create_communication_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{
-            AgentBroadcastTool, AgentInfoTool, AgentInvokeTool, AgentSpawnTool, AgentsListTool,
+            AgentBroadcastTool, AgentInfoTool, AgentInvokeTool, AgentsListTool,
         };
         use std::sync::Arc;
 
@@ -327,7 +327,7 @@ impl AgentManager {
         tools.push(Arc::new(AgentInfoTool::new(self.command_tx.clone())));
 
         // Agent spawn tool
-        tools.push(Arc::new(AgentSpawnTool::new(self.command_tx.clone())));
+        // AgentSpawnTool is registered by the agent module with SubagentExecutor
 
         // Agent broadcast tool
         tools.push(Arc::new(AgentBroadcastTool::new(self.command_tx.clone())));
@@ -360,7 +360,7 @@ impl AgentManager {
             cron_db_path: Some(self.data_dir.join("cron.db")),
             ..Default::default()
         };
-        let mut tools = ToolFactory::create_tools_async(&factory_config).await?;
+        let (mut tools, _discovery) = ToolFactory::create_tools_async(&factory_config).await?;
 
         // Add communication tools
         tools.extend(self.create_communication_tools(&agent.identity.did));
@@ -419,7 +419,7 @@ impl AgentManager {
             cron_db_path: Some(self.data_dir.join("cron.db")),
             ..Default::default()
         };
-        let mut tools = ToolFactory::create_tools_async(&factory_config).await?;
+        let (mut tools, _discovery) = ToolFactory::create_tools_async(&factory_config).await?;
 
         // Add communication tools
         tools.extend(self.create_communication_tools(agent_did));
@@ -459,7 +459,7 @@ impl AgentManager {
     ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
         use crate::tools::ToolFactory;
 
-        let mut tools = ToolFactory::create_tools_async(&config).await?;
+        let (mut tools, _discovery) = ToolFactory::create_tools_async(&config).await?;
         tools.extend(self.create_communication_tools(agent_did));
 
         // Filter if tool config specified

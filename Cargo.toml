@@ -71,14 +71,11 @@ dirs = "5.0"
 url = "2.5"
 urlencoding = "2.1"
 
+# Binary discovery
+which = "6.0"
+
 # Pattern matching for document parsing
 regex = "1.10"
-
-# HTML parsing for web_search
-scraper = "0.19"
-
-# HTML to text extraction
-readability = "0.3"
 
 # Portable agent dependencies
 tar = "0.4"

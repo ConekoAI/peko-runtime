@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "mcp-web",
+    "mcp-browser",
+    "mcp-memory",
+]
+resolver = "2"

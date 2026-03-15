@@ -2,11 +2,17 @@
 //!
 //! Provides CLI commands for managing MCP servers:
 //! - List, add, remove MCP servers
+//! - Install built-in MCP servers (web, browser, memory)
+//! - Check status of all servers
 //! - Start, stop, restart servers
 //! - List tools from servers
 //! - Test server connections
+//! - Call tools directly
 
-use crate::mcp::{McpConfig, McpServerConfig, TransportType};
+use crate::mcp::{
+    discover_servers, ensure_default_config, is_server_installed, list_available_servers,
+    mcp_config_path, mcp_install_dir, McpConfig, McpServerConfig, TransportType,
+};
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,6 +31,27 @@ pub enum McpCommands {
     Show {
         /// Server name
         name: String,
+    },
+
+    /// Install a built-in MCP server (web, browser, memory)
+    Install {
+        /// Server name (web, browser, memory)
+        name: String,
+
+        /// Force reinstall even if already installed
+        #[arg(short, long)]
+        force: bool,
+
+        /// Build from source instead of downloading
+        #[arg(long)]
+        build: bool,
+    },
+
+    /// Check status of MCP servers
+    Status {
+        /// Check a specific server
+        #[arg(short, long)]
+        server: Option<String>,
     },
 
     /// Add a new MCP server
@@ -117,6 +144,10 @@ pub enum McpCommands {
         /// Tool arguments as JSON
         #[arg(short, long)]
         args: Option<String>,
+
+        /// Arguments as key=value pairs
+        #[arg(long)]
+        kv: Vec<String>,
     },
 
     /// Edit MCP configuration
@@ -466,6 +497,298 @@ impl McpCommandHandler {
         }
         Ok(())
     }
+
+    /// Handle install command
+    pub async fn install(&self, name: &str, force: bool, build: bool) -> anyhow::Result<()> {
+        let valid_servers = ["web", "browser", "memory"];
+        
+        if !valid_servers.contains(&name) {
+            anyhow::bail!(
+                "Unknown MCP server '{}'. Valid servers: {}",
+                name,
+                valid_servers.join(", ")
+            );
+        }
+
+        // Check if already installed
+        if is_server_installed(name).await && !force {
+            println!("✓ MCP server '{}' is already installed", name);
+            println!("  Use --force to reinstall");
+            return Ok(());
+        }
+
+        println!("Installing MCP server '{}'...", name);
+
+        // Ensure install directory exists
+        let install_dir = mcp_install_dir();
+        tokio::fs::create_dir_all(&install_dir).await?;
+
+        if build {
+            // Build from source
+            self.build_and_install(name, &install_dir).await?;
+        } else {
+            // Try to download pre-built binary or build
+            println!("  Building from source...");
+            self.build_and_install(name, &install_dir).await?;
+        }
+
+        // Ensure config exists
+        ensure_default_config().await?;
+
+        println!("✓ MCP server '{}' installed successfully", name);
+        println!("  Binary: {}", install_dir.join(format!("mcp-{}", name)).display());
+        println!("  Config: {}", mcp_config_path().display());
+        println!("\nTest the installation with:");
+        println!("  pekobot mcp test {}", name);
+
+        Ok(())
+    }
+
+    /// Build and install an MCP server from source
+    async fn build_and_install(&self, name: &str, install_dir: &PathBuf) -> anyhow::Result<()> {
+        let source_dir = match name {
+            "web" => "mcp-servers/mcp-web",
+            "browser" => "mcp-servers/mcp-browser",
+            "memory" => "mcp-servers/mcp-memory",
+            _ => anyhow::bail!("Unknown server: {}", name),
+        };
+
+        // Check if source exists
+        if !PathBuf::from(source_dir).exists() {
+            anyhow::bail!(
+                "Source directory '{}' not found. Make sure you're running from the project root.",
+                source_dir
+            );
+        }
+
+        println!("  Building {}...", source_dir);
+
+        // Build the server
+        let output = tokio::process::Command::new("cargo")
+            .args(["build", "--release", "-p", &format!("mcp-{}", name)])
+            .current_dir(".")
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Build failed:\n{}", stderr);
+        }
+
+        // Copy binary to install dir
+        let binary_name = format!("mcp-{}", name);
+        let source_binary = PathBuf::from("mcp-servers")
+            .join(format!("mcp-{}", name))
+            .join("target")
+            .join("release")
+            .join(&binary_name);
+        
+        // Also check workspace target
+        let workspace_binary = PathBuf::from("mcp-servers")
+            .join("target")
+            .join("release")
+            .join(&binary_name);
+
+        let binary_to_copy = if source_binary.exists() {
+            source_binary
+        } else if workspace_binary.exists() {
+            workspace_binary
+        } else {
+            anyhow::bail!("Built binary not found at expected location");
+        };
+
+        let target_binary = install_dir.join(&binary_name);
+        tokio::fs::copy(&binary_to_copy, &target_binary).await?;
+
+        // Make executable (on Unix)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = tokio::fs::metadata(&target_binary).await?.permissions();
+            perms.set_mode(0o755);
+            tokio::fs::set_permissions(&target_binary, perms).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Handle status command
+    pub async fn status(&self, server_filter: Option<&str>) -> anyhow::Result<()> {
+        println!("MCP Server Status\n");
+
+        // Show config path
+        let config_path = mcp_config_path();
+        println!("Config: {}", config_path.display());
+        
+        if !config_path.exists() {
+            println!("  Status: Not configured");
+            println!("\nRun 'pekobot mcp install <server>' to get started.");
+            return Ok(());
+        }
+
+        // Discover servers
+        match discover_servers().await {
+            Ok(servers) => {
+                if servers.is_empty() {
+                    println!("\nNo MCP servers configured.");
+                    println!("Run 'pekobot mcp install <web|browser|memory>' to add servers.");
+                    return Ok(());
+                }
+
+                println!("\n{:<15} {:<12} {:<10} {}", "NAME", "STATUS", "TOOLS", "BINARY");
+                println!("{}", "-".repeat(60));
+
+                for server in &servers {
+                    // Apply filter if specified
+                    if let Some(filter) = server_filter {
+                        if server.name != filter {
+                            continue;
+                        }
+                    }
+
+                    let status_icon = match server.status {
+                        crate::mcp::McpServerStatus::Available => "✅",
+                        crate::mcp::McpServerStatus::NotInstalled => "❌",
+                        _ => "⚠️ ",
+                    };
+
+                    let binary_status = if is_server_installed(&server.name).await {
+                        "installed"
+                    } else {
+                        "not found"
+                    };
+
+                    println!(
+                        "{:<15} {} {:<10} {:<10} {}",
+                        server.name,
+                        status_icon,
+                        format!("{}", server.tools_count),
+                        "",
+                        binary_status
+                    );
+
+                    if let Some(ref error) = server.error {
+                        println!("  → {}", error);
+                    }
+                }
+
+                // Show available but uninstalled servers
+                let available = list_available_servers().await;
+                let mut installed = std::collections::HashSet::new();
+                for server in &servers {
+                    if is_server_installed(&server.name).await {
+                        installed.insert(server.name.clone());
+                    }
+                }
+
+                let not_installed: Vec<_> = available
+                    .iter()
+                    .filter(|s| !installed.contains(*s))
+                    .collect();
+
+                if !not_installed.is_empty() {
+                    println!("\nAvailable to install:");
+                    for name in not_installed {
+                        println!("  • {} (run: pekobot mcp install {})", name, name);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("Error discovering servers: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle call command
+    pub async fn call(
+        &self,
+        server: &str,
+        tool: &str,
+        args_json: Option<&str>,
+        kv_args: &[String],
+    ) -> anyhow::Result<()> {
+        use crate::mcp::McpManager;
+        use serde_json::Value;
+
+        // Parse arguments
+        let mut args: Value = if let Some(json_str) = args_json {
+            serde_json::from_str(json_str)?
+        } else {
+            Value::Object(serde_json::Map::new())
+        };
+
+        // Add key=value pairs
+        if let Value::Object(ref mut map) = args {
+            for kv in kv_args {
+                if let Some((key, value)) = kv.split_once('=') {
+                    // Try to parse as number, bool, or string
+                    let parsed: Value = if let Ok(n) = value.parse::<i64>() {
+                        Value::Number(n.into())
+                    } else if let Ok(b) = value.parse::<bool>() {
+                        Value::Bool(b)
+                    } else {
+                        Value::String(value.to_string())
+                    };
+                    map.insert(key.to_string(), parsed);
+                } else {
+                    anyhow::bail!("Invalid key=value format: {}", kv);
+                }
+            }
+        }
+
+        println!("Calling {}::{}...", server, tool);
+        println!("Arguments: {}", serde_json::to_string_pretty(&args)?);
+
+        // Load config and initialize manager
+        let config = self.load_config()?;
+
+        if config.get_server(server).is_none() {
+            anyhow::bail!("Server '{}' not found in config", server);
+        }
+
+        let manager = McpManager::new(config);
+        manager.init().await?;
+
+        // Get client and call tool
+        let client = manager.get_client(server).await?;
+        let result = {
+            let client_guard = client.read().await;
+            client_guard.call_tool(tool, args).await
+        };
+
+        match result {
+            Ok(tool_result) => {
+                println!("\n✓ Tool executed successfully");
+                
+                // Print results
+                for content in &tool_result.content {
+                    match content {
+                        crate::mcp::types::ToolResultContent::Text(text) => {
+                            println!("\n{}", text.text);
+                        }
+                        crate::mcp::types::ToolResultContent::Image(img) => {
+                            println!("\n[Image: {} ({} bytes)]", img.mime_type, img.data.len());
+                        }
+                        crate::mcp::types::ToolResultContent::Resource(res) => {
+                            println!("\n[Resource: {:?}]", res);
+                        }
+                    }
+                }
+
+                if tool_result.is_error {
+                    println!("\n⚠️ Tool reported an error");
+                }
+            }
+            Err(e) => {
+                println!("\n✗ Tool call failed: {}", e);
+            }
+        }
+
+        manager.shutdown().await?;
+        Ok(())
+    }
 }
 
 /// Handle MCP subcommands
@@ -475,6 +798,8 @@ pub async fn handle(command: McpCommands, config_path: PathBuf) -> anyhow::Resul
     match command {
         McpCommands::List { long } => handler.list(long),
         McpCommands::Show { name } => handler.show(&name),
+        McpCommands::Install { name, force, build } => handler.install(&name, force, build).await,
+        McpCommands::Status { server } => handler.status(server.as_deref()).await,
         McpCommands::Add {
             name,
             transport,
@@ -516,14 +841,8 @@ pub async fn handle(command: McpCommands, config_path: PathBuf) -> anyhow::Resul
         }
         McpCommands::Test { name } => handler.test(&name).await,
         McpCommands::Tools { server } => handler.tools(server.as_deref()).await,
-        McpCommands::Call { server, tool, args } => {
-            println!("Calling {server}::{tool}...");
-            if let Some(args) = args {
-                println!("Arguments: {args}");
-            }
-            // TODO: Implement tool calling
-            println!("Note: Direct tool calling not yet implemented.");
-            Ok(())
+        McpCommands::Call { server, tool, args, kv } => {
+            handler.call(&server, &tool, args.as_deref(), &kv).await
         }
         McpCommands::Config { edit } => handler.config(edit),
     }

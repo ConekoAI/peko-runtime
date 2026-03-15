@@ -1,4 +1,4 @@
-//! Agent Spawn Tool v2 (OpenClaw-Style)
+//! Agent Spawn Tool (OpenClaw-Style)
 //!
 //! Spawns subagent sessions for isolated task execution.
 //! Results are announced back to the parent session asynchronously.
@@ -104,11 +104,11 @@ impl SessionKeyProvider for DynamicSessionKeyProvider {
     }
 }
 
-/// Agent Spawn Tool v2
+/// Agent Spawn Tool
 ///
 /// Creates a subagent session and executes a task in the background.
 /// Results are announced back to the parent when complete.
-pub struct AgentSpawnToolV2 {
+pub struct AgentSpawnTool {
     /// Subagent executor for background execution
     executor: Arc<SubagentExecutor>,
     /// Session key provider to get current session at execution time
@@ -121,7 +121,7 @@ pub struct AgentSpawnToolV2 {
     max_concurrent: usize,
 }
 
-impl AgentSpawnToolV2 {
+impl AgentSpawnTool {
     /// Create a new spawn tool with an executor
     #[must_use]
     pub fn new(executor: Arc<SubagentExecutor>) -> Self {
@@ -183,7 +183,7 @@ impl AgentSpawnToolV2 {
 }
 
 #[async_trait]
-impl Tool for AgentSpawnToolV2 {
+impl Tool for AgentSpawnTool {
     fn name(&self) -> &'static str {
         "agent_spawn"
     }
@@ -475,11 +475,11 @@ mod tests {
     use tokio::sync::RwLock;
 
     #[tokio::test]
-    async fn test_spawn_tool_v2_creation() {
+    async fn test_spawn_tool_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
         let router = crate::session::context::SessionRouter::new(manager.clone(), "test_agent");
         let executor = Arc::new(SubagentExecutor::new(router, manager, "test_agent", 5));
-        let tool = AgentSpawnToolV2::new(executor);
+        let tool = AgentSpawnTool::new(executor);
 
         assert_eq!(tool.name(), "agent_spawn");
     }
@@ -491,7 +491,7 @@ mod tests {
         let executor = Arc::new(SubagentExecutor::new(router, manager, "test_agent", 5));
 
         let provider = Box::new(StaticSessionKeyProvider::new("test:session:key"));
-        let tool = AgentSpawnToolV2::with_session_provider(executor, provider);
+        let tool = AgentSpawnTool::with_session_provider(executor, provider);
 
         assert_eq!(tool.name(), "agent_spawn");
     }
