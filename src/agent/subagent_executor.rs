@@ -286,26 +286,23 @@ impl SubagentExecutor {
         }
 
         // Register with async task registry
-        let async_task_entry = AsyncTaskEntry {
-            task_id: run_id.clone(),
-            tool_name: "agent_spawn".to_string(),
-            params: serde_json::json!({
+        let async_config = AsyncToolConfig {
+            delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
+            timeout_secs: config.timeout_seconds,
+            cleanup_after_delivery: config.cleanup == SpawnCleanupPolicy::Delete,
+            label: config.label.clone(),
+        };
+        let async_task_entry = AsyncTaskEntry::new(
+            run_id.clone(),
+            "agent_spawn".to_string(),
+            serde_json::json!({
                 "task": task,
                 "isolated": isolated,
                 "label": &config.label,
             }),
-            status: AsyncTaskStatus::Running,
-            parent_session_key: parent_session_key.to_string(),
-            created_at: chrono::Utc::now(),
-            completed_at: None,
-            config: AsyncToolConfig {
-                delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
-                timeout_secs: config.timeout_seconds,
-                cleanup_after_delivery: config.cleanup == SpawnCleanupPolicy::Delete,
-                label: config.label.clone(),
-            },
-            formatted_result: None,
-        };
+            parent_session_key.to_string(),
+            async_config,
+        );
         {
             let mut async_registry = self.async_registry.write().await;
             async_registry.register(async_task_entry);

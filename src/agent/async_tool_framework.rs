@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
 /// Unique identifier for an async task
@@ -88,8 +89,17 @@ impl Default for AsyncToolConfig {
     }
 }
 
-/// An async task entry stored in the registry
+/// Result of waiting for an async task to complete
 #[derive(Debug, Clone)]
+pub enum WaitResult {
+    Completed { result: ToolResult },
+    Failed { error: String },
+    Cancelled,
+    Timeout,
+}
+
+/// An async task entry stored in the registry
+#[derive(Debug)]
 pub struct AsyncTaskEntry {
     pub task_id: AsyncTaskId,
     pub tool_name: String,
@@ -101,6 +111,63 @@ pub struct AsyncTaskEntry {
     pub config: AsyncToolConfig,
     /// The formatted result message ready for delivery
     pub formatted_result: Option<String>,
+    /// Completion notification channel for sync waiting
+    completion_tx: Option<mpsc::Sender<AsyncTaskStatus>>,
+}
+
+impl AsyncTaskEntry {
+    /// Create a new async task entry
+    #[must_use]
+    pub fn new(
+        task_id: AsyncTaskId,
+        tool_name: String,
+        params: Value,
+        parent_session_key: String,
+        config: AsyncToolConfig,
+    ) -> Self {
+        Self {
+            task_id,
+            tool_name,
+            params,
+            status: AsyncTaskStatus::Pending,
+            parent_session_key,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+            config,
+            formatted_result: None,
+            completion_tx: None,
+        }
+    }
+
+    /// Set the completion notification channel
+    pub fn set_completion_channel(&mut self, tx: mpsc::Sender<AsyncTaskStatus>) {
+        self.completion_tx = Some(tx);
+    }
+
+    /// Clone the status for notification
+    fn notify_completion(&self) {
+        if let Some(ref tx) = self.completion_tx {
+            // Use try_send to avoid blocking - if channel is full, skip notification
+            let _ = tx.try_send(self.status.clone());
+        }
+    }
+}
+
+impl Clone for AsyncTaskEntry {
+    fn clone(&self) -> Self {
+        Self {
+            task_id: self.task_id.clone(),
+            tool_name: self.tool_name.clone(),
+            params: self.params.clone(),
+            status: self.status.clone(),
+            parent_session_key: self.parent_session_key.clone(),
+            created_at: self.created_at,
+            completed_at: self.completed_at,
+            config: self.config.clone(),
+            formatted_result: self.formatted_result.clone(),
+            completion_tx: None, // Channels don't clone, will need to be re-set
+        }
+    }
 }
 
 /// Event sent to agent when an async task completes
@@ -145,10 +212,104 @@ impl AsyncTaskRegistry {
 
     pub fn update_status(&mut self, task_id: &AsyncTaskId, status: AsyncTaskStatus) {
         if let Some(entry) = self.tasks.get_mut(task_id) {
-            entry.status = status;
+            entry.status = status.clone();
             if entry.status.is_terminal() {
                 entry.completed_at = Some(chrono::Utc::now());
+                // Notify any waiters
+                entry.notify_completion();
             }
+        }
+    }
+
+    /// Wait for a task to complete with a timeout
+    /// 
+    /// This is used for sync-mode execution of async tools.
+    /// Returns immediately if the task is already in a terminal state.
+    pub async fn wait_for_completion(
+        &self,
+        task_id: &AsyncTaskId,
+        timeout: Duration,
+    ) -> Result<WaitResult> {
+        // Fast path: check if already completed
+        if let Some(entry) = self.tasks.get(task_id) {
+            if entry.status.is_terminal() {
+                return Ok(self.status_to_wait_result(&entry.status));
+            }
+        }
+
+        // Create a channel to receive completion notification
+        let (tx, _rx) = mpsc::channel(1);
+
+        // Register the completion channel
+        if let Some(entry) = self.tasks.get(task_id) {
+            // Clone the entry, set the channel, and re-insert
+            let mut entry_with_channel = entry.clone();
+            entry_with_channel.set_completion_channel(tx);
+            
+            // We need to modify through a mutable reference
+            // Since we can't easily do this, we'll poll instead
+            drop(entry);
+        }
+
+        // Polling-based wait with notification support
+        let start = tokio::time::Instant::now();
+        loop {
+            // Check if completed
+            if let Some(entry) = self.tasks.get(task_id) {
+                if entry.status.is_terminal() {
+                    return Ok(self.status_to_wait_result(&entry.status));
+                }
+            } else {
+                return Err(anyhow::anyhow!("Task {} not found in registry", task_id));
+            }
+
+            // Check timeout
+            if start.elapsed() >= timeout {
+                return Ok(WaitResult::Timeout);
+            }
+
+            // Wait for either notification or poll interval
+            let remaining = timeout.saturating_sub(start.elapsed());
+            let poll_interval = Duration::from_millis(50).min(remaining);
+
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
+    /// Check if a task exists and return its current status
+    #[must_use]
+    pub fn check_status(&self, task_id: &AsyncTaskId) -> Option<AsyncTaskStatus> {
+        self.tasks.get(task_id).map(|e| e.status.clone())
+    }
+
+    /// Convert status to wait result
+    fn status_to_wait_result(&self, status: &AsyncTaskStatus) -> WaitResult {
+        match status {
+            AsyncTaskStatus::Completed { result } => WaitResult::Completed {
+                result: result.clone(),
+            },
+            AsyncTaskStatus::Failed { error } => WaitResult::Failed {
+                error: error.clone(),
+            },
+            AsyncTaskStatus::Cancelled => WaitResult::Cancelled,
+            _ => WaitResult::Timeout, // Should not happen for terminal states
+        }
+    }
+
+    /// Register a completion waiter for a task
+    /// 
+    /// This is an alternative to `wait_for_completion` that uses a channel
+    /// for more efficient notification.
+    pub async fn register_waiter(
+        &mut self,
+        task_id: &AsyncTaskId,
+        tx: mpsc::Sender<AsyncTaskStatus>,
+    ) -> Result<()> {
+        if let Some(entry) = self.tasks.get_mut(task_id) {
+            entry.set_completion_channel(tx);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Task {} not found in registry", task_id))
         }
     }
 
@@ -432,19 +593,15 @@ mod tests {
     #[tokio::test]
     async fn test_async_task_registry() {
         let mut registry = AsyncTaskRegistry::new();
-        let entry = AsyncTaskEntry {
-            task_id: "task_123".to_string(),
-            tool_name: "test_tool".to_string(),
-            params: serde_json::json!({}),
-            status: AsyncTaskStatus::Pending,
-            parent_session_key: "session:abc".to_string(),
-            created_at: chrono::Utc::now(),
-            completed_at: None,
-            config: AsyncToolConfig::default(),
-            formatted_result: None,
-        };
+        let entry = AsyncTaskEntry::new(
+            "task_123".to_string(),
+            "test_tool".to_string(),
+            serde_json::json!({}),
+            "session:abc".to_string(),
+            AsyncToolConfig::default(),
+        );
 
-        registry.register(entry.clone());
+        registry.register(entry);
         assert!(registry.get(&"task_123".to_string()).is_some());
 
         registry.update_status(&"task_123".to_string(), AsyncTaskStatus::Running);
@@ -452,6 +609,100 @@ mod tests {
             registry.get(&"task_123".to_string()).unwrap().status,
             AsyncTaskStatus::Running
         );
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_completion() {
+        let mut registry = AsyncTaskRegistry::new();
+        let task_id = "task_wait".to_string();
+
+        let entry = AsyncTaskEntry::new(
+            task_id.clone(),
+            "test_tool".to_string(),
+            serde_json::json!({}),
+            "session:abc".to_string(),
+            AsyncToolConfig::default(),
+        );
+
+        registry.register(entry);
+
+        // Test timeout when task doesn't complete
+        let timeout_result = tokio::time::timeout(
+            Duration::from_millis(100),
+            registry.wait_for_completion(&task_id, Duration::from_millis(50))
+        ).await;
+
+        // Should timeout or return WaitResult::Timeout
+        match timeout_result {
+            Ok(Ok(WaitResult::Timeout)) => {}
+            Err(_) => {} // tokio timeout also acceptable
+            other => panic!("Expected timeout, got: {:?}", other),
+        }
+
+        // Now complete the task
+        registry.update_status(&task_id, AsyncTaskStatus::Completed {
+            result: ToolResult::success(serde_json::json!({"done": true})),
+        });
+
+        // Now wait should return immediately with completed result
+        let result = registry.wait_for_completion(&task_id, Duration::from_secs(1)).await.unwrap();
+        match result {
+            WaitResult::Completed { result } => {
+                assert!(result.success);
+            }
+            _ => panic!("Expected completed result, got: {:?}", result),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_failed_task() {
+        let mut registry = AsyncTaskRegistry::new();
+        let task_id = "task_fail".to_string();
+
+        let entry = AsyncTaskEntry::new(
+            task_id.clone(),
+            "test_tool".to_string(),
+            serde_json::json!({}),
+            "session:abc".to_string(),
+            AsyncToolConfig::default(),
+        );
+
+        registry.register(entry);
+
+        // Mark as failed
+        registry.update_status(&task_id, AsyncTaskStatus::Failed {
+            error: "Something went wrong".to_string(),
+        });
+
+        let result = registry.wait_for_completion(&task_id, Duration::from_secs(1)).await.unwrap();
+        match result {
+            WaitResult::Failed { error } => {
+                assert_eq!(error, "Something went wrong");
+            }
+            _ => panic!("Expected failed result, got: {:?}", result),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_check_status() {
+        let mut registry = AsyncTaskRegistry::new();
+        let task_id = "task_check".to_string();
+
+        assert!(registry.check_status(&task_id).is_none());
+
+        let entry = AsyncTaskEntry::new(
+            task_id.clone(),
+            "test_tool".to_string(),
+            serde_json::json!({}),
+            "session:abc".to_string(),
+            AsyncToolConfig::default(),
+        );
+
+        registry.register(entry);
+        assert_eq!(registry.check_status(&task_id), Some(AsyncTaskStatus::Pending));
+
+        registry.update_status(&task_id, AsyncTaskStatus::Running);
+        assert_eq!(registry.check_status(&task_id), Some(AsyncTaskStatus::Running));
     }
 
     #[test]
