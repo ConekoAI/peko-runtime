@@ -1,5 +1,34 @@
-//! Agent Invoke Tool - Session-based agent-to-agent messaging
+//! Agent Invoke Tool - DEPRECATED
 //!
+//! # ⚠️ Deprecated
+//! This module is deprecated since v0.3.0. Use `sessions_send` tool instead.
+//!
+//! ## Migration Guide
+//! ```rust,ignore
+//! // Old (deprecated)
+//! AgentInvokeTool::execute(json!({
+//!     "target": "analyzer",
+//!     "message": "Review this code",
+//!     "mode": "async"
+//! }))
+//!
+//! // New (recommended)
+//! SessionsSendTool::execute(json!({
+//!     "target": "analyzer",
+//!     "message": "Review this code",
+//!     "mode": "async"
+//! }))
+//! ```
+//!
+//! ## Why Migrate?
+//! - Unified delivery mechanism (same as subagent_spawn)
+//! - Supports queue modes: steer, collect, interrupt
+//! - Consistent session ownership model
+//! - OpenClaw parity
+//!
+//! See `docs/A2A-MIGRATION-PLAN.md` for full details.
+//!
+//! ## Legacy Description
 //! Implements GAP-005: Agent-to-Agent Messaging using session queues.
 //!
 //! Supports two modes:
@@ -28,7 +57,11 @@ use crate::orchestration::EventSubscriber;
 use crate::tools::Tool;
 
 /// Pending invocation awaiting response
+///
+/// # Deprecated
+/// Use `AsyncTaskEntry` from `async_tool_framework` instead.
 #[derive(Debug, Clone)]
+#[deprecated(since = "0.3.0", note = "Use AsyncTaskEntry instead")]
 pub struct PendingInvocation {
     /// Invocation ID
     pub id: String,
@@ -43,7 +76,11 @@ pub struct PendingInvocation {
 }
 
 /// Response from an invocation
+///
+/// # Deprecated
+/// Use `AsyncTaskResult::SessionMessage` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[deprecated(since = "0.3.0", note = "Use AsyncTaskResult::SessionMessage instead")]
 pub struct InvocationResponse {
     /// Original invocation ID
     pub invocation_id: String,
@@ -83,7 +120,11 @@ pub struct InvocationMessage {
 }
 
 /// Global registry for tracking pending invocations
+///
+/// # Deprecated
+/// Use `AsyncTaskRegistry` from `async_tool_framework` instead.
 #[derive(Debug, Default)]
+#[deprecated(since = "0.3.0", note = "Use AsyncTaskRegistry instead")]
 pub struct InvocationRegistry {
     /// Pending invocations by ID
     pending: HashMap<String, PendingInvocation>,
@@ -161,14 +202,24 @@ pub type SharedInvocationRegistry = Arc<RwLock<InvocationRegistry>>;
 
 /// Create a shared invocation registry
 #[must_use]
+/// # Deprecated
+/// Use `UnifiedAsyncExecutor` instead.
+#[deprecated(since = "0.3.0", note = "Use UnifiedAsyncExecutor instead")]
 pub fn create_shared_registry() -> SharedInvocationRegistry {
     Arc::new(RwLock::new(InvocationRegistry::new()))
 }
 
 /// Tool for invoking another agent via session-based messaging
 ///
+/// # Deprecated
+/// Use `SessionsSendTool` instead. See module documentation for migration guide.
+///
 /// MODE: sync - blocks until target agent returns result
 /// MODE: async - returns receipt, result delivered via `EventSubscriber`
+#[deprecated(
+    since = "0.3.0",
+    note = "Use SessionsSendTool instead. See docs/A2A-MIGRATION-PLAN.md"
+)]
 pub struct AgentInvokeTool {
     /// This agent's DID
     agent_did: String,
@@ -181,7 +232,11 @@ pub struct AgentInvokeTool {
 }
 
 /// Commands for the invocation system
+///
+/// # Deprecated
+/// Use `UnifiedAsyncExecutor` instead.
 #[derive(Debug)]
+#[deprecated(since = "0.3.0", note = "Use UnifiedAsyncExecutor instead")]
 pub enum InvokeCommand {
     /// Send invocation to target agent
     SendInvocation {
@@ -213,7 +268,11 @@ pub enum InvokeCommand {
 }
 
 /// Result of an invocation (internal)
+///
+/// # Deprecated
+/// Use `AsyncTaskResult` instead.
 #[derive(Debug, Clone)]
+#[deprecated(since = "0.3.0", note = "Use AsyncTaskResult instead")]
 pub enum InvocationResult {
     /// Sync mode completed with result
     Completed(InvocationResponse),
@@ -225,14 +284,23 @@ pub enum InvocationResult {
     Timeout,
 }
 
+#[allow(deprecated)]
 impl AgentInvokeTool {
     /// Create a new agent invoke tool
+    ///
+    /// # Deprecated
+    /// Use `SessionsSendTool::new()` instead.
+    #[must_use]
     pub fn new(
         agent_did: impl Into<String>,
         agent_name: impl Into<String>,
         command_tx: mpsc::Sender<InvokeCommand>,
         event_subscriber: Option<Arc<EventSubscriber>>,
     ) -> Self {
+        tracing::warn!(
+            "AgentInvokeTool is deprecated since v0.3.0. Use SessionsSendTool instead. \
+             See docs/A2A-MIGRATION-PLAN.md for migration guide."
+        );
         Self {
             agent_did: agent_did.into(),
             agent_name: agent_name.into(),
@@ -274,21 +342,23 @@ impl AgentInvokeTool {
 }
 
 #[async_trait]
+#[allow(deprecated)]
 impl Tool for AgentInvokeTool {
     fn name(&self) -> &'static str {
         "agent_invoke"
     }
 
     fn description(&self) -> &'static str {
-        r#"Invoke another agent via session-based messaging.
+        r#"⚠️ DEPRECATED: Use `sessions_send` instead.
+
+Invoke another agent via session-based messaging.
 
 Supports two modes:
 - sync: Blocks until target agent returns result (default)
 - async: Returns immediately with receipt, result delivered via event
 
-The target agent will receive the message and process it, then return
-a response. In sync mode, this tool waits for that response. In async
-mode, the response is delivered later through the event system.
+Migration: Replace agent_invoke with sessions_send. Both tools accept
+similar parameters (target, message, mode). See docs/A2A-MIGRATION-PLAN.md.
 
 Parameters:
 - target: Agent DID or name to invoke (required)
@@ -299,24 +369,24 @@ Parameters:
 
 Examples:
 SYNC:  {"target": "researcher", "message": "Analyze this data", "mode": "sync"}
-ASYNC: {"target": "analyzer", "message": "Process logs", "mode": "async"}
-
-Use when: you need another agent to perform a task and wait for results.
-Don't use when: a simple function call or direct computation would suffice."#
+ASYNC: {"target": "analyzer", "message": "Process logs", "mode": "async"}"#
     }
 
     fn llm_description(&self) -> String {
-        r#"Invoke another agent to perform a task. Use agent_invoke when you need to:
-- Delegate work to a specialized agent
-- Get information from another agent's session
-- Request analysis or computation from another agent
+        r#"⚠️ DEPRECATED: Use `sessions_send` tool instead.
 
-Examples:
-{"target": "researcher", "message": "Search for recent papers on quantum computing", "mode": "sync"}
-{"target": "code_agent", "message": "Review this function for bugs", "mode": "async"}
+Invoke another agent to perform a task.
 
-Use when: you need another agent's capabilities and must wait for results (sync) or can continue without results (async).
-Don't use when: the task is simple enough to do yourself or you don't need to coordinate with other agents."#.to_string()
+⚠️ MIGRATION NOTICE: This tool is deprecated since v0.3.0. Use `sessions_send` instead.
+Both tools have similar parameters. See docs/A2A-MIGRATION-PLAN.md for details.
+
+Legacy usage:
+{"target": "researcher", "message": "Search for recent papers", "mode": "sync"}
+
+Migration:
+{"target": "researcher", "message": "Search for recent papers", "mode": "sync"}
+(Just change tool name from agent_invoke to sessions_send)"#
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -324,6 +394,12 @@ Don't use when: the task is simple enough to do yourself or you don't need to co
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        // Emit deprecation warning
+        tracing::warn!(
+            "agent_invoke tool is deprecated since v0.3.0. Use sessions_send instead. \
+             See docs/A2A-MIGRATION-PLAN.md for migration guide."
+        );
+
         // Parse parameters
         let target = params["target"]
             .as_str()
@@ -414,6 +490,10 @@ Don't use when: the task is simple enough to do yourself or you don't need to co
 /// Service that handles invocation routing between agents
 ///
 /// This runs as a background task and routes messages between agents
+///
+/// # Deprecated
+/// Use `UnifiedAsyncExecutor` instead.
+#[deprecated(since = "0.3.0", note = "Use UnifiedAsyncExecutor instead")]
 pub struct InvocationService {
     /// Registry of pending invocations
     registry: SharedInvocationRegistry,

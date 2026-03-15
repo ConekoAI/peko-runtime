@@ -8,6 +8,7 @@ use crate::agent::{
     types::{AgentInfo, ManagerEvent},
 };
 use crate::identity::{storage::KeyStorage, Identity};
+#[allow(deprecated)]
 use crate::tools::{
     ExecuteHandler, InvocationResponse, InvocationService, InvokeCommand, ManagerCommand,
 };
