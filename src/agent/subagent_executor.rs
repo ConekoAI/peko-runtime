@@ -7,20 +7,18 @@
 //! - Announcing results back to parents
 //! - Timeout and cancellation handling
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use tokio::sync::{mpsc, RwLock};
-use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::agent::async_tool_framework::{
-    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEntry,
-    AsyncTaskRegistry, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
-    SharedAsyncTaskRegistry, WaitResult,
+    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskRegistry, AsyncTaskResult,
+    AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, UnifiedAsyncExecutor,
+    WaitResult,
 };
 use crate::agent::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agent::subagent_registry::{
@@ -75,16 +73,14 @@ impl Default for ExecutionConfig {
 
 /// Executor for subagent tasks
 pub struct SubagentExecutor {
-    /// Registry for tracking runs (legacy)
+    /// Registry for tracking runs (subagent-specific)
     registry: SharedSubagentRegistry,
-    /// Async task registry for unified async tool tracking
-    async_registry: SharedAsyncTaskRegistry,
+    /// Unified async executor for background task execution
+    unified_executor: UnifiedAsyncExecutor,
     /// Session router for creating sessions
     session_router: SessionRouter,
     /// Agent name for the executor
     agent_name: String,
-    /// Active task handles
-    handles: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
     /// Maximum concurrent runs
     max_concurrent: usize,
     /// Channel for announcing completed runs
@@ -95,8 +91,6 @@ pub struct SubagentExecutor {
     agent_config: Option<AgentConfig>,
     /// Session manager for accessing sessions
     session_manager: Arc<RwLock<SessionManager>>,
-    /// Async result queue manager for delivering results to parent sessions
-    async_queue_manager: SharedAsyncResultQueueManager,
 }
 
 impl SubagentExecutor {
@@ -108,18 +102,21 @@ impl SubagentExecutor {
         agent_name: impl Into<String>,
         max_concurrent: usize,
     ) -> Self {
+        let async_registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
+        let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+        let unified_executor =
+            UnifiedAsyncExecutor::with_registries(async_registry, async_queue_manager);
+
         Self {
             registry: create_shared_registry(),
-            async_registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
+            unified_executor,
             session_router,
             agent_name: agent_name.into(),
-            handles: Arc::new(RwLock::new(HashMap::new())),
             max_concurrent,
             announcement_tx: None,
             provider: None,
             agent_config: None,
             session_manager,
-            async_queue_manager: Arc::new(RwLock::new(AsyncResultQueueManager::new())),
         }
     }
 
@@ -132,18 +129,21 @@ impl SubagentExecutor {
         agent_name: impl Into<String>,
         max_concurrent: usize,
     ) -> Self {
+        let async_registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
+        let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+        let unified_executor =
+            UnifiedAsyncExecutor::with_registries(async_registry, async_queue_manager);
+
         Self {
             registry,
-            async_registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
+            unified_executor,
             session_router,
             agent_name: agent_name.into(),
-            handles: Arc::new(RwLock::new(HashMap::new())),
             max_concurrent,
             announcement_tx: None,
             provider: None,
             agent_config: None,
             session_manager,
-            async_queue_manager: Arc::new(RwLock::new(AsyncResultQueueManager::new())),
         }
     }
 
@@ -158,18 +158,19 @@ impl SubagentExecutor {
         agent_name: impl Into<String>,
         max_concurrent: usize,
     ) -> Self {
+        let unified_executor =
+            UnifiedAsyncExecutor::with_registries(async_registry, async_queue_manager);
+
         Self {
             registry,
-            async_registry,
+            unified_executor,
             session_router,
             agent_name: agent_name.into(),
-            handles: Arc::new(RwLock::new(HashMap::new())),
             max_concurrent,
             announcement_tx: None,
             provider: None,
             agent_config: None,
             session_manager,
-            async_queue_manager,
         }
     }
 
@@ -208,13 +209,19 @@ impl SubagentExecutor {
     /// Get a reference to the async task registry
     #[must_use]
     pub fn async_registry(&self) -> &SharedAsyncTaskRegistry {
-        &self.async_registry
+        self.unified_executor.registry()
     }
 
     /// Get a reference to the async queue manager
     #[must_use]
     pub fn async_queue_manager(&self) -> &SharedAsyncResultQueueManager {
-        &self.async_queue_manager
+        self.unified_executor.queue_manager()
+    }
+
+    /// Get a reference to the unified executor
+    #[must_use]
+    pub fn unified_executor(&self) -> &UnifiedAsyncExecutor {
+        &self.unified_executor
     }
 
     /// Spawn and execute a subagent
@@ -286,7 +293,7 @@ impl SubagentExecutor {
             registry.register(run);
         }
 
-        // Register with async task registry
+        // Execute using unified async executor
         let async_config = AsyncToolConfig {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: None,
@@ -294,178 +301,146 @@ impl SubagentExecutor {
             cleanup_after_delivery: config.cleanup == SpawnCleanupPolicy::Delete,
             label: config.label.clone(),
         };
-        let async_task_entry = AsyncTaskEntry::new(
-            run_id.clone(),
-            "agent_spawn".to_string(),
-            serde_json::json!({
-                "task": task,
-                "isolated": isolated,
-                "label": &config.label,
-            }),
-            parent_session_key.to_string(),
-            async_config,
-        );
-        {
-            let mut async_registry = self.async_registry.write().await;
-            async_registry.register(async_task_entry);
-        }
 
-        // Clone what we need for the background task
+        // Clone values for the execution closure
         let registry_clone = self.registry.clone();
-        let async_registry_clone = self.async_registry.clone();
-        let async_queue_manager_clone = self.async_queue_manager.clone();
-        let run_id_clone = run_id.clone();
         let child_session_key_clone = child_session_key.clone();
         let parent_session_key_clone = parent_session_key.to_string();
         let task_clone = task.to_string();
+        let label_clone = config.label.clone();
+        let run_id_clone = run_id.clone();
         let timeout = config.timeout_seconds;
         let agent_name = self.agent_name.clone();
         let provider_clone = self.provider.clone();
         let agent_config_clone = self.agent_config.clone();
         let session_manager_clone = self.session_manager.clone();
-        let label_clone = config.label.clone();
 
-        // Spawn the background execution
-        let handle = tokio::spawn(async move {
-            info!(
-                "Starting subagent execution: run_id={} session={}",
-                run_id_clone, child_session_key_clone
-            );
-
-            // Build system prompt and task message
-            let system_prompt = build_subagent_system_prompt(
-                &parent_session_key_clone,
-                &child_session_key_clone,
-                &task_clone,
-                config.label.as_deref(),
-                child_depth,
-                config.max_depth,
-            );
-
-            let task_message =
-                build_subagent_task_message(&task_clone, child_depth, config.max_depth);
-
-            // Execute with timeout
-            let result = if timeout > 0 {
-                if let Ok(r) = tokio::time::timeout(
-                    tokio::time::Duration::from_secs(timeout),
-                    execute_subagent_task(
-                        &agent_name,
-                        &child_session_key_clone,
-                        &system_prompt,
-                        &task_message,
-                        provider_clone,
-                        agent_config_clone,
-                        session_manager_clone,
-                    ),
-                )
-                .await
-                {
-                    r
-                } else {
-                    warn!(
-                        "Subagent timed out: run_id={} timeout={}s",
-                        run_id_clone, timeout
+        // Use unified executor for background execution
+        self.unified_executor
+            .execute(
+                run_id.clone(),
+                "agent_spawn",
+                serde_json::json!({
+                    "task": task,
+                    "isolated": isolated,
+                    "label": &config.label,
+                    "child_session_key": &child_session_key,
+                }),
+                parent_session_key.to_string(),
+                async_config,
+                move || async move {
+                    info!(
+                        "Starting subagent execution: run_id={} session={}",
+                        run_id_clone, child_session_key_clone
                     );
-                    Err(anyhow::anyhow!(
-                        "Subagent execution timed out after {timeout} seconds"
-                    ))
-                }
-            } else {
-                execute_subagent_task(
-                    &agent_name,
-                    &child_session_key_clone,
-                    &system_prompt,
-                    &task_message,
-                    provider_clone,
-                    agent_config_clone,
-                    session_manager_clone,
-                )
-                .await
-            };
 
-            // Process result
-            let (status, output, error) = match result {
-                Ok(output) => {
-                    info!("Subagent completed successfully: run_id={}", run_id_clone);
-                    (SubagentStatus::Completed, Some(output), None)
-                }
-                Err(e) => {
-                    error!("Subagent failed: run_id={} error={}", run_id_clone, e);
-                    (SubagentStatus::Failed, None, Some(e.to_string()))
-                }
-            };
+                    // Build system prompt and task message
+                    let system_prompt = build_subagent_system_prompt(
+                        &parent_session_key_clone,
+                        &child_session_key_clone,
+                        &task_clone,
+                        label_clone.as_deref(),
+                        child_depth,
+                        config.max_depth,
+                    );
 
-            // Complete the run in registry
-            let subagent_result = SubagentResult {
-                status,
-                output: output.clone(),
-                error: error.clone(),
-                token_usage: None, // TODO: Track token usage
-                completed_at: Utc::now(),
-            };
+                    let task_message =
+                        build_subagent_task_message(&task_clone, child_depth, config.max_depth);
 
-            {
-                let mut registry = registry_clone.write().await;
-                registry.complete(&run_id_clone, subagent_result);
-            }
+                    // Execute with timeout
+                    let result = if timeout > 0 {
+                        match tokio::time::timeout(
+                            tokio::time::Duration::from_secs(timeout),
+                            execute_subagent_task(
+                                &agent_name,
+                                &child_session_key_clone,
+                                &system_prompt,
+                                &task_message,
+                                provider_clone,
+                                agent_config_clone,
+                                session_manager_clone,
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(r) => r,
+                            Err(_) => {
+                                warn!(
+                                    "Subagent timed out: run_id={} timeout={}s",
+                                    run_id_clone, timeout
+                                );
+                                Err(anyhow::anyhow!(
+                                    "Subagent execution timed out after {timeout} seconds"
+                                ))
+                            }
+                        }
+                    } else {
+                        execute_subagent_task(
+                            &agent_name,
+                            &child_session_key_clone,
+                            &system_prompt,
+                            &task_message,
+                            provider_clone,
+                            agent_config_clone,
+                            session_manager_clone,
+                        )
+                        .await
+                    };
 
-            // Update async task registry and queue result for delivery
-            let async_status = match status {
-                SubagentStatus::Completed => AsyncTaskStatus::Completed {
-                    result: crate::tools::ToolResult::success(output.clone().unwrap_or_default()),
+                    // Process result and update subagent registry
+                    let (status, output, error) = match result {
+                        Ok(output) => {
+                            info!("Subagent completed successfully: run_id={}", run_id_clone);
+                            (SubagentStatus::Completed, Some(output), None)
+                        }
+                        Err(e) => {
+                            error!("Subagent failed: run_id={} error={}", run_id_clone, e);
+                            (SubagentStatus::Failed, None, Some(e.to_string()))
+                        }
+                    };
+
+                    // Complete the run in subagent registry (if not already cancelled)
+                    {
+                        let mut registry = registry_clone.write().await;
+                        if let Some(existing_run) = registry.get(&run_id_clone) {
+                            if existing_run.status == SubagentStatus::Cancelled {
+                                // Run was cancelled, don't overwrite status
+                                info!(
+                                    "Subagent run {} was cancelled, skipping completion update",
+                                    run_id_clone
+                                );
+                                return Ok(AsyncTaskResult::Subagent {
+                                    output: None,
+                                    error: Some("Cancelled".to_string()),
+                                    token_usage: None,
+                                });
+                            }
+                        }
+
+                        let subagent_result = SubagentResult {
+                            status,
+                            output: output.clone(),
+                            error: error.clone(),
+                            token_usage: None, // TODO: Track token usage
+                            completed_at: Utc::now(),
+                        };
+                        registry.complete(&run_id_clone, subagent_result);
+                    }
+
+                    info!(
+                        "Subagent result queued for delivery to {}: run_id={}",
+                        parent_session_key_clone, run_id_clone
+                    );
+
+                    // Return unified async task result
+                    Ok(AsyncTaskResult::Subagent {
+                        output,
+                        error,
+                        token_usage: None,
+                    })
                 },
-                SubagentStatus::Failed => AsyncTaskStatus::Failed {
-                    error: error.clone().unwrap_or_default(),
-                },
-                SubagentStatus::Cancelled => AsyncTaskStatus::Cancelled,
-                _ => AsyncTaskStatus::Completed {
-                    result: crate::tools::ToolResult::success("Unknown status"),
-                },
-            };
-
-            // Format the result message (OpenClaw-style)
-            let result_message = format_subagent_result(
-                &run_id_clone,
-                &child_session_key_clone,
-                &task_clone,
-                label_clone.as_deref(),
-                &status,
-                output.as_deref(),
-                error.as_deref(),
-            );
-
-            {
-                // Update async task registry
-                let mut async_registry = async_registry_clone.write().await;
-                async_registry.update_status(&run_id_clone, async_status);
-
-                // Queue the result for delivery to parent
-                let event = AsyncTaskCompletionEvent {
-                    task_id: run_id_clone.clone(),
-                    tool_name: "agent_spawn".to_string(),
-                    result_message,
-                    parent_session_key: parent_session_key_clone.clone(),
-                    label: label_clone.clone(),
-                };
-                async_registry.queue_announcement(run_id_clone.clone(), &parent_session_key_clone);
-
-                // Also queue in the queue manager
-                let mut queue_manager = async_queue_manager_clone.write().await;
-                queue_manager.enqueue(event);
-            }
-
-            info!(
-                "Subagent result queued for delivery to {}: run_id={}",
-                parent_session_key_clone, run_id_clone
-            );
-        });
-
-        // Store the handle
-        {
-            let mut handles = self.handles.write().await;
-            handles.insert(run_id.clone(), handle);
-        }
+            )
+            .await?;
 
         info!(
             "Spawned subagent: run_id={} depth={} isolated={}",
@@ -497,7 +472,7 @@ impl SubagentExecutor {
 
         // Wait for completion using the async registry
         let wait_result = {
-            let registry = self.async_registry.read().await;
+            let registry = self.async_registry().read().await;
             registry
                 .wait_for_completion(&run_id, Duration::from_secs(timeout_secs))
                 .await
@@ -555,80 +530,51 @@ impl SubagentExecutor {
 
     /// Cancel a running subagent
     pub async fn cancel(&self, run_id: &str) -> Result<()> {
-        // Remove the handle
-        let handle = {
-            let mut handles = self.handles.write().await;
-            handles.remove(run_id)
-        };
+        // Cancel via unified executor
+        self.unified_executor.cancel(&run_id.to_string()).await.ok();
 
-        // Abort the task if it exists
-        if let Some(handle) = handle {
-            handle.abort();
-            info!("Cancelled subagent task: run_id={}", run_id);
-        }
-
-        // Update registry
+        // Update subagent registry
         {
             let mut registry = self.registry.write().await;
             registry.update_status(run_id, SubagentStatus::Cancelled);
         }
 
+        info!("Cancelled subagent task: run_id={}", run_id);
         Ok(())
     }
 
     /// Clean up completed tasks and old registry entries
     pub async fn cleanup(&self) -> usize {
-        // Remove completed handles
-        let to_remove: Vec<String> = {
-            let handles = self.handles.read().await;
-            let registry = self.registry.read().await;
-
-            handles
-                .keys()
-                .filter(|run_id| {
-                    registry
-                        .get(run_id)
-                        .is_none_or(|run| run.status.is_terminal())
-                })
-                .cloned()
-                .collect()
-        };
-
-        let mut count = 0;
-        {
-            let mut handles = self.handles.write().await;
-            for run_id in to_remove {
-                handles.remove(&run_id);
-                count += 1;
-            }
-        }
-
         // Clean up old registry entries (older than 1 hour)
-        {
-            let mut registry = self.registry.write().await;
-            count += registry.cleanup_old(chrono::Duration::hours(1));
-        }
-
-        count
+        let mut registry = self.registry.write().await;
+        registry.cleanup_old(chrono::Duration::hours(1))
     }
 
     /// Shutdown the executor, cancelling all running tasks
     pub async fn shutdown(&self) {
         info!("Shutting down subagent executor...");
 
-        // Cancel all tasks
-        let handles: Vec<_> = {
-            let mut handles = self.handles.write().await;
-            handles.drain().collect()
-        };
+        // Note: UnifiedAsyncExecutor doesn't track all task handles externally,
+        // so we rely on the registry to know what might be running
+        // In practice, the async task registry handles cleanup internally
 
-        for (run_id, handle) in handles {
-            handle.abort();
-            info!("Aborted subagent task: run_id={}", run_id);
-
-            // Update registry
+        // Update all non-terminal runs to cancelled status
+        {
             let mut registry = self.registry.write().await;
-            registry.update_status(&run_id, SubagentStatus::Cancelled);
+            let active_runs: Vec<String> = registry
+                .list_all()
+                .into_iter()
+                .filter(|run| !run.status.is_terminal())
+                .map(|run| run.run_id.clone())
+                .collect();
+
+            for run_id in active_runs {
+                registry.update_status(&run_id, SubagentStatus::Cancelled);
+                info!(
+                    "Marked subagent as cancelled during shutdown: run_id={}",
+                    run_id
+                );
+            }
         }
 
         info!("Subagent executor shutdown complete");
@@ -674,16 +620,14 @@ impl Clone for SubagentExecutor {
     fn clone(&self) -> Self {
         Self {
             registry: self.registry.clone(),
-            async_registry: self.async_registry.clone(),
+            unified_executor: self.unified_executor.clone(),
             session_router: self.session_router.clone(),
             agent_name: self.agent_name.clone(),
-            handles: Arc::new(RwLock::new(HashMap::new())),
             max_concurrent: self.max_concurrent,
             announcement_tx: self.announcement_tx.clone(),
             provider: self.provider.clone(),
             agent_config: self.agent_config.clone(),
             session_manager: self.session_manager.clone(),
-            async_queue_manager: self.async_queue_manager.clone(),
         }
     }
 }
