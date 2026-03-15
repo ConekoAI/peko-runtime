@@ -54,8 +54,14 @@ pub enum EntityRef {
 pub enum Target {
     Channel(ChannelId),
     User(UserId),
-    Reply { channel: ChannelId, message: MessageId },
-    Thread { channel: ChannelId, thread_id: String },
+    Reply {
+        channel: ChannelId,
+        message: MessageId,
+    },
+    Thread {
+        channel: ChannelId,
+        thread_id: String,
+    },
 }
 
 /// Content type

@@ -38,9 +38,14 @@ pub mod subagent_registry;
 pub mod async_tool_framework;
 pub use async_tool_framework::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEventBus,
-    AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskStatus, AsyncTool, AsyncToolConfig,
-    SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
+    AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
+    CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery, ResultDelivery,
+    SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, UnifiedAsyncExecutor, WaitResult,
 };
+
+// Deprecated: AsyncTool trait is deprecated, use UnifiedAsyncExecutor directly
+#[allow(deprecated)]
+pub use async_tool_framework::AsyncTool;
 
 // Re-export manager components for convenience
 pub use commands::command_handler_loop;

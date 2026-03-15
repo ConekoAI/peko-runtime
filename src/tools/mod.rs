@@ -43,6 +43,11 @@ pub use traits::{Tool, ToolError, ToolResult};
 // Async tool framework re-exports
 pub use crate::agent::async_tool_framework::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEventBus,
-    AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskStatus, AsyncTool, AsyncToolConfig,
-    SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
+    AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
+    CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery, ResultDelivery,
+    SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, UnifiedAsyncExecutor, WaitResult,
 };
+
+// Deprecated: AsyncTool trait is deprecated, use UnifiedAsyncExecutor directly
+#[allow(deprecated)]
+pub use crate::agent::async_tool_framework::AsyncTool;

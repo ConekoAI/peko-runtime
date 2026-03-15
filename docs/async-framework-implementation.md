@@ -1,193 +1,197 @@
-# Async Tool Framework Implementation Summary
+# Async Tool Framework Implementation
 
-## What Was Built
+## Overview
 
-### 1. Core Framework (`src/agent/async_tool_framework.rs`)
+The Async Tool Framework provides unified infrastructure for asynchronous tool execution. It replaces manual registry/queue management with a centralized executor pattern.
 
-A generalized async tool execution framework inspired by OpenClaw's subagent queue:
+## Architecture
 
-**Key Components:**
-- `AsyncTaskRegistry` - Central registry tracking all async tasks system-wide
-- `AsyncResultQueueManager` - Per-session queues for pending results
-- `AsyncResultQueue` - Individual queue with delivery modes
-- `AsyncTool` trait - Interface for async-capable tools
-- `ToolResult` - Structured result type with success/failure/metadata
+### Core Components
 
-**Delivery Modes (from OpenClaw):**
-- `QueueWhenBusy` - Queue result, deliver when agent idle (default)
-- `Interrupt` - Immediate delivery
-- `Collect` - Batch multiple results together
-- `Steer` - Inject into running session
-
-### 2. Subagent Integration (`src/agent/subagent_executor.rs`)
-
-Updated `SubagentExecutor` to use the async framework:
-
-**New Fields:**
-```rust
-async_registry: SharedAsyncTaskRegistry          // Track async tasks
-async_queue_manager: SharedAsyncResultQueueManager // Queue results
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 UnifiedAsyncExecutor                        │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐  ┌─────────────────────────────────┐  │
+│  │ AsyncTaskRegistry│  │    ResultDelivery (pluggable)   │  │
+│  │                 │  ├─────────────────────────────────┤  │
+│  │ - Track tasks   │  │  • QueueDelivery (default)      │  │
+│  │ - Store status  │  │  • ChannelDelivery              │  │
+│  │ - Cache results │  │  • CallbackDelivery             │  │
+│  └─────────────────┘  └─────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌───────────────────┐
+                    │ AsyncTaskResult   │
+                    │ (unified enum)    │
+                    ├───────────────────┤
+                    │ • Process         │
+                    │ • Subagent        │
+                    │ • Invocation      │
+                    │ • Generic         │
+                    └───────────────────┘
 ```
 
-**Spawn Flow:**
-1. Register task in `AsyncTaskRegistry` with status `Running`
-2. Spawn background task with clones of registries
-3. When complete:
-   - Update `AsyncTaskRegistry` with result
-   - Format result as OpenClaw-style message
-   - Queue in `AsyncResultQueueManager` for parent session
+## Key Types
 
-**Result Format:**
-```
-[System Message] [sessionId: agent:name:subagent:uuid] A subagent task "task description" just completed successfully.
+### AsyncTaskResult
 
-Result:
-<subagent output>
-
-[runId: run_xxx | session: agent:name:subagent:uuid]
-
-Instruction: Convert this result into your normal assistant voice for the user...
-```
-
-### 3. Test Coverage
-
-- `test_async_task_status_terminal` - Status state machine
-- `test_async_task_registry` - Task registration/updates
-- `test_async_result_queue` - Queue behavior (busy/idle)
-- `test_collect_mode_batching` - Batch mode for multiple results
-
-**All 406 tests pass.**
-
-## Architecture Benefits
-
-### Before (Direct Assistant Message)
-```
-Parent Session                    Child Session
-├─ User: "Spawn task X"          ├─ System: "You are subagent..."
-├─ Tool: agent_spawn ───────────►├─ User: "Task X" 
-│  └─ Returns: accepted          │  └─ LLM processes...
-│                                 ├─ Assistant: "Result Y"
-◄─────────────────────────────────┘
-│  ├─ Assistant: "## Subagent     ← WRONG: Direct injection
-│     Result\nResult Y"           ← Parent didn't say this!
-```
-
-### After (System Message Queue)
-```
-Parent Session                    Child Session
-├─ User: "Spawn task X"          ├─ System: "You are subagent..."
-├─ Tool: agent_spawn ───────────►├─ User: "Task X"
-│  └─ Returns: accepted          │  └─ LLM processes...
-│                                 ├─ Assistant: "Result Y"
-│  [Parent busy, running]         └─ Complete
-│                                 
-│  [Queue: Result Y waiting]      
-│                                 
-├─ Agent loop finishes ◄──────────┘
-├─ Check queue → Result Y found
-├─ Add system message:           ← CORRECT: System context
-│  "[System Message] A subagent
-│   task completed. Result: Y"
-│  
-├─ LLM processes result → Response
-└─ Assistant: "The subagent found Y"
-```
-
-### Race Condition Safety
-
-**Problem:** Parent and child writing to session simultaneously = corruption
-
-**Solution:** 
-- Child only queues result, doesn't write to session
-- Parent checks queue when idle, then writes
-- Single writer to session at any time
-
-## What's Next
-
-### 1. Agent Loop Integration
-
-Add queue checking to the agent loop before each iteration:
+Unified result type for all async operations:
 
 ```rust
-async fn run_iteration(&mut self) -> Result<()> {
-    // Check for async task completions
-    let events = self.async_queue_manager
-        .process_queue(&self.session_key)
-        .await;
-    
-    // Add events to conversation as system messages
-    for event in events {
-        self.add_system_message(&event.result_message).await?;
-    }
-    
-    // Continue normal loop execution...
+pub enum AsyncTaskResult {
+    Process { stdout, stderr, exit_code },
+    Subagent { result, task },
+    Invocation { result, invocation_id },
+    Generic { data, result_type },
 }
 ```
 
-### 2. AgentSpawnToolV2 AsyncTool Implementation
+Provides standardized formatting:
+- `format_for_announcement()` - Format for parent agent delivery
+- `summary()` - Short summary for logging
 
-Implement the `AsyncTool` trait for `AgentSpawnToolV2`:
+### ResultDelivery Trait
 
 ```rust
 #[async_trait]
-impl AsyncTool for AgentSpawnToolV2 {
-    async fn spawn_async(...) -> Result<AsyncTaskReceipt>;
-    async fn check_status(&self, task_id: &AsyncTaskId) -> Result<AsyncTaskStatus>;
-    async fn cancel(&self, task_id: &AsyncTaskId) -> Result<bool>;
-    fn format_result(&self, entry: &AsyncTaskEntry) -> String;
+pub trait ResultDelivery: Send + Sync {
+    async fn deliver(&self, entry: &AsyncTaskEntry) -> Result<()>;
+    fn clone_box(&self) -> Box<dyn ResultDelivery>;
 }
 ```
 
-### 3. Other Async Tools
+**Built-in implementations:**
+- `QueueDelivery` - Queue for later delivery (default)
+- `ChannelDelivery` - Send via mpsc channel
+- `CallbackDelivery` - Invoke async callback
 
-The framework enables async execution for:
-- **Cron jobs** - Schedule future execution
-- **Long processes** - Spawn process, notify on completion
-- **External webhooks** - Register callback, deliver when received
-- **Batch operations** - Multiple operations, results collected
+### UnifiedAsyncExecutor
 
-### 4. Advanced Features
+Central executor for all async operations:
 
-**Steer Mode:** Inject into running session (requires careful coordination)
-**Collect Mode:** Batch multiple subagent results
+```rust
+impl UnifiedAsyncExecutor {
+    pub async fn execute<F, Fut>(
+        &self,
+        task_id: AsyncTaskId,
+        tool_name: &str,
+        params: Value,
+        parent_session_key: &str,
+        config: AsyncToolConfig,
+        execution_fn: F,
+    ) -> Result<AsyncTaskReceipt>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<AsyncTaskResult>> + Send;
+
+    pub async fn wait_for_completion(
+        &self,
+        task_id: &AsyncTaskId,
+        timeout: Duration,
+    ) -> Result<WaitResult>;
+
+    pub async fn check_status(&self, task_id: &AsyncTaskId) -> Option<AsyncTaskStatus>;
+    pub async fn cancel(&self, task_id: &AsyncTaskId) -> Result<bool>;
+}
 ```
-[Multiple async tasks completed]
 
-## subagent_spawn (task_1):
-Result 1...
+## Tool Integration
 
-## subagent_spawn (task_2):
-Result 2...
+### ProcessTool Example
 
-Instruction: Synthesize these results.
+```rust
+pub struct ProcessTool {
+    executor: Option<UnifiedAsyncExecutor>,
+    session_key: Option<String>,
+}
+
+impl ProcessTool {
+    pub fn with_async(
+        mut self,
+        executor: UnifiedAsyncExecutor,
+        session_key: impl Into<String>,
+    ) -> Self {
+        self.executor = Some(executor);
+        self.session_key = Some(session_key.into());
+        self
+    }
+
+    async fn execute_async(&self, ...) -> Result<Value> {
+        let executor = self.executor.clone()
+            .ok_or_else(|| anyhow!("Async mode not configured"))?;
+
+        let receipt = executor
+            .execute(
+                task_id,
+                "process",
+                params,
+                session_key,
+                AsyncToolConfig { ... },
+                move || async move {
+                    let result = Self::execute_command(...).await?;
+                    Ok(AsyncTaskResult::Process { ... })
+                },
+            )
+            .await?;
+
+        Ok(json!({ "task_id": receipt.task_id, "status": "accepted" }))
+    }
+}
 ```
 
-## Files Modified
+## Benefits Over Manual Pattern
 
-- `src/agent/async_tool_framework.rs` - NEW: Core framework
-- `src/agent/subagent_executor.rs` - Integration with async framework
-- `src/agent/mod.rs` - Re-exports
-- `src/tools/traits.rs` - Added ToolResult struct
-- `src/tools/mod.rs` - Re-exports
+### Code Reduction
 
-## Alignment with OpenClaw
+| Aspect | Manual Pattern | Unified Executor |
+|--------|---------------|------------------|
+| Registry access | 4 lock operations | 0 (handled internally) |
+| Queue management | Manual enqueue | Via delivery trait |
+| Status updates | 2+ updates | Automatic |
+| Error handling | Per-tool | Standardized |
+| Lines of code | ~80 | ~40 |
 
-| Feature | OpenClaw | Our Implementation |
-|---------|----------|-------------------|
-| Queue storage | In-memory + persistence | In-memory (extensible) |
-| Delivery modes | steer, queue, collect, interrupt | Same modes |
-| Busy detection | `isEmbeddedPiRunActive()` | Agent state tracking |
-| Result format | System message trigger | System message trigger |
-| Batch handling | Collect mode with summary | Collect mode implemented |
-| Scope | Subagents only | Any async tool |
+### Consistency
 
-## Design Philosophy
+All async tools now share:
+- Same registry and queue management
+- Same result formatting
+- Same delivery mechanisms
+- Same status tracking
 
-> "Subagent spawn is essentially an async internal tool."
+### Testability
 
-By generalizing async execution:
-- **Unified pattern** - Any tool can be async
-- **Consistent API** - Same interface for all async operations
-- **Composable** - Async tools can spawn other async tools
-- **Testable** - Framework can be tested independently
-- **Extensible** - New delivery modes can be added
+```rust
+// Mock executor for testing
+let mock_executor = UnifiedAsyncExecutor::with_registries(
+    Arc::new(RwLock::new(AsyncTaskRegistry::new())),
+    Arc::new(RwLock::new(AsyncResultQueueManager::new())),
+);
+
+let tool = ProcessTool::new().with_async(mock_executor, "test_session");
+```
+
+## Migration Status
+
+| Tool | Status | Notes |
+|------|--------|-------|
+| ProcessTool | ✅ Migrated | Using UnifiedAsyncExecutor |
+| AgentSpawnTool | ⏳ Pending | Uses SubagentExecutor (higher-level) |
+| agent_invoke | ✅ Separate | Uses InvocationRegistry (A2A messaging) |
+
+## Files
+
+- `src/agent/async_tool_framework.rs` - Core framework
+- `src/tools/process.rs` - ProcessTool implementation
+- `docs/async-tool-framework.md` - User documentation
+
+## Test Coverage
+
+All 500 tests pass including:
+- `test_async_task_result_process` - Result formatting
+- `test_process_async_mode` - Async execution
+- `test_process_async_with_timeout` - Timeout handling
+- `test_async_task_registry` - Registry operations
+- `test_queue_delivery` - Delivery mechanisms

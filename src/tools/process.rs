@@ -8,15 +8,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use crate::agent::async_tool_framework::{
-    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEntry,
-    AsyncTaskRegistry, AsyncTaskStatus, AsyncToolConfig, SharedAsyncResultQueueManager,
-    SharedAsyncTaskRegistry,
+    AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, UnifiedAsyncExecutor,
 };
 use crate::tools::Tool;
 
@@ -50,10 +47,8 @@ pub struct ProcessTool {
     default_timeout_secs: u64,
     /// Whether to allow shell commands (sh -c)
     allow_shell: bool,
-    /// Async task registry (for async mode)
-    async_registry: Option<SharedAsyncTaskRegistry>,
-    /// Result queue manager (for async mode)
-    queue_manager: Option<SharedAsyncResultQueueManager>,
+    /// Unified async executor (for async mode)
+    executor: Option<UnifiedAsyncExecutor>,
     /// Parent session key (for async result routing)
     session_key: Option<String>,
 }
@@ -70,8 +65,7 @@ impl ProcessTool {
         Self {
             default_timeout_secs: DEFAULT_TIMEOUT_SECS,
             allow_shell: false,
-            async_registry: None,
-            queue_manager: None,
+            executor: None,
             session_key: None,
         }
     }
@@ -82,8 +76,7 @@ impl ProcessTool {
         Self {
             default_timeout_secs: timeout_secs.min(MAX_TIMEOUT_SECS),
             allow_shell: false,
-            async_registry: None,
-            queue_manager: None,
+            executor: None,
             session_key: None,
         }
     }
@@ -94,22 +87,19 @@ impl ProcessTool {
         Self {
             default_timeout_secs: 30,
             allow_shell: true,
-            async_registry: None,
-            queue_manager: None,
+            executor: None,
             session_key: None,
         }
     }
 
-    /// Enable async mode with registry and queue manager
+    /// Enable async mode with unified executor
     #[must_use]
-    pub fn with_async_support(
+    pub fn with_async(
         mut self,
-        registry: SharedAsyncTaskRegistry,
-        queue_manager: SharedAsyncResultQueueManager,
+        executor: UnifiedAsyncExecutor,
         session_key: impl Into<String>,
     ) -> Self {
-        self.async_registry = Some(registry);
-        self.queue_manager = Some(queue_manager);
+        self.executor = Some(executor);
         self.session_key = Some(session_key.into());
         self
     }
@@ -196,7 +186,7 @@ impl ProcessTool {
         .await
     }
 
-    /// Execute command in async mode
+    /// Execute command in async mode using UnifiedAsyncExecutor
     async fn execute_async(
         &self,
         command: String,
@@ -207,13 +197,8 @@ impl ProcessTool {
         label: Option<String>,
         delivery_mode: AsyncResultDeliveryMode,
     ) -> Result<serde_json::Value> {
-        let registry = self
-            .async_registry
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Async mode not configured for process tool"))?;
-
-        let queue_manager = self
-            .queue_manager
+        let executor = self
+            .executor
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Async mode not configured for process tool"))?;
 
@@ -224,123 +209,64 @@ impl ProcessTool {
 
         let task_id = format!("process_{}", Uuid::new_v4().simple());
 
-        // Register task
-        let config = AsyncToolConfig {
-            delivery_mode,
-            delivery_target: None,
-            timeout_secs,
-            cleanup_after_delivery: true,
-            label: label.clone(),
-        };
-
-        let entry = AsyncTaskEntry::new(
-            task_id.clone(),
-            "process".to_string(),
-            json!({
-                "command": &command,
-                "args": &args,
-                "working_dir": &working_dir,
-            }),
-            session_key.clone(),
-            config,
-        );
-
-        {
-            let mut reg = registry.write().await;
-            reg.register(entry);
-        }
-
-        // Spawn background task - clone all values that will be moved into the async block
-        let registry_clone = registry.clone();
-        let queue_manager_clone = queue_manager.clone();
-        let session_key_clone = session_key.clone();
-        let task_id_clone = task_id.clone();
+        // Clone values for the execution closure
         let command_clone = command.clone();
-        let label_clone = label.clone();
+        let working_dir_clone = working_dir.clone();
 
-        tokio::spawn(async move {
-            // Update status to Running
-            {
-                let mut reg = registry_clone.write().await;
-                reg.update_status(&task_id_clone, AsyncTaskStatus::Running);
-            }
-
-            // Execute command
-            let result = Self::execute_command(
-                &command_clone,
-                args,
-                timeout_secs,
-                working_dir.as_deref(),
-                env_vars,
-            )
-            .await;
-
-            // Format result and update registry
-            let (status, result_message) = match result {
-                Ok(output) => {
-                    let success = output["success"].as_bool().unwrap_or(false);
-                    let stdout = output["stdout"].as_str().unwrap_or("");
-                    let stderr = output["stderr"].as_str().unwrap_or("");
-                    let exit_code = output["exit_code"].as_i64().unwrap_or(-1);
-
-                    let message = format!(
-                        "Process completed: {}\nExit code: {}\nStdout:\n{}\nStderr:\n{}",
-                        command_clone, exit_code, stdout, stderr
-                    );
-
-                    if success {
-                        (
-                            AsyncTaskStatus::Completed {
-                                result: crate::tools::traits::ToolResult::success(output.clone()),
-                            },
-                            message,
-                        )
-                    } else {
-                        (
-                            AsyncTaskStatus::Failed {
-                                error: format!("Exit code: {}", exit_code),
-                            },
-                            message,
-                        )
-                    }
-                }
-                Err(e) => {
-                    let error_msg = e.to_string();
-                    (
-                        AsyncTaskStatus::Failed {
-                            error: error_msg.clone(),
-                        },
-                        format!("Process failed: {}", error_msg),
+        // Execute using unified executor
+        let receipt = executor
+            .execute(
+                task_id.clone(),
+                "process",
+                json!({
+                    "command": &command,
+                    "args": &args,
+                    "working_dir": &working_dir,
+                }),
+                session_key,
+                AsyncToolConfig {
+                    delivery_mode,
+                    delivery_target: None,
+                    timeout_secs,
+                    cleanup_after_delivery: true,
+                    label: label.clone(),
+                },
+                move || async move {
+                    // Execute the command
+                    let result = Self::execute_command(
+                        &command_clone,
+                        args,
+                        timeout_secs,
+                        working_dir_clone.as_deref(),
+                        env_vars,
                     )
-                }
-            };
+                    .await;
 
-            // Update registry
-            {
-                let mut reg = registry_clone.write().await;
-                reg.update_status(&task_id_clone, status);
-            }
+                    // Convert to AsyncTaskResult
+                    match result {
+                        Ok(output) => {
+                            let stdout = output["stdout"].as_str().unwrap_or("").to_string();
+                            let stderr = output["stderr"].as_str().unwrap_or("").to_string();
+                            let exit_code = output["exit_code"].as_i64().unwrap_or(-1) as i32;
+                            Ok(AsyncTaskResult::Process {
+                                stdout,
+                                stderr,
+                                exit_code,
+                            })
+                        }
+                        Err(e) => Err(e),
+                    }
+                },
+            )
+            .await?;
 
-            // Queue for delivery
-            {
-                let mut manager = queue_manager_clone.write().await;
-                manager.enqueue(AsyncTaskCompletionEvent {
-                    task_id: task_id_clone,
-                    tool_name: "process".to_string(),
-                    result_message,
-                    parent_session_key: session_key_clone,
-                    label: label_clone,
-                });
-            }
-        });
-
-        // Return receipt immediately
+        // Return receipt
         Ok(json!({
-            "task_id": task_id,
+            "task_id": receipt.task_id,
             "status": "accepted",
             "mode": "async",
             "command": command,
-            "check_status_tool": "async_task_status",
+            "check_status_tool": receipt.check_status_tool,
         }))
     }
 }
@@ -618,6 +544,7 @@ Run tests without blocking:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::async_tool_framework::{AsyncResultQueueManager, AsyncTaskRegistry};
     use serde_json::json;
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -633,15 +560,11 @@ mod tests {
     fn test_process_tool_with_async_support() {
         let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+        let executor = UnifiedAsyncExecutor::with_registries(registry, queue_manager);
 
-        let tool = ProcessTool::new().with_async_support(
-            registry,
-            queue_manager,
-            "test_session".to_string(),
-        );
+        let tool = ProcessTool::new().with_async(executor, "test_session");
 
-        assert!(tool.async_registry.is_some());
-        assert!(tool.queue_manager.is_some());
+        assert!(tool.executor.is_some());
         assert_eq!(tool.session_key, Some("test_session".to_string()));
     }
 
@@ -649,12 +572,10 @@ mod tests {
     async fn test_process_async_mode() {
         let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+        let executor =
+            UnifiedAsyncExecutor::with_registries(registry.clone(), queue_manager.clone());
 
-        let tool = ProcessTool::new().with_async_support(
-            registry.clone(),
-            queue_manager.clone(),
-            "test_session".to_string(),
-        );
+        let tool = ProcessTool::new().with_async(executor, "test_session");
 
         let params = json!({
             "command": "echo",
@@ -714,12 +635,10 @@ mod tests {
     async fn test_process_async_with_timeout() {
         let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
+        let executor =
+            UnifiedAsyncExecutor::with_registries(registry.clone(), queue_manager.clone());
 
-        let tool = ProcessTool::new().with_async_support(
-            registry.clone(),
-            queue_manager.clone(),
-            "test_session".to_string(),
-        );
+        let tool = ProcessTool::new().with_async(executor, "test_session");
 
         let params = json!({
             "command": "sleep",

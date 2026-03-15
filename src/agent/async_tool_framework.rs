@@ -53,7 +53,7 @@ pub struct AsyncTaskReceipt {
 }
 
 /// Unified result type for all async operations
-/// 
+///
 /// This enum normalizes results from different async tools (process, agent_spawn, agent_invoke)
 /// into a single format that can be handled uniformly by the delivery infrastructure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,9 +78,7 @@ pub enum AsyncTaskResult {
         error: Option<String>,
     },
     /// Generic tool result for extensibility
-    Generic {
-        data: serde_json::Value,
-    },
+    Generic { data: serde_json::Value },
 }
 
 impl AsyncTaskResult {
@@ -88,7 +86,11 @@ impl AsyncTaskResult {
     #[must_use]
     pub fn format_for_announcement(&self, tool_name: &str) -> String {
         match self {
-            Self::Process { stdout, stderr, exit_code } => {
+            Self::Process {
+                stdout,
+                stderr,
+                exit_code,
+            } => {
                 format!(
                     "## Process Result\n\n**Command:** {}\n**Exit Code:** {}\n\n**Stdout:**\n```\n{}\n```\n\n**Stderr:**\n```\n{}\n```",
                     tool_name, exit_code, stdout, stderr
@@ -100,21 +102,28 @@ impl AsyncTaskResult {
                 } else {
                     format!("Subagent [{}]", tool_name)
                 };
-                
+
                 let status_emoji = if error.is_some() { "❌" } else { "✅" };
-                let content = error.as_deref()
+                let content = error
+                    .as_deref()
                     .or(output.as_deref())
                     .unwrap_or("(no content)");
-                
-                format!(
-                    "## {} Result {}\n\n{}",
-                    label_part, status_emoji, content
-                )
+
+                format!("## {} Result {}\n\n{}", label_part, status_emoji, content)
             }
-            Self::Invocation { content, from, success, error } => {
-                let status = if *success { "✅ Success" } else { "❌ Failed" };
+            Self::Invocation {
+                content,
+                from,
+                success,
+                error,
+            } => {
+                let status = if *success {
+                    "✅ Success"
+                } else {
+                    "❌ Failed"
+                };
                 let display_content = error.as_deref().unwrap_or(content);
-                
+
                 format!(
                     "## Message from {}\n\n**Status:** {}\n\n{}",
                     from, status, display_content
@@ -129,7 +138,7 @@ impl AsyncTaskResult {
             }
         }
     }
-    
+
     /// Get a short summary of the result for logging/metrics
     #[must_use]
     pub fn summary(&self) -> String {
@@ -139,7 +148,10 @@ impl AsyncTaskResult {
                 if error.is_some() {
                     "subagent: failed".to_string()
                 } else {
-                    format!("subagent: {} chars output", output.as_ref().map(|s| s.len()).unwrap_or(0))
+                    format!(
+                        "subagent: {} chars output",
+                        output.as_ref().map(|s| s.len()).unwrap_or(0)
+                    )
                 }
             }
             Self::Invocation { success, .. } => format!("invocation: success={}", success),
@@ -507,7 +519,7 @@ impl AsyncTaskEventBus {
 }
 
 /// Delivery target types for async task results
-/// 
+///
 /// Defines where and how the result should be delivered
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -529,22 +541,22 @@ impl Default for DeliveryTarget {
 }
 
 /// Trait for result delivery mechanisms
-/// 
+///
 /// Implementations define how async task results are delivered to their recipients.
 /// This enables pluggable delivery strategies for different use cases.
 #[async_trait::async_trait]
 pub trait ResultDelivery: Send + Sync {
     /// Deliver result for a completed task
-    /// 
+    ///
     /// # Arguments
     /// * `task` - The completed async task entry with result
-    /// 
+    ///
     /// # Returns
     /// Ok(()) on successful delivery, Err otherwise
     async fn deliver(&self, task: &AsyncTaskEntry) -> Result<()>;
-    
+
     /// Clone this delivery mechanism into a Box
-    /// 
+    ///
     /// Required because ResultDelivery is a trait object and needs
     /// to be cloneable for use in spawned tasks.
     fn clone_box(&self) -> Box<dyn ResultDelivery>;
@@ -557,7 +569,7 @@ impl Clone for Box<dyn ResultDelivery> {
 }
 
 /// Queue-based delivery mechanism
-/// 
+///
 /// Delivers results via the AsyncResultQueueManager for later retrieval.
 /// Used by process tool and agent_spawn in queue mode.
 #[derive(Debug, Clone)]
@@ -576,10 +588,16 @@ impl QueueDelivery {
 #[async_trait::async_trait]
 impl ResultDelivery for QueueDelivery {
     async fn deliver(&self, task: &AsyncTaskEntry) -> Result<()> {
-        let result_message = task.formatted_result.clone()
-            .or_else(|| task.result.as_ref().map(|r| r.format_for_announcement(&task.tool_name)))
+        let result_message = task
+            .formatted_result
+            .clone()
+            .or_else(|| {
+                task.result
+                    .as_ref()
+                    .map(|r| r.format_for_announcement(&task.tool_name))
+            })
             .unwrap_or_else(|| format!("Task {} completed with no result", task.task_id));
-        
+
         let event = AsyncTaskCompletionEvent {
             task_id: task.task_id.clone(),
             tool_name: task.tool_name.clone(),
@@ -587,26 +605,26 @@ impl ResultDelivery for QueueDelivery {
             parent_session_key: task.parent_session_key.clone(),
             label: task.config.label.clone(),
         };
-        
+
         let mut manager = self.queue_manager.write().await;
         manager.enqueue(event);
-        
+
         tracing::debug!(
             "Queued result for task {} in session {}",
             task.task_id,
             task.parent_session_key
         );
-        
+
         Ok(())
     }
-    
+
     fn clone_box(&self) -> Box<dyn ResultDelivery> {
         Box::new(self.clone())
     }
 }
 
 /// Direct channel delivery mechanism
-/// 
+///
 /// Delivers results via an mpsc channel for immediate consumption.
 /// Used for sync-wait scenarios where a task waits for completion.
 #[derive(Debug)]
@@ -625,10 +643,16 @@ impl ChannelDelivery {
 #[async_trait::async_trait]
 impl ResultDelivery for ChannelDelivery {
     async fn deliver(&self, task: &AsyncTaskEntry) -> Result<()> {
-        let result_message = task.formatted_result.clone()
-            .or_else(|| task.result.as_ref().map(|r| r.format_for_announcement(&task.tool_name)))
+        let result_message = task
+            .formatted_result
+            .clone()
+            .or_else(|| {
+                task.result
+                    .as_ref()
+                    .map(|r| r.format_for_announcement(&task.tool_name))
+            })
             .unwrap_or_else(|| format!("Task {} completed", task.task_id));
-        
+
         let event = AsyncTaskCompletionEvent {
             task_id: task.task_id.clone(),
             tool_name: task.tool_name.clone(),
@@ -636,15 +660,15 @@ impl ResultDelivery for ChannelDelivery {
             parent_session_key: task.parent_session_key.clone(),
             label: task.config.label.clone(),
         };
-        
+
         self.sender
             .send(event)
             .await
             .map_err(|_| anyhow::anyhow!("Failed to send result via channel - receiver dropped"))?;
-        
+
         Ok(())
     }
-    
+
     fn clone_box(&self) -> Box<dyn ResultDelivery> {
         // Channel cannot be cloned in the traditional sense
         // This is a limitation - ChannelDelivery is typically used for sync waiting
@@ -654,11 +678,13 @@ impl ResultDelivery for ChannelDelivery {
 }
 
 /// Callback-based delivery mechanism
-/// 
+///
 /// Delivers results via a user-provided async callback function.
 /// Used for session announcements and other custom delivery mechanisms.
 pub struct CallbackDelivery {
-    callback: Arc<dyn Fn(&AsyncTaskEntry) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>,
+    callback: Arc<
+        dyn Fn(&AsyncTaskEntry) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync,
+    >,
 }
 
 impl std::fmt::Debug for CallbackDelivery {
@@ -680,7 +706,7 @@ impl CallbackDelivery {
             let fut = callback(entry);
             Box::pin(fut) as futures::future::BoxFuture<'static, Result<()>>
         });
-        
+
         Self { callback }
     }
 }
@@ -699,13 +725,37 @@ impl ResultDelivery for CallbackDelivery {
     async fn deliver(&self, task: &AsyncTaskEntry) -> Result<()> {
         (self.callback)(task).await
     }
-    
+
     fn clone_box(&self) -> Box<dyn ResultDelivery> {
         Box::new(self.clone())
     }
 }
 
 /// Trait for tools that support async execution
+///
+/// # Deprecated
+/// This trait is deprecated in favor of using `UnifiedAsyncExecutor` directly.
+/// Tools should implement async execution by calling `executor.execute()` with
+/// a closure that returns `AsyncTaskResult`.
+///
+/// Example migration:
+/// ```rust,ignore
+/// // Old: Implement AsyncTool trait
+/// impl AsyncTool for MyTool { ... }
+///
+/// // New: Use UnifiedAsyncExecutor
+/// let receipt = executor.execute(
+///     task_id, tool_name, params, session_key, config,
+///     move || async move {
+///         // Do work...
+///         Ok(AsyncTaskResult::Generic { ... })
+///     }
+/// ).await?;
+/// ```
+#[deprecated(
+    since = "0.2.0",
+    note = "Use UnifiedAsyncExecutor::execute() instead. See docs/async-tool-framework.md for migration guide."
+)]
 #[async_trait::async_trait]
 pub trait AsyncTool: Send + Sync {
     /// Unique name of the tool
@@ -731,7 +781,7 @@ pub trait AsyncTool: Send + Sync {
 }
 
 /// Unified executor for all async tool operations
-/// 
+///
 /// This provides a single entry point for executing async tasks with:
 /// - Task registration and tracking
 /// - Pluggable delivery mechanisms
@@ -804,7 +854,7 @@ impl UnifiedAsyncExecutor {
     }
 
     /// Execute an async task with the unified executor
-    /// 
+    ///
     /// # Arguments
     /// * `task_id` - Unique identifier for this task
     /// * `tool_name` - Name of the tool executing the task
@@ -812,7 +862,7 @@ impl UnifiedAsyncExecutor {
     /// * `parent_session_key` - Session key for result routing
     /// * `config` - Async tool configuration
     /// * `execution_fn` - The actual async work to execute
-    /// 
+    ///
     /// # Returns
     /// Receipt with task_id and initial status
     pub async fn execute<F, Fut>(
@@ -887,7 +937,7 @@ impl UnifiedAsyncExecutor {
             {
                 let mut registry = registry_clone.write().await;
                 registry.update_status(&task_id_clone, status);
-                
+
                 // Store the unified result
                 if let Ok(async_result) = result {
                     if let Some(entry) = registry.get_mut(&task_id_clone) {
@@ -899,11 +949,7 @@ impl UnifiedAsyncExecutor {
             // Deliver the result
             if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
                 if let Err(e) = delivery.deliver(entry).await {
-                    tracing::error!(
-                        "Failed to deliver result for task {}: {}",
-                        task_id_clone,
-                        e
-                    );
+                    tracing::error!("Failed to deliver result for task {}: {}", task_id_clone, e);
                 }
             }
         });
@@ -918,7 +964,7 @@ impl UnifiedAsyncExecutor {
     }
 
     /// Wait for a task to complete (sync mode)
-    /// 
+    ///
     /// This is a convenience method for tools that need to wait for completion.
     pub async fn wait_for_completion(
         &self,
@@ -957,7 +1003,10 @@ impl std::fmt::Debug for UnifiedAsyncExecutor {
         f.debug_struct("UnifiedAsyncExecutor")
             .field("registry", &"<AsyncTaskRegistry>")
             .field("queue_manager", &"<AsyncResultQueueManager>")
-            .field("deliveries", &"<HashMap<DeliveryTarget, Box<dyn ResultDelivery>>>")
+            .field(
+                "deliveries",
+                &"<HashMap<DeliveryTarget, Box<dyn ResultDelivery>>>",
+            )
             .field("default_delivery", &self.default_delivery)
             .finish()
     }
@@ -1340,7 +1389,7 @@ mod tests {
         assert!(formatted.contains("Process Result"));
         assert!(formatted.contains("Hello World"));
         assert!(formatted.contains("Exit Code:** 0"));
-        
+
         assert_eq!(result.summary(), "process: exit_code=0");
     }
 
@@ -1356,7 +1405,7 @@ mod tests {
         assert!(formatted.contains("Subagent [analyzer]"));
         assert!(formatted.contains("✅"));
         assert!(formatted.contains("Analysis complete"));
-        
+
         assert_eq!(result.summary(), "subagent: 17 chars output");
     }
 
@@ -1372,7 +1421,7 @@ mod tests {
         assert!(formatted.contains("Subagent"));
         assert!(formatted.contains("❌"));
         assert!(formatted.contains("Task failed"));
-        
+
         assert_eq!(result.summary(), "subagent: failed");
     }
 
@@ -1389,7 +1438,7 @@ mod tests {
         assert!(formatted.contains("Message from researcher_agent"));
         assert!(formatted.contains("✅ Success"));
         assert!(formatted.contains("Here is the research result"));
-        
+
         assert_eq!(result.summary(), "invocation: success=true");
     }
 
@@ -1405,7 +1454,7 @@ mod tests {
         let formatted = result.format_for_announcement("agent_invoke");
         assert!(formatted.contains("❌ Failed"));
         assert!(formatted.contains("Agent not available"));
-        
+
         assert_eq!(result.summary(), "invocation: success=false");
     }
 
@@ -1418,7 +1467,7 @@ mod tests {
         assert!(formatted.contains("custom_tool Result"));
         assert!(formatted.contains("key"));
         assert!(formatted.contains("value"));
-        
+
         assert_eq!(result.summary(), "generic: completed");
     }
 
@@ -1445,7 +1494,11 @@ mod tests {
 
         assert!(entry.result.is_some());
         assert!(entry.formatted_result.is_some());
-        assert!(entry.formatted_result.as_ref().unwrap().contains("Process Result"));
+        assert!(entry
+            .formatted_result
+            .as_ref()
+            .unwrap()
+            .contains("Process Result"));
     }
 
     // Tests for Delivery Mechanisms (Phase 2)
@@ -1475,7 +1528,7 @@ mod tests {
         // Verify it was queued
         let mut manager = queue_manager.write().await;
         let events = manager.process_queue("session:abc");
-        
+
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].task_id, "task_123");
         assert!(events[0].result_message.contains("Hello"));
@@ -1563,11 +1616,11 @@ mod tests {
     #[tokio::test]
     async fn test_unified_executor_creation() {
         let executor = UnifiedAsyncExecutor::new();
-        
+
         // Should be able to access registry and queue manager
         let _registry = executor.registry();
         let _queue_manager = executor.queue_manager();
-        
+
         // Debug should work
         let debug_str = format!("{:?}", executor);
         assert!(debug_str.contains("UnifiedAsyncExecutor"));
@@ -1575,9 +1628,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_executor_default_delivery() {
-        let executor = UnifiedAsyncExecutor::new()
-            .with_default_delivery(DeliveryTarget::SessionAnnouncement);
-        
+        let executor =
+            UnifiedAsyncExecutor::new().with_default_delivery(DeliveryTarget::SessionAnnouncement);
+
         let debug_str = format!("{:?}", executor);
         assert!(debug_str.contains("SessionAnnouncement"));
     }
@@ -1719,7 +1772,7 @@ mod tests {
         // Check queue for result
         let mut manager = executor.queue_manager().write().await;
         let events = manager.process_queue("session:abc");
-        
+
         assert_eq!(events.len(), 1);
         assert!(events[0].result_message.contains("hello"));
     }
@@ -1778,7 +1831,7 @@ mod tests {
     #[tokio::test]
     async fn test_unified_executor_default() {
         let executor: UnifiedAsyncExecutor = Default::default();
-        
+
         // Should work the same as new()
         let task_id = "default_exec_task".to_string();
         let receipt = executor
