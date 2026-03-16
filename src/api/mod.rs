@@ -45,3 +45,6 @@ pub const VERSION_HEADER: &str = "X-Pekobot-Version";
 
 /// Header name for request ID
 pub const REQUEST_ID_HEADER: &str = "X-Request-ID";
+
+/// Pekobot version string (re-export from crate)
+pub const VERSION: &str = crate::VERSION;

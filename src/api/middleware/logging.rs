@@ -5,7 +5,7 @@
 use axum::{
     body::Body,
     extract::ConnectInfo,
-    http::{Method, Request, Response, Uri},
+    http::{Request, Response},
     middleware::Next,
 };
 use std::net::SocketAddr;

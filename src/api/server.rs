@@ -5,7 +5,7 @@
 
 use axum::{
     extract::connect_info::IntoMakeServiceWithConnectInfo,
-    middleware::{from_fn, from_fn_with_state},
+    middleware::from_fn,
     Router,
 };
 use std::net::SocketAddr;

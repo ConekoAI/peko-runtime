@@ -11,7 +11,10 @@ use axum::{
 use crate::api::{VERSION, VERSION_HEADER};
 
 /// Middleware that adds the Pekobot version header to all responses
-pub async fn version_middleware<B>(request: Request<B>, next: Next) -> Response<Body> {
+pub async fn version_middleware(
+    request: Request<Body>,
+    next: Next,
+) -> Response<Body> {
     let mut response = next.run(request).await;
 
     // Add version header

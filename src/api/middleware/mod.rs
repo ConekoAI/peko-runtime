@@ -10,8 +10,6 @@ pub mod logging;
 pub mod request_id;
 pub mod version;
 
-use axum::middleware::from_fn;
-
 /// Create the middleware stack for the API
 ///
 /// The order matters - middleware is executed from bottom to top

@@ -4,13 +4,11 @@
 //! conversions to HTTP responses following the API contract.
 
 use axum::{
-    body::Body,
     extract::rejection::JsonRejection,
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
-use std::borrow::Cow;
 
 use crate::api::types::{ErrorDetail, ErrorResponse};
 
@@ -30,7 +28,7 @@ pub enum ApiError {
     },
 
     /// Resource not found
-    #[error("Not found: {resource}")]
+    #[error("Not found: {resource_type} {resource_id}")]
     NotFound {
         /// Type of resource
         resource_type: String,

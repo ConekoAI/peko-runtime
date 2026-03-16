@@ -2,7 +2,11 @@
 //!
 //! Provides detailed information about the daemon instance.
 
-use axum::{extract::State, response::Response, Json};
+use axum::{
+    extract::State,
+    response::{IntoResponse, Response},
+    Json,
+};
 
 use crate::api::state::AppState;
 use crate::api::types::{CapabilitiesInfo, InfoResponse};
