@@ -37,6 +37,10 @@ pub struct DaemonConfig {
     pub enable_isolated_execution: bool,
     /// Session maintenance interval (0 to disable)
     pub maintenance_interval: Duration,
+    /// Host address for HTTP API server
+    pub host: String,
+    /// Port for HTTP API server
+    pub port: u16,
 }
 
 impl Default for DaemonConfig {
@@ -53,6 +57,8 @@ impl Default for DaemonConfig {
             data_dir,
             enable_isolated_execution: true,
             maintenance_interval: Duration::from_secs(3600), // 1 hour default
+            host: crate::api::DEFAULT_HOST.to_string(),
+            port: crate::api::DEFAULT_PORT,
         }
     }
 }
@@ -139,6 +145,27 @@ impl Daemon {
             status.running = true;
         }
 
+        // Start HTTP API server
+        let api_config = crate::api::ServerConfig {
+            host: self.config.host.clone(),
+            port: self.config.port,
+            workspace_path: self.config.data_dir.clone(),
+            daemon_config: crate::api::state::DaemonConfigSnapshot {
+                data_dir: self.config.data_dir.clone(),
+                config_dir: self.config.config_dir.clone(),
+                log_level: "info".to_string(),
+            },
+        };
+
+        let (api_shutdown_tx, api_shutdown_rx) = tokio::sync::oneshot::channel();
+        let api_server = crate::api::ApiServer::new(api_config);
+
+        let api_handle = tokio::spawn(async move {
+            if let Err(e) = api_server.run(api_shutdown_rx).await {
+                error!("API server error: {}", e);
+            }
+        });
+
         // Create polling intervals
         let mut poll_tick = interval(self.config.poll_interval);
         let mut maintenance_tick = interval(self.config.maintenance_interval);
@@ -189,6 +216,8 @@ impl Daemon {
                     match cmd {
                         DaemonCommand::Shutdown => {
                             info!("🛑 Daemon shutdown requested...");
+                            // Signal API server to shutdown
+                            let _ = api_shutdown_tx.send(());
                             break;
                         }
                         DaemonCommand::CheckCron => {
@@ -205,6 +234,9 @@ impl Daemon {
                 }
             }
         }
+
+        // Wait for API server to finish
+        let _ = api_handle.await;
 
         {
             let mut status = self.status.lock().await;
@@ -732,6 +764,8 @@ mod tests {
             data_dir: tmp.path().join("data"),
             enable_isolated_execution: false,
             maintenance_interval: Duration::from_secs(60), // 1 minute for tests
+            host: "127.0.0.1".to_string(),
+            port: 0, // Port 0 = let OS assign a free port
         };
 
         let (_tx, rx) = mpsc::channel(10);

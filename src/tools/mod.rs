@@ -6,12 +6,6 @@
 //! - mcp-browser: browser automation  
 //! - mcp-memory: persistent memory storage
 
-pub mod agent_invoke;
-#[allow(deprecated)]
-pub use agent_invoke::{
-    create_shared_registry, AgentInvokeTool, ExecuteHandler, InvocationMessage, InvocationRegistry,
-    InvocationResponse, InvocationService, InvokeCommand, SharedInvocationRegistry,
-};
 pub mod agent_management;
 pub mod agent_spawn;
 pub mod apply_patch;
@@ -52,7 +46,3 @@ pub use crate::agent::async_tool_framework::{
     SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
     UnifiedAsyncExecutor, WaitResult,
 };
-
-// Deprecated: AsyncTool trait is deprecated, use UnifiedAsyncExecutor directly
-#[allow(deprecated)]
-pub use crate::agent::async_tool_framework::AsyncTool;

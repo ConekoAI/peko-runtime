@@ -57,6 +57,8 @@ pub async fn handle_daemon(
                 data_dir: paths.data_dir.clone(),
                 enable_isolated_execution: true,
                 maintenance_interval: std::time::Duration::from_secs(3600), // 1 hour
+                host: crate::api::DEFAULT_HOST.to_string(),
+                port: crate::api::DEFAULT_PORT,
             };
 
             if foreground {

@@ -113,6 +113,9 @@ pub(crate) mod cron;
 /// Daemon mode for background execution
 pub(crate) mod daemon;
 
+/// HTTP API server
+pub mod api;
+
 /// Security policies and sandboxing
 pub mod security;
 

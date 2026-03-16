@@ -8,17 +8,14 @@ use crate::agent::{
     types::{AgentInfo, ManagerEvent},
 };
 use crate::identity::{storage::KeyStorage, Identity};
-#[allow(deprecated)]
-use crate::tools::{
-    ExecuteHandler, InvocationResponse, InvocationService, InvokeCommand, ManagerCommand,
-};
+use crate::tools::ManagerCommand;
 use anyhow::Result;
-use async_trait::async_trait;
+
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+
 use tokio::sync::{mpsc, RwLock};
-use tokio::time::timeout;
+
 use tracing::{info, warn};
 
 /// Unified agent manager
@@ -37,8 +34,6 @@ pub struct AgentManager {
     data_dir: PathBuf,
     /// Command channel for agent tools
     command_tx: mpsc::Sender<ManagerCommand>,
-    /// Invocation service command channel for `agent_invoke` tool
-    invocation_tx: mpsc::Sender<InvokeCommand>,
 }
 
 impl AgentManager {
@@ -58,17 +53,6 @@ impl AgentManager {
         let identity_storage = Arc::new(RwLock::new(KeyStorage::new()?));
         let lifecycle = LifecycleManager::new();
 
-        // Create invocation service with execute handler for sync mode
-        let pool_for_handler = pool.clone();
-        let handler = Arc::new(PoolExecuteHandler::new(pool_for_handler));
-        let (mut invocation_service, invocation_tx) = InvocationService::new(None);
-        invocation_service.set_execute_handler(handler);
-
-        // Spawn invocation service as background task
-        tokio::spawn(async move {
-            invocation_service.run().await;
-        });
-
         let manager = Self {
             pool,
             registry,
@@ -77,7 +61,6 @@ impl AgentManager {
             events: events_tx,
             data_dir,
             command_tx,
-            invocation_tx,
         };
 
         Ok((manager, events_rx))
@@ -95,17 +78,6 @@ impl AgentManager {
         let identity_storage = Arc::new(RwLock::new(KeyStorage::new()?));
         let lifecycle = LifecycleManager::new();
 
-        // Create invocation service with execute handler for sync mode
-        let pool_for_handler = pool.clone();
-        let handler = Arc::new(PoolExecuteHandler::new(pool_for_handler));
-        let (mut invocation_service, invocation_tx) = InvocationService::new(None);
-        invocation_service.set_execute_handler(handler);
-
-        // Spawn invocation service as background task
-        tokio::spawn(async move {
-            invocation_service.run().await;
-        });
-
         let manager = Self {
             pool,
             registry,
@@ -114,7 +86,6 @@ impl AgentManager {
             events: events_tx,
             data_dir,
             command_tx,
-            invocation_tx,
         };
 
         Ok((manager, events_rx))
@@ -307,7 +278,7 @@ impl AgentManager {
     /// Create agent communication tools
     #[must_use]
     pub fn create_communication_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::tools::{AgentInfoTool, AgentInvokeTool, AgentsListTool};
+        use crate::tools::{AgentInfoTool, AgentsListTool};
         use std::sync::Arc;
 
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = vec![];
@@ -321,15 +292,7 @@ impl AgentManager {
         // Agent spawn tool
         // AgentSpawnTool is registered by the agent module with SubagentExecutor
 
-        // Agent invoke tool (session-based messaging, GAP-005)
-        // Note: agent_name is extracted from agent_did for now
-        let agent_name = agent_did.split(':').next_back().unwrap_or(agent_did);
-        tools.push(Arc::new(AgentInvokeTool::new(
-            agent_did.to_string(),
-            agent_name.to_string(),
-            self.invocation_tx.clone(),
-            None, // EventSubscriber can be added later
-        )));
+        // Note: sessions_send tool for A2A is registered by the agent module
 
         tools
     }
@@ -459,105 +422,5 @@ impl AgentManager {
         }
 
         Ok(tools)
-    }
-
-    /// Get the invocation command channel
-    #[must_use]
-    pub fn invocation_tx(&self) -> &mpsc::Sender<InvokeCommand> {
-        &self.invocation_tx
-    }
-}
-
-/// `ExecuteHandler` that uses the `AgentPool` to execute on target agents
-pub struct PoolExecuteHandler {
-    pool: Arc<RwLock<AgentPool>>,
-}
-
-impl PoolExecuteHandler {
-    /// Create a new handler with a pool reference
-    pub fn new(pool: Arc<RwLock<AgentPool>>) -> Self {
-        Self { pool }
-    }
-}
-
-#[async_trait]
-impl ExecuteHandler for PoolExecuteHandler {
-    async fn execute_on_target(
-        &self,
-        target: &str,
-        prompt: &str,
-        timeout_ms: u64,
-    ) -> anyhow::Result<InvocationResponse> {
-        let start = Instant::now();
-
-        // Look up target agent in pool - scope the lock to drop before await
-        let handle = {
-            let pool = self.pool.read().await;
-            if let Some(h) = pool.get(target) {
-                Some(h)
-            } else {
-                pool.get_by_name(target)
-            }
-        };
-
-        let handle = match handle {
-            Some(h) => h,
-            None => {
-                return Ok(InvocationResponse {
-                    invocation_id: String::new(),
-                    from: target.to_string(),
-                    content: String::new(),
-                    duration_ms: 0,
-                    success: false,
-                    error: Some(format!("Target agent '{target}' not found")),
-                });
-            }
-        };
-
-        let target_did = handle.did().to_string();
-
-        // Execute with timeout
-        let result = match timeout(
-            tokio::time::Duration::from_millis(timeout_ms),
-            handle.execute(prompt),
-        )
-        .await
-        {
-            Ok(Ok(content)) => {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                InvocationResponse {
-                    invocation_id: String::new(),
-                    from: target_did,
-                    content,
-                    duration_ms,
-                    success: true,
-                    error: None,
-                }
-            }
-            Ok(Err(e)) => {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                InvocationResponse {
-                    invocation_id: String::new(),
-                    from: target_did,
-                    content: String::new(),
-                    duration_ms,
-                    success: false,
-                    error: Some(format!("Execution failed: {e}")),
-                }
-            }
-            Err(_) => {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                InvocationResponse {
-                    invocation_id: String::new(),
-                    from: target_did,
-                    content: String::new(),
-                    duration_ms,
-                    success: false,
-                    error: Some(format!("Timeout after {timeout_ms}ms")),
-                }
-            }
-        };
-
-        Ok(result)
     }
 }
