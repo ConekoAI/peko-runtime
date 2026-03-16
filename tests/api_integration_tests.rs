@@ -7,7 +7,7 @@ use std::time::Duration;
 
 /// Default base URL for API tests
 fn base_url() -> String {
-    std::env::var("PEKOBOT_TEST_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string())
+    std::env::var("PEKOBOT_TEST_URL").unwrap_or_else(|_| "http://127.0.0.1:11435".to_string())
 }
 
 /// Test helper: Wait for server to be ready

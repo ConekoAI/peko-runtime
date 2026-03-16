@@ -48,7 +48,7 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 | 1.6 | Add graceful shutdown handling | REQ-DM-001 |
 
 ### Deliverables
-- HTTP server listening on `127.0.0.1:11434` by default
+- HTTP server listening on `127.0.0.1:11435` by default
 - Health check endpoint returning structured status
 - Consistent error handling across all endpoints
 - Warning logged when binding to non-loopback address
@@ -56,8 +56,8 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 ### Verification
 ```bash
 pekobot daemon start
-curl http://localhost:11434/health  # Returns {"status":"ok",...}
-curl http://localhost:11434/info    # Returns version, workspace, etc.
+curl http://localhost:11435/health  # Returns {"status":"ok",...}
+curl http://localhost:11435/info    # Returns version, workspace, etc.
 ```
 
 ---
@@ -151,7 +151,7 @@ kill -9 $(cat .pekobot/run/daemon.pid)
 | 4.4 | Implement tool timeout handling | REQ-RL-002 |
 | 4.5 | Implement tool panic isolation | REQ-RL-002 |
 | 4.6 | Implement `POST /agents/{id}/chat` with SSE streaming | API_CONTRACT §4 |
-| 4.7 | Implement WebSocket chat endpoint `ws://localhost:11434/agents/{id}/ws` | REQ-DM-003 |
+| 4.7 | Implement WebSocket chat endpoint `ws://localhost:11435/agents/{id}/ws` | REQ-DM-003 |
 | 4.8 | Add streaming first token latency (< 500ms target) | REQ-PF-003 |
 | 4.9 | Implement watch mode (`--watch`) for development | REQ-AR-005 |
 | 4.10 | Complete all 4 LLM providers: Anthropic, OpenAI, Ollama, OpenAI-compatible | REQ-AR-004 |
@@ -167,7 +167,7 @@ kill -9 $(cat .pekobot/run/daemon.pid)
 ```bash
 pekobot run ./agent/ --watch  # Auto-reload on file changes
 # In another terminal:
-curl -N http://localhost:11434/agents/{id}/chat \
+curl -N http://localhost:11435/agents/{id}/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"Hello"}'  # Streams SSE events
 ```
@@ -210,7 +210,7 @@ curl -N http://localhost:11434/agents/{id}/chat \
 ### Verification
 ```bash
 # Test sandboxing
-curl http://localhost:11434/agents/{id}/chat -d '{
+curl http://localhost:11435/agents/{id}/chat -d '{
   "message": "Read file at ../../../../etc/passwd"
 }'  # Should get SandboxViolation
 ```
@@ -303,7 +303,7 @@ pekobot team scale my-team researcher 5
 | 8.6 | Implement webhook token validation | REQ-UI-004 |
 | 8.7 | Implement file watcher hook | REQ-DM-004 |
 | 8.8 | Implement event-triggered hook (event bus integration) | REQ-DM-004 |
-| 8.9 | Implement system event stream `ws://localhost:11434/events` | REQ-DM-005 |
+| 8.9 | Implement system event stream `ws://localhost:11435/events` | REQ-DM-005 |
 | 8.10 | Emit all lifecycle events on system stream | API_CONTRACT §8.4 |
 
 ### Deliverables

@@ -89,8 +89,8 @@ This document is intentionally short. The requirements spec has the detail; this
 - [ ] **[MUST]** Daemon starts with zero configuration; all defaults apply without `runtime.toml` present.
   `pekobot daemon start` on a fresh system with no `.pekobot/` directory; daemon starts and responds to `GET /health`.
 
-- [ ] **[MUST]** Daemon listens on `127.0.0.1:11434` by default.
-  `ss -tlnp | grep 11434` shows `127.0.0.1:11434`, not `0.0.0.0`.
+- [ ] **[MUST]** Daemon listens on `127.0.0.1:11435` by default.
+  `ss -tlnp | grep 11435` shows `127.0.0.1:11435`, not `0.0.0.0`.
 
 - [ ] **[MUST]** Binding to non-loopback address prints a warning to stderr.
   Set `host = "0.0.0.0"` in `runtime.toml`; start daemon; verify warning line in stderr.
@@ -99,7 +99,7 @@ This document is intentionally short. The requirements spec has the detail; this
   Run the full API contract test suite; all endpoint tests pass.
 
 - [ ] **[MUST]** Every response includes `X-Pekobot-Version` header.
-  `curl -I http://localhost:11434/health` — header present.
+  `curl -I http://localhost:11435/health` — header present.
 
 - [ ] **[MUST]** `X-Request-ID` echoed in response if provided; generated if absent.
   Send request with header; verify echo. Send without; verify generated ID in response.
@@ -113,7 +113,7 @@ This document is intentionally short. The requirements spec has the detail; this
 - [ ] **[MUST]** Non-streaming fallback: `Accept: application/json` returns complete response after turn completes.
   Send chat request with `Accept: application/json`; verify single JSON response with `message`, `tool_calls`, `usage`.
 
-- [ ] **[MUST]** WebSocket chat endpoint `ws://localhost:11434/agents/{id}/ws` handles `message` frames and returns `delta`/`done` frames.
+- [ ] **[MUST]** WebSocket chat endpoint `ws://localhost:11435/agents/{id}/ws` handles `message` frames and returns `delta`/`done` frames.
   Connect via WebSocket; send message frame; verify frame sequence.
 
 - [ ] **[MUST]** First `delta` SSE event arrives within 500ms of LLM producing first token.
@@ -125,7 +125,7 @@ This document is intentionally short. The requirements spec has the detail; this
 - [ ] **[MUST]** Webhook endpoint `POST /webhooks/{instance_id}/{token}` validates token; returns `202` on success, `401` on bad token.
   POST with correct token; verify `202`. POST with wrong token; verify `401`.
 
-- [ ] **[MUST]** System event stream `ws://localhost:11434/events` emits events for all instance and team lifecycle changes.
+- [ ] **[MUST]** System event stream `ws://localhost:11435/events` emits events for all instance and team lifecycle changes.
   Subscribe to event stream; create, start, stop, remove an instance; verify all four event types received.
 
 - [ ] **[MUST]** `GET /health` returns `200` with structured body; returns `503` when daemon is degraded.
@@ -318,10 +318,10 @@ This document is intentionally short. The requirements spec has the detail; this
 - [ ] **[SHOULD]** TUI (`pekobot-tui`) connects to daemon, displays running instances, allows interactive chat.
   Launch TUI; verify instance list shown; send a message; verify response displayed.
 
-- [ ] **[SHOULD]** Web UI served at `http://localhost:11434/ui`; loads in browser; shows instance list; chat works.
+- [ ] **[SHOULD]** Web UI served at `http://localhost:11435/ui`; loads in browser; shows instance list; chat works.
   Open in browser; verify page loads; chat with an instance; verify response displayed.
 
-- [ ] **[SHOULD]** WebSocket `ws://localhost:11434/agents/{id}/ws` sends `hello` on connect; accepts `message` frames; streams `delta`/`done` frames.
+- [ ] **[SHOULD]** WebSocket `ws://localhost:11435/agents/{id}/ws` sends `hello` on connect; accepts `message` frames; streams `delta`/`done` frames.
   Connect with `websocat`; send message frame; verify frame sequence matches spec.
 
 ---
@@ -341,7 +341,7 @@ This document is intentionally short. The requirements spec has the detail; this
   Set `[provider] api_key = "sk-..."` in `config.toml`; attempt `pekobot run`; verify startup refused with actionable error.
 
 - [ ] **[MUST]** Daemon binds to `127.0.0.1` by default; `0.0.0.0` requires explicit config and prints a warning.
-  Fresh start: `ss -tlnp | grep 11434` shows loopback only. Set `host = "0.0.0.0"`; restart; verify warning in stderr.
+  Fresh start: `ss -tlnp | grep 11435` shows loopback only. Set `host = "0.0.0.0"`; restart; verify warning in stderr.
 
 ---
 

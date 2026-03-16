@@ -29,7 +29,7 @@ pub async fn version_middleware(
 mod tests {
     use super::*;
     use axum::{body::Body, http::StatusCode, routing::get, Router};
-    use tower::ServiceExt;
+    use tower::util::ServiceExt;
 
     #[tokio::test]
     async fn test_version_header_injected() {

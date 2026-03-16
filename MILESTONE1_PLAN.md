@@ -14,7 +14,7 @@ Milestone 1 establishes the HTTP API server as the single control point for all 
 
 ### Deliverables
 
-1. HTTP server listening on configurable address (default: `127.0.0.1:11434`)
+1. HTTP server listening on configurable address (default: `127.0.0.1:11435`)
 2. `GET /health` endpoint returning daemon status
 3. `GET /info` endpoint returning version and capabilities
 4. Standard headers (`X-Pekobot-Version`, `X-Request-ID`) on all responses
@@ -325,7 +325,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: "127.0.0.1".to_string(),
-            port: 11434,
+            port: 11435,
             workspace_path: std::path::PathBuf::from(".pekobot"),
         }
     }
@@ -446,7 +446,7 @@ impl Default for DaemonConfig {
         Self {
             // ... existing defaults ...
             host: "127.0.0.1".to_string(),
-            port: 11434,
+            port: 11435,
         }
     }
 }
@@ -478,7 +478,7 @@ async fn test_health_endpoint() {
     let daemon = start_test_daemon().await;
     
     // Make request
-    let response = reqwest::get("http://localhost:11434/health")
+    let response = reqwest::get("http://localhost:11435/health")
         .await
         .unwrap();
     
@@ -495,7 +495,7 @@ async fn test_request_id_echo() {
     let client = reqwest::Client::new();
     
     let response = client
-        .get("http://localhost:11434/health")
+        .get("http://localhost:11435/health")
         .header("X-Request-ID", "test-123")
         .send()
         .await
@@ -520,14 +520,14 @@ async fn test_non_loopback_warning() {
 pekobot daemon start
 
 # Test health endpoint
-curl http://localhost:11434/health
+curl http://localhost:11435/health
 
 # Test info endpoint
-curl http://localhost:11434/info
+curl http://localhost:11435/info
 
 # Verify headers
-curl -I http://localhost:11434/health | grep -i "X-Pekobot-Version"
-curl -I http://localhost:11434/health -H "X-Request-ID: abc123" | grep -i "X-Request-ID"
+curl -I http://localhost:11435/health | grep -i "X-Pekobot-Version"
+curl -I http://localhost:11435/health -H "X-Request-ID: abc123" | grep -i "X-Request-ID"
 
 # Test with non-loopback (should see warning)
 # Edit runtime.toml to set host = "0.0.0.0"
@@ -538,7 +538,7 @@ pekobot daemon start 2>&1 | grep "WARNING"
 
 ## Acceptance Criteria
 
-- [ ] HTTP server starts on `127.0.0.1:11434` by default
+- [ ] HTTP server starts on `127.0.0.1:11435` by default
 - [ ] `GET /health` returns `200 OK` with `{"status":"ok",...}`
 - [ ] `GET /info` returns version, workspace, port, pid, platform, capabilities
 - [ ] All responses include `X-Pekobot-Version` header

@@ -35,7 +35,7 @@ pub use types::*;
 pub const API_VERSION: &str = "1.0";
 
 /// Default port for the HTTP API
-pub const DEFAULT_PORT: u16 = 11434;
+pub const DEFAULT_PORT: u16 = 11435;
 
 /// Default host for the HTTP API (localhost only)
 pub const DEFAULT_HOST: &str = "127.0.0.1";

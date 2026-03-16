@@ -54,7 +54,7 @@ pub fn get_request_id<B>(request: &Request<B>) -> Option<&RequestId> {
 mod tests {
     use super::*;
     use axum::{body::Body, extract::Extension, http::StatusCode, routing::get, Router};
-    use tower::ServiceExt;
+    use tower::util::ServiceExt;
 
     #[tokio::test]
     async fn test_request_id_echoed() {

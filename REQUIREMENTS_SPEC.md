@@ -225,7 +225,7 @@ The runtime shall support a development watch mode that reloads the agent on sou
 All runtime operations shall be mediated by a single local daemon process. No client (CLI, TUI, external integration) shall communicate with agent internals directly.
 
 **Acceptance criteria:**
-- Daemon listens on `localhost:11434` by default (configurable)
+- Daemon listens on `localhost:11435` by default (configurable)
 - Daemon starts with zero configuration required; all settings have sensible defaults
 - `pekobot daemon start` starts the daemon; `pekobot daemon stop` stops it gracefully
 - PID file written to `.pekobot/run/daemon.pid` on start
@@ -254,7 +254,7 @@ The daemon shall support streaming agent responses to clients.
 - `POST /agents/{id}/chat` streams via Server-Sent Events by default
 - Event types: `delta`, `tool_call`, `tool_result`, `thinking`, `done`, `error`
 - Non-streaming fallback available via `Accept: application/json`
-- WebSocket endpoint `ws://localhost:11434/agents/{id}/ws` for bidirectional use cases
+- WebSocket endpoint `ws://localhost:11435/agents/{id}/ws` for bidirectional use cases
 - Stream must begin emitting `delta` events within 500ms of the LLM producing first tokens
 
 ---
@@ -278,7 +278,7 @@ The daemon shall activate agent sessions in response to external triggers withou
 The daemon shall emit a real-time stream of system events that clients can subscribe to.
 
 **Acceptance criteria:**
-- WebSocket endpoint `ws://localhost:11434/events`
+- WebSocket endpoint `ws://localhost:11435/events`
 - Client can filter by resource type, resource ID, and event type on connect
 - Event types cover all instance, team, and image lifecycle changes as defined in `API_CONTRACT.md` §8.4
 - Bus messages optionally included via opt-in filter (due to potential volume)
@@ -621,7 +621,7 @@ A terminal user interface shall be available as a separate binary over the HTTP 
 A lightweight web UI shall be served by the daemon.
 
 **Acceptance criteria:**
-- Served at `http://localhost:11434/ui`
+- Served at `http://localhost:11435/ui`
 - Single static HTML file embedded in the daemon binary; no separate build or file serving
 - Functional parity with TUI: instance list, chat, event stream, logs
 - Works in modern browsers without any browser extensions
@@ -648,7 +648,7 @@ The daemon shall provide a generic inbound webhook endpoint for third-party chan
 The daemon shall provide a WebSocket endpoint for bidirectional integration with games and external services.
 
 **Acceptance criteria:**
-- Endpoint: `ws://localhost:11434/agents/{id}/ws`
+- Endpoint: `ws://localhost:11435/agents/{id}/ws`
 - Wire format: JSON envelope with typed frames (`hello`, `message`, `delta`, `tool_call`, `done`, `error`, `ping`, `pong`, `ack`)
 - Connection drop mid-turn: agent completes turn; result available via session history API
 - No authentication required for localhost connections (consistent with HTTP API)
@@ -1016,7 +1016,7 @@ CLI commands shall support structured output for scripting and CI integration.
 
 **Flow:**
 1. Game creates an instance: `POST /agents` with NPC character's agent image
-2. Game connects to `ws://localhost:11434/agents/{id}/ws`
+2. Game connects to `ws://localhost:11435/agents/{id}/ws`
 3. Game sends player input as `message` frames; receives `delta` frames in real time
 4. Agent uses `filesystem` tool to persist NPC state to workspace between sessions
 5. On game restart, same instance is resumed; session history provides memory continuity

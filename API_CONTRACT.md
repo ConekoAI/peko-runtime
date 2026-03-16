@@ -31,7 +31,7 @@ This document defines the complete contract for the Pekobot daemon HTTP API. It 
 ### 1.1 Base URL
 
 ```
-http://localhost:11434
+http://localhost:11435
 ```
 
 The port is configurable in `.pekobot/config.toml` under `[daemon] port`. All paths in this document are relative to the base URL.
@@ -568,7 +568,7 @@ Accept: application/json
 For bidirectional streaming (e.g. game integration), connect via WebSocket:
 
 ```
-ws://localhost:11434/agents/{id}/ws
+ws://localhost:11435/agents/{id}/ws
 ```
 
 #### Connection handshake
@@ -1126,7 +1126,7 @@ Removes an image from the local cache. Does not affect running instances (which 
 ### 8.1 System Event Stream
 
 ```
-ws://localhost:11434/events
+ws://localhost:11435/events
 ```
 
 A WebSocket stream of all system-level events. Used by the TUI, Web UI, and monitoring tools to observe the daemon in real time without polling.
@@ -1314,7 +1314,7 @@ GET /info
   "version": "0.1.0",
   "api_version": "1.0",
   "workspace": "/home/user/project/.pekobot",
-  "port": 11434,
+  "port": 11435,
   "pid": 12345,
   "platform": "linux/amd64",
   "capabilities": {

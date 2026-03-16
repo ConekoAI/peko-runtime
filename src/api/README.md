@@ -27,7 +27,7 @@ src/api/
 The server is configured via `DaemonConfig`:
 
 - `host`: Bind address (default: `127.0.0.1`)
-- `port`: Port number (default: `11434`)
+- `port`: Port number (default: `11435`)
 
 ## Security
 

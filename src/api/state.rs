@@ -147,7 +147,7 @@ mod tests {
         let state = AppState::new(
             "/tmp/test",
             "127.0.0.1",
-            11434,
+            11435,
             DaemonConfigSnapshot::default(),
         );
 
@@ -166,7 +166,7 @@ mod tests {
         let state = AppState::new(
             "/tmp/test",
             "127.0.0.1",
-            11434,
+            11435,
             DaemonConfigSnapshot::default(),
         );
 
@@ -184,7 +184,7 @@ mod tests {
         let state = AppState::new(
             "/tmp/test",
             "127.0.0.1",
-            11434,
+            11435,
             DaemonConfigSnapshot::default(),
         );
 

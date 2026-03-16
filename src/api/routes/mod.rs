@@ -33,13 +33,13 @@ mod tests {
     use crate::api::state::{AppState, DaemonConfigSnapshot};
     use axum::body::Body;
     use axum::http::Request;
-    use tower::ServiceExt;
+    use tower::util::ServiceExt;
 
     fn test_state() -> AppState {
         AppState::new(
             "/tmp/test",
             "127.0.0.1",
-            11434,
+            11435,
             DaemonConfigSnapshot::default(),
         )
     }

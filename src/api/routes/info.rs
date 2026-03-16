@@ -23,7 +23,7 @@ use crate::api::API_VERSION;
 ///   "version": "0.1.0",
 ///   "api_version": "1.0",
 ///   "workspace": "/home/user/.pekobot",
-///   "port": 11434,
+///   "port": 11435,
 ///   "pid": 12345,
 ///   "platform": "linux-x86_64",
 ///   "capabilities": {
@@ -62,7 +62,7 @@ mod tests {
         AppState::new(
             "/tmp/test-pekobot",
             "127.0.0.1",
-            11434,
+            11435,
             DaemonConfigSnapshot::default(),
         )
     }
@@ -86,7 +86,7 @@ mod tests {
         assert!(json["version"].as_str().is_some());
         assert_eq!(json["api_version"], "1.0");
         assert_eq!(json["workspace"], "/tmp/test-pekobot");
-        assert_eq!(json["port"], 11434);
+        assert_eq!(json["port"], 11435);
         assert!(json["pid"].as_u64().is_some());
         assert!(json["platform"].as_str().is_some());
 

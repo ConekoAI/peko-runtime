@@ -246,7 +246,7 @@ The daemon's own configuration. Lives at the runtime root.
 # ── Daemon ─────────────────────────────────────────────────────────────────
 
 [daemon]
-port        = 11434               # Optional. Default: 11434
+port        = 11435               # Optional. Default: 11435
 host        = "127.0.0.1"        # Optional. Default: 127.0.0.1 (localhost only)
 log_level   = "info"             # Optional. "error"|"warn"|"info"|"debug"|"trace". Default: "info"
 log_format  = "text"             # Optional. "text"|"json". Default: "text"

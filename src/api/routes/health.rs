@@ -71,7 +71,7 @@ mod tests {
         AppState::new(
             "/tmp/test",
             "127.0.0.1",
-            11434,
+            11435,
             DaemonConfigSnapshot::default(),
         )
     }

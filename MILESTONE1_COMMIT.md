@@ -107,7 +107,7 @@ Returns daemon information and capabilities.
   "version": "0.1.0",
   "api_version": "1.0",
   "workspace": "/home/user/.pekobot",
-  "port": 11434,
+  "port": 11435,
   "pid": 12345,
   "platform": "linux-x86_64",
   "capabilities": {
@@ -139,7 +139,7 @@ The API server is configured through `DaemonConfig`:
 pub struct DaemonConfig {
     // ... other fields ...
     pub host: String,  // Default: "127.0.0.1"
-    pub port: u16,     // Default: 11434
+    pub port: u16,     // Default: 11435
 }
 ```
 
@@ -178,10 +178,10 @@ cargo test --test api_integration_tests -- --ignored --test-threads=1
 pekobot daemon start --foreground
 
 # Test health endpoint
-curl http://localhost:11434/health
+curl http://localhost:11435/health
 
 # Test info endpoint
-curl http://localhost:11434/info
+curl http://localhost:11435/info
 
 # Verify headers
 curl -I http://localhost:11434/health
@@ -229,7 +229,7 @@ Milestone 1 provides the HTTP API foundation. Future milestones will add:
 | Requirement | Implementation |
 |-------------|----------------|
 | Default host: `127.0.0.1` | ✅ `DEFAULT_HOST` constant |
-| Default port: `11434` | ✅ `DEFAULT_PORT` constant |
+| Default port: `11435` | ✅ `DEFAULT_PORT` constant |
 | `GET /health` | ✅ `routes::health::health_check` |
 | `GET /info` | ✅ `routes::info::daemon_info` |
 | `X-Pekobot-Version` header | ✅ `middleware::version` |

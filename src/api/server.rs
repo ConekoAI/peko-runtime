@@ -239,7 +239,7 @@ mod tests {
     fn test_server_config_default() {
         let config = ServerConfig::default();
         assert_eq!(config.host, "127.0.0.1");
-        assert_eq!(config.port, 11434);
+        assert_eq!(config.port, 11435);
     }
 
     #[test]

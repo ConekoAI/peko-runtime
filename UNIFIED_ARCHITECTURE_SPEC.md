@@ -144,7 +144,7 @@ Images follow semantic versioning. The runtime resolves image references in this
 
 Pekobot runs as a local daemon (`pekobot daemon start`) that exposes an HTTP API on localhost. This is the single point of control for all runtime operations — the CLI, TUI, Web UI, and external integrations all talk to the daemon, never to agents directly.
 
-> **NOTE:** Default port: `11434` (matches Ollama convention for familiarity). Configurable in `.pekobot/config.toml`.
+> **NOTE:** Default port: `11435` (matches Ollama convention for familiarity). Configurable in `.pekobot/config.toml`.
 
 ### 3.2 Inbound HTTP API
 
@@ -414,7 +414,7 @@ The TUI is a terminal user interface built on top of the HTTP API. It is a separ
 
 ### 7.3 Web UI
 
-A lightweight web UI is served by the daemon at `http://localhost:11434/ui`. It provides the same capabilities as the TUI via a browser interface. No build step — single static HTML file served from the daemon binary.
+A lightweight web UI is served by the daemon at `http://localhost:11435/ui`. It provides the same capabilities as the TUI via a browser interface. No build step — single static HTML file served from the daemon binary.
 
 ### 7.4 External Channels
 
@@ -424,7 +424,7 @@ External channels (Discord, Slack, email, etc.) are not first-party features. Th
 
 ### 7.5 Game and Service Integration
 
-Games and other services connect to the daemon's WebSocket endpoint for bidirectional streaming. The agent appears as a local service at `ws://localhost:11434/agents/{id}/ws`. The wire format is JSON with a simple envelope schema.
+Games and other services connect to the daemon's WebSocket endpoint for bidirectional streaming. The agent appears as a local service at `ws://localhost:11435/agents/{id}/ws`. The wire format is JSON with a simple envelope schema.
 
 ---
 
