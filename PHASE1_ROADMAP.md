@@ -17,35 +17,36 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | CLI Framework | ✅ Partial | Commands exist but need API alignment |
-| Daemon | ✅ Partial | Cron, maintenance implemented; HTTP API missing |
+| Daemon | ✅ Partial | Cron, maintenance implemented; HTTP API Milestone 1 complete |
 | Agent Runtime | ✅ Partial | Agentic loop exists; needs refactoring for image/instance model |
 | Session Management | ✅ Partial | JSONL storage exists; needs index files and atomic writes |
 | Tools (13 built-in) | ✅ Partial | Filesystem, process, apply_patch exist; some need completion |
 | MCP Support | ✅ Partial | Client exists; integration needs alignment |
-| HTTP API | ❌ Missing | No HTTP server exists yet |
+| HTTP API | ✅ Milestone 1 Complete | Foundation: /health, /info endpoints, headers, middleware |
 | Team Runtime | ❌ Missing | No team support yet |
 | Event Bus | ❌ Missing | No A2A communication yet |
 | Registry/Packaging | ❌ Missing | No image packaging yet |
 
 ---
 
-## Milestone 1: HTTP API Server Foundation
+## Milestone 1: HTTP API Server Foundation ✅ COMPLETE
 
 **Goal:** Implement the daemon HTTP API as the single control point for all runtime operations.
 
 **Duration:** 2 weeks  
 **Dependencies:** None  
+**Completed:** 2026-03-16  
 
 ### Tasks
 
-| Task | Description | Spec Ref |
-|------|-------------|----------|
-| 1.1 | Create `src/api/` module with Axum-based HTTP server | API_CONTRACT §1-2 |
-| 1.2 | Implement `GET /health` and `GET /info` endpoints | API_CONTRACT §10 |
-| 1.3 | Implement `X-Pekobot-Version` and `X-Request-ID` headers | API_CONTRACT §1.3-1.6 |
-| 1.4 | Implement standard error envelope `{error: {code, message, request_id, details}}` | API_CONTRACT §11 |
-| 1.5 | Create API request/response types with validation | DATA_MODEL §12 |
-| 1.6 | Add graceful shutdown handling | REQ-DM-001 |
+| Task | Description | Spec Ref | Status |
+|------|-------------|----------|--------|
+| 1.1 | Create `src/api/` module with Axum-based HTTP server | API_CONTRACT §1-2 | ✅ Complete |
+| 1.2 | Implement `GET /health` and `GET /info` endpoints | API_CONTRACT §10 | ✅ Complete |
+| 1.3 | Implement `X-Pekobot-Version` and `X-Request-ID` headers | API_CONTRACT §1.3-1.6 | ✅ Complete |
+| 1.4 | Implement standard error envelope `{error: {code, message, request_id, details}}` | API_CONTRACT §11 | ✅ Complete |
+| 1.5 | Create API request/response types with validation | DATA_MODEL §12 | ✅ Complete |
+| 1.6 | Add graceful shutdown handling | REQ-DM-001 | ✅ Complete |
 
 ### Deliverables
 - HTTP server listening on `127.0.0.1:11435` by default
