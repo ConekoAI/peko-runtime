@@ -173,7 +173,7 @@ impl FileLock {
 
         unsafe {
             let handle: HANDLE = OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid);
-            if handle.is_null() {
+            if handle == 0 {
                 return false;
             }
             CloseHandle(handle);

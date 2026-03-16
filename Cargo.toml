@@ -93,6 +93,9 @@ secrecy = "0.10"
 # File system watching (orchestration layer)
 notify = "6.1"
 
+# Windows system calls
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 # Gateway plugin interface (local path during development)
 gateway-interface = { path = "gateway-interface" }
 
