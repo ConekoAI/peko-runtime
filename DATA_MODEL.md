@@ -1,0 +1,1198 @@
+# Pekobot — Data Model Specification
+
+**Version:** 1.0
+**Date:** 2026-03-16
+**Status:** Draft
+**Companion docs:** `UNIFIED_ARCHITECTURE_SPEC.md` v4.0, `API_CONTRACT.md` v1.0
+
+This document defines every on-disk and in-memory data format used by the Pekobot runtime. It is the authoritative reference for anyone implementing the filesystem loader, session manager, image builder, or any component that reads or writes Pekobot data. All formats described here must be treated as stable contracts — breaking changes require a version increment.
+
+---
+
+## Table of Contents
+
+1. [Conventions](#1-conventions)
+2. [config.toml — Agent Image Config](#2-configtoml--agent-image-config)
+3. [runtime.toml — Runtime Config](#3-runtimetoml--runtime-config)
+4. [team.toml — Team Definition](#4-teamtoml--team-definition)
+5. [Session JSONL — Conversation History](#5-session-jsonl--conversation-history)
+6. [Image Manifest](#6-image-manifest)
+7. [Instance State](#7-instance-state)
+8. [Markdown Files](#8-markdown-files)
+9. [mcp.json — MCP Server Config](#9-mcpjson--mcp-server-config)
+10. [Tool Protocol — stdin/stdout](#10-tool-protocol--stdinstdout)
+11. [Capability Manifest](#11-capability-manifest)
+12. [Type Reference](#12-type-reference)
+13. [Changelog](#13-changelog)
+
+---
+
+## 1. Conventions
+
+### 1.1 Null vs. Absent
+
+Fields marked **optional** may be omitted entirely from the file. A present field with a `null` value is equivalent to omitting it. Parsers must treat both the same way.
+
+### 1.2 Unknown Fields
+
+Parsers must ignore unknown fields. This allows forward-compatible additions without breaking older runtime versions.
+
+### 1.3 Timestamps
+
+All timestamps are ISO 8601 in UTC with millisecond precision: `2026-03-16T08:00:00.000Z`.
+
+### 1.4 IDs
+
+Runtime-assigned IDs use a `prefix_` + 8-character base36 string:
+
+| Prefix | Resource |
+|--------|----------|
+| `inst_` | Agent instance |
+| `sess_` | Session |
+| `team_` | Team |
+| `evt_` | Session event |
+| `tc_` | Tool call |
+| `msg_` | Message |
+
+Image IDs use `sha256:` + the full hex digest of the image manifest.
+
+### 1.5 Defaults
+
+When a field is omitted and a default is listed, the runtime behaves as if the default value was written. Defaults are never written to disk by the runtime — they remain implicit.
+
+### 1.6 TOML Versions
+
+All TOML files conform to TOML v1.0. String values use double quotes. Multi-line strings use `"""`. Comments use `#`.
+
+---
+
+## 2. config.toml — Agent Image Config
+
+`config.toml` is the only required file in an agent image. It defines the agent's identity, LLM provider, capabilities, hooks, and optional inheritance from a base image.
+
+**Location:** `<agent-image-root>/config.toml`
+
+### 2.1 Full Schema
+
+```toml
+# ── Identity ─────────────────────────────────────────────────────────────────
+
+[agent]
+name        = "researcher"          # REQUIRED. Lowercase alphanumeric + hyphens
+version     = "1.0.0"              # REQUIRED. Semver string
+description = "..."                 # Optional. Free text, shown in registry listings
+author      = "user@example.com"   # Optional
+license     = "MIT"                # Optional
+
+# ── Provider ──────────────────────────────────────────────────────────────────
+
+[provider]
+provider_type = "anthropic"        # REQUIRED. See §2.2
+model         = "claude-sonnet-4-6" # REQUIRED. Provider-specific model identifier
+max_tokens    = 8096               # Optional. Default: 8096
+temperature   = 0.7                # Optional. Default: 1.0 (provider default)
+top_p         = null               # Optional. Null = provider default
+system_prompt = null               # Optional. Inline system prompt (prefer BOOTSTRAP.md)
+
+# ── Base image inheritance ─────────────────────────────────────────────────
+
+[base]
+image = "pekohub.com/agents/base-researcher:v2"  # Optional. Full image ref or digest
+
+# ── Capability dependencies ────────────────────────────────────────────────
+
+[capabilities]
+tools  = ["github", "browser"]           # Optional. Named tool capabilities
+skills = ["research"]                    # Optional. Named skill capabilities
+mcps   = ["vector-store-memory"]         # Optional. Named MCP capabilities
+
+[capabilities.session]
+plugin = "lossless-compression"          # Optional. Session plugin capability
+
+[capabilities.options]
+auto_install = true                      # Optional. Default: true in dev, false in prod
+
+# ── Hooks ──────────────────────────────────────────────────────────────────
+
+[[hooks]]
+type     = "cron"
+schedule = "0 8 * * *"            # Standard crontab syntax (5-field)
+action   = "run"                  # "run" = start a session with trigger as first message
+session  = "new"                  # "new" | "active". Default: "new"
+enabled  = true                   # Optional. Default: true
+
+[[hooks]]
+type    = "webhook"
+path    = "/hooks/github"         # Path suffix under /webhooks/{instance_id}/{token}
+token   = "wh_7kxmnqp4vrlbsdcf8e2nthz9a0yqw5j"  # Optional shared secret
+action  = "run"
+session = "new"
+enabled = true
+
+[[hooks]]
+type    = "event"
+topic   = "team.task.assigned"    # Event bus topic pattern (glob supported)
+action  = "run"
+session = "active"                # Inject into the running active session
+enabled = true
+
+[[hooks]]
+type    = "file_watch"
+path    = "./inbox/"              # Relative to instance workspace
+pattern = "*.pdf"                 # Optional glob filter
+action  = "run"
+session = "new"
+enabled = true
+
+# ── Resource limits ────────────────────────────────────────────────────────
+
+[resources]
+max_concurrent_tools = 5          # Optional. Default: 5
+tool_timeout_seconds = 30         # Optional. Default: 30
+session_timeout_seconds = 3600    # Optional. Idle session timeout. Default: no timeout
+max_session_tokens  = 200000      # Optional. Truncate context if exceeded
+```
+
+### 2.2 provider_type Values
+
+| Value | Provider |
+|-------|----------|
+| `anthropic` | Anthropic Claude (via API key) |
+| `openai` | OpenAI (via API key) |
+| `ollama` | Local Ollama instance |
+| `openai_compatible` | Any OpenAI-compatible endpoint; set `base_url` in `[provider]` |
+
+For `ollama` and `openai_compatible`, add:
+
+```toml
+[provider]
+provider_type = "openai_compatible"
+model         = "llama3.2"
+base_url      = "http://localhost:11435/v1"
+```
+
+### 2.3 Inheritance and Merging
+
+When `[base]` is specified, the runtime loads the base image's `config.toml` first, then merges the local config on top. Merge rules:
+
+- Scalar fields: local value overwrites base.
+- Array fields (`capabilities.tools`, `capabilities.mcps`, etc.): local array is **appended** to base array, then deduplicated.
+- `[[hooks]]`: local hooks are appended to base hooks. Base hooks cannot be removed, only added to.
+- `[provider]`: entire section replaced by local if present; otherwise base provider is used.
+
+#### 2.3.1 Circular Dependency Detection
+
+The runtime detects circular base image dependencies and aborts with error `circular_base_dependency`.
+
+**Detection rules:**
+- Maximum inheritance depth: 10 levels
+- If loading a base image that is already in the current inheritance chain, the operation fails
+- Error includes the chain of inheritance that caused the cycle (e.g., `A → B → C → B`)
+
+**Example error:**
+```json
+{
+  "error": {
+    "code": "circular_base_dependency",
+    "message": "Circular base image dependency detected",
+    "details": {
+      "chain": ["my-agent", "base-v2", "base-v1", "base-v2"],
+      "depth_limit": 10
+    }
+  }
+}
+```
+
+### 2.4 Validation Rules
+
+- `name` must match `^[a-z0-9][a-z0-9-]*[a-z0-9]$` (3–64 chars).
+- `version` must be a valid semver string.
+- `schedule` (cron hooks) must be a valid 5-field crontab expression.
+- `token` (webhook hooks), if present, must be 32–128 printable ASCII characters.
+- Duplicate `path` values across `webhook` hooks within the same agent are not permitted.
+
+#### 2.4.1 Webhook Token Security
+
+Webhook tokens are optional but **strongly recommended**. The runtime enforces token requirements based on configuration:
+
+**In `runtime.toml`:**
+```toml
+[daemon]
+require_webhook_tokens = false  # Default: false (development)
+                                # Set to true for production
+```
+
+| Setting | Behavior |
+|---------|----------|
+| `require_webhook_tokens = false` (default) | Token optional; omission logs a warning |
+| `require_webhook_tokens = true` | Token mandatory; webhook hooks without tokens fail validation with `missing_webhook_token` error |
+
+**Best practice:** Always set tokens in production. Tokens should be:
+- Randomly generated (32+ characters)
+- Treated as secrets (stored in environment variables, not committed to version control)
+- Rotated periodically
+
+---
+
+## 3. runtime.toml — Runtime Config
+
+The daemon's own configuration. Lives at the runtime root.
+
+**Location:** `.pekobot/config.toml` (project-level) or `~/.pekobot/config.toml` (global)
+
+### 3.1 Full Schema
+
+```toml
+# ── Daemon ─────────────────────────────────────────────────────────────────
+
+[daemon]
+port        = 11434               # Optional. Default: 11434
+host        = "127.0.0.1"        # Optional. Default: 127.0.0.1 (localhost only)
+log_level   = "info"             # Optional. "error"|"warn"|"info"|"debug"|"trace". Default: "info"
+log_format  = "text"             # Optional. "text"|"json". Default: "text"
+pid_file    = ".pekobot/run/daemon.pid"  # Optional. Default: as shown
+
+# ── Registry ───────────────────────────────────────────────────────────────
+
+[registry]
+default = "pekohub.com"          # Optional. Default: "pekohub.com"
+
+[[registry.sources]]
+url      = "pekohub.com"
+priority = 1                     # Lower = checked first
+
+[[registry.sources]]
+url      = "registry.internal.example.com"
+priority = 2
+auth     = { type = "token", env = "INTERNAL_REGISTRY_TOKEN" }
+
+# ── Provider credentials ───────────────────────────────────────────────────
+# API keys are resolved at runtime from environment variables.
+# Never store keys in this file.
+
+[providers]
+anthropic_api_key_env = "ANTHROPIC_API_KEY"   # Optional. Default: "ANTHROPIC_API_KEY"
+openai_api_key_env    = "OPENAI_API_KEY"       # Optional. Default: "OPENAI_API_KEY"
+
+# ── Capabilities ───────────────────────────────────────────────────────────
+
+[capabilities]
+auto_install    = false           # Optional. Default: false (safe for prod)
+install_dir     = "~/.pekobot/capabilities"  # Optional. Default: as shown
+
+# ── Team defaults ──────────────────────────────────────────────────────────
+
+[teams]
+workspace_root  = ".pekobot/teams"  # Optional. Default: as shown
+
+# ── Agents defaults ────────────────────────────────────────────────────────
+
+[agents]
+workspace_root  = ".pekobot/agents" # Optional. Default: as shown
+```
+
+### 3.2 Auth Types for Registry Sources
+
+| `type` | Fields | Description |
+|--------|--------|-------------|
+| `token` | `env` | Bearer token read from the named env var |
+| `basic` | `user_env`, `password_env` | HTTP Basic, credentials from env vars |
+| `none` | — | Unauthenticated (public registries) |
+
+---
+
+## 4. team.toml — Team Definition
+
+Defines the agents, scaling, shared services, and bus configuration for a team.
+
+**Location:** `.pekobot/teams/<team-name>/config.toml`
+
+### 4.1 Full Schema
+
+```toml
+# ── Team identity ──────────────────────────────────────────────────────────
+
+[team]
+name        = "research-team"     # REQUIRED. Lowercase alphanumeric + hyphens
+description = "..."               # Optional
+
+# ── Agent definitions ──────────────────────────────────────────────────────
+
+[[agents]]
+name      = "coordinator"         # REQUIRED. Unique within this team
+image     = "./agents/coordinator" # REQUIRED. Local path, image ref, or digest
+instances = 1                     # Optional. Default: 1
+role      = "coordinator"         # Optional. "coordinator"|"worker"|null
+env       = { CUSTOM_VAR = "value" }  # Optional. Instance-level env overrides
+
+[[agents]]
+name      = "researcher"
+image     = "pekohub.com/agents/researcher:v2.5"
+instances = 3
+role      = "worker"
+
+[[agents]]
+name      = "writer"
+image     = "pekohub.com/agents/writer:v1.0"
+instances = 1
+
+# ── Shared services ────────────────────────────────────────────────────────
+
+[shared.bus]
+backend = "in-memory"             # "in-memory"|"redis"|"nats". Default: "in-memory"
+url     = null                    # Required for redis/nats. e.g. "redis://localhost:6379"
+
+[shared.memory]
+type    = "chroma"                # "chroma"|"qdrant"|"in-memory". Default: "in-memory"
+url     = null                    # Required for chroma/qdrant
+persist = true                    # Optional. Default: true
+
+[shared.files]
+enabled = true                    # Optional. Default: true
+path    = ".pekobot/teams/research-team/shared/files"  # Optional. Default: as shown
+
+# ── Shared MCPs ────────────────────────────────────────────────────────────
+# These are started once and proxied to all agents in the team.
+
+[[shared.mcps]]
+name    = "browser"
+command = ["npx", "-y", "@browserbasehq/mcp"]
+env     = { BROWSERBASE_API_KEY = "${BROWSERBASE_API_KEY}" }
+```
+
+### 4.2 Agent `image` Resolution
+
+| Value pattern | Resolution |
+|---------------|------------|
+| Starts with `./` or `/` | Filesystem path to agent directory |
+| Contains `:` but not `/` | Local image `name:tag` |
+| Contains `/` | Full registry ref `host/path:tag` |
+| `sha256:...` | Exact digest, registry-independent |
+
+### 4.3 Agent Instance Naming and Identity
+
+When a team is deployed, the runtime creates instances from the `[[agents]]` definitions:
+
+| Field | Usage | Instance Naming |
+|-------|-------|-----------------|
+| `name` | Agent type identifier within the team | Used as prefix for instance names |
+| `instances` | Count of identical instances to create | Instances are named `{name}-{N}` where N starts at 1 |
+
+**Example:**
+```toml
+[[agents]]
+name = "researcher"
+instances = 3
+```
+
+Creates instances with IDs like `inst_7k2mxp3q`, named:
+- `researcher-1` (ID: `inst_7k2mxp3q`)
+- `researcher-2` (ID: `inst_2nqkrp8x`)
+- `researcher-3` (ID: `inst_5vlmds4w`)
+
+**Addressing instances:**
+- Via daemon API: Use the instance ID (`inst_...`)
+- Via A2A bus: Use the instance name (`researcher-1`) with `Direct` message type
+- Instance names are unique within a team; instance IDs are globally unique
+
+### 4.4 Shared Bus Backend Requirements
+
+| Backend | Requirement |
+|---------|-------------|
+| `in-memory` | None. All instances must be in the same process |
+| `redis` | Redis 6.2+ with Streams support. Set `url` |
+| `nats` | NATS 2.2+ with JetStream. Set `url` |
+
+---
+
+## 5. Session JSONL — Conversation History
+
+Sessions are stored as JSONL (newline-delimited JSON) files. Each line is exactly one event. The file is append-only — events are never modified or deleted in place.
+
+**Location:** `<instance-workspace>/sessions/<session-id>.jsonl`
+
+**Example:** `.pekobot/teams/research-team/agents/researcher-1/sessions/sess_9nrwbf1v.jsonl`
+
+### 5.1 File Conventions
+
+- Each line is a complete, independently parseable JSON object.
+- Lines are separated by `\n` (Unix line endings).
+- No trailing comma. No outer array wrapper.
+- The file is written atomically: new events are first written to `<filename>.tmp`, then `rename()` appends to the live file. A partial `.tmp` file indicates a crash mid-write and must be discarded.
+- Files are UTF-8 encoded.
+
+### 5.2 Event Envelope
+
+Every line shares this envelope:
+
+```json
+{
+  "id":         "evt_001",
+  "type":       "<event-type>",
+  "session_id": "sess_9nrwbf1v",
+  "ts":         "2026-03-16T08:05:00.000Z",
+  "seq":        1,
+  ...type-specific fields
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique event ID within the session |
+| `type` | string | Event type (see §5.3) |
+| `session_id` | string | ID of the session this event belongs to |
+| `ts` | string | ISO 8601 timestamp of when the event was written |
+| `seq` | integer | Monotonically increasing sequence number, starting at 1 |
+
+### 5.3 Event Types
+
+#### `session.created`
+
+Written as the very first line of every new session file.
+
+```json
+{
+  "id": "evt_001",
+  "type": "session.created",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:05:00.000Z",
+  "seq": 1,
+  "instance_id": "inst_7k2mxp3q",
+  "image_digest": "sha256:a3b5c7d9e1f2...",
+  "parent_session_id": null,
+  "trigger": "user"
+}
+```
+
+| `trigger` | Meaning |
+|-----------|---------|
+| `user` | Interactive session started by a user |
+| `cron` | Started by a cron hook |
+| `webhook` | Started by a webhook delivery |
+| `event` | Started by an event bus message |
+| `file_watch` | Started by a file watch trigger |
+| `branch` | Created from a branch of another session |
+| `spawn` | Created as a subagent by a parent session |
+
+---
+
+#### `user.message`
+
+A message sent by the user (or a hook trigger payload).
+
+```json
+{
+  "id": "evt_002",
+  "type": "user.message",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:05:00.000Z",
+  "seq": 2,
+  "message_id": "msg_3xpwqr7n",
+  "content": "Summarise the Q4 earnings report.",
+  "source": "user"
+}
+```
+
+| `source` | Meaning |
+|----------|---------|
+| `user` | Typed by a human |
+| `hook` | Injected by a hook trigger |
+| `a2a` | Sent by another agent via the event bus |
+| `spawn_parent` | Sent by the spawning parent agent |
+
+---
+
+#### `assistant.message`
+
+The final, complete text response from the LLM for a turn.
+
+```json
+{
+  "id": "evt_003",
+  "type": "assistant.message",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:05:04.100Z",
+  "seq": 5,
+  "message_id": "msg_7xpwqr9n",
+  "content": "The Q4 earnings report shows revenue of $4.2B...",
+  "usage": {
+    "input_tokens": 1240,
+    "output_tokens": 382,
+    "total_tokens": 1622
+  }
+}
+```
+
+`usage` reflects the token counts for the entire turn (all LLM calls combined, including tool result re-submissions).
+
+---
+
+#### `thinking`
+
+Extended thinking content produced before or during a response. Only written if the provider and model support it and it is enabled in `[provider]`.
+
+```json
+{
+  "id": "evt_004",
+  "type": "thinking",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:05:00.800Z",
+  "seq": 3,
+  "content": "I need to search for recent financial data for ACME Corp..."
+}
+```
+
+---
+
+#### `tool.call`
+
+An invocation of a tool requested by the LLM.
+
+```json
+{
+  "id": "evt_005",
+  "type": "tool.call",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:05:01.800Z",
+  "seq": 3,
+  "tool_call_id": "tc_4bwmnq",
+  "tool": "web_search",
+  "args": {
+    "query": "Q4 2025 earnings ACME Corp"
+  },
+  "async": false,
+  "timeout_seconds": 30
+}
+```
+
+---
+
+#### `tool.result`
+
+The result returned by a tool invocation.
+
+```json
+{
+  "id": "evt_006",
+  "type": "tool.result",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:05:03.221Z",
+  "seq": 4,
+  "tool_call_id": "tc_4bwmnq",
+  "output": "ACME Corp reported $4.2B revenue in Q4 2025, up 12% YoY...",
+  "error": null,
+  "duration_ms": 1421
+}
+```
+
+When the tool fails, `output` is `null` and `error` is a string describing the failure.
+
+---
+
+#### `spawn.request`
+
+This agent spawned a subagent.
+
+```json
+{
+  "id": "evt_007",
+  "type": "spawn.request",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:06:00.000Z",
+  "seq": 6,
+  "tool_call_id": "tc_5cxnor",
+  "child_image": "researcher:v2",
+  "child_instance_id": "inst_9pqrst2x",
+  "child_session_id": "sess_2kxmnqp4",
+  "task": "Summarise the Q4 earnings report at https://...",
+  "async": false
+}
+```
+
+---
+
+#### `spawn.result`
+
+The spawned subagent completed.
+
+```json
+{
+  "id": "evt_008",
+  "type": "spawn.result",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:06:45.200Z",
+  "seq": 7,
+  "tool_call_id": "tc_5cxnor",
+  "child_instance_id": "inst_9pqrst2x",
+  "child_session_id": "sess_2kxmnqp4",
+  "output": "The Q4 report summary is...",
+  "error": null,
+  "duration_ms": 45200
+}
+```
+
+---
+
+#### `a2a.sent`
+
+This agent sent a message to the team event bus.
+
+```json
+{
+  "id": "evt_009",
+  "type": "a2a.sent",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:07:00.000Z",
+  "seq": 8,
+  "message_type": "Task",
+  "topic": "team.research-team.tasks",
+  "to": "inst_2nqkrp8x",
+  "payload": {
+    "task": "Find recent news about ACME Corp",
+    "priority": "high"
+  }
+}
+```
+
+---
+
+#### `a2a.received`
+
+This agent received a message from the team event bus.
+
+```json
+{
+  "id": "evt_010",
+  "type": "a2a.received",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:07:01.100Z",
+  "seq": 9,
+  "message_type": "TaskResult",
+  "topic": "team.research-team.results",
+  "from": "inst_2nqkrp8x",
+  "payload": {
+    "result": "ACME Corp announced a new product line...",
+    "task_id": "tc_5cxnor"
+  }
+}
+```
+
+---
+
+#### `hook.trigger`
+
+The session was activated by a hook.
+
+```json
+{
+  "id": "evt_011",
+  "type": "hook.trigger",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T08:00:00.000Z",
+  "seq": 1,
+  "hook_type": "cron",
+  "schedule": "0 8 * * *",
+  "payload": null
+}
+```
+
+For webhook hooks, `payload` contains the decoded request body. For `file_watch`, it contains `{ "path": "...", "event": "created" }`.
+
+---
+
+#### `system`
+
+A system-level annotation. Used for recording significant runtime events that affect the session but are not part of the conversation content.
+
+```json
+{
+  "id": "evt_012",
+  "type": "system",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T09:00:00.000Z",
+  "seq": 10,
+  "event": "context_truncated",
+  "detail": {
+    "reason": "max_session_tokens exceeded",
+    "tokens_before": 210000,
+    "tokens_after": 180000,
+    "events_dropped": 4
+  }
+}
+```
+
+Common `event` values: `context_truncated`, `session_resumed`, `instance_restarted`, `plugin_applied`.
+
+---
+
+#### `session.ended`
+
+Written as the final line when a session is explicitly closed. Not written on crash — the absence of this event indicates an unclean termination.
+
+```json
+{
+  "id": "evt_013",
+  "type": "session.ended",
+  "session_id": "sess_9nrwbf1v",
+  "ts": "2026-03-16T09:05:00.000Z",
+  "seq": 11,
+  "reason": "user_closed",
+  "turn_count": 6,
+  "total_tokens": 9840
+}
+```
+
+| `reason` | Meaning |
+|----------|---------|
+| `user_closed` | User explicitly ended the session |
+| `instance_stopped` | Instance was stopped while session was active |
+| `idle_timeout` | Session exceeded `session_timeout_seconds` |
+| `max_tokens_reached` | Hard token limit hit and session cannot continue |
+
+---
+
+### 5.4 Session Index File
+
+Alongside each `.jsonl` file is a `.index.json` sidecar. It is maintained by the runtime and provides O(1) lookup of session metadata without scanning the full JSONL.
+
+**Location:** `<session-id>.index.json`
+
+```json
+{
+  "session_id": "sess_9nrwbf1v",
+  "instance_id": "inst_7k2mxp3q",
+  "created_at": "2026-03-16T08:05:00.000Z",
+  "updated_at": "2026-03-16T09:05:00.000Z",
+  "turn_count": 6,
+  "event_count": 13,
+  "total_tokens": 9840,
+  "parent_session_id": null,
+  "trigger": "user",
+  "ended": true,
+  "title": "Q4 earnings analysis"
+}
+```
+
+The `title` field is auto-generated by the runtime after the first assistant response (first 60 characters, stripped of newlines). It can be overwritten by the user.
+
+---
+
+## 6. Image Manifest
+
+An image is a content-addressable archive. Its manifest describes the layers that compose it.
+
+**Location:** `.pekobot/registry/images/<digest>/manifest.json`
+
+### 6.1 Manifest Schema
+
+```json
+{
+  "schema_version": 1,
+  "name": "researcher",
+  "version": "2.5.0",
+  "ref": "pekohub.com/agents/researcher:v2.5",
+  "digest": "sha256:a3b5c7d9e1f2b4d6e8fa0c2e4g6h8j0k2m4n6p8r0s2t4v6w8x0y2z4",
+  "created_at": "2026-03-10T12:00:00.000Z",
+  "source": "registry",
+  "layers": [
+    {
+      "digest":    "sha256:1a2b3c4d...",
+      "type":      "config",
+      "size_bytes": 512,
+      "path":      "config.toml"
+    },
+    {
+      "digest":    "sha256:5e6f7g8h...",
+      "type":      "markdown",
+      "size_bytes": 4096,
+      "paths":     ["AGENT.md", "BOOTSTRAP.md", "IDENTITY.md", "SOUL.md", "TOOLS.md"]
+    },
+    {
+      "digest":    "sha256:9i0j1k2l...",
+      "type":      "tools",
+      "size_bytes": 20480,
+      "paths":     ["tools/web_search.py", "tools/fetch.sh"]
+    },
+    {
+      "digest":    "sha256:3m4n5o6p...",
+      "type":      "projects",
+      "size_bytes": 102400,
+      "paths":     ["projects/"]
+    },
+    {
+      "digest":    "sha256:7q8r9s0t...",
+      "type":      "skills",
+      "size_bytes": 8192,
+      "paths":     ["skills/"]
+    }
+  ],
+  "base": {
+    "ref":    "pekohub.com/agents/base-researcher:v2",
+    "digest": "sha256:basef0ba..."
+  },
+  "capabilities": {
+    "tools":  ["github", "browser"],
+    "skills": ["research"],
+    "mcps":   ["vector-store-memory"]
+  }
+}
+```
+
+### 6.2 Layer Types
+
+| `type` | Contents | Notes |
+|--------|----------|-------|
+| `config` | `config.toml` only | Always present |
+| `markdown` | Root `.md` files | One layer for all markdown files |
+| `tools` | Files in `tools/` | Executable scripts and binaries |
+| `projects` | Files in `projects/` | Potentially large; content-deduplicated |
+| `memories` | Files in `memories/` | Seeded long-term memory |
+| `skills` | Files in `skills/` | Skill definitions |
+| `mcp_config` | `mcp.json` | MCP server configuration |
+
+### 6.3 Layer Storage
+
+Each layer is stored as a gzip-compressed tar archive at:
+
+```
+.pekobot/registry/images/layers/<digest>.tar.gz
+```
+
+Layers are shared across images. If two images contain identical `projects/` content, they reference the same layer digest and the bytes are stored once.
+
+---
+
+## 7. Instance State
+
+Runtime state for a running or stopped instance. Stored in SQLite.
+
+**Location:** `.pekobot/run/state.db`
+
+This is not a user-editable file. It is the daemon's working state — sessions, instance metadata, team membership. It is rebuilt from the filesystem if deleted. The JSONL session files are the source of truth; the SQLite file is a read-optimised index over them.
+
+### 7.1 Tables
+
+#### `instances`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Instance ID (`inst_...`) |
+| `name` | TEXT | Human name |
+| `image_ref` | TEXT | Image ref at creation time |
+| `image_digest` | TEXT | Pinned image digest |
+| `status` | TEXT | Current `InstanceStatus` |
+| `team_id` | TEXT NULL | Foreign key to `teams.id` |
+| `workspace_path` | TEXT | Absolute path to instance workspace |
+| `active_session_id` | TEXT NULL | Currently active session |
+| `created_at` | TEXT | ISO 8601 timestamp |
+| `started_at` | TEXT NULL | ISO 8601 timestamp |
+| `stopped_at` | TEXT NULL | ISO 8601 timestamp |
+| `error` | TEXT NULL | Error message if `status = 'error'` |
+
+#### `sessions`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Session ID (`sess_...`) |
+| `instance_id` | TEXT | Foreign key to `instances.id` |
+| `jsonl_path` | TEXT | Absolute path to `.jsonl` file |
+| `created_at` | TEXT | ISO 8601 timestamp |
+| `updated_at` | TEXT | ISO 8601 timestamp |
+| `turn_count` | INTEGER | Number of complete turns |
+| `event_count` | INTEGER | Total events in the JSONL |
+| `total_tokens` | INTEGER | Cumulative token usage |
+| `parent_session_id` | TEXT NULL | Set if branched |
+| `trigger` | TEXT | How the session was started |
+| `ended` | INTEGER | Boolean (0/1) |
+| `title` | TEXT NULL | Auto-generated or user-set |
+
+#### `teams`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Team ID (`team_...`) |
+| `name` | TEXT | Team name |
+| `status` | TEXT | `starting` / `running` / `stopping` / `stopped` |
+| `config_path` | TEXT | Absolute path to `config.toml` |
+| `created_at` | TEXT | ISO 8601 timestamp |
+
+---
+
+## 8. Markdown Files
+
+Optional markdown files in the agent image root provide identity, behavior, and context. All follow the same conventions.
+
+### 8.1 General Conventions
+
+- UTF-8 encoded.
+- Standard CommonMark markdown.
+- No required internal structure — the runtime loads the full file content and passes it to the LLM as part of the system prompt. Authors may structure with headings for readability, but the runtime does not parse internal structure.
+- Files are loaded at instance startup and held in memory for the session lifetime. Changes to files on disk are not hot-reloaded in a running instance (only in `--watch` dev mode).
+
+### 8.2 Load Order and Prompt Assembly
+
+When the runtime assembles the system prompt, markdown files are concatenated in this order:
+
+```
+1. BOOTSTRAP.md   — sets the high-level framing
+2. IDENTITY.md    — who the agent is
+3. SOUL.md        — values and personality
+4. AGENT.md       — responsibilities and behaviour
+5. TOOLS.md       — tool usage guidelines
+6. USER.md        — context about the user
+7. SKILLS.md      — available skills description
+```
+
+If a file is absent, its slot is skipped. If `[provider] system_prompt` is also set in `config.toml`, it is prepended before `BOOTSTRAP.md`.
+
+### 8.3 File Reference
+
+| File | Purpose | Typical Content |
+|------|---------|-----------------|
+| `BOOTSTRAP.md` | Sets the initial framing for every session | Opening context, task domain, high-level goals |
+| `IDENTITY.md` | Who the agent is | Name, role, communication style |
+| `SOUL.md` | Core values and personality traits | Tone, principles, what the agent cares about |
+| `AGENT.md` | Operational behaviour | Responsibilities, what to do, what not to do |
+| `TOOLS.md` | How to use available tools | When to call each tool, argument conventions |
+| `USER.md` | Context about the user | Name, preferences, background — populated by the user |
+| `SKILLS.md` | Available skills | Brief descriptions of skills the agent can invoke |
+
+### 8.4 Inheritance
+
+When a base image is used, markdown files from the base are loaded first. If the local image provides the same file (e.g. both have `AGENT.md`), the local file **replaces** the base file entirely. Files present only in the base are inherited as-is.
+
+---
+
+## 9. mcp.json — MCP Server Config
+
+Declares MCP servers available to the agent. The runtime starts these processes and proxies tool calls to them.
+
+**Location:** `<agent-image-root>/mcp.json`
+
+### 9.1 Schema
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "env": {}
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "vector-memory": {
+      "command": "pekobot-mcp-proxy",
+      "args": ["vector-store-memory"],
+      "env": {}
+    }
+  }
+}
+```
+
+### 9.2 Field Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `command` | string | Yes | Executable to run |
+| `args` | string[] | No | Arguments passed to the command |
+| `env` | object | No | Environment variables. Values starting with `${` are substituted from the runtime environment |
+
+### 9.3 Environment Variable Substitution
+
+Values in `env` support `${VAR_NAME}` substitution. The variable is resolved from the process environment at instance startup. If the variable is not set, the field is set to an empty string and a warning is logged.
+
+---
+
+## 10. Tool Protocol — stdin/stdout
+
+Custom tools in `tools/` are executables invoked by the runtime via a simple JSON-over-stdin/stdout protocol. Any language that can read stdin and write stdout works.
+
+### 10.1 Invocation
+
+The runtime spawns the tool as a subprocess and writes a single JSON object to its stdin, followed by a newline:
+
+```json
+{
+  "tool_call_id": "tc_4bwmnq",
+  "tool":         "my_tool",
+  "args":         { "query": "ACME Corp Q4 earnings" },
+  "timeout_ms":   30000,
+  "context": {
+    "instance_id": "inst_7k2mxp3q",
+    "session_id":  "sess_9nrwbf1v",
+    "workspace":   "/home/user/project/.pekobot/agents/researcher-1/workspace"
+  }
+}
+```
+
+### 10.2 Response
+
+The tool writes a single JSON object to stdout, followed by a newline, then exits:
+
+**Success:**
+
+```json
+{
+  "tool_call_id": "tc_4bwmnq",
+  "output":       "ACME Corp reported $4.2B revenue in Q4 2025...",
+  "error":        null
+}
+```
+
+**Failure:**
+
+```json
+{
+  "tool_call_id": "tc_4bwmnq",
+  "output":       null,
+  "error":        "HTTP request failed: connection timeout"
+}
+```
+
+### 10.3 Exit Codes
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | Success — parse stdout as JSON |
+| `1` | Tool error — runtime treats as a failed tool call; `error` in response is used |
+| `2` | Protocol error — runtime logs a warning and reports a generic failure to the LLM |
+
+Anything written to stderr is captured and appended to the daemon log at `debug` level.
+
+### 10.4 Tool Manifest (optional)
+
+A tool may include a `<toolname>.json` sidecar that describes its schema. The runtime uses this to generate the tool definition sent to the LLM. Without it, the runtime generates a minimal definition using just the tool name.
+
+```json
+{
+  "name":        "my_tool",
+  "description": "Searches the web for recent information.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type":        "string",
+        "description": "The search query"
+      },
+      "max_results": {
+        "type":    "integer",
+        "default": 5
+      }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+The `parameters` schema is JSON Schema draft-07.
+
+---
+
+## 11. Capability Manifest
+
+Every installable capability (tool, skill, MCP, session plugin) includes a `capability.toml` that describes it.
+
+**Location:** `<capability-root>/capability.toml`
+
+### 11.1 Schema
+
+```toml
+[capability]
+type        = "tool"              # REQUIRED. "tool"|"skill"|"mcp"|"session"
+name        = "web-browser"       # REQUIRED. Lowercase alphanumeric + hyphens
+version     = "1.2.0"            # REQUIRED. Semver
+description = "Playwright-based browser for web interaction"
+author      = "pekobot-community"
+license     = "MIT"
+
+# For type = "tool"
+[tool]
+entrypoint  = "browser.py"        # Executable within the capability directory
+platforms   = ["linux", "darwin"] # Optional. Omit to indicate all platforms
+
+# For type = "mcp"
+[mcp]
+command     = ["npx", "-y", "@browserbasehq/mcp"]
+env_vars    = ["BROWSERBASE_API_KEY"]  # Required env vars; runtime warns if missing
+
+# For type = "skill"
+[skill]
+prompts     = ["skill.md"]        # Markdown prompt files included in the skill
+tools       = ["web_search"]      # Tool capabilities this skill depends on
+
+# For type = "session"
+[session]
+library     = "libsession_lossless.so"  # Shared library implementing SessionPlugin
+```
+
+### 11.2 Installed Capability Layout
+
+```
+~/.pekobot/capabilities/
+├── tools/
+│   └── web-browser@1.2.0/
+│       ├── capability.toml
+│       └── browser.py
+├── skills/
+│   └── research@2.0.1/
+│       ├── capability.toml
+│       └── skill.md
+├── mcps/
+│   └── vector-store-memory@1.0.0/
+│       └── capability.toml
+└── session/
+    └── lossless-compression@1.0.0/
+        ├── capability.toml
+        └── libsession_lossless.so
+```
+
+Multiple versions of the same capability may be installed side by side. An agent's `config.toml` may pin to a version:
+
+```toml
+[capabilities]
+tools = ["browser@1.2.0"]         # Pinned
+skills = ["research"]             # Latest installed
+```
+
+---
+
+## 12. Type Reference
+
+Quick-reference table of all primitive types used across formats.
+
+| Type name | Format | Example |
+|-----------|--------|---------|
+| `Timestamp` | ISO 8601 UTC, ms precision | `2026-03-16T08:00:00.000Z` |
+| `InstanceId` | `inst_` + 8 base36 chars | `inst_7k2mxp3q` |
+| `SessionId` | `sess_` + 8 base36 chars | `sess_9nrwbf1v` |
+| `TeamId` | `team_` + 8 base36 chars | `team_4hsdcl8e` |
+| `EventId` | `evt_` + 8 base36 chars | `evt_001` |
+| `ToolCallId` | `tc_` + 6 base36 chars | `tc_4bwmnq` |
+| `MessageId` | `msg_` + 8 base36 chars | `msg_3xpwqr7n` |
+| `ImageDigest` | `sha256:` + 64 hex chars | `sha256:a3b5c7d9...` |
+| `ImageRef` | `[host/]name:tag` | `pekohub.com/agents/researcher:v2.5` |
+| `Semver` | Major.Minor.Patch | `1.2.0` |
+| `AgentName` | `^[a-z0-9][a-z0-9-]*[a-z0-9]$` | `my-researcher` |
+| `InstanceStatus` | Enum | `starting \| running \| stopping \| stopped \| error` |
+| `HookType` | Enum | `cron \| webhook \| event \| file_watch` |
+| `SessionTrigger` | Enum | `user \| cron \| webhook \| event \| file_watch \| branch \| spawn` |
+| `CapabilityType` | Enum | `tool \| skill \| mcp \| session` |
+| `BusBackend` | Enum | `in-memory \| redis \| nats` |
+
+---
+
+## 13. Changelog
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | 2026-03-16 | Initial draft |
+
+---
+
+*Version: 1.0 · Last Updated: 2026-03-16 · Status: Draft*
