@@ -449,8 +449,6 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn test_execute_tool_with_timeout() {
-
-
         let temp_dir = TempDir::new().unwrap();
 
         // Create a tool that sleeps (will timeout)

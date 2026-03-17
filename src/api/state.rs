@@ -3,6 +3,7 @@
 //! Shared state accessible to all API route handlers.
 //! This will expand as more endpoints are implemented.
 
+use crate::team::TeamManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -12,7 +13,7 @@ use tokio::sync::RwLock;
 ///
 /// This struct is passed to all route handlers via Axum's State extractor.
 /// All fields are thread-safe and can be accessed concurrently.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     /// Time when the daemon started
     pub started_at: SystemTime,
@@ -29,8 +30,24 @@ pub struct AppState {
     /// Daemon configuration
     pub config: DaemonConfigSnapshot,
 
+    /// Team manager for team runtime
+    pub team_manager: Arc<TeamManager>,
+
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("started_at", &self.started_at)
+            .field("workspace_path", &self.workspace_path)
+            .field("port", &self.port)
+            .field("host", &self.host)
+            .field("config", &self.config)
+            .field("team_manager", &"<TeamManager>")
+            .finish()
+    }
 }
 
 /// Mutable internal state
@@ -69,6 +86,26 @@ impl AppState {
             port,
             host: host.into(),
             config,
+            team_manager: Arc::new(TeamManager::new()),
+            inner: Arc::new(RwLock::new(AppStateInner::default())),
+        }
+    }
+
+    /// Create new application state with custom data directory
+    pub fn with_data_dir(
+        workspace_path: impl Into<PathBuf>,
+        host: impl Into<String>,
+        port: u16,
+        config: DaemonConfigSnapshot,
+        data_dir: PathBuf,
+    ) -> Self {
+        Self {
+            started_at: SystemTime::now(),
+            workspace_path: workspace_path.into(),
+            port,
+            host: host.into(),
+            config,
+            team_manager: Arc::new(TeamManager::with_data_dir(data_dir)),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         }
     }

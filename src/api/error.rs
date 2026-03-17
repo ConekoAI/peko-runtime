@@ -112,7 +112,7 @@ impl ApiError {
         }
     }
 
-    /// Create an internal error
+    /// Create an internal error (with request ID)
     pub fn internal(message: impl Into<String>, request_id: impl Into<String>) -> Self {
         Self::Internal {
             message: message.into(),
@@ -120,7 +120,15 @@ impl ApiError {
         }
     }
 
-    /// Create a not found error
+    /// Create an internal error (without request ID - will be set by middleware)
+    pub fn internal_error(message: impl Into<String>) -> Self {
+        Self::Internal {
+            message: message.into(),
+            request_id: "pending".to_string(),
+        }
+    }
+
+    /// Create a not found error (with request ID)
     pub fn not_found(
         resource_type: impl Into<String>,
         resource_id: impl Into<String>,
@@ -133,7 +141,19 @@ impl ApiError {
         }
     }
 
-    /// Create a bad request error
+    /// Create a not found error (without request ID - will be set by middleware)
+    pub fn not_found_simple(
+        resource_type: impl Into<String>,
+        resource_id: impl Into<String>,
+    ) -> Self {
+        Self::NotFound {
+            resource_type: resource_type.into(),
+            resource_id: resource_id.into(),
+            request_id: "pending".to_string(),
+        }
+    }
+
+    /// Create a bad request error (with request ID)
     pub fn bad_request(message: impl Into<String>, request_id: impl Into<String>) -> Self {
         Self::BadRequest {
             message: message.into(),
@@ -142,18 +162,60 @@ impl ApiError {
         }
     }
 
-    /// Create a service unavailable error
+    /// Create a bad request error (without request ID - will be set by middleware)
+    pub fn invalid_request(message: impl Into<String>) -> Self {
+        Self::BadRequest {
+            message: message.into(),
+            request_id: "pending".to_string(),
+            details: None,
+        }
+    }
+
+    /// Create a service unavailable error (with request ID)
     pub fn service_unavailable(request_id: impl Into<String>) -> Self {
         Self::ServiceUnavailable {
             request_id: request_id.into(),
         }
     }
 
-    /// Create a conflict error
+    /// Create a conflict error (with request ID)
     pub fn conflict(message: impl Into<String>, request_id: impl Into<String>) -> Self {
         Self::Conflict {
             message: message.into(),
             request_id: request_id.into(),
+        }
+    }
+
+    /// Set the request ID for this error
+    pub fn with_request_id(self, request_id: impl Into<String>) -> Self {
+        let request_id = request_id.into();
+        match self {
+            Self::Internal { message, .. } => Self::Internal {
+                message,
+                request_id,
+            },
+            Self::NotFound {
+                resource_type,
+                resource_id,
+                ..
+            } => Self::NotFound {
+                resource_type,
+                resource_id,
+                request_id,
+            },
+            Self::BadRequest {
+                message, details, ..
+            } => Self::BadRequest {
+                message,
+                request_id,
+                details,
+            },
+            Self::ServiceUnavailable { .. } => Self::ServiceUnavailable { request_id },
+            Self::MethodNotAllowed { method, .. } => Self::MethodNotAllowed { method, request_id },
+            Self::Conflict { message, .. } => Self::Conflict {
+                message,
+                request_id,
+            },
         }
     }
 
