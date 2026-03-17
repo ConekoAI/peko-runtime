@@ -93,6 +93,10 @@ secrecy = "0.10"
 # File system watching (orchestration layer)
 notify = "6.1"
 
+# Image building
+walkdir = "2.5"
+tokio-stream = "0.1"
+
 # Windows system calls
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
 

@@ -6,9 +6,11 @@
 //! - agents: Instance management (Milestone 2)
 //! - sessions: Session management (Milestone 3)
 //! - teams: Team management (Milestone 7)
-//! - images: Image registry (Milestone 9)
+//! - images: Image registry (Milestone 2)
 
+pub mod agents;
 pub mod health;
+pub mod images;
 pub mod info;
 
 use axum::{routing::get, Router};
@@ -18,13 +20,12 @@ use crate::api::state::AppState;
 /// Create the API router with all routes
 pub fn create_router() -> Router<AppState> {
     Router::new()
-        // Health and info endpoints
+        // Health and info endpoints (Milestone 1)
         .route("/health", get(health::health_check))
         .route("/info", get(info::daemon_info))
-    // Additional routes will be added in future milestones:
-    // .route("/agents", get(agents::list_agents).post(agents::create_agent))
-    // .route("/agents/:id", get(agents::get_agent).delete(agents::delete_agent))
-    // etc.
+        // Merge nested routers (Milestone 2)
+        .merge(images::router())
+        .merge(agents::router())
 }
 
 #[cfg(test)]

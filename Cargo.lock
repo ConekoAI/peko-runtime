@@ -2375,6 +2375,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tokio-test",
  "toml",
  "tower 0.4.13",
@@ -2384,6 +2385,7 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+ "walkdir",
  "which",
  "windows-sys 0.52.0",
 ]

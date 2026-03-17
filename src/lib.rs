@@ -149,6 +149,9 @@ pub(crate) mod prompt;
 /// Portable agent packaging (export/import)
 pub mod portable;
 
+/// Agent image management (images, instances, registry)
+pub mod image;
+
 /// Compaction and transcript management
 pub(crate) mod compaction;
 

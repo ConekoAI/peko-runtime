@@ -23,9 +23,10 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 | Tools (13 built-in) | ✅ Partial | Filesystem, process, apply_patch exist; some need completion |
 | MCP Support | ✅ Partial | Client exists; integration needs alignment |
 | HTTP API | ✅ Milestone 1 Complete | Foundation: /health, /info endpoints, headers, middleware |
+| Agent Image/Instance | ✅ Milestone 2 Complete | Image build, registry, instance lifecycle |
 | Team Runtime | ❌ Missing | No team support yet |
 | Event Bus | ❌ Missing | No A2A communication yet |
-| Registry/Packaging | ❌ Missing | No image packaging yet |
+| Registry/Packaging | ✅ Partial | Local registry complete, push/pull pending |
 
 ---
 
@@ -63,26 +64,27 @@ curl http://localhost:11435/info    # Returns version, workspace, etc.
 
 ---
 
-## Milestone 2: Agent Image and Instance Model
+## Milestone 2: Agent Image and Instance Model ✅ COMPLETE
 
 **Goal:** Implement the image/instance distinction with filesystem-first agent definition.
 
 **Duration:** 2 weeks  
 **Dependencies:** Milestone 1  
+**Completed:** 2026-03-16  
 
 ### Tasks
 
 | Task | Description | Spec Ref |
 |------|-------------|----------|
-| 2.1 | Create `src/image/` module for image manifest management | DATA_MODEL §6 |
-| 2.2 | Implement `config.toml` loader with validation | DATA_MODEL §2 |
-| 2.3 | Implement image build (`POST /images/build`) with SHA-256 digests | REQ-AI-003 |
-| 2.4 | Implement `.pekobot/registry/images/` content-addressable storage | UNIFIED_ARCH §2.3 |
-| 2.5 | Refactor `src/agent/` to separate Image vs Instance concepts | REQ-AI-002 |
-| 2.6 | Implement instance pinning to image digest | REQ-AI-005 |
-| 2.7 | Implement `POST /agents` (create instance from image) | API_CONTRACT §3.2 |
-| 2.8 | Implement `GET /agents`, `GET /agents/{id}`, `DELETE /agents/{id}` | API_CONTRACT §3 |
-| 2.9 | Ensure `sessions/` is never included in image | REQ-AI-001 |
+| 2.1 | Create `src/image/` module for image manifest management | DATA_MODEL §6 | ✅ Complete |
+| 2.2 | Implement `config.toml` loader with validation | DATA_MODEL §2 | ✅ Complete |
+| 2.3 | Implement image build (`POST /images/build`) with SHA-256 digests | REQ-AI-003 | ✅ Complete |
+| 2.4 | Implement `.pekobot/registry/images/` content-addressable storage | UNIFIED_ARCH §2.3 | ✅ Complete |
+| 2.5 | Refactor `src/agent/` to separate Image vs Instance concepts | REQ-AI-002 | ✅ Complete |
+| 2.6 | Implement instance pinning to image digest | REQ-AI-005 | ✅ Complete |
+| 2.7 | Implement `POST /agents` (create instance from image) | API_CONTRACT §3.2 | ✅ Complete |
+| 2.8 | Implement `GET /agents`, `GET /agents/{id}`, `DELETE /agents/{id}` | API_CONTRACT §3 | ✅ Complete |
+| 2.9 | Ensure `sessions/` is never included in image | REQ-AI-001 | ✅ Complete |
 
 ### Deliverables
 - Agent images built with deterministic SHA-256 digests

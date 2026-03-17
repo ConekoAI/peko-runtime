@@ -153,8 +153,23 @@ pub struct PaginationParams {
     /// Maximum number of items to return
     #[serde(default = "default_limit")]
     pub limit: usize,
-    /// Pagination cursor
+    /// Offset for pagination (simple cursor)
+    #[serde(default)]
+    pub offset: usize,
+    /// Pagination cursor (alternative to offset)
     pub cursor: Option<String>,
+}
+
+impl PaginationParams {
+    /// Get the offset value
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Get the limit value (capped at 100)
+    pub fn limit(&self) -> usize {
+        self.limit.min(100)
+    }
 }
 
 fn default_limit() -> usize {
