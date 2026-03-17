@@ -116,6 +116,9 @@ pub mod identity;
 /// Cron job scheduling
 pub(crate) mod cron;
 
+/// Hook registry and management (Milestone 8)
+pub mod hooks;
+
 /// Daemon mode for background execution
 pub(crate) mod daemon;
 

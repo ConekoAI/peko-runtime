@@ -3,6 +3,7 @@
 //! Shared state accessible to all API route handlers.
 //! This will expand as more endpoints are implemented.
 
+use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::team::TeamManager;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,6 +33,12 @@ pub struct AppState {
 
     /// Team manager for team runtime
     pub team_manager: Arc<TeamManager>,
+
+    /// Hook registry for webhook and event hooks
+    hook_registry: Arc<HookRegistry>,
+
+    /// Event broadcaster for system events
+    event_broadcaster: Arc<EventBroadcaster>,
 
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
@@ -87,6 +94,8 @@ impl AppState {
             host: host.into(),
             config,
             team_manager: Arc::new(TeamManager::new()),
+            hook_registry: Arc::new(HookRegistry::new()),
+            event_broadcaster: Arc::new(EventBroadcaster::new()),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         }
     }
@@ -106,6 +115,8 @@ impl AppState {
             host: host.into(),
             config,
             team_manager: Arc::new(TeamManager::with_data_dir(data_dir)),
+            hook_registry: Arc::new(HookRegistry::new()),
+            event_broadcaster: Arc::new(EventBroadcaster::new()),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         }
     }
@@ -162,6 +173,16 @@ impl AppState {
     /// Mark the daemon as degraded
     pub async fn mark_degraded(&self) {
         self.set_degraded(true).await;
+    }
+
+    /// Get the hook registry
+    pub fn hook_registry(&self) -> Arc<HookRegistry> {
+        self.hook_registry.clone()
+    }
+
+    /// Get the event broadcaster
+    pub fn event_broadcaster(&self) -> Arc<EventBroadcaster> {
+        self.event_broadcaster.clone()
     }
 }
 

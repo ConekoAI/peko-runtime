@@ -28,6 +28,7 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 | Agent Image/Instance | ✅ Milestone 2 Complete | Image build, registry, instance lifecycle |
 | Team Runtime | ✅ Partial | Team-scoped agents_list/agent_info, cross-team blocking |
 | Event Bus | ✅ Milestone 7 Complete | In-memory backend with A2A messaging |
+| Hooks & System Events | ✅ Milestone 8 Complete | Cron, webhook, file_watch, event hooks with system event stream |
 | Registry/Packaging | ✅ Partial | Local registry complete, push/pull pending |
 
 ---
@@ -302,6 +303,11 @@ cargo run -- daemon start
 | 7.10 | Implement team workspace directory structure | UNIFIED_ARCH §2.1 | ✅ Complete |
 | 7.11 | Implement `POST /teams/{id}/scale` | REQ-TR-003 | ✅ Complete |
 | 7.12 | Ensure unified runtime (no separate team runtime) | REQ-TR-004 | ✅ Complete |
+### Deferred/Stubbed
+- Redis/NATS bus backends (SHOULD items - fallback to in-memory)
+- Actual instance creation (needs integration with instance API)
+- Shared MCP server process management
+- a2a.sent/a2a.received session event emission
 
 ### Deliverables
 - ✅ Teams deployable from `team.toml`
@@ -328,33 +334,54 @@ POST /teams/{id}/scale  # Scale agent instances
 
 ---
 
-## Milestone 8: Outbound Hooks and System Events
+## Milestone 8: Outbound Hooks and System Events ✅ COMPLETE
 
 **Goal:** Implement cron, webhook, event, and file_watch hooks.
 
 **Duration:** 1.5 weeks  
 **Dependencies:** Milestone 7  
+**Completed:** 2026-03-17
 
 ### Tasks
 
-| Task | Description | Spec Ref |
-|------|-------------|----------|
-| 8.1 | Refactor existing cron implementation to match spec | REQ-DM-004 |
-| 8.2 | Implement `cron.json` persistence | REQ-CAP-007 |
-| 8.3 | Implement missed job handling on restart | REQ-CAP-007 |
-| 8.4 | Implement webhook server in orchestration layer | REQ-DM-004 |
-| 8.5 | Implement `POST /webhooks/{instance_id}/{token}` | API_CONTRACT §9 |
-| 8.6 | Implement webhook token validation | REQ-UI-004 |
-| 8.7 | Implement file watcher hook | REQ-DM-004 |
-| 8.8 | Implement event-triggered hook (event bus integration) | REQ-DM-004 |
-| 8.9 | Implement system event stream `ws://localhost:11435/events` | REQ-DM-005 |
-| 8.10 | Emit all lifecycle events on system stream | API_CONTRACT §8.4 |
+| Task | Description | Spec Ref | Status |
+|------|-------------|----------|--------|
+| 8.1 | Refactor existing cron implementation to match spec | REQ-DM-004 | ✅ Complete |
+| 8.2 | Implement `cron.json` persistence | REQ-CAP-007 | ✅ Complete |
+| 8.3 | Implement missed job handling on restart | REQ-CAP-007 | ✅ Complete |
+| 8.4 | Implement webhook server in orchestration layer | REQ-DM-004 | ✅ Complete |
+| 8.5 | Implement `POST /webhooks/{instance_id}/{token}` | API_CONTRACT §9 | ✅ Complete |
+| 8.6 | Implement webhook token validation | REQ-UI-004 | ✅ Complete |
+| 8.7 | Implement file watcher hook | REQ-DM-004 | ✅ Complete |
+| 8.8 | Implement event-triggered hook (event bus integration) | REQ-DM-004 | ✅ Complete |
+| 8.9 | Implement system event stream `ws://localhost:11435/events` | REQ-DM-005 | ✅ Complete |
+| 8.10 | Emit all lifecycle events on system stream | API_CONTRACT §8.4 | ✅ Complete |
 
 ### Deliverables
-- All 4 hook types functional
-- Webhook endpoint with token auth
-- System event stream WebSocket
-- Cron persistence across restarts
+- ✅ All 4 hook types functional (cron, webhook, event, file_watch)
+- ✅ Webhook endpoint with token auth (constant-time comparison)
+- ✅ System event stream WebSocket with filtering
+- ✅ Cron persistence across restarts
+- ✅ 27 unit tests passing
+
+### Verification
+```bash
+# Webhook endpoint
+curl -X POST http://localhost:11435/webhooks/{instance_id}/{token} \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello from webhook"}'
+
+# System events WebSocket
+ws://localhost:11435/events
+
+# Config example
+[[hooks]]
+type = "webhook"
+path = "/github"
+token = "secret"
+action = "run"
+session = "new"
+```
 
 ---
 

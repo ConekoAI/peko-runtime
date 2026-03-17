@@ -7,14 +7,18 @@
 //! - sessions: Session management (Milestone 3)
 //! - teams: Team management (Milestone 7)
 //! - images: Image registry (Milestone 2)
+//! - webhooks: Webhook endpoint (Milestone 8)
+//! - events: System event stream (Milestone 8)
 
 pub mod agents;
 pub mod chat;
+pub mod events;
 pub mod health;
 pub mod images;
 pub mod info;
 pub mod sessions;
 pub mod teams;
+pub mod webhooks;
 pub mod websocket;
 
 use axum::{routing::get, Router};
@@ -34,6 +38,9 @@ pub fn create_router() -> Router<AppState> {
         .merge(chat::router())
         .merge(teams::routes())
         .merge(websocket::router())
+        // Milestone 8: Webhooks and system events
+        .merge(webhooks::router())
+        .merge(events::router())
 }
 
 #[cfg(test)]
