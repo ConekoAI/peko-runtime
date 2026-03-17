@@ -78,10 +78,7 @@ impl AgentConfig {
         for hook in &self.hooks {
             if let HookType::Webhook { path, .. } = &hook.hook_type {
                 if !seen_paths.insert(path.as_str()) {
-                    return Err(anyhow::anyhow!(
-                        "Duplicate webhook path: {}",
-                        path
-                    ));
+                    return Err(anyhow::anyhow!("Duplicate webhook path: {}", path));
                 }
             }
         }

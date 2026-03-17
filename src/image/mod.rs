@@ -39,7 +39,11 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub enum ImageRef {
     /// Full registry reference: "pekohub.com/agents/researcher:v2.5"
-    RegistryRef { host: String, path: String, tag: String },
+    RegistryRef {
+        host: String,
+        path: String,
+        tag: String,
+    },
     /// Local tag: "my-agent:v1.0"
     LocalTag { name: String, tag: String },
     /// Exact digest: "sha256:abc123..."

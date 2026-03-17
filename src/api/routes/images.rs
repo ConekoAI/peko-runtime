@@ -11,9 +11,9 @@
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
+use crate::image::builder::{BuildOptions, BuildProgress, ImageBuilder};
 use crate::image::manifest::ImageManifest;
 use crate::image::registry::ImageRegistry;
-use crate::image::builder::{BuildOptions, BuildProgress, ImageBuilder};
 use crate::image::RegistryConfig;
 use axum::{
     extract::{Path, Query, State},
@@ -101,9 +101,10 @@ async fn list_images(
     let config = RegistryConfig::new(&registry_path);
     let registry = ImageRegistry::new(config);
 
-    let manifests = registry.list_images().await.map_err(|e| {
-        ApiError::internal(format!("Failed to list images: {}", e), "")
-    })?;
+    let manifests = registry
+        .list_images()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to list images: {}", e), ""))?;
 
     let images: Vec<ImageResponse> = manifests
         .into_iter()
@@ -133,10 +134,10 @@ async fn get_image(
         } else {
             id.clone()
         };
-        
+
         let digest = crate::image::manifest::ImageDigest::new(&digest_str)
             .map_err(|e| ApiError::bad_request(format!("Invalid digest: {}", e), ""))?;
-        
+
         registry.get_manifest_by_digest(&digest).await
     } else {
         // Try as reference
@@ -160,16 +161,17 @@ async fn build_image(
 
     tokio::spawn(async move {
         let source_path = std::path::PathBuf::from(&request.path);
-        
+
         // Verify path exists
         if !source_path.exists() {
             let event = BuildEvent::Error {
                 message: format!("Path not found: {}", request.path),
             };
-            let _ = tx.send(Ok(axum::response::sse::Event::default()
-                .event("error")
-                .json_data(event)
-                .unwrap()))
+            let _ = tx
+                .send(Ok(axum::response::sse::Event::default()
+                    .event("error")
+                    .json_data(event)
+                    .unwrap()))
                 .await;
             return;
         }
@@ -177,7 +179,7 @@ async fn build_image(
         let registry_path = workspace.join("registry");
         let options = BuildOptions::new(&registry_path)
             .with_tag(request.tag.unwrap_or_else(|| "latest".to_string()));
-        
+
         let builder = ImageBuilder::new(options);
 
         let progress_callback = |progress: BuildProgress| {
@@ -188,11 +190,9 @@ async fn build_image(
                 BuildProgress::Layering { layer_type } => Some(BuildEvent::Layering {
                     layer_type: format!("{:?}", layer_type).to_lowercase(),
                 }),
-                BuildProgress::Complete { manifest } => {
-                    Some(BuildEvent::Done {
-                        image: ImageResponse::from(manifest),
-                    })
-                }
+                BuildProgress::Complete { manifest } => Some(BuildEvent::Done {
+                    image: ImageResponse::from(manifest),
+                }),
                 BuildProgress::Error { message } => Some(BuildEvent::Error { message }),
                 _ => None,
             };
@@ -206,7 +206,7 @@ async fn build_image(
                     })
                     .json_data(&evt)
                     .unwrap();
-                
+
                 let _ = tx.blocking_send(Ok(sse_event));
             }
         };
@@ -217,10 +217,11 @@ async fn build_image(
                 let event = BuildEvent::Error {
                     message: format!("Build failed: {}", e),
                 };
-                let _ = tx.send(Ok(axum::response::sse::Event::default()
-                    .event("error")
-                    .json_data(event)
-                    .unwrap()))
+                let _ = tx
+                    .send(Ok(axum::response::sse::Event::default()
+                        .event("error")
+                        .json_data(event)
+                        .unwrap()))
                     .await;
             }
         }
@@ -268,7 +269,10 @@ async fn delete_image(
     match registry.delete_image(&digest).await {
         Ok(true) => Ok(axum::http::StatusCode::NO_CONTENT),
         Ok(false) => Err(ApiError::not_found("image", id, "")),
-        Err(e) => Err(ApiError::internal(format!("Failed to delete image: {}", e), "")),
+        Err(e) => Err(ApiError::internal(
+            format!("Failed to delete image: {}", e),
+            "",
+        )),
     }
 }
 
@@ -304,7 +308,7 @@ mod tests {
             .with_ref("test:v1.0");
 
         let response = ImageResponse::from(manifest);
-        
+
         assert_eq!(response.name, "test");
         assert_eq!(response.version, "1.0.0");
         assert_eq!(response.r#ref, "test:v1.0");

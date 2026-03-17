@@ -1,17 +1,19 @@
 //! Session management module
 //!
-//! Provides session storage with OpenClaw-compatible JSONL format:
+//! Provides session storage with Pekobot JSONL format:
 //! - File locking for concurrent access safety
-//! - Session index (sessions.json) for fast lookups
+//! - Session index (.index.json sidecar) for fast lookups
 //! - Session key derivation for multi-user isolation
 //! - Session overlays (base + channel/spawn layers)
+//! - Atomic writes (tmp + rename) for durability
 //!
 //! # Module Structure
 //!
+//! - `events`: Pekobot session event types (13 types per DATA_MODEL §5.3)
 //! - `lock`: File locking with timeout and stale detection
-//! - `index`: Session index (sessions.json) management
+//! - `index`: Session index (.index.json sidecar) management
 //! - `key`: Session key derivation for scoping
-//! - `jsonl`: JSONL storage format (OpenClaw compatible)
+//! - `jsonl`: JSONL storage format (Pekobot format)
 //! - `types`: Core types (Peer, ChannelType, OverlayType)
 //! - `overlay`: Session overlay trait and ChannelOverlay
 //! - `spawn`: Spawn overlay for subagent isolation
@@ -20,20 +22,31 @@
 
 pub mod base;
 pub mod context;
+pub mod events;
 pub mod index;
 pub mod jsonl;
 pub mod key;
 pub mod lock;
 pub mod manager;
 pub mod overlay;
+pub mod recovery;
 pub mod registry;
+pub mod sidecar;
 pub mod spawn;
 pub mod subagent_key;
+pub mod sync;
 pub mod types;
 
 // Re-export commonly used types from existing modules
 pub use base::BaseSession;
 pub use context::{SessionContext, SessionRouter};
+pub use events::{
+    generate_event_id, generate_message_id, generate_tool_call_id, A2aMessageType,
+    A2aReceivedEvent, A2aSentEvent, AssistantMessageEvent, EventEnvelope, HookTriggerEvent,
+    HookType, MessageSource, SessionCreatedEvent, SessionEndReason, SessionEndedEvent,
+    SessionEvent, SessionTrigger, SpawnRequestEvent, SpawnResultEvent, SystemEvent, ThinkingEvent,
+    TokenUsage, ToolCallEvent, ToolResultEvent, UserMessageEvent,
+};
 pub use index::{IndexEntry, MaintenanceConfig, MaintenanceMode, MaintenanceReport, SessionIndex};
 pub use jsonl::{SessionEntry, SessionStorage};
 pub use key::{
@@ -52,7 +65,10 @@ pub use spawn::{SpawnOverlay, SpawnOverlayData, SpawnResult, SpawnStatus};
 pub use manager::{HybridSession, OverlayRef, SessionManager};
 
 // Re-export session registry for switching/branching
+pub use recovery::{RecoveryReport, RecoveryState, SessionRecovery};
 pub use registry::{PeerRegistryEntry, SessionInfo, SessionRegistry, SessionRegistryManager};
+pub use sidecar::{SessionSidecarIndex, SidecarManager};
+pub use sync::SyncSessionStorage;
 
 // Re-export subagent key utilities
 pub use subagent_key::{

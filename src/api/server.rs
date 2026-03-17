@@ -3,11 +3,7 @@
 //! The main server implementation using Axum. Handles startup, routing,
 //! middleware application, and graceful shutdown.
 
-use axum::{
-    extract::connect_info::IntoMakeServiceWithConnectInfo,
-    middleware::from_fn,
-    Router,
-};
+use axum::{extract::connect_info::IntoMakeServiceWithConnectInfo, middleware::from_fn, Router};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};

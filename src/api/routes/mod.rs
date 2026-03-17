@@ -12,6 +12,7 @@ pub mod agents;
 pub mod health;
 pub mod images;
 pub mod info;
+pub mod sessions;
 
 use axum::{routing::get, Router};
 
@@ -23,9 +24,10 @@ pub fn create_router() -> Router<AppState> {
         // Health and info endpoints (Milestone 1)
         .route("/health", get(health::health_check))
         .route("/info", get(info::daemon_info))
-        // Merge nested routers (Milestone 2)
+        // Merge nested routers (Milestone 2 & 3)
         .merge(images::router())
         .merge(agents::router())
+        .merge(sessions::router())
 }
 
 #[cfg(test)]

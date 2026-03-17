@@ -76,12 +76,15 @@ impl ImageRegistry {
     }
 
     /// Store an image manifest
-    pub async fn store_manifest(&mut self, manifest: &ImageManifest) -> anyhow::Result<ImageDigest> {
+    pub async fn store_manifest(
+        &mut self,
+        manifest: &ImageManifest,
+    ) -> anyhow::Result<ImageDigest> {
         let digest = ImageDigest::new(&manifest.digest)?;
         let image_dir = self.image_dir(&digest);
-        
+
         fs::create_dir_all(&image_dir).await?;
-        
+
         let manifest_path = image_dir.join("manifest.json");
         let json = manifest.to_json()?;
         fs::write(&manifest_path, json).await?;
@@ -100,7 +103,7 @@ impl ImageRegistry {
         digest: &ImageDigest,
     ) -> anyhow::Result<Option<ImageManifest>> {
         let manifest_path = self.image_dir(digest).join("manifest.json");
-        
+
         if !manifest_path.exists() {
             return Ok(None);
         }
@@ -159,13 +162,9 @@ impl ImageRegistry {
     }
 
     /// Store a layer
-    pub async fn store_layer(
-        &self,
-        digest: &ImageDigest,
-        data: &[u8],
-    ) -> anyhow::Result<PathBuf> {
+    pub async fn store_layer(&self, digest: &ImageDigest, data: &[u8]) -> anyhow::Result<PathBuf> {
         let layer_path = self.layer_path(digest);
-        
+
         // Check if layer already exists (content-addressable dedup)
         if layer_path.exists() {
             return Ok(layer_path);
@@ -178,7 +177,7 @@ impl ImageRegistry {
     /// Get layer data
     pub async fn get_layer(&self, digest: &ImageDigest) -> anyhow::Result<Option<Vec<u8>>> {
         let layer_path = self.layer_path(digest);
-        
+
         if !layer_path.exists() {
             return Ok(None);
         }
@@ -193,11 +192,7 @@ impl ImageRegistry {
     }
 
     /// Set a tag for an image
-    pub async fn set_tag(
-        &mut self,
-        reference: &str,
-        digest: &ImageDigest,
-    ) -> anyhow::Result<()> {
+    pub async fn set_tag(&mut self, reference: &str, digest: &ImageDigest) -> anyhow::Result<()> {
         // Update in-memory cache
         self.tags.insert(reference.to_string(), digest.to_string());
 
@@ -211,7 +206,7 @@ impl ImageRegistry {
     /// Remove a tag
     pub async fn remove_tag(&mut self, reference: &str) -> anyhow::Result<()> {
         self.tags.remove(reference);
-        
+
         let tag_path = self.tags_dir().join(sanitize_tag(reference));
         if tag_path.exists() {
             fs::remove_file(&tag_path).await?;
@@ -243,14 +238,14 @@ impl ImageRegistry {
 
         // Sort by creation time (newest first)
         manifests.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        
+
         Ok(manifests)
     }
 
     /// Delete an image by digest
     pub async fn delete_image(&self, digest: &ImageDigest) -> anyhow::Result<bool> {
         let image_dir = self.image_dir(digest);
-        
+
         if !image_dir.exists() {
             return Ok(false);
         }
@@ -266,7 +261,8 @@ impl ImageRegistry {
 
     /// Get layer path
     fn layer_path(&self, digest: &ImageDigest) -> PathBuf {
-        self.layers_dir().join(format!("{}.tar.gz", digest.dir_name()))
+        self.layers_dir()
+            .join(format!("{}.tar.gz", digest.dir_name()))
     }
 
     /// Get image directory for a digest
@@ -292,7 +288,7 @@ impl ImageRegistry {
     /// Load tags from disk
     async fn load_tags(&mut self) -> anyhow::Result<()> {
         let tags_dir = self.tags_dir();
-        
+
         if !tags_dir.exists() {
             return Ok(());
         }
@@ -316,7 +312,8 @@ impl ImageRegistry {
 
     /// Garbage collect unreferenced layers
     pub async fn gc(&self) -> anyhow::Result<usize> {
-        let mut referenced_digests: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut referenced_digests: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         // Collect all digests referenced by manifests
         let images = self.list_images().await?;
@@ -330,7 +327,7 @@ impl ImageRegistry {
         // Find unreferenced layers
         let mut deleted = 0;
         let layers_dir = self.layers_dir();
-        
+
         if layers_dir.exists() {
             let mut entries = fs::read_dir(&layers_dir).await?;
             while let Some(entry) = entries.next_entry().await? {
@@ -407,7 +404,7 @@ mod tests {
             .with_ref("test:v1.0");
 
         let digest = registry.store_manifest(&manifest).await.unwrap();
-        
+
         let retrieved = registry
             .get_manifest_by_digest(&digest)
             .await
@@ -450,8 +447,10 @@ mod tests {
 
         let hex1 = "c".repeat(64);
         let hex2 = "d".repeat(64);
-        let manifest1 = ImageManifest::new("agent1", "1.0.0").with_digest(format!("sha256:{}", hex1));
-        let manifest2 = ImageManifest::new("agent2", "2.0.0").with_digest(format!("sha256:{}", hex2));
+        let manifest1 =
+            ImageManifest::new("agent1", "1.0.0").with_digest(format!("sha256:{}", hex1));
+        let manifest2 =
+            ImageManifest::new("agent2", "2.0.0").with_digest(format!("sha256:{}", hex2));
 
         registry.store_manifest(&manifest1).await.unwrap();
         registry.store_manifest(&manifest2).await.unwrap();
@@ -476,7 +475,7 @@ mod tests {
 
         // Should return same path
         assert_eq!(path1, path2);
-        
+
         // Should only have one file
         let mut layers = fs::read_dir(registry.layers_dir()).await.unwrap();
         let mut count = 0;

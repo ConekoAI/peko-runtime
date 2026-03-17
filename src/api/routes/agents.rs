@@ -238,9 +238,9 @@ async fn create_instance(
         .ok_or_else(|| ApiError::not_found("image", request.image.clone(), ""))?;
 
     // Generate instance name if not provided
-    let name = request.name.unwrap_or_else(|| {
-        format!("{}-{}", manifest.name, generate_short_id())
-    });
+    let name = request
+        .name
+        .unwrap_or_else(|| format!("{}-{}", manifest.name, generate_short_id()));
 
     // Create workspace directory
     let workspace_path = if let Some(ref team_id) = request.team_id {
@@ -376,11 +376,11 @@ async fn stop_instance(
                 r.status = InstanceStatus::Stopping;
             })
             .await;
-        
+
         // In real implementation, would signal graceful shutdown
         // and wait for completion
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        
+
         store
             .update(&id, |r| {
                 r.status = InstanceStatus::Stopped;
@@ -436,9 +436,9 @@ async fn delete_instance(
     if params.purge {
         let workspace = std::path::PathBuf::from(&record.workspace_path);
         if workspace.exists() {
-            tokio::fs::remove_dir_all(&workspace)
-                .await
-                .map_err(|e| ApiError::internal(format!("Failed to delete workspace: {}", e), ""))?;
+            tokio::fs::remove_dir_all(&workspace).await.map_err(|e| {
+                ApiError::internal(format!("Failed to delete workspace: {}", e), "")
+            })?;
         }
     }
 

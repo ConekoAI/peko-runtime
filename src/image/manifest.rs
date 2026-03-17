@@ -95,8 +95,7 @@ impl ImageManifest {
 
     /// Deserialize from JSON string
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
-        serde_json::from_str(json)
-            .map_err(|e| anyhow::anyhow!("Failed to parse manifest: {}", e))
+        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("Failed to parse manifest: {}", e))
     }
 
     /// Get layer by type
@@ -125,11 +124,7 @@ pub struct Layer {
 
 impl Layer {
     /// Create a new layer
-    pub fn new(
-        digest: impl Into<String>,
-        layer_type: LayerType,
-        size_bytes: u64,
-    ) -> Self {
+    pub fn new(digest: impl Into<String>, layer_type: LayerType, size_bytes: u64) -> Self {
         Self {
             digest: digest.into(),
             layer_type,
@@ -273,7 +268,7 @@ impl ImageDigest {
     /// Create a new digest from a hex string (with or without sha256: prefix)
     pub fn new(digest: impl Into<String>) -> anyhow::Result<Self> {
         let mut digest = digest.into();
-        
+
         // Ensure prefix
         if !digest.starts_with("sha256:") {
             // Validate it's a valid hex string
@@ -393,12 +388,7 @@ mod tests {
             .with_digest("sha256:abc123");
 
         manifest.add_layer(
-            Layer::new(
-                "sha256:config123",
-                LayerType::Config,
-                512,
-            )
-            .with_path("config.toml"),
+            Layer::new("sha256:config123", LayerType::Config, 512).with_path("config.toml"),
         );
 
         let json = manifest.to_json().unwrap();

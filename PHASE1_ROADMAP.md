@@ -19,13 +19,13 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 | CLI Framework | ✅ Partial | Commands exist but need API alignment |
 | Daemon | ✅ Partial | Cron, maintenance implemented; HTTP API Milestone 1 complete |
 | Agent Runtime | ✅ Partial | Agentic loop exists; needs refactoring for image/instance model |
-| Session Management | ✅ Partial | JSONL storage exists; needs index files and atomic writes |
+| Session Management | ✅ Complete | Atomic writes, sidecar indexes, branching, recovery |
 | Tools (13 built-in) | ✅ Partial | Filesystem, process, apply_patch exist; some need completion |
 | MCP Support | ✅ Partial | Client exists; integration needs alignment |
 | HTTP API | ✅ Milestone 1 Complete | Foundation: /health, /info endpoints, headers, middleware |
 | Agent Image/Instance | ✅ Milestone 2 Complete | Image build, registry, instance lifecycle |
-| Team Runtime | ❌ Missing | No team support yet |
-| Event Bus | ❌ Missing | No A2A communication yet |
+| Team Runtime | ❌ Not Started | Milestone 7 |
+| Event Bus | ❌ Not Started | Milestone 7 |
 | Registry/Packaging | ✅ Partial | Local registry complete, push/pull pending |
 
 ---
@@ -101,12 +101,13 @@ pekobot ps                           # List instances with digests
 
 ---
 
-## Milestone 3: Session Management
+## Milestone 3: Session Management ✅ COMPLETE
 
 **Goal:** Implement durable JSONL sessions with atomic writes and index files.
 
 **Duration:** 2 weeks  
 **Dependencies:** Milestone 2  
+**Completed:** 2026-03-17  
 
 ### Tasks
 
@@ -120,7 +121,7 @@ pekobot ps                           # List instances with digests
 | 3.6 | Implement `POST /agents/{id}/sessions/{id}/branch` | REQ-SM-003 |
 | 3.7 | Implement session state recovery on daemon restart | REQ-RL-003 |
 | 3.8 | Auto-generate title from first assistant response | REQ-SM-004 |
-| 3.9 | Add SQLite index as read-optimized cache (rebuildable from JSONL) | REQ-SM-001 |
+| 3.9 | Add SQLite index as read-optimized cache (rebuildable from JSONL) | REQ-SM-001 | ⏸️ Deferred - sidecar index sufficient for Phase 1 |
 
 ### Deliverables
 - Atomic JSONL writes with no corruption on crash

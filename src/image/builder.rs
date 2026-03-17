@@ -120,7 +120,9 @@ impl ImageBuilder {
         progress(BuildProgress::Layering {
             layer_type: LayerType::Config,
         });
-        let config_layer = self.create_file_layer(&config_path, LayerType::Config, &layers_dir).await?;
+        let config_layer = self
+            .create_file_layer(&config_path, LayerType::Config, &layers_dir)
+            .await?;
         layers.push(config_layer);
 
         // 2. Markdown layer (all .md files in root)
@@ -199,7 +201,9 @@ impl ImageBuilder {
         });
         let mcp_path = source_path.join("mcp.json");
         if mcp_path.exists() {
-            let mcp_layer = self.create_file_layer(&mcp_path, LayerType::McpConfig, &layers_dir).await?;
+            let mcp_layer = self
+                .create_file_layer(&mcp_path, LayerType::McpConfig, &layers_dir)
+                .await?;
             layers.push(mcp_layer);
         }
 
@@ -249,9 +253,10 @@ impl ImageBuilder {
 
         // Store compressed layer
         let layer_path = layers_dir.join(format!("{}.tar.gz", digest.dir_name()));
-        
+
         // Create tar.gz archive with the file
-        let tar_data = create_tar_gz(&[(file_path.file_name().unwrap().to_str().unwrap(), &data)]).await?;
+        let tar_data =
+            create_tar_gz(&[(file_path.file_name().unwrap().to_str().unwrap(), &data)]).await?;
         fs::write(&layer_path, tar_data).await?;
 
         let filename = file_path.file_name().unwrap().to_str().unwrap();
@@ -301,13 +306,23 @@ impl ImageBuilder {
 
         // Store compressed layer
         let layer_path = layers_dir.join(format!("{}.tar.gz", digest.dir_name()));
-        let tar_data = create_tar_gz(&files.iter().map(|(p, d)| (p.as_str(), d.as_slice())).collect::<Vec<_>>()).await?;
+        let tar_data = create_tar_gz(
+            &files
+                .iter()
+                .map(|(p, d)| (p.as_str(), d.as_slice()))
+                .collect::<Vec<_>>(),
+        )
+        .await?;
         fs::write(&layer_path, tar_data).await?;
 
         let dir_name = dir_path.file_name().unwrap().to_str().unwrap();
         Ok(Some(
-            Layer::new(digest.as_str(), layer_type, size_bytes)
-                .with_paths(paths.into_iter().map(|p| format!("{}/{}", dir_name, p)).collect()),
+            Layer::new(digest.as_str(), layer_type, size_bytes).with_paths(
+                paths
+                    .into_iter()
+                    .map(|p| format!("{}/{}", dir_name, p))
+                    .collect(),
+            ),
         ))
     }
 }
@@ -399,7 +414,7 @@ model = "claude-sonnet-4-6"
 
         // Verify layers
         assert!(!manifest.layers.is_empty());
-        
+
         // Should have config layer
         let config_layer = manifest.get_layer(LayerType::Config);
         assert!(config_layer.is_some());
