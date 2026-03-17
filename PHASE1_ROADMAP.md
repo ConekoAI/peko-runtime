@@ -112,16 +112,16 @@ pekobot ps                           # List instances with digests
 
 ### Tasks
 
-| Task | Description | Spec Ref |
-|------|-------------|----------|
-| 3.1 | Refactor `src/session/jsonl.rs` for atomic writes (tmp + rename) | REQ-SM-001 |
-| 3.2 | Implement all 13 event types in JSONL | DATA_MODEL §5.3 |
-| 3.3 | Implement `.index.json` sidecar generation | REQ-SM-004 |
-| 3.4 | Implement `GET /agents/{id}/sessions` | API_CONTRACT §5.1 |
-| 3.5 | Implement `GET /agents/{id}/sessions/{id}/history` | API_CONTRACT §5.3 |
-| 3.6 | Implement `POST /agents/{id}/sessions/{id}/branch` | REQ-SM-003 |
-| 3.7 | Implement session state recovery on daemon restart | REQ-RL-003 |
-| 3.8 | Auto-generate title from first assistant response | REQ-SM-004 |
+| Task | Description | Spec Ref | Status |
+|------|-------------|----------|--------|
+| 3.1 | Refactor `src/session/jsonl.rs` for atomic writes (tmp + rename) | REQ-SM-001 | ✅ Complete |
+| 3.2 | Implement all 13 event types in JSONL | DATA_MODEL §5.3 | ✅ Complete |
+| 3.3 | Implement `.index.json` sidecar generation | REQ-SM-004 | ✅ Complete |
+| 3.4 | Implement `GET /agents/{id}/sessions` | API_CONTRACT §5.1 | ✅ Complete |
+| 3.5 | Implement `GET /agents/{id}/sessions/{id}/history` | API_CONTRACT §5.3 | ✅ Complete |
+| 3.6 | Implement `POST /agents/{id}/sessions/{id}/branch` | REQ-SM-003 | ✅ Complete |
+| 3.7 | Implement session state recovery on daemon restart | REQ-RL-003 | ✅ Complete |
+| 3.8 | Auto-generate title from first assistant response | REQ-SM-004 | ✅ Complete |
 | 3.9 | Add SQLite index as read-optimized cache (rebuildable from JSONL) | REQ-SM-001 | ⏸️ Deferred - sidecar index sufficient for Phase 1 |
 
 ### Deliverables
