@@ -101,6 +101,24 @@ pub enum AgentCommands {
         /// Path to .agent file
         file: String,
     },
+
+    /// Initialize a new agent directory with minimal structure
+    Init {
+        /// Directory path to initialize (creates if doesn't exist)
+        path: String,
+        /// Agent name (defaults to directory name)
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Provider to use
+        #[arg(short, long, default_value = "kimi_code")]
+        provider: String,
+        /// Model name
+        #[arg(short, long)]
+        model: Option<String>,
+        /// Skip confirmation
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 /// Handle agent commands
@@ -157,6 +175,18 @@ pub async fn handle_agent(
         }
         AgentCommands::Inspect { file } => {
             crate::commands::agent::handlers::handle_agent_inspect(file, json).await
+        }
+        AgentCommands::Init {
+            path,
+            name,
+            provider,
+            model,
+            yes,
+        } => {
+            crate::commands::agent::handlers::handle_agent_init(
+                path, name, provider, model, yes, json,
+            )
+            .await
         }
     }
 }
@@ -553,6 +583,131 @@ pub mod handlers {
         Ok(())
     }
 
+    /// Handle agent init command
+    pub async fn handle_agent_init(
+        path: String,
+        name: Option<String>,
+        provider: String,
+        model: Option<String>,
+        yes: bool,
+        json: bool,
+    ) -> anyhow::Result<()> {
+        use std::io::Write;
+
+        // Determine agent name from directory if not provided
+        let agent_name = name.unwrap_or_else(|| {
+            std::path::Path::new(&path)
+                .file_name()
+                .map_or_else(|| "agent".to_string(), |n| n.to_string_lossy().to_string())
+        });
+
+        let dir = std::path::PathBuf::from(&path);
+        let config_path = dir.join("config.toml");
+
+        // Check if directory already exists and has files
+        if dir.exists() {
+            let entries: Vec<_> = std::fs::read_dir(&dir)?.collect();
+            if !entries.is_empty() && !yes {
+                if json {
+                    println!("{{\"error\": \"Directory not empty: {path}\"}}");
+                    return Err(anyhow::anyhow!("Directory not empty"));
+                }
+                print!("⚠️  Directory '{path}' is not empty. Continue? [y/N] ");
+                std::io::stdout().flush()?;
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+        } else {
+            std::fs::create_dir_all(&dir)?;
+        }
+
+        // Create config.toml
+        let default_model = model.unwrap_or_else(|| match provider.to_lowercase().as_str() {
+            "openai" => "gpt-4o-mini".to_string(),
+            "anthropic" => "claude-3-sonnet".to_string(),
+            "ollama" => "llama3.2".to_string(),
+            "kimi" => "kimi-k2.5".to_string(),
+            _ => "default".to_string(),
+        });
+
+        let config_content = format!(
+            r#"name = "{agent_name}"
+version = "0.1.0"
+
+[provider]
+provider_type = "{provider}"
+default_model = "{default_model}"
+api_key_env = "{provider_env}_API_KEY"
+timeout_seconds = 60
+
+[[models]]
+name = "{default_model}"
+max_tokens = 4096
+temperature = 0.7
+"#,
+            provider = provider.to_lowercase(),
+            provider_env = provider.to_uppercase().replace("-", "_"),
+        );
+
+        std::fs::write(&config_path, config_content)?;
+
+        // Create .gitignore
+        let gitignore_content = r#"# Pekobot agent - gitignore
+sessions/
+workspace/
+memories/
+cron.json
+*.log
+"#;
+        std::fs::write(dir.join(".gitignore"), gitignore_content)?;
+
+        // Create optional markdown files with templates
+        let agent_md = format!(
+            r#"# {agent_name}
+
+Agent description and instructions go here.
+
+## Capabilities
+
+- Add specific capabilities here
+- Describe what this agent can do
+
+## Instructions
+
+Add detailed instructions for the agent here.
+"#
+        );
+        std::fs::write(dir.join("AGENT.md"), agent_md)?;
+
+        // Create empty directories
+        std::fs::create_dir_all(dir.join("tools"))?;
+        std::fs::create_dir_all(dir.join("skills"))?;
+        std::fs::create_dir_all(dir.join("workspace"))?;
+
+        if json {
+            println!("{{\"success\": true, \"name\": \"{agent_name}\", \"path\": \"{path}\", \"config\": \"{}\"}}", config_path.display());
+        } else {
+            println!("✅ Initialized agent '{agent_name}' in '{path}'");
+            println!();
+            println!("📁 Structure created:");
+            println!("   config.toml    - Agent configuration");
+            println!("   AGENT.md       - Agent description");
+            println!("   .gitignore     - Excludes sessions/, workspace/, memories/");
+            println!("   tools/         - Custom tools directory");
+            println!("   skills/        - Skills directory");
+            println!("   workspace/     - Working directory");
+            println!();
+            println!("🚀 Run the agent:");
+            println!("   pekobot agent start --config {}/config.toml", path);
+        }
+
+        Ok(())
+    }
+
     /// Build default agent config
     fn build_default_config(
         name: &str,
@@ -658,5 +813,71 @@ pub mod handlers {
         }
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_agent_commands_enum() {
+        // Test Init command
+        let cmd = AgentCommands::Init {
+            path: "./my-agent".to_string(),
+            name: Some("my-agent".to_string()),
+            provider: "kimi_code".to_string(),
+            model: Some("k2p5".to_string()),
+            yes: true,
+        };
+        match cmd {
+            AgentCommands::Init {
+                path,
+                name,
+                provider,
+                model,
+                yes,
+            } => {
+                assert_eq!(path, "./my-agent");
+                assert_eq!(name, Some("my-agent".to_string()));
+                assert_eq!(provider, "kimi_code");
+                assert_eq!(model, Some("k2p5".to_string()));
+                assert!(yes);
+            }
+            _ => panic!("Expected Init command"),
+        }
+    }
+
+    #[test]
+    fn test_agent_init_default_provider() {
+        let cmd = AgentCommands::Init {
+            path: "./test".to_string(),
+            name: None,
+            provider: "openai".to_string(),
+            model: None,
+            yes: false,
+        };
+        match cmd {
+            AgentCommands::Init { provider, .. } => {
+                assert_eq!(provider, "openai");
+            }
+            _ => panic!("Expected Init command"),
+        }
+    }
+
+    #[test]
+    fn test_agent_init_extracts_name_from_path() {
+        // Test that the name extraction logic works
+        let path = "./my-awesome-agent";
+        let name: Option<String> = None;
+
+        // This is what the handler does
+        let extracted_name = name.unwrap_or_else(|| {
+            std::path::Path::new(path)
+                .file_name()
+                .map_or_else(|| "agent".to_string(), |n| n.to_string_lossy().to_string())
+        });
+
+        assert_eq!(extracted_name, "my-awesome-agent");
     }
 }

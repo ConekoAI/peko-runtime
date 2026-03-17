@@ -1,61 +1,67 @@
 //! Session Management Commands
+//!
+//! These commands communicate with the daemon via HTTP API.
 
+use crate::api::client::{ApiClient, ClientError};
 use crate::commands::GlobalPaths;
-use crate::engine::SimpleSession;
-use crate::session::index::{MaintenanceConfig, MaintenanceMode, SessionIndex};
-use crate::session::key::cli_session_key;
 use clap::Subcommand;
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use reqwest::StatusCode;
 
 /// Session management subcommands
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum SessionCommands {
-    /// List active sessions
+    /// List sessions for an instance
     List {
-        /// Show all sessions (including inactive)
+        /// Instance ID (required - use 'pekobot agent list' to find instances)
+        instance_id: String,
+        /// Show all sessions including inactive
         #[arg(long)]
         all: bool,
-        /// Filter by agent name
-        #[arg(short, long)]
-        agent: Option<String>,
     },
 
     /// Show session details and history
     Show {
+        /// Instance ID
+        instance_id: String,
         /// Session ID
-        id: String,
+        session_id: String,
         /// Show full message history
         #[arg(long)]
         history: bool,
     },
 
-    /// Run maintenance on sessions (prune old, cap count)
-    Maintenance {
-        /// Agent to maintain (default: all)
+    /// Branch a session
+    Branch {
+        /// Instance ID
+        instance_id: String,
+        /// Session ID to branch from
+        session_id: String,
+        /// Optional label for the new session
         #[arg(short, long)]
-        agent: Option<String>,
-        /// Actually perform maintenance (default: dry run)
-        #[arg(long)]
-        execute: bool,
+        label: Option<String>,
     },
 
-    /// Send message to a session
-    Send {
-        /// Session ID
-        id: String,
-        /// Message content
-        message: String,
-    },
-
-    /// Terminate a session
-    Kill {
-        /// Session ID
-        id: String,
-        /// Force immediate termination
+    /// Delete a session
+    Delete {
+        /// Instance ID
+        instance_id: String,
+        /// Session ID to delete
+        session_id: String,
+        /// Skip confirmation
         #[arg(short, long)]
         force: bool,
+    },
+
+    /// Send message to a session (via chat API)
+    Send {
+        /// Instance ID
+        instance_id: String,
+        /// Session ID (optional - uses active session if not provided)
+        #[arg(short, long)]
+        session_id: Option<String>,
+        /// Message content
+        message: String,
     },
 }
 
@@ -65,372 +71,157 @@ pub async fn handle_session(
     _paths: &GlobalPaths,
     json: bool,
 ) -> anyhow::Result<()> {
+    let client = ApiClient::new()?;
+
     match cmd {
-        SessionCommands::List { all: _, agent } => list_sessions(agent, json).await,
-        SessionCommands::Show { id, history } => show_session(&id, history, json).await,
-        SessionCommands::Maintenance { agent, execute } => {
-            run_maintenance(agent, execute, json).await
-        }
-        SessionCommands::Send { id, message } => {
-            println!("📤 Sending to session '{id}': {message}");
-            Ok(())
-        }
-        SessionCommands::Kill { id, force } => {
-            if force {
-                println!("💀 Force killing session '{id}'...");
-            } else {
-                println!("🛑 Stopping session '{id}'...");
+        SessionCommands::List {
+            instance_id,
+            all: _,
+        } => list_sessions(&client, &instance_id, json).await,
+        SessionCommands::Show {
+            instance_id,
+            session_id,
+            history,
+        } => show_session(&client, &instance_id, &session_id, history, json).await,
+        SessionCommands::Branch {
+            instance_id,
+            session_id,
+            label,
+        } => branch_session(&client, &instance_id, &session_id, label, json).await,
+        SessionCommands::Delete {
+            instance_id,
+            session_id,
+            force,
+        } => delete_session(&client, &instance_id, &session_id, force, json).await,
+        SessionCommands::Send {
+            instance_id,
+            session_id,
+            message,
+        } => {
+            println!("📤 Sending message to instance '{instance_id}': {message}");
+            if let Some(sid) = session_id {
+                println!("   Session: {sid}");
             }
             Ok(())
         }
     }
 }
 
-/// List sessions for an agent or all agents using the index
-async fn list_sessions(agent_filter: Option<String>, json: bool) -> anyhow::Result<()> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let agents_dir = home.join(".pekobot").join("agents");
+/// Check if error is a 404 not found
+fn is_not_found(e: &ClientError) -> bool {
+    matches!(e, ClientError::Api { status, .. } if *status == StatusCode::NOT_FOUND)
+}
 
-    let mut all_sessions = Vec::new();
+/// List sessions for an instance
+async fn list_sessions(client: &ApiClient, instance_id: &str, json: bool) -> anyhow::Result<()> {
+    match client.list_sessions(instance_id).await {
+        Ok(response) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else if response.items.is_empty() {
+                println!("📭 No sessions found for instance '{instance_id}'.");
+                println!("   Start chatting with the agent to create sessions.");
+            } else {
+                println!(
+                    "📋 Sessions for instance '{}' ({} found):",
+                    instance_id,
+                    response.items.len()
+                );
+                println!();
 
-    // If agent filter specified, only check that agent
-    let agents_to_check: Vec<String> = if let Some(agent) = agent_filter {
-        vec![agent]
-    } else {
-        // List all agents
-        match tokio::fs::read_dir(&agents_dir).await {
-            Ok(mut entries) => {
-                let mut agents = Vec::new();
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    if let Ok(metadata) = entry.metadata().await {
-                        if metadata.is_dir() {
-                            if let Some(name) = entry.file_name().to_str() {
-                                agents.push(name.to_string());
-                            }
-                        }
+                for session in &response.items {
+                    let title = session.title.as_deref().unwrap_or("(untitled)");
+                    let created = format_timestamp(&session.created_at);
+                    let updated = format_timestamp(&session.updated_at);
+
+                    println!("  📁 {}", session.id);
+                    println!("     Title: {}", title);
+                    println!("     Turns: {}", session.turn_count);
+                    println!("     Created: {}", created);
+                    println!("     Updated: {}", updated);
+
+                    if let Some(ref parent) = session.parent_session_id {
+                        println!("     Parent: {}", parent);
                     }
-                }
-                agents
-            }
-            Err(_) => Vec::new(),
-        }
-    };
-
-    for agent_name in agents_to_check {
-        let sessions_dir = agents_dir.join(&agent_name).join("sessions");
-        let mut index = SessionIndex::open(&sessions_dir);
-
-        // Ensure index is migrated
-        let _ = index.migrate_from_directory(&agent_name).await;
-
-        // List from index
-        match index.list().await {
-            Ok(entries) => {
-                for entry in entries {
-                    let modified = SystemTime::UNIX_EPOCH + Duration::from_millis(entry.updated_at);
-
-                    // Get transcript file size
-                    let transcript_path = sessions_dir.join(&entry.transcript_file);
-                    let size = if let Ok(metadata) = tokio::fs::metadata(&transcript_path).await {
-                        metadata.len()
-                    } else {
-                        0
-                    };
-
-                    all_sessions.push((
-                        agent_name.clone(),
-                        entry.session_id,
-                        entry.session_key,
-                        modified,
-                        size,
-                        entry.message_count,
-                        entry.total_tokens,
-                    ));
+                    println!();
                 }
             }
-            Err(_) => continue,
+            Ok(())
         }
-    }
-
-    // Sort by modification time (newest first)
-    all_sessions.sort_by(|a, b| b.3.cmp(&a.3));
-
-    if json {
-        let sessions_json: Vec<_> = all_sessions
-            .iter()
-            .map(|(agent, session_id, session_key, modified, size, msg_count, tokens)| {
-                serde_json::json!({
-                    "agent": agent,
-                    "session_id": session_id,
-                    "session_key": session_key,
-                    "modified": modified.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                    "size_bytes": size,
-                    "message_count": msg_count,
-                    "total_tokens": tokens,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::json!({ "sessions": sessions_json }));
-    } else if all_sessions.is_empty() {
-        println!("📭 No sessions found.");
-        println!("   Start chatting with an agent to create sessions.");
-    } else {
-        println!("📋 Sessions ({} found):", all_sessions.len());
-        println!();
-
-        // Group by agent
-        let mut current_agent = String::new();
-        for (agent, session_id, session_key, modified, size, msg_count, tokens) in all_sessions {
-            if agent != current_agent {
-                println!("  🐱 {agent}");
-                current_agent = agent;
-            }
-
-            let time_ago = format_time_ago(modified);
-            let size_str = format_size(size);
-
-            // Check if this is the CLI default session
-            let is_cli_default = session_key
-                .as_ref()
-                .is_some_and(|k| k == &cli_session_key(&current_agent));
-            let indicator = if is_cli_default { "→ " } else { "   " };
-
-            // Show session key if available, otherwise session_id
-            let display_id = session_key.as_deref().unwrap_or(&session_id);
-
-            let msg_info = if msg_count > 0 {
-                format!(" | {msg_count} msgs")
-            } else {
-                String::new()
-            };
-
-            let token_info = if let Some(t) = tokens {
-                format!(" | {t} tokens")
-            } else {
-                String::new()
-            };
-
-            println!("{indicator}   {display_id} {time_ago} ({size_str}{msg_info}{token_info})");
+        Err(ref e) if is_not_found(e) => {
+            Err(anyhow::anyhow!("Instance '{}' not found", instance_id))
         }
-
-        println!();
-        println!("  → = CLI default session (persistent)");
+        Err(e) => Err(anyhow::anyhow!("Failed to list sessions: {}", e)),
     }
-
-    Ok(())
 }
 
-/// Run maintenance on sessions
-async fn run_maintenance(
-    agent_filter: Option<String>,
-    execute: bool,
+/// Show session details and optionally history
+async fn show_session(
+    client: &ApiClient,
+    instance_id: &str,
+    session_id: &str,
+    show_history: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let agents_dir = home.join(".pekobot").join("agents");
-
-    let agents_to_check: Vec<String> = if let Some(agent) = agent_filter {
-        vec![agent]
-    } else {
-        match tokio::fs::read_dir(&agents_dir).await {
-            Ok(mut entries) => {
-                let mut agents = Vec::new();
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    if let Ok(metadata) = entry.metadata().await {
-                        if metadata.is_dir() {
-                            if let Some(name) = entry.file_name().to_str() {
-                                agents.push(name.to_string());
-                            }
-                        }
-                    }
-                }
-                agents
-            }
-            Err(_) => Vec::new(),
+    // Get session metadata
+    let session = match client.get_session(instance_id, session_id).await {
+        Ok(s) => s,
+        Err(ref e) if is_not_found(e) => {
+            return Err(anyhow::anyhow!(
+                "Session '{}' not found for instance '{}'",
+                session_id,
+                instance_id
+            ));
         }
+        Err(e) => return Err(anyhow::anyhow!("Failed to get session: {}", e)),
     };
 
-    let mut total_pruned = 0;
-    let mut total_capped = 0;
-    let mut total_rotated = 0;
-    let mut total_bytes = 0u64;
-
-    for agent_name in agents_to_check {
-        let sessions_dir = agents_dir.join(&agent_name).join("sessions");
-        let mut index = SessionIndex::open(&sessions_dir);
-
-        let _ = index.migrate_from_directory(&agent_name).await;
-
-        let config = MaintenanceConfig {
-            mode: if execute {
-                MaintenanceMode::Auto
-            } else {
-                MaintenanceMode::Warn
-            },
-            ..Default::default()
-        };
-
-        match index.maintenance(&config).await {
-            Ok(report) => {
-                total_pruned += report.pruned;
-                total_capped += report.capped;
-                if report.rotated {
-                    total_rotated += 1;
-                }
-                total_bytes += report.bytes_reclaimed;
-            }
+    // Get history if requested
+    let history = if show_history {
+        match client
+            .get_session_history(instance_id, session_id, true, false)
+            .await
+        {
+            Ok(h) => Some(h),
             Err(e) => {
-                eprintln!("⚠️  Maintenance failed for {agent_name}: {e}");
+                eprintln!("⚠️  Failed to load history: {}", e);
+                None
             }
         }
-    }
-
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "mode": if execute { "executed" } else { "dry-run" },
-                "pruned": total_pruned,
-                "capped": total_capped,
-                "rotated": total_rotated,
-                "bytes_reclaimed": total_bytes,
-            })
-        );
     } else {
-        let mode_str = if execute { "Executed" } else { "Would execute" };
-        println!("🔧 {mode_str} maintenance:");
-        println!("   Sessions pruned: {total_pruned}");
-        println!("   Sessions capped: {total_capped}");
-        println!("   Indexes rotated: {total_rotated}");
-        println!("   Space reclaimed: {}", format_size(total_bytes));
-
-        if !execute && (total_pruned > 0 || total_capped > 0) {
-            println!();
-            println!("   Run with --execute to actually perform maintenance.");
-        }
-    }
-
-    Ok(())
-}
-
-/// Show session details
-async fn show_session(session_id: &str, show_history: bool, json: bool) -> anyhow::Result<()> {
-    // Find the session across all agents using index
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let agents_dir = home.join(".pekobot").join("agents");
-
-    let mut found_entry = None;
-    let mut found_agent = None;
-
-    // Search through all agents
-    if let Ok(mut entries) = tokio::fs::read_dir(&agents_dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let agent_dir = entry.path();
-            if let Ok(metadata) = entry.metadata().await {
-                if metadata.is_dir() {
-                    let agent_name = agent_dir
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-
-                    let sessions_dir = agent_dir.join("sessions");
-                    let mut index = SessionIndex::open(&sessions_dir);
-                    let _ = index.migrate_from_directory(&agent_name).await;
-
-                    // Try to find by session_id
-                    if let Ok(Some(idx_entry)) = index.find_by_session_id(session_id).await {
-                        found_entry = Some(idx_entry);
-                        found_agent = Some(agent_name);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    let (entry, agent_name) = if let (Some(e), Some(a)) = (found_entry, found_agent) {
-        (e, a)
-    } else {
-        eprintln!("❌ Session '{session_id}' not found");
-        return Ok(());
+        None
     };
 
-    let session_path = agents_dir
-        .join(&agent_name)
-        .join("sessions")
-        .join(&entry.transcript_file);
-
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "session": {
-                    "id": entry.session_id,
-                    "agent": agent_name,
-                    "session_key": entry.session_key,
-                    "message_count": entry.message_count,
-                    "total_tokens": entry.total_tokens,
-                    "provider": entry.provider,
-                    "model": entry.model,
-                    "created_at": entry.created_at,
-                    "updated_at": entry.updated_at,
-                }
-            })
-        );
+        let output = serde_json::json!({
+            "session": session,
+            "history": history,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("📊 Session Details");
-        println!("   Agent: {agent_name}");
-        println!("   Session ID: {}", entry.session_id);
-        if let Some(ref key) = entry.session_key {
-            println!("   Session Key: {key}");
+        println!("   Instance ID: {}", instance_id);
+        println!("   Session ID: {}", session.id);
+        if let Some(ref title) = session.title {
+            println!("   Title: {}", title);
         }
-        println!("   Messages: {}", entry.message_count);
-        if let Some(tokens) = entry.total_tokens {
-            println!("   Tokens: {tokens}");
-        }
-        if let Some(ref provider) = entry.provider {
-            if let Some(ref model) = entry.model {
-                println!("   Model: {provider}/{model}");
-            }
-        }
-        println!("   Path: {}", session_path.display());
+        println!("   Turns: {}", session.turn_count);
+        println!("   Created: {}", format_timestamp(&session.created_at));
+        println!("   Updated: {}", format_timestamp(&session.updated_at));
 
-        let modified = SystemTime::UNIX_EPOCH + Duration::from_millis(entry.updated_at);
-        println!("   Last active: {}", format_time_ago(modified));
-
-        if let Ok(metadata) = tokio::fs::metadata(&session_path).await {
-            println!("   Size: {}", format_size(metadata.len()));
+        if let Some(ref parent) = session.parent_session_id {
+            println!("   Parent Session: {}", parent);
         }
 
-        if show_history {
-            println!();
-            println!("📜 Message History:");
+        if let Some(h) = history {
+            if !h.items.is_empty() {
+                println!();
+                println!("📜 Message History ({} events):", h.items.len());
+                println!();
 
-            match SimpleSession::open(&agent_name, session_id).await {
-                Ok(Some(session)) => match session.load_history().await {
-                    Ok(messages) => {
-                        for (i, msg) in messages.iter().enumerate() {
-                            let role = format!("{:?}", msg.role);
-                            let preview: String = msg
-                                .content
-                                .iter()
-                                .filter_map(|b| match b {
-                                    crate::types::ContentBlock::Text { text } => Some(text.clone()),
-                                    _ => None,
-                                })
-                                .collect::<String>()
-                                .chars()
-                                .take(100)
-                                .collect();
-
-                            if !preview.is_empty() {
-                                println!("  [{i}] {role}: {preview}");
-                            }
-                        }
-                    }
-                    Err(e) => println!("  Error loading history: {e}"),
-                },
-                _ => println!("  Could not load session"),
+                for (i, event) in h.items.iter().enumerate() {
+                    print_history_event(i, event);
+                }
             }
         }
     }
@@ -438,35 +229,314 @@ async fn show_session(session_id: &str, show_history: bool, json: bool) -> anyho
     Ok(())
 }
 
-/// Format a duration as a human-readable string
-fn format_duration(duration: Duration) -> String {
-    let secs = duration.as_secs();
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h", secs / 3600)
-    } else {
-        format!("{}d", secs / 86400)
+/// Print a history event in human-readable format
+fn print_history_event(index: usize, event: &crate::api::client::HistoryEventResponse) {
+    let event_type = &event.event_type;
+    let timestamp = format_timestamp(&event.created_at);
+
+    match event_type.as_str() {
+        "user.message" => {
+            if let Some(ref content) = event.content {
+                println!("  [{}] 👤 User ({}):", index, timestamp);
+                println!("      {}", truncate(content, 200));
+            }
+        }
+        "assistant.message" => {
+            if let Some(ref content) = event.content {
+                println!("  [{}] 🤖 Assistant ({}):", index, timestamp);
+                println!("      {}", truncate(content, 200));
+            }
+        }
+        "tool.call" => {
+            if let Some(ref tool) = event.tool {
+                println!("  [{}] 🔧 Tool Call: {} ({})", index, tool, timestamp);
+                if let Some(ref args) = event.args {
+                    println!(
+                        "      Args: {}",
+                        serde_json::to_string(args).unwrap_or_default()
+                    );
+                }
+            }
+        }
+        "tool.result" => {
+            println!("  [{}] ✅ Tool Result ({})", index, timestamp);
+            if let Some(ref output) = event.output {
+                println!("      Output: {}", truncate(output, 150));
+            }
+            if let Some(ref error) = event.error {
+                println!("      Error: {}", error);
+            }
+        }
+        "thinking" => {
+            if let Some(ref content) = event.content {
+                println!("  [{}] 💭 Thinking ({}):", index, timestamp);
+                println!("      {}", truncate(content, 150));
+            }
+        }
+        "system" => {
+            if let Some(ref content) = event.content {
+                println!("  [{}] ⚙️  System ({}): {}", index, timestamp, content);
+            }
+        }
+        "hook.trigger" => {
+            if let Some(ref content) = event.content {
+                println!("  [{}] 🪝 Hook Trigger ({}): {}", index, timestamp, content);
+            }
+        }
+        _ => {
+            println!("  [{}] {} ({})", index, event_type, timestamp);
+            if let Some(ref content) = event.content {
+                println!("      {}", truncate(content, 150));
+            }
+        }
+    }
+    println!();
+}
+
+/// Branch a session
+async fn branch_session(
+    client: &ApiClient,
+    instance_id: &str,
+    session_id: &str,
+    label: Option<String>,
+    json: bool,
+) -> anyhow::Result<()> {
+    match client
+        .branch_session(instance_id, session_id, label.as_deref())
+        .await
+    {
+        Ok(response) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                println!("✅ Branched session '{}'", session_id);
+                println!("   New Session ID: {}", response.session.id);
+                println!("   Parent Session: {}", response.parent_session_id);
+                if let Some(ref label) = label {
+                    println!("   Label: {}", label);
+                }
+            }
+            Ok(())
+        }
+        Err(ref e) if is_not_found(e) => Err(anyhow::anyhow!(
+            "Session '{}' not found for instance '{}'",
+            session_id,
+            instance_id
+        )),
+        Err(e) => Err(anyhow::anyhow!("Failed to branch session: {}", e)),
     }
 }
 
-/// Format a `SystemTime` as "X ago"
-fn format_time_ago(time: SystemTime) -> String {
-    match time.elapsed() {
-        Ok(duration) => format!("{} ago", format_duration(duration)),
-        Err(_) => "unknown".to_string(),
+/// Delete a session
+async fn delete_session(
+    client: &ApiClient,
+    instance_id: &str,
+    session_id: &str,
+    force: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    if !force {
+        println!("⚠️  This will delete session '{}'.", session_id);
+        println!("   Session history will be permanently lost.");
+        print!("   Continue? [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    match client.delete_session(instance_id, session_id).await {
+        Ok(()) => {
+            if json {
+                println!("{{\"success\": true, \"session_id\": \"{}\"}}", session_id);
+            } else {
+                println!("✅ Deleted session '{}'", session_id);
+            }
+            Ok(())
+        }
+        Err(ref e) if is_not_found(e) => Err(anyhow::anyhow!(
+            "Session '{}' not found for instance '{}'",
+            session_id,
+            instance_id
+        )),
+        Err(e) => Err(anyhow::anyhow!("Failed to delete session: {}", e)),
     }
 }
 
-/// Format bytes as human-readable string
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{bytes} B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+/// Format an ISO timestamp for display
+fn format_timestamp(ts: &str) -> String {
+    // Try to parse and format nicely
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+        dt.format("%Y-%m-%d %H:%M:%S").to_string()
     } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        ts.to_string()
+    }
+}
+
+/// Truncate a string to max length with ellipsis
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_commands_enum() {
+        // Test List command
+        let cmd = SessionCommands::List {
+            instance_id: "inst_123".to_string(),
+            all: true,
+        };
+        match cmd {
+            SessionCommands::List { instance_id, all } => {
+                assert_eq!(instance_id, "inst_123");
+                assert!(all);
+            }
+            _ => panic!("Expected List command"),
+        }
+
+        // Test Show command
+        let cmd = SessionCommands::Show {
+            instance_id: "inst_123".to_string(),
+            session_id: "sess_456".to_string(),
+            history: true,
+        };
+        match cmd {
+            SessionCommands::Show {
+                instance_id,
+                session_id,
+                history,
+            } => {
+                assert_eq!(instance_id, "inst_123");
+                assert_eq!(session_id, "sess_456");
+                assert!(history);
+            }
+            _ => panic!("Expected Show command"),
+        }
+
+        // Test Branch command
+        let cmd = SessionCommands::Branch {
+            instance_id: "inst_123".to_string(),
+            session_id: "sess_456".to_string(),
+            label: Some("test-branch".to_string()),
+        };
+        match cmd {
+            SessionCommands::Branch {
+                instance_id,
+                session_id,
+                label,
+            } => {
+                assert_eq!(instance_id, "inst_123");
+                assert_eq!(session_id, "sess_456");
+                assert_eq!(label, Some("test-branch".to_string()));
+            }
+            _ => panic!("Expected Branch command"),
+        }
+
+        // Test Delete command
+        let cmd = SessionCommands::Delete {
+            instance_id: "inst_123".to_string(),
+            session_id: "sess_456".to_string(),
+            force: true,
+        };
+        match cmd {
+            SessionCommands::Delete {
+                instance_id,
+                session_id,
+                force,
+            } => {
+                assert_eq!(instance_id, "inst_123");
+                assert_eq!(session_id, "sess_456");
+                assert!(force);
+            }
+            _ => panic!("Expected Delete command"),
+        }
+
+        // Test Send command
+        let cmd = SessionCommands::Send {
+            instance_id: "inst_123".to_string(),
+            session_id: Some("sess_456".to_string()),
+            message: "Hello".to_string(),
+        };
+        match cmd {
+            SessionCommands::Send {
+                instance_id,
+                session_id,
+                message,
+            } => {
+                assert_eq!(instance_id, "inst_123");
+                assert_eq!(session_id, Some("sess_456".to_string()));
+                assert_eq!(message, "Hello");
+            }
+            _ => panic!("Expected Send command"),
+        }
+    }
+
+    #[test]
+    fn test_format_timestamp() {
+        // Test RFC3339 timestamp
+        let ts = "2026-03-17T10:30:00+00:00";
+        let formatted = format_timestamp(ts);
+        assert_eq!(formatted, "2026-03-17 10:30:00");
+
+        // Test invalid timestamp (should return original)
+        let ts = "invalid-timestamp";
+        let formatted = format_timestamp(ts);
+        assert_eq!(formatted, "invalid-timestamp");
+    }
+
+    #[test]
+    fn test_truncate() {
+        // Test string shorter than max
+        let s = "short";
+        assert_eq!(truncate(s, 10), "short");
+
+        // Test string longer than max
+        let s = "this is a very long string";
+        assert_eq!(truncate(s, 10), "this is a ...");
+
+        // Test exact length
+        let s = "exactlyten";
+        assert_eq!(truncate(s, 10), "exactlyten");
+    }
+
+    #[test]
+    fn test_is_not_found() {
+        use reqwest::StatusCode;
+
+        // Test API error with 404 status
+        let err = ClientError::Api {
+            status: StatusCode::NOT_FOUND,
+            code: "not_found".to_string(),
+            message: "Not found".to_string(),
+            request_id: "req_123".to_string(),
+        };
+        assert!(is_not_found(&err));
+
+        // Test API error with different status
+        let err = ClientError::Api {
+            status: StatusCode::BAD_REQUEST,
+            code: "bad_request".to_string(),
+            message: "Bad request".to_string(),
+            request_id: "req_123".to_string(),
+        };
+        assert!(!is_not_found(&err));
+
+        // Test other error types
+        let err = ClientError::DaemonNotRunning {
+            addr: "http://localhost:11435".to_string(),
+        };
+        assert!(!is_not_found(&err));
     }
 }

@@ -41,6 +41,8 @@ pub fn create_router() -> Router<AppState> {
         // Milestone 8: Webhooks and system events
         .merge(webhooks::router())
         .merge(events::router())
+        // Milestone 10: Web UI
+        .merge(crate::web_ui::router())
 }
 
 #[cfg(test)]

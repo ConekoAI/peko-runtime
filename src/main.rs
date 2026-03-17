@@ -8,7 +8,7 @@ use pekobot::types::config::PekobotConfig;
 
 /// Pekobot - Lightweight Multi-Agent Runtime
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
     let cli = Cli::parse();
 
     // Initialize logging
@@ -17,16 +17,47 @@ async fn main() -> anyhow::Result<()> {
     // Set up global paths
     let paths = GlobalPaths::from_cli(&cli);
 
-    match cli.command {
-        Commands::Agent(cmd) => agent::handle_agent(cmd, &paths, cli.json).await,
-        Commands::Auth(cmd) => auth::handle_auth(cmd, &paths, cli.json).await,
-        Commands::Tool(cmd) => tool::handle_tool(cmd, &paths, cli.json).await,
-        Commands::Session(cmd) => session::handle_session(cmd, &paths, cli.json).await,
-        Commands::Config(cmd) => config::handle_config(cmd, &paths, cli.json).await,
-        Commands::System(cmd) => system::handle_system(cmd, &paths, cli.json).await,
-        Commands::Daemon(cmd) => daemon::handle_daemon(cmd, &paths, cli.json).await,
-        Commands::Cron(cmd) => cron::handle_cron(cmd, &paths, cli.json).await,
-        Commands::Gateway(cmd) => gateway::handle_gateway(cmd, &paths, cli.json).await,
+    // Run the command and handle results/exit codes
+    let result = run_command(cli.command, &paths).await;
+
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            // Print error message
+            if cli.debug {
+                // With --debug, show full error chain and backtrace if available
+                eprintln!("❌ Error: {:?}", e);
+            } else {
+                // Default: just show the error message
+                eprintln!("❌ Error: {}", e);
+            }
+
+            // Determine exit code
+            let exit_code =
+                if let Some(client_err) = e.downcast_ref::<pekobot::api::client::ClientError>() {
+                    client_err.exit_code()
+                } else {
+                    1
+                };
+
+            std::process::exit(exit_code);
+        }
+    }
+}
+
+async fn run_command(command: Commands, paths: &GlobalPaths) -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    match command {
+        Commands::Agent(cmd) => agent::handle_agent(cmd, paths, cli.json).await,
+        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, cli.json).await,
+        Commands::Tool(cmd) => tool::handle_tool(cmd, paths, cli.json).await,
+        Commands::Session(cmd) => session::handle_session(cmd, paths, cli.json).await,
+        Commands::Config(cmd) => config::handle_config(cmd, paths, cli.json).await,
+        Commands::System(cmd) => system::handle_system(cmd, paths, cli.json).await,
+        Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, cli.json).await,
+        Commands::Cron(cmd) => cron::handle_cron(cmd, paths, cli.json).await,
+        Commands::Gateway(cmd) => gateway::handle_gateway(cmd, paths, cli.json).await,
         Commands::Mcp(cmd) => mcp::handle(cmd, paths.mcp_config()).await,
         Commands::Orchestration(cmd) => {
             // Load configuration for orchestration commands

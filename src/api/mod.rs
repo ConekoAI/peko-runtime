@@ -19,6 +19,7 @@
 //! Binding to non-loopback addresses requires explicit configuration and
 //! will log a security warning.
 
+pub mod client;
 pub mod error;
 pub mod middleware;
 pub mod routes;

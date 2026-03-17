@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 // =============================================================================
 
 /// Response from the health check endpoint
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     /// Service status: "ok" or "degraded"
     pub status: String,
@@ -53,7 +53,7 @@ impl HealthResponse {
 // =============================================================================
 
 /// Response from the daemon info endpoint
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoResponse {
     /// Pekobot version
     pub version: String,
@@ -72,7 +72,7 @@ pub struct InfoResponse {
 }
 
 /// Capability flags returned by the info endpoint
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilitiesInfo {
     /// Streaming responses supported
     pub streaming: bool,
@@ -99,14 +99,14 @@ impl Default for CapabilitiesInfo {
 /// Standard error response envelope
 ///
 /// All API errors follow this structure for consistency.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     /// Error details
     pub error: ErrorDetail,
 }
 
 /// Detailed error information
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorDetail {
     /// Error code (machine-readable)
     pub code: String,

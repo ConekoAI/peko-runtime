@@ -62,6 +62,10 @@ pub struct Cli {
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    /// Show debug information including stack traces
+    #[arg(long, global = true, env = "PEKOBOT_DEBUG")]
+    pub debug: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
