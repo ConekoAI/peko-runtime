@@ -494,4 +494,258 @@ mod tests {
         let tc_id = generate_tool_call_id();
         assert!(tc_id.starts_with("tc_"));
     }
+
+    #[test]
+    fn test_all_event_types() {
+        // Test that all 13 event types can be serialized and deserialized
+        let ts = Utc::now();
+        let session_id = "sess_test".to_string();
+
+        // 1. session.created
+        let created = SessionEvent::SessionCreated(SessionCreatedEvent {
+            envelope: EventEnvelope {
+                id: "evt_001".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 1,
+            },
+            instance_id: "inst_001".to_string(),
+            image_digest: "sha256:abc".to_string(),
+            parent_session_id: None,
+            trigger: SessionTrigger::User,
+        });
+        assert_eq!(created.event_type(), "session.created");
+
+        // 2. user.message
+        let user_msg = SessionEvent::UserMessage(UserMessageEvent {
+            envelope: EventEnvelope {
+                id: "evt_002".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 2,
+            },
+            message_id: "msg_001".to_string(),
+            content: "Hello".to_string(),
+            source: MessageSource::User,
+        });
+        assert_eq!(user_msg.event_type(), "user.message");
+
+        // 3. assistant.message
+        let assistant_msg = SessionEvent::AssistantMessage(AssistantMessageEvent {
+            envelope: EventEnvelope {
+                id: "evt_003".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 3,
+            },
+            message_id: "msg_002".to_string(),
+            content: "Hi there".to_string(),
+            usage: TokenUsage {
+                input_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 30,
+            },
+        });
+        assert_eq!(assistant_msg.event_type(), "assistant.message");
+        assert!(assistant_msg.is_assistant_message());
+        assert_eq!(assistant_msg.assistant_content(), Some("Hi there"));
+
+        // 4. thinking
+        let thinking = SessionEvent::Thinking(ThinkingEvent {
+            envelope: EventEnvelope {
+                id: "evt_004".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 4,
+            },
+            content: "Thinking...".to_string(),
+        });
+        assert_eq!(thinking.event_type(), "thinking");
+
+        // 5. tool.call
+        let tool_call = SessionEvent::ToolCall(ToolCallEvent {
+            envelope: EventEnvelope {
+                id: "evt_005".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 5,
+            },
+            tool_call_id: "tc_001".to_string(),
+            tool: "web_search".to_string(),
+            args: serde_json::json!({"query": "test"}),
+            async_: false,
+            timeout_seconds: Some(30),
+        });
+        assert_eq!(tool_call.event_type(), "tool.call");
+
+        // 6. tool.result
+        let tool_result = SessionEvent::ToolResult(ToolResultEvent {
+            envelope: EventEnvelope {
+                id: "evt_006".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 6,
+            },
+            tool_call_id: "tc_001".to_string(),
+            output: Some("Results found".to_string()),
+            error: None,
+            duration_ms: 1500,
+        });
+        assert_eq!(tool_result.event_type(), "tool.result");
+
+        // 7. spawn.request
+        let spawn_req = SessionEvent::SpawnRequest(SpawnRequestEvent {
+            envelope: EventEnvelope {
+                id: "evt_007".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 7,
+            },
+            tool_call_id: "tc_002".to_string(),
+            child_image: "researcher:v1".to_string(),
+            child_instance_id: "inst_child".to_string(),
+            child_session_id: "sess_child".to_string(),
+            task: "Research task".to_string(),
+            async_: false,
+        });
+        assert_eq!(spawn_req.event_type(), "spawn.request");
+
+        // 8. spawn.result
+        let spawn_res = SessionEvent::SpawnResult(SpawnResultEvent {
+            envelope: EventEnvelope {
+                id: "evt_008".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 8,
+            },
+            tool_call_id: "tc_002".to_string(),
+            child_instance_id: "inst_child".to_string(),
+            child_session_id: "sess_child".to_string(),
+            output: Some("Research complete".to_string()),
+            error: None,
+            duration_ms: 5000,
+        });
+        assert_eq!(spawn_res.event_type(), "spawn.result");
+
+        // 9. a2a.sent
+        let a2a_sent = SessionEvent::A2aSent(A2aSentEvent {
+            envelope: EventEnvelope {
+                id: "evt_009".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 9,
+            },
+            message_type: A2aMessageType::Task,
+            topic: "team.tasks".to_string(),
+            to: "inst_other".to_string(),
+            payload: serde_json::json!({"task": "do something"}),
+        });
+        assert_eq!(a2a_sent.event_type(), "a2a.sent");
+
+        // 10. a2a.received
+        let a2a_recv = SessionEvent::A2aReceived(A2aReceivedEvent {
+            envelope: EventEnvelope {
+                id: "evt_010".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 10,
+            },
+            message_type: A2aMessageType::TaskResult,
+            topic: "team.results".to_string(),
+            from: "inst_other".to_string(),
+            payload: serde_json::json!({"result": "done"}),
+        });
+        assert_eq!(a2a_recv.event_type(), "a2a.received");
+
+        // 11. hook.trigger
+        let hook = SessionEvent::HookTrigger(HookTriggerEvent {
+            envelope: EventEnvelope {
+                id: "evt_011".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 11,
+            },
+            hook_type: HookType::Cron,
+            schedule: Some("0 0 * * *".to_string()),
+            payload: None,
+        });
+        assert_eq!(hook.event_type(), "hook.trigger");
+
+        // 12. system
+        let system = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope {
+                id: "evt_012".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 12,
+            },
+            event: "context_truncated".to_string(),
+            detail: serde_json::json!({"reason": "too long"}),
+        });
+        assert_eq!(system.event_type(), "system");
+
+        // 13. session.ended
+        let ended = SessionEvent::SessionEnded(SessionEndedEvent {
+            envelope: EventEnvelope {
+                id: "evt_013".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 13,
+            },
+            reason: SessionEndReason::UserClosed,
+            turn_count: 5,
+            total_tokens: 1000,
+        });
+        assert_eq!(ended.event_type(), "session.ended");
+        assert!(ended.is_session_ended());
+
+        // Test round-trip serialization for each event type
+        for event in [created, user_msg, assistant_msg, thinking, tool_call, 
+                      tool_result, spawn_req, spawn_res, a2a_sent, a2a_recv, 
+                      hook, system, ended] {
+            let json = serde_json::to_string(&event).expect("Failed to serialize");
+            let deserialized: SessionEvent = serde_json::from_str(&json).expect("Failed to deserialize");
+            assert_eq!(event.event_type(), deserialized.event_type());
+        }
+    }
+
+    #[test]
+    fn test_session_trigger_variants() {
+        use serde_json;
+
+        // Test all trigger types serialize correctly
+        let triggers = vec![
+            SessionTrigger::User,
+            SessionTrigger::Cron,
+            SessionTrigger::Webhook,
+            SessionTrigger::Event,
+            SessionTrigger::FileWatch,
+            SessionTrigger::Branch,
+            SessionTrigger::Spawn,
+        ];
+
+        for trigger in triggers {
+            let json = serde_json::to_string(&trigger).expect("Failed to serialize trigger");
+            let deserialized: SessionTrigger = serde_json::from_str(&json).expect("Failed to deserialize trigger");
+            assert!(matches!(trigger, _ if std::mem::discriminant(&trigger) == std::mem::discriminant(&deserialized)));
+        }
+    }
+
+    #[test]
+    fn test_session_end_reason_variants() {
+        use serde_json;
+
+        let reasons = vec![
+            SessionEndReason::UserClosed,
+            SessionEndReason::InstanceStopped,
+            SessionEndReason::IdleTimeout,
+            SessionEndReason::MaxTokensReached,
+        ];
+
+        for reason in reasons {
+            let json = serde_json::to_string(&reason).expect("Failed to serialize reason");
+            let deserialized: SessionEndReason = serde_json::from_str(&json).expect("Failed to deserialize reason");
+            assert!(matches!(reason, _ if std::mem::discriminant(&reason) == std::mem::discriminant(&deserialized)));
+        }
+    }
 }

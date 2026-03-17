@@ -452,7 +452,8 @@ impl SidecarManager {
 mod tests {
     use super::*;
     use crate::session::events::{
-        AssistantMessageEvent, EventEnvelope, TokenUsage, UserMessageEvent,
+        AssistantMessageEvent, EventEnvelope, SessionCreatedEvent, SessionEvent, TokenUsage,
+        UserMessageEvent,
     };
     use tempfile::TempDir;
 
@@ -568,5 +569,187 @@ mod tests {
 
         let index = manager.load("sess_123").await.unwrap().unwrap();
         assert!(index.ended);
+    }
+
+    #[tokio::test]
+    async fn test_list_indices() {
+        let temp = TempDir::new().unwrap();
+        let manager = SidecarManager::new(temp.path().to_path_buf());
+
+        // Create multiple sessions
+        for i in 0..3 {
+            manager
+                .create(&format!("sess_{}", i), "inst_456", SessionTrigger::User)
+                .await
+                .unwrap();
+        }
+
+        let indices = manager.list_indices().await.unwrap();
+        assert_eq!(indices.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_from_events() {
+        use crate::session::events::{
+            AssistantMessageEvent, EventEnvelope, TokenUsage, UserMessageEvent,
+        };
+        use chrono::Utc;
+
+        let temp = TempDir::new().unwrap();
+        let manager = SidecarManager::new(temp.path().to_path_buf());
+
+        // Create events manually
+        let events = vec![
+            SessionEvent::SessionCreated(SessionCreatedEvent {
+                envelope: EventEnvelope {
+                    id: "evt_001".to_string(),
+                    session_id: "sess_rebuild".to_string(),
+                    ts: Utc::now(),
+                    seq: 1,
+                },
+                instance_id: "inst_001".to_string(),
+                image_digest: "sha256:abc".to_string(),
+                parent_session_id: None,
+                trigger: SessionTrigger::User,
+            }),
+            SessionEvent::UserMessage(UserMessageEvent {
+                envelope: EventEnvelope {
+                    id: "evt_002".to_string(),
+                    session_id: "sess_rebuild".to_string(),
+                    ts: Utc::now(),
+                    seq: 2,
+                },
+                message_id: "msg_001".to_string(),
+                content: "Hello".to_string(),
+                source: crate::session::events::MessageSource::User,
+            }),
+            SessionEvent::AssistantMessage(AssistantMessageEvent {
+                envelope: EventEnvelope {
+                    id: "evt_003".to_string(),
+                    session_id: "sess_rebuild".to_string(),
+                    ts: Utc::now(),
+                    seq: 3,
+                },
+                message_id: "msg_002".to_string(),
+                content: "This is the first response that should become the title.".to_string(),
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    total_tokens: 30,
+                },
+            }),
+        ];
+
+        // Rebuild sidecar from events
+        let index = manager
+            .rebuild_from_events("sess_rebuild", &events, "inst_001")
+            .await
+            .unwrap();
+
+        assert_eq!(index.event_count, 3);
+        assert_eq!(index.turn_count, 1);
+        assert_eq!(index.total_tokens, 30);
+        assert!(index.title.is_some());
+        assert!(index.title.unwrap().contains("This is the first response"));
+    }
+
+    #[tokio::test]
+    async fn test_update_with_various_events() {
+        use crate::session::events::{
+            SystemEvent, ThinkingEvent, ToolCallEvent, ToolResultEvent,
+        };
+        use serde_json::json;
+
+        let temp = TempDir::new().unwrap();
+        let manager = SidecarManager::new(temp.path().to_path_buf());
+
+        manager
+            .create("sess_123", "inst_456", SessionTrigger::User)
+            .await
+            .unwrap();
+
+        let ts = Utc::now();
+        let session_id = "sess_123".to_string();
+
+        // Test thinking event (doesn't increment turn)
+        let thinking = SessionEvent::Thinking(ThinkingEvent {
+            envelope: EventEnvelope {
+                id: "evt_002".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 2,
+            },
+            content: "Thinking...".to_string(),
+        });
+        manager.update_with_event("sess_123", &thinking).await.unwrap();
+
+        let index = manager.load("sess_123").await.unwrap().unwrap();
+        assert_eq!(index.event_count, 1); // Only thinking, no new turn
+        assert_eq!(index.turn_count, 0);
+
+        // Test tool call
+        let tool_call = SessionEvent::ToolCall(ToolCallEvent {
+            envelope: EventEnvelope {
+                id: "evt_003".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 3,
+            },
+            tool_call_id: "tc_001".to_string(),
+            tool: "search".to_string(),
+            args: json!({}),
+            async_: false,
+            timeout_seconds: None,
+        });
+        manager.update_with_event("sess_123", &tool_call).await.unwrap();
+
+        // Test tool result
+        let tool_result = SessionEvent::ToolResult(ToolResultEvent {
+            envelope: EventEnvelope {
+                id: "evt_004".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 4,
+            },
+            tool_call_id: "tc_001".to_string(),
+            output: Some("Results".to_string()),
+            error: None,
+            duration_ms: 100,
+        });
+        manager.update_with_event("sess_123", &tool_result).await.unwrap();
+
+        // Test system event
+        let system = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope {
+                id: "evt_005".to_string(),
+                session_id: session_id.clone(),
+                ts,
+                seq: 5,
+            },
+            event: "test".to_string(),
+            detail: json!({}),
+        });
+        manager.update_with_event("sess_123", &system).await.unwrap();
+
+        let index = manager.load("sess_123").await.unwrap().unwrap();
+        assert_eq!(index.event_count, 4);
+        assert_eq!(index.turn_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_delete_sidecar() {
+        let temp = TempDir::new().unwrap();
+        let manager = SidecarManager::new(temp.path().to_path_buf());
+
+        manager
+            .create("sess_delete", "inst_456", SessionTrigger::User)
+            .await
+            .unwrap();
+
+        assert!(manager.exists("sess_delete").await);
+
+        manager.delete("sess_delete").await.unwrap();
+
+        assert!(!manager.exists("sess_delete").await);
     }
 }

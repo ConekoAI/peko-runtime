@@ -7,7 +7,7 @@
 use crate::session::events::SessionEvent;
 use crate::session::events::SessionTrigger;
 use crate::session::jsonl::SessionStorage;
-use crate::session::sidecar::SidecarManager;
+use crate::session::sidecar::{SessionSidecarIndex, SidecarManager};
 use anyhow::Result;
 use std::path::PathBuf;
 use tracing::{debug, error, info};
@@ -63,11 +63,6 @@ impl SyncSessionStorage {
         // Ensure directory exists
         fs::create_dir_all(&self.jsonl.storage_dir()).await?;
 
-        // Create sidecar index first
-        self.sidecar
-            .create(session_id, instance_id, trigger.clone())
-            .await?;
-
         // Create the session.created event
         let created_event = SessionEvent::SessionCreated(SessionCreatedEvent {
             envelope: EventEnvelope {
@@ -79,7 +74,7 @@ impl SyncSessionStorage {
             instance_id: instance_id.to_string(),
             image_digest: String::new(), // Will be set when instance starts
             parent_session_id: None,
-            trigger,
+            trigger: trigger.clone(),
         });
 
         // Write the initial event atomically
@@ -93,6 +88,11 @@ impl SyncSessionStorage {
             file.flush().await?;
         }
         fs::rename(&temp_path, &path).await?;
+
+        // Create sidecar index (with correct event_count = 1)
+        let mut index = SessionSidecarIndex::new(session_id, instance_id, trigger);
+        index.event_count = 1; // Account for session.created event
+        self.sidecar.save(session_id, &index).await?;
 
         info!("Created synchronized session: {}", session_id);
         Ok(())
@@ -365,8 +365,9 @@ mod tests {
             .unwrap();
 
         // Verify sidecar updated
+        // 3 events: session.created + user.message + assistant.message
         let index = storage.load_index("sess_123").await.unwrap().unwrap();
-        assert_eq!(index.event_count, 2);
+        assert_eq!(index.event_count, 3);
         assert_eq!(index.turn_count, 1);
         assert_eq!(index.total_tokens, 15);
     }
@@ -434,5 +435,145 @@ mod tests {
         let index = storage.load_index("sess_123").await.unwrap().unwrap();
         // 2 events: session.created and user.message
         assert_eq!(index.event_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_list_sessions() {
+        let temp = TempDir::new().unwrap();
+        let storage = SyncSessionStorage::new(temp.path().to_path_buf());
+
+        // Create multiple sessions
+        storage
+            .create_session("sess_1", "inst_001", SessionTrigger::User, None)
+            .await
+            .unwrap();
+        storage
+            .create_session("sess_2", "inst_001", SessionTrigger::User, None)
+            .await
+            .unwrap();
+
+        let sessions = storage.list_sessions().await.unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.contains(&"sess_1".to_string()));
+        assert!(sessions.contains(&"sess_2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_delete_session() {
+        let temp = TempDir::new().unwrap();
+        let storage = SyncSessionStorage::new(temp.path().to_path_buf());
+
+        storage
+            .create_session("sess_delete", "inst_001", SessionTrigger::User, None)
+            .await
+            .unwrap();
+
+        assert!(storage.session_exists("sess_delete").await);
+
+        storage.delete_session("sess_delete").await.unwrap();
+
+        assert!(!storage.session_exists("sess_delete").await);
+        assert!(!storage.sidecar.exists("sess_delete").await);
+    }
+
+    #[tokio::test]
+    async fn test_set_title() {
+        let temp = TempDir::new().unwrap();
+        let storage = SyncSessionStorage::new(temp.path().to_path_buf());
+
+        storage
+            .create_session("sess_123", "inst_001", SessionTrigger::User, None)
+            .await
+            .unwrap();
+
+        storage.set_title("sess_123", "Custom Title").await.unwrap();
+
+        let index = storage.load_index("sess_123").await.unwrap().unwrap();
+        assert_eq!(index.title, Some("Custom Title".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_verify_and_repair_no_repair_needed() {
+        let temp = TempDir::new().unwrap();
+        let storage = SyncSessionStorage::new(temp.path().to_path_buf());
+
+        storage
+            .create_session("sess_123", "inst_001", SessionTrigger::User, None)
+            .await
+            .unwrap();
+
+        // Verify should return false (no repair needed)
+        let repaired = storage
+            .verify_and_repair("sess_123", "inst_001")
+            .await
+            .unwrap();
+        assert!(!repaired);
+    }
+
+    #[tokio::test]
+    async fn test_verify_and_repair_sidecar_missing() {
+        let temp = TempDir::new().unwrap();
+        let storage = SyncSessionStorage::new(temp.path().to_path_buf());
+
+        storage
+            .create_session("sess_123", "inst_001", SessionTrigger::User, None)
+            .await
+            .unwrap();
+
+        // Delete sidecar
+        storage.sidecar.delete("sess_123").await.unwrap();
+
+        // Verify should detect missing sidecar and repair
+        let repaired = storage
+            .verify_and_repair("sess_123", "inst_001")
+            .await
+            .unwrap();
+        assert!(repaired);
+
+        // Sidecar should be restored
+        assert!(storage.sidecar.exists("sess_123").await);
+    }
+
+    #[tokio::test]
+    async fn test_create_branched_session() {
+        let temp = TempDir::new().unwrap();
+        let storage = SyncSessionStorage::new(temp.path().to_path_buf());
+
+        // Create parent session
+        storage
+            .create_session("parent_sess", "inst_001", SessionTrigger::User, None)
+            .await
+            .unwrap();
+
+        let user_event = SessionEvent::UserMessage(UserMessageEvent {
+            envelope: EventEnvelope {
+                id: "evt_001".to_string(),
+                session_id: "parent_sess".to_string(),
+                ts: Utc::now(),
+                seq: 2,
+            },
+            message_id: "msg_001".to_string(),
+            content: "Hello".to_string(),
+            source: crate::session::events::MessageSource::User,
+        });
+        storage.append_event("parent_sess", &user_event).await.unwrap();
+
+        // Create branched session
+        storage
+            .create_branched_session("child_sess", "inst_001", "parent_sess", None)
+            .await
+            .unwrap();
+
+        // Both sessions should exist
+        assert!(storage.session_exists("parent_sess").await);
+        assert!(storage.session_exists("child_sess").await);
+
+        // Child should have parent_session_id set
+        let child_index = storage.load_index("child_sess").await.unwrap().unwrap();
+        assert_eq!(child_index.parent_session_id, Some("parent_sess".to_string()));
+
+        // Child should have copied events
+        let child_events = storage.load_events("child_sess").await.unwrap();
+        assert_eq!(child_events.len(), 2); // session.created + user.message
     }
 }

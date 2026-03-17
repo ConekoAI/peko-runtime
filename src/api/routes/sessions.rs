@@ -496,4 +496,102 @@ mod tests {
         assert_eq!(response.tool, Some("web_search".to_string()));
         assert_eq!(response.tool_call_id, Some("tc_001".to_string()));
     }
+
+    #[test]
+    fn test_history_response_from_assistant_message() {
+        use crate::session::events::{AssistantMessageEvent, TokenUsage};
+
+        let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
+            envelope: EventEnvelope {
+                id: "evt_003".to_string(),
+                session_id: "sess_123".to_string(),
+                ts: Utc::now(),
+                seq: 3,
+            },
+            message_id: "msg_002".to_string(),
+            content: "The answer is 42.".to_string(),
+            usage: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                total_tokens: 150,
+            },
+        });
+
+        let response: HistoryEventResponse = (&event).into();
+        assert_eq!(response.event_type, "assistant.message");
+        assert_eq!(response.role, Some("assistant".to_string()));
+        assert_eq!(response.content, Some("The answer is 42.".to_string()));
+    }
+
+    #[test]
+    fn test_history_response_from_thinking() {
+        use crate::session::events::ThinkingEvent;
+
+        let event = SessionEvent::Thinking(ThinkingEvent {
+            envelope: EventEnvelope {
+                id: "evt_004".to_string(),
+                session_id: "sess_123".to_string(),
+                ts: Utc::now(),
+                seq: 4,
+            },
+            content: "Let me think about this...".to_string(),
+        });
+
+        let response: HistoryEventResponse = (&event).into();
+        assert_eq!(response.event_type, "thinking");
+        assert_eq!(response.content, Some("Let me think about this...".to_string()));
+    }
+
+    #[test]
+    fn test_session_response_title_optional() {
+        use crate::session::sidecar::SessionSidecarIndex;
+        use crate::session::events::SessionTrigger;
+        use chrono::Utc;
+
+        let index = SessionSidecarIndex {
+            session_id: "sess_123".to_string(),
+            instance_id: "inst_456".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            turn_count: 0,
+            event_count: 1,
+            total_tokens: 0,
+            parent_session_id: None,
+            trigger: SessionTrigger::User,
+            ended: false,
+            title: None,
+        };
+
+        let response: SessionResponse = index.into();
+        assert_eq!(response.id, "sess_123");
+        assert_eq!(response.title, None);
+        assert_eq!(response.turn_count, 0);
+    }
+
+    #[test]
+    fn test_session_response_with_parent() {
+        use crate::session::sidecar::SessionSidecarIndex;
+        use crate::session::events::SessionTrigger;
+        use chrono::Utc;
+
+        let index = SessionSidecarIndex {
+            session_id: "sess_child".to_string(),
+            instance_id: "inst_456".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            turn_count: 5,
+            event_count: 10,
+            total_tokens: 1000,
+            parent_session_id: Some("sess_parent".to_string()),
+            trigger: SessionTrigger::Branch,
+            ended: false,
+            title: Some("Branched Session".to_string()),
+        };
+
+        let response: SessionResponse = index.into();
+        assert_eq!(response.id, "sess_child");
+        assert_eq!(response.parent_session_id, Some("sess_parent".to_string()));
+        assert_eq!(response.turn_count, 5);
+        assert_eq!(response.title, Some("Branched Session".to_string()));
+    }
 }
