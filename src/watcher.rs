@@ -283,6 +283,8 @@ pub async fn watch_agent_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     #[test]
     fn test_file_watcher_creation() {
@@ -308,5 +310,111 @@ mod tests {
             }
             _ => panic!("Clone failed"),
         }
+    }
+
+    #[test]
+    fn test_watch_event_variants() {
+        let changed = WatchEvent::Changed(PathBuf::from("/a.txt"));
+        let created = WatchEvent::Created(PathBuf::from("/b.txt"));
+        let removed = WatchEvent::Removed(PathBuf::from("/c.txt"));
+        let batch = WatchEvent::Batch(vec![PathBuf::from("/d.txt"), PathBuf::from("/e.txt")]);
+        let error = WatchEvent::Error("test error".to_string());
+
+        // Test that all variants can be created
+        drop(changed);
+        drop(created);
+        drop(removed);
+        drop(batch);
+        drop(error);
+    }
+
+    #[tokio::test]
+    async fn test_watch_handle_stop() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let handle = WatchHandle { stop_tx: tx };
+        
+        // Stop should complete without error
+        handle.stop().await;
+        
+        // Verify stop signal was sent
+        let result = timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_file_watcher_handle_receiver() {
+        let (_watcher, handle) = FileWatcher::new("/tmp/test");
+        
+        // The handle should have a receiver
+        // We can't easily test the full flow without creating actual files,
+        // but we can verify the handle structure
+        drop(handle);
+    }
+
+    #[test]
+    fn test_debounce_configuration() {
+        let path = PathBuf::from("/tmp/agent");
+        let (watcher, _handle) = FileWatcher::new(&path);
+        assert_eq!(watcher.debounce_ms, 500); // Default
+        
+        let watcher = watcher.with_debounce(100);
+        assert_eq!(watcher.debounce_ms, 100);
+        
+        let watcher = watcher.with_debounce(0);
+        assert_eq!(watcher.debounce_ms, 0);
+    }
+
+    #[test]
+    fn test_watch_event_debug() {
+        let event = WatchEvent::Changed(PathBuf::from("/test.txt"));
+        let debug = format!("{:?}", event);
+        assert!(debug.contains("Changed"));
+        assert!(debug.contains("/test.txt"));
+    }
+
+    #[test]
+    fn test_batch_event_paths() {
+        let paths = vec![
+            PathBuf::from("/a.txt"),
+            PathBuf::from("/b.txt"),
+            PathBuf::from("/c.txt"),
+        ];
+        let event = WatchEvent::Batch(paths.clone());
+        
+        match event {
+            WatchEvent::Batch(batch_paths) => {
+                assert_eq!(batch_paths.len(), 3);
+                assert_eq!(batch_paths[0], PathBuf::from("/a.txt"));
+            }
+            _ => panic!("Expected Batch variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_watch_agent_directory() {
+        // Create a temporary directory for testing
+        let temp_dir = std::env::temp_dir().join(format!("pekobot_test_{}", std::process::id()));
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+        
+        let (reload_tx, mut reload_rx) = mpsc::channel(1);
+        
+        // Start watching the directory
+        let handle = watch_agent_directory(temp_dir.clone(), reload_tx).await;
+        assert!(handle.is_ok());
+        
+        let watch_handle = handle.unwrap();
+        
+        // Create a test file to trigger an event
+        let test_file = temp_dir.join("test.txt");
+        tokio::fs::write(&test_file, "test content").await.unwrap();
+        
+        // Wait for potential reload signal (with timeout)
+        // Note: This may not always trigger due to debouncing and timing
+        let _ = timeout(Duration::from_millis(1000), reload_rx.recv()).await;
+        
+        // Clean up
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        let _ = watch_handle.stop().await;
     }
 }

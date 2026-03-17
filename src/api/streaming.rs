@@ -168,6 +168,7 @@ pub fn engine_event_to_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::AgenticEvent;
 
     #[test]
     fn test_sse_event_serialization() {
@@ -191,5 +192,192 @@ mod tests {
         assert!(json.contains("\"event\":\"tool_call\""));
         assert!(json.contains("\"tool\":\"web_search\""));
         assert!(json.contains("\"async\""));
+    }
+
+    #[test]
+    fn test_tool_result_serialization() {
+        let event = ChatSseEvent::ToolResult {
+            tool_call_id: "tc_123".to_string(),
+            output: "Search results".to_string(),
+            error: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"tool_result\""));
+        assert!(json.contains("\"tool_call_id\":\"tc_123\""));
+        assert!(json.contains("\"output\":\"Search results\""));
+        assert!(!json.contains("error")); // Should be skipped when None
+    }
+
+    #[test]
+    fn test_tool_result_with_error() {
+        let event = ChatSseEvent::ToolResult {
+            tool_call_id: "tc_456".to_string(),
+            output: "Error occurred".to_string(),
+            error: Some("Tool failed".to_string()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"error\":\"Tool failed\""));
+    }
+
+    #[test]
+    fn test_thinking_serialization() {
+        let event = ChatSseEvent::Thinking {
+            text: "Let me think...".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"thinking\""));
+        assert!(json.contains("\"text\":\"Let me think...\""));
+    }
+
+    #[test]
+    fn test_done_serialization() {
+        let event = ChatSseEvent::Done {
+            message_id: "msg_123".to_string(),
+            session_id: "sess_456".to_string(),
+            turn_count: 3,
+            usage: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                total_tokens: 150,
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"done\""));
+        assert!(json.contains("\"message_id\":\"msg_123\""));
+        assert!(json.contains("\"turn_count\":3"));
+        assert!(json.contains("\"input_tokens\":100"));
+        assert!(json.contains("\"output_tokens\":50"));
+        assert!(json.contains("\"total_tokens\":150"));
+    }
+
+    #[test]
+    fn test_error_serialization() {
+        let event = ChatSseEvent::Error {
+            code: "rate_limit".to_string(),
+            message: "Too many requests".to_string(),
+            tool_call_id: Some("tc_789".to_string()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event\":\"error\""));
+        assert!(json.contains("\"code\":\"rate_limit\""));
+        assert!(json.contains("\"message\":\"Too many requests\""));
+        assert!(json.contains("\"tool_call_id\":\"tc_789\""));
+    }
+
+    #[test]
+    fn test_error_without_tool_call_id() {
+        let event = ChatSseEvent::Error {
+            code: "general_error".to_string(),
+            message: "Something went wrong".to_string(),
+            tool_call_id: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(!json.contains("tool_call_id")); // Should be skipped when None
+    }
+
+    #[test]
+    fn test_token_usage_default() {
+        let usage = TokenUsage::default();
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_sse_stream_creation() {
+        let (stream, sender) = SseStream::new();
+        // Just verify it compiles and creates properly
+        drop(stream);
+        drop(sender);
+    }
+
+    #[test]
+    fn test_engine_event_to_sse_assistant_delta() {
+        let event = AgenticEvent::Assistant {
+            run_id: "run_123".to_string(),
+            text: "Hello".to_string(),
+            is_delta: true,
+            is_final: false,
+        };
+        let sse = engine_event_to_sse(&event, "run_123");
+        match sse {
+            Some(ChatSseEvent::Delta { text }) => assert_eq!(text, "Hello"),
+            _ => panic!("Expected Delta event"),
+        }
+    }
+
+    #[test]
+    fn test_engine_event_to_sse_thinking() {
+        let event = AgenticEvent::Thinking {
+            run_id: "run_123".to_string(),
+            text: "Thinking...".to_string(),
+            is_delta: true,
+            is_final: false,
+            signature: None,
+        };
+        let sse = engine_event_to_sse(&event, "run_123");
+        match sse {
+            Some(ChatSseEvent::Thinking { text }) => assert_eq!(text, "Thinking..."),
+            _ => panic!("Expected Thinking event"),
+        }
+    }
+
+    #[test]
+    fn test_engine_event_to_sse_tool_start() {
+        let event = AgenticEvent::ToolStart {
+            run_id: "run_123".to_string(),
+            tool_id: "tc_001".to_string(),
+            name: "web_search".to_string(),
+            params: serde_json::json!({"query": "rust"}),
+        };
+        let sse = engine_event_to_sse(&event, "run_123");
+        match sse {
+            Some(ChatSseEvent::ToolCall { id, tool, args, async_ }) => {
+                assert_eq!(id, "tc_001");
+                assert_eq!(tool, "web_search");
+                assert_eq!(args, serde_json::json!({"query": "rust"}));
+                assert!(!async_);
+            }
+            _ => panic!("Expected ToolCall event"),
+        }
+    }
+
+    #[test]
+    fn test_engine_event_to_sse_tool_end_success() {
+        let event = AgenticEvent::ToolEnd {
+            run_id: "run_123".to_string(),
+            tool_id: "tc_001".to_string(),
+            result: serde_json::json!("result"),
+            success: true,
+            duration_ms: 100,
+        };
+        let sse = engine_event_to_sse(&event, "run_123");
+        match sse {
+            Some(ChatSseEvent::ToolResult { tool_call_id, output, error }) => {
+                assert_eq!(tool_call_id, "tc_001");
+                assert!(error.is_none());
+                assert!(output.contains("result"));
+            }
+            _ => panic!("Expected ToolResult event"),
+        }
+    }
+
+    #[test]
+    fn test_engine_event_to_sse_tool_end_failure() {
+        let event = AgenticEvent::ToolEnd {
+            run_id: "run_123".to_string(),
+            tool_id: "tc_002".to_string(),
+            result: serde_json::json!("Tool failed"),
+            success: false,
+            duration_ms: 50,
+        };
+        let sse = engine_event_to_sse(&event, "run_123");
+        match sse {
+            Some(ChatSseEvent::ToolResult { tool_call_id, error, .. }) => {
+                assert_eq!(tool_call_id, "tc_002");
+                assert!(error.is_some());
+            }
+            _ => panic!("Expected ToolResult event"),
+        }
     }
 }

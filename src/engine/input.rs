@@ -244,6 +244,18 @@ mod tests {
     }
 
     #[test]
+    fn test_user_message_with_session() {
+        let input = AgentInput::user_message_with_session("Hello", "sess_123");
+        match input {
+            AgentInput::UserMessage { content, session_id } => {
+                assert_eq!(content, "Hello");
+                assert_eq!(session_id, Some("sess_123".to_string()));
+            }
+            _ => panic!("Expected UserMessage variant"),
+        }
+    }
+
+    #[test]
     fn test_hook_trigger() {
         let payload = serde_json::json!({"file": "test.txt"});
         let input = AgentInput::hook_trigger(HookType::FileWatch, payload, "./watch");
@@ -254,6 +266,39 @@ mod tests {
         let content = input.content_string();
         assert!(content.contains("FileWatch"));
         assert!(content.contains("./watch"));
+    }
+
+    #[test]
+    fn test_hook_trigger_variants() {
+        // Test Cron hook
+        let cron = AgentInput::hook_trigger(
+            HookType::Cron,
+            serde_json::json!({"schedule": "0 9 * * *"}),
+            "daily_job",
+        );
+        let content = cron.content_string();
+        assert!(content.contains("Cron"));
+        assert!(content.contains("daily_job"));
+
+        // Test Webhook hook
+        let webhook = AgentInput::hook_trigger(
+            HookType::Webhook,
+            serde_json::json!({"event": "push"}),
+            "/github/webhook",
+        );
+        let content = webhook.content_string();
+        assert!(content.contains("Webhook"));
+        assert!(content.contains("/github/webhook"));
+
+        // Test Event hook
+        let event = AgentInput::hook_trigger(
+            HookType::Event,
+            serde_json::json!({"type": "user_login"}),
+            "auth_events",
+        );
+        let content = event.content_string();
+        assert!(content.contains("Event"));
+        assert!(content.contains("auth_events"));
     }
 
     #[test]
@@ -269,10 +314,48 @@ mod tests {
     }
 
     #[test]
+    fn test_a2a_message_types() {
+        let types = vec![
+            A2AMessageType::Direct,
+            A2AMessageType::Broadcast,
+            A2AMessageType::Request,
+            A2AMessageType::Response,
+            A2AMessageType::Announcement,
+        ];
+
+        for msg_type in types {
+            let input = AgentInput::a2a_message("sender", "content", msg_type.clone());
+            let content = input.content_string();
+            assert!(content.contains("sender"));
+            assert!(content.contains("content"));
+            // The debug representation of the enum variant should be in the content
+            assert!(!content.is_empty());
+        }
+    }
+
+    #[test]
     fn test_to_chat_message() {
         let input = AgentInput::user_message("Test message");
         let msg = input.to_chat_message();
         assert!(matches!(msg.role, MessageRole::User));
+    }
+
+    #[test]
+    fn test_to_chat_message_with_hook() {
+        let input = AgentInput::hook_trigger(
+            HookType::Cron,
+            serde_json::json!({"task": "backup"}),
+            "scheduler",
+        );
+        let msg = input.to_chat_message();
+        assert!(matches!(msg.role, MessageRole::User));
+        match &msg.content[0] {
+            ContentBlock::Text { text } => {
+                assert!(text.contains("Cron"));
+                assert!(text.contains("scheduler"));
+            }
+            _ => panic!("Expected Text content block"),
+        }
     }
 
     #[test]
@@ -284,5 +367,54 @@ mod tests {
 
         let ctx = ctx.with_existing_session();
         assert!(!ctx.is_new_session);
+    }
+
+    #[test]
+    fn test_input_context_chaining() {
+        let input = AgentInput::user_message("Test");
+        let ctx = InputContext::new(input, "run_001")
+            .with_existing_session();
+        
+        assert_eq!(ctx.run_id, "run_001");
+        assert!(!ctx.is_new_session);
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let input = AgentInput::user_message_with_session("Hello", "sess_123");
+        let json = serde_json::to_string(&input).unwrap();
+        let deserialized: AgentInput = serde_json::from_str(&json).unwrap();
+        
+        match deserialized {
+            AgentInput::UserMessage { content, session_id } => {
+                assert_eq!(content, "Hello");
+                assert_eq!(session_id, Some("sess_123".to_string()));
+            }
+            _ => panic!("Deserialization failed"),
+        }
+    }
+
+    #[test]
+    fn test_hook_serialization() {
+        let input = AgentInput::hook_trigger(
+            HookType::FileWatch,
+            serde_json::json!({"path": "/tmp/test"}),
+            "watcher",
+        );
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("hook_trigger"));
+        assert!(json.contains("file_watch"));
+        assert!(json.contains("watcher"));
+    }
+
+    #[test]
+    fn test_a2a_serialization() {
+        let input = AgentInput::a2a_message("agent_a", "Hello", A2AMessageType::Direct);
+        let json = serde_json::to_string(&input).unwrap();
+        // The variant is A2AMessage which with snake_case becomes "a2_a_message"
+        // (serde treats numbers as word boundaries)
+        assert!(json.contains("a2_a_message"), "JSON: {}", json);
+        assert!(json.contains("agent_a"));
+        assert!(json.contains("direct"));
     }
 }

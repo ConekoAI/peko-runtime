@@ -268,6 +268,7 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
 
     #[test]
     fn test_chat_request_deserialization() {
@@ -289,5 +290,167 @@ mod tests {
         assert_eq!(req.message, "Hi");
         assert!(req.session_id.is_none());
         assert_eq!(req.role, "user");
+    }
+
+    #[test]
+    fn test_chat_request_with_only_session() {
+        let json = r#"{
+            "message": "Test",
+            "session_id": "sess_456"
+        }"#;
+        let req: ChatRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.message, "Test");
+        assert_eq!(req.session_id, Some("sess_456".to_string()));
+        assert_eq!(req.role, "user"); // Default
+    }
+
+    #[test]
+    fn test_chat_response_serialization() {
+        let response = ChatResponse {
+            message: AssistantMessage {
+                id: "msg_123".to_string(),
+                role: "assistant".to_string(),
+                content: "Hello!".to_string(),
+                created_at: "2026-03-17T10:00:00Z".to_string(),
+            },
+            session_id: "sess_456".to_string(),
+            turn_count: 1,
+            usage: TokenUsage::default(),
+            tool_calls: None,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"message\""));
+        assert!(json.contains("\"session_id\""));
+        assert!(json.contains("\"turn_count\":1"));
+    }
+
+    #[test]
+    fn test_chat_response_with_tool_calls() {
+        let response = ChatResponse {
+            message: AssistantMessage {
+                id: "msg_789".to_string(),
+                role: "assistant".to_string(),
+                content: "I used a tool".to_string(),
+                created_at: "2026-03-17T10:00:00Z".to_string(),
+            },
+            session_id: "sess_abc".to_string(),
+            turn_count: 2,
+            usage: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                total_tokens: 150,
+            },
+            tool_calls: Some(vec![ToolCallSummary {
+                id: "tc_001".to_string(),
+                tool: "web_search".to_string(),
+                args: serde_json::json!({"query": "test"}),
+                output: "Search results".to_string(),
+            }]),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"tool_calls\""));
+        assert!(json.contains("web_search"));
+        assert!(json.contains("input_tokens\""));
+    }
+
+    #[test]
+    fn test_assistant_message_serialization() {
+        let msg = AssistantMessage {
+            id: "msg_001".to_string(),
+            role: "assistant".to_string(),
+            content: "Test response".to_string(),
+            created_at: "2026-03-17T10:00:00Z".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"id\":\"msg_001\""));
+        assert!(json.contains("\"role\":\"assistant\""));
+        assert!(json.contains("\"content\":\"Test response\""));
+        assert!(json.contains("\"created_at\""));
+    }
+
+    #[test]
+    fn test_tool_call_summary_serialization() {
+        let summary = ToolCallSummary {
+            id: "tc_123".to_string(),
+            tool: "filesystem_read".to_string(),
+            args: serde_json::json!({"path": "/test.txt"}),
+            output: "file contents".to_string(),
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"id\":\"tc_123\""));
+        assert!(json.contains("\"tool\":\"filesystem_read\""));
+        assert!(json.contains("\"args\""));
+        assert!(json.contains("\"output\""));
+    }
+
+    #[test]
+    fn test_default_user_role() {
+        assert_eq!(default_user_role(), "user");
+    }
+
+    #[tokio::test]
+    async fn test_sse_event_channel() {
+        let (sse_tx, mut sse_rx) = mpsc::channel(10);
+        
+        // Send an assistant event
+        let _ = sse_tx.send(ChatSseEvent::Delta { text: "Hello".to_string() }).await;
+        
+        // Verify event was sent
+        let event = sse_rx.recv().await;
+        assert!(matches!(event, Some(ChatSseEvent::Delta { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_sse_tool_events() {
+        let (sse_tx, mut sse_rx) = mpsc::channel(10);
+        
+        // Send tool start event
+        let _ = sse_tx.send(ChatSseEvent::ToolCall {
+            id: "tc_001".to_string(),
+            tool: "test_tool".to_string(),
+            args: serde_json::json!({}),
+            async_: false,
+        }).await;
+        
+        let event = sse_rx.recv().await;
+        match event {
+            Some(ChatSseEvent::ToolCall { id, tool, .. }) => {
+                assert_eq!(id, "tc_001");
+                assert_eq!(tool, "test_tool");
+            }
+            _ => panic!("Expected ToolCall event"),
+        }
+        
+        // Send tool result event
+        let _ = sse_tx.send(ChatSseEvent::ToolResult {
+            tool_call_id: "tc_001".to_string(),
+            output: "result".to_string(),
+            error: None,
+        }).await;
+        
+        let event = sse_rx.recv().await;
+        assert!(matches!(event, Some(ChatSseEvent::ToolResult { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_sse_done_event() {
+        let (sse_tx, mut sse_rx) = mpsc::channel(10);
+        
+        let _ = sse_tx.send(ChatSseEvent::Done {
+            message_id: "msg_001".to_string(),
+            session_id: "sess_001".to_string(),
+            turn_count: 1,
+            usage: TokenUsage::default(),
+        }).await;
+        
+        let event = sse_rx.recv().await;
+        match event {
+            Some(ChatSseEvent::Done { message_id, session_id, turn_count, .. }) => {
+                assert_eq!(message_id, "msg_001");
+                assert_eq!(session_id, "sess_001");
+                assert_eq!(turn_count, 1);
+            }
+            _ => panic!("Expected Done event"),
+        }
     }
 }

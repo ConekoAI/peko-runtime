@@ -301,6 +301,28 @@ mod tests {
     }
 
     #[test]
+    fn test_ws_client_message_without_session() {
+        let json = r#"{
+            "type": "message",
+            "id": "req_002",
+            "content": "Test"
+        }"#;
+        let msg: WsClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            WsClientMessage::Message {
+                id,
+                content,
+                session_id,
+            } => {
+                assert_eq!(id, "req_002");
+                assert_eq!(content, "Test");
+                assert_eq!(session_id, None);
+            }
+            _ => panic!("Expected Message variant"),
+        }
+    }
+
+    #[test]
     fn test_ws_client_ping() {
         let json = r#"{"type": "ping"}"#;
         let msg: WsClientMessage = serde_json::from_str(json).unwrap();
@@ -311,7 +333,17 @@ mod tests {
     }
 
     #[test]
-    fn test_ws_server_serialization() {
+    fn test_ws_client_close() {
+        let json = r#"{"type": "close"}"#;
+        let msg: WsClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            WsClientMessage::Close => {}
+            _ => panic!("Expected Close variant"),
+        }
+    }
+
+    #[test]
+    fn test_ws_server_hello_serialization() {
         let msg = WsServerMessage::Hello {
             instance_id: "inst_123".to_string(),
             session_id: Some("sess_456".to_string()),
@@ -319,5 +351,165 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"hello\""));
         assert!(json.contains("\"instance_id\":\"inst_123\""));
+        assert!(json.contains("\"session_id\":\"sess_456\""));
+    }
+
+    #[test]
+    fn test_ws_server_hello_without_session() {
+        let msg = WsServerMessage::Hello {
+            instance_id: "inst_789".to_string(),
+            session_id: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"hello\""));
+        assert!(json.contains("\"instance_id\":\"inst_789\""));
+        // session_id is serialized as null when None
+        assert!(json.contains("\"session_id\":null"));
+    }
+
+    #[test]
+    fn test_ws_server_ack_serialization() {
+        let msg = WsServerMessage::Ack {
+            request_id: "req_123".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"ack\""));
+        assert!(json.contains("\"request_id\":\"req_123\""));
+    }
+
+    #[test]
+    fn test_ws_server_delta_serialization() {
+        let msg = WsServerMessage::Delta {
+            text: "Hello world".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"delta\""));
+        assert!(json.contains("\"text\":\"Hello world\""));
+    }
+
+    #[test]
+    fn test_ws_server_tool_call_serialization() {
+        let msg = WsServerMessage::ToolCall {
+            id: "tc_001".to_string(),
+            tool: "web_search".to_string(),
+            args: serde_json::json!({"query": "rust"}),
+            async_: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"tool_call\""));
+        assert!(json.contains("\"id\":\"tc_001\""));
+        assert!(json.contains("\"tool\":\"web_search\""));
+        assert!(json.contains("\"async\""));
+    }
+
+    #[test]
+    fn test_ws_server_tool_result_serialization() {
+        let msg = WsServerMessage::ToolResult {
+            tool_call_id: "tc_001".to_string(),
+            output: "Search results".to_string(),
+            error: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"tool_result\""));
+        assert!(json.contains("\"tool_call_id\":\"tc_001\""));
+        assert!(json.contains("\"output\":\"Search results\""));
+        assert!(!json.contains("error"));
+    }
+
+    #[test]
+    fn test_ws_server_tool_result_with_error() {
+        let msg = WsServerMessage::ToolResult {
+            tool_call_id: "tc_002".to_string(),
+            output: "Error output".to_string(),
+            error: Some("Tool failed".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"error\":\"Tool failed\""));
+    }
+
+    #[test]
+    fn test_ws_server_thinking_serialization() {
+        let msg = WsServerMessage::Thinking {
+            text: "Let me analyze...".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"thinking\""));
+        assert!(json.contains("\"text\":\"Let me analyze...\""));
+    }
+
+    #[test]
+    fn test_ws_server_done_serialization() {
+        let msg = WsServerMessage::Done {
+            message_id: "msg_001".to_string(),
+            session_id: "sess_001".to_string(),
+            turn_count: 3,
+            usage: TokenUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                total_tokens: 150,
+            },
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"done\""));
+        assert!(json.contains("\"message_id\":\"msg_001\""));
+        assert!(json.contains("\"turn_count\":3"));
+        assert!(json.contains("\"input_tokens\":100"));
+        assert!(json.contains("\"output_tokens\":50"));
+        assert!(json.contains("\"total_tokens\":150"));
+    }
+
+    #[test]
+    fn test_ws_server_pong_serialization() {
+        let msg = WsServerMessage::Pong;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"pong\""));
+    }
+
+    #[test]
+    fn test_ws_server_error_serialization() {
+        let msg = WsServerMessage::Error {
+            code: "invalid_request".to_string(),
+            message: "Missing required field".to_string(),
+            request_id: Some("req_123".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"error\""));
+        assert!(json.contains("\"code\":\"invalid_request\""));
+        assert!(json.contains("\"message\":\"Missing required field\""));
+        assert!(json.contains("\"request_id\":\"req_123\""));
+    }
+
+    #[test]
+    fn test_ws_server_error_without_request_id() {
+        let msg = WsServerMessage::Error {
+            code: "internal_error".to_string(),
+            message: "Server error".to_string(),
+            request_id: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("request_id"));
+    }
+
+    #[test]
+    fn test_token_usage_default() {
+        let usage = TokenUsage::default();
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_invalid_client_message() {
+        let json = r#"{"type": "unknown_type"}"#;
+        let result: Result<WsClientMessage, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_client_message_missing_required_field() {
+        // Message type requires "id" and "content" fields
+        let json = r#"{"type": "message", "id": "req_001"}"#;
+        let result: Result<WsClientMessage, _> = serde_json::from_str(json);
+        assert!(result.is_err());
     }
 }
