@@ -577,4 +577,88 @@ mod tests {
         assert!(json.contains("pulling"));
         assert!(json.contains("sha256:abc123"));
     }
+
+    #[test]
+    fn test_progress_event_variants() {
+        // Test Resolving
+        let event = ProgressEvent::Resolving {
+            r#ref: "test:v1.0".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("resolving"));
+
+        // Test Extracting
+        let event = ProgressEvent::Extracting {
+            layer: "sha256:def456".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("extracting"));
+
+        // Test Verifying
+        let event = ProgressEvent::Verifying {
+            layer: "sha256:ghi789".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("verifying"));
+
+        // Test Done
+        let hex = "a".repeat(64);
+        let manifest = ImageManifest::new("test", "1.0.0").with_digest(format!("sha256:{}", hex));
+        let event = ProgressEvent::Done { manifest };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("done"));
+
+        // Test Error
+        let event = ProgressEvent::Error {
+            code: "not_found".to_string(),
+            message: "Image not found".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("error"));
+        assert!(json.contains("not_found"));
+    }
+
+    #[test]
+    fn test_registry_ref_invalid() {
+        // Empty string should fail
+        assert!(RegistryRef::parse("").is_err());
+
+        // Just a host without path should fail
+        assert!(RegistryRef::parse("pekohub.com").is_err());
+
+        // But host/path should work
+        assert!(RegistryRef::parse("pekohub.com/agent").is_ok());
+    }
+
+    #[test]
+    fn test_sanitize_tag() {
+        assert_eq!(sanitize_tag("test:v1.0"), "test_v1.0");
+        assert_eq!(sanitize_tag("a/b/c"), "a_b_c");
+        assert_eq!(sanitize_tag("path\\to\\tag"), "path_to_tag");
+        assert_eq!(sanitize_tag("tag<with>chars"), "tag_with_chars");
+        assert_eq!(sanitize_tag("tag|with*chars?"), "tag_with_chars_");
+    }
+
+    #[tokio::test]
+    async fn test_registry_client_creation() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = RegistryConfig::default();
+        let _client = RegistryClient::new(config, temp_dir.path());
+
+        // Just verify it can be created without panicking
+    }
+
+    #[test]
+    fn test_registry_ref_display_and_repo() {
+        let r#ref = RegistryRef::parse("pekohub.com/agents/test:v1.0").unwrap();
+        assert_eq!(r#ref.full_ref(), "pekohub.com/agents/test:v1.0");
+        assert_eq!(r#ref.repository(), "pekohub.com/agents/test");
+
+        // Test with nested path
+        let r#ref = RegistryRef::parse("registry.io/org/team/agent:latest").unwrap();
+        assert_eq!(r#ref.full_ref(), "registry.io/org/team/agent:latest");
+        assert_eq!(r#ref.repository(), "registry.io/org/team/agent");
+    }
 }

@@ -4,6 +4,7 @@
 //! This will expand as more endpoints are implemented.
 
 use crate::hooks::{EventBroadcaster, HookRegistry};
+use crate::registry::{load_from_workspace, RegistryConfig};
 use crate::team::TeamManager;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,6 +40,9 @@ pub struct AppState {
 
     /// Event broadcaster for system events
     event_broadcaster: Arc<EventBroadcaster>,
+
+    /// Registry configuration for push/pull operations
+    registry_config: Arc<RwLock<RegistryConfig>>,
 
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
@@ -96,6 +100,7 @@ impl AppState {
             team_manager: Arc::new(TeamManager::new()),
             hook_registry: Arc::new(HookRegistry::new()),
             event_broadcaster: Arc::new(EventBroadcaster::new()),
+            registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         }
     }
@@ -117,6 +122,7 @@ impl AppState {
             team_manager: Arc::new(TeamManager::with_data_dir(data_dir)),
             hook_registry: Arc::new(HookRegistry::new()),
             event_broadcaster: Arc::new(EventBroadcaster::new()),
+            registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         }
     }
@@ -183,6 +189,25 @@ impl AppState {
     /// Get the event broadcaster
     pub fn event_broadcaster(&self) -> Arc<EventBroadcaster> {
         self.event_broadcaster.clone()
+    }
+
+    /// Load registry configuration from workspace
+    pub async fn load_registry_config(&self) {
+        let config = load_from_workspace(&self.workspace_path);
+        let mut registry_config = self.registry_config.write().await;
+        *registry_config = config;
+    }
+
+    /// Get the current registry configuration
+    pub async fn registry_config(&self) -> RegistryConfig {
+        let config = self.registry_config.read().await;
+        config.clone()
+    }
+
+    /// Update the registry configuration
+    pub async fn set_registry_config(&self, config: RegistryConfig) {
+        let mut registry_config = self.registry_config.write().await;
+        *registry_config = config;
     }
 }
 

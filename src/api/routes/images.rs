@@ -338,8 +338,8 @@ async fn pull_image(
     tokio::spawn(async move {
         let registry_path = workspace.join("registry");
 
-        // TODO: Load registry config from runtime.toml
-        let config = RegistryConfig::default();
+        // Load registry config from runtime.toml
+        let config = load_from_workspace(&workspace);
         let client = RegistryClient::new(config, registry_path);
 
         let progress_callback = |progress: ProgressEvent| {

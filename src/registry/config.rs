@@ -282,4 +282,164 @@ port = 11435
         let config = load_from_workspace("/nonexistent/path/that/does/not/exist");
         assert_eq!(config.default, "pekohub.com"); // Falls back to default
     }
+
+    #[test]
+    fn test_registry_source_with_auth() {
+        let source = RegistrySource {
+            url: "private.registry.com".to_string(),
+            priority: 1,
+            auth: Some(AuthConfig::token("MY_TOKEN")),
+        };
+
+        assert_eq!(source.url, "private.registry.com");
+        assert_eq!(source.priority, 1);
+        assert!(source.auth.is_some());
+    }
+
+    #[test]
+    fn test_registry_source_no_auth() {
+        let source = RegistrySource {
+            url: "public.registry.com".to_string(),
+            priority: 2,
+            auth: None,
+        };
+
+        assert_eq!(source.url, "public.registry.com");
+        assert!(source.auth.is_none());
+    }
+
+    #[test]
+    fn test_auth_config_none() {
+        let auth = AuthConfig::None;
+        match auth {
+            AuthConfig::None => (), // Expected
+            _ => panic!("Expected None variant"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_auth_none() {
+        let auth = AuthConfig::None;
+        let resolved = auth.resolve().unwrap();
+        match resolved {
+            ResolvedAuth::None => (), // Expected
+            _ => panic!("Expected ResolvedAuth::None"),
+        }
+    }
+
+    #[test]
+    fn test_resolved_auth_apply() {
+        use reqwest;
+
+        // Test Bearer auth
+        let bearer = ResolvedAuth::Bearer("token123".to_string());
+        let req = reqwest::Client::new().get("http://example.com");
+        let _ = bearer.apply(req);
+
+        // Test Basic auth
+        let basic = ResolvedAuth::Basic {
+            username: "user".to_string(),
+            password: "pass".to_string(),
+        };
+        let req = reqwest::Client::new().get("http://example.com");
+        let _ = basic.apply(req);
+
+        // Test None auth
+        let none = ResolvedAuth::None;
+        let req = reqwest::Client::new().get("http://example.com");
+        let _ = none.apply(req);
+    }
+
+    #[test]
+    fn test_config_add_and_resolve_source() {
+        // Create empty config without default sources
+        let mut config = RegistryConfig {
+            default: "pekohub.com".to_string(),
+            sources: Vec::new(),
+        };
+
+        // Add sources in reverse priority order
+        config.add_source(RegistrySource {
+            url: "low.priority.com".to_string(),
+            priority: 2,
+            auth: None,
+        });
+
+        config.add_source(RegistrySource {
+            url: "high.priority.com".to_string(),
+            priority: 1,
+            auth: None,
+        });
+
+        // Should be sorted by priority
+        assert_eq!(config.sources[0].url, "high.priority.com");
+        assert_eq!(config.sources[1].url, "low.priority.com");
+
+        // Test resolve_source - should find exact match
+        let resolved = config.resolve_source("high.priority.com");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().url, "high.priority.com");
+
+        // Test resolve_source fallback to first source
+        let resolved = config.resolve_source("nonexistent.com");
+        assert!(resolved.is_some()); // Falls back to first source
+        assert_eq!(resolved.unwrap().url, "high.priority.com");
+
+        // Test get_source
+        let source = config.get_source("low.priority.com");
+        assert!(source.is_some());
+        assert_eq!(source.unwrap().priority, 2);
+    }
+
+    #[test]
+    fn test_parse_runtime_toml_with_basic_auth() {
+        // Use flattened format for auth (fields at same level due to #[serde(flatten)])
+        let toml = r#"
+[registry]
+default = "secure.registry.com"
+
+[[registry.sources]]
+url = "secure.registry.com"
+priority = 1
+type = "basic"
+user_env = "REG_USER"
+password_env = "REG_PASS"
+"#;
+        let config = parse_runtime_toml(toml);
+        assert_eq!(config.default, "secure.registry.com");
+        assert_eq!(config.sources.len(), 1);
+
+        match &config.sources[0].auth {
+            Some(AuthConfig::Basic {
+                user_env,
+                password_env,
+            }) => {
+                assert_eq!(user_env, "REG_USER");
+                assert_eq!(password_env, "REG_PASS");
+            }
+            other => panic!("Expected Basic auth, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_runtime_toml_with_multiple_sections() {
+        let toml = r#"
+[daemon]
+port = 11435
+host = "127.0.0.1"
+
+[registry]
+default = "custom.registry.com"
+
+[[registry.sources]]
+url = "custom.registry.com"
+priority = 1
+
+[providers]
+anthropic_api_key_env = "ANTHROPIC_API_KEY"
+"#;
+        let config = parse_runtime_toml(toml);
+        assert_eq!(config.default, "custom.registry.com");
+        assert_eq!(config.sources.len(), 1);
+    }
 }
