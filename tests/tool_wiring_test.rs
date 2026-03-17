@@ -108,26 +108,26 @@ async fn test_tool_factory_presets() {
     println!("\n🔧 Testing ToolFactory presets...");
 
     // Minimal tools
-    let minimal = ToolFactory::create_minimal_tools(PathBuf::from("/tmp"));
+    let minimal = ToolFactory::create_minimal_tools(PathBuf::from("/tmp"), vec![]);
     assert_eq!(
-        minimal.len(),
+        minimal.tools.len(),
         2,
         "Minimal should have 2 tools (filesystem, process)"
     );
-    println!("  ✓ Minimal tools: {}", minimal.len());
+    println!("  ✓ Minimal tools: {}", minimal.tools.len());
 
     // Coding tools
-    let coding = ToolFactory::create_coding_tools(PathBuf::from("/tmp"));
+    let coding = ToolFactory::create_coding_tools(PathBuf::from("/tmp"), vec![]);
     assert!(
-        coding.len() >= 4,
+        coding.tools.len() >= 4,
         "Coding should have at least 4 tools (filesystem, apply_patch, process, cron)"
     );
-    println!("  ✓ Coding tools: {}", coding.len());
+    println!("  ✓ Coding tools: {}", coding.tools.len());
 
     // Full tools
-    let full = ToolFactory::create_full_tools(PathBuf::from("/tmp"));
-    assert!(full.len() >= 7, "Full should have at least 7 tools (filesystem, apply_patch, process, 3 session tools, cron)");
-    println!("  ✓ Full tools: {}", full.len());
+    let full = ToolFactory::create_full_tools(PathBuf::from("/tmp"), vec![]);
+    assert!(full.tools.len() >= 7, "Full should have at least 7 tools (filesystem, apply_patch, process, 3 session tools, cron)");
+    println!("  ✓ Full tools: {}", full.tools.len());
 
     println!("✅ ToolFactory presets working!");
 }
@@ -138,9 +138,9 @@ async fn test_tools_have_descriptions() {
 
     println!("\n🔧 Testing tool descriptions...");
 
-    let tools = ToolFactory::create_full_tools(PathBuf::from("/tmp"));
+    let result = ToolFactory::create_full_tools(PathBuf::from("/tmp"), vec![]);
 
-    for tool in &tools {
+    for tool in &result.tools {
         let desc = tool.description();
         assert!(
             !desc.is_empty(),

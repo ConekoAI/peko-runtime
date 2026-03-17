@@ -123,7 +123,7 @@ impl TaskManager {
         let tool_name_for_error = tool_name.clone();
 
         // Spawn the tool execution in a blocking task with panic catching
-        let result = tokio::task::spawn_blocking(move || {
+        let spawn_result = tokio::task::spawn_blocking(move || {
             // Use AssertUnwindSafe because we're catching the panic anyway
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 // Create a runtime for the async tool execution
@@ -149,12 +149,14 @@ impl TaskManager {
                     ))
                 }
             }
-        })
-        .await;
+        });
+
+        // Apply timeout to the spawned task
+        let result = tokio::time::timeout(timeout, spawn_result).await;
 
         match result {
-            Ok(tool_result) => tool_result,
-            Err(e) => {
+            Ok(Ok(tool_result)) => tool_result,
+            Ok(Err(e)) => {
                 if e.is_panic() {
                     error!("Task panicked during execution: {}", e);
                     Err(anyhow::anyhow!(
@@ -167,6 +169,13 @@ impl TaskManager {
                         tool_name_for_error
                     ))
                 }
+            }
+            Err(_) => {
+                Err(anyhow::anyhow!(
+                    "Tool '{}' timed out after {:?}",
+                    tool_name_for_error,
+                    timeout
+                ))
             }
         }
     }

@@ -119,6 +119,4 @@ path = "src/main.rs"
 name = "performance_benchmarks"
 harness = false
 
-[[example]]
-name = "e2e_tool_test"
-path = "examples/e2e_tool_test.rs"
+

@@ -283,6 +283,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "Requires ~/.pekobot agent directory setup"]
     async fn test_session_context_for_channel() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
         let peer = Peer::User("alice".to_string());
@@ -364,6 +365,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires ~/.pekobot agent directory setup"]
     async fn test_session_router_spawn_routing() {
         // Test that SessionRouter correctly routes spawn sessions
         // with proper parent key inheritance

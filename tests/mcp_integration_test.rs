@@ -18,14 +18,14 @@ async fn test_tool_factory_core_only() {
         ..Default::default()
     };
 
-    let (tools, discovery) = ToolFactory::create_tools_async(&config).await.unwrap();
+    let result = ToolFactory::create_tools_async(&config).await.unwrap();
 
     // Should have core tools
-    assert!(!tools.is_empty(), "Should have core tools");
+    assert!(!result.tools.is_empty(), "Should have core tools");
 
     // MCP should not be used
-    assert!(!discovery.has_mcp_tools());
-    assert_eq!(discovery.servers_found, 0);
+    assert!(!result.mcp.has_mcp_tools());
+    assert_eq!(result.mcp.servers_found, 0);
 }
 
 /// Test that ToolFactory attempts MCP discovery when enabled
@@ -45,13 +45,13 @@ async fn test_tool_factory_mcp_enabled_no_config() {
     };
 
     // Should not fail even without MCP config
-    let (tools, discovery) = ToolFactory::create_tools_async(&config).await.unwrap();
+    let result = ToolFactory::create_tools_async(&config).await.unwrap();
 
     // Should still have core tools
-    assert!(!tools.is_empty(), "Should have core tools even without MCP");
+    assert!(!result.tools.is_empty(), "Should have core tools even without MCP");
 
     // No MCP servers should be found (no config)
-    assert_eq!(discovery.servers_found, 0);
+    assert_eq!(result.mcp.servers_found, 0);
 }
 
 /// Test MCP config path helper
@@ -96,10 +96,10 @@ fn test_mcp_discovery_result_helpers() {
 fn test_create_minimal_tools() {
     use pekobot::tools::ToolFactory;
 
-    let tools = ToolFactory::create_minimal_tools(PathBuf::from("."));
+    let result = ToolFactory::create_minimal_tools(PathBuf::from("."), vec![]);
 
     // Minimal tools should only have filesystem and process
-    let tool_names: Vec<_> = tools.iter().map(|t| t.name().to_string()).collect();
+    let tool_names: Vec<_> = result.tools.iter().map(|t| t.name().to_string()).collect();
 
     // Should have filesystem
     assert!(
@@ -126,8 +126,8 @@ fn test_create_minimal_tools() {
 fn test_create_coding_tools() {
     use pekobot::tools::ToolFactory;
 
-    let tools = ToolFactory::create_coding_tools(PathBuf::from("."));
+    let result = ToolFactory::create_coding_tools(PathBuf::from("."), vec![]);
 
     // Should have more tools than minimal
-    assert!(!tools.is_empty(), "Should have coding tools");
+    assert!(!result.tools.is_empty(), "Should have coding tools");
 }

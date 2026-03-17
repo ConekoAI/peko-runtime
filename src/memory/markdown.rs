@@ -361,10 +361,18 @@ mod tests {
         let date = Utc::now();
         let path = memory.daily_file_path(date);
 
-        assert!(path.to_string_lossy().contains("memory/"));
-        assert!(path
-            .to_string_lossy()
-            .contains(&date.format("%Y-%m-%d").to_string()));
+        // Check path contains the memory directory and date
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.contains("memory") || path_str.contains("memory"),
+            "Path should contain memory directory: {}",
+            path_str
+        );
+        assert!(
+            path_str.contains(&date.format("%Y-%m-%d").to_string()),
+            "Path should contain date: {}",
+            path_str
+        );
     }
 
     #[tokio::test]

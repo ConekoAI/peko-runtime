@@ -327,9 +327,13 @@ This is the body content.
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("</available_skills>"));
         assert!(prompt.contains("docker: Docker container operations"));
-        // Should use ~ instead of full home path
+        // Should use ~ instead of full home path (path separator may vary by platform)
+        // On Windows, the path might have mixed separators after replacement
+        let has_tilde_path = prompt.contains("~/.pekobot/skills/docker/SKILL.md")
+            || prompt.contains("~\\.pekobot/skills/docker/SKILL.md")
+            || prompt.contains("~\\.pekobot\\skills\\docker\\SKILL.md");
         assert!(
-            prompt.contains("~/.pekobot/skills/docker/SKILL.md"),
+            has_tilde_path,
             "Expected path with ~, got: {}",
             prompt
         );

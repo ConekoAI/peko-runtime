@@ -107,16 +107,16 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Example: Create combined tool list with built-in and MCP tools
-    let mut all_tools =
-        pekobot::tools::ToolFactory::create_full_tools(std::path::PathBuf::from("."));
+    let mut result =
+        pekobot::tools::ToolFactory::create_full_tools(std::path::PathBuf::from("."), vec![]);
 
     // Add MCP tools
     for tool in mcp_tools {
-        all_tools.push(tool);
+        result.tools.push(tool);
     }
 
-    println!("\nCombined tool list ({} tools):", all_tools.len());
-    for tool in &all_tools {
+    println!("\nCombined tool list ({} tools):", result.tools.len());
+    for tool in &result.tools {
         println!("  - {}", tool.name());
     }
 
@@ -163,14 +163,14 @@ async fn example_with_agent() -> anyhow::Result<()> {
 
     // Get built-in tools
     let workspace_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let mut tools = pekobot::tools::ToolFactory::create_full_tools(workspace_dir);
+    let mut result = pekobot::tools::ToolFactory::create_full_tools(workspace_dir, vec![]);
 
     // Add MCP tools
     let mcp_tools = {
         let mgr = mcp_manager.read().await;
         mgr.get_tools().await
     };
-    tools.extend(mcp_tools);
+    result.tools.extend(mcp_tools);
 
     // Now use these tools with an agent
     // let agent = Agent::new(agent_config, tools)?;

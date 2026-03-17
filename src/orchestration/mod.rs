@@ -8,7 +8,7 @@
 //!
 //! # Architecture
 //!
-//! ```
+//! ```text
 //! FileWatcher ──┐
 //! WebhookServer ─┼──► EventRouter ──► AgentManager
 //! EventSubscriber─┘

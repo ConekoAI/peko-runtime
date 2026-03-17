@@ -7,9 +7,9 @@
 //! - Session creation (/new)
 //!
 //! Architecture:
-//! ```
+//! ```text
 //! Peer Key (agent:myagent:peer:user:alice)
-//!     ↓
+//!     |
 //! SessionRegistryEntry {
 //!     active_session_id: "uuid-1",
 //!     sessions: {
