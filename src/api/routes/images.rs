@@ -14,7 +14,8 @@ use crate::api::types::{PaginatedResponse, PaginationParams};
 use crate::image::builder::{BuildOptions, BuildProgress, ImageBuilder};
 use crate::image::manifest::ImageManifest;
 use crate::image::registry::ImageRegistry;
-use crate::image::RegistryConfig;
+use crate::image::RegistryConfig as LocalRegistryConfig;
+use crate::registry::{load_from_workspace, ProgressEvent, RegistryClient, RegistryConfig};
 use axum::{
     extract::{Path, Query, State},
     response::Sse,
@@ -85,11 +86,107 @@ pub struct PullImageRequest {
     pub r#ref: String,
 }
 
+/// Pull progress event for SSE
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "stage")]
+pub enum PullEvent {
+    #[serde(rename = "resolving")]
+    Resolving { r#ref: String },
+    #[serde(rename = "pulling")]
+    Pulling {
+        layer: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bytes_received: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bytes_total: Option<u64>,
+    },
+    #[serde(rename = "extracting")]
+    Extracting { layer: String },
+    #[serde(rename = "verifying")]
+    Verifying { layer: String },
+    #[serde(rename = "done")]
+    Done { image: ImageResponse },
+    #[serde(rename = "error")]
+    Error { code: String, message: String },
+}
+
+impl From<ProgressEvent> for PullEvent {
+    fn from(e: ProgressEvent) -> Self {
+        match e {
+            ProgressEvent::Resolving { r#ref } => PullEvent::Resolving { r#ref },
+            ProgressEvent::Pulling {
+                layer,
+                bytes_received,
+                bytes_total,
+            } => PullEvent::Pulling {
+                layer,
+                bytes_received,
+                bytes_total,
+            },
+            ProgressEvent::Extracting { layer } => PullEvent::Extracting { layer },
+            ProgressEvent::Verifying { layer } => PullEvent::Verifying { layer },
+            ProgressEvent::Done { manifest } => PullEvent::Done {
+                image: ImageResponse::from(manifest),
+            },
+            ProgressEvent::Error { code, message } => PullEvent::Error { code, message },
+            _ => PullEvent::Error {
+                code: "unexpected_event".to_string(),
+                message: "Unexpected progress event".to_string(),
+            },
+        }
+    }
+}
+
 /// Push image request
 #[derive(Debug, Deserialize)]
 pub struct PushImageRequest {
     pub local_ref: String,
     pub remote_ref: String,
+}
+
+/// Push progress event for SSE
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "stage")]
+pub enum PushEvent {
+    #[serde(rename = "resolving")]
+    Resolving { r#ref: String },
+    #[serde(rename = "pushing")]
+    Pushing {
+        layer: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bytes_sent: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bytes_total: Option<u64>,
+    },
+    #[serde(rename = "done")]
+    Done { image: ImageResponse },
+    #[serde(rename = "error")]
+    Error { code: String, message: String },
+}
+
+impl From<ProgressEvent> for PushEvent {
+    fn from(e: ProgressEvent) -> Self {
+        match e {
+            ProgressEvent::Resolving { r#ref } => PushEvent::Resolving { r#ref },
+            ProgressEvent::Pushing {
+                layer,
+                bytes_sent,
+                bytes_total,
+            } => PushEvent::Pushing {
+                layer,
+                bytes_sent,
+                bytes_total,
+            },
+            ProgressEvent::Done { manifest } => PushEvent::Done {
+                image: ImageResponse::from(manifest),
+            },
+            ProgressEvent::Error { code, message } => PushEvent::Error { code, message },
+            _ => PushEvent::Error {
+                code: "unexpected_event".to_string(),
+                message: "Unexpected progress event".to_string(),
+            },
+        }
+    }
 }
 
 /// List all images
@@ -98,7 +195,7 @@ async fn list_images(
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<ImageResponse>>, ApiError> {
     let registry_path = state.workspace_path.join("registry");
-    let config = RegistryConfig::new(&registry_path);
+    let config = LocalRegistryConfig::new(&registry_path);
     let registry = ImageRegistry::new(config);
 
     let manifests = registry
@@ -123,7 +220,7 @@ async fn get_image(
     Path(id): Path<String>,
 ) -> Result<Json<ImageResponse>, ApiError> {
     let registry_path = state.workspace_path.join("registry");
-    let config = RegistryConfig::new(&registry_path);
+    let config = LocalRegistryConfig::new(&registry_path);
     let registry = ImageRegistry::new(config);
 
     // Try to resolve as digest or reference
@@ -230,22 +327,146 @@ async fn build_image(
     Sse::new(ReceiverStream::new(rx))
 }
 
-/// Pull image from registry (placeholder - requires registry client)
+/// Pull image from registry (streaming SSE)
 async fn pull_image(
-    State(_state): State<AppState>,
-    Json(_request): Json<PullImageRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    // TODO: Implement registry client
-    Err(ApiError::service_unavailable(""))
+    State(state): State<AppState>,
+    Json(request): Json<PullImageRequest>,
+) -> Sse<ReceiverStream<Result<axum::response::sse::Event, Infallible>>> {
+    let (tx, rx) = mpsc::channel(10);
+    let workspace = state.workspace_path.clone();
+
+    tokio::spawn(async move {
+        let registry_path = workspace.join("registry");
+
+        // TODO: Load registry config from runtime.toml
+        let config = RegistryConfig::default();
+        let client = RegistryClient::new(config, registry_path);
+
+        let progress_callback = |progress: ProgressEvent| {
+            let event: PullEvent = progress.into();
+            let sse_event = axum::response::sse::Event::default()
+                .event(match &event {
+                    PullEvent::Done { .. } => "done",
+                    PullEvent::Error { .. } => "error",
+                    _ => "progress",
+                })
+                .json_data(&event)
+                .unwrap();
+
+            let _ = tx.blocking_send(Ok(sse_event));
+        };
+
+        match client.pull(&request.r#ref, progress_callback).await {
+            Ok(_) => {}
+            Err(e) => {
+                let event = PullEvent::Error {
+                    code: "pull_failed".to_string(),
+                    message: format!("Pull failed: {}", e),
+                };
+                let _ = tx
+                    .send(Ok(axum::response::sse::Event::default()
+                        .event("error")
+                        .json_data(event)
+                        .unwrap()))
+                    .await;
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx))
 }
 
-/// Push image to registry (placeholder - requires registry client)
+/// Push image to registry (streaming SSE)
 async fn push_image(
-    State(_state): State<AppState>,
-    Json(_request): Json<PushImageRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    // TODO: Implement registry client
-    Err(ApiError::service_unavailable(""))
+    State(state): State<AppState>,
+    Json(request): Json<PushImageRequest>,
+) -> Sse<ReceiverStream<Result<axum::response::sse::Event, Infallible>>> {
+    let (tx, rx) = mpsc::channel(10);
+    let workspace = state.workspace_path.clone();
+
+    tokio::spawn(async move {
+        let registry_path = workspace.join("registry");
+
+        // Load registry config from runtime.toml
+        let config = load_from_workspace(&workspace);
+        let client = RegistryClient::new(config, registry_path.clone());
+
+        // Resolve local_ref to a digest
+        let local_registry = ImageRegistry::new(LocalRegistryConfig::new(&registry_path));
+        let digest_str = if request.local_ref.starts_with("sha256:") {
+            request.local_ref.clone()
+        } else {
+            // Try to resolve from tag
+            match local_registry.get_manifest_by_ref(&request.local_ref).await {
+                Ok(Some(manifest)) => manifest.digest,
+                _ => {
+                    let event = PushEvent::Error {
+                        code: "image_not_found".to_string(),
+                        message: format!("Local image not found: {}", request.local_ref),
+                    };
+                    let _ = tx
+                        .send(Ok(axum::response::sse::Event::default()
+                            .event("error")
+                            .json_data(event)
+                            .unwrap()))
+                        .await;
+                    return;
+                }
+            }
+        };
+
+        let digest = match crate::image::manifest::ImageDigest::new(&digest_str) {
+            Ok(d) => d,
+            Err(e) => {
+                let event = PushEvent::Error {
+                    code: "invalid_digest".to_string(),
+                    message: e.to_string(),
+                };
+                let _ = tx
+                    .send(Ok(axum::response::sse::Event::default()
+                        .event("error")
+                        .json_data(event)
+                        .unwrap()))
+                    .await;
+                return;
+            }
+        };
+
+        let progress_callback = |progress: ProgressEvent| {
+            let event: PushEvent = progress.into();
+            let sse_event = axum::response::sse::Event::default()
+                .event(match &event {
+                    PushEvent::Done { .. } => "done",
+                    PushEvent::Error { .. } => "error",
+                    _ => "progress",
+                })
+                .json_data(&event)
+                .unwrap();
+
+            let _ = tx.blocking_send(Ok(sse_event));
+        };
+
+        match client
+            .push(&digest, &request.remote_ref, progress_callback)
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => {
+                let event = PushEvent::Error {
+                    code: "push_failed".to_string(),
+                    message: format!("Push failed: {}", e),
+                };
+                let _ = tx
+                    .send(Ok(axum::response::sse::Event::default()
+                        .event("error")
+                        .json_data(event)
+                        .unwrap()))
+                    .await;
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx))
 }
 
 /// Delete image
@@ -254,7 +475,7 @@ async fn delete_image(
     Path(id): Path<String>,
 ) -> Result<axum::http::StatusCode, ApiError> {
     let registry_path = state.workspace_path.join("registry");
-    let config = RegistryConfig::new(&registry_path);
+    let config = LocalRegistryConfig::new(&registry_path);
     let registry = ImageRegistry::new(config);
 
     let digest_str = if id.starts_with("img_") {
@@ -313,5 +534,39 @@ mod tests {
         assert_eq!(response.version, "1.0.0");
         assert_eq!(response.r#ref, "test:v1.0");
         assert!(response.id.starts_with("img_"));
+    }
+
+    #[test]
+    fn test_pull_event_from_progress() {
+        let progress = ProgressEvent::Resolving {
+            r#ref: "test:v1.0".to_string(),
+        };
+        let event: PullEvent = progress.into();
+        match event {
+            PullEvent::Resolving { r#ref } => assert_eq!(r#ref, "test:v1.0"),
+            _ => panic!("Expected Resolving variant"),
+        }
+    }
+
+    #[test]
+    fn test_push_event_from_progress() {
+        let progress = ProgressEvent::Pushing {
+            layer: "sha256:abc".to_string(),
+            bytes_sent: Some(1024),
+            bytes_total: Some(2048),
+        };
+        let event: PushEvent = progress.into();
+        match event {
+            PushEvent::Pushing {
+                layer,
+                bytes_sent,
+                bytes_total,
+            } => {
+                assert_eq!(layer, "sha256:abc");
+                assert_eq!(bytes_sent, Some(1024));
+                assert_eq!(bytes_total, Some(2048));
+            }
+            _ => panic!("Expected Pushing variant"),
+        }
     }
 }

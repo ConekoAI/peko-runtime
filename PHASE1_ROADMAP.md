@@ -29,7 +29,7 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 | Team Runtime | ✅ Partial | Team-scoped agents_list/agent_info, cross-team blocking |
 | Event Bus | ✅ Milestone 7 Complete | In-memory backend with A2A messaging |
 | Hooks & System Events | ✅ Milestone 8 Complete | Cron, webhook, file_watch, event hooks with system event stream |
-| Registry/Packaging | ✅ Partial | Local registry complete, push/pull pending |
+| Registry/Packaging | ✅ Complete | Milestone 9 complete, push/pull with streaming |
 
 ---
 
@@ -385,26 +385,27 @@ session = "new"
 
 ---
 
-## Milestone 9: Registry and Image Distribution
+## Milestone 9: Registry and Image Distribution ✅ COMPLETE
 
 **Goal:** Implement image packaging, push/pull, and registry client.
 
 **Duration:** 2 weeks  
 **Dependencies:** Milestone 8  
+**Completed:** 2026-03-17
 
 ### Tasks
 
-| Task | Description | Spec Ref |
-|------|-------------|----------|
-| 9.1 | Refactor `src/portable/` for OCI-inspired packaging | REQ-RG-001 |
-| 9.2 | Implement layer compression (gzip tar) | DATA_MODEL §6.3 |
-| 9.3 | Implement content-addressable layer storage | REQ-RG-001 |
-| 9.4 | Implement `POST /images/pull` with streaming progress | API_CONTRACT §7.3 |
-| 9.5 | Implement `POST /images/push` with streaming progress | API_CONTRACT §7.5 |
-| 9.6 | Implement registry client with bearer token auth | REQ-RG-002 |
-| 9.7 | Implement registry client with HTTP Basic auth | REQ-RG-002 |
-| 9.8 | Support multiple registry sources in `runtime.toml` | DATA_MODEL §3 |
-| 9.9 | Implement package signing (optional, **[SHOULD]**) | REQ-RG-003 |
+| Task | Description | Spec Ref | Status |
+|------|-------------|----------|--------|
+| 9.1 | Refactor `src/portable/` for OCI-inspired packaging | REQ-RG-001 | ✅ Complete |
+| 9.2 | Implement layer compression (gzip tar) | DATA_MODEL §6.3 | ✅ Complete |
+| 9.3 | Implement content-addressable layer storage | REQ-RG-001 | ✅ Complete |
+| 9.4 | Implement `POST /images/pull` with streaming progress | API_CONTRACT §7.3 | ✅ Complete |
+| 9.5 | Implement `POST /images/push` with streaming progress | API_CONTRACT §7.5 | ✅ Complete |
+| 9.6 | Implement registry client with bearer token auth | REQ-RG-002 | ✅ Complete |
+| 9.7 | Implement registry client with HTTP Basic auth | REQ-RG-002 | ✅ Complete |
+| 9.8 | Support multiple registry sources in `runtime.toml` | DATA_MODEL §3 | ✅ Complete |
+| 9.9 | Implement package signing (optional, **[SHOULD]**) | REQ-RG-003 | ⏸️ Deferred |
 
 ### Deliverables
 - Images buildable with layer deduplication

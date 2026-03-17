@@ -161,6 +161,9 @@ pub mod portable;
 /// Agent image management (images, instances, registry)
 pub mod image;
 
+/// Remote registry client (push/pull)
+pub mod registry;
+
 /// Compaction and transcript management
 pub(crate) mod compaction;
 
