@@ -24,6 +24,7 @@ pub mod middleware;
 pub mod routes;
 pub mod server;
 pub mod state;
+pub mod streaming;
 pub mod types;
 
 pub use error::ApiError;

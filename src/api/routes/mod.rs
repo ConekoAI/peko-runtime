@@ -9,10 +9,12 @@
 //! - images: Image registry (Milestone 2)
 
 pub mod agents;
+pub mod chat;
 pub mod health;
 pub mod images;
 pub mod info;
 pub mod sessions;
+pub mod websocket;
 
 use axum::{routing::get, Router};
 
@@ -24,10 +26,12 @@ pub fn create_router() -> Router<AppState> {
         // Health and info endpoints (Milestone 1)
         .route("/health", get(health::health_check))
         .route("/info", get(info::daemon_info))
-        // Merge nested routers (Milestone 2 & 3)
+        // Merge nested routers (Milestone 2, 3 & 4)
         .merge(images::router())
         .merge(agents::router())
         .merge(sessions::router())
+        .merge(chat::router())
+        .merge(websocket::router())
 }
 
 #[cfg(test)]

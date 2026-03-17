@@ -18,8 +18,9 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 |-----------|--------|-------|
 | CLI Framework | ✅ Partial | Commands exist but need API alignment |
 | Daemon | ✅ Partial | Cron, maintenance implemented; HTTP API Milestone 1 complete |
-| Agent Runtime | ✅ Partial | Agentic loop exists; needs refactoring for image/instance model |
+| Agent Runtime | ✅ Complete | Agentic loop v4 with sync/async tools, SSE, WebSocket |
 | Session Management | ✅ Complete | Atomic writes, sidecar indexes, branching, recovery |
+| Core Runtime | ✅ Complete | Agentic loop, sync/async tools, SSE streaming, WebSocket, watch mode |
 | Tools (13 built-in) | ✅ Partial | Filesystem, process, apply_patch exist; some need completion |
 | MCP Support | ✅ Partial | Client exists; integration needs alignment |
 | HTTP API | ✅ Milestone 1 Complete | Foundation: /health, /info endpoints, headers, middleware |

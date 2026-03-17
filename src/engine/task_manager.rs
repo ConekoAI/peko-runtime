@@ -12,9 +12,10 @@
 use crate::engine::execution::{ExecutionMode, TaskExecutor, TaskId};
 use crate::tools::Tool;
 use anyhow::Result;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 /// Configuration for the task manager
 #[derive(Debug, Clone)]
@@ -56,10 +57,13 @@ impl TaskManager {
         }
     }
 
-    /// Execute a tool synchronously
+    /// Execute a tool synchronously with panic isolation
     ///
     /// This is the main entry point for tool execution. The agent
     /// will block until the tool completes or times out.
+    ///
+    /// Panics in tool execution are caught and converted to errors,
+    /// preventing the agentic loop from crashing.
     #[instrument(skip(self, tool), fields(tool_name = %tool.name()))]
     pub async fn execute(
         &self,
@@ -75,9 +79,9 @@ impl TaskManager {
 
         let start = Instant::now();
 
+        // Execute with panic isolation
         let result = self
-            .executor
-            .execute(&tool_name, || tool.execute(params), timeout)
+            .execute_with_panic_isolation(tool.clone(), params, timeout)
             .await;
 
         let duration = start.elapsed();
@@ -103,6 +107,68 @@ impl TaskManager {
         }
 
         result
+    }
+
+    /// Execute a tool with panic isolation
+    ///
+    /// Catches panics during tool execution and converts them to errors.
+    /// This ensures that a buggy tool doesn't crash the entire agentic loop.
+    async fn execute_with_panic_isolation(
+        &self,
+        tool: Arc<dyn Tool>,
+        params: serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value> {
+        let tool_name = tool.name().to_string();
+        let tool_name_for_error = tool_name.clone();
+
+        // Spawn the tool execution in a blocking task with panic catching
+        let result = tokio::task::spawn_blocking(move || {
+            // Use AssertUnwindSafe because we're catching the panic anyway
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                // Create a runtime for the async tool execution
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(async { tool.execute(params).await })
+            }));
+
+            match result {
+                Ok(tool_result) => tool_result,
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else {
+                        "Unknown panic".to_string()
+                    };
+
+                    Err(anyhow::anyhow!(
+                        "Tool '{}' panicked: {}",
+                        tool_name,
+                        panic_msg
+                    ))
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(tool_result) => tool_result,
+            Err(e) => {
+                if e.is_panic() {
+                    error!("Task panicked during execution: {}", e);
+                    Err(anyhow::anyhow!(
+                        "Tool '{}' task panicked",
+                        tool_name_for_error
+                    ))
+                } else {
+                    Err(anyhow::anyhow!(
+                        "Tool '{}' task cancelled",
+                        tool_name_for_error
+                    ))
+                }
+            }
+        }
     }
 
     /// Execute with explicit timeout
@@ -229,5 +295,89 @@ mod tests {
             .unwrap();
 
         assert_eq!(result["fast"], true);
+    }
+
+    // Mock tool that panics
+    struct PanickingTool {
+        name: String,
+        panic_message: String,
+    }
+
+    #[async_trait]
+    impl Tool for PanickingTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn description(&self) -> &str {
+            "Mock tool that panics"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {}
+            })
+        }
+
+        async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+            panic!("{}", self.panic_message);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_panic_isolation() {
+        let manager = TaskManager::new();
+        let tool = Arc::new(PanickingTool {
+            name: "panicker".to_string(),
+            panic_message: "Intentional test panic".to_string(),
+        });
+
+        // Should not panic, should return an error
+        let result = manager.execute(tool, serde_json::json!({}), None).await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("panicked"));
+        assert!(error_msg.contains("Intentional test panic"));
+    }
+
+    #[tokio::test]
+    async fn test_panic_isolation_unknown_panic() {
+        let manager = TaskManager::new();
+
+        // Tool that panics with a non-string type
+        struct PanicWithNumber;
+
+        #[async_trait]
+        impl Tool for PanicWithNumber {
+            fn name(&self) -> &str {
+                "numeric_panicker"
+            }
+
+            fn description(&self) -> &str {
+                "Panics with a number"
+            }
+
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+
+            async fn execute(
+                &self,
+                _params: serde_json::Value,
+            ) -> anyhow::Result<serde_json::Value> {
+                // This panic payload is not a String or &str
+                std::panic::panic_any(42i32);
+            }
+        }
+
+        let tool = Arc::new(PanicWithNumber);
+        let result = manager.execute(tool, serde_json::json!({}), None).await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("panicked"));
+        assert!(error_msg.contains("Unknown panic"));
     }
 }

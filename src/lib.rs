@@ -68,6 +68,9 @@ pub mod session;
 /// Orchestration layer (event router, file watcher, webhooks)
 pub mod orchestration;
 
+/// File watcher for development mode
+pub mod watcher;
+
 // ============================================================================
 // External Interfaces
 // ============================================================================
