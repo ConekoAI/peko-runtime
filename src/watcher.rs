@@ -293,7 +293,8 @@ mod tests {
 
     #[test]
     fn test_file_watcher_with_debounce() {
-        let (watcher, _handle) = FileWatcher::new("/tmp/test").with_debounce(1000);
+        let (mut watcher, _handle) = FileWatcher::new("/tmp/test");
+        watcher = watcher.with_debounce(1000);
         assert_eq!(watcher.debounce_ms, 1000);
     }
 

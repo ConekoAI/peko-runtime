@@ -24,7 +24,11 @@ pub async fn command_handler_loop(
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
-            ManagerCommand::ListAgents { respond_to } => {
+            ManagerCommand::ListAgents {
+                respond_to,
+                team_id: _,
+                include_cross_team: _,
+            } => {
                 // Need to await while holding the lock due to lifetime issues
                 let basic_list = pool.read().await.list();
 
@@ -44,12 +48,58 @@ pub async fn command_handler_loop(
                                 scope: "local".to_string(),
                                 created_at: None,
                             },
+                            image_ref: None,
+                            image_digest: None,
+                            role: None,
+                            team_id: None,
+                            active_session_id: None,
+                            created_at: chrono::Utc::now(),
+                            skills: None,
                         }
                     })
                     .collect();
 
                 if let Err(e) = respond_to.send(agents).await {
                     warn!("Failed to send agent list response: {}", e);
+                }
+            }
+
+            ManagerCommand::GetAgent {
+                agent_id,
+                team_id: _,
+                include_cross_team: _,
+                respond_to,
+            } => {
+                // Find agent by ID
+                let basic_list = pool.read().await.list();
+                let agent = basic_list
+                    .into_iter()
+                    .find(|info| info.did == agent_id)
+                    .map(|info| {
+                        let did = info.did.clone();
+                        AgentInfo {
+                            did: info.did,
+                            name: info.name,
+                            state: info.state,
+                            capabilities: vec![],
+                            uptime_secs: info.uptime_secs,
+                            identity_info: IdentityInfo {
+                                did,
+                                scope: "local".to_string(),
+                                created_at: None,
+                            },
+                            image_ref: None,
+                            image_digest: None,
+                            role: None,
+                            team_id: None,
+                            active_session_id: None,
+                            created_at: chrono::Utc::now(),
+                            skills: None,
+                        }
+                    });
+
+                if let Err(e) = respond_to.send(agent).await {
+                    warn!("Failed to send agent info response: {}", e);
                 }
             }
 

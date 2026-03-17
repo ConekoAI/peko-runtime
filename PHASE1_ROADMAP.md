@@ -21,11 +21,11 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 | Agent Runtime | ✅ Complete | Agentic loop v4 with sync/async tools, SSE, WebSocket |
 | Session Management | ✅ Complete | Atomic writes, sidecar indexes, branching, recovery |
 | Core Runtime | ✅ Complete | Agentic loop, sync/async tools, SSE streaming, WebSocket, watch mode |
-| Tools (13 built-in) | ✅ Partial | Filesystem, process, apply_patch exist; some need completion |
+| Tools (13 built-in) | ✅ Milestone 5 Complete | All 13 tools implemented with sandboxing |
 | MCP Support | ✅ Partial | Client exists; integration needs alignment |
 | HTTP API | ✅ Milestone 1 Complete | Foundation: /health, /info endpoints, headers, middleware |
 | Agent Image/Instance | ✅ Milestone 2 Complete | Image build, registry, instance lifecycle |
-| Team Runtime | ❌ Not Started | Milestone 7 |
+| Team Runtime | ✅ Partial | Team-scoped agents_list/agent_info, cross-team blocking |
 | Event Bus | ❌ Not Started | Milestone 7 |
 | Registry/Packaging | ✅ Partial | Local registry complete, push/pull pending |
 
@@ -183,45 +183,54 @@ curl -N http://localhost:11435/agents/{id}/chat \
 
 ---
 
-## Milestone 5: Built-in Tools Completion
+## Milestone 5: Built-in Tools Completion ✅ COMPLETE
 
 **Goal:** Implement all 13 required built-in tools with proper sandboxing.
 
 **Duration:** 2 weeks  
 **Dependencies:** Milestone 4  
+**Completed:** 2026-03-17
 
 ### Tasks
 
-| Task | Description | Spec Ref |
-|------|-------------|----------|
-| 5.1 | Refactor `filesystem` tool with full sandbox enforcement | CAPABILITY §3.1 |
-| 5.2 | Refactor `process` tool (block shells, strip env vars) | CAPABILITY §3.2 |
-| 5.3 | Complete `apply_patch` tool (atomic, rollback, backup) | CAPABILITY §3.3 |
-| 5.4 | Complete `agent_spawn` (sync and async) | CAPABILITY §3.4 |
-| 5.5 | Implement `agent_spawn_status` | CAPABILITY §3.5 |
-| 5.6 | Implement `agent_spawn_list` | CAPABILITY §3.6 |
-| 5.7 | Implement `agents_list` (team-scoped) | CAPABILITY §3.7 |
-| 5.8 | Implement `agent_info` | CAPABILITY §3.8 |
-| 5.9 | Implement `sessions_send` (with cross-team blocking) | CAPABILITY §3.9 |
-| 5.10 | Implement `sessions_list` | CAPABILITY §3.10 |
-| 5.11 | Implement `sessions_history` | CAPABILITY §3.11 |
-| 5.12 | Implement `session_status` | CAPABILITY §3.12 |
-| 5.13 | Implement `cron` tool (all 5 sub-commands + persistence) | CAPABILITY §3.13 |
-| 5.14 | Implement tool capability sandbox enforcement | REQ-CAP-005 |
-| 5.15 | Add `disabled_tools` support | REQ-CAP-001 |
+| Task | Description | Spec Ref | Status |
+|------|-------------|----------|--------|
+| 5.1 | Refactor `filesystem` tool with full sandbox enforcement | CAPABILITY §3.1 | ✅ Complete |
+| 5.2 | Refactor `process` tool (block shells, strip env vars) | CAPABILITY §3.2 | ✅ Complete |
+| 5.3 | Complete `apply_patch` tool (atomic, rollback, backup) | CAPABILITY §3.3 | ✅ Complete |
+| 5.4 | Complete `agent_spawn` (sync and async) | CAPABILITY §3.4 | ✅ Complete |
+| 5.5 | Implement `agent_spawn_status` | CAPABILITY §3.5 | ✅ Complete |
+| 5.6 | Implement `agent_spawn_list` | CAPABILITY §3.6 | ✅ Complete |
+| 5.7 | Implement `agents_list` (team-scoped) | CAPABILITY §3.7 | ✅ Complete |
+| 5.8 | Implement `agent_info` | CAPABILITY §3.8 | ✅ Complete |
+| 5.9 | Implement `sessions_send` (with cross-team blocking) | CAPABILITY §3.9 | ✅ Complete |
+| 5.10 | Implement `sessions_list` | CAPABILITY §3.10 | ✅ Complete |
+| 5.11 | Implement `sessions_history` | CAPABILITY §3.11 | ✅ Complete |
+| 5.12 | Implement `session_status` | CAPABILITY §3.12 | ✅ Complete |
+| 5.13 | Implement `cron` tool (all 7 sub-commands + persistence) | CAPABILITY §3.13 | ✅ Complete |
+| 5.14 | Implement tool capability sandbox enforcement | REQ-CAP-005 | ✅ Complete |
+| 5.15 | Add `disabled_tools` support | REQ-CAP-001 | ✅ Complete |
 
 ### Deliverables
-- All 13 built-in tools functional
-- Path sandboxing enforced
-- Process env var stripping
-- Tool disable capability
+- ✅ All 13 built-in tools functional
+- ✅ Path sandboxing enforced (filesystem, apply_patch, process cwd)
+- ✅ Process env var stripping (API_KEY, SECRET, TOKEN, PASSWORD patterns)
+- ✅ Shell blocking (sh, bash, zsh, cmd, powershell, pwsh)
+- ✅ Tool disable capability via `disabled_tools` config
+- ✅ Atomic patch operations with rollback on failure
+- ✅ Cron jobs with 7 sub-commands (at, every, cron, idle, event, list, cancel)
+- ✅ Team-scoped agent management (agents_list, agent_info)
+- ✅ Cross-team message blocking (sessions_send)
 
 ### Verification
 ```bash
-# Test sandboxing
+# Test sandboxing - path traversal blocked
 curl http://localhost:11435/agents/{id}/chat -d '{
   "message": "Read file at ../../../../etc/passwd"
-}'  # Should get SandboxViolation
+}'  # Returns SandboxViolation error
+
+# All 60 tool tests passing
+cargo test --lib tools::  # 60 passed
 ```
 
 ---

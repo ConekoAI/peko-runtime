@@ -323,10 +323,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_blocks_absolute_paths_in_workspace_mode() {
-        let policy = SecurityPolicy::default();
+        let policy = SecurityPolicy {
+            workspace_only: true,
+            ..SecurityPolicy::default()
+        };
         assert!(!policy.is_path_allowed("/etc/passwd"));
         assert!(!policy.is_path_allowed("/tmp/file.txt"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_blocks_absolute_paths_in_workspace_mode() {
+        let policy = SecurityPolicy {
+            workspace_only: true,
+            ..SecurityPolicy::default()
+        };
+        assert!(!policy.is_path_allowed("C:\\Windows\\System32\\file.txt"));
+        assert!(!policy.is_path_allowed("D:\\some\\file.txt"));
     }
 
     #[test]

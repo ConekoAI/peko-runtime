@@ -1,6 +1,7 @@
 //! Agent manager types and events
 
 use crate::engine::state::AgentState;
+use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 
 /// Events emitted by the manager
@@ -42,6 +43,59 @@ pub struct AgentInfo {
     pub uptime_secs: u64,
     /// Identity info
     pub identity_info: IdentityInfo,
+    // Fields for team-scoped tools (Milestone 5)
+    /// Image reference (e.g., "researcher:v2")
+    pub image_ref: Option<String>,
+    /// Image digest (SHA-256)
+    pub image_digest: Option<String>,
+    /// Role in team (e.g., "worker", "orchestrator")
+    pub role: Option<String>,
+    /// Team ID (if in a team)
+    pub team_id: Option<String>,
+    /// Active session ID
+    pub active_session_id: Option<String>,
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+    /// Skills
+    pub skills: Option<Vec<String>>,
+}
+
+impl AgentInfo {
+    /// Create a new AgentInfo with required fields
+    pub fn new(did: String, name: String, state: AgentState) -> Self {
+        Self {
+            did: did.clone(),
+            name,
+            state,
+            capabilities: Vec::new(),
+            uptime_secs: 0,
+            identity_info: IdentityInfo {
+                did,
+                scope: "local".to_string(),
+                created_at: None,
+            },
+            image_ref: None,
+            image_digest: None,
+            role: None,
+            team_id: None,
+            active_session_id: None,
+            created_at: Utc::now(),
+            skills: None,
+        }
+    }
+
+    /// Set image reference
+    pub fn with_image_ref(mut self, image_ref: String) -> Self {
+        self.image_ref = Some(image_ref);
+        self
+    }
+
+    /// Set team info
+    pub fn with_team(mut self, team_id: String, role: String) -> Self {
+        self.team_id = Some(team_id);
+        self.role = Some(role);
+        self
+    }
 }
 
 /// Identity information

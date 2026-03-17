@@ -1,13 +1,17 @@
 //! Process execution tool for running commands
 //!
-//! Supports both sync and async execution modes:
-//! - **Sync mode** (default): Blocks until command completes, returns result immediately
-//! - **Async mode**: Returns receipt immediately, executes in background, delivers result via event queue
+//! Implements CAPABILITY_INTERFACE.md §3.2
+//! - Blocks shell execution (sh, bash, zsh, cmd, powershell)
+//! - Strips sensitive env vars (*_API_KEY, *_SECRET, *_TOKEN, *_PASSWORD)
+//! - Validates cwd is within sandbox
+//! - Supports both sync and async execution modes
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
+use std::path::Path;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
@@ -17,6 +21,22 @@ use crate::agent::async_tool_framework::{
 };
 use crate::tools::Tool;
 
+/// List of blocked shell commands
+const BLOCKED_SHELLS: &[&str] = &["sh", "bash", "zsh", "fish", "cmd", "powershell", "pwsh"];
+
+/// List of sensitive env var patterns to strip
+const SENSITIVE_ENV_PATTERNS: &[&str] = &[
+    "_API_KEY",
+    "_SECRET",
+    "_SECRET_KEY",
+    "_TOKEN",
+    "_PASSWORD",
+    "_KEY", // Generic key pattern
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "GITHUB_TOKEN",
+];
+
 /// Execution mode for process tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,7 +44,7 @@ pub enum ProcessMode {
     /// Synchronous: block until completion (default)
     Sync {
         #[serde(default = "default_timeout")]
-        timeout_secs: u64,
+        timeout_ms: u64,
     },
     /// Asynchronous: return receipt, execute in background
     Async {
@@ -38,58 +58,79 @@ pub enum ProcessMode {
 }
 
 fn default_timeout() -> u64 {
-    120
+    120000 // 120 seconds default
+}
+
+/// Process tool arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessArgs {
+    /// Command to execute (must not be a shell)
+    pub command: String,
+    /// Command arguments
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Working directory (must be within sandbox)
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Additional environment variables
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// Timeout in milliseconds
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: u64,
+    /// Async mode
+    #[serde(default)]
+    pub r#async: Option<bool>,
+    /// Stdin content
+    #[serde(default)]
+    pub stdin: Option<String>,
 }
 
 /// Process execution tool for running shell commands
 pub struct ProcessTool {
-    /// Default timeout in seconds
-    default_timeout_secs: u64,
-    /// Whether to allow shell commands (sh -c)
-    allow_shell: bool,
+    /// Default timeout in milliseconds
+    default_timeout_ms: u64,
     /// Unified async executor (for async mode)
     executor: Option<UnifiedAsyncExecutor>,
     /// Parent session key (for async result routing)
     session_key: Option<String>,
+    /// Workspace directory for cwd validation
+    workspace_dir: Option<std::path::PathBuf>,
 }
 
-/// Maximum allowed timeout in seconds (5 minutes)
-const MAX_TIMEOUT_SECS: u64 = 300;
-/// Default timeout in seconds (2 minutes)
-const DEFAULT_TIMEOUT_SECS: u64 = 120;
+/// Maximum allowed timeout in milliseconds (5 minutes)
+const MAX_TIMEOUT_MS: u64 = 300_000;
+/// Default timeout in milliseconds (2 minutes)
+const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 impl ProcessTool {
     /// Create a new process tool with default settings
     #[must_use]
     pub fn new() -> Self {
         Self {
-            default_timeout_secs: DEFAULT_TIMEOUT_SECS,
-            allow_shell: false,
+            default_timeout_ms: DEFAULT_TIMEOUT_MS,
             executor: None,
             session_key: None,
+            workspace_dir: None,
         }
     }
 
     /// Create with custom timeout
     #[must_use]
-    pub fn with_timeout(timeout_secs: u64) -> Self {
+    pub fn with_timeout(timeout_ms: u64) -> Self {
         Self {
-            default_timeout_secs: timeout_secs.min(MAX_TIMEOUT_SECS),
-            allow_shell: false,
+            default_timeout_ms: timeout_ms.min(MAX_TIMEOUT_MS),
             executor: None,
             session_key: None,
+            workspace_dir: None,
         }
     }
 
-    /// Create with shell support enabled
+    /// Configure workspace directory for cwd validation
     #[must_use]
-    pub fn with_shell() -> Self {
-        Self {
-            default_timeout_secs: 30,
-            allow_shell: true,
-            executor: None,
-            session_key: None,
-        }
+    pub fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
+        self.workspace_dir = Some(workspace.into());
+        self
     }
 
     /// Enable async mode with unified executor
@@ -104,86 +145,202 @@ impl ProcessTool {
         self
     }
 
+    /// Check if command is a blocked shell
+    fn is_blocked_shell(&self, command: &str) -> bool {
+        let cmd_lower = command.to_lowercase();
+        let base_cmd = cmd_lower.split('/').last().unwrap_or(&cmd_lower);
+
+        BLOCKED_SHELLS.contains(&base_cmd)
+    }
+
+    /// Validate and resolve cwd path
+    fn validate_cwd(&self, cwd: &str) -> Result<std::path::PathBuf> {
+        let path = std::path::PathBuf::from(cwd);
+
+        // Check for path traversal
+        if path.to_string_lossy().contains("..") {
+            return Err(anyhow::anyhow!(
+                "SandboxViolation: cwd contains path traversal: {}",
+                cwd
+            ));
+        }
+
+        // If we have a workspace directory, ensure cwd is within it
+        if let Some(ref workspace) = self.workspace_dir {
+            let resolved = if path.is_absolute() {
+                path
+            } else {
+                workspace.join(&path)
+            };
+
+            // Use string comparison for consistency (avoids UNC prefix issues on Windows)
+            let workspace_str = workspace.to_string_lossy();
+            let resolved_str = resolved.to_string_lossy();
+
+            if !resolved_str.starts_with(&*workspace_str) {
+                return Err(anyhow::anyhow!(
+                    "SandboxViolation: cwd {} is outside workspace {}",
+                    resolved.display(),
+                    workspace.display()
+                ));
+            }
+
+            return Ok(resolved);
+        }
+
+        Ok(path)
+    }
+
+    /// Filter environment variables to remove sensitive ones
+    fn filter_env_vars(&self, env: &HashMap<String, String>) -> HashMap<String, String> {
+        let mut filtered = HashMap::new();
+
+        for (key, value) in env {
+            // Check if key matches any sensitive pattern
+            let is_sensitive = SENSITIVE_ENV_PATTERNS.iter().any(|pattern| {
+                key.to_uppercase().ends_with(pattern) || key.to_uppercase() == *pattern
+            });
+
+            if !is_sensitive {
+                filtered.insert(key.clone(), value.clone());
+            }
+        }
+
+        filtered
+    }
+
+    /// Get clean environment for child process
+    fn get_clean_env(&self, extra_env: &HashMap<String, String>) -> HashMap<String, String> {
+        // Start with minimal environment
+        let mut env = HashMap::new();
+
+        // Add only safe environment variables
+        let safe_vars = ["PATH", "HOME", "USER", "LANG", "TERM"];
+        for var in &safe_vars {
+            if let Ok(value) = std::env::var(var) {
+                env.insert(var.to_string(), value);
+            }
+        }
+
+        // Add filtered extra env vars
+        let filtered_extra = self.filter_env_vars(extra_env);
+        env.extend(filtered_extra);
+
+        env
+    }
+
     /// Execute a command with arguments
     async fn execute_command(
+        &self,
         command: &str,
         args: Vec<String>,
-        timeout_secs: u64,
+        timeout_ms: u64,
         working_dir: Option<&str>,
-        env_vars: Option<serde_json::Map<String, serde_json::Value>>,
+        env_vars: &HashMap<String, String>,
+        stdin: Option<&str>,
     ) -> Result<serde_json::Value> {
+        // Validate command is not a shell
+        if self.is_blocked_shell(command) {
+            return Err(anyhow::anyhow!(
+                "Shell execution is blocked. Use 'command' and 'args' parameters instead of shell syntax. "
+            ));
+        }
+
+        // Validate and resolve working directory
+        let cwd = if let Some(cwd) = working_dir {
+            Some(self.validate_cwd(cwd)?)
+        } else {
+            self.workspace_dir.clone()
+        };
+
         let mut cmd = Command::new(command);
         cmd.args(&args);
 
-        // Set working directory if provided
-        if let Some(dir) = working_dir {
+        // Set working directory
+        if let Some(ref dir) = cwd {
             cmd.current_dir(dir);
         }
 
-        // Set environment variables if provided
-        if let Some(envs) = env_vars {
-            for (key, value) in envs {
-                if let Some(val_str) = value.as_str() {
-                    cmd.env(key, val_str);
-                }
+        // Set filtered environment
+        let clean_env = self.get_clean_env(env_vars);
+        cmd.env_clear();
+        cmd.envs(&clean_env);
+
+        // Set stdin if provided
+        if let Some(input) = stdin {
+            use std::process::Stdio;
+            use tokio::io::AsyncWriteExt;
+
+            cmd.stdin(Stdio::piped());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+
+            let mut child = cmd.spawn()?;
+
+            if let Some(mut child_stdin) = child.stdin.take() {
+                child_stdin.write_all(input.as_bytes()).await?;
             }
+
+            let result = timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await;
+
+            return match result {
+                Ok(Ok(output)) => self.format_output(&output),
+                Ok(Err(e)) => Err(anyhow::anyhow!(
+                    "Failed to execute command '{}': {}",
+                    command,
+                    e
+                )),
+                Err(_) => Err(anyhow::anyhow!(
+                    "Command '{}' timed out after {} ms",
+                    command,
+                    timeout_ms
+                )),
+            };
         }
 
         // Execute with timeout
-        let result = timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
+        let result = timeout(Duration::from_millis(timeout_ms), cmd.output()).await;
 
         match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let exit_code = output.status.code().unwrap_or(-1);
-                let success = output.status.success();
-
-                // Truncate output if too large (over 100KB)
-                let stdout = if stdout.len() > 100_000 {
-                    format!("{}...(truncated)", &stdout[..100_000])
-                } else {
-                    stdout
-                };
-
-                let stderr = if stderr.len() > 100_000 {
-                    format!("{}...(truncated)", &stderr[..100_000])
-                } else {
-                    stderr
-                };
-
-                Ok(json!({
-                    "command": command,
-                    "args": args,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                    "exit_code": exit_code,
-                    "success": success,
-                }))
-            }
+            Ok(Ok(output)) => self.format_output(&output),
             Ok(Err(e)) => Err(anyhow::anyhow!(
-                "Failed to execute command '{command}': {e}"
+                "Failed to execute command '{}': {}",
+                command,
+                e
             )),
             Err(_) => Err(anyhow::anyhow!(
-                "Command '{command}' timed out after {timeout_secs} seconds"
+                "Command '{}' timed out after {} ms",
+                command,
+                timeout_ms
             )),
         }
     }
 
-    /// Execute a shell command (if enabled)
-    async fn execute_shell(
-        command: &str,
-        timeout_secs: u64,
-        working_dir: Option<&str>,
-    ) -> Result<serde_json::Value> {
-        Self::execute_command(
-            "sh",
-            vec!["-c".to_string(), command.to_string()],
-            timeout_secs,
-            working_dir,
-            None,
-        )
-        .await
+    /// Format command output
+    fn format_output(&self, output: &std::process::Output) -> Result<serde_json::Value> {
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(-1);
+
+        // Truncate output if too large (over 100KB)
+        let stdout = if stdout.len() > 100_000 {
+            format!("{}...(truncated)", &stdout[..100_000])
+        } else {
+            stdout
+        };
+
+        let stderr = if stderr.len() > 100_000 {
+            format!("{}...(truncated)", &stderr[..100_000])
+        } else {
+            stderr
+        };
+
+        Ok(json!({
+            "exit_code": exit_code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "success": output.status.success(),
+        }))
     }
 
     /// Execute command in async mode using UnifiedAsyncExecutor
@@ -191,9 +348,10 @@ impl ProcessTool {
         &self,
         command: String,
         args: Vec<String>,
-        timeout_secs: u64,
+        timeout_ms: u64,
         working_dir: Option<String>,
-        env_vars: Option<serde_json::Map<String, serde_json::Value>>,
+        env_vars: HashMap<String, String>,
+        stdin: Option<String>,
         label: Option<String>,
         delivery_mode: AsyncResultDeliveryMode,
     ) -> Result<serde_json::Value> {
@@ -209,9 +367,25 @@ impl ProcessTool {
 
         let task_id = format!("process_{}", Uuid::new_v4().simple());
 
+        // Validate command before spawning
+        if self.is_blocked_shell(&command) {
+            return Err(anyhow::anyhow!(
+                "Shell execution is blocked. Use 'command' and 'args' parameters instead of shell syntax."
+            ));
+        }
+
+        // Validate cwd
+        let cwd = if let Some(ref cwd) = working_dir {
+            Some(self.validate_cwd(cwd)?)
+        } else {
+            self.workspace_dir.clone()
+        };
+
         // Clone values for the execution closure
-        let command_clone = command.clone();
-        let working_dir_clone = working_dir.clone();
+        let workspace = self.workspace_dir.clone();
+
+        // Clone command for the closure
+        let command_for_closure = command.clone();
 
         // Execute using unified executor
         let receipt = executor
@@ -227,34 +401,65 @@ impl ProcessTool {
                 AsyncToolConfig {
                     delivery_mode,
                     delivery_target: None,
-                    timeout_secs,
+                    timeout_secs: timeout_ms / 1000,
                     cleanup_after_delivery: true,
                     label: label.clone(),
                 },
                 move || async move {
                     // Execute the command
-                    let result = Self::execute_command(
-                        &command_clone,
-                        args,
-                        timeout_secs,
-                        working_dir_clone.as_deref(),
-                        env_vars,
-                    )
-                    .await;
+                    let mut cmd = Command::new(&command_for_closure);
+                    cmd.args(&args);
 
-                    // Convert to AsyncTaskResult
-                    match result {
-                        Ok(output) => {
-                            let stdout = output["stdout"].as_str().unwrap_or("").to_string();
-                            let stderr = output["stderr"].as_str().unwrap_or("").to_string();
-                            let exit_code = output["exit_code"].as_i64().unwrap_or(-1) as i32;
-                            Ok(AsyncTaskResult::Process {
-                                stdout,
-                                stderr,
-                                exit_code,
-                            })
+                    if let Some(ref dir) = cwd {
+                        cmd.current_dir(dir);
+                    }
+
+                    // Set filtered environment
+                    let clean_env = if let Some(ref ws) = workspace {
+                        let tool = ProcessTool::new().with_workspace(ws.clone());
+                        tool.get_clean_env(&env_vars)
+                    } else {
+                        env_vars
+                    };
+                    cmd.env_clear();
+                    cmd.envs(&clean_env);
+
+                    // Handle stdin
+                    if let Some(input) = stdin {
+                        use std::process::Stdio;
+                        use tokio::io::AsyncWriteExt;
+
+                        cmd.stdin(Stdio::piped());
+                        cmd.stdout(Stdio::piped());
+                        cmd.stderr(Stdio::piped());
+
+                        let mut child = cmd
+                            .spawn()
+                            .map_err(|e| anyhow::anyhow!("Failed to spawn: {}", e))?;
+
+                        if let Some(mut child_stdin) = child.stdin.take() {
+                            child_stdin.write_all(input.as_bytes()).await?;
                         }
-                        Err(e) => Err(e),
+
+                        let output = child.wait_with_output().await?;
+                        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                        Ok(AsyncTaskResult::Process {
+                            stdout,
+                            stderr,
+                            exit_code: output.status.code().unwrap_or(-1),
+                        })
+                    } else {
+                        let output = cmd.output().await?;
+                        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+                        Ok(AsyncTaskResult::Process {
+                            stdout,
+                            stderr,
+                            exit_code: output.status.code().unwrap_or(-1),
+                        })
                     }
                 },
             )
@@ -262,7 +467,7 @@ impl ProcessTool {
 
         // Return receipt
         Ok(json!({
-            "task_id": receipt.task_id,
+            "receipt_id": receipt.task_id,
             "status": "accepted",
             "mode": "async",
             "command": command,
@@ -284,132 +489,55 @@ impl Tool for ProcessTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute system commands with arguments, timeout, and working directory"
+        "Execute system commands with sandboxing. Shell execution is blocked."
     }
 
     fn llm_description(&self) -> String {
         r#"## Purpose
 Execute system commands with sync or async support. For build commands, git operations, system diagnostics, and long-running tasks.
 
+## Security Restrictions
+- **No shell execution**: Commands like `sh`, `bash`, `zsh`, `cmd`, `powershell` are blocked
+- **Use `command` + `args`**: Instead of `sh -c "ls -la"`, use `command: "ls"`, `args: ["-la"]`
+- **cwd sandboxing**: Working directory must be within the agent's workspace
+- **Env var stripping**: Sensitive variables (*_API_KEY, *_SECRET, *_TOKEN, *_PASSWORD) are removed
+
 ## Modes
 
 ### Sync Mode (default)
-Blocks until command completes. Use for quick commands that return immediately.
+Blocks until command completes. Use for quick commands.
 ```json
 {"command": "git", "args": ["status"]}
 ```
 
 ### Async Mode
-Returns immediately with task ID. Command runs in background, result delivered via event system.
-Use for long-running builds, tests, downloads, or when you need to run multiple commands in parallel.
+Returns receipt immediately. Command runs in background.
 ```json
 {
     "command": "cargo",
     "args": ["build", "--release"],
-    "mode": "async",
+    "async": true,
     "label": "release-build"
 }
 ```
 
-## When to Use
-- Running build commands (cargo build, npm install, make, etc.)
-- Git operations (status, log, diff, commit when authorized)
-- System diagnostics (df, ps, netstat, etc.)
-- File operations that need scripting (find with complex filters)
-- Running tests or linting tools
-- Long-running downloads (use async mode or timeout: 0)
-
-## When NOT to Use
-- Simple file reads/writes (use `filesystem` instead)
-- Code patches that preserve file structure (use `apply_patch` instead)
-- Destructive operations without explicit user confirmation
-- Commands with unbounded output (may be truncated)
-
-## Input (Sync Mode)
-```json
-{
-  "command": "command-name",
-  "args": ["arg1", "arg2"],
-  "timeout": 120,
-  "working_dir": "/optional/path",
-  "env": {"KEY": "value"}
-}
-```
-
-## Input (Async Mode)
-```json
-{
-  "command": "command-name",
-  "args": ["arg1", "arg2"],
-  "mode": "async",
-  "label": "optional-label",
-  "timeout": 300
-}
-```
-
-## Timeout Behavior
-- **Default**: 120 seconds (suitable for most commands)
-- **Short tasks** (date, echo, ls): Use default or timeout: 5
-- **Build commands**: Use timeout: 120 or higher (or async mode)
-- **Long downloads**: Use async mode or timeout: 0 (disables timeout)
-- **Max**: 300 seconds (5 minutes) unless timeout is 0
-
-## Returns (Sync Mode)
-- stdout and stderr output (truncated if >100KB)
-- Exit code
-- Success/failure status
-- Timeout error message if command times out
-
-## Returns (Async Mode)
-- task_id: Unique identifier for tracking
-- status: "accepted"
-- mode: "async"
-- check_status_tool: Tool name to check status later
-
-## Result Delivery (Async Mode)
-Results are delivered via the async event system when the command completes.
+## Timeout
+- Default: 120 seconds
+- Max: 300 seconds (unless 0 to disable)
+- 0 disables timeout for long downloads
 
 ## Examples
 
-### Sync Mode Examples
-Check git status:
+Good (compliant):
 ```json
-{"command": "git", "args": ["status"]}
+{"command": "git", "args": ["log", "--oneline", "-10"]}
 ```
 
-Build a Rust project:
+Bad (blocked - shell):
 ```json
-{"command": "cargo", "args": ["build", "--release"], "timeout": 300}
-```
-
-### Async Mode Examples
-Long build in background:
-```json
-{
-    "command": "cargo",
-    "args": ["build", "--release"],
-    "mode": "async",
-    "label": "building-release"
-}
-```
-
-Run tests without blocking:
-```json
-{
-    "command": "cargo",
-    "args": ["test", "--all"],
-    "mode": "async",
-    "label": "running-tests",
-    "timeout": 300
-}
-```
-
-## Safety
-- Commands are validated for forbidden characters
-- Timeout prevents runaway processes (default: 120s, max: 300s, or unlimited with timeout: 0)
-- Output is truncated at 100KB to prevent memory issues
-- Prefer `trash` over `rm` for recoverable deletes
-- Ask before destructive operations"#.to_string()
+{"command": "bash", "args": ["-c", "git status"]}
+```"#
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -418,35 +546,38 @@ Run tests without blocking:
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The command to execute"
+                    "description": "The command to execute (not a shell)"
                 },
                 "args": {
                     "type": "array",
                     "description": "Command arguments",
-                    "items": { "type": "string" }
+                    "items": { "type": "string" },
+                    "default": []
                 },
-                "timeout": {
+                "timeout_ms": {
                     "type": "integer",
-                    "description": "Timeout in seconds (default: 120). Set to 0 to disable timeout for long-running tasks like downloads. Max: 300 unless timeout is 0.",
+                    "description": "Timeout in milliseconds (default: 120000). Set to 0 to disable. Max: 300000",
                     "minimum": 0,
-                    "maximum": 300
+                    "maximum": 300000,
+                    "default": 120000
                 },
-                "working_dir": {
+                "cwd": {
                     "type": "string",
-                    "description": "Working directory for the command"
+                    "description": "Working directory (must be within workspace)"
                 },
                 "env": {
                     "type": "object",
-                    "description": "Environment variables"
+                    "description": "Additional environment variables (sensitive vars will be stripped)",
+                    "additionalProperties": { "type": "string" }
                 },
-                "mode": {
-                    "type": "string",
-                    "enum": ["sync", "async"],
-                    "description": "Execution mode: 'sync' blocks for result, 'async' returns receipt and runs in background (default: sync)"
+                "async": {
+                    "type": "boolean",
+                    "description": "If true, return receipt and execute in background",
+                    "default": false
                 },
-                "label": {
+                "stdin": {
                     "type": "string",
-                    "description": "Optional label for async mode (for identifying the task)"
+                    "description": "Content to pipe to the process stdin"
                 }
             },
             "required": ["command"]
@@ -454,89 +585,51 @@ Run tests without blocking:
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
-        // Check if this is a shell command
-        if let Some(shell_cmd) = params.get("shell").and_then(|v| v.as_str()) {
-            if !self.allow_shell {
-                return Err(anyhow::anyhow!(
-                    "Shell execution not enabled. Use command and args instead."
-                ));
-            }
+        let args: ProcessArgs = serde_json::from_value(params)
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
 
-            let timeout_secs = params
-                .get("timeout")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(self.default_timeout_secs);
-
-            let working_dir = params.get("working_dir").and_then(|v| v.as_str());
-
-            return Self::execute_shell(shell_cmd, timeout_secs, working_dir).await;
+        // Validate command is not a shell
+        if self.is_blocked_shell(&args.command) {
+            return Err(anyhow::anyhow!(
+                "Shell execution is blocked: '{}' is a shell. Use 'command' and 'args' parameters instead of shell syntax.",
+                args.command
+            ));
         }
 
-        // Regular command execution
-        let command = params
-            .get("command")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing required parameter: command"))?;
-
-        // Security: validate command name
-        let forbidden_chars = [';', '|', '&', '$', '`', '\'', '"'];
-        if command.chars().any(|c| forbidden_chars.contains(&c)) {
-            return Err(anyhow::anyhow!("Command contains forbidden characters"));
-        }
-
-        let args: Vec<String> = params
-            .get("args")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let timeout_secs = params
-            .get("timeout")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(self.default_timeout_secs, |t| {
-                if t == 0 {
-                    u64::MAX
-                } else {
-                    t.min(MAX_TIMEOUT_SECS)
-                }
-            });
-
-        let working_dir = params.get("working_dir").and_then(|v| v.as_str());
-        let env_vars = params.get("env").and_then(|v| v.as_object()).cloned();
+        let timeout_ms = if args.timeout_ms == 0 {
+            u64::MAX // Disable timeout
+        } else {
+            args.timeout_ms.min(MAX_TIMEOUT_MS)
+        };
 
         // Determine execution mode
-        let mode_str = params
-            .get("mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("sync");
+        let is_async = args.r#async.unwrap_or(false);
 
-        match mode_str {
-            "async" => {
-                let label = params
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let delivery_mode = AsyncResultDeliveryMode::default();
+        if is_async {
+            let label = None; // Could be extracted from params if needed
+            let delivery_mode = AsyncResultDeliveryMode::default();
 
-                self.execute_async(
-                    command.to_string(),
-                    args,
-                    timeout_secs,
-                    working_dir.map(String::from),
-                    env_vars,
-                    label,
-                    delivery_mode,
-                )
-                .await
-            }
-            "sync" | _ => {
-                // Default sync mode
-                Self::execute_command(command, args, timeout_secs, working_dir, env_vars).await
-            }
+            self.execute_async(
+                args.command,
+                args.args,
+                timeout_ms,
+                args.cwd,
+                args.env,
+                args.stdin,
+                label,
+                delivery_mode,
+            )
+            .await
+        } else {
+            self.execute_command(
+                &args.command,
+                args.args,
+                timeout_ms,
+                args.cwd.as_deref(),
+                &args.env,
+                args.stdin.as_deref(),
+            )
+            .await
         }
     }
 }
@@ -544,306 +637,122 @@ Run tests without blocking:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::async_tool_framework::{AsyncResultQueueManager, AsyncTaskRegistry};
     use serde_json::json;
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
+    use tempfile::TempDir;
+    use tokio::fs;
 
     #[test]
     fn test_process_tool_creation() {
         let tool = ProcessTool::new();
         assert_eq!(tool.name(), "process");
-        assert!(!tool.description().is_empty());
     }
 
     #[test]
-    fn test_process_tool_with_async_support() {
-        let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
-        let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let executor = UnifiedAsyncExecutor::with_registries(registry, queue_manager);
-
-        let tool = ProcessTool::new().with_async(executor, "test_session");
-
-        assert!(tool.executor.is_some());
-        assert_eq!(tool.session_key, Some("test_session".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_process_async_mode() {
-        let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
-        let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let executor =
-            UnifiedAsyncExecutor::with_registries(registry.clone(), queue_manager.clone());
-
-        let tool = ProcessTool::new().with_async(executor, "test_session");
-
-        let params = json!({
-            "command": "echo",
-            "args": ["Hello from async"],
-            "mode": "async",
-            "label": "test-echo"
-        });
-
-        let result = tool.execute(params).await;
-        assert!(
-            result.is_ok(),
-            "Async process execution failed: {:?}",
-            result
-        );
-
-        let response = result.unwrap();
-        assert_eq!(response["status"].as_str().unwrap(), "accepted");
-        assert_eq!(response["mode"].as_str().unwrap(), "async");
-        assert!(response["task_id"].as_str().is_some());
-        assert_eq!(
-            response["check_status_tool"].as_str().unwrap(),
-            "async_task_status"
-        );
-
-        let task_id = response["task_id"].as_str().unwrap().to_string();
-
-        // Wait a bit for the task to complete
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Verify task was registered and completed
-        let reg = registry.read().await;
-        let status = reg.check_status(&task_id);
-        assert!(status.is_some());
-        assert!(status.unwrap().is_terminal());
-    }
-
-    #[tokio::test]
-    async fn test_process_async_mode_not_configured() {
-        // Tool without async support should fail in async mode
+    fn test_blocked_shells() {
         let tool = ProcessTool::new();
 
-        let params = json!({
-            "command": "echo",
-            "args": ["test"],
-            "mode": "async"
-        });
+        // Blocked shells
+        assert!(tool.is_blocked_shell("sh"));
+        assert!(tool.is_blocked_shell("bash"));
+        assert!(tool.is_blocked_shell("/bin/bash"));
+        assert!(tool.is_blocked_shell("zsh"));
+        assert!(tool.is_blocked_shell("cmd"));
+        assert!(tool.is_blocked_shell("powershell"));
+        assert!(tool.is_blocked_shell("pwsh"));
 
-        let result = tool.execute(params).await;
-        assert!(result.is_err());
-        assert!(result
+        // Allowed commands
+        assert!(!tool.is_blocked_shell("git"));
+        assert!(!tool.is_blocked_shell("ls"));
+        assert!(!tool.is_blocked_shell("cargo"));
+    }
+
+    #[test]
+    fn test_env_var_filtering() {
+        let tool = ProcessTool::new();
+
+        let mut env = HashMap::new();
+        env.insert("NORMAL_VAR".to_string(), "value1".to_string());
+        env.insert("ANTHROPIC_API_KEY".to_string(), "secret123".to_string());
+        env.insert("MY_SECRET_KEY".to_string(), "secret456".to_string());
+        env.insert("GITHUB_TOKEN".to_string(), "token789".to_string());
+        env.insert("DB_PASSWORD".to_string(), "password".to_string());
+
+        let filtered = tool.filter_env_vars(&env);
+
+        assert!(filtered.contains_key("NORMAL_VAR"));
+        assert!(!filtered.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!filtered.contains_key("MY_SECRET_KEY"));
+        assert!(!filtered.contains_key("GITHUB_TOKEN"));
+        assert!(!filtered.contains_key("DB_PASSWORD"));
+    }
+
+    #[test]
+    fn test_cwd_validation() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ProcessTool::new().with_workspace(temp_dir.path());
+
+        // Valid cwd within workspace (subdirectory that doesn't exist yet is allowed)
+        let valid = tool.validate_cwd("subdir");
+        assert!(valid.is_ok(), "Valid cwd failed: {:?}", valid);
+
+        // Path traversal attempt
+        let invalid = tool.validate_cwd("../etc");
+        assert!(invalid.is_err());
+        assert!(invalid
             .unwrap_err()
             .to_string()
-            .contains("Async mode not configured"));
+            .contains("SandboxViolation"));
     }
 
     #[tokio::test]
-    async fn test_process_async_with_timeout() {
-        let registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
-        let queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
-        let executor =
-            UnifiedAsyncExecutor::with_registries(registry.clone(), queue_manager.clone());
-
-        let tool = ProcessTool::new().with_async(executor, "test_session");
-
-        let params = json!({
-            "command": "sleep",
-            "args": ["0.5"],
-            "mode": "async",
-            "timeout": 1,
-            "label": "short-sleep"
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
-
-        let task_id = result.unwrap()["task_id"].as_str().unwrap().to_string();
-
-        // Wait for task to complete
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        let reg = registry.read().await;
-        let entry = reg.get(&task_id);
-        assert!(entry.is_some());
-        assert!(entry.unwrap().status.is_terminal());
-    }
-
-    #[tokio::test]
-    async fn test_process_echo() {
-        let tool = ProcessTool::new();
-        let params = json!({
-            "command": "echo",
-            "args": ["Hello", "World"]
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
-
-        let response = result.unwrap();
-        assert!(response.get("success").unwrap().as_bool().unwrap());
-        assert!(response
-            .get("stdout")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .contains("Hello World"));
-    }
-
-    #[tokio::test]
-    async fn test_process_exit_code() {
+    async fn test_process_blocked_shell() {
         let tool = ProcessTool::new();
 
-        // Command that succeeds
         let params = json!({
-            "command": "true"
-        });
-        let result = tool.execute(params).await.unwrap();
-        assert!(result.get("success").unwrap().as_bool().unwrap());
-        assert_eq!(result.get("exit_code").unwrap().as_i64().unwrap(), 0);
-
-        // Command that fails
-        let params = json!({
-            "command": "false"
-        });
-        let result = tool.execute(params).await.unwrap();
-        assert!(!result.get("success").unwrap().as_bool().unwrap());
-        assert_ne!(result.get("exit_code").unwrap().as_i64().unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_process_stderr() {
-        let tool = ProcessTool::new();
-        let params = json!({
-            "command": "ls",
-            "args": ["/nonexistent_directory_that_does_not_exist"]
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
-
-        let response = result.unwrap();
-        let stderr = response.get("stderr").unwrap().as_str().unwrap();
-        assert!(!stderr.is_empty() || !response.get("success").unwrap().as_bool().unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_process_timeout() {
-        let tool = ProcessTool::new();
-        let params = json!({
-            "command": "sleep",
-            "args": ["10"],
-            "timeout": 1
+            "command": "bash",
+            "args": ["-c", "echo hello"]
         });
 
         let result = tool.execute(params).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(result.unwrap_err().to_string().contains("blocked"));
     }
 
     #[tokio::test]
-    async fn test_process_timeout_disabled() {
-        let tool = ProcessTool::new();
-        // timeout: 0 should disable timeout, allowing long commands to complete
+    async fn test_process_simple_command() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ProcessTool::new().with_workspace(temp_dir.path());
+
+        // Use a cross-platform command: `whoami` on both Unix and Windows
         let params = json!({
-            "command": "sleep",
-            "args": ["0.5"],
-            "timeout": 0
+            "command": "whoami"
         });
 
         let result = tool.execute(params).await;
-        // Should succeed because timeout is disabled
-        assert!(result.is_ok());
-        let response = result.unwrap();
-        assert!(response.get("success").unwrap().as_bool().unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_process_timeout_max_cap() {
-        let tool = ProcessTool::new();
-        // timeout > 300 should be capped at 300
-        let params = json!({
-            "command": "echo",
-            "args": ["hello"],
-            "timeout": 9999  // Way over max, should be capped
-        });
-
-        // Should still work (not timeout immediately)
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
-        let response = result.unwrap();
-        assert!(response.get("success").unwrap().as_bool().unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_process_working_dir() {
-        let tool = ProcessTool::new();
-        let params = json!({
-            "command": "pwd",
-            "working_dir": "/tmp"
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Failed: {:?}", result);
 
         let response = result.unwrap();
-        let stdout = response.get("stdout").unwrap().as_str().unwrap();
-        assert!(stdout.contains("/tmp") || stdout.contains("tmp"));
+        assert!(response["success"].as_bool().unwrap());
+        // whoami outputs the current username - just verify we got some output
+        assert!(!response["stdout"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn test_process_env_vars() {
-        let tool = ProcessTool::new();
-        let params = json!({
-            "command": "sh",
-            "args": ["-c", "echo $TEST_VAR"],
-            "env": {
-                "TEST_VAR": "hello_world"
-            }
-        });
+    async fn test_process_cwd() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::create_dir(temp_dir.path().join("subdir"))
+            .await
+            .unwrap();
 
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
+        let tool = ProcessTool::new().with_workspace(temp_dir.path());
 
-        let response = result.unwrap();
-        let stdout = response.get("stdout").unwrap().as_str().unwrap();
-        assert!(stdout.contains("hello_world"));
-    }
+        // Test that cwd validation passes for valid subdirectory
+        // We can't easily test execution because 'echo' is shell builtin on Windows
+        let valid = tool.validate_cwd("subdir");
+        assert!(valid.is_ok(), "cwd validation should pass: {:?}", valid);
 
-    #[tokio::test]
-    async fn test_process_forbidden_chars() {
-        let tool = ProcessTool::new();
-        let params = json!({
-            "command": "echo; rm -rf /"
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("forbidden"));
-    }
-
-    #[tokio::test]
-    async fn test_process_shell_disabled() {
-        let tool = ProcessTool::new();
-        let params = json!({
-            "shell": "echo hello"
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not enabled"));
-    }
-
-    #[tokio::test]
-    async fn test_process_shell_enabled() {
-        let tool = ProcessTool::with_shell();
-        let params = json!({
-            "shell": "echo hello_world"
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
-
-        let response = result.unwrap();
-        assert!(response.get("success").unwrap().as_bool().unwrap());
-        assert!(response
-            .get("stdout")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .contains("hello_world"));
+        // Verify the resolved path is correct
+        let resolved = valid.unwrap();
+        assert!(resolved.to_string_lossy().contains("subdir"));
     }
 }

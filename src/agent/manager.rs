@@ -196,6 +196,13 @@ impl AgentManager {
                     scope: "local".to_string(),
                     created_at: None,
                 },
+                image_ref: None,
+                image_digest: None,
+                role: None,
+                team_id: None,
+                active_session_id: None,
+                created_at: chrono::Utc::now(),
+                skills: None,
             })
             .collect()
     }
@@ -283,11 +290,19 @@ impl AgentManager {
 
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = vec![];
 
-        // Agents list tool
-        tools.push(Arc::new(AgentsListTool::new(self.command_tx.clone())));
+        // Agents list tool (standalone agent - no team)
+        tools.push(Arc::new(AgentsListTool::new(
+            self.command_tx.clone(),
+            None,  // team_id
+            false, // allow_cross_team
+        )));
 
-        // Agent info tool
-        tools.push(Arc::new(AgentInfoTool::new(self.command_tx.clone())));
+        // Agent info tool (standalone agent - no team)
+        tools.push(Arc::new(AgentInfoTool::new(
+            self.command_tx.clone(),
+            None,  // team_id
+            false, // allow_cross_team
+        )));
 
         // Agent spawn tool
         // AgentSpawnTool is registered by the agent module with SubagentExecutor
@@ -312,7 +327,8 @@ impl AgentManager {
             cron_db_path: Some(self.data_dir.join("cron.db")),
             ..Default::default()
         };
-        let (mut tools, _discovery) = ToolFactory::create_tools_async(&factory_config).await?;
+        let result = ToolFactory::create_tools_async(&factory_config).await?;
+        let mut tools = result.tools;
 
         // Add communication tools
         tools.extend(self.create_communication_tools(&agent.identity.did));
@@ -350,7 +366,8 @@ impl AgentManager {
             cron_db_path: Some(self.data_dir.join("cron.db")),
             ..Default::default()
         };
-        let mut tools = ToolFactory::create_tools(&factory_config);
+        let result = ToolFactory::create_tools(&factory_config);
+        let mut tools = result.tools;
 
         // Add communication tools
         tools.extend(self.create_communication_tools(agent_did));
@@ -371,7 +388,8 @@ impl AgentManager {
             cron_db_path: Some(self.data_dir.join("cron.db")),
             ..Default::default()
         };
-        let (mut tools, _discovery) = ToolFactory::create_tools_async(&factory_config).await?;
+        let result = ToolFactory::create_tools_async(&factory_config).await?;
+        let mut tools = result.tools;
 
         // Add communication tools
         tools.extend(self.create_communication_tools(agent_did));
@@ -389,7 +407,8 @@ impl AgentManager {
     ) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::ToolFactory;
 
-        let mut tools = ToolFactory::create_tools(&config);
+        let result = ToolFactory::create_tools(&config);
+        let mut tools = result.tools;
         tools.extend(self.create_communication_tools(agent_did));
 
         // Filter if tool config specified
@@ -411,7 +430,8 @@ impl AgentManager {
     ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
         use crate::tools::ToolFactory;
 
-        let (mut tools, _discovery) = ToolFactory::create_tools_async(&config).await?;
+        let result = ToolFactory::create_tools_async(&config).await?;
+        let mut tools = result.tools;
         tools.extend(self.create_communication_tools(agent_did));
 
         // Filter if tool config specified
