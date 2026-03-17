@@ -139,34 +139,38 @@ kill -9 $(cat .pekobot/run/daemon.pid)
 
 ---
 
-## Milestone 4: Core Runtime and Agentic Loop
+## Milestone 4: Core Runtime and Agentic Loop ✅ COMPLETE
 
 **Goal:** Implement the turn-based agentic loop with sync/async tool calling.
 
 **Duration:** 2 weeks  
 **Dependencies:** Milestone 3  
+**Completed:** 2026-03-17
 
 ### Tasks
 
-| Task | Description | Spec Ref |
-|------|-------------|----------|
-| 4.1 | Refactor `src/engine/loop_v4.rs` to handle three input sources | REQ-AR-001 |
-| 4.2 | Implement synchronous tool execution (blocking) | REQ-AR-002 |
-| 4.3 | Implement asynchronous tool execution (receipt + callback) | REQ-AR-002 |
-| 4.4 | Implement tool timeout handling | REQ-RL-002 |
-| 4.5 | Implement tool panic isolation | REQ-RL-002 |
-| 4.6 | Implement `POST /agents/{id}/chat` with SSE streaming | API_CONTRACT §4 |
-| 4.7 | Implement WebSocket chat endpoint `ws://localhost:11435/agents/{id}/ws` | REQ-DM-003 |
-| 4.8 | Add streaming first token latency (< 500ms target) | REQ-PF-003 |
-| 4.9 | Implement watch mode (`--watch`) for development | REQ-AR-005 |
-| 4.10 | Complete all 4 LLM providers: Anthropic, OpenAI, Ollama, OpenAI-compatible | REQ-AR-004 |
+| Task | Description | Spec Ref | Status |
+|------|-------------|----------|--------|
+| 4.1 | Refactor `src/engine/loop_v4.rs` to handle three input sources | REQ-AR-001 | ✅ Complete |
+| 4.2 | Implement synchronous tool execution (blocking) | REQ-AR-002 | ✅ Complete |
+| 4.3 | Implement asynchronous tool execution (receipt + callback) | REQ-AR-002 | ✅ Complete |
+| 4.4 | Implement tool timeout handling | REQ-RL-002 | ✅ Complete |
+| 4.5 | Implement tool panic isolation | REQ-RL-002 | ✅ Complete |
+| 4.6 | Implement `POST /agents/{id}/chat` with SSE streaming | API_CONTRACT §4 | ✅ Complete |
+| 4.7 | Implement WebSocket chat endpoint `ws://localhost:11435/agents/{id}/ws` | REQ-DM-003 | ✅ Complete |
+| 4.8 | Add streaming first token latency (< 500ms target) | REQ-PF-003 | ✅ Complete |
+| 4.9 | Implement watch mode (`--watch`) for development | REQ-AR-005 | ✅ Complete |
+| 4.10 | Complete all 4 LLM providers: Anthropic, OpenAI, Ollama, OpenAI-compatible | REQ-AR-004 | ✅ Complete |
 
 ### Deliverables
-- Agentic loop with proper turn handling
-- Sync and async tool execution
-- SSE streaming chat responses
-- WebSocket bidirectional chat
-- Watch mode for development
+- ✅ `AgentInput` enum supporting UserMessage, HookTrigger, A2AMessage (src/engine/input.rs)
+- ✅ Synchronous tool execution via `TaskManager` with panic isolation using `catch_unwind`
+- ✅ Asynchronous tool execution via `UnifiedAsyncExecutor` with queue-based delivery
+- ✅ Tool timeout handling (120s default) in task execution
+- ✅ SSE streaming chat at `POST /agents/{id}/chat` (delta, tool_call, tool_result, thinking, done events)
+- ✅ WebSocket endpoint at `ws://localhost:11435/agents/{id}/ws` with bidirectional protocol
+- ✅ File watcher for `--watch` mode with debouncing (src/watcher.rs)
+- ✅ All 4 LLM providers with native tool calling support
 
 ### Verification
 ```bash
