@@ -247,7 +247,10 @@ mod tests {
     fn test_user_message_with_session() {
         let input = AgentInput::user_message_with_session("Hello", "sess_123");
         match input {
-            AgentInput::UserMessage { content, session_id } => {
+            AgentInput::UserMessage {
+                content,
+                session_id,
+            } => {
                 assert_eq!(content, "Hello");
                 assert_eq!(session_id, Some("sess_123".to_string()));
             }
@@ -372,9 +375,8 @@ mod tests {
     #[test]
     fn test_input_context_chaining() {
         let input = AgentInput::user_message("Test");
-        let ctx = InputContext::new(input, "run_001")
-            .with_existing_session();
-        
+        let ctx = InputContext::new(input, "run_001").with_existing_session();
+
         assert_eq!(ctx.run_id, "run_001");
         assert!(!ctx.is_new_session);
     }
@@ -384,9 +386,12 @@ mod tests {
         let input = AgentInput::user_message_with_session("Hello", "sess_123");
         let json = serde_json::to_string(&input).unwrap();
         let deserialized: AgentInput = serde_json::from_str(&json).unwrap();
-        
+
         match deserialized {
-            AgentInput::UserMessage { content, session_id } => {
+            AgentInput::UserMessage {
+                content,
+                session_id,
+            } => {
                 assert_eq!(content, "Hello");
                 assert_eq!(session_id, Some("sess_123".to_string()));
             }

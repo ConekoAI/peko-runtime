@@ -700,11 +700,24 @@ mod tests {
         assert!(ended.is_session_ended());
 
         // Test round-trip serialization for each event type
-        for event in [created, user_msg, assistant_msg, thinking, tool_call, 
-                      tool_result, spawn_req, spawn_res, a2a_sent, a2a_recv, 
-                      hook, system, ended] {
+        for event in [
+            created,
+            user_msg,
+            assistant_msg,
+            thinking,
+            tool_call,
+            tool_result,
+            spawn_req,
+            spawn_res,
+            a2a_sent,
+            a2a_recv,
+            hook,
+            system,
+            ended,
+        ] {
             let json = serde_json::to_string(&event).expect("Failed to serialize");
-            let deserialized: SessionEvent = serde_json::from_str(&json).expect("Failed to deserialize");
+            let deserialized: SessionEvent =
+                serde_json::from_str(&json).expect("Failed to deserialize");
             assert_eq!(event.event_type(), deserialized.event_type());
         }
     }
@@ -726,8 +739,11 @@ mod tests {
 
         for trigger in triggers {
             let json = serde_json::to_string(&trigger).expect("Failed to serialize trigger");
-            let deserialized: SessionTrigger = serde_json::from_str(&json).expect("Failed to deserialize trigger");
-            assert!(matches!(trigger, _ if std::mem::discriminant(&trigger) == std::mem::discriminant(&deserialized)));
+            let deserialized: SessionTrigger =
+                serde_json::from_str(&json).expect("Failed to deserialize trigger");
+            assert!(
+                matches!(trigger, _ if std::mem::discriminant(&trigger) == std::mem::discriminant(&deserialized))
+            );
         }
     }
 
@@ -744,8 +760,11 @@ mod tests {
 
         for reason in reasons {
             let json = serde_json::to_string(&reason).expect("Failed to serialize reason");
-            let deserialized: SessionEndReason = serde_json::from_str(&json).expect("Failed to deserialize reason");
-            assert!(matches!(reason, _ if std::mem::discriminant(&reason) == std::mem::discriminant(&deserialized)));
+            let deserialized: SessionEndReason =
+                serde_json::from_str(&json).expect("Failed to deserialize reason");
+            assert!(
+                matches!(reason, _ if std::mem::discriminant(&reason) == std::mem::discriminant(&deserialized))
+            );
         }
     }
 }

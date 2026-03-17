@@ -539,13 +539,16 @@ mod tests {
 
         let response: HistoryEventResponse = (&event).into();
         assert_eq!(response.event_type, "thinking");
-        assert_eq!(response.content, Some("Let me think about this...".to_string()));
+        assert_eq!(
+            response.content,
+            Some("Let me think about this...".to_string())
+        );
     }
 
     #[test]
     fn test_session_response_title_optional() {
-        use crate::session::sidecar::SessionSidecarIndex;
         use crate::session::events::SessionTrigger;
+        use crate::session::sidecar::SessionSidecarIndex;
         use chrono::Utc;
 
         let index = SessionSidecarIndex {
@@ -570,8 +573,8 @@ mod tests {
 
     #[test]
     fn test_session_response_with_parent() {
-        use crate::session::sidecar::SessionSidecarIndex;
         use crate::session::events::SessionTrigger;
+        use crate::session::sidecar::SessionSidecarIndex;
         use chrono::Utc;
 
         let index = SessionSidecarIndex {

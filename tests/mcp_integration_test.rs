@@ -48,7 +48,10 @@ async fn test_tool_factory_mcp_enabled_no_config() {
     let result = ToolFactory::create_tools_async(&config).await.unwrap();
 
     // Should still have core tools
-    assert!(!result.tools.is_empty(), "Should have core tools even without MCP");
+    assert!(
+        !result.tools.is_empty(),
+        "Should have core tools even without MCP"
+    );
 
     // No MCP servers should be found (no config)
     assert_eq!(result.mcp.servers_found, 0);

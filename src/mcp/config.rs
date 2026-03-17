@@ -174,6 +174,38 @@ impl McpServerConfig {
     }
 }
 
+/// JSON format MCP configuration (compatible with Claude Desktop)
+///
+/// Example:
+/// ```json
+/// {
+///   "mcpServers": {
+///     "filesystem": {
+///       "command": "npx",
+///       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+///       "env": {}
+///     }
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpJsonConfig {
+    #[serde(default, rename = "mcpServers")]
+    pub mcp_servers: HashMap<String, McpJsonServerConfig>,
+}
+
+/// Server configuration in JSON format
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpJsonServerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+}
+
 /// Top-level MCP configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpConfig {
@@ -258,6 +290,90 @@ impl McpConfig {
     /// Convert to TOML string
     pub fn to_toml(&self) -> anyhow::Result<String> {
         Ok(toml::to_string_pretty(self)?)
+    }
+
+    /// Load configuration from a JSON string (mcp.json format)
+    ///
+    /// This format is compatible with Claude Desktop and other MCP clients.
+    pub fn from_json(json: &str) -> anyhow::Result<Self> {
+        let json_config: McpJsonConfig = serde_json::from_str(json)?;
+
+        let mut servers = Vec::new();
+        for (name, server_config) in json_config.mcp_servers {
+            servers.push(McpServerConfig {
+                name,
+                transport: TransportType::Stdio,
+                command: Some(server_config.command),
+                args: server_config.args,
+                env: server_config.env,
+                cwd: server_config.cwd,
+                endpoint: None,
+                auto_start: default_auto_start(),
+                health_check_interval_secs: default_health_check_interval_secs(),
+                max_restarts: 0,
+                init_timeout_secs: default_init_timeout_secs(),
+                tool_timeout_secs: default_tool_timeout_secs(),
+            });
+        }
+
+        let config = Self {
+            servers,
+            auto_start: default_global_auto_start(),
+            health_check_interval_secs: default_global_health_check_interval_secs(),
+        };
+
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Convert to JSON string (mcp.json format)
+    pub fn to_json(&self) -> anyhow::Result<String> {
+        let mut mcp_servers = HashMap::new();
+
+        for server in &self.servers {
+            // Only stdio servers can be represented in JSON format
+            if server.transport == TransportType::Stdio {
+                mcp_servers.insert(
+                    server.name.clone(),
+                    McpJsonServerConfig {
+                        command: server.command.clone().unwrap_or_default(),
+                        args: server.args.clone(),
+                        env: server.env.clone(),
+                        cwd: server.cwd.clone(),
+                    },
+                );
+            }
+        }
+
+        let json_config = McpJsonConfig { mcp_servers };
+        Ok(serde_json::to_string_pretty(&json_config)?)
+    }
+
+    /// Load configuration from file (auto-detects format by extension)
+    ///
+    /// Supports both `.toml` and `.json` formats.
+    pub async fn from_file(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let content = tokio::fs::read_to_string(path.as_ref()).await?;
+        let path_str = path.as_ref().to_string_lossy();
+
+        if path_str.ends_with(".json") {
+            Self::from_json(&content)
+        } else {
+            // Default to TOML for .toml and other extensions
+            Self::from_toml(&content)
+        }
+    }
+
+    /// Load configuration from file synchronously (auto-detects format)
+    pub fn from_file_sync(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        let content = std::fs::read_to_string(path.as_ref())?;
+        let path_str = path.as_ref().to_string_lossy();
+
+        if path_str.ends_with(".json") {
+            Self::from_json(&content)
+        } else {
+            Self::from_toml(&content)
+        }
     }
 }
 

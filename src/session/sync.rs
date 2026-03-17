@@ -556,7 +556,10 @@ mod tests {
             content: "Hello".to_string(),
             source: crate::session::events::MessageSource::User,
         });
-        storage.append_event("parent_sess", &user_event).await.unwrap();
+        storage
+            .append_event("parent_sess", &user_event)
+            .await
+            .unwrap();
 
         // Create branched session
         storage
@@ -570,7 +573,10 @@ mod tests {
 
         // Child should have parent_session_id set
         let child_index = storage.load_index("child_sess").await.unwrap().unwrap();
-        assert_eq!(child_index.parent_session_id, Some("parent_sess".to_string()));
+        assert_eq!(
+            child_index.parent_session_id,
+            Some("parent_sess".to_string())
+        );
 
         // Child should have copied events
         let child_events = storage.load_events("child_sess").await.unwrap();

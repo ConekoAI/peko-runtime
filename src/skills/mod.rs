@@ -332,11 +332,7 @@ This is the body content.
         let has_tilde_path = prompt.contains("~/.pekobot/skills/docker/SKILL.md")
             || prompt.contains("~\\.pekobot/skills/docker/SKILL.md")
             || prompt.contains("~\\.pekobot\\skills\\docker\\SKILL.md");
-        assert!(
-            has_tilde_path,
-            "Expected path with ~, got: {}",
-            prompt
-        );
+        assert!(has_tilde_path, "Expected path with ~, got: {}", prompt);
     }
 
     #[test]

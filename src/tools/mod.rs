@@ -11,6 +11,7 @@ pub mod agent_spawn;
 pub mod apply_patch;
 pub mod context;
 pub mod cron_tool;
+pub mod custom;
 pub mod factory;
 pub mod filesystem;
 pub mod message_tool;

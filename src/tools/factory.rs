@@ -6,11 +6,15 @@
 //! Note: Heavy tools (web_search, fetch, http, browser, memory) have been
 //! migrated to standalone MCP servers. Use MCP configuration to enable them.
 //!
-//! # Tool Loading Strategy (MCP-First)
+//! # Tool Loading Strategy (Resolution Order)
 //!
-//! 1. Try to load tools from MCP servers first (external processes)
-//! 2. If MCP unavailable, log warning and continue with core tools only
-//! 3. Users can install MCP servers via `pekobot mcp install <server>`
+//! Per CAPABILITY_INTERFACE.md §9.1, tools are resolved in this order:
+//!
+//! 1. **Built-in tools** - Compiled into the runtime, checked first
+//! 2. **Custom tools** - From agent's `tools/` directory
+//! 3. **MCP tools** - From configured MCP servers
+//!
+//! Built-in tools take precedence. Name conflicts are resolved by this order.
 //!
 //! # Disabled Tools Support
 //!
@@ -18,8 +22,11 @@
 //! - Are not registered with the LLM
 //! - Return error if called directly
 //! - Are filtered from the tool list
+//!
+//! Note: Custom tools can also be disabled by name.
 
 use crate::security::SecurityPolicy;
+use crate::tools::traits::Tool;
 use crate::tools::{
     ApplyPatchConfig, ApplyPatchTool, CronTool, FileSystemTool, ProcessTool, SessionStatusTool,
     SessionsHistoryTool, SessionsListTool,
@@ -82,6 +89,10 @@ pub struct ToolFactoryConfig {
     pub team_id: Option<String>,
     /// Allow cross-team access (requires explicit grant)
     pub allow_cross_team: bool,
+    /// Path to custom tools directory (defaults to `workspace_dir/tools/`)
+    pub custom_tools_dir: Option<PathBuf>,
+    /// Enable custom tools from `tools/` directory
+    pub enable_custom_tools: bool,
 }
 
 impl Default for ToolFactoryConfig {
@@ -100,6 +111,8 @@ impl Default for ToolFactoryConfig {
             instance_id: None,
             team_id: None,
             allow_cross_team: false,
+            custom_tools_dir: None,
+            enable_custom_tools: true,
         }
     }
 }
@@ -108,7 +121,7 @@ impl Default for ToolFactoryConfig {
 pub struct ToolFactory;
 
 /// Result of MCP discovery
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct McpDiscoveryResult {
     /// Number of MCP servers discovered
     pub servers_found: usize,
@@ -128,6 +141,25 @@ impl McpDiscoveryResult {
     }
 }
 
+/// Result of custom tools discovery
+#[derive(Debug, Clone)]
+pub struct CustomToolsDiscoveryResult {
+    /// Number of custom tools discovered
+    pub tools_discovered: usize,
+    /// Number of custom tools loaded
+    pub tools_loaded: usize,
+    /// Tool names that failed to load
+    pub failed_tools: Vec<(String, String)>,
+}
+
+impl CustomToolsDiscoveryResult {
+    /// Check if any custom tools were loaded
+    #[must_use]
+    pub fn has_custom_tools(&self) -> bool {
+        self.tools_loaded > 0
+    }
+}
+
 /// Tool creation result with metadata
 pub struct ToolCreationResult {
     /// Created tools
@@ -136,6 +168,8 @@ pub struct ToolCreationResult {
     pub disabled: Vec<String>,
     /// MCP discovery result
     pub mcp: McpDiscoveryResult,
+    /// Custom tools discovery result
+    pub custom: CustomToolsDiscoveryResult,
 }
 
 impl std::fmt::Debug for ToolCreationResult {
@@ -144,6 +178,7 @@ impl std::fmt::Debug for ToolCreationResult {
             .field("tool_count", &self.tools.len())
             .field("disabled", &self.disabled)
             .field("mcp", &self.mcp)
+            .field("custom", &self.custom)
             .finish()
     }
 }
@@ -257,65 +292,205 @@ impl ToolFactory {
                 failed_servers: Vec::new(),
                 auto_install_attempted: false,
             },
+            custom: CustomToolsDiscoveryResult {
+                tools_discovered: 0,
+                tools_loaded: 0,
+                failed_tools: Vec::new(),
+            },
         }
     }
 
-    /// Create all essential tools including MCP tools (asynchronous version)
+    /// Create all essential tools including custom and MCP tools (asynchronous version)
     ///
-    /// This version uses MCP-first loading:
-    /// 1. Discover and connect to MCP servers
-    /// 2. Load tools from MCP servers
-    /// 3. Fall back to core tools if MCP unavailable
+    /// This version follows the capability resolution order (CAPABILITY_INTERFACE.md §9.1):
+    /// 1. Built-in tools (created synchronously first)
+    /// 2. Custom tools from `tools/` directory (override built-ins if same name)
+    /// 3. MCP tools from configured servers (override neither built-in nor custom)
     ///
-    /// Respects `disabled_tools` - disabled built-in tools are excluded.
+    /// Note: Built-in tools take precedence. If a custom tool has the same name as
+    /// a built-in tool, the built-in is kept and the custom tool is logged as skipped.
+    ///
+    /// Respects `disabled_tools` - disabled tools are excluded from all sources.
     pub async fn create_tools_async(
         config: &ToolFactoryConfig,
     ) -> anyhow::Result<ToolCreationResult> {
-        // Start with core built-in tools
+        // Step 1: Start with core built-in tools
         let mut result = Self::create_tools(config);
-        let mut discovery_result = McpDiscoveryResult {
+
+        // Track built-in tool names for conflict resolution
+        let builtin_names: std::collections::HashSet<String> = result
+            .tools
+            .iter()
+            .map(|t| t.name().to_lowercase())
+            .collect();
+
+        // Step 2: Load custom tools from tools/ directory
+        let mut custom_discovery = CustomToolsDiscoveryResult {
+            tools_discovered: 0,
+            tools_loaded: 0,
+            failed_tools: Vec::new(),
+        };
+
+        if config.enable_custom_tools {
+            let custom_tools_dir = config
+                .custom_tools_dir
+                .clone()
+                .unwrap_or_else(|| config.workspace_dir.join("tools"));
+
+            tracing::debug!("Discovering custom tools in {:?}", custom_tools_dir);
+
+            match Self::load_custom_tools_with_discovery(
+                &custom_tools_dir,
+                &config.disabled_tools,
+                &builtin_names,
+            )
+            .await
+            {
+                Ok((custom_tools, discovery)) => {
+                    custom_discovery = discovery;
+                    if custom_discovery.tools_loaded > 0 {
+                        tracing::info!(
+                            "✅ Loaded {} custom tools ({} discovered)",
+                            custom_discovery.tools_loaded,
+                            custom_discovery.tools_discovered
+                        );
+                        result.tools.extend(custom_tools);
+                    } else if custom_discovery.tools_discovered > 0 {
+                        tracing::info!(
+                            "ℹ️ Discovered {} custom tools but none loaded",
+                            custom_discovery.tools_discovered
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("❌ Custom tools discovery failed: {}", e);
+                }
+            }
+        } else {
+            tracing::debug!("Custom tools disabled");
+        }
+
+        result.custom = custom_discovery;
+
+        // Step 3: Load MCP tools
+        let mut mcp_discovery = McpDiscoveryResult {
             servers_found: 0,
             tools_available: 0,
             failed_servers: Vec::new(),
             auto_install_attempted: false,
         };
 
-        // Try to discover and load MCP tools if enabled
         if config.mcp.enabled {
             tracing::info!("Discovering MCP servers...");
 
-            match Self::load_mcp_tools_with_discovery(&config.mcp, &config.disabled_tools).await {
+            // Get current tool names (built-in + custom) for conflict resolution
+            let existing_names: std::collections::HashSet<String> = result
+                .tools
+                .iter()
+                .map(|t| t.name().to_lowercase())
+                .collect();
+
+            match Self::load_mcp_tools_with_discovery(
+                &config.mcp,
+                &config.disabled_tools,
+                &existing_names,
+            )
+            .await
+            {
                 Ok((mcp_tools, mcp_result)) => {
+                    let servers_found = mcp_result.servers_found;
+                    mcp_discovery = mcp_result;
                     if !mcp_tools.is_empty() {
                         tracing::info!(
                             "✅ Loaded {} tools from {} MCP servers",
                             mcp_tools.len(),
-                            mcp_result.servers_found
+                            servers_found
                         );
                         result.tools.extend(mcp_tools);
                     } else {
                         tracing::info!("ℹ️ No MCP servers configured or available");
                     }
-                    discovery_result = mcp_result;
                 }
                 Err(e) => {
                     tracing::warn!("❌ MCP discovery failed: {}", e);
-                    tracing::info!("💡 Continuing with core tools only. Install MCP servers with:");
+                    tracing::info!("💡 Continuing without MCP tools. Install with:");
                     tracing::info!("   pekobot mcp install <web|browser|memory>");
                 }
             }
         } else {
-            tracing::debug!("MCP tools disabled, using core tools only");
+            tracing::debug!("MCP tools disabled");
         }
 
-        result.mcp = discovery_result;
+        result.mcp = mcp_discovery;
         Ok(result)
+    }
+
+    /// Load custom tools with discovery metadata
+    async fn load_custom_tools_with_discovery(
+        tools_dir: &PathBuf,
+        disabled_tools: &[String],
+        existing_names: &std::collections::HashSet<String>,
+    ) -> anyhow::Result<(Vec<Arc<dyn crate::tools::Tool>>, CustomToolsDiscoveryResult)> {
+        use crate::tools::custom::{create_custom_tools, CustomTool};
+
+        if !tools_dir.exists() {
+            tracing::debug!("Custom tools directory does not exist: {:?}", tools_dir);
+            return Ok((
+                Vec::new(),
+                CustomToolsDiscoveryResult {
+                    tools_discovered: 0,
+                    tools_loaded: 0,
+                    failed_tools: Vec::new(),
+                },
+            ));
+        }
+
+        // Load all custom tools
+        let custom_tools = create_custom_tools(tools_dir).await?;
+        let discovered_count = custom_tools.len();
+
+        // Filter tools
+        let mut loaded_tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+        let mut failed_tools: Vec<(String, String)> = Vec::new();
+
+        for tool in custom_tools {
+            let name = tool.name().to_lowercase();
+
+            // Check if disabled
+            if disabled_tools.iter().any(|d| d.to_lowercase() == name) {
+                tracing::debug!("Custom tool '{}' is disabled, skipping", tool.name());
+                continue;
+            }
+
+            // Check for conflicts with built-in tools
+            if existing_names.contains(&name) {
+                tracing::info!(
+                    "Custom tool '{}' has same name as built-in tool, keeping built-in",
+                    tool.name()
+                );
+                continue;
+            }
+
+            loaded_tools.push(Arc::new(tool));
+        }
+
+        let loaded_count = loaded_tools.len();
+
+        Ok((
+            loaded_tools,
+            CustomToolsDiscoveryResult {
+                tools_discovered: discovered_count,
+                tools_loaded: loaded_count,
+                failed_tools,
+            },
+        ))
     }
 
     /// Load MCP tools with discovery metadata
     async fn load_mcp_tools_with_discovery(
         mcp_config: &McpFactoryConfig,
         disabled_tools: &[String],
+        existing_names: &std::collections::HashSet<String>,
     ) -> anyhow::Result<(Vec<Arc<dyn crate::tools::Tool>>, McpDiscoveryResult)> {
         use crate::mcp::{create_tool_proxies, McpConfig, McpManager};
 
@@ -325,6 +500,18 @@ impl ToolFactory {
                 .join(".pekobot")
                 .join("mcp.toml")
         });
+
+        // Also check for mcp.json if mcp.toml doesn't exist
+        let (config_path, format) = if config_path.exists() {
+            (config_path, "toml")
+        } else {
+            let json_path = config_path.with_extension("json");
+            if json_path.exists() {
+                (json_path, "json")
+            } else {
+                (config_path, "toml") // Default to TOML path for error reporting
+            }
+        };
 
         // Check if config exists
         if !config_path.exists() {
@@ -341,8 +528,17 @@ impl ToolFactory {
         }
 
         // Load MCP configuration
+        tracing::debug!(
+            "Loading MCP config from {:?} (format: {})",
+            config_path,
+            format
+        );
         let content = tokio::fs::read_to_string(&config_path).await?;
-        let config: McpConfig = toml::from_str(&content)?;
+        let config: McpConfig = if format == "json" {
+            McpConfig::from_json(&content)?
+        } else {
+            toml::from_str(&content)?
+        };
 
         if config.servers.is_empty() {
             tracing::debug!("No MCP servers configured");
@@ -374,20 +570,37 @@ impl ToolFactory {
                 // Create tool proxies
                 let mcp_tools = create_tool_proxies(manager).await;
 
-                // Filter out disabled MCP tools
-                let filtered_tools: Vec<_> = mcp_tools
-                    .into_iter()
-                    .filter(|tool| {
-                        let name = tool.name().to_lowercase();
-                        let is_disabled = disabled_tools.iter().any(|d| d.to_lowercase() == name);
-                        if is_disabled {
-                            tracing::debug!("MCP tool '{}' is disabled, skipping", tool.name());
-                        }
-                        !is_disabled
-                    })
-                    .collect();
+                // Filter out disabled MCP tools and handle name conflicts
+                let mut filtered_tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+                let mut conflict_count = 0;
+
+                for tool in mcp_tools {
+                    let name = tool.name().to_lowercase();
+
+                    // Check if disabled
+                    if disabled_tools.iter().any(|d| d.to_lowercase() == name) {
+                        tracing::debug!("MCP tool '{}' is disabled, skipping", tool.name());
+                        continue;
+                    }
+
+                    // Check for conflicts with existing tools (built-in or custom)
+                    if existing_names.contains(&name) {
+                        tracing::debug!(
+                            "MCP tool '{}' conflicts with existing tool, skipping",
+                            tool.name()
+                        );
+                        conflict_count += 1;
+                        continue;
+                    }
+
+                    filtered_tools.push(tool);
+                }
 
                 let tools_count = filtered_tools.len();
+
+                if conflict_count > 0 {
+                    tracing::debug!("Skipped {} MCP tools due to name conflicts", conflict_count);
+                }
 
                 tracing::info!(
                     "Connected to {} MCP server(s) with {} tools",
@@ -425,13 +638,33 @@ impl ToolFactory {
                 .join("mcp.toml")
         });
 
+        // Also check for mcp.json if mcp.toml doesn't exist
+        let config_path = if config_path.exists() {
+            config_path
+        } else {
+            let json_path = config_path.with_extension("json");
+            if json_path.exists() {
+                json_path
+            } else {
+                config_path
+            }
+        };
+
         if !config_path.exists() {
             tracing::debug!("MCP config not found at {:?}", config_path);
             return Ok(Vec::new());
         }
 
         let content = tokio::fs::read_to_string(&config_path).await?;
-        let config: McpConfig = toml::from_str(&content)?;
+        let is_json = config_path
+            .extension()
+            .map(|e| e == "json")
+            .unwrap_or(false);
+        let config: McpConfig = if is_json {
+            McpConfig::from_json(&content)?
+        } else {
+            toml::from_str(&content)?
+        };
 
         if config.servers.is_empty() {
             return Ok(Vec::new());
@@ -527,34 +760,59 @@ impl ToolFactory {
     }
 
     /// Check if MCP tools should be used (config exists)
+    ///
+    /// Checks for both mcp.toml and mcp.json files.
     pub async fn should_use_mcp() -> bool {
-        let config_path = dirs::home_dir()
+        let base_path = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pekobot")
-            .join("mcp.toml");
+            .join("mcp");
 
-        if !config_path.exists() {
-            return false;
-        }
-
-        match tokio::fs::read_to_string(&config_path).await {
-            Ok(content) => {
-                if let Ok(config) = toml::from_str::<crate::mcp::McpConfig>(&content) {
-                    !config.servers.is_empty()
-                } else {
-                    false
+        // Check for mcp.toml
+        let toml_path = base_path.with_extension("toml");
+        if toml_path.exists() {
+            match tokio::fs::read_to_string(&toml_path).await {
+                Ok(content) => {
+                    if let Ok(config) = toml::from_str::<crate::mcp::McpConfig>(&content) {
+                        if !config.servers.is_empty() {
+                            return true;
+                        }
+                    }
                 }
+                Err(_) => {}
             }
-            Err(_) => false,
         }
+
+        // Check for mcp.json
+        let json_path = base_path.with_extension("json");
+        if json_path.exists() {
+            match tokio::fs::read_to_string(&json_path).await {
+                Ok(content) => {
+                    if let Ok(config) = crate::mcp::McpConfig::from_json(&content) {
+                        return !config.servers.is_empty();
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+
+        false
     }
 
-    /// Get MCP config path
+    /// Get MCP config path (TOML format)
     pub fn mcp_config_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pekobot")
             .join("mcp.toml")
+    }
+
+    /// Get MCP config path (JSON format)
+    pub fn mcp_config_json_path() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".pekobot")
+            .join("mcp.json")
     }
 
     /// Get list of all available built-in tool names

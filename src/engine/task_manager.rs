@@ -170,13 +170,11 @@ impl TaskManager {
                     ))
                 }
             }
-            Err(_) => {
-                Err(anyhow::anyhow!(
-                    "Tool '{}' timed out after {:?}",
-                    tool_name_for_error,
-                    timeout
-                ))
-            }
+            Err(_) => Err(anyhow::anyhow!(
+                "Tool '{}' timed out after {:?}",
+                tool_name_for_error,
+                timeout
+            )),
         }
     }
 

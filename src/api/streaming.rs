@@ -332,7 +332,12 @@ mod tests {
         };
         let sse = engine_event_to_sse(&event, "run_123");
         match sse {
-            Some(ChatSseEvent::ToolCall { id, tool, args, async_ }) => {
+            Some(ChatSseEvent::ToolCall {
+                id,
+                tool,
+                args,
+                async_,
+            }) => {
                 assert_eq!(id, "tc_001");
                 assert_eq!(tool, "web_search");
                 assert_eq!(args, serde_json::json!({"query": "rust"}));
@@ -353,7 +358,11 @@ mod tests {
         };
         let sse = engine_event_to_sse(&event, "run_123");
         match sse {
-            Some(ChatSseEvent::ToolResult { tool_call_id, output, error }) => {
+            Some(ChatSseEvent::ToolResult {
+                tool_call_id,
+                output,
+                error,
+            }) => {
                 assert_eq!(tool_call_id, "tc_001");
                 assert!(error.is_none());
                 assert!(output.contains("result"));
@@ -373,7 +382,11 @@ mod tests {
         };
         let sse = engine_event_to_sse(&event, "run_123");
         match sse {
-            Some(ChatSseEvent::ToolResult { tool_call_id, error, .. }) => {
+            Some(ChatSseEvent::ToolResult {
+                tool_call_id,
+                error,
+                ..
+            }) => {
                 assert_eq!(tool_call_id, "tc_002");
                 assert!(error.is_some());
             }

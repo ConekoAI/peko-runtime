@@ -12,7 +12,7 @@ use uuid::Uuid;
 /// # Examples
 /// ```
 /// use pekobot::session::generate_subagent_key;
-/// 
+///
 /// let key = generate_subagent_key("myagent");
 /// // agent:myagent:subagent:550e8400-e29b-41d4-a716-446655440000
 /// ```

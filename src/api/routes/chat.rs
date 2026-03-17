@@ -391,10 +391,14 @@ mod tests {
     #[tokio::test]
     async fn test_sse_event_channel() {
         let (sse_tx, mut sse_rx) = mpsc::channel(10);
-        
+
         // Send an assistant event
-        let _ = sse_tx.send(ChatSseEvent::Delta { text: "Hello".to_string() }).await;
-        
+        let _ = sse_tx
+            .send(ChatSseEvent::Delta {
+                text: "Hello".to_string(),
+            })
+            .await;
+
         // Verify event was sent
         let event = sse_rx.recv().await;
         assert!(matches!(event, Some(ChatSseEvent::Delta { .. })));
@@ -403,15 +407,17 @@ mod tests {
     #[tokio::test]
     async fn test_sse_tool_events() {
         let (sse_tx, mut sse_rx) = mpsc::channel(10);
-        
+
         // Send tool start event
-        let _ = sse_tx.send(ChatSseEvent::ToolCall {
-            id: "tc_001".to_string(),
-            tool: "test_tool".to_string(),
-            args: serde_json::json!({}),
-            async_: false,
-        }).await;
-        
+        let _ = sse_tx
+            .send(ChatSseEvent::ToolCall {
+                id: "tc_001".to_string(),
+                tool: "test_tool".to_string(),
+                args: serde_json::json!({}),
+                async_: false,
+            })
+            .await;
+
         let event = sse_rx.recv().await;
         match event {
             Some(ChatSseEvent::ToolCall { id, tool, .. }) => {
@@ -420,14 +426,16 @@ mod tests {
             }
             _ => panic!("Expected ToolCall event"),
         }
-        
+
         // Send tool result event
-        let _ = sse_tx.send(ChatSseEvent::ToolResult {
-            tool_call_id: "tc_001".to_string(),
-            output: "result".to_string(),
-            error: None,
-        }).await;
-        
+        let _ = sse_tx
+            .send(ChatSseEvent::ToolResult {
+                tool_call_id: "tc_001".to_string(),
+                output: "result".to_string(),
+                error: None,
+            })
+            .await;
+
         let event = sse_rx.recv().await;
         assert!(matches!(event, Some(ChatSseEvent::ToolResult { .. })));
     }
@@ -435,17 +443,24 @@ mod tests {
     #[tokio::test]
     async fn test_sse_done_event() {
         let (sse_tx, mut sse_rx) = mpsc::channel(10);
-        
-        let _ = sse_tx.send(ChatSseEvent::Done {
-            message_id: "msg_001".to_string(),
-            session_id: "sess_001".to_string(),
-            turn_count: 1,
-            usage: TokenUsage::default(),
-        }).await;
-        
+
+        let _ = sse_tx
+            .send(ChatSseEvent::Done {
+                message_id: "msg_001".to_string(),
+                session_id: "sess_001".to_string(),
+                turn_count: 1,
+                usage: TokenUsage::default(),
+            })
+            .await;
+
         let event = sse_rx.recv().await;
         match event {
-            Some(ChatSseEvent::Done { message_id, session_id, turn_count, .. }) => {
+            Some(ChatSseEvent::Done {
+                message_id,
+                session_id,
+                turn_count,
+                ..
+            }) => {
                 assert_eq!(message_id, "msg_001");
                 assert_eq!(session_id, "sess_001");
                 assert_eq!(turn_count, 1);

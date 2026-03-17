@@ -655,9 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_with_various_events() {
-        use crate::session::events::{
-            SystemEvent, ThinkingEvent, ToolCallEvent, ToolResultEvent,
-        };
+        use crate::session::events::{SystemEvent, ThinkingEvent, ToolCallEvent, ToolResultEvent};
         use serde_json::json;
 
         let temp = TempDir::new().unwrap();
@@ -681,7 +679,10 @@ mod tests {
             },
             content: "Thinking...".to_string(),
         });
-        manager.update_with_event("sess_123", &thinking).await.unwrap();
+        manager
+            .update_with_event("sess_123", &thinking)
+            .await
+            .unwrap();
 
         let index = manager.load("sess_123").await.unwrap().unwrap();
         assert_eq!(index.event_count, 1); // Only thinking, no new turn
@@ -701,7 +702,10 @@ mod tests {
             async_: false,
             timeout_seconds: None,
         });
-        manager.update_with_event("sess_123", &tool_call).await.unwrap();
+        manager
+            .update_with_event("sess_123", &tool_call)
+            .await
+            .unwrap();
 
         // Test tool result
         let tool_result = SessionEvent::ToolResult(ToolResultEvent {
@@ -716,7 +720,10 @@ mod tests {
             error: None,
             duration_ms: 100,
         });
-        manager.update_with_event("sess_123", &tool_result).await.unwrap();
+        manager
+            .update_with_event("sess_123", &tool_result)
+            .await
+            .unwrap();
 
         // Test system event
         let system = SessionEvent::System(SystemEvent {
@@ -729,7 +736,10 @@ mod tests {
             event: "test".to_string(),
             detail: json!({}),
         });
-        manager.update_with_event("sess_123", &system).await.unwrap();
+        manager
+            .update_with_event("sess_123", &system)
+            .await
+            .unwrap();
 
         let index = manager.load("sess_123").await.unwrap().unwrap();
         assert_eq!(index.event_count, 4);

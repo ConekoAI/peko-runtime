@@ -22,7 +22,8 @@ Phase 1 establishes the **Core Runtime** including: agent image/instance model, 
 | Session Management | ✅ Complete | Atomic writes, sidecar indexes, branching, recovery |
 | Core Runtime | ✅ Complete | Agentic loop, sync/async tools, SSE streaming, WebSocket, watch mode |
 | Tools (13 built-in) | ✅ Milestone 5 Complete | All 13 tools implemented with sandboxing |
-| MCP Support | ✅ Partial | Client exists; integration needs alignment |
+| Custom Tools | ✅ Milestone 6 Complete | tools/ discovery, JSON protocol, manifests |
+| MCP Support | ✅ Milestone 6 Complete | Client, mcp.json, tool proxy, resolution order |
 | HTTP API | ✅ Milestone 1 Complete | Foundation: /health, /info endpoints, headers, middleware |
 | Agent Image/Instance | ✅ Milestone 2 Complete | Image build, registry, instance lifecycle |
 | Team Runtime | ✅ Partial | Team-scoped agents_list/agent_info, cross-team blocking |
@@ -235,31 +236,45 @@ cargo test --lib tools::  # 60 passed
 
 ---
 
-## Milestone 6: Custom Tools and MCP Integration
+## Milestone 6: Custom Tools and MCP Integration ✅ COMPLETE
 
 **Goal:** Implement custom tool discovery and MCP client support.
 
 **Duration:** 1.5 weeks  
 **Dependencies:** Milestone 5  
+**Completed:** 2026-03-17  
 
 ### Tasks
 
-| Task | Description | Spec Ref |
-|------|-------------|----------|
-| 6.1 | Implement `tools/` directory discovery | REQ-CAP-002 |
-| 6.2 | Implement custom tool JSON protocol (stdin/stdout) | DATA_MODEL §10 |
-| 6.3 | Support optional `<toolname>.json` schema sidecar | REQ-CAP-002 |
-| 6.4 | Implement MCP client in `src/mcp/` | REQ-CAP-003 |
-| 6.5 | Implement `mcp.json` parsing | DATA_MODEL §9 |
-| 6.6 | Implement MCP tool discovery (`list_tools`) | REQ-CAP-003 |
-| 6.7 | Implement MCP tool call proxying | REQ-CAP-003 |
-| 6.8 | Add MCP server startup failure handling | REQ-CAP-003 |
-| 6.9 | Implement capability resolution order (built-in → local → MCP) | REQ-CAP-004 |
+| Task | Description | Spec Ref | Status |
+|------|-------------|----------|--------|
+| 6.1 | Implement `tools/` directory discovery | REQ-CAP-002 | ✅ Complete |
+| 6.2 | Implement custom tool JSON protocol (stdin/stdout) | DATA_MODEL §10 | ✅ Complete |
+| 6.3 | Support optional `<toolname>.json` schema sidecar | REQ-CAP-002 | ✅ Complete |
+| 6.4 | Implement MCP client in `src/mcp/` | REQ-CAP-003 | ✅ Complete |
+| 6.5 | Implement `mcp.json` parsing | DATA_MODEL §9 | ✅ Complete |
+| 6.6 | Implement MCP tool discovery (`list_tools`) | REQ-CAP-003 | ✅ Complete |
+| 6.7 | Implement MCP tool call proxying | REQ-CAP-003 | ✅ Complete |
+| 6.8 | Add MCP server startup failure handling | REQ-CAP-003 | ✅ Complete |
+| 6.9 | Implement capability resolution order (built-in → local → MCP) | REQ-CAP-004 | ✅ Complete |
 
 ### Deliverables
-- Custom tools from `tools/` directory work
-- MCP servers integrate seamlessly
-- Tool name conflicts resolved per spec
+- ✅ Custom tools from `tools/` directory work
+- ✅ MCP servers integrate seamlessly
+- ✅ Tool name conflicts resolved per spec
+- ✅ 64 unit tests for custom tools
+
+### Verification
+```bash
+# Run custom tool tests
+cargo test --lib tools::custom  # 64 passed
+
+# Tools directory structure
+mkdir -p tools/
+echo '#!/bin/bash
+echo "{\"tool_call_id\": \"$1\", \"output\": \"Hello\"}"' > tools/hello
+cargo run -- daemon start
+```
 
 ---
 
