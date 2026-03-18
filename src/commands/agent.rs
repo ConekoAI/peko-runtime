@@ -10,10 +10,7 @@ use clap::Subcommand;
 ///   # Initialize a new agent directory
 ///   pekobot agent init ./my-agent --provider openai
 ///
-///   # Run an agent interactively  
-///   pekobot agent start my-agent
-///
-///   # Send a single message (non-interactive)
+///   # Send a message to an agent (non-interactive only)
 ///   pekobot agent start my-agent --message "Hello"
 ///
 ///   # List all agents
@@ -21,12 +18,12 @@ use clap::Subcommand;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AgentCommands {
-    /// Run an agent interactively
+    /// Send a single message to an agent (non-interactive)
     #[command(alias = "run")]
     Start {
         /// Agent name (defaults to 'peko' if not specified)
         name: Option<String>,
-        /// Custom configuration file path (optional, defaults to ~/.pekobot/agents/{name}/config.toml)
+        /// Custom configuration file path (optional, defaults to ~/.pekobot/teams/default/agents/{name}/config.toml)
         #[arg(short, long)]
         config: Option<String>,
         /// LLM provider (openai, anthropic, ollama, kimi, `kimi_code`) - only used when creating default config
@@ -38,9 +35,9 @@ pub enum AgentCommands {
         /// Database path for memory
         #[arg(long)]
         db: Option<String>,
-        /// Send a single message and exit (non-interactive mode)
-        #[arg(short = 'M', long)]
-        message: Option<String>,
+        /// Message to send (required, non-interactive only)
+        #[arg(short = 'M', long, required = true)]
+        message: String,
         /// Start a new session (don't resume existing CLI session)
         #[arg(short, long)]
         new: bool,
@@ -69,9 +66,9 @@ pub enum AgentCommands {
         /// Provider to use
         #[arg(short, long, default_value = "kimi_code")]
         provider: String,
-        /// Skip confirmation
+        /// Force overwrite if agent already exists (non-interactive)
         #[arg(short, long)]
-        yes: bool,
+        force: bool,
     },
 
     /// Delete an agent and its configuration
@@ -128,9 +125,9 @@ pub enum AgentCommands {
         /// Model name
         #[arg(short, long)]
         model: Option<String>,
-        /// Skip confirmation
+        /// Force overwrite if directory exists (non-interactive)
         #[arg(short, long)]
-        yes: bool,
+        force: bool,
     },
 }
 
@@ -165,10 +162,10 @@ pub async fn handle_agent(
             name,
             template,
             provider,
-            yes,
+            force,
         } => {
             crate::commands::agent::handlers::handle_agent_create(
-                paths, name, template, provider, yes,
+                paths, name, template, provider, force,
             )
             .await
         }
@@ -194,10 +191,10 @@ pub async fn handle_agent(
             name,
             provider,
             model,
-            yes,
+            force,
         } => {
             crate::commands::agent::handlers::handle_agent_init(
-                path, name, provider, model, yes, json,
+                path, name, provider, model, force, json,
             )
             .await
         }
@@ -207,11 +204,9 @@ pub async fn handle_agent(
 /// Agent command handlers
 pub mod handlers {
     use crate::agent::Agent;
-    use crate::channels::cli::{run_interactive_loop, CliChannel};
     use crate::commands::GlobalPaths;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
-    use std::io::{self, Write};
     use tracing::{info, warn};
 
     /// Handle agent start command
@@ -221,30 +216,29 @@ pub mod handlers {
         provider: String,
         model: Option<String>,
         db: Option<String>,
-        message: Option<String>,
+        message: String,
         new_session: bool,
     ) -> anyhow::Result<()> {
         // Determine agent name (default to "peko")
         let agent_name = name.unwrap_or_else(|| "peko".to_string());
 
-        // Determine config path
+        // Determine config path (updated for team-based structure)
         let config_path = if let Some(path) = config_path {
             path
         } else {
-            // Look up in default location: ~/.pekobot/agents/{name}/config.toml
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            format!("{home}/.pekobot/agents/{agent_name}/config.toml")
+            // Look up in default location: ~/.pekobot/teams/default/agents/{name}/config.toml
+            let home = dirs::home_dir()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_else(|| ".".to_string());
+            format!("{home}/.pekobot/teams/default/agents/{agent_name}/config.toml")
         };
-
-        info!("Starting Pekobot agent: {}", agent_name);
-        info!("Loading config from: {}", config_path);
 
         let agent_config = if std::path::Path::new(&config_path).exists() {
             let content = std::fs::read_to_string(&config_path)?;
             toml::from_str(&content)?
         } else {
-            warn!("Config file not found: {}", config_path);
-            warn!("Using default configuration");
+            eprintln!("⚠️ Config file not found: {}", config_path);
+            eprintln!("Using default configuration");
             build_default_config(&agent_name, &provider, model, db)
         };
 
@@ -255,52 +249,15 @@ pub mod handlers {
                     return Err(e);
                 }
 
-                println!("\n🐱 Agent '{agent_name}' started successfully!");
-                println!("   DID: {}", agent.identity.did);
-                println!("   State: {:?}", agent.state());
+                // Single message mode only (non-interactive)
+                // Send message - output is already printed by process_events
+                crate::channels::cli::send_single_message_with_session(
+                    &agent,
+                    &message,
+                    new_session,
+                )
+                .await?;
 
-                // Check if we're in single-message mode
-                if let Some(msg) = message {
-                    // Single message mode
-                    println!();
-                    if let Err(e) = crate::channels::cli::send_single_message_with_session(
-                        &agent,
-                        &msg,
-                        new_session,
-                    )
-                    .await
-                    {
-                        eprintln!("❌ Error processing message: {e}");
-                    }
-                } else {
-                    // Interactive mode with streaming support
-                    // TODO: Support session persistence in interactive mode too
-                    let streaming_config = crate::channels::StreamingConfig {
-                        enabled: true,
-                        min_chars: 100,
-                        max_chars: 2000,
-                        break_preference: crate::engine::chunker::BreakPreference::Sentence,
-                        show_tools: true,
-                        show_status: true,
-                        coalesce: false,
-                        coalesce_idle_ms: 500,
-                        human_delay: None,
-                    };
-                    let channel = CliChannel::with_config(&agent_name, streaming_config);
-
-                    let agent_arc = std::sync::Arc::new(std::sync::Mutex::new(agent));
-                    if let Err(e) = run_interactive_loop(channel, agent_arc.clone()).await {
-                        eprintln!("❌ Error in interactive loop: {e}");
-                    }
-
-                    // Stop the agent after the loop completes
-                    let agent_guard = agent_arc.lock().unwrap();
-                    if let Err(e) = agent_guard.stop().await {
-                        eprintln!("❌ Error stopping agent: {e}");
-                    }
-                }
-
-                println!("\n👋 Agent '{agent_name}' stopped. Goodbye!");
                 Ok(())
             }
             Err(e) => {
@@ -310,17 +267,17 @@ pub mod handlers {
         }
     }
 
-    /// Handle agent list command
+    /// Handle agent list command - organized by teams
     pub async fn handle_agent_list(
         paths: &GlobalPaths,
         long: bool,
         json: bool,
     ) -> anyhow::Result<()> {
-        let agents_dir = paths.agents_dir();
+        let teams_dir = paths.teams_dir();
 
-        if !agents_dir.exists() {
+        if !teams_dir.exists() {
             if json {
-                println!("{{\"agents\": []}}");
+                println!("{{\"teams\": []}}");
             } else {
                 println!("No agents configured.");
                 println!("Create one with: pekobot agent create <name>");
@@ -328,46 +285,109 @@ pub mod handlers {
             return Ok(());
         }
 
-        let mut agents = Vec::new();
+        // Structure: teams/{team}/agents/{agent}/config.toml
+        let mut teams: std::collections::HashMap<String, Vec<(String, AgentConfig)>> =
+            std::collections::HashMap::new();
+        let mut total_agents = 0;
 
-        if let Ok(entries) = std::fs::read_dir(&agents_dir) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.path().file_stem() {
-                    let name = name.to_string_lossy().to_string();
-                    agents.push(name);
+        if let Ok(team_entries) = std::fs::read_dir(&teams_dir) {
+            for team_entry in team_entries.flatten() {
+                let team_path = team_entry.path();
+                let team_name = team_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                let team_agents_dir = team_path.join("agents");
+                if !team_agents_dir.exists() {
+                    continue;
+                }
+
+                let mut team_agents = Vec::new();
+                if let Ok(agent_entries) = std::fs::read_dir(&team_agents_dir) {
+                    for agent_entry in agent_entries.flatten() {
+                        let agent_path = agent_entry.path();
+                        if !agent_path.is_dir() {
+                            continue;
+                        }
+
+                        let agent_name = agent_path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+
+                        let config_path = agent_path.join("config.toml");
+                        if let Ok(content) = std::fs::read_to_string(&config_path) {
+                            if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
+                                team_agents.push((agent_name, config));
+                            }
+                        }
+                    }
+                }
+
+                if !team_agents.is_empty() {
+                    team_agents.sort_by(|a, b| a.0.cmp(&b.0));
+                    total_agents += team_agents.len();
+                    teams.insert(team_name, team_agents);
                 }
             }
         }
 
-        agents.sort();
-
         if json {
-            let output = serde_json::json!({"agents": agents});
-            println!("{output}");
-        } else if agents.is_empty() {
+            // Build JSON output with team structure
+            let mut teams_json = Vec::new();
+            for (team_name, agents) in &teams {
+                let agents_json: Vec<_> = agents
+                    .iter()
+                    .map(|(name, config)| {
+                        serde_json::json!({
+                            "name": name,
+                            "provider": format!("{:?}", config.provider.provider_type),
+                            "model": config.provider.default_model,
+                            "description": config.description,
+                        })
+                    })
+                    .collect();
+                teams_json.push(serde_json::json!({
+                    "name": team_name,
+                    "agents": agents_json
+                }));
+            }
+            let output = serde_json::json!({"teams": teams_json, "total_agents": total_agents});
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else if total_agents == 0 {
             println!("No agents configured.");
             println!("Create one with: pekobot agent create <name>");
         } else {
-            println!("🐱 Configured Agents ({}):", agents.len());
-            for name in agents {
-                let config_path = paths.agent_config(&name);
-                if long {
-                    if let Ok(content) = std::fs::read_to_string(&config_path) {
-                        if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
-                            println!("\n  📦 {name}");
-                            println!("     Provider: {:?}", config.provider.provider_type);
-                            println!("     Model: {}", config.provider.default_model);
-                            if let Some(desc) = &config.description {
-                                println!("     Description: {desc}");
-                            }
-                        } else {
-                            println!("  📦 {name} (parse error)");
+            println!("🐱 Configured Agents ({}):", total_agents);
+
+            // Sort teams: default first, then alphabetically
+            let mut team_names: Vec<_> = teams.keys().cloned().collect();
+            team_names.sort_by(|a, b| {
+                if a == "default" {
+                    return std::cmp::Ordering::Less;
+                }
+                if b == "default" {
+                    return std::cmp::Ordering::Greater;
+                }
+                a.cmp(b)
+            });
+
+            for team_name in team_names {
+                let team_agents = teams.get(&team_name).unwrap();
+                println!("\n  📁 Team: {team_name}");
+
+                for (name, config) in team_agents {
+                    if long {
+                        println!("\n    📦 {name}");
+                        println!("       Provider: {:?}", config.provider.provider_type);
+                        println!("       Model: {}", config.provider.default_model);
+                        if let Some(desc) = &config.description {
+                            println!("       Description: {desc}");
                         }
                     } else {
-                        println!("  📦 {name} (no config)");
+                        println!("    📦 {name}");
                     }
-                } else {
-                    println!("  📦 {name}");
                 }
             }
         }
@@ -381,7 +401,7 @@ pub mod handlers {
         name: String,
         json: bool,
     ) -> anyhow::Result<()> {
-        let config_path = paths.agent_config(&name);
+        let config_path = paths.agent_config(&name, None); // Use default team
 
         if !config_path.exists() {
             eprintln!("❌ Agent '{name}' not found");
@@ -411,26 +431,22 @@ pub mod handlers {
     }
 
     /// Handle agent create command with bootstrapping and auto-detected credentials
+    ///
+    /// NOTE: This command is non-interactive per REQ-UI-001.
+    /// If agent already exists, use --force to overwrite or delete it first.
     pub async fn handle_agent_create(
         paths: &GlobalPaths,
         name: String,
         _template: String,
         provider: String,
-        yes: bool,
+        force: bool,
     ) -> anyhow::Result<()> {
-        let config_path = paths.agent_config(&name);
+        let config_path = paths.agent_config(&name, None); // Use default team
 
-        if config_path.exists() && !yes {
-            print!("Agent '{name}' already exists. Overwrite? [y/N] ");
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Cancelled.");
-                return Ok(());
-            }
+        if config_path.exists() && !force {
+            anyhow::bail!(
+                "Agent '{name}' already exists. Use --force to overwrite or delete it first."
+            );
         }
 
         // Auto-detect available providers from stored credentials
@@ -468,52 +484,30 @@ pub mod handlers {
             println!("   Or export: export OPENAI_API_KEY='your-key'");
         }
 
-        // Bootstrap workspace with OpenClaw-style files
+        // Bootstrap workspace with OpenClaw-style files (always non-interactive)
         let workspace_dir = paths.data_dir.join("workspaces").join(&name);
-        if yes {
-            // Non-interactive: minimal bootstrap
-            let bootstrap =
-                crate::commands::agent_bootstrap::AgentBootstrap::new(&name, workspace_dir);
-            if let Err(e) = bootstrap.run_non_interactive() {
-                eprintln!("⚠️  Warning: Failed to bootstrap workspace: {e}");
-            }
-        } else {
-            // Interactive: full bootstrap with Q&A
-            if let Err(e) =
-                crate::commands::agent_bootstrap::bootstrap_agent_workspace(&name, &workspace_dir)
-            {
-                eprintln!("⚠️  Warning: Failed to bootstrap workspace: {e}");
-            }
+        let bootstrap = crate::commands::agent_bootstrap::AgentBootstrap::new(&name, workspace_dir);
+        if let Err(e) = bootstrap.run_non_interactive() {
+            eprintln!("⚠️  Warning: Failed to bootstrap workspace: {e}");
         }
 
         Ok(())
     }
 
     /// Handle agent delete command
+    ///
+    /// NOTE: This command is non-interactive per REQ-UI-001.
+    /// Use --force flag to skip confirmation (confirmation is not prompted).
     pub async fn handle_agent_delete(
         paths: &GlobalPaths,
         name: String,
         purge: bool,
-        force: bool,
+        _force: bool, // Always non-interactive, flag kept for CLI compatibility
     ) -> anyhow::Result<()> {
-        let config_path = paths.agent_config(&name);
+        let config_path = paths.agent_config(&name, None); // Use default team
 
         if !config_path.exists() {
-            eprintln!("❌ Agent '{name}' not found");
-            return Ok(());
-        }
-
-        if !force {
-            print!("Delete agent '{name}'? This cannot be undone. [y/N] ");
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Cancelled.");
-                return Ok(());
-            }
+            anyhow::bail!("Agent '{name}' not found");
         }
 
         std::fs::remove_file(&config_path)?;
@@ -534,7 +528,7 @@ pub mod handlers {
         output: Option<String>,
         encrypt: bool,
     ) -> anyhow::Result<()> {
-        let config_path = paths.agent_config(&name);
+        let config_path = paths.agent_config(&name, None); // Use default team
 
         if !config_path.exists() {
             eprintln!("❌ Agent '{name}' not found");
@@ -597,16 +591,17 @@ pub mod handlers {
     }
 
     /// Handle agent init command
+    ///
+    /// NOTE: This command is non-interactive per REQ-UI-001.
+    /// Use --force flag to overwrite existing directory.
     pub async fn handle_agent_init(
         path: String,
         name: Option<String>,
         provider: String,
         model: Option<String>,
-        yes: bool,
+        force: bool,
         json: bool,
     ) -> anyhow::Result<()> {
-        use std::io::Write;
-
         // Determine agent name from directory if not provided
         let agent_name = name.unwrap_or_else(|| {
             std::path::Path::new(&path)
@@ -620,51 +615,26 @@ pub mod handlers {
         // Check if directory already exists and has files
         if dir.exists() {
             let entries: Vec<_> = std::fs::read_dir(&dir)?.collect();
-            if !entries.is_empty() && !yes {
+            if !entries.is_empty() && !force {
                 if json {
                     println!("{{\"error\": \"Directory not empty: {path}\"}}");
-                    return Err(anyhow::anyhow!("Directory not empty"));
+                } else {
+                    eprintln!("⚠️  Directory '{path}' is not empty. Use --force to overwrite or remove existing files.");
                 }
-                print!("⚠️  Directory '{path}' is not empty. Continue? [y/N] ");
-                std::io::stdout().flush()?;
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("Cancelled.");
-                    return Ok(());
-                }
+                return Err(anyhow::anyhow!("Directory not empty: {path}"));
             }
-        } else {
-            std::fs::create_dir_all(&dir)?;
+            // If force is true, remove existing directory
+            if force {
+                std::fs::remove_dir_all(&dir)?;
+            }
         }
 
-        // Create config.toml
-        let default_model = model.unwrap_or_else(|| match provider.to_lowercase().as_str() {
-            "openai" => "gpt-4o-mini".to_string(),
-            "anthropic" => "claude-3-sonnet".to_string(),
-            "ollama" => "llama3.2".to_string(),
-            "kimi" => "kimi-k2.5".to_string(),
-            _ => "default".to_string(),
-        });
+        // Create directory
+        std::fs::create_dir_all(&dir)?;
 
-        let config_content = format!(
-            r#"name = "{agent_name}"
-version = "0.1.0"
-
-[provider]
-provider_type = "{provider}"
-default_model = "{default_model}"
-api_key_env = "{provider_env}_API_KEY"
-timeout_seconds = 60
-
-[[models]]
-name = "{default_model}"
-max_tokens = 4096
-temperature = 0.7
-"#,
-            provider = provider.to_lowercase(),
-            provider_env = provider.to_uppercase().replace("-", "_"),
-        );
+        // Create config using proper AgentConfig struct for valid TOML
+        let config = build_default_config(&agent_name, &provider, model, None);
+        let config_content = toml::to_string_pretty(&config)?;
 
         std::fs::write(&config_path, config_content)?;
 
@@ -763,8 +733,10 @@ Add detailed instructions for the agent here.
         );
 
         AgentConfig {
+            version: "1.0".to_string(),
             name: name.to_string(),
             description: Some(format!("Pekobot agent: {name}")),
+            team: None,
             tenant: None,
             capabilities: vec![],
             provider: ProviderConfig {
@@ -841,7 +813,7 @@ mod tests {
             name: Some("my-agent".to_string()),
             provider: "kimi_code".to_string(),
             model: Some("k2p5".to_string()),
-            yes: true,
+            force: true,
         };
         match cmd {
             AgentCommands::Init {
@@ -849,13 +821,13 @@ mod tests {
                 name,
                 provider,
                 model,
-                yes,
+                force,
             } => {
                 assert_eq!(path, "./my-agent");
                 assert_eq!(name, Some("my-agent".to_string()));
                 assert_eq!(provider, "kimi_code");
                 assert_eq!(model, Some("k2p5".to_string()));
-                assert!(yes);
+                assert!(force);
             }
             _ => panic!("Expected Init command"),
         }
@@ -868,7 +840,7 @@ mod tests {
             name: None,
             provider: "openai".to_string(),
             model: None,
-            yes: false,
+            force: false,
         };
         match cmd {
             AgentCommands::Init { provider, .. } => {

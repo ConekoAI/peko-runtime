@@ -119,7 +119,26 @@ impl AgenticLoopV4 {
         // Build messages - either from history or fresh start
         let mut messages = if let Some(h) = history {
             info!("Loaded {} messages from history", h.len());
-            h
+            // Check if history already has a system message at the start
+            let has_system = h
+                .first()
+                .map(|m| matches!(m.role, MessageRole::System))
+                .unwrap_or(false);
+            if has_system {
+                h
+            } else {
+                // Prepend system prompt to history
+                let mut msgs = vec![ChatMessage {
+                    role: MessageRole::System,
+                    content: vec![ContentBlock::Text {
+                        text: self.system_prompt.clone(),
+                    }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                }];
+                msgs.extend(h);
+                msgs
+            }
         } else {
             // Fresh start - add system prompt
             let msgs = vec![ChatMessage {

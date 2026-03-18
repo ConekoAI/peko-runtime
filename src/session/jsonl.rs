@@ -354,7 +354,6 @@ impl SessionStorage {
     /// Also cleans up any partial .tmp files that may exist from crashes.
     pub async fn load_session(&self, session_id: &str) -> Result<Vec<SessionEntry>> {
         let path = self.session_path(session_id);
-
         // Clean up any partial tmp files from previous crashes
         self.cleanup_temp_files(session_id).await?;
 

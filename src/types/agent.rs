@@ -7,11 +7,17 @@ use std::path::PathBuf;
 /// Agent configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
+    /// Configuration format version
+    #[serde(default = "default_config_version")]
+    pub version: String,
     /// Unique identifier (DID will be generated from this)
     pub name: String,
     /// Human-readable description
     pub description: Option<String>,
-    /// Tenant/organization this agent belongs to
+    /// Team this agent belongs to (replaces tenant for team-based organization)
+    #[serde(default)]
+    pub team: Option<String>,
+    /// Tenant/organization this agent belongs to (legacy, use team)
     pub tenant: Option<String>,
     /// Agent capabilities
     pub capabilities: Vec<AgentCapability>,
@@ -35,11 +41,17 @@ pub struct AgentConfig {
     pub prompt: Option<PromptConfig>,
 }
 
+fn default_config_version() -> String {
+    "1.0".to_string()
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
+            version: default_config_version(),
             name: "unnamed-agent".to_string(),
             description: None,
+            team: None,
             tenant: None,
             capabilities: vec![],
             provider: super::provider::ProviderConfig::default(),

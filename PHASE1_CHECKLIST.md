@@ -312,6 +312,27 @@ This document is intentionally short. The requirements spec has the detail; this
 - [ ] **[MUST]** `pekobot init ./agent/` creates minimal structure and `.gitignore` excluding `sessions/`, `workspace/`, `memories/`, `cron.json`.
   `pekobot init ./test-agent/`; verify directory structure; `cat .gitignore`; verify excluded paths.
 
+- [ ] **[MUST]** `pekobot agent create <name> --provider <provider> --yes` creates agent config and workspace without prompts.
+  `pekobot agent create test --provider kimi --yes`; verify `~/.pekobot/agents/test/config.toml` exists and is valid.
+
+- [ ] **[MUST]** `pekobot agent list` lists all configured agents.
+  Create 3 agents; `pekobot agent list`; verify all 3 names appear.
+
+- [ ] **[MUST]** `pekobot agent show <name>` displays agent configuration.
+  `pekobot agent show test`; verify provider, model, and capabilities shown.
+
+- [ ] **[MUST]** `pekobot agent start <name> --message "..."` sends message and returns response (non-interactive).
+  `pekobot agent start test --message "Hello"`; verify assistant response printed to stdout.
+
+- [ ] **[MUST]** `pekobot agent start <name>` starts interactive session with streaming output.
+  `echo "Hello" | pekobot agent start test`; verify interactive mode starts and responds.
+
+- [ ] **[MUST]** `pekobot agent delete <name> --force` removes agent without prompts.
+  `pekobot agent delete test --force`; verify agent no longer in `pekobot agent list`.
+
+- [ ] **[MUST]** `pekobot auth set <provider> <key>` configures API credentials.
+  `pekobot auth set kimi "sk-..."`; verify credentials stored and used for API calls.
+
 - [ ] **[MUST]** Inbound webhook `POST /webhooks/{instance_id}/{token}` delivers payload as `hook.trigger` session event within the agent's active or new session.
   POST to webhook endpoint; verify `hook.trigger` event written with correct payload.
 

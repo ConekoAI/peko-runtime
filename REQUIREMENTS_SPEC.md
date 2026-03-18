@@ -602,6 +602,42 @@ The CLI shall be fully scriptable with no interactive prompts.
 
 ---
 
+#### REQ-UI-001a: CLI Agent Workflow
+**Priority:** Must Have | **Phase:** 1
+
+The CLI shall support a complete agent lifecycle workflow without requiring image builds or daemon interaction.
+
+**Acceptance criteria:**
+- `pekobot agent create <name> --provider <provider> --yes` creates agent config and workspace
+- `pekobot agent list` lists all configured agents with names
+- `pekobot agent show <name>` displays agent configuration
+- `pekobot agent start <name> --message "..."` sends a message and returns response (non-interactive)
+- `pekobot agent start <name>` starts interactive session
+- `pekobot agent delete <name>` removes agent configuration
+- `pekobot auth set <provider> <key>` configures API credentials
+- Agent runs directly from source config without `pekobot build` step (satisfies REQ-AI-001)
+- Sessions are persisted to `~/.pekobot/agents/{name}/sessions/*.jsonl`
+
+**Example workflow:**
+```bash
+# Setup
+export KIMI_API_KEY="sk-..."
+pekobot agent create myagent --provider kimi --yes
+
+# List and verify
+pekobot agent list
+pekobot agent show myagent
+
+# Send messages
+pekobot agent start myagent --message "Hello!"
+echo "What's the weather?" | pekobot agent start myagent
+
+# Cleanup
+pekobot agent delete myagent --force
+```
+
+---
+
 #### REQ-UI-002: TUI
 **Priority:** Should Have | **Phase:** 1
 

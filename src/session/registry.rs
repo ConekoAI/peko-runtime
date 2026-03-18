@@ -311,6 +311,8 @@ impl SessionRegistryManager {
         let sessions_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pekobot")
+            .join("teams")
+            .join("default")
             .join("agents")
             .join(agent_name)
             .join("sessions");

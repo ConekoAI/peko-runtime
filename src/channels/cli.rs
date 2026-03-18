@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use std::io::Write;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::session::context::SessionContext;
 use crate::session::types::{ChannelType, Peer};
@@ -740,19 +740,7 @@ pub async fn send_single_message_with_session(
     } else {
         // Use agent's method to get context
         match agent.get_default_session_context().await {
-            Ok(ctx) => {
-                // Check if we have history
-                match ctx.load_history().await {
-                    Ok(history) if !history.is_empty() => {
-                        info!(
-                            "📂 Resumed session with {} previous messages",
-                            history.len()
-                        );
-                    }
-                    _ => {}
-                }
-                ctx
-            }
+            Ok(ctx) => ctx,
             Err(e) => {
                 warn!("Failed to get session context: {}. Starting fresh.", e);
                 agent.get_default_session_context().await?
@@ -760,7 +748,35 @@ pub async fn send_single_message_with_session(
         }
     };
 
-    // Load history BEFORE executing - the engine will add the new message
+    // Sync BaseSession ID with existing SimpleSession if resuming
+    // This must happen BEFORE loading history so we load from the correct session file
+    let base_session_id = {
+        let base = session_ctx.hybrid.base.read().await;
+        base.id.clone()
+    };
+
+    // Try to find existing SimpleSession by key
+    let existing_simple = {
+        let base = session_ctx.hybrid.base.read().await;
+        crate::engine::SimpleSession::open_by_key(&agent_name, &base.session_key)
+            .await
+            .ok()
+            .flatten()
+    };
+
+    // If SimpleSession exists with different ID, update BaseSession to match
+    if let Some(ref simple) = existing_simple {
+        if simple.id != base_session_id {
+            debug!(
+                "Syncing BaseSession ID to match existing session: {}",
+                simple.id
+            );
+            let mut base = session_ctx.hybrid.base.write().await;
+            base.id = simple.id.clone();
+        }
+    }
+
+    // Load history AFTER syncing the session ID
     let history = session_ctx.load_history().await.ok();
 
     // Create a LocalSet for the streaming execution
@@ -768,13 +784,20 @@ pub async fn send_single_message_with_session(
 
     let result = local
         .run_until(async {
-            // Get base session for resume
-            let base_session = {
+            // Use the SimpleSession we already looked up (or create new if none)
+            let base_session = if let Some(session) = existing_simple {
+                info!("Resuming session: {}", session.id);
+                Some(session)
+            } else {
                 let base = session_ctx.hybrid.base.read().await;
-                crate::engine::SimpleSession::open_by_key(&agent_name, &base.session_key)
-                    .await
-                    .ok()
-                    .flatten()
+                info!("Creating new session: {}", base.id);
+                crate::engine::SimpleSession::create_with_key(
+                    &agent_name,
+                    &base.id,
+                    Some(base.session_key.clone()),
+                )
+                .await
+                .ok()
             };
 
             // The engine handles adding user message and assistant response

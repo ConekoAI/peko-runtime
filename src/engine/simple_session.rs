@@ -39,11 +39,14 @@ pub struct SimpleSession {
 
 impl SimpleSession {
     /// Get the storage directory for an agent
+    /// Uses team-based structure: ~/.pekobot/teams/default/agents/{agent}/sessions/
     #[must_use]
     pub fn storage_dir(agent_name: &str) -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pekobot")
+            .join("teams")
+            .join("default")
             .join("agents")
             .join(agent_name)
             .join("sessions")

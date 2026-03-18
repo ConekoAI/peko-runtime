@@ -189,16 +189,37 @@ impl GlobalPaths {
         }
     }
 
-    /// Get agents configuration directory
+    /// Get teams configuration directory
     #[must_use]
-    pub fn agents_dir(&self) -> PathBuf {
-        self.config_dir.join("agents")
+    pub fn teams_dir(&self) -> PathBuf {
+        self.config_dir.join("teams")
+    }
+
+    /// Get a specific team's directory
+    #[must_use]
+    pub fn team_dir(&self, team: &str) -> PathBuf {
+        self.teams_dir().join(team)
+    }
+
+    /// Get agents directory for a specific team
+    #[must_use]
+    pub fn agents_dir(&self, team: Option<&str>) -> PathBuf {
+        let team = team.unwrap_or("default");
+        self.team_dir(team).join("agents")
     }
 
     /// Get agent config file path
+    ///
+    /// If team is None, uses the "default" team
     #[must_use]
-    pub fn agent_config(&self, name: &str) -> PathBuf {
-        self.agents_dir().join(name).join("config.toml")
+    pub fn agent_config(&self, name: &str, team: Option<&str>) -> PathBuf {
+        self.agents_dir(team).join(name).join("config.toml")
+    }
+
+    /// Get agent sessions directory
+    #[must_use]
+    pub fn agent_sessions_dir(&self, name: &str, team: Option<&str>) -> PathBuf {
+        self.agents_dir(team).join(name).join("sessions")
     }
 
     /// Get tools directory
