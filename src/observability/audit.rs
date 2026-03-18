@@ -146,4 +146,206 @@ mod tests {
         let entries = logger.get_entries(10).await;
         assert_eq!(entries.len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_audit_log_capacity() {
+        let mut logger = AuditLogger::with_capacity(5);
+
+        // Add more events than capacity
+        for i in 0..10 {
+            logger
+                .log(AuditEvent {
+                    timestamp: chrono::Utc::now(),
+                    component: "test".to_string(),
+                    event_type: format!("event_{}", i),
+                    agent_did: None,
+                    details: serde_json::json!({}),
+                    severity: AuditSeverity::Info,
+                })
+                .await
+                .unwrap();
+        }
+
+        // Should only keep max_size entries (capacity * 10)
+        assert_eq!(logger.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_get_entries_limit() {
+        let mut logger = AuditLogger::new();
+
+        // Add 5 events
+        for i in 0..5 {
+            logger
+                .log(AuditEvent {
+                    timestamp: chrono::Utc::now(),
+                    component: "test".to_string(),
+                    event_type: format!("event_{}", i),
+                    agent_did: None,
+                    details: serde_json::json!({}),
+                    severity: AuditSeverity::Info,
+                })
+                .await
+                .unwrap();
+        }
+
+        // Get only 3 entries
+        let entries = logger.get_entries(3).await;
+        assert_eq!(entries.len(), 3);
+
+        // Should return most recent first (LIFO order)
+        assert_eq!(entries[0].event_type, "event_4");
+        assert_eq!(entries[1].event_type, "event_3");
+        assert_eq!(entries[2].event_type, "event_2");
+    }
+
+    #[tokio::test]
+    async fn test_get_by_agent() {
+        let mut logger = AuditLogger::new();
+
+        logger
+            .log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                component: "test".to_string(),
+                event_type: "event1".to_string(),
+                agent_did: Some("agent_a".to_string()),
+                details: serde_json::json!({}),
+                severity: AuditSeverity::Info,
+            })
+            .await
+            .unwrap();
+
+        logger
+            .log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                component: "test".to_string(),
+                event_type: "event2".to_string(),
+                agent_did: Some("agent_b".to_string()),
+                details: serde_json::json!({}),
+                severity: AuditSeverity::Info,
+            })
+            .await
+            .unwrap();
+
+        logger
+            .log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                component: "test".to_string(),
+                event_type: "event3".to_string(),
+                agent_did: Some("agent_a".to_string()),
+                details: serde_json::json!({}),
+                severity: AuditSeverity::Info,
+            })
+            .await
+            .unwrap();
+
+        let agent_a_entries = logger.get_by_agent("agent_a", 10).await;
+        assert_eq!(agent_a_entries.len(), 2);
+        assert!(agent_a_entries
+            .iter()
+            .all(|e| e.agent_did == Some("agent_a".to_string())));
+    }
+
+    #[tokio::test]
+    async fn test_get_security_events() {
+        let mut logger = AuditLogger::new();
+
+        logger
+            .log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                component: "test".to_string(),
+                event_type: "normal_event".to_string(),
+                agent_did: None,
+                details: serde_json::json!({}),
+                severity: AuditSeverity::Info,
+            })
+            .await
+            .unwrap();
+
+        logger
+            .log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                component: "test".to_string(),
+                event_type: "security_event".to_string(),
+                agent_did: None,
+                details: serde_json::json!({}),
+                severity: AuditSeverity::Security,
+            })
+            .await
+            .unwrap();
+
+        logger
+            .log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                component: "test".to_string(),
+                event_type: "another_security".to_string(),
+                agent_did: None,
+                details: serde_json::json!({}),
+                severity: AuditSeverity::Security,
+            })
+            .await
+            .unwrap();
+
+        let security_events = logger.get_security_events(10).await;
+        assert_eq!(security_events.len(), 2);
+        assert!(security_events
+            .iter()
+            .all(|e| e.severity == AuditSeverity::Security));
+    }
+
+    #[tokio::test]
+    async fn test_clear() {
+        let mut logger = AuditLogger::new();
+
+        logger
+            .log(AuditEvent {
+                timestamp: chrono::Utc::now(),
+                component: "test".to_string(),
+                event_type: "event".to_string(),
+                agent_did: None,
+                details: serde_json::json!({}),
+                severity: AuditSeverity::Info,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(logger.len(), 1);
+        logger.clear();
+        assert_eq!(logger.len(), 0);
+        assert!(logger.is_empty());
+    }
+
+    #[test]
+    fn test_default_implementation() {
+        let logger = AuditLogger::default();
+        assert!(logger.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_audit_severity_levels() {
+        let severities = vec![
+            AuditSeverity::Debug,
+            AuditSeverity::Info,
+            AuditSeverity::Warning,
+            AuditSeverity::Error,
+            AuditSeverity::Security,
+        ];
+
+        let mut logger = AuditLogger::new();
+        for (i, severity) in severities.iter().enumerate() {
+            logger
+                .log(AuditEvent {
+                    timestamp: chrono::Utc::now(),
+                    component: "test".to_string(),
+                    event_type: format!("event_{}", i),
+                    agent_did: None,
+                    details: serde_json::json!({}),
+                    severity: *severity,
+                })
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(logger.len(), 5);
+    }
 }

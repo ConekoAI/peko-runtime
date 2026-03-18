@@ -36,10 +36,147 @@ impl AgentConfig {
 
     /// Parse from TOML string
     pub fn from_toml(toml_str: &str) -> anyhow::Result<Self> {
+        // First, check for credentials in raw TOML (before parsing, to catch unknown fields)
+        Self::check_raw_toml_for_credentials(toml_str)?;
+
         let config: Self = toml::from_str(toml_str)
             .map_err(|e| anyhow::anyhow!("Failed to parse config.toml: {}", e))?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// Check raw TOML string for credential patterns (security hardening)
+    /// This catches credentials even in unknown/invalid fields
+    fn check_raw_toml_for_credentials(toml_str: &str) -> anyhow::Result<()> {
+        // Parse as generic TOML value to catch all fields including unknown ones
+        let toml_value: toml::Value = toml::from_str(toml_str)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config for credential check: {}", e))?;
+
+        // Patterns that indicate credentials (case-insensitive, checked against field names)
+        let credential_patterns: &[&str] = &[
+            "_api_key",
+            "api_key",
+            "apikey",
+            "_secret_key",
+            "secret_key",
+            "_secret",
+            "secret",
+            "_token",
+            "token",
+            "_password",
+            "password",
+            "_access_key",
+            "access_key",
+            "_private_key",
+            "private_key",
+            "_key", // generic key pattern (check last)
+        ];
+
+        fn scan_value(value: &toml::Value, path: &str, patterns: &[&str]) -> anyhow::Result<()> {
+            match value {
+                toml::Value::Table(table) => {
+                    for (key, val) in table.iter() {
+                        let new_path = if path.is_empty() {
+                            key.clone()
+                        } else {
+                            format!("{}.{}", path, key)
+                        };
+                        scan_value(val, &new_path, patterns)?;
+                    }
+                }
+                toml::Value::Array(arr) => {
+                    for (i, val) in arr.iter().enumerate() {
+                        scan_value(val, &format!("{}[{}]", path, i), patterns)?;
+                    }
+                }
+                toml::Value::String(s) => {
+                    // Skip environment variable references (these are safe)
+                    if s.starts_with('$') || s.starts_with("env.") {
+                        return Ok(());
+                    }
+
+                    // Check if the field name looks like a credential field
+                    let key_lower = path.to_lowercase();
+                    for pattern in patterns {
+                        if key_lower.ends_with(pattern) {
+                            // Check if value looks like an actual credential (not a placeholder)
+                            if looks_like_credential_value(s) {
+                                return Err(anyhow::anyhow!(
+                                    "Security violation: Field '{}' appears to contain a credential value. \
+                                     Do not put credentials in config.toml. Use environment variables instead (e.g., '${}').",
+                                    path,
+                                    path.to_uppercase().replace('.', "_")
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {} // Other types (int, float, bool, datetime) can't contain credentials
+            }
+            Ok(())
+        }
+
+        fn looks_like_credential_value(value: &str) -> bool {
+            // Skip short values (likely placeholders)
+            if value.len() < 8 {
+                return false;
+            }
+
+            // Skip common placeholder values
+            let lower = value.to_lowercase();
+            let placeholders = [
+                "placeholder",
+                "example",
+                "sample",
+                "test",
+                "dummy",
+                "your_",
+                "change_me",
+                "changeme",
+                "TODO",
+                "FIXME",
+                "<insert",
+                "insert_",
+                "...",
+                "xxx",
+                "***",
+            ];
+            for ph in &placeholders {
+                if lower.contains(ph) {
+                    return false;
+                }
+            }
+
+            // Check for common credential prefixes
+            let credential_prefixes = [
+                "sk-",
+                "sk_live_",
+                "sk_test_",
+                "bearer ",
+                "basic ",
+                "ghp_",
+                "github_pat_",
+            ];
+            for prefix in &credential_prefixes {
+                if lower.starts_with(prefix) {
+                    return true;
+                }
+            }
+
+            // Long values (20+ chars) with mixed alphanumeric are likely credentials
+            if value.len() >= 20 {
+                let has_digit = value.chars().any(|c| c.is_ascii_digit());
+                let has_letter = value.chars().any(|c| c.is_ascii_alphabetic());
+                if has_digit && has_letter {
+                    return true;
+                }
+            }
+
+            false
+        }
+
+        scan_value(&toml_value, "", credential_patterns)?;
+        Ok(())
     }
 
     /// Serialize to TOML string
@@ -82,6 +219,8 @@ impl AgentConfig {
                 }
             }
         }
+
+        // Note: Credential check is done in from_toml() before parsing to catch unknown fields
 
         Ok(())
     }
@@ -548,5 +687,132 @@ session = "new"
         assert_eq!(local.skills.unwrap().len(), 1);
         // Should keep local mcp
         assert_eq!(local.mcps.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_credential_detection_blocks_secrets() {
+        // Test that actual-looking credentials are rejected
+        let toml_with_secret = r#"
+[agent]
+name = "test-agent"
+version = "1.0.0"
+
+[provider]
+provider_type = "anthropic"
+model = "claude-sonnet-4-6"
+secret_key = "sk-ant-api03-AbCdEfGh123456789XYZabcdefghijklmnopqrstuvwxyz"
+"#;
+
+        let result = AgentConfig::from_toml(toml_with_secret);
+        if result.is_ok() {
+            // Debug: print what was parsed
+            let config = result.unwrap();
+            let toml_out = config.to_toml().unwrap();
+            panic!(
+                "Expected error but config parsed successfully. TOML output:\n{}",
+                toml_out
+            );
+        }
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Security violation"),
+            "Expected security violation, got: {}",
+            err
+        );
+        assert!(
+            err.contains("secret_key"),
+            "Error should mention the field: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_credential_detection_allows_placeholders() {
+        // Test that placeholder values are allowed
+        let toml_with_placeholder = r#"
+[agent]
+name = "test-agent"
+version = "1.0.0"
+
+[provider]
+provider_type = "anthropic"
+model = "claude-sonnet-4-6"
+api_key = "your_api_key_here"
+"#;
+
+        let result = AgentConfig::from_toml(toml_with_placeholder);
+        assert!(
+            result.is_ok(),
+            "Placeholders should be allowed: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_credential_detection_allows_env_vars() {
+        // Test that env var references are allowed
+        let toml_with_env = r#"
+[agent]
+name = "test-agent"
+version = "1.0.0"
+
+[provider]
+provider_type = "anthropic"
+model = "claude-sonnet-4-6"
+api_key = "$ANTHROPIC_API_KEY"
+"#;
+
+        let result = AgentConfig::from_toml(toml_with_env);
+        assert!(
+            result.is_ok(),
+            "Environment variable references should be allowed: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_credential_detection_blocks_api_key() {
+        // Test that api_key fields with real-looking values are rejected
+        let toml_with_api_key = r#"
+[agent]
+name = "test-agent"
+version = "1.0.0"
+
+[provider]
+provider_type = "openai"
+model = "gpt-4"
+api_key = "sk-abcdefghijklmnop12345678901234567890ABCDEFGH"
+"#;
+
+        let result = AgentConfig::from_toml(toml_with_api_key);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Security violation"),
+            "Expected security violation, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_credential_detection_allows_short_values() {
+        // Test that short values are not flagged as credentials
+        let toml_short = r#"
+[agent]
+name = "test-agent"
+version = "1.0.0"
+
+[provider]
+provider_type = "anthropic"
+model = "claude-sonnet-4-6"
+token = "abc123"
+"#;
+
+        let result = AgentConfig::from_toml(toml_short);
+        assert!(
+            result.is_ok(),
+            "Short values should be allowed: {:?}",
+            result
+        );
     }
 }

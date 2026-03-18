@@ -163,8 +163,13 @@ impl FileSystemTool {
         })
     }
 
-    /// Resolve and validate a path
-    fn resolve_path(&self, path: &str) -> Result<PathBuf, SandboxViolation> {
+    /// Resolve and validate a path with symlink security checking
+    ///
+    /// Per CAPABILITY_INTERFACE.md §7.2:
+    /// - Symlink inside → Points inside: ✅ Allow
+    /// - Symlink inside → Points outside: ❌ SandboxViolation
+    /// - Symlink outside → Any target: ❌ SandboxViolation (cannot access symlink itself)
+    async fn resolve_path(&self, path: &str) -> Result<PathBuf, SandboxViolation> {
         // Block path traversal attempts
         if path.contains("..") {
             return Err(SandboxViolation {
@@ -178,6 +183,9 @@ impl FileSystemTool {
         } else {
             self.policy.workspace_dir.join(path)
         };
+
+        // Check if the path itself is a symlink and validate it
+        self.validate_symlink_security(&resolved).await?;
 
         // For non-existent paths, we need to check if the parent directory
         // is within the sandbox (since we can't canonicalize the file itself)
@@ -195,9 +203,124 @@ impl FileSystemTool {
         Ok(resolved)
     }
 
+    /// Validate symlink security per CAPABILITY §7.2
+    async fn validate_symlink_security(&self, path: &Path) -> Result<(), SandboxViolation> {
+        // Get the symlink metadata without following the link
+        let metadata = match fs::symlink_metadata(path).await {
+            Ok(m) => m,
+            Err(_) => return Ok(()), // Not a symlink or doesn't exist - no issue
+        };
+
+        // If it's not a symlink, nothing to check
+        if !metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+
+        // It's a symlink - apply security rules
+
+        // Rule 3: Symlink outside sandbox → Any target: ❌ Block
+        // First check if the symlink itself is within the sandbox
+        let workspace = &self.policy.workspace_dir;
+        let workspace_canonical = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.clone());
+
+        // Get the directory containing the symlink
+        let symlink_dir = path.parent().ok_or_else(|| SandboxViolation {
+            path: path.display().to_string(),
+            reason: "Cannot determine parent directory of symlink".to_string(),
+        })?;
+
+        let symlink_dir_canonical = symlink_dir
+            .canonicalize()
+            .unwrap_or_else(|_| symlink_dir.to_path_buf());
+
+        // Check if symlink is within workspace
+        let symlink_in_workspace = symlink_dir_canonical.starts_with(&workspace_canonical);
+
+        if !symlink_in_workspace {
+            // Check shared workspace
+            let symlink_in_shared = if let Some(ref shared) = self.shared_workspace {
+                let shared_canonical = shared.canonicalize().unwrap_or_else(|_| shared.clone());
+                symlink_dir_canonical.starts_with(&shared_canonical)
+            } else {
+                false
+            };
+
+            // Check projects directory
+            let symlink_in_projects = if let Some(ref projects) = self.projects_dir {
+                let projects_canonical =
+                    projects.canonicalize().unwrap_or_else(|_| projects.clone());
+                symlink_dir_canonical.starts_with(&projects_canonical)
+            } else {
+                false
+            };
+
+            if !symlink_in_shared && !symlink_in_projects {
+                return Err(SandboxViolation {
+                    path: path.display().to_string(),
+                    reason: "Symlink is outside sandbox - cannot access symlink itself".to_string(),
+                });
+            }
+        }
+
+        // Rule 2: Symlink inside → Points outside: ❌ Block
+        // Read the symlink target
+        let target = fs::read_link(path).await.map_err(|e| SandboxViolation {
+            path: path.display().to_string(),
+            reason: format!("Cannot read symlink target: {}", e),
+        })?;
+
+        // Resolve target relative to symlink location if relative
+        let resolved_target = if target.is_absolute() {
+            target
+        } else {
+            symlink_dir.join(target)
+        };
+
+        // Canonicalize the target (follows symlinks in the path)
+        let target_canonical = resolved_target
+            .canonicalize()
+            .unwrap_or_else(|_| resolved_target.clone());
+
+        // Check if target is within allowed areas
+        let target_in_workspace = target_canonical.starts_with(&workspace_canonical);
+
+        let target_in_shared = if let Some(ref shared) = self.shared_workspace {
+            let shared_canonical = shared.canonicalize().unwrap_or_else(|_| shared.clone());
+            target_canonical.starts_with(&shared_canonical)
+        } else {
+            false
+        };
+
+        let target_in_projects = if let Some(ref projects) = self.projects_dir {
+            let projects_canonical = projects.canonicalize().unwrap_or_else(|_| projects.clone());
+            target_canonical.starts_with(&projects_canonical)
+        } else {
+            false
+        };
+
+        if !target_in_workspace && !target_in_shared && !target_in_projects {
+            return Err(SandboxViolation {
+                path: path.display().to_string(),
+                reason: format!(
+                    "Symlink points outside sandbox: target '{}' resolves to '{}'",
+                    resolved_target.display(),
+                    target_canonical.display()
+                ),
+            });
+        }
+
+        // Rule 1: Symlink inside → Points inside: ✅ Allow
+        Ok(())
+    }
+
     /// Read a file
     async fn read_file(&self, path: &str, encoding: Option<&str>) -> Result<serde_json::Value> {
-        let resolved = self.resolve_path(path).map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self
+            .resolve_path(path)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         let content = fs::read(&resolved)
             .await
@@ -241,7 +364,10 @@ impl FileSystemTool {
         encoding: Option<&str>,
         mode: Option<&str>,
     ) -> Result<serde_json::Value> {
-        let resolved = self.resolve_path(path).map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self
+            .resolve_path(path)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         // Decode content if base64 encoded
         let decoded_content = if encoding == Some("base64") {
@@ -308,7 +434,10 @@ impl FileSystemTool {
         recursive: bool,
         include_hidden: bool,
     ) -> Result<serde_json::Value> {
-        let resolved = self.resolve_path(path).map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self
+            .resolve_path(path)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         if !resolved.is_dir() {
             return Err(anyhow::anyhow!(
@@ -413,7 +542,10 @@ impl FileSystemTool {
 
     /// Check if a file exists
     async fn file_exists(&self, path: &str) -> Result<serde_json::Value> {
-        let resolved = self.resolve_path(path).map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self
+            .resolve_path(path)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         let exists = fs::try_exists(&resolved).await.unwrap_or(false);
         let file_type = if exists {
@@ -441,7 +573,10 @@ impl FileSystemTool {
 
     /// Delete a file or directory
     async fn delete_file(&self, path: &str, recursive: bool) -> Result<serde_json::Value> {
-        let resolved = self.resolve_path(path).map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self
+            .resolve_path(path)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         let metadata = fs::metadata(&resolved).await;
 
@@ -483,8 +618,14 @@ impl FileSystemTool {
 
     /// Move/rename a file or directory
     async fn move_file(&self, from: &str, to: &str) -> Result<serde_json::Value> {
-        let from_resolved = self.resolve_path(from).map_err(|e| anyhow::anyhow!(e))?;
-        let to_resolved = self.resolve_path(to).map_err(|e| anyhow::anyhow!(e))?;
+        let from_resolved = self
+            .resolve_path(from)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let to_resolved = self
+            .resolve_path(to)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
 
         // Ensure source exists
         if !from_resolved.exists() {
@@ -913,5 +1054,429 @@ mod tests {
         let response = result.unwrap();
         let entries = response["entries"].as_array().unwrap();
         assert!(entries.len() >= 3); // main.rs, components/, components/mod.rs
+    }
+
+    #[tokio::test]
+    async fn test_symlink_inside_to_inside_allowed() {
+        // Rule 1: Symlink inside → Points inside: ✅ Allow
+        let temp_dir = TempDir::new().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        // Create a file and a symlink pointing to it (both inside workspace)
+        let target_path = temp_dir.path().join("target.txt");
+        fs::write(&target_path, "target content").await.unwrap();
+
+        let symlink_path = temp_dir.path().join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &symlink_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target_path, &symlink_path).unwrap();
+
+        // Should be able to read through the symlink
+        let read_params = json!({
+            "operation": "read",
+            "path": "link.txt"
+        });
+
+        let result = tool.execute(read_params).await;
+        assert!(
+            result.is_ok(),
+            "Symlink inside→inside should be allowed: {:?}",
+            result
+        );
+        let response = result.unwrap();
+        assert_eq!(response["content"].as_str().unwrap(), "target content");
+    }
+
+    #[tokio::test]
+    async fn test_symlink_inside_to_outside_blocked() {
+        // Rule 2: Symlink inside → Points outside: ❌ SandboxViolation
+        let temp_dir = TempDir::new().unwrap();
+        let outside_dir = TempDir::new().unwrap();
+
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        // Create a file outside the workspace
+        let outside_file = outside_dir.path().join("secret.txt");
+        fs::write(&outside_file, "secret").await.unwrap();
+
+        // Create a symlink inside workspace pointing outside
+        let symlink_path = temp_dir.path().join("link_to_secret.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, &symlink_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside_file, &symlink_path).unwrap();
+
+        // Should be blocked
+        let read_params = json!({
+            "operation": "read",
+            "path": "link_to_secret.txt"
+        });
+
+        let result = tool.execute(read_params).await;
+        assert!(result.is_err(), "Symlink inside→outside should be blocked");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("SandboxViolation"),
+            "Expected SandboxViolation, got: {}",
+            err
+        );
+        assert!(
+            err.contains("outside sandbox"),
+            "Error should mention outside sandbox: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_symlink_outside_blocked() {
+        // Rule 3: Symlink outside → Any target: ❌ Block
+        let temp_dir = TempDir::new().unwrap();
+        let outside_dir = TempDir::new().unwrap();
+
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        // Create a file inside workspace
+        let inside_file = temp_dir.path().join("inside.txt");
+        fs::write(&inside_file, "inside content").await.unwrap();
+
+        // Create a symlink outside workspace pointing inside
+        let symlink_outside = outside_dir.path().join("link_to_inside.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&inside_file, &symlink_outside).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&inside_file, &symlink_outside).unwrap();
+
+        // Try to read the symlink using an absolute path (outside sandbox)
+        let read_params = json!({
+            "operation": "read",
+            "path": symlink_outside.to_str().unwrap()
+        });
+
+        let result = tool.execute(read_params).await;
+        // This should fail because the symlink itself is outside the sandbox
+        assert!(result.is_err(), "Symlink outside sandbox should be blocked");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("SandboxViolation"),
+            "Expected SandboxViolation, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_path_traversal_variations_blocked() {
+        let temp_dir = TempDir::new().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: true,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        // Various path traversal attempts
+        let traversals = vec![
+            "../etc/passwd",
+            "../../etc/shadow",
+            "../../../etc/hosts",
+            "foo/../../../etc/passwd",
+            "./../etc/passwd",
+            "a/b/c/../../../../etc/passwd",
+        ];
+
+        for path in &traversals {
+            let params = json!({
+                "operation": "read",
+                "path": path
+            });
+
+            let result = tool.execute(params).await;
+            assert!(
+                result.is_err(),
+                "Path traversal '{}' should be blocked",
+                path
+            );
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("SandboxViolation"),
+                "Expected SandboxViolation for '{}', got: {}",
+                path,
+                err
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_absolute_path_outside_workspace_blocked() {
+        let temp_dir = TempDir::new().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: true,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        #[cfg(unix)]
+        let outside_paths = vec![
+            "/etc/passwd",
+            "/etc/shadow",
+            "/root/.ssh/id_rsa",
+            "/var/log/syslog",
+            "/tmp/sensitive.txt",
+        ];
+
+        #[cfg(windows)]
+        let outside_paths = vec![
+            "C:\\Windows\\System32\\config\\SAM",
+            "C:\\Users\\Administrator\\Desktop\\file.txt",
+            "D:\\secret.txt",
+        ];
+
+        for path in &outside_paths {
+            let params = json!({
+                "operation": "read",
+                "path": path
+            });
+
+            let result = tool.execute(params).await;
+            assert!(
+                result.is_err(),
+                "Absolute path '{}' outside workspace should be blocked",
+                path
+            );
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("SandboxViolation"),
+                "Expected SandboxViolation for '{}', got: {}",
+                path,
+                err
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_shared_workspace_access() {
+        let temp_dir = TempDir::new().unwrap();
+        let shared_dir = TempDir::new().unwrap();
+
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: true,
+            ..SecurityPolicy::default()
+        };
+
+        let tool = FileSystemTool::with_policy(policy).with_shared_workspace(shared_dir.path());
+
+        // Create a file in shared workspace
+        let shared_file = shared_dir.path().join("shared.txt");
+        fs::write(&shared_file, "shared content").await.unwrap();
+
+        // Should be able to read from shared workspace using absolute path
+        let read_params = json!({
+            "operation": "read",
+            "path": shared_file.to_str().unwrap()
+        });
+
+        let result = tool.execute(read_params).await;
+        assert!(
+            result.is_ok(),
+            "Should be able to read from shared workspace: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_projects_dir_readonly_access() {
+        let temp_dir = TempDir::new().unwrap();
+        let projects_dir = TempDir::new().unwrap();
+
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: true,
+            ..SecurityPolicy::default()
+        };
+
+        let tool = FileSystemTool::with_policy(policy).with_projects_dir(projects_dir.path());
+
+        // Create a file in projects dir
+        let project_file = projects_dir.path().join("project.md");
+        fs::write(&project_file, "# Project").await.unwrap();
+
+        // Should be able to read from projects dir
+        let read_params = json!({
+            "operation": "read",
+            "path": project_file.to_str().unwrap()
+        });
+
+        let result = tool.execute(read_params).await;
+        assert!(
+            result.is_ok(),
+            "Should be able to read from projects dir: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_file_creates_directories() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // First create the nested directories
+        let nested_dir = temp_dir.path().join("level1").join("level2").join("level3");
+        fs::create_dir_all(&nested_dir).await.unwrap();
+
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        // Write to a nested path
+        let write_params = json!({
+            "operation": "write",
+            "path": "level1/level2/level3/file.txt",
+            "content": "nested content"
+        });
+
+        let result = tool.execute(write_params).await;
+        assert!(result.is_ok(), "Should write to nested path: {:?}", result);
+
+        // Verify file was created
+        let file_path = nested_dir.join("file.txt");
+        assert!(file_path.exists(), "File should exist at {:?}", file_path);
+        let content = fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(content, "nested content");
+    }
+
+    #[tokio::test]
+    async fn test_delete_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        // Create a file
+        let file_path = temp_dir.path().join("to_delete.txt");
+        fs::write(&file_path, "delete me").await.unwrap();
+        assert!(file_path.exists());
+
+        // Delete the file
+        let delete_params = json!({
+            "operation": "delete",
+            "path": "to_delete.txt"
+        });
+
+        let result = tool.execute(delete_params).await;
+        assert!(result.is_ok(), "Should delete file: {:?}", result);
+        assert!(!file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_delete_directory_recursive() {
+        let temp_dir = TempDir::new().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        // Create a directory with files
+        let dir_path = temp_dir.path().join("mydir");
+        fs::create_dir(&dir_path).await.unwrap();
+        fs::write(dir_path.join("file1.txt"), "content1")
+            .await
+            .unwrap();
+        fs::write(dir_path.join("file2.txt"), "content2")
+            .await
+            .unwrap();
+
+        // Delete the directory recursively
+        let delete_params = json!({
+            "operation": "delete",
+            "path": "mydir",
+            "recursive_delete": true
+        });
+
+        let result = tool.execute(delete_params).await;
+        assert!(
+            result.is_ok(),
+            "Should delete directory recursively: {:?}",
+            result
+        );
+        assert!(!dir_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_exists_false() {
+        let temp_dir = TempDir::new().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        let exists_params = json!({
+            "operation": "exists",
+            "path": "nonexistent_file.txt"
+        });
+
+        let result = tool.execute(exists_params).await;
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert!(!response["exists"].as_bool().unwrap());
+        assert_eq!(response["type"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn test_binary_file_base64() {
+        let temp_dir = TempDir::new().unwrap();
+        let policy = SecurityPolicy {
+            workspace_dir: temp_dir.path().to_path_buf(),
+            workspace_only: false,
+            ..SecurityPolicy::default()
+        };
+        let tool = FileSystemTool::with_policy(policy);
+
+        // Create a binary file
+        let binary_content = vec![0u8, 1, 2, 3, 255, 254, 253];
+        let file_path = temp_dir.path().join("binary.bin");
+        fs::write(&file_path, &binary_content).await.unwrap();
+
+        // Read as base64
+        let read_params = json!({
+            "operation": "read",
+            "path": "binary.bin",
+            "encoding": "base64"
+        });
+
+        let result = tool.execute(read_params).await;
+        assert!(result.is_ok(), "Should read binary file: {:?}", result);
+        let response = result.unwrap();
+        assert_eq!(response["encoding"], "base64");
+
+        // Verify we can decode it back
+        let base64_content = response["content"].as_str().unwrap();
+        let decoded = base64::decode(base64_content).unwrap();
+        assert_eq!(decoded, binary_content);
     }
 }

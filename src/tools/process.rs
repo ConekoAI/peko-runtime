@@ -755,4 +755,260 @@ mod tests {
         let resolved = valid.unwrap();
         assert!(resolved.to_string_lossy().contains("subdir"));
     }
+
+    #[test]
+    fn test_env_var_filtering_comprehensive() {
+        let tool = ProcessTool::new();
+
+        let mut env = HashMap::new();
+        // Should be allowed
+        env.insert("NORMAL_VAR".to_string(), "value1".to_string());
+        env.insert("PATH".to_string(), "/usr/bin".to_string());
+        env.insert("HOME".to_string(), "/home/user".to_string());
+
+        // Should be filtered - API keys
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-ant-12345".to_string());
+        env.insert("OPENAI_API_KEY".to_string(), "sk-openai-12345".to_string());
+        env.insert("MY_API_KEY".to_string(), "secret123".to_string());
+
+        // Should be filtered - Secrets
+        env.insert(
+            "AWS_SECRET_ACCESS_KEY".to_string(),
+            "aws-secret-123".to_string(),
+        );
+        env.insert("MY_SECRET".to_string(), "shhhh".to_string());
+        env.insert("SECRET_KEY".to_string(), "another-secret".to_string());
+
+        // Should be filtered - Tokens
+        env.insert("GITHUB_TOKEN".to_string(), "ghp_12345".to_string());
+        env.insert("AUTH_TOKEN".to_string(), "token123".to_string());
+        env.insert("BEARER_TOKEN".to_string(), "bearer123".to_string());
+
+        // Should be filtered - Passwords
+        env.insert("DB_PASSWORD".to_string(), "password123".to_string());
+        env.insert("ADMIN_PASSWORD".to_string(), "admin123".to_string());
+
+        let filtered = tool.filter_env_vars(&env);
+
+        // Allowed vars should be present
+        assert!(filtered.contains_key("NORMAL_VAR"));
+        assert!(filtered.contains_key("PATH"));
+        assert!(filtered.contains_key("HOME"));
+
+        // Sensitive vars should be filtered
+        assert!(!filtered.contains_key("ANTHROPIC_API_KEY"));
+        assert!(!filtered.contains_key("OPENAI_API_KEY"));
+        assert!(!filtered.contains_key("MY_API_KEY"));
+        assert!(!filtered.contains_key("AWS_SECRET_ACCESS_KEY"));
+        assert!(!filtered.contains_key("MY_SECRET"));
+        assert!(!filtered.contains_key("SECRET_KEY"));
+        assert!(!filtered.contains_key("GITHUB_TOKEN"));
+        assert!(!filtered.contains_key("AUTH_TOKEN"));
+        assert!(!filtered.contains_key("BEARER_TOKEN"));
+        assert!(!filtered.contains_key("DB_PASSWORD"));
+        assert!(!filtered.contains_key("ADMIN_PASSWORD"));
+    }
+
+    #[test]
+    fn test_blocked_shells_comprehensive() {
+        let tool = ProcessTool::new();
+
+        // All these should be blocked
+        let blocked = vec![
+            "sh",
+            "bash",
+            "zsh",
+            "fish",
+            "cmd",
+            "powershell",
+            "pwsh",
+            "/bin/sh",
+            "/bin/bash",
+            "/bin/zsh",
+            "/usr/bin/bash",
+            "/usr/local/bin/zsh",
+        ];
+
+        for shell in &blocked {
+            assert!(
+                tool.is_blocked_shell(shell),
+                "'{}' should be blocked as a shell",
+                shell
+            );
+        }
+
+        // These should be allowed
+        let allowed = vec![
+            "git",
+            "cargo",
+            "npm",
+            "node",
+            "python",
+            "rustc",
+            "ls",
+            "cat",
+            "grep",
+            "find",
+            "echo",
+            "pwd",
+            "docker",
+            "kubectl",
+            "terraform",
+            "ansible",
+        ];
+
+        for cmd in &allowed {
+            assert!(
+                !tool.is_blocked_shell(cmd),
+                "'{}' should not be blocked",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn test_cwd_path_traversal_blocked() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ProcessTool::new().with_workspace(temp_dir.path());
+
+        // Path traversal attempts should be blocked
+        let traversals = vec![
+            "../etc",
+            "../../etc/passwd",
+            "..\\Windows\\System32",
+            "foo/../../../etc/shadow",
+            "./../..",
+        ];
+
+        for path in &traversals {
+            let result = tool.validate_cwd(path);
+            assert!(
+                result.is_err(),
+                "Path traversal '{}' should be blocked",
+                path
+            );
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("SandboxViolation"));
+        }
+    }
+
+    #[test]
+    fn test_cwd_absolute_outside_workspace() {
+        let temp_dir = TempDir::new().unwrap();
+        let tool = ProcessTool::new().with_workspace(temp_dir.path());
+
+        // Absolute paths outside workspace should be blocked
+        #[cfg(unix)]
+        let outside_paths = vec!["/etc", "/tmp", "/var/log", "/root"];
+
+        #[cfg(windows)]
+        let outside_paths = vec!["C:\\Windows", "D:\\", "C:\\Program Files"];
+
+        for path in &outside_paths {
+            let result = tool.validate_cwd(path);
+            assert!(
+                result.is_err(),
+                "Absolute path '{}' outside workspace should be blocked",
+                path
+            );
+        }
+    }
+
+    #[test]
+    fn test_get_clean_env_strips_parent_env() {
+        let tool = ProcessTool::new();
+
+        // Set some parent environment variables that should be stripped
+        std::env::set_var("TEST_API_KEY", "should-be-stripped");
+        std::env::set_var("TEST_SECRET", "should-be-stripped");
+        std::env::set_var("TEST_NORMAL", "should-be-allowed");
+
+        let extra_env = HashMap::new();
+        let clean_env = tool.get_clean_env(&extra_env);
+
+        // API_KEY and SECRET patterns should be stripped even from parent
+        assert!(!clean_env.contains_key("TEST_API_KEY"));
+        assert!(!clean_env.contains_key("TEST_SECRET"));
+
+        // But note: the filter only checks key names, not values
+        // So TEST_NORMAL would be allowed if it were in the safe vars list
+        // Actually, the function only adds specific safe vars from parent
+
+        // Clean up
+        std::env::remove_var("TEST_API_KEY");
+        std::env::remove_var("TEST_SECRET");
+        std::env::remove_var("TEST_NORMAL");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_process_shell_injection_blocked() {
+        // This test demonstrates that shell injection is NOT possible
+        // because we don't invoke a shell - args are passed literally to the command
+        let tool = ProcessTool::new();
+
+        // These would be dangerous if passed to a shell, but are safe here
+        // because they're just string arguments to echo
+        let test_cases = vec![
+            ("echo", vec!["hello; rm -rf /".to_string()]),
+            ("echo", vec!["hello && cat /etc/passwd".to_string()]),
+            ("echo", vec!["hello || whoami".to_string()]),
+            ("echo", vec!["$(rm -rf /)".to_string()]),
+            ("echo", vec!["`whoami`".to_string()]),
+        ];
+
+        for (cmd, args) in &test_cases {
+            // The command runs safely because args are passed literally, not interpreted by a shell
+            let result = tool
+                .execute_command(cmd, args.clone(), 5000, None, &HashMap::new(), None)
+                .await;
+
+            // Should succeed - the metacharacters are just part of the output string
+            assert!(
+                result.is_ok(),
+                "Command should execute safely without shell interpretation"
+            );
+
+            // Verify the output contains the literal string (not executed)
+            let output = result.unwrap();
+            let stdout = output["stdout"].as_str().unwrap();
+            assert!(
+                stdout.contains("hello") || stdout.contains("rm") || stdout.contains("whoami"),
+                "Output should contain the literal argument: {}",
+                stdout
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn test_process_shell_injection_blocked_windows() {
+        // Windows version of the test - uses whoami which is available on Windows
+        let tool = ProcessTool::new();
+
+        // Test that args with shell metacharacters are passed literally
+        // whoami on Windows doesn't take args, but it won't execute the dangerous content
+        let result = tool
+            .execute_command(
+                "whoami",
+                vec!["test&whoami".to_string()], // This would be dangerous in cmd.exe
+                5000,
+                None,
+                &HashMap::new(),
+                None,
+            )
+            .await;
+
+        // Should succeed - the & is just passed as an argument
+        assert!(
+            result.is_ok(),
+            "Command should execute safely without shell interpretation"
+        );
+    }
+
+    #[test]
+    fn test_process_tool_with_timeout() {
+        let tool = ProcessTool::with_timeout(60000); // 60 seconds
+        assert_eq!(tool.default_timeout_ms, 60000);
+    }
 }

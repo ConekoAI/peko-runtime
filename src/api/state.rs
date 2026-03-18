@@ -4,6 +4,7 @@
 //! This will expand as more endpoints are implemented.
 
 use crate::hooks::{EventBroadcaster, HookRegistry};
+use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
 use crate::team::TeamManager;
 use std::path::PathBuf;
@@ -43,6 +44,9 @@ pub struct AppState {
 
     /// Registry configuration for push/pull operations
     registry_config: Arc<RwLock<RegistryConfig>>,
+
+    /// Observability hub for audit, metrics, and tracing
+    observability: Arc<Observability>,
 
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
@@ -101,6 +105,7 @@ impl AppState {
             hook_registry: Arc::new(HookRegistry::new()),
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
+            observability: Arc::new(Observability::new("api")),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         }
     }
@@ -123,6 +128,7 @@ impl AppState {
             hook_registry: Arc::new(HookRegistry::new()),
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
+            observability: Arc::new(Observability::new("api")),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         }
     }
@@ -189,6 +195,11 @@ impl AppState {
     /// Get the event broadcaster
     pub fn event_broadcaster(&self) -> Arc<EventBroadcaster> {
         self.event_broadcaster.clone()
+    }
+
+    /// Get the observability hub
+    pub fn observability(&self) -> Arc<Observability> {
+        self.observability.clone()
     }
 
     /// Load registry configuration from workspace

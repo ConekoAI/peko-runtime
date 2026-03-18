@@ -144,6 +144,22 @@ async fn handle_webhook(
 
     event_broadcaster.broadcast(system_event).await;
 
+    // Audit log: webhook triggered
+    let observability = state.observability();
+    let _ = observability
+        .audit(
+            "hook.trigger",
+            Some(&instance_id),
+            json!({
+                "hook_id": hook.id,
+                "hook_type": "webhook",
+                "instance_id": instance_id,
+                "session_id": response.session_id,
+                "source": "webhook",
+            }),
+        )
+        .await;
+
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 

@@ -9,6 +9,7 @@
 //! - Graceful shutdown
 
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
+use crate::observability::Observability;
 use crate::orchestration::events::SystemEvent;
 use crate::session::index::{MaintenanceConfig, MaintenanceMode, SessionIndex};
 use crate::types::agent::AgentConfig;
@@ -93,6 +94,8 @@ pub struct Daemon {
     idle_detector: Arc<IdleDetector>,
     /// Event receiver for event-triggered jobs
     event_rx: Option<mpsc::Receiver<SystemEvent>>,
+    /// Observability for audit logging
+    observability: Arc<Observability>,
 }
 
 impl Daemon {
@@ -117,6 +120,7 @@ impl Daemon {
         }));
 
         let idle_detector = Arc::new(IdleDetector::new());
+        let observability = Arc::new(Observability::new("daemon"));
 
         Ok(Self {
             config,
@@ -125,6 +129,7 @@ impl Daemon {
             status,
             idle_detector,
             event_rx,
+            observability,
         })
     }
 
@@ -401,6 +406,22 @@ impl Daemon {
         let run_id = Uuid::new_v4().to_string();
         let started_at = Utc::now();
 
+        // Audit log: cron job started
+        let _ = self
+            .observability
+            .audit(
+                "cron.execute",
+                job.agent_id.as_deref(),
+                serde_json::json!({
+                    "job_id": job.id,
+                    "job_name": job.name,
+                    "schedule": job.schedule.display(),
+                    "target": format!("{:?}", job.target),
+                    "run_id": &run_id,
+                }),
+            )
+            .await;
+
         // Record run start
         let run = CronRun {
             id: run_id.clone(),
@@ -434,15 +455,32 @@ impl Daemon {
 
         let finished_at = Utc::now();
         let run = CronRun {
-            id: run_id,
+            id: run_id.clone(),
             job_id: job.id.clone(),
             started_at,
             finished_at: Some(finished_at),
             status: status.clone(),
-            output,
-            error,
+            output: output.clone(),
+            error: error.clone(),
         };
         self.scheduler.record_run(&run)?;
+
+        // Audit log: cron job completed
+        let _ = self
+            .observability
+            .audit(
+                "cron.result",
+                job.agent_id.as_deref(),
+                serde_json::json!({
+                    "job_id": job.id,
+                    "job_name": job.name,
+                    "run_id": run_id,
+                    "status": &status,
+                    "error": error,
+                    "duration_ms": (finished_at - started_at).num_milliseconds(),
+                }),
+            )
+            .await;
 
         // Calculate next run time
         let next_run = self

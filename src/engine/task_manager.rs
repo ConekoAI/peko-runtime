@@ -10,6 +10,7 @@
 //! - Agent spawn
 
 use crate::engine::execution::{ExecutionMode, TaskExecutor, TaskId};
+use crate::observability::Observability;
 use crate::tools::Tool;
 use anyhow::Result;
 use std::panic::AssertUnwindSafe;
@@ -33,12 +34,24 @@ impl Default for TaskManagerConfig {
 }
 
 /// The `TaskManager` handles tool execution with timeout support
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TaskManager {
     /// Configuration
     config: TaskManagerConfig,
     /// Task executor
     executor: TaskExecutor,
+    /// Observability for audit logging
+    observability: Option<Arc<Observability>>,
+}
+
+impl std::fmt::Debug for TaskManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskManager")
+            .field("config", &self.config)
+            .field("executor", &self.executor)
+            .field("observability", &self.observability.is_some())
+            .finish()
+    }
 }
 
 impl TaskManager {
@@ -54,7 +67,15 @@ impl TaskManager {
         Self {
             config,
             executor: TaskExecutor::new(),
+            observability: None,
         }
+    }
+
+    /// Set observability for audit logging
+    #[must_use]
+    pub fn with_observability(mut self, observability: Arc<Observability>) -> Self {
+        self.observability = Some(observability);
+        self
     }
 
     /// Execute a tool synchronously with panic isolation
@@ -77,23 +98,55 @@ impl TaskManager {
 
         info!(task_id = %task_id, %tool_name, ?timeout, "Executing tool");
 
+        // Audit log: tool call started
+        if let Some(ref obs) = self.observability {
+            let _ = obs
+                .audit(
+                    "tool.call",
+                    None, // TODO: pass agent_id through context
+                    serde_json::json!({
+                        "task_id": task_id.to_string(),
+                        "tool_name": &tool_name,
+                        "params": &params,
+                    }),
+                )
+                .await;
+        }
+
         let start = Instant::now();
 
         // Execute with panic isolation
         let result = self
-            .execute_with_panic_isolation(tool.clone(), params, timeout)
+            .execute_with_panic_isolation(tool.clone(), params.clone(), timeout)
             .await;
 
         let duration = start.elapsed();
 
         match &result {
-            Ok(_) => {
+            Ok(output) => {
                 info!(
                     task_id = %task_id,
                     %tool_name,
                     duration_ms = duration.as_millis() as u64,
                     "Tool completed successfully"
                 );
+
+                // Audit log: tool call succeeded
+                if let Some(ref obs) = self.observability {
+                    let _ = obs
+                        .audit(
+                            "tool.result",
+                            None, // TODO: pass agent_id through context
+                            serde_json::json!({
+                                "task_id": task_id.to_string(),
+                                "tool_name": &tool_name,
+                                "success": true,
+                                "output": output,
+                                "duration_ms": duration.as_millis() as u64,
+                            }),
+                        )
+                        .await;
+                }
             }
             Err(e) => {
                 warn!(
@@ -103,6 +156,23 @@ impl TaskManager {
                     error = %e,
                     "Tool failed"
                 );
+
+                // Audit log: tool call failed
+                if let Some(ref obs) = self.observability {
+                    let _ = obs
+                        .audit(
+                            "tool.result",
+                            None, // TODO: pass agent_id through context
+                            serde_json::json!({
+                                "task_id": task_id.to_string(),
+                                "tool_name": &tool_name,
+                                "success": false,
+                                "error": e.to_string(),
+                                "duration_ms": duration.as_millis() as u64,
+                            }),
+                        )
+                        .await;
+                }
             }
         }
 
