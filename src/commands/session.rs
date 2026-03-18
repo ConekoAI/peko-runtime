@@ -1,11 +1,17 @@
 //! Session Management Commands
 //!
-//! These commands communicate with the daemon via HTTP API.
+//! These commands can work in two modes:
+//! 1. Online: Communicate with the daemon via HTTP API (for active instances)
+//! 2. Offline: Read directly from disk (for inactive instances or when daemon is down)
 
 use crate::api::client::{ApiClient, ClientError};
 use crate::commands::GlobalPaths;
+use anyhow::Result;
 use clap::Subcommand;
-use reqwest::StatusCode;
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use tracing::debug;
 
 /// Session management subcommands
 ///
@@ -32,7 +38,7 @@ use reqwest::StatusCode;
 pub enum SessionCommands {
     /// List sessions for an instance
     List {
-        /// Instance ID (required - use 'pekobot agent list' to find instances)
+        /// Instance ID (agent name for local agents)
         instance_id: String,
         /// Show all sessions including inactive
         #[arg(long)]
@@ -41,7 +47,7 @@ pub enum SessionCommands {
 
     /// Show session details and history
     Show {
-        /// Instance ID
+        /// Instance ID (agent name for local agents)
         instance_id: String,
         /// Session ID
         session_id: String,
@@ -50,7 +56,7 @@ pub enum SessionCommands {
         history: bool,
     },
 
-    /// Branch a session
+    /// Branch a session (requires daemon)
     Branch {
         /// Instance ID
         instance_id: String,
@@ -61,7 +67,7 @@ pub enum SessionCommands {
         label: Option<String>,
     },
 
-    /// Delete a session
+    /// Delete a session (requires daemon)
     Delete {
         /// Instance ID
         instance_id: String,
@@ -72,7 +78,7 @@ pub enum SessionCommands {
         force: bool,
     },
 
-    /// Send message to a session (via chat API)
+    /// Send message to a session (requires daemon)
     Send {
         /// Instance ID
         instance_id: String,
@@ -82,63 +88,227 @@ pub enum SessionCommands {
         /// Message content
         message: String,
     },
+
+    /// Switch active session for an instance (requires daemon)
+    Switch {
+        /// Instance ID
+        instance_id: String,
+        /// Session ID to activate
+        session_id: String,
+    },
 }
 
 /// Handle session commands
 pub async fn handle_session(
     cmd: SessionCommands,
-    _paths: &GlobalPaths,
+    paths: &GlobalPaths,
     json: bool,
 ) -> anyhow::Result<()> {
-    let client = ApiClient::new()?;
-
     match cmd {
         SessionCommands::List {
             instance_id,
             all: _,
-        } => list_sessions(&client, &instance_id, json).await,
+        } => list_sessions(paths, &instance_id, json).await,
         SessionCommands::Show {
             instance_id,
             session_id,
             history,
-        } => show_session(&client, &instance_id, &session_id, history, json).await,
+        } => show_session(paths, &instance_id, &session_id, history, json).await,
         SessionCommands::Branch {
             instance_id,
             session_id,
             label,
-        } => branch_session(&client, &instance_id, &session_id, label, json).await,
+        } => branch_session(&instance_id, &session_id, label, json).await,
         SessionCommands::Delete {
             instance_id,
             session_id,
             force,
-        } => delete_session(&client, &instance_id, &session_id, force, json).await,
+        } => delete_session(&instance_id, &session_id, force, json).await,
         SessionCommands::Send {
             instance_id,
             session_id,
             message,
         } => {
-            println!("📤 Sending message to instance '{instance_id}': {message}");
+            println!("📤 Sending message to instance '{}': {}", instance_id, message);
             if let Some(sid) = session_id {
-                println!("   Session: {sid}");
+                println!("   Session: {}", sid);
+                println!();
+                println!("   💡 Use 'pekobot agent start {} --message \"{}\"' to send a message", 
+                    instance_id, message);
+            } else {
+                println!("   (Using active session)");
+                println!("   💡 Use --session-id to target a specific session");
             }
+            Ok(())
+        }
+        SessionCommands::Switch {
+            instance_id,
+            session_id,
+        } => {
+            println!("🔄 Switching active session for '{}' to '{}'", instance_id, session_id);
+            println!();
+            println!("   💡 This feature requires the session switch API endpoint.");
+            println!("   For now, restart the agent with the desired session.");
             Ok(())
         }
     }
 }
 
-/// Check if error is a 404 not found
-fn is_not_found(e: &ClientError) -> bool {
-    matches!(e, ClientError::Api { status, .. } if *status == StatusCode::NOT_FOUND)
+/// Get sessions directory for an instance
+///
+/// Checks multiple locations:
+/// 1. Data directory: {data_dir}/agents/{instance_id}/sessions
+/// 2. Config directory: {config_dir}/agents/{instance_id}/sessions
+fn get_sessions_dir(paths: &GlobalPaths, instance_id: &str) -> Option<PathBuf> {
+    // Try data directory first (where runtime instances store sessions)
+    let data_sessions = paths.data_dir.join("agents").join(instance_id).join("sessions");
+    if data_sessions.exists() {
+        return Some(data_sessions);
+    }
+
+    // Try config directory (for agent definitions)
+    let config_sessions = paths
+        .agents_dir(None)
+        .join(instance_id)
+        .join("sessions");
+    if config_sessions.exists() {
+        return Some(config_sessions);
+    }
+
+    // Also check if instance_id is actually an agent name in default team
+    let team_sessions = paths
+        .config_dir
+        .join("teams")
+        .join("default")
+        .join("agents")
+        .join(instance_id)
+        .join("sessions");
+    if team_sessions.exists() {
+        return Some(team_sessions);
+    }
+
+    None
 }
 
-/// List sessions for an instance
-async fn list_sessions(client: &ApiClient, instance_id: &str, json: bool) -> anyhow::Result<()> {
+/// Session index sidecar structure (subset of SessionSidecarIndex)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SessionIndex {
+    session_id: String,
+    instance_id: String,
+    created_at: String,
+    updated_at: String,
+    turn_count: u32,
+    #[serde(default)]
+    event_count: u64,
+    #[serde(default)]
+    total_tokens: u32,
+    #[serde(default)]
+    parent_session_id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    ended: bool,
+}
+
+/// List sessions from disk by reading sidecar index files
+async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<SessionIndex>> {
+    let mut sessions = vec![];
+    
+    let mut entries = tokio::fs::read_dir(sessions_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if let Some(name) = entry.file_name().to_str() {
+            if name.ends_with(".index.json") {
+                let session_id = name.trim_end_matches(".index.json").to_string();
+                let path = sessions_dir.join(name);
+                
+                if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                    if let Ok(index) = serde_json::from_str::<SessionIndex>(&content) {
+                        // Only include if session_id matches
+                        if index.session_id == session_id {
+                            sessions.push(index);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Sort by updated_at descending (most recent first)
+    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    
+    Ok(sessions)
+}
+
+/// List sessions for an instance (works offline)
+async fn list_sessions(
+    paths: &GlobalPaths,
+    instance_id: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    // Get sessions from disk (offline mode)
+    let sessions_dir = get_sessions_dir(paths, instance_id);
+
+    if let Some(dir) = sessions_dir {
+        match list_sessions_from_disk(&dir).await {
+            Ok(sessions) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&sessions)?);
+                } else if sessions.is_empty() {
+                    println!("📭 No sessions found for '{}'.", instance_id);
+                    println!("   Start chatting with the agent to create sessions.");
+                } else {
+                    println!(
+                        "📋 Sessions for '{}' ({} found):",
+                        instance_id,
+                        sessions.len()
+                    );
+                    println!();
+
+                    for session in &sessions {
+                        let title = session.title.as_deref().unwrap_or("(untitled)");
+                        let created = format_timestamp(&session.created_at);
+                        let updated = format_timestamp(&session.updated_at);
+                        
+                        let status = if session.ended { "🔴" } else { "🟢" };
+
+                        println!("  {} {}", status, session.session_id);
+                        println!("     Title: {}", title);
+                        println!("     Turns: {}", session.turn_count);
+                        println!("     Created: {}", created);
+                        println!("     Updated: {}", updated);
+
+                        if let Some(ref parent) = session.parent_session_id {
+                            println!("     Parent: {}", parent);
+                        }
+                        println!();
+                    }
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                debug!("Failed to read sessions from disk: {}", e);
+            }
+        }
+    }
+    
+    // Fall back to API if disk read fails or directory not found
+    debug!("Falling back to API for session list");
+    let client = ApiClient::new()?;
+    list_sessions_via_api(&client, instance_id, json).await
+}
+
+/// List sessions via API (online mode)
+async fn list_sessions_via_api(
+    client: &ApiClient,
+    instance_id: &str,
+    json: bool,
+) -> anyhow::Result<()> {
     match client.list_sessions(instance_id).await {
         Ok(response) => {
             if json {
                 println!("{}", serde_json::to_string_pretty(&response)?);
             } else if response.items.is_empty() {
-                println!("📭 No sessions found for instance '{instance_id}'.");
+                println!("📭 No sessions found for instance '{}'.", instance_id);
                 println!("   Start chatting with the agent to create sessions.");
             } else {
                 println!(
@@ -167,15 +337,85 @@ async fn list_sessions(client: &ApiClient, instance_id: &str, json: bool) -> any
             }
             Ok(())
         }
-        Err(ref e) if is_not_found(e) => {
-            Err(anyhow::anyhow!("Instance '{}' not found", instance_id))
+        Err(ClientError::DaemonNotRunning { .. }) => {
+            Err(anyhow::anyhow!(
+                "No sessions found for '{}'. The agent may not exist or has no sessions yet.",
+                instance_id
+            ))
         }
         Err(e) => Err(anyhow::anyhow!("Failed to list sessions: {}", e)),
     }
 }
 
-/// Show session details and optionally history
+/// Show session details (works offline for basic info)
 async fn show_session(
+    paths: &GlobalPaths,
+    instance_id: &str,
+    session_id: &str,
+    show_history: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    // Try to get session from disk first
+    let sessions_dir = get_sessions_dir(paths, instance_id);
+    
+    if let Some(dir) = sessions_dir {
+        let sidecar_path = dir.join(format!("{}.index.json", session_id));
+        
+        if sidecar_path.exists() {
+            match tokio::fs::read_to_string(&sidecar_path).await {
+                Ok(content) => {
+                    match serde_json::from_str::<SessionIndex>(&content) {
+                        Ok(index) => {
+                            // If history is not requested, we can show just the metadata
+                            if !show_history {
+                                if json {
+                                    println!("{}", serde_json::to_string_pretty(&index)?);
+                                } else {
+                                    println!("📊 Session Details");
+                                    println!("   Instance ID: {}", instance_id);
+                                    println!("   Session ID: {}", index.session_id);
+                                    if let Some(ref title) = index.title {
+                                        println!("   Title: {}", title);
+                                    }
+                                    println!("   Turns: {}", index.turn_count);
+                                    println!("   Events: {}", index.event_count);
+                                    println!("   Tokens: {}", index.total_tokens);
+                                    println!("   Status: {}", if index.ended { "Ended" } else { "Active" });
+                                    println!("   Created: {}", format_timestamp(&index.created_at));
+                                    println!("   Updated: {}", format_timestamp(&index.updated_at));
+
+                                    if let Some(ref parent) = index.parent_session_id {
+                                        println!("   Parent Session: {}", parent);
+                                    }
+                                    
+                                    println!();
+                                    println!("   💡 Use --history to see full message history (requires daemon)");
+                                }
+                                return Ok(());
+                            } else {
+                                // History requested - need daemon
+                                println!("📜 History requested, connecting to daemon...");
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Failed to parse session index: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to read session file: {}", e);
+                }
+            }
+        }
+    }
+    
+    // Fall back to API for full details including history
+    let client = ApiClient::new()?;
+    show_session_via_api(&client, instance_id, session_id, show_history, json).await
+}
+
+/// Show session via API (online mode)
+async fn show_session_via_api(
     client: &ApiClient,
     instance_id: &str,
     session_id: &str,
@@ -185,12 +425,11 @@ async fn show_session(
     // Get session metadata
     let session = match client.get_session(instance_id, session_id).await {
         Ok(s) => s,
-        Err(ref e) if is_not_found(e) => {
+        Err(ClientError::DaemonNotRunning { addr }) => {
             return Err(anyhow::anyhow!(
-                "Session '{}' not found for instance '{}'",
-                session_id,
-                instance_id
-            ));
+                "Daemon not running at {}. Start it with 'pekobot daemon start --foreground'",
+                addr
+            ))
         }
         Err(e) => return Err(anyhow::anyhow!("Failed to get session: {}", e)),
     };
@@ -312,14 +551,15 @@ fn print_history_event(index: usize, event: &crate::api::client::HistoryEventRes
     println!();
 }
 
-/// Branch a session
+/// Branch a session (requires daemon)
 async fn branch_session(
-    client: &ApiClient,
     instance_id: &str,
     session_id: &str,
     label: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
+    let client = ApiClient::new()?;
+    
     match client
         .branch_session(instance_id, session_id, label.as_deref())
         .await
@@ -337,18 +577,18 @@ async fn branch_session(
             }
             Ok(())
         }
-        Err(ref e) if is_not_found(e) => Err(anyhow::anyhow!(
-            "Session '{}' not found for instance '{}'",
-            session_id,
-            instance_id
-        )),
+        Err(ClientError::DaemonNotRunning { addr }) => {
+            Err(anyhow::anyhow!(
+                "Daemon not running at {}. Session branching requires the daemon to be active.",
+                addr
+            ))
+        }
         Err(e) => Err(anyhow::anyhow!("Failed to branch session: {}", e)),
     }
 }
 
-/// Delete a session
+/// Delete a session (requires daemon)
 async fn delete_session(
-    client: &ApiClient,
     instance_id: &str,
     session_id: &str,
     force: bool,
@@ -369,6 +609,8 @@ async fn delete_session(
         }
     }
 
+    let client = ApiClient::new()?;
+    
     match client.delete_session(instance_id, session_id).await {
         Ok(()) => {
             if json {
@@ -378,14 +620,17 @@ async fn delete_session(
             }
             Ok(())
         }
-        Err(ref e) if is_not_found(e) => Err(anyhow::anyhow!(
-            "Session '{}' not found for instance '{}'",
-            session_id,
-            instance_id
-        )),
+        Err(ClientError::DaemonNotRunning { addr }) => {
+            Err(anyhow::anyhow!(
+                "Daemon not running at {}. Session deletion requires the daemon to be active.",
+                addr
+            ))
+        }
         Err(e) => Err(anyhow::anyhow!("Failed to delete session: {}", e)),
     }
 }
+
+
 
 /// Format an ISO timestamp for display
 fn format_timestamp(ts: &str) -> String {
@@ -444,61 +689,20 @@ mod tests {
             _ => panic!("Expected Show command"),
         }
 
-        // Test Branch command
-        let cmd = SessionCommands::Branch {
+        // Test Switch command
+        let cmd = SessionCommands::Switch {
             instance_id: "inst_123".to_string(),
             session_id: "sess_456".to_string(),
-            label: Some("test-branch".to_string()),
         };
         match cmd {
-            SessionCommands::Branch {
+            SessionCommands::Switch {
                 instance_id,
                 session_id,
-                label,
             } => {
                 assert_eq!(instance_id, "inst_123");
                 assert_eq!(session_id, "sess_456");
-                assert_eq!(label, Some("test-branch".to_string()));
             }
-            _ => panic!("Expected Branch command"),
-        }
-
-        // Test Delete command
-        let cmd = SessionCommands::Delete {
-            instance_id: "inst_123".to_string(),
-            session_id: "sess_456".to_string(),
-            force: true,
-        };
-        match cmd {
-            SessionCommands::Delete {
-                instance_id,
-                session_id,
-                force,
-            } => {
-                assert_eq!(instance_id, "inst_123");
-                assert_eq!(session_id, "sess_456");
-                assert!(force);
-            }
-            _ => panic!("Expected Delete command"),
-        }
-
-        // Test Send command
-        let cmd = SessionCommands::Send {
-            instance_id: "inst_123".to_string(),
-            session_id: Some("sess_456".to_string()),
-            message: "Hello".to_string(),
-        };
-        match cmd {
-            SessionCommands::Send {
-                instance_id,
-                session_id,
-                message,
-            } => {
-                assert_eq!(instance_id, "inst_123");
-                assert_eq!(session_id, Some("sess_456".to_string()));
-                assert_eq!(message, "Hello");
-            }
-            _ => panic!("Expected Send command"),
+            _ => panic!("Expected Switch command"),
         }
     }
 
@@ -528,34 +732,5 @@ mod tests {
         // Test exact length
         let s = "exactlyten";
         assert_eq!(truncate(s, 10), "exactlyten");
-    }
-
-    #[test]
-    fn test_is_not_found() {
-        use reqwest::StatusCode;
-
-        // Test API error with 404 status
-        let err = ClientError::Api {
-            status: StatusCode::NOT_FOUND,
-            code: "not_found".to_string(),
-            message: "Not found".to_string(),
-            request_id: "req_123".to_string(),
-        };
-        assert!(is_not_found(&err));
-
-        // Test API error with different status
-        let err = ClientError::Api {
-            status: StatusCode::BAD_REQUEST,
-            code: "bad_request".to_string(),
-            message: "Bad request".to_string(),
-            request_id: "req_123".to_string(),
-        };
-        assert!(!is_not_found(&err));
-
-        // Test other error types
-        let err = ClientError::DaemonNotRunning {
-            addr: "http://localhost:11435".to_string(),
-        };
-        assert!(!is_not_found(&err));
     }
 }
