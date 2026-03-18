@@ -701,35 +701,38 @@ The daemon shall provide a WebSocket endpoint for bidirectional integration with
 Phase 1 must expose enough observability for a control plane to operate without modifying runtime internals.
 
 **Acceptance criteria:**
-- All instance lifecycle events emitted on the system event stream
+- All agent execution events emitted on the system event stream (per ADR-013, agents cold-start per request)
 - All session events include `instance_id` and `team_id`
-- Health check endpoint (`GET /health`) returns structured status including instance count and uptime
+- Health check endpoint (`GET /health`) returns structured status including registered agent count and uptime
 - Daemon log format supports `json` output mode for log aggregation
 
 ---
 
-#### REQ-CP-002: Agent Lifecycle Management
+#### REQ-CP-002: Agent Registration (Simplified per ADR-013)
 **Priority:** Phase 2
 
-The control plane shall manage instance lifecycle (start, stop, restart, upgrade) with configurable policies.
+> **NOTE:** Per ADR-013, agents are stateless and cold-start on every request. There is no "instance lifecycle" to manage. This requirement is simplified from the original lifecycle management design.
+
+The control plane shall manage agent registration and versioning.
 
 **Acceptance criteria (Phase 2):**
-- Restart policies: `never`, `on-failure`, `always`
-- Configurable restart backoff (exponential with jitter)
-- Upgrade policy: `manual` (default) | `on-restart` | `auto`
-- All lifecycle actions audit-logged
+- Agents register their configuration (not runtime state)
+- Version tracking for agent configs
+- Upgrade policy: `manual` (default) | `on-request` | `auto`
+- All config changes audit-logged
 
 ---
 
 #### REQ-CP-003: Resource Allocation
 **Priority:** Phase 2
 
-The control plane shall enforce per-instance resource budgets.
+The control plane shall enforce per-request resource budgets.
 
 **Acceptance criteria (Phase 2):**
-- CPU and memory limits enforced via cgroups (Linux)
+- CPU and memory limits enforced via cgroups (Linux) per request
 - Limits declared per-agent in `config.toml` under `[resources]`
-- Instance killed and restarted if memory limit exceeded; event emitted
+- Request killed if memory limit exceeded; event emitted
+- Resources freed immediately after request completes (stateless model per ADR-013)
 
 ---
 

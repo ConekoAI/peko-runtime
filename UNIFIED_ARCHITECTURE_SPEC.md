@@ -146,18 +146,20 @@ Pekobot runs as a local daemon (`pekobot daemon start`) that exposes an HTTP API
 
 > **NOTE:** Default port: `11435` (matches Ollama convention for familiarity). Configurable in `.pekobot/config.toml`.
 
+> **ARCHITECTURE:** Per ADR-013, agents are **stateless** and **cold-start on every request**. The daemon does not keep agents "warm" in RAM. When a request arrives, the daemon spawns a task that loads the agent config from disk, runs the agentic loop, and exits. See ADR-013 for rationale.
+
 ### 3.2 Inbound HTTP API
 
 | Method + Path | Description | Notes |
 |---------------|-------------|-------|
-| `POST /agents/{id}/chat` | Send a message to an agent instance | Streams response via SSE |
-| `GET  /agents` | List all instances | |
-| `POST /agents` | Create a new instance from image | |
-| `DELETE /agents/{id}` | Stop and remove instance | |
-| `GET  /agents/{id}/sessions` | List sessions for instance | |
+| `POST /agents/{id}/chat` | Send a message to an agent (cold-start) | Streams response via SSE |
+| `GET  /agents` | List all agent configs | Returns registered agents |
+| `POST /agents` | Register an agent config | Creates config entry |
+| `DELETE /agents/{id}` | Unregister agent config | Removes from registry |
+| `GET  /agents/{id}/sessions` | List sessions for agent | Reads from filesystem |
 | `GET  /teams` | List all teams | |
 | `POST /teams` | Deploy a team from config | |
-| `DELETE /teams/{id}` | Stop and teardown team | |
+| `DELETE /teams/{id}` | Remove team config | |
 | `GET  /images` | List local images | |
 | `POST /images/pull` | Pull image from registry | |
 | `POST /images/build` | Build image from directory | |
@@ -189,7 +191,7 @@ path   = "/hooks/github"
 action = "run"
 ```
 
-> **NOTE:** When a hook triggers a session, the trigger payload becomes the first user message. Session ownership and history work identically to interactive sessions. There is no "background session" special case.
+> **NOTE:** When a hook triggers, the daemon spawns a task that **cold-starts** the agent (loads config from disk, instantiates tools, runs the agentic loop), then exits. There is no "running agent" to keep warm. Session ownership and history work identically to interactive sessions. See ADR-013.
 
 ---
 
@@ -369,16 +371,23 @@ memory_namespaces = ["_team_shared", "researcher"]  # Allow access to these name
 
 ### 7.1 CLI
 
-The CLI talks to the daemon via HTTP. All commands are non-interactive — suitable for scripting and CI pipelines.
+The CLI can operate in two modes:
+1. **Direct mode** - Loads agent config and runs locally (no daemon required)
+2. **API mode** - Talks to the daemon via HTTP
+
+All commands are non-interactive — suitable for scripting and CI pipelines.
+
+> **ARCHITECTURE:** Per ADR-013, agents are stateless and cold-start on every request. There is no "running instance" to start/stop. The daemon only provides API access and cron scheduling.
 
 ```bash
-# Agent lifecycle
-pekobot run ./my-agent/                    # Create instance from local image, attach
-pekobot run researcher:v2 --detach         # Run detached instance
-pekobot stop <instance-id>
-pekobot rm <instance-id>
-pekobot ps                                 # List running instances
-pekobot logs <instance-id> --follow
+# Agent execution (cold-start, stateless)
+pekobot agent start my-agent --message "Hello"    # Direct mode
+pekobot session send my-agent --message "Hello"   # API mode via daemon
+
+# Agent config management
+pekobot agent create my-agent --provider kimi
+pekobot agent list
+pekobot agent delete my-agent
 
 # Image management
 pekobot build ./my-agent/ -t my-agent:v1.0
@@ -392,10 +401,11 @@ pekobot team scale research-team researcher 5
 pekobot team stop research-team
 pekobot team ps
 
-# Session management
-pekobot session list <instance-id>
-pekobot session show <session-id>
-pekobot session branch <session-id>
+# Session management (offline-capable per ADR-013)
+pekobot session list my-agent
+pekobot session show my-agent <session-id> --history
+pekobot session branch my-agent <session-id> --label "experiment"
+pekobot session switch my-agent <session-id>
 
 # Daemon
 pekobot daemon start
@@ -407,10 +417,12 @@ pekobot daemon status
 
 The TUI is a terminal user interface built on top of the HTTP API. It is a separate binary (`pekobot-tui`) and has no privileged access to agent internals. It provides:
 
-- Live view of running instances and teams
-- Interactive chat with any running instance
+- Live view of registered agents and teams
+- Interactive chat with agents (cold-starts on each message)
 - Event bus monitor (tap into the bus stream for a team)
 - Log tail with filtering
+
+> **NOTE:** Per ADR-013, agents cold-start on every request. The TUI does not show "running instances" — it shows registered agent configs and triggers cold-starts when you send messages.
 
 ### 7.3 Web UI
 
