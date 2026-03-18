@@ -860,13 +860,15 @@ impl Agent {
         let provider_name = match config.provider.provider_type {
             ProviderType::OpenAI => "openai",
             ProviderType::Anthropic => "anthropic",
+            ProviderType::Moonshot => "moonshot",
             ProviderType::Kimi => "kimi",
-            ProviderType::KimiCode => "kimi_code", // Use kimi_code metadata (Anthropic API)
             ProviderType::Ollama => "ollama",
             ProviderType::OpenAICompatible => {
                 // Use base_url to determine provider
                 if let Some(ref url) = config.provider.base_url {
-                    if url.contains("moonshot.cn") || url.contains("kimi") {
+                    if url.contains("moonshot.cn") {
+                        "moonshot"
+                    } else if url.contains("kimi.com") {
                         "kimi"
                     } else if url.contains("groq") {
                         "groq"
@@ -887,8 +889,8 @@ impl Agent {
         let provider_type = match provider_name {
             "openai" => ProviderType::OpenAI,
             "anthropic" => ProviderType::Anthropic,
+            "moonshot" => ProviderType::Moonshot,
             "kimi" => ProviderType::Kimi,
-            "kimi_code" => ProviderType::KimiCode,
             "ollama" => ProviderType::Ollama,
             _ => ProviderType::OpenAICompatible,
         };

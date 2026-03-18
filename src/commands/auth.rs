@@ -164,6 +164,15 @@ fn mask_key(key: &str) -> String {
     }
 }
 
+/// Normalize provider name (handle aliases)
+fn normalize_provider(provider: &str) -> &str {
+    match provider.to_lowercase().as_str() {
+        "kimi" | "kimi-code" | "kimi_code" => "kimi",
+        "moonshot" | "moonshotai" => "moonshot",
+        _ => provider,
+    }
+}
+
 /// Handle auth commands
 pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
     match cmd {
@@ -173,6 +182,7 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             profile,
         } => {
             let profile = profile.unwrap_or_else(|| "default".to_string());
+            let canonical_provider = normalize_provider(&provider);
 
             // Get API key interactively if not provided
             let api_key = if let Some(k) = key {
@@ -191,10 +201,10 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
 
             // Load, update, save
             let mut store = load_credentials(paths)?;
-            store.set(&provider, &profile, api_key);
+            store.set(canonical_provider, &profile, api_key);
             save_credentials(paths, &store)?;
 
-            println!("✓ API key saved for {provider} (profile: {profile})");
+            println!("✓ API key saved for {canonical_provider} (profile: {profile})");
             println!(
                 "  Location: {}",
                 paths.config_dir.join("credentials.json").display()

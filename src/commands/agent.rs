@@ -706,9 +706,8 @@ Add detailed instructions for the agent here.
             "openai" => ProviderType::OpenAI,
             "anthropic" => ProviderType::Anthropic,
             "ollama" => ProviderType::Ollama,
+            "moonshot" => ProviderType::Moonshot,
             "kimi" => ProviderType::Kimi,
-            "kimi_code" => ProviderType::KimiCode,
-            "kimi-code" => ProviderType::KimiCode,
             _ => ProviderType::OpenAI,
         };
 
@@ -723,8 +722,8 @@ Add detailed instructions for the agent here.
                     ProviderType::Anthropic => "claude-3-sonnet".to_string(),
                     ProviderType::Ollama => "llama3.2".to_string(),
                     ProviderType::OpenAICompatible => "default".to_string(),
-                    ProviderType::Kimi => "kimi-k2.5".to_string(),
-                    ProviderType::KimiCode => "k2p5".to_string(),
+                    ProviderType::Moonshot => "kimi-k2.5".to_string(),
+                    ProviderType::Kimi => "k2p5".to_string(),
                 },
                 max_tokens: 4096,
                 temperature: 0.7,
@@ -747,8 +746,8 @@ Add detailed instructions for the agent here.
                 api_key_env: match provider_type {
                     ProviderType::OpenAI => Some("OPENAI_API_KEY".to_string()),
                     ProviderType::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
+                    ProviderType::Moonshot => Some("MOONSHOT_API_KEY".to_string()),
                     ProviderType::Kimi => Some("KIMI_API_KEY".to_string()),
-                    ProviderType::KimiCode => Some("KIMI_API_KEY".to_string()),
                     _ => None,
                 },
                 base_url: match provider_type {
@@ -756,8 +755,8 @@ Add detailed instructions for the agent here.
                     ProviderType::Anthropic => None,
                     ProviderType::Ollama => Some("http://localhost:11434".to_string()),
                     ProviderType::OpenAICompatible => None,
-                    ProviderType::Kimi => Some("https://api.moonshot.cn/v1".to_string()),
-                    ProviderType::KimiCode => Some("https://api.kimi.com/coding".to_string()),
+                    ProviderType::Moonshot => Some("https://api.moonshot.cn/v1".to_string()),
+                    ProviderType::Kimi => Some("https://api.kimi.com/coding".to_string()),
                 },
                 default_model,
                 models,
@@ -787,9 +786,10 @@ Add detailed instructions for the agent here.
         let mut config = build_default_config(name, provider, model, db);
 
         // Try to get stored API key
-        // Normalize provider name for credential lookup (e.g., "kimi_code" -> "kimi")
+        // Normalize provider name for credential lookup
         let credential_provider = match provider {
-            "kimi_code" | "kimi-code" => "kimi",
+            "kimi" | "kimi-code" | "kimi_code" => "kimi",
+            "moonshot" => "moonshot",
             _ => provider,
         };
 
