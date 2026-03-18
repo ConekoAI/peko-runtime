@@ -748,35 +748,35 @@ pub async fn send_single_message_with_session(
         }
     };
 
-    // Sync BaseSession ID with existing SimpleSession if resuming
-    // This must happen BEFORE loading history so we load from the correct session file
-    let base_session_id = {
+    // When not creating a new session, sync with existing SimpleSession
+    // This ensures we resume from the correct session file
+    let existing_simple = if new_session {
+        // For new sessions, don't look up existing SimpleSession
+        None
+    } else {
         let base = session_ctx.hybrid.base.read().await;
-        base.id.clone()
-    };
+        let base_session_id = base.id.clone();
 
-    // Try to find existing SimpleSession by key
-    let existing_simple = {
-        let base = session_ctx.hybrid.base.read().await;
-        crate::engine::SimpleSession::open_by_key(&agent_name, &base.session_key)
+        // Try to find existing SimpleSession by key
+        let simple = crate::engine::SimpleSession::open_by_key(&agent_name, &base.session_key)
             .await
             .ok()
-            .flatten()
+            .flatten();
+
+        // If SimpleSession exists with different ID, update BaseSession to match
+        if let Some(ref s) = simple {
+            if s.id != base_session_id {
+                debug!("Syncing BaseSession ID to match existing session: {}", s.id);
+                drop(base);
+                let mut base = session_ctx.hybrid.base.write().await;
+                base.id = s.id.clone();
+            }
+        }
+
+        simple
     };
 
-    // If SimpleSession exists with different ID, update BaseSession to match
-    if let Some(ref simple) = existing_simple {
-        if simple.id != base_session_id {
-            debug!(
-                "Syncing BaseSession ID to match existing session: {}",
-                simple.id
-            );
-            let mut base = session_ctx.hybrid.base.write().await;
-            base.id = simple.id.clone();
-        }
-    }
-
-    // Load history AFTER syncing the session ID
+    // Load history (will be empty for new sessions)
     let history = session_ctx.load_history().await.ok();
 
     // Create a LocalSet for the streaming execution

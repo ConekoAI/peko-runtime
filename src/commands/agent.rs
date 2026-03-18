@@ -237,8 +237,10 @@ pub mod handlers {
             let content = std::fs::read_to_string(&config_path)?;
             toml::from_str(&content)?
         } else {
-            eprintln!("⚠️ Config file not found: {}", config_path);
-            eprintln!("Using default configuration");
+            info!(
+                "No config file found at {}, using default configuration",
+                config_path
+            );
             build_default_config(&agent_name, &provider, model, db)
         };
 
