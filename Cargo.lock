@@ -2369,6 +2369,7 @@ dependencies = [
  "libc",
  "libloading",
  "notify",
+ "once_cell",
  "rand",
  "regex",
  "reqwest",

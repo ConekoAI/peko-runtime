@@ -16,6 +16,7 @@ pub mod events;
 pub mod health;
 pub mod images;
 pub mod info;
+pub mod metrics;
 pub mod sessions;
 pub mod teams;
 pub mod webhooks;
@@ -41,6 +42,8 @@ pub fn create_router() -> Router<AppState> {
         // Milestone 8: Webhooks and system events
         .merge(webhooks::router())
         .merge(events::router())
+        // Milestone 12: Performance metrics
+        .merge(metrics::router())
         // Milestone 10: Web UI
         .merge(crate::web_ui::router())
 }

@@ -8,6 +8,7 @@ use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::streaming::{ChatSseEvent, SseStream, TokenUsage};
 use crate::engine::{AgenticEvent, LifecyclePhase};
+use crate::observability::performance::GLOBAL_METRICS;
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -119,6 +120,12 @@ async fn process_chat_stream(
         instance_id, run_id
     );
 
+    // Start first token timing (REQ-PF-003: < 500ms target)
+    // Note: This is a simplified measurement - in production, we'd measure
+    // from actual LLM stream start to first token emission
+    let first_token_start = std::time::Instant::now();
+    let mut first_token_recorded = false;
+
     // TODO: Load instance, get provider, tools, etc.
     // For now, send a simple response
 
@@ -128,6 +135,10 @@ async fn process_chat_stream(
             text: "Processing your message...".to_string(),
         })
         .await;
+
+    // Record first token latency (placeholder - would be measured at actual first LLM token)
+    let _ = first_token_recorded; // Suppress warning for now
+    GLOBAL_METRICS.record_first_token(first_token_start.elapsed());
 
     // TODO: Integrate with actual agentic loop
     // This is a placeholder implementation

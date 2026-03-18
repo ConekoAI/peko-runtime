@@ -1,5 +1,6 @@
 //! Tool trait
 
+use crate::observability::performance::GLOBAL_METRICS;
 use crate::tools::context::ToolContext;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -132,8 +133,13 @@ pub trait Tool: Send + Sync {
         // Report start status
         ctx.report_status(format!("Starting {}", self.name())).await;
 
-        // Execute using the basic method
+        // Execute using the basic method with performance measurement (REQ-PF-004: < 5ms target)
+        let tool_name = self.name().to_string();
         let result = self.execute(params).await;
+        let elapsed = start_time.elapsed();
+
+        // Record tool latency for performance monitoring
+        GLOBAL_METRICS.record_tool_latency(&tool_name, elapsed);
 
         // Check abort after completion
         if ctx.is_aborted() {
@@ -144,7 +150,7 @@ pub trait Tool: Send + Sync {
         ctx.check_timeout(start_time)?;
 
         // Report completion
-        ctx.report_status(format!("Completed {}", self.name()))
+        ctx.report_status(format!("Completed {} in {:?}", tool_name, elapsed))
             .await;
 
         result

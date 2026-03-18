@@ -13,6 +13,7 @@ use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
 use crate::image::registry::{ImageRegistry, RegistryConfig};
 use crate::image::ImageRef;
+use crate::observability::performance::PerformanceGuard;
 use axum::{
     extract::{Path, Query, State},
     routing::{get, post},
@@ -222,6 +223,9 @@ async fn create_instance(
     State(state): State<AppState>,
     Json(request): Json<CreateInstanceRequest>,
 ) -> Result<Json<InstanceResponse>, ApiError> {
+    // Start warm start timing (REQ-PF-002: < 100ms target)
+    let _warm_start_guard = PerformanceGuard::new("warm_start");
+
     // Parse image reference
     let image_ref = ImageRef::parse(&request.image)
         .map_err(|e| ApiError::bad_request(format!("Invalid image reference: {}", e), ""))?;

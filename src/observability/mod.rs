@@ -7,10 +7,15 @@
 
 pub mod audit;
 pub mod metrics;
+pub mod performance;
 pub mod tracer;
 
 pub use audit::{AuditEvent, AuditLogger, AuditSeverity};
 pub use metrics::MetricsCollector;
+pub use performance::{
+    start_timer, stop_timer, LatencyStats, MetricsExport, PerformanceGuard, PerformanceMetrics,
+    GLOBAL_METRICS,
+};
 pub use tracer::{TraceSpan, Tracer};
 
 use anyhow::Result;

@@ -131,8 +131,8 @@ pub mod web_ui;
 /// Security policies and sandboxing
 pub mod security;
 
-/// Observability (metrics, tracing, audit)
-pub(crate) mod observability;
+/// Observability (metrics, tracing, audit, performance)
+pub mod observability;
 
 // ============================================================================
 // Tools & Skills
