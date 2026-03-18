@@ -5,6 +5,19 @@ use crate::commands::GlobalPaths;
 use clap::Subcommand;
 
 /// Agent management subcommands
+///
+/// Examples:
+///   # Initialize a new agent directory
+///   pekobot agent init ./my-agent --provider openai
+///
+///   # Run an agent interactively  
+///   pekobot agent start my-agent
+///
+///   # Send a single message (non-interactive)
+///   pekobot agent start my-agent --message "Hello"
+///
+///   # List all agents
+///   pekobot agent list
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AgentCommands {

@@ -430,8 +430,35 @@ Use this table to record any **[SHOULD]** items deferred at ship time.
 
 | Item | Section | Reason | Tracking Issue | Target |
 |------|---------|--------|----------------|--------|
-| | | | | |
+| Base image inheritance | §1 Image | Can use explicit config copying; adds complexity | TBD | Phase 2 |
+| Session plugins | §4 Session | Raw sessions sufficient for Phase 1; ABI stability needed | TBD | Phase 2 |
+| Session branching | §4 Session | API exists, CLI UI can be added later | TBD | Phase 2 |
+| MCP crash detection/restart | §6 MCP | Manual restart acceptable for now | TBD | Phase 2 |
+| Shared MCP server lifecycle | §6 MCP | Reference counting framework ready, full lifecycle deferred | TBD | Phase 2 |
+| Redis bus backend | §7 Team | In-memory sufficient for single-node deployments | TBD | Phase 2 |
+| NATS bus backend | §7 Team | In-memory sufficient for single-node deployments | TBD | Phase 2 |
+| Team scale CLI | §7 Team | API exists (`POST /teams/{id}/scale`), CLI wrapper deferred | TBD | Phase 2 |
+| Package signing | §8 Registry | Verification warning mode acceptable for Phase 1 | TBD | Phase 2 |
+| TUI (`pekobot-tui`) | §9 Interfaces | Web UI at `/ui` sufficient for Phase 1 | TBD | Phase 2 |
+| WebSocket detailed protocol | §9 Interfaces | Basic protocol works, enhancements deferred | TBD | Phase 2 |
+| In-memory bus p95 < 1ms | §12 Performance | Current performance acceptable, optimization deferred | TBD | Phase 2 |
+| 50 concurrent memory stability | §12 Performance | Framework ready, deep optimization deferred | TBD | Phase 2 |
 
 ---
 
-*Version: 1.0 · Last Updated: 2026-03-16 · Status: Draft*
+## Phase 1 Ship Checklist
+
+Before shipping Phase 1, verify:
+
+- [x] All **[MUST]** items are implemented and tested
+- [x] All **[SHOULD]** items are either done or have deferral entries above
+- [x] CHANGELOG.md is complete
+- [x] Getting Started guide tested on clean machine
+- [x] All documentation links work
+- [x] Version bumped to 0.1.0
+- [x] Git tag `v0.1.0` created
+- [x] GitHub release notes drafted
+
+---
+
+*Version: 1.1 · Last Updated: 2026-03-18 · Status: Ready for Review*

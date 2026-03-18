@@ -8,6 +8,25 @@ use clap::Subcommand;
 use reqwest::StatusCode;
 
 /// Session management subcommands
+///
+/// Sessions store the conversation history with an agent.
+/// Each instance can have multiple sessions, but only one active session at a time.
+///
+/// Examples:
+///   # List sessions for an instance
+///   pekobot session list INSTANCE_ID
+///
+///   # Show session details with history
+///   pekobot session show INSTANCE_ID SESSION_ID --history
+///
+///   # Create a branch of a session
+///   pekobot session branch INSTANCE_ID SESSION_ID --label "experiment"
+///
+///   # Send a message to a specific session
+///   pekobot session send INSTANCE_ID "Hello" --session-id SESSION_ID
+///
+///   # Delete a session
+///   pekobot session delete INSTANCE_ID SESSION_ID
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum SessionCommands {

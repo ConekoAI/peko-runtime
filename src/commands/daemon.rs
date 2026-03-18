@@ -7,6 +7,25 @@ use clap::Subcommand;
 use std::path::PathBuf;
 
 /// Daemon management subcommands
+///
+/// The daemon is the core service that manages agents and provides the HTTP API.
+/// It must be running before you can create or run agents.
+///
+/// Examples:
+///   # Start the daemon in background (default)
+///   pekobot daemon start
+///
+///   # Start in foreground to see logs
+///   pekobot daemon start --foreground
+///
+///   # Check daemon status
+///   pekobot daemon status
+///
+///   # Stop the daemon
+///   pekobot daemon stop
+///
+///   # Restart the daemon
+///   pekobot daemon restart
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum DaemonCommands {

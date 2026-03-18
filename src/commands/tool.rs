@@ -4,6 +4,28 @@ use crate::commands::GlobalPaths;
 use clap::Subcommand;
 
 /// Tool management subcommands
+///
+/// Tools extend agent capabilities. Built-in tools are always available,
+/// and additional tools can be installed from the Pekohub registry.
+///
+/// Examples:
+///   # List all installed tools
+///   pekobot tool list
+///
+///   # Search for tools in the registry
+///   pekobot tool search "database"
+///
+///   # Install a tool
+///   pekobot tool install postgres
+///
+///   # Install specific version
+///   pekobot tool install postgres --version 1.2.0
+///
+///   # Show tool details
+///   pekobot tool info postgres
+///
+///   # Uninstall a tool
+///   pekobot tool uninstall postgres
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum ToolCommands {

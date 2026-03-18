@@ -29,14 +29,8 @@ const TARGET_TEAM_DEPLOY_S: u64 = 30;
 
 /// Check if daemon is available for integration benchmarks
 fn daemon_available() -> bool {
-    // Try to connect to the daemon
-    let client = reqwest::blocking::Client::new();
-    client
-        .get("http://127.0.0.1:11435/health")
-        .timeout(Duration::from_secs(1))
-        .send()
-        .map(|r| r.status().is_success())
-        .unwrap_or(false)
+    // Try to connect to the daemon using std::net to avoid async/blocking issues
+    std::net::TcpStream::connect("127.0.0.1:11435").is_ok()
 }
 
 // ============================================================================
@@ -192,31 +186,20 @@ fn benchmark_tool_latency(c: &mut Criterion) {
     group.bench_function("filesystem_read_simulated", |b| {
         b.iter(|| {
             // Simulate filesystem.read tool call
-            let start = std::time::Instant::now();
-
             // Actual tool execution would go here
             // For now, simulate sub-millisecond operation
             std::hint::black_box(())
-
-            // Record latency
-            // GLOBAL_METRICS.record_tool_latency("filesystem.read", start.elapsed());
         })
     });
 
     // filesystem.exists benchmark
     group.bench_function("filesystem_exists_simulated", |b| {
-        b.iter(|| {
-            let start = std::time::Instant::now();
-            std::hint::black_box(())
-        })
+        b.iter(|| std::hint::black_box(()))
     });
 
     // session_status benchmark
     group.bench_function("session_status_simulated", |b| {
-        b.iter(|| {
-            let start = std::time::Instant::now();
-            std::hint::black_box(())
-        })
+        b.iter(|| std::hint::black_box(()))
     });
 
     // 5ms target baseline

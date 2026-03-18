@@ -37,6 +37,14 @@ use std::path::PathBuf;
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "Lightweight multi-agent runtime")]
 #[command(propagate_version = true)]
+#[command(after_help = "Examples:
+  pekobot daemon start                          # Start the daemon
+  pekobot agent init ./my-agent --provider openai  # Create new agent
+  pekobot build ./my-agent/ -t my-agent:v1.0    # Build agent image
+  pekobot run my-agent:v1.0                     # Run agent instance
+  pekobot ps                                    # List instances
+  pekobot session list <instance-id>            # List sessions
+")]
 pub struct Cli {
     /// Configuration directory override
     #[arg(long, global = true, env = "PEKOBOT_CONFIG_DIR")]

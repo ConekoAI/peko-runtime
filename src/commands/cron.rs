@@ -4,6 +4,22 @@ use crate::commands::GlobalPaths;
 use clap::Subcommand;
 
 /// Cron management subcommands
+///
+/// Schedule agents to run at specific times or intervals.
+/// Jobs are persisted and survive daemon restarts.
+///
+/// Examples:
+///   # List all cron jobs
+///   pekobot cron list
+///
+///   # Add a daily job (9 AM)
+///   pekobot cron add --name "daily-report" --schedule "0 9 * * *" --message "Generate daily summary"
+///
+///   # Add a one-time job
+///   pekobot cron at --name "reminder" --at "2026-03-20T14:00:00Z" --message "Meeting in 1 hour"
+///
+///   # Remove a job
+///   pekobot cron remove daily-report
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum CronCommands {

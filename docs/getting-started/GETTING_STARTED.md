@@ -1,179 +1,222 @@
 # Getting Started with Pekobot
 
-Get up and running with Pekobot in 5 minutes.
+Get up and running with Pekobot in under 5 minutes.
+
+---
 
 ## Prerequisites
 
-- **Rust** 1.70+ — [Install](https://rustup.rs)
-- **OpenAI API Key** — [Get one](https://platform.openai.com/api-keys)
+- **Rust** 1.70+ — [Install via rustup](https://rustup.rs)
+- **API Key** for one of these providers:
+  - [OpenAI](https://platform.openai.com/api-keys) (GPT-4, GPT-3.5)
+  - [Anthropic](https://console.anthropic.com/) (Claude)
+  - [Kimi](https://platform.moonshot.cn/) (Kimi K2.5)
+  - [Ollama](https://ollama.com) (local models, no key needed)
 
-## Quick Install
+---
+
+## Quick Start (5 Minutes)
+
+### 1. Build and Install
 
 ```bash
 # Clone the repository
 git clone https://github.com/coneko/pekobot
 cd pekobot
 
-# Build in release mode
+# Build in release mode (optimized)
 cargo build --release
 
 # Verify installation
 ./target/release/pekobot --version
 ```
 
-## Run Your First Agent
-
-### 1. Set Your API Key
+### 2. Set Your API Key
 
 ```bash
+# For OpenAI
 export OPENAI_API_KEY="sk-your-key-here"
+
+# For Anthropic
+export ANTHROPIC_API_KEY="sk-ant-your-key-here"
+
+# For Kimi
+export KIMI_API_KEY="your-kimi-key"
 ```
 
-### 2. Start an Agent
+> 💡 **Tip:** Add this to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to persist across sessions.
+
+### 3. Start the Daemon
+
+The daemon is the heart of Pekobot — it manages agents, sessions, and the HTTP API.
 
 ```bash
-./target/release/pekobot agent --name my-first-agent
+# Start in background
+./target/release/pekobot daemon start
+
+# Verify it's running
+./target/release/pekobot daemon status
+```
+
+You should see:
+```
+📊 Daemon Status:
+  Status: ✅ Running (healthy)
+  Version: 0.1.0
+  API Version: v1
+  Port: 11435
+```
+
+### 4. Create Your First Agent
+
+```bash
+# Initialize a new agent directory
+./target/release/pekobot agent init ./my-agent/ --provider openai
+```
+
+This creates:
+```
+my-agent/
+├── config.toml      # Agent configuration
+├── AGENT.md         # Agent description (edit this!)
+├── .gitignore       # Excludes sessions/, workspace/
+├── tools/           # Custom tools directory
+├── skills/          # Skills directory
+└── workspace/       # Working files
+```
+
+### 5. Edit Your Agent (Optional)
+
+Edit `my-agent/AGENT.md` to give your agent a personality:
+
+```markdown
+# My First Agent
+
+You are a helpful coding assistant.
+
+## Capabilities
+
+- Write and debug code
+- Explain technical concepts
+- Review code for best practices
+
+## Tone
+
+Friendly, concise, and encouraging.
+```
+
+### 6. Build and Run
+
+```bash
+# Build the agent into an image
+./target/release/pekobot build ./my-agent/ -t my-agent:v1.0
+
+# Run it (creates an instance)
+./target/release/pekobot run my-agent:v1.0
 ```
 
 You'll see:
-
 ```
-🐱 Agent 'my-first-agent' started successfully!
-   DID: did:pekobot:local:default:abc123...
-   State: Idle
+🚀 Starting agent instance...
+✅ Instance 'my-agent-abc123' created
+📡 Connecting to chat stream...
 
-╔════════════════════════════════════════╗
-║     🐱 Pekobot Agent Interface         ║
-╚════════════════════════════════════════╝
-
-⚡ Agent 'my-first-agent' is ready!
+🐱 My Agent: Hello! I'm ready to help. What would you like to work on?
 
 💬 You:
 ```
 
-### 3. Interact
-
+Type a message and press Enter:
 ```
-💬 You: hello
-🐱 Agent: Received: 'hello' (agent processing not yet implemented)
-
-💬 You: exit
-⚡ Goodbye! 👋
+💬 You: Write a Python function to calculate fibonacci numbers
+🐱 My Agent: Here's a Python function to calculate Fibonacci numbers...
 ```
 
-## Enable AI Responses
+### 7. Stop the Agent
 
-To get real AI responses, run with a provider:
+Press `Ctrl+C` or type `exit` to stop the agent.
 
-```bash
-./target/release/pekobot agent \
-  --name ai-agent \
-  --provider openai \
-  --model gpt-4o-mini
-```
-
-## Enable Memory
-
-Store conversations persistently:
-
-```bash
-./target/release/pekobot agent \
-  --name memory-agent \
-  --memory \
-  --db ~/.local/share/pekobot/memory.db
-```
-
-## Check System Status
-
-```bash
-./target/release/pekobot status
-```
-
-Output:
-```
-🐱 Pekobot Status
-   Version: 0.1.0
-   Status: 🟢 Operational
-   Features:
-     - Agent Runtime: ✅ Ready
-     - SQLite Memory: ✅ Ready
-     - OpenAI Provider: ✅ Ready
-```
-
-## Run an Example
-
-```bash
-# Simple echo agent
-cargo run --example echo_agent
-
-# Multi-agent orchestration
-cargo run --example multi_agent
-
-# HTTP tool demo
-cargo run --example http_tool
-```
+---
 
 ## Next Steps
 
 | Resource | Description |
 |----------|-------------|
-| [User Guide](USERS_GUIDE.md) | Comprehensive documentation |
-| [Tutorial: Building Your First Agent](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step tutorial |
-| [CLI Reference](CLI_REFERENCE.md) | All commands explained |
-| [Architecture](ARCHITECTURE.md) | How Pekobot works |
-| [API Documentation](API.md) | API reference |
+| [Tutorial: Building Your First Agent](TUTORIAL_BUILDING_FIRST_AGENT.md) | Step-by-step deep dive |
+| [CLI Reference](../user-guide/CLI_REFERENCE.md) | All commands explained |
+| [Architecture Overview](../dev/ARCHITECTURE.md) | How Pekobot works |
+| [API Examples](../api-examples.md) | HTTP API usage |
+
+---
 
 ## Common Commands
 
 ```bash
-# Quick reference
+# Daemon management
+pekobot daemon start              # Start daemon
+pekobot daemon status             # Check status
+pekobot daemon stop               # Stop daemon
 
-# Build
-cargo build --release
+# Agent lifecycle
+pekobot agent init ./my-agent/    # Create new agent
+pekobot build ./my-agent/ -t tag  # Build image
+pekobot run my-agent:v1.0         # Run instance
+pekobot ps                        # List instances
 
-# Run agent
-./target/release/pekobot agent --name my-agent
+# Session management
+pekobot session list              # List sessions
+pekobot session show <id>         # View session history
 
-# With memory
-./target/release/pekobot agent --name my-agent --db memory.db
-
-# With Coneko network
-./target/release/pekobot agent --name my-agent --coneko http://localhost:8080
-
-# Check status
-./target/release/pekobot status
-
-# Interactive setup
-./target/release/pekobot onboard
-
-# Run tests
-cargo test
-```
-
-## Troubleshooting
-
-**Build fails?**
-```bash
-# Update Rust
-rustup update
-
-# Install dependencies on Linux
-sudo apt-get install libssl-dev pkg-config
-```
-
-**OpenAI errors?**
-```bash
-# Verify API key
-export OPENAI_API_KEY="sk-..."
-echo $OPENAI_API_KEY
-```
-
-**Need help?**
-```bash
-./target/release/pekobot --help
-./target/release/pekobot agent --help
+# Get help
+pekobot --help                    # Global help
+pekobot agent --help              # Agent commands
+pekobot daemon --help             # Daemon commands
 ```
 
 ---
 
-Welcome to Pekobot! 🐱
+## Troubleshooting
+
+### "Daemon not running"
+```bash
+# Start the daemon first
+pekobot daemon start --foreground  # See errors in real-time
+```
+
+### "API key not found"
+```bash
+# Verify your key is set
+echo $OPENAI_API_KEY
+
+# Set it in your shell
+export OPENAI_API_KEY="sk-..."
+```
+
+### Build fails on Linux
+```bash
+# Install required dependencies
+sudo apt-get update
+sudo apt-get install libssl-dev pkg-config
+```
+
+### Port already in use
+```bash
+# Check what's using port 11435
+lsof -i :11435
+
+# Stop the existing daemon or use a different port
+pekobot daemon stop
+```
+
+---
+
+## Requirements Checklist
+
+✅ **Time to first agent:** Under 5 minutes  
+✅ **No configuration required:** Daemon starts with sensible defaults  
+✅ **Git-friendly:** `pekobot init` creates proper `.gitignore`  
+✅ **Actionable errors:** All errors include suggested fixes
+
+---
+
+*Welcome to Pekobot! 🐱*
