@@ -71,6 +71,18 @@ pub struct IndexEntry {
     /// Last error (if any)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Parent session ID (for branched sessions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// Session title (auto-generated or user-set)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Whether the session has ended
+    #[serde(default)]
+    pub ended: bool,
+    /// What triggered this session creation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
 }
 
 impl IndexEntry {
@@ -100,6 +112,10 @@ impl IndexEntry {
             recipient: None,
             account_id: None,
             last_error: None,
+            parent_session_id: None,
+            title: None,
+            ended: false,
+            trigger: None,
         }
     }
 
@@ -609,6 +625,10 @@ impl SessionIndex {
                     recipient: None,
                     account_id: None,
                     last_error: None,
+                    parent_session_id: None,
+                    title: None,
+                    ended: false,
+                    trigger: None,
                 };
 
                 let key = format!("agent:{agent_name}:session:{filename}");

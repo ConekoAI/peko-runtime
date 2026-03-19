@@ -7,11 +7,12 @@
 //!
 //! Session storage layout:
 //! - `{data_dir}/agents/{instance_id}/sessions/*.jsonl` - Session event logs
-//! - `{data_dir}/agents/{instance_id}/sessions/*.index.json` - Metadata sidecars
+//! - `{data_dir}/agents/{instance_id}/sessions/sessions.json` - Centralized session index
 //! - `{data_dir}/agents/{instance_id}/sessions/.active.json` - Preferred active session (CLI-managed)
 
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
+use crate::session::index::{IndexEntry, SessionIndex};
 use anyhow::Result;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
@@ -248,65 +249,28 @@ async fn ensure_sessions_dir(paths: &GlobalPaths, name: &str, team: &str) -> Res
 }
 
 // ================================================================================
-// Session Index (Sidecar) Operations
+// Session Index (Centralized) Operations
 // ================================================================================
 
-/// Session index sidecar structure
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct SessionIndex {
-    session_id: String,
-    instance_id: String,
-    created_at: String,
-    updated_at: String,
-    turn_count: u32,
-    #[serde(default)]
-    event_count: u64,
-    #[serde(default)]
-    total_tokens: u32,
-    #[serde(default)]
-    parent_session_id: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    ended: bool,
-    #[serde(default)]
-    trigger: String,
-}
-
-/// Load session index from sidecar file
-async fn load_session_index(
+/// Load session entry from centralized index
+async fn load_session_entry(
     sessions_dir: &PathBuf,
     session_id: &str,
-) -> Result<Option<SessionIndex>> {
-    let path = sessions_dir.join(format!("{}.index.json", session_id));
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = tokio::fs::read_to_string(&path).await?;
-    let index: SessionIndex = serde_json::from_str(&content)?;
-    Ok(Some(index))
+) -> Result<Option<IndexEntry>> {
+    let mut index = SessionIndex::open(sessions_dir);
+    index.find_by_session_id(session_id).await
 }
 
-/// List all sessions from disk
-async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<SessionIndex>> {
-    let mut sessions = vec![];
-
-    let mut entries = tokio::fs::read_dir(sessions_dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        if let Some(name) = entry.file_name().to_str() {
-            if name.ends_with(".index.json") && !name.starts_with('.') {
-                let session_id = name.trim_end_matches(".index.json").to_string();
-                if let Ok(Some(index)) = load_session_index(sessions_dir, &session_id).await {
-                    sessions.push(index);
-                }
-            }
-        }
-    }
-
+/// List all sessions from centralized index
+async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<IndexEntry>> {
+    let mut index = SessionIndex::open(sessions_dir);
+    let entries = index.list().await?;
+    
     // Sort by updated_at descending (most recent first)
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-
-    Ok(sessions)
+    let mut entries: Vec<_> = entries.into_iter().collect();
+    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    
+    Ok(entries)
 }
 
 // ================================================================================
@@ -401,8 +365,8 @@ async fn list_sessions(paths: &GlobalPaths, team: &str, agent: &str, json: bool)
 
         for session in &sessions {
             let title = session.title.as_deref().unwrap_or("(untitled)");
-            let created = format_timestamp(&session.created_at);
-            let updated = format_timestamp(&session.updated_at);
+            let created = format_timestamp_ms(session.created_at);
+            let updated = format_timestamp_ms(session.updated_at);
 
             // Status indicators
             let is_preferred = active_pref.as_ref() == Some(&session.session_id);
@@ -416,9 +380,10 @@ async fn list_sessions(paths: &GlobalPaths, team: &str, agent: &str, json: bool)
 
             println!("  {} {}", status_icon, session.session_id);
             println!("     Title: {}", title);
+            let tokens = session.total_tokens.unwrap_or(0);
             println!(
-                "     Turns: {} | Events: {} | Tokens: {}",
-                session.turn_count, session.event_count, session.total_tokens
+                "     Messages: {} | Tokens: {}",
+                session.message_count, tokens
             );
             println!("     Created: {} | Updated: {}", created, updated);
 
@@ -445,8 +410,8 @@ async fn show_session(
         return Err(anyhow::anyhow!("Agent '{}' not found in team '{}'", agent, team));
     };
 
-    // Load session index
-    let Some(index) = load_session_index(&loc.sessions_dir, session_id).await? else {
+    // Load session entry from centralized index
+    let Some(entry) = load_session_entry(&loc.sessions_dir, session_id).await? else {
         return Err(anyhow::anyhow!(
             "Session '{}' not found for agent '{}'",
             session_id,
@@ -465,7 +430,7 @@ async fn show_session(
 
     if json {
         let output = serde_json::json!({
-            "session": index,
+            "session": entry,
             "history": history_events,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -473,27 +438,30 @@ async fn show_session(
         println!("📊 Session Details");
         println!("   Team: {}", team);
         println!("   Agent: {}", agent);
-        println!("   Session ID: {}", index.session_id);
-        if let Some(ref title) = index.title {
+        println!("   Session ID: {}", entry.session_id);
+        if let Some(ref title) = entry.title {
             println!("   Title: {}", title);
         }
         println!(
             "   Status: {}",
-            if index.ended {
+            if entry.ended {
                 "Ended 🔴"
             } else {
                 "Active 🟢"
             }
         );
-        println!("   Trigger: {}", index.trigger);
+        if let Some(ref trigger) = entry.trigger {
+            println!("   Trigger: {}", trigger);
+        }
+        let tokens = entry.total_tokens.unwrap_or(0);
         println!(
-            "   Turns: {} | Events: {} | Tokens: {}",
-            index.turn_count, index.event_count, index.total_tokens
+            "   Messages: {} | Tokens: {}",
+            entry.message_count, tokens
         );
-        println!("   Created: {}", format_timestamp(&index.created_at));
-        println!("   Updated: {}", format_timestamp(&index.updated_at));
+        println!("   Created: {}", format_timestamp_ms(entry.created_at));
+        println!("   Updated: {}", format_timestamp_ms(entry.updated_at));
 
-        if let Some(ref parent) = index.parent_session_id {
+        if let Some(ref parent) = entry.parent_session_id {
             println!("   Parent Session: {}", parent);
         }
 
@@ -621,16 +589,15 @@ async fn branch_session(
 ) -> anyhow::Result<()> {
     let loc = ensure_sessions_dir(paths, agent, team).await?;
 
-    // Verify parent session exists
-    let parent_index = load_session_index(&loc.sessions_dir, session_id)
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Parent session '{}' not found for agent '{}'",
-                session_id,
-                agent
-            )
-        })?;
+    // Verify parent session exists in centralized index
+    let mut index = SessionIndex::open(&loc.sessions_dir);
+    let parent_entry = index.find_by_session_id(session_id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Parent session '{}' not found for agent '{}'",
+            session_id,
+            agent
+        )
+    })?;
 
     // Generate new session ID
     let new_session_id = format!("sess_{}", Uuid::new_v4().simple());
@@ -646,38 +613,51 @@ async fn branch_session(
         create_empty_session(&new_jsonl, &new_session_id, agent, Some(session_id)).await?;
     }
 
-    // Create branched sidecar index
-    let new_index = SessionIndex {
+    // Create new index entry for branched session
+    let new_entry = IndexEntry {
         session_id: new_session_id.clone(),
-        instance_id: parent_index.instance_id.clone(),
-        created_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: chrono::Utc::now().to_rfc3339(),
-        turn_count: parent_index.turn_count,
-        event_count: parent_index.event_count,
-        total_tokens: parent_index.total_tokens,
+        agent_name: parent_entry.agent_name.clone(),
+        session_key: parent_entry.session_key.clone(),
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+        updated_at: std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+        message_count: parent_entry.message_count,
+        total_tokens: parent_entry.total_tokens,
+        input_tokens: parent_entry.input_tokens,
+        output_tokens: parent_entry.output_tokens,
+        transcript_file: format!("{}.jsonl", new_session_id),
+        cwd: parent_entry.cwd.clone(),
+        provider: parent_entry.provider.clone(),
+        model: parent_entry.model.clone(),
+        channel: parent_entry.channel.clone(),
+        recipient: parent_entry.recipient.clone(),
+        account_id: parent_entry.account_id.clone(),
+        last_error: None,
         parent_session_id: Some(session_id.to_string()),
         title: label.clone().or_else(|| {
-            parent_index
+            parent_entry
                 .title
                 .as_ref()
                 .map(|t| format!("Branch: {}", t))
         }),
         ended: false,
-        trigger: "branch".to_string(),
+        trigger: Some("branch".to_string()),
     };
 
-    let sidecar_path = loc
-        .sessions_dir
-        .join(format!("{}.index.json", new_session_id));
-    let sidecar_json = serde_json::to_string_pretty(&new_index)?;
-
-    // Atomic write
-    let temp_path = sidecar_path.with_extension("tmp");
-    tokio::fs::write(&temp_path, sidecar_json).await?;
-    tokio::fs::rename(&temp_path, &sidecar_path).await?;
+    // Add to centralized index
+    let index_key = parent_entry
+        .session_key
+        .clone()
+        .unwrap_or_else(|| format!("agent:{}:session:{}", agent, new_session_id));
+    index.insert(index_key, new_entry.clone()).await?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&new_index)?);
+        println!("{}", serde_json::to_string_pretty(&new_entry)?);
     } else {
         println!("✅ Branched session '{}'", session_id);
         println!("   New Session ID: {}", new_session_id);
@@ -737,21 +717,18 @@ async fn delete_session(
 
     // Verify session exists
     let jsonl_path = loc.sessions_dir.join(format!("{}.jsonl", session_id));
-    let sidecar_path = loc.sessions_dir.join(format!("{}.index.json", session_id));
+    
+    // Load metadata from centralized index
+    let mut index = SessionIndex::open(&loc.sessions_dir);
+    let metadata = index.find_by_session_id(session_id).await?;
 
-    if !jsonl_path.exists() && !sidecar_path.exists() {
+    if !jsonl_path.exists() && metadata.is_none() {
         return Err(anyhow::anyhow!(
             "Session '{}' not found for agent '{}'",
             session_id,
             agent
         ));
     }
-
-    // Load metadata for display
-    let metadata = load_session_index(&loc.sessions_dir, session_id)
-        .await
-        .ok()
-        .flatten();
 
     if !force {
         println!("⚠️  This will permanently delete session '{}'.", session_id);
@@ -760,8 +737,8 @@ async fn delete_session(
                 println!("   Title: {}", title);
             }
             println!(
-                "   Turns: {} | Events: {}",
-                meta.turn_count, meta.event_count
+                "   Messages: {}",
+                meta.message_count
             );
         }
         println!("   This action cannot be undone.");
@@ -783,9 +760,20 @@ async fn delete_session(
         tokio::fs::remove_file(&jsonl_path).await?;
         deleted.push("jsonl");
     }
-    if sidecar_path.exists() {
-        tokio::fs::remove_file(&sidecar_path).await?;
-        deleted.push("index");
+
+    // Remove from centralized index
+    if let Some(ref meta) = metadata {
+        let index_key = meta
+            .session_key
+            .clone()
+            .unwrap_or_else(|| format!("agent:{}:session:{}", agent, session_id));
+        if index.remove(&index_key).await?.is_some() {
+            deleted.push("index");
+        }
+        
+        // Also try to remove by alternate key format
+        let alt_key = format!("agent:{}:session:{}", agent, session_id);
+        let _ = index.remove(&alt_key).await;
     }
 
     // Check if this was the preferred active session
@@ -817,23 +805,18 @@ async fn switch_session(
 ) -> anyhow::Result<()> {
     let loc = ensure_sessions_dir(paths, agent, team).await?;
 
-    // Verify session exists
-    let sidecar_path = loc.sessions_dir.join(format!("{}.index.json", session_id));
-    if !sidecar_path.exists() {
-        return Err(anyhow::anyhow!(
+    // Verify session exists in centralized index
+    let mut index = SessionIndex::open(&loc.sessions_dir);
+    let entry = index.find_by_session_id(session_id).await?.ok_or_else(|| {
+        anyhow::anyhow!(
             "Session '{}' not found for agent '{}'",
             session_id,
             agent
-        ));
-    }
+        )
+    })?;
 
     // Check if session is ended
-    let is_ended = load_session_index(&loc.sessions_dir, session_id)
-        .await?
-        .map(|i| i.ended)
-        .unwrap_or(false);
-
-    if is_ended {
+    if entry.ended {
         println!("⚠️  Warning: Session '{}' is ended.", session_id);
         println!("   Switching to an ended session will start a new conversation");
         println!("   with the same history available for reference.");
@@ -909,6 +892,17 @@ fn format_timestamp(ts: &str) -> String {
         dt.format("%Y-%m-%d %H:%M").to_string()
     } else {
         ts.to_string()
+    }
+}
+
+/// Format a millisecond timestamp (unix epoch) for display
+fn format_timestamp_ms(ts_ms: u64) -> String {
+    let secs = (ts_ms / 1000) as i64;
+    let nanos = ((ts_ms % 1000) * 1_000_000) as u32;
+    if let Some(dt) = chrono::DateTime::from_timestamp(secs, nanos) {
+        dt.format("%Y-%m-%d %H:%M").to_string()
+    } else {
+        format!("{}", ts_ms)
     }
 }
 
