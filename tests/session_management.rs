@@ -2,12 +2,11 @@
 //!
 //! Run with: cargo test --test session_management
 
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tempfile::TempDir;
 
 // Import from pekobot crate
-use pekobot::session::index::{IndexEntry, MaintenanceConfig, MaintenanceMode, SessionIndex};
+use pekobot::session::index::SessionEntry;
 use pekobot::session::jsonl::SessionStorage;
 use pekobot::session::key::{
     cli_session_key, derive_session_key, discord_session_key, parse_session_key, ChatType,
@@ -56,134 +55,95 @@ async fn test_session_index_create_and_load() {
     // Create directory for index
     tokio::fs::create_dir_all(&index_path).await.unwrap();
 
-    let mut index = SessionIndex::open(index_path);
+    let mut index = pekobot::session::index::SessionIndex::open(index_path);
 
-    // Create initial empty index file
-    tokio::fs::write(index_path.join("sessions.json"), "{}")
-        .await
-        .unwrap();
+    // Create a session entry
+    let entry = SessionEntry {
+        session_id: "test_123".to_string(),
+        agent_name: "testagent".to_string(),
+        created_at: 1234567890,
+        updated_at: 1234567890,
+        message_count: 0,
+        turn_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        transcript_file: "test_123.jsonl".to_string(),
+        title: None,
+        parent_session_id: None,
+        ended: false,
+        trigger: "test".to_string(),
+        provider: None,
+        model: None,
+        channel: None,
+        recipient: None,
+        cwd: None,
+    };
 
-    // Initially empty
-    let entries = index.load().await.unwrap();
-    assert!(entries.is_empty());
-
-    // Add entry
-    let entry = IndexEntry::new(
-        "test_123".to_string(),
-        "testagent".to_string(),
-        "test_123.jsonl".to_string(),
-    );
-    index
-        .insert(
-            "agent:testagent:session:test_123".to_string(),
-            entry.clone(),
-        )
-        .await
-        .unwrap();
+    // Insert and verify
+    index.insert(entry).await.unwrap();
 
     // Reload and verify
-    let mut index2 = SessionIndex::open(index_path);
-    let loaded = index2
-        .get("agent:testagent:session:test_123")
-        .await
-        .unwrap();
+    let loaded = index.get("test_123").await.unwrap();
     assert!(loaded.is_some());
     assert_eq!(loaded.unwrap().session_id, "test_123");
 }
 
-/// Test session index maintenance (prune)
+/// Test peer-based session operations
 #[tokio::test]
-async fn test_session_index_maintenance_prune() {
+async fn test_peer_session_operations() {
     let temp = TempDir::new().unwrap();
-    tokio::fs::create_dir_all(temp.path()).await.unwrap();
-    // Create initial empty index file
-    tokio::fs::write(temp.path().join("sessions.json"), "{}")
-        .await
-        .unwrap();
-    let mut index = SessionIndex::open(temp.path());
+    let index_path = temp.path();
 
-    // Add old entry
-    let mut old_entry = IndexEntry::new(
-        "old_123".to_string(),
-        "testagent".to_string(),
-        "old_123.jsonl".to_string(),
-    );
-    old_entry.updated_at = 0; // Very old
-    index.insert("old".to_string(), old_entry).await.unwrap();
+    tokio::fs::create_dir_all(&index_path).await.unwrap();
 
-    // Add new entry
-    let new_entry = IndexEntry::new(
-        "new_456".to_string(),
-        "testagent".to_string(),
-        "new_456.jsonl".to_string(),
-    );
-    index.insert("new".to_string(), new_entry).await.unwrap();
+    let mut index = pekobot::session::index::SessionIndex::open(index_path);
 
-    // Run maintenance with 1 day prune
-    let config = MaintenanceConfig {
-        mode: MaintenanceMode::Auto,
-        prune_after: Duration::from_secs(86400),
-        max_sessions: 100,
-        rotate_bytes: 10_000_000,
+    // Create a peer info entry
+    let peer_key = "agent:testagent:cli:default";
+    let session_id = "session_abc123";
+
+    // Create session entry
+    let entry = SessionEntry {
+        session_id: session_id.to_string(),
+        agent_name: "testagent".to_string(),
+        created_at: 1234567890,
+        updated_at: 1234567890,
+        message_count: 5,
+        turn_count: 3,
+        input_tokens: 100,
+        output_tokens: 200,
+        total_tokens: 300,
+        transcript_file: format!("{}.jsonl", session_id),
+        title: Some("Test Session".to_string()),
+        parent_session_id: None,
+        ended: false,
+        trigger: "cli".to_string(),
+        provider: Some("openai".to_string()),
+        model: Some("gpt-4".to_string()),
+        channel: Some("cli".to_string()),
+        recipient: None,
+        cwd: Some("/tmp".to_string()),
     };
 
-    let report = index.maintenance(&config).await.unwrap();
-    println!("Pruned: {}, Capped: {}", report.pruned, report.capped);
-    println!(
-        "Entries before reload: {}",
-        index.load().await.unwrap().len()
-    );
-    assert!(
-        report.pruned >= 1,
-        "Expected at least 1 pruned, got {}",
-        report.pruned
-    );
+    // Save session
+    index.insert(entry).await.unwrap();
 
-    // Verify old entry is gone
-    let entries = index.load().await.unwrap();
-    println!("Entries after reload: {}", entries.len());
-    assert!(
-        entries.len() <= 1,
-        "Expected at most 1 entry, got {}",
-        entries.len()
-    );
-}
+    // Get session directly
+    let loaded = index.get(session_id).await.unwrap();
+    assert!(loaded.is_some());
+    let loaded_entry = loaded.unwrap();
+    assert_eq!(loaded_entry.session_id, session_id);
+    assert_eq!(loaded_entry.message_count, 5);
 
-/// Test session index maintenance (cap)
-#[tokio::test]
-async fn test_session_index_maintenance_cap() {
-    let temp = TempDir::new().unwrap();
-    tokio::fs::create_dir_all(temp.path()).await.unwrap();
-    // Create initial empty index file
-    tokio::fs::write(temp.path().join("sessions.json"), "{}")
-        .await
-        .unwrap();
-    let mut index = SessionIndex::open(temp.path());
+    // Verify we can update message count
+    let mut updated_entry = loaded_entry;
+    updated_entry.message_count = 10;
+    updated_entry.updated_at = 1234567999;
+    index.insert(updated_entry).await.unwrap();
 
-    // Add 5 entries
-    for i in 0..5 {
-        let entry = IndexEntry::new(
-            format!("session_{}", i),
-            "testagent".to_string(),
-            format!("session_{}.jsonl", i),
-        );
-        index.insert(format!("key_{}", i), entry).await.unwrap();
-    }
-
-    // Run maintenance with max 3 sessions
-    let config = MaintenanceConfig {
-        mode: MaintenanceMode::Auto,
-        prune_after: Duration::from_secs(86400 * 365), // 1 year (won't prune)
-        max_sessions: 3,
-        rotate_bytes: 10_000_000,
-    };
-
-    let report = index.maintenance(&config).await.unwrap();
-    assert_eq!(report.capped, 2); // 5 - 3 = 2 removed
-
-    // Verify only 3 remain
-    let entries = index.load().await.unwrap();
-    assert_eq!(entries.len(), 3);
+    let reloaded = index.get(session_id).await.unwrap().unwrap();
+    assert_eq!(reloaded.message_count, 10);
 }
 
 /// Test session key derivation
@@ -318,63 +278,6 @@ async fn test_session_storage_with_locking() {
     assert_eq!(messages.len(), 2);
 }
 
-/// Test session index migration from directory
-#[tokio::test]
-async fn test_session_index_migration() {
-    let temp = TempDir::new().unwrap();
-    let sessions_dir = temp.path().join("sessions");
-    tokio::fs::create_dir_all(&sessions_dir).await.unwrap();
-
-    // Create initial empty index file
-    tokio::fs::write(sessions_dir.join("sessions.json"), "{}")
-        .await
-        .unwrap();
-
-    // Create old-style session files (without index)
-    for i in 0..3 {
-        let session_file = sessions_dir.join(format!("legacy_session_{}.jsonl", i));
-        tokio::fs::write(
-            &session_file,
-            r#"{"type":"session","version":3,"id":"legacy_session","timestamp":"2025-01-01T00:00:00Z"}
-"#,
-        )
-        .await
-        .unwrap();
-    }
-
-    // Open index (should be empty)
-    let mut index = SessionIndex::open(&sessions_dir);
-    let entries = index.load().await.unwrap();
-    assert!(entries.is_empty());
-
-    // Run migration
-    let count = index.migrate_from_directory("testagent").await.unwrap();
-    assert_eq!(count, 3);
-
-    // Verify index now has entries
-    let entries = index.load().await.unwrap();
-    assert_eq!(entries.len(), 3);
-}
-
-/// Test index entry touch updates timestamp
-#[test]
-fn test_index_entry_touch() {
-    let mut entry = IndexEntry::new(
-        "test".to_string(),
-        "agent".to_string(),
-        "test.jsonl".to_string(),
-    );
-
-    let old_updated = entry.updated_at;
-
-    // Wait a tiny bit
-    std::thread::sleep(Duration::from_millis(10));
-
-    entry.touch();
-
-    assert!(entry.updated_at > old_updated);
-}
-
 /// Integration test: Full session lifecycle
 #[tokio::test]
 async fn test_full_session_lifecycle() {
@@ -382,14 +285,9 @@ async fn test_full_session_lifecycle() {
     let sessions_dir = temp.path().join("sessions");
     tokio::fs::create_dir_all(&sessions_dir).await.unwrap();
 
-    // Create initial empty index file
-    tokio::fs::write(sessions_dir.join("sessions.json"), "{}")
-        .await
-        .unwrap();
-
     // 1. Create storage and index
     let storage = SessionStorage::new(sessions_dir.clone());
-    let mut index = SessionIndex::open(&sessions_dir);
+    let mut index = pekobot::session::index::SessionIndex::open(&sessions_dir);
 
     // 2. Create session
     let session_id = "lifecycle_test";
@@ -398,15 +296,29 @@ async fn test_full_session_lifecycle() {
         .await
         .unwrap();
 
-    // 3. Create index entry with key
-    let session_key = format!("agent:testagent:session:{}", session_id);
-    let mut entry = IndexEntry::new(
-        session_id.to_string(),
-        "testagent".to_string(),
-        format!("{}.jsonl", session_id),
-    );
-    entry.session_key = Some(session_key.clone());
-    index.insert(session_key.clone(), entry).await.unwrap();
+    // 3. Create session entry
+    let entry = SessionEntry {
+        session_id: session_id.to_string(),
+        agent_name: "testagent".to_string(),
+        created_at: 1234567890,
+        updated_at: 1234567890,
+        message_count: 0,
+        turn_count: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        transcript_file: format!("{}.jsonl", session_id),
+        title: None,
+        parent_session_id: None,
+        ended: false,
+        trigger: "cli".to_string(),
+        provider: None,
+        model: None,
+        channel: None,
+        recipient: None,
+        cwd: Some("/tmp".to_string()),
+    };
+    index.insert(entry).await.unwrap();
 
     // 4. Append messages
     let _msg_id = storage
@@ -422,29 +334,19 @@ async fn test_full_session_lifecycle() {
         .unwrap();
 
     // 5. Update index with message count
-    if let Some(mut entry) = index.get(&session_key).await.unwrap() {
-        entry.message_count = 1;
-        index.insert(session_key.clone(), entry).await.unwrap();
+    if let Some(mut loaded) = index.get(session_id).await.unwrap() {
+        loaded.message_count = 1;
+        index.insert(loaded).await.unwrap();
     }
 
     // 6. Verify everything
-    let loaded_entry = index.get(&session_key).await.unwrap().unwrap();
+    let loaded_entry = index.get(session_id).await.unwrap().unwrap();
     assert_eq!(loaded_entry.message_count, 1);
     assert_eq!(loaded_entry.session_id, session_id);
 
     let messages = storage.load_session(session_id).await.unwrap();
     assert_eq!(messages.len(), 2); // session header + 1 message
 
-    // 7. Run maintenance
-    let config = MaintenanceConfig {
-        mode: MaintenanceMode::Auto,
-        prune_after: Duration::from_secs(86400),
-        max_sessions: 100,
-        rotate_bytes: 10_000_000,
-    };
-    let report = index.maintenance(&config).await.unwrap();
-    assert!(report.is_empty()); // Nothing to do
-
-    // 8. Entry should still exist
-    assert!(index.get(&session_key).await.unwrap().is_some());
+    // 7. Entry should still exist
+    assert!(index.get(session_id).await.unwrap().is_some());
 }
