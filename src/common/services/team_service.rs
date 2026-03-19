@@ -216,7 +216,10 @@ async fn load_team_metadata(team_dir: &PathBuf) -> Result<TeamMetadata> {
 }
 
 /// Count agents in a team
+/// Only counts directories with a valid, parseable config.toml
 async fn count_agents_in_team(team_dir: &PathBuf) -> usize {
+    use crate::types::agent::AgentConfig;
+    
     let agents_dir = team_dir.join("agents");
 
     if !agents_dir.exists() {
@@ -227,8 +230,19 @@ async fn count_agents_in_team(team_dir: &PathBuf) -> usize {
         Ok(mut entries) => {
             let mut count = 0;
             while let Ok(Some(entry)) = entries.next_entry().await {
-                if entry.path().is_dir() {
-                    count += 1;
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                
+                // Only count if config.toml exists and is valid
+                let config_path = path.join("config.toml");
+                if config_path.exists() {
+                    if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
+                        if toml::from_str::<AgentConfig>(&content).is_ok() {
+                            count += 1;
+                        }
+                    }
                 }
             }
             count

@@ -357,7 +357,7 @@ async fn list_sessions(paths: &GlobalPaths, team: &str, agent: &str, json: bool)
         println!("📭 No sessions found for '{}'.", agent);
         println!("   Start chatting with the agent to create sessions.");
     } else {
-        println!("📋 Sessions for '{}'/{} ({} found):", team, agent, sessions.len());
+        println!("📋 Sessions for {}/{} ({} found):", team, agent, sessions.len());
         if let Some(ref pref) = active_pref {
             println!("   Preferred active: {}", pref);
         }
