@@ -285,6 +285,11 @@ mod tests {
             config_dir: PathBuf::from("/home/test/.pekobot"),
             data_dir: PathBuf::from("/home/test/.local/share/pekobot"),
             cache_dir: PathBuf::from("/home/test/.cache/pekobot"),
+            resolver: crate::common::paths::PathResolver::with_dirs(
+                PathBuf::from("/home/test/.pekobot"),
+                PathBuf::from("/home/test/.local/share/pekobot"),
+                PathBuf::from("/home/test/.cache/pekobot"),
+            ),
         };
 
         let result =
@@ -299,6 +304,11 @@ mod tests {
             config_dir: PathBuf::from("/home/test/.pekobot"),
             data_dir: PathBuf::from("/home/test/.local/share/pekobot"),
             cache_dir: PathBuf::from("/home/test/.cache/pekobot"),
+            resolver: crate::common::paths::PathResolver::with_dirs(
+                PathBuf::from("/home/test/.pekobot"),
+                PathBuf::from("/home/test/.local/share/pekobot"),
+                PathBuf::from("/home/test/.cache/pekobot"),
+            ),
         };
 
         let result = resolve_config_path("myagent", None, "default", &paths).unwrap();
@@ -314,6 +324,11 @@ mod tests {
             config_dir: PathBuf::from("/home/test/.pekobot"),
             data_dir: PathBuf::from("/home/test/.local/share/pekobot"),
             cache_dir: PathBuf::from("/home/test/.cache/pekobot"),
+            resolver: crate::common::paths::PathResolver::with_dirs(
+                PathBuf::from("/home/test/.pekobot"),
+                PathBuf::from("/home/test/.local/share/pekobot"),
+                PathBuf::from("/home/test/.cache/pekobot"),
+            ),
         };
 
         let result = resolve_config_path("myagent", None, "myteam", &paths).unwrap();
