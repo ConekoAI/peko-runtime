@@ -51,7 +51,7 @@ pub enum IdentifierError {
 ///
 /// # Examples
 /// ```
-/// use pekobot::commands::identifier::parse_agent_identifier;
+/// use pekobot::common::identifiers::parse_agent_identifier;
 ///
 /// assert_eq!(parse_agent_identifier("my-agent").unwrap(), (None, "my-agent"));
 /// assert_eq!(parse_agent_identifier("myteam/my-agent").unwrap(), (Some("myteam"), "my-agent"));
@@ -455,8 +455,8 @@ mod tests {
 
         #[test]
         fn test_nested() {
-            // Still returns true even though it's invalid
-            assert!(is_qualified_identifier("a/b/c"));
+            // Nested teams (multiple slashes) are not qualified identifiers
+            assert!(!is_qualified_identifier("a/b/c"));
         }
 
         #[test]

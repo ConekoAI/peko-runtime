@@ -2,13 +2,16 @@
 //!
 //! Provides CLI commands for managing teams - logical groupings of agents.
 //! Teams are stored as directories under ~/.pekobot/teams/{team}/agents/
+//!
+//! NOTE: All business logic is delegated to TeamService in common::services.
+//! This module only handles CLI argument parsing and output formatting.
 
-use crate::commands::identifier::{validate_team_name, ValidationError};
 use crate::commands::GlobalPaths;
-use crate::types::agent::AgentConfig;
+use crate::common::identifiers::{validate_team_name, ValidationError};
+use crate::common::services::TeamService;
+use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
 use anyhow::Result;
 use clap::Subcommand;
-use std::collections::HashMap;
 
 /// Team management subcommands
 ///
@@ -63,145 +66,94 @@ pub enum TeamCommands {
 }
 
 /// Handle team commands
-pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> Result<()> {
+pub async fn handle_team(
+    cmd: TeamCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> Result<()> {
+    let service = paths.services().team();
+
     match cmd {
         TeamCommands::Create { name, description } => {
-            handle_team_create(paths, &name, description, json).await
+            let result = service.create_team(&name, description.as_deref()).await?;
+            render_team_created(&result, json);
+            Ok(())
         }
-        TeamCommands::List { long } => handle_team_list(paths, long, json).await,
-        TeamCommands::Show { name } => handle_team_show(paths, &name, json).await,
+        TeamCommands::List { long } => {
+            let teams = service.list_teams().await?;
+            render_team_list(&teams, long, json);
+            Ok(())
+        }
+        TeamCommands::Show { name } => {
+            let team = service.get_team(&name).await?;
+            match team {
+                Some(team_info) => {
+                    let agents = service.get_team_agents(&name).await?;
+                    render_team_show(&team_info, &agents, json);
+                    Ok(())
+                }
+                None => {
+                    anyhow::bail!("Team '{}' not found", name);
+                }
+            }
+        }
         TeamCommands::Delete { name, force } => {
-            handle_team_delete(paths, &name, force, json).await
+            // Pre-validate for better error messages
+            if let Err(e) = validate_team_name(&name) {
+                return Err(map_validation_error(&name, e));
+            }
+
+            // Get team info for confirmation
+            let team_info = match service.get_team(&name).await? {
+                Some(info) => info,
+                None => {
+                    anyhow::bail!("Team '{}' not found", name);
+                }
+            };
+
+            // Confirm deletion
+            if !force {
+                if !confirm_team_deletion(&name, team_info.agent_count)? {
+                    if json {
+                        println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
+                    } else {
+                        println!("Cancelled.");
+                    }
+                    return Ok(());
+                }
+            }
+
+            let result = service.delete_team(&name).await?;
+            render_team_deleted(&result, json);
+            Ok(())
         }
     }
 }
 
-/// Handle team create command
-async fn handle_team_create(
-    paths: &GlobalPaths,
-    name: &str,
-    description: Option<String>,
-    json: bool,
-) -> Result<()> {
-    // Validate team name
-    if let Err(e) = validate_team_name(name) {
-        match e {
-            ValidationError::Empty => anyhow::bail!("Team name cannot be empty"),
-            ValidationError::TooLong(max) => {
-                anyhow::bail!("Team name exceeds maximum length of {} characters", max)
-            }
-            ValidationError::Reserved(reserved) => {
-                anyhow::bail!("'{}' is a reserved name and cannot be used", reserved)
-            }
-            ValidationError::ContainsPathSeparators => {
-                anyhow::bail!("Team name cannot contain path separators (/ or \\)")
-            }
-            ValidationError::InvalidHyphenPlacement => {
-                anyhow::bail!("Team name cannot start or end with a hyphen")
-            }
-            ValidationError::InvalidCharacter(ch) => {
-                anyhow::bail!("Team name contains invalid character: '{}'", ch)
-            }
-        }
-    }
+// ================================================================================
+// Rendering Functions (CLI-specific output formatting)
+// ================================================================================
 
-    let team_dir = paths.team_dir(name);
-
-    // Check if team already exists
-    if team_dir.exists() {
-        anyhow::bail!("Team '{}' already exists", name);
-    }
-
-    // Create team directory structure
-    let agents_dir = team_dir.join("agents");
-    tokio::fs::create_dir_all(&agents_dir).await?;
-
-    // Create team metadata file
-    let metadata = TeamMetadata {
-        name: name.to_string(),
-        description,
-        created_at: chrono::Utc::now().to_rfc3339(),
-    };
-
-    let metadata_path = team_dir.join("team.toml");
-    let metadata_content = toml::to_string_pretty(&metadata)?;
-    tokio::fs::write(&metadata_path, metadata_content).await?;
-
+fn render_team_created(result: &TeamCreationResult, json: bool) {
     if json {
         println!(
             "{{\"success\": true, \"name\": \"{}\", \"path\": \"{}\"}}",
-            name,
-            team_dir.display()
+            result.metadata.name,
+            result.path.display()
         );
     } else {
-        println!("✅ Created team '{}'", name);
-        println!("   Path: {}", team_dir.display());
-        if let Some(desc) = &metadata.description {
+        println!("✅ Created team '{}'", result.metadata.name);
+        println!("   Path: {}", result.path.display());
+        if let Some(desc) = &result.metadata.description {
             println!("   Description: {}", desc);
         }
         println!();
         println!("   You can now create agents in this team:");
-        println!("     pekobot agent create {}/<agent-name>", name);
+        println!("     pekobot agent create {}/<agent-name>", result.metadata.name);
     }
-
-    Ok(())
 }
 
-/// Handle team list command
-async fn handle_team_list(paths: &GlobalPaths, long: bool, json: bool) -> Result<()> {
-    let teams_dir = paths.teams_dir();
-
-    if !teams_dir.exists() {
-        if json {
-            println!("{{\"teams\": []}}");
-        } else {
-            println!("No teams found.");
-            println!("Create one with: pekobot team create <name>");
-        }
-        return Ok(());
-    }
-
-    let mut teams: Vec<TeamInfo> = Vec::new();
-    let mut entries = tokio::fs::read_dir(&teams_dir).await?;
-
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let team_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        // Skip invalid team names (could be temp files, etc.)
-        if validate_team_name(&team_name).is_err() {
-            continue;
-        }
-
-        let metadata = load_team_metadata(&path).await.ok();
-        let agent_count = count_agents_in_team(&path).await;
-
-        teams.push(TeamInfo {
-            name: team_name,
-            metadata,
-            agent_count,
-            path,
-        });
-    }
-
-    // Sort teams: default first, then alphabetically
-    teams.sort_by(|a, b| {
-        if a.name == "default" {
-            return std::cmp::Ordering::Less;
-        }
-        if b.name == "default" {
-            return std::cmp::Ordering::Greater;
-        }
-        a.name.cmp(&b.name)
-    });
-
+fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
     if json {
         let teams_json: Vec<_> = teams
             .iter()
@@ -222,7 +174,7 @@ async fn handle_team_list(paths: &GlobalPaths, long: bool, json: bool) -> Result
         println!("📁 Teams ({} found):", teams.len());
         println!();
 
-        for team in &teams {
+        for team in teams {
             let is_default = team.name == "default";
             let icon = if is_default { "⭐" } else { "📁" };
 
@@ -247,26 +199,13 @@ async fn handle_team_list(paths: &GlobalPaths, long: bool, json: bool) -> Result
             }
         }
     }
-
-    Ok(())
 }
 
-/// Handle team show command
-async fn handle_team_show(paths: &GlobalPaths, name: &str, json: bool) -> Result<()> {
-    // Validate team name
-    if let Err(e) = validate_team_name(name) {
-        anyhow::bail!("Invalid team name '{}': {}", name, e);
-    }
-
-    let team_dir = paths.team_dir(name);
-
-    if !team_dir.exists() {
-        anyhow::bail!("Team '{}' not found", name);
-    }
-
-    let metadata = load_team_metadata(&team_dir).await.ok();
-    let agents = list_agents_in_team(&team_dir).await?;
-
+fn render_team_show(
+    team: &TeamInfo,
+    agents: &[(String, crate::types::agent::AgentConfig)],
+    json: bool,
+) {
     if json {
         let agents_json: Vec<_> = agents
             .iter()
@@ -283,31 +222,31 @@ async fn handle_team_show(paths: &GlobalPaths, name: &str, json: bool) -> Result
         println!(
             "{}",
             serde_json::json!({
-                "name": name,
-                "path": team_dir.display().to_string(),
-                "description": metadata.as_ref().and_then(|m| m.description.clone()),
-                "created_at": metadata.as_ref().map(|m| m.created_at.clone()),
+                "name": team.name,
+                "path": team.path.display().to_string(),
+                "description": team.metadata.as_ref().and_then(|m| m.description.clone()),
+                "created_at": team.metadata.as_ref().map(|m| m.created_at.clone()),
                 "agents": agents_json,
                 "agent_count": agents.len(),
             })
         );
     } else {
-        println!("📁 Team: {}", name);
-        if let Some(ref metadata) = metadata {
+        println!("📁 Team: {}", team.name);
+        if let Some(ref metadata) = team.metadata {
             if let Some(ref desc) = metadata.description {
                 println!("   Description: {}", desc);
             }
             println!("   Created: {}", format_timestamp(&metadata.created_at));
         }
-        println!("   Path: {}", team_dir.display());
+        println!("   Path: {}", team.path.display());
         println!();
 
         if agents.is_empty() {
             println!("   No agents in this team.");
-            println!("   Create one with: pekobot agent create {}/<agent-name>", name);
+            println!("   Create one with: pekobot agent create {}/<agent-name>", team.name);
         } else {
             println!("   Agents ({}):", agents.len());
-            for (agent_name, config) in &agents {
+            for (agent_name, config) in agents {
                 println!("   📦 {}", agent_name);
                 if let Some(ref desc) = config.description {
                     println!("      {}", desc);
@@ -319,166 +258,62 @@ async fn handle_team_show(paths: &GlobalPaths, name: &str, json: bool) -> Result
             }
         }
     }
-
-    Ok(())
 }
 
-/// Handle team delete command
-async fn handle_team_delete(
-    paths: &GlobalPaths,
-    name: &str,
-    force: bool,
-    json: bool,
-) -> Result<()> {
-    // Validate team name
-    if let Err(e) = validate_team_name(name) {
-        anyhow::bail!("Invalid team name '{}': {}", name, e);
-    }
-
-    // Prevent deletion of default team
-    if name == "default" {
-        anyhow::bail!("Cannot delete the 'default' team");
-    }
-
-    let team_dir = paths.team_dir(name);
-
-    if !team_dir.exists() {
-        anyhow::bail!("Team '{}' not found", name);
-    }
-
-    let agent_count = count_agents_in_team(&team_dir).await;
-
-    // Confirm deletion
-    if !force {
-        println!("⚠️  This will permanently delete team '{}'.", name);
-        if agent_count > 0 {
-            println!("   It contains {} agent(s) that will also be deleted.", agent_count);
-        }
-        println!("   This action cannot be undone.");
-        print!("   Continue? [y/N] ");
-        std::io::Write::flush(&mut std::io::stdout())?;
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-
-        if !input.trim().eq_ignore_ascii_case("y") {
-            if json {
-                println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
-            } else {
-                println!("Cancelled.");
-            }
-            return Ok(());
-        }
-    }
-
-    // Delete team directory
-    tokio::fs::remove_dir_all(&team_dir).await?;
-
+fn render_team_deleted(result: &TeamDeletionResult, json: bool) {
     if json {
         println!(
             "{{\"success\": true, \"name\": \"{}\", \"agents_deleted\": {}}}",
-            name, agent_count
+            result.name, result.agents_deleted
         );
     } else {
-        println!("✅ Deleted team '{}'", name);
-        if agent_count > 0 {
-            println!("   Removed {} agent(s)", agent_count);
+        println!("✅ Deleted team '{}'", result.name);
+        if result.agents_deleted > 0 {
+            println!("   Removed {} agent(s)", result.agents_deleted);
         }
     }
-
-    Ok(())
 }
 
 // ================================================================================
-// Helper Types and Functions
+// Helper Functions
 // ================================================================================
 
-/// Team metadata stored in team.toml
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TeamMetadata {
-    pub name: String,
-    pub description: Option<String>,
-    pub created_at: String,
-}
-
-/// Team information for listing
-#[derive(Debug, Clone)]
-struct TeamInfo {
-    name: String,
-    metadata: Option<TeamMetadata>,
-    agent_count: usize,
-    path: std::path::PathBuf,
-}
-
-/// Load team metadata from team.toml
-async fn load_team_metadata(team_dir: &std::path::PathBuf) -> Result<TeamMetadata> {
-    let metadata_path = team_dir.join("team.toml");
-    let content = tokio::fs::read_to_string(&metadata_path).await?;
-    let metadata: TeamMetadata = toml::from_str(&content)?;
-    Ok(metadata)
-}
-
-/// Count agents in a team
-async fn count_agents_in_team(team_dir: &std::path::PathBuf) -> usize {
-    let agents_dir = team_dir.join("agents");
-
-    if !agents_dir.exists() {
-        return 0;
+fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
+    println!("⚠️  This will permanently delete team '{}'.", name);
+    if agent_count > 0 {
+        println!("   It contains {} agent(s) that will also be deleted.", agent_count);
     }
+    println!("   This action cannot be undone.");
+    print!("   Continue? [y/N] ");
+    std::io::Write::flush(&mut std::io::stdout())?;
 
-    match tokio::fs::read_dir(&agents_dir).await {
-        Ok(mut entries) => {
-            let mut count = 0;
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if entry.path().is_dir() {
-                    count += 1;
-                }
-            }
-            count
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+
+    Ok(input.trim().eq_ignore_ascii_case("y"))
+}
+
+fn map_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
+    match e {
+        ValidationError::Empty => anyhow::anyhow!("Team name cannot be empty"),
+        ValidationError::TooLong(max) => {
+            anyhow::anyhow!("Team name '{}' exceeds maximum length of {} characters", name, max)
         }
-        Err(_) => 0,
-    }
-}
-
-/// List agents in a team with their configs
-async fn list_agents_in_team(
-    team_dir: &std::path::PathBuf,
-) -> Result<Vec<(String, AgentConfig)>> {
-    let agents_dir = team_dir.join("agents");
-    let mut agents = Vec::new();
-
-    if !agents_dir.exists() {
-        return Ok(agents);
-    }
-
-    let mut entries = tokio::fs::read_dir(&agents_dir).await?;
-
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
+        ValidationError::Reserved(reserved) => {
+            anyhow::anyhow!("'{}' is a reserved name and cannot be used", reserved)
         }
-
-        let agent_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-
-        let config_path = path.join("config.toml");
-        if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
-            if let Ok(config) = toml::from_str::<AgentConfig>(&content) {
-                agents.push((agent_name, config));
-            }
+        ValidationError::ContainsPathSeparators => {
+            anyhow::anyhow!("Team name cannot contain path separators (/ or \\)")
+        }
+        ValidationError::InvalidHyphenPlacement => {
+            anyhow::anyhow!("Team name cannot start or end with a hyphen")
+        }
+        ValidationError::InvalidCharacter(ch) => {
+            anyhow::anyhow!("Team name contains invalid character: '{}'", ch)
         }
     }
-
-    // Sort alphabetically
-    agents.sort_by(|a, b| a.0.cmp(&b.0));
-
-    Ok(agents)
 }
 
-/// Format timestamp for display
 fn format_timestamp(ts: &str) -> String {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
         dt.format("%Y-%m-%d %H:%M").to_string()

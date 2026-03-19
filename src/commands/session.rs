@@ -10,7 +10,7 @@
 //! - `{data_dir}/agents/{instance_id}/sessions/*.index.json` - Metadata sidecars
 //! - `{data_dir}/agents/{instance_id}/sessions/.active.json` - Preferred active session (CLI-managed)
 
-use crate::commands::identifier::parse_agent_identifier_with_override;
+use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
 use anyhow::Result;
 use clap::Subcommand;

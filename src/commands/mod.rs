@@ -19,7 +19,6 @@ pub mod config;
 pub mod cron;
 pub mod daemon;
 pub mod gateway;
-pub mod identifier;
 pub mod mcp;
 pub mod orchestration;
 pub mod provider;
@@ -177,6 +176,7 @@ pub struct GlobalPaths {
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
     resolver: crate::common::paths::PathResolver,
+    services: crate::common::services::ServiceRegistry,
 }
 
 impl GlobalPaths {
@@ -212,11 +212,14 @@ impl GlobalPaths {
             cache_dir.clone(),
         );
 
+        let services = crate::common::services::ServiceRegistry::new(resolver.clone());
+
         Self {
             config_dir,
             data_dir,
             cache_dir,
             resolver,
+            services,
         }
     }
 
@@ -224,6 +227,12 @@ impl GlobalPaths {
     #[must_use]
     pub fn resolver(&self) -> &crate::common::paths::PathResolver {
         &self.resolver
+    }
+
+    /// Get the service registry
+    #[must_use]
+    pub fn services(&self) -> &crate::common::services::ServiceRegistry {
+        &self.services
     }
 
     /// Get teams configuration directory

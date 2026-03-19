@@ -17,7 +17,7 @@
 //!   pekobot send myagent --file prompt.txt
 
 use crate::agent::Agent;
-use crate::commands::identifier::parse_agent_identifier_with_override;
+use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
 use crate::types::agent::AgentConfig;
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -281,15 +281,17 @@ mod tests {
 
     #[test]
     fn test_resolve_config_path_with_override() {
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            PathBuf::from("/home/test/.pekobot"),
+            PathBuf::from("/home/test/.local/share/pekobot"),
+            PathBuf::from("/home/test/.cache/pekobot"),
+        );
         let paths = GlobalPaths {
             config_dir: PathBuf::from("/home/test/.pekobot"),
             data_dir: PathBuf::from("/home/test/.local/share/pekobot"),
             cache_dir: PathBuf::from("/home/test/.cache/pekobot"),
-            resolver: crate::common::paths::PathResolver::with_dirs(
-                PathBuf::from("/home/test/.pekobot"),
-                PathBuf::from("/home/test/.local/share/pekobot"),
-                PathBuf::from("/home/test/.cache/pekobot"),
-            ),
+            resolver: resolver.clone(),
+            services: crate::common::services::ServiceRegistry::new(resolver),
         };
 
         let result =
@@ -300,15 +302,17 @@ mod tests {
 
     #[test]
     fn test_resolve_config_path_default_team() {
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            PathBuf::from("/home/test/.pekobot"),
+            PathBuf::from("/home/test/.local/share/pekobot"),
+            PathBuf::from("/home/test/.cache/pekobot"),
+        );
         let paths = GlobalPaths {
             config_dir: PathBuf::from("/home/test/.pekobot"),
             data_dir: PathBuf::from("/home/test/.local/share/pekobot"),
             cache_dir: PathBuf::from("/home/test/.cache/pekobot"),
-            resolver: crate::common::paths::PathResolver::with_dirs(
-                PathBuf::from("/home/test/.pekobot"),
-                PathBuf::from("/home/test/.local/share/pekobot"),
-                PathBuf::from("/home/test/.cache/pekobot"),
-            ),
+            resolver: resolver.clone(),
+            services: crate::common::services::ServiceRegistry::new(resolver),
         };
 
         let result = resolve_config_path("myagent", None, "default", &paths).unwrap();
@@ -320,15 +324,17 @@ mod tests {
 
     #[test]
     fn test_resolve_config_path_custom_team() {
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            PathBuf::from("/home/test/.pekobot"),
+            PathBuf::from("/home/test/.local/share/pekobot"),
+            PathBuf::from("/home/test/.cache/pekobot"),
+        );
         let paths = GlobalPaths {
             config_dir: PathBuf::from("/home/test/.pekobot"),
             data_dir: PathBuf::from("/home/test/.local/share/pekobot"),
             cache_dir: PathBuf::from("/home/test/.cache/pekobot"),
-            resolver: crate::common::paths::PathResolver::with_dirs(
-                PathBuf::from("/home/test/.pekobot"),
-                PathBuf::from("/home/test/.local/share/pekobot"),
-                PathBuf::from("/home/test/.cache/pekobot"),
-            ),
+            resolver: resolver.clone(),
+            services: crate::common::services::ServiceRegistry::new(resolver),
         };
 
         let result = resolve_config_path("myagent", None, "myteam", &paths).unwrap();

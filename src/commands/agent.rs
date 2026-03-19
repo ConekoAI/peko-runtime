@@ -1,7 +1,7 @@
 //! Agent Management Commands
 #![allow(dead_code)]
 
-use crate::commands::identifier::parse_agent_identifier_with_override;
+use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
 use clap::Subcommand;
 
@@ -253,7 +253,7 @@ pub async fn handle_agent(
 /// Agent command handlers
 pub mod handlers {
     use crate::agent::Agent;
-    use crate::commands::identifier::parse_agent_identifier_with_override;
+    use crate::common::identifiers::parse_agent_identifier_with_override;
     use crate::commands::GlobalPaths;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -525,8 +525,8 @@ pub mod handlers {
         let team_dir = paths.team_dir(team);
         if !team_dir.exists() {
             // Validate team name before creating
-            use crate::commands::identifier::validate_team_name;
-            use crate::commands::identifier::ValidationError;
+            use crate::common::identifiers::validate_team_name;
+            use crate::common::identifiers::ValidationError;
             
             if let Err(e) = validate_team_name(team) {
                 match e {
@@ -554,7 +554,7 @@ pub mod handlers {
             tokio::fs::create_dir_all(&agents_dir).await?;
             
             // Create team metadata file
-            let metadata = crate::commands::team::TeamMetadata {
+            let metadata = crate::common::types::team::TeamMetadata {
                 name: team.to_string(),
                 description: None,
                 created_at: chrono::Utc::now().to_rfc3339(),
@@ -669,7 +669,7 @@ pub mod handlers {
         to_team: Option<String>,
         json: bool,
     ) -> anyhow::Result<()> {
-        use crate::commands::identifier::validate_agent_name;
+        use crate::common::identifiers::validate_agent_name;
 
         // Validate new agent name
         if let Err(e) = validate_agent_name(&new_name) {
