@@ -1,4 +1,5 @@
-//! Agent manager core implementation
+//! Agent manager core implementation (DEPRECATED - Use StatelessAgentManager)
+#![allow(deprecated)]
 
 use crate::agent::Agent;
 use crate::agent::{

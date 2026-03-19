@@ -1,4 +1,5 @@
-//! Event Router for orchestration layer
+//! Event Router for orchestration layer (DEPRECATED)
+#![allow(deprecated)]
 //!
 //! Routes system events to appropriate agents based on registered handlers.
 

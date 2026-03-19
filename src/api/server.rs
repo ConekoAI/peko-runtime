@@ -59,13 +59,17 @@ impl ApiServer {
     /// # Warnings
     ///
     /// If the host is not a loopback address, a security warning will be logged.
-    pub fn new(config: ServerConfig) -> Self {
+    pub async fn new(config: ServerConfig) -> anyhow::Result<Self> {
         // Log security warning for non-loopback binding
         if !is_loopback(&config.host) {
             warn!(
                 "\n\
 ╔══════════════════════════════════════════════════════════════════════╗\n\
-║  SECURITY WARNING: Binding to non-loopback address '{}'             ║\n║                                                                      ║\n║  The Pekobot daemon is accessible from the network. Ensure proper   ║\n║  firewall rules are in place and access is restricted.              ║\n╚══════════════════════════════════════════════════════════════════════╝\n",
+║  SECURITY WARNING: Binding to non-loopback address '{}'             ║
+║                                                                      ║
+║  The Pekobot daemon is accessible from the network. Ensure proper   ║
+║  firewall rules are in place and access is restricted.              ║
+╚══════════════════════════════════════════════════════════════════════╝\n",
                 config.host
             );
         }
@@ -75,9 +79,10 @@ impl ApiServer {
             &config.host,
             config.port,
             config.daemon_config.clone(),
-        );
+        )
+        .await?;
 
-        Self { config, state }
+        Ok(Self { config, state })
     }
 
     /// Create the Axum router with all routes and middleware
@@ -124,7 +129,7 @@ impl ApiServer {
 
         let actual_addr = listener.local_addr()?;
         info!(
-            "🌐 HTTP API server listening on http://{} (bound to {})",
+            "HTTP API server listening on http://{} (bound to {})",
             actual_addr, addr
         );
 
@@ -132,12 +137,12 @@ impl ApiServer {
         axum::serve(listener, app)
             .with_graceful_shutdown(async {
                 let _ = shutdown_rx.await;
-                info!("🛑 HTTP API server shutdown signal received");
+                info!("HTTP API server shutdown signal received");
             })
             .await
             .map_err(|e| anyhow::anyhow!("Server error: {}", e))?;
 
-        info!("👋 HTTP API server stopped");
+        info!("HTTP API server stopped");
         Ok(())
     }
 
@@ -174,7 +179,7 @@ fn is_loopback(host: &str) -> bool {
 pub async fn spawn_server(config: ServerConfig) -> anyhow::Result<ServerHandle> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
-    let server = ApiServer::new(config);
+    let server = ApiServer::new(config).await?;
     let address = server.address();
 
     let handle = tokio::spawn(async move {
@@ -220,6 +225,7 @@ impl ServerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_is_loopback() {
@@ -238,14 +244,16 @@ mod tests {
         assert_eq!(config.port, 11435);
     }
 
-    #[test]
-    fn test_api_server_address() {
+    #[tokio::test]
+    async fn test_api_server_creation() {
+        let temp_dir = TempDir::new().unwrap();
         let config = ServerConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,
-            ..Default::default()
+            workspace_path: temp_dir.path().to_path_buf(),
+            daemon_config: DaemonConfigSnapshot::default(),
         };
-        let server = ApiServer::new(config);
+        let server = ApiServer::new(config).await.unwrap();
         assert_eq!(server.address(), "127.0.0.1:8080");
     }
 }

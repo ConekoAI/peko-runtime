@@ -54,20 +54,25 @@ mod tests {
     use crate::api::state::{AppState, DaemonConfigSnapshot};
     use axum::body::Body;
     use axum::http::Request;
+    use tempfile::TempDir;
     use tower::util::ServiceExt;
 
-    fn test_state() -> AppState {
-        AppState::new(
-            "/tmp/test",
+    async fn test_state() -> AppState {
+        let temp_dir = TempDir::new().unwrap();
+        AppState::with_data_dir(
+            temp_dir.path(),
             "127.0.0.1",
             11435,
             DaemonConfigSnapshot::default(),
+            temp_dir.path().to_path_buf(),
         )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
     async fn test_router_has_health_endpoint() {
-        let app = create_router().with_state(test_state());
+        let app = create_router().with_state(test_state().await);
 
         let response = app
             .oneshot(
@@ -84,7 +89,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_router_has_info_endpoint() {
-        let app = create_router().with_state(test_state());
+        let app = create_router().with_state(test_state().await);
 
         let response = app
             .oneshot(Request::builder().uri("/info").body(Body::empty()).unwrap())
@@ -96,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_router_returns_404_for_unknown_path() {
-        let app = create_router().with_state(test_state());
+        let app = create_router().with_state(test_state().await);
 
         let response = app
             .oneshot(

@@ -243,7 +243,10 @@ struct SessionIndex {
 }
 
 /// Load session index from sidecar file
-async fn load_session_index(sessions_dir: &PathBuf, session_id: &str) -> Result<Option<SessionIndex>> {
+async fn load_session_index(
+    sessions_dir: &PathBuf,
+    session_id: &str,
+) -> Result<Option<SessionIndex>> {
     let path = sessions_dir.join(format!("{}.index.json", session_id));
     if !path.exists() {
         return Ok(None);
@@ -306,10 +309,7 @@ async fn load_active_preference(sessions_dir: &PathBuf) -> Result<Option<String>
 }
 
 /// Save preferred active session
-async fn save_active_preference(
-    sessions_dir: &PathBuf,
-    session_id: &str,
-) -> Result<()> {
+async fn save_active_preference(sessions_dir: &PathBuf, session_id: &str) -> Result<()> {
     let path = active_session_path(sessions_dir);
     let pref = ActiveSessionPreference {
         session_id: session_id.to_string(),
@@ -317,12 +317,12 @@ async fn save_active_preference(
         set_by: Some("cli".to_string()),
     };
     let json = serde_json::to_string_pretty(&pref)?;
-    
+
     // Atomic write
     let temp_path = path.with_extension("tmp");
     tokio::fs::write(&temp_path, json).await?;
     tokio::fs::rename(&temp_path, &path).await?;
-    
+
     Ok(())
 }
 
@@ -331,23 +331,25 @@ async fn save_active_preference(
 // ================================================================================
 
 /// List sessions for an agent (offline)
-async fn list_sessions(
-    paths: &GlobalPaths,
-    agent: &str,
-    json: bool,
-) -> anyhow::Result<()> {
+async fn list_sessions(paths: &GlobalPaths, agent: &str, json: bool) -> anyhow::Result<()> {
     let Some(loc) = locate_agent(paths, agent) else {
         if json {
             println!("[]");
         } else {
             println!("📭 Agent '{}' not found or has no sessions.", agent);
-            println!("   Create the agent first with: pekobot agent create {}", agent);
+            println!(
+                "   Create the agent first with: pekobot agent create {}",
+                agent
+            );
         }
         return Ok(());
     };
 
     let sessions = list_sessions_from_disk(&loc.sessions_dir).await?;
-    let active_pref = load_active_preference(&loc.sessions_dir).await.ok().flatten();
+    let active_pref = load_active_preference(&loc.sessions_dir)
+        .await
+        .ok()
+        .flatten();
 
     if json {
         println!("{}", serde_json::to_string_pretty(&sessions)?);
@@ -378,8 +380,10 @@ async fn list_sessions(
 
             println!("  {} {}", status_icon, session.session_id);
             println!("     Title: {}", title);
-            println!("     Turns: {} | Events: {} | Tokens: {}", 
-                session.turn_count, session.event_count, session.total_tokens);
+            println!(
+                "     Turns: {} | Events: {} | Tokens: {}",
+                session.turn_count, session.event_count, session.total_tokens
+            );
             println!("     Created: {} | Updated: {}", created, updated);
 
             if let Some(ref parent) = session.parent_session_id {
@@ -408,13 +412,16 @@ async fn show_session(
     let Some(index) = load_session_index(&loc.sessions_dir, session_id).await? else {
         return Err(anyhow::anyhow!(
             "Session '{}' not found for agent '{}'",
-            session_id, agent
+            session_id,
+            agent
         ));
     };
 
     // Load history if requested
     let history_events = if show_history {
-        load_session_history(&loc.sessions_dir, session_id).await.ok()
+        load_session_history(&loc.sessions_dir, session_id)
+            .await
+            .ok()
     } else {
         None
     };
@@ -432,10 +439,19 @@ async fn show_session(
         if let Some(ref title) = index.title {
             println!("   Title: {}", title);
         }
-        println!("   Status: {}", if index.ended { "Ended 🔴" } else { "Active 🟢" });
+        println!(
+            "   Status: {}",
+            if index.ended {
+                "Ended 🔴"
+            } else {
+                "Active 🟢"
+            }
+        );
         println!("   Trigger: {}", index.trigger);
-        println!("   Turns: {} | Events: {} | Tokens: {}",
-            index.turn_count, index.event_count, index.total_tokens);
+        println!(
+            "   Turns: {} | Events: {} | Tokens: {}",
+            index.turn_count, index.event_count, index.total_tokens
+        );
         println!("   Created: {}", format_timestamp(&index.created_at));
         println!("   Updated: {}", format_timestamp(&index.updated_at));
 
@@ -504,7 +520,11 @@ async fn load_session_history(
 /// Print a history event
 fn print_history_event(index: usize, event: &HistoryEvent) {
     let event_type = &event.event_type;
-    let timestamp = event.ts.as_deref().map(format_timestamp).unwrap_or_default();
+    let timestamp = event
+        .ts
+        .as_deref()
+        .map(format_timestamp)
+        .unwrap_or_default();
 
     match event_type.as_str() {
         "user.message" => {
@@ -565,9 +585,13 @@ async fn branch_session(
     // Verify parent session exists
     let parent_index = load_session_index(&loc.sessions_dir, session_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!(
-            "Parent session '{}' not found for agent '{}'", session_id, agent
-        ))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Parent session '{}' not found for agent '{}'",
+                session_id,
+                agent
+            )
+        })?;
 
     // Generate new session ID
     let new_session_id = format!("sess_{}", Uuid::new_v4().simple());
@@ -575,7 +599,7 @@ async fn branch_session(
     // Copy parent JSONL file
     let parent_jsonl = loc.sessions_dir.join(format!("{}.jsonl", session_id));
     let new_jsonl = loc.sessions_dir.join(format!("{}.jsonl", new_session_id));
-    
+
     if parent_jsonl.exists() {
         tokio::fs::copy(&parent_jsonl, &new_jsonl).await?;
     } else {
@@ -594,15 +618,20 @@ async fn branch_session(
         total_tokens: parent_index.total_tokens,
         parent_session_id: Some(session_id.to_string()),
         title: label.clone().or_else(|| {
-            parent_index.title.as_ref().map(|t| format!("Branch: {}", t))
+            parent_index
+                .title
+                .as_ref()
+                .map(|t| format!("Branch: {}", t))
         }),
         ended: false,
         trigger: "branch".to_string(),
     };
 
-    let sidecar_path = loc.sessions_dir.join(format!("{}.index.json", new_session_id));
+    let sidecar_path = loc
+        .sessions_dir
+        .join(format!("{}.index.json", new_session_id));
     let sidecar_json = serde_json::to_string_pretty(&new_index)?;
-    
+
     // Atomic write
     let temp_path = sidecar_path.with_extension("tmp");
     tokio::fs::write(&temp_path, sidecar_json).await?;
@@ -619,7 +648,10 @@ async fn branch_session(
         }
         println!();
         println!("   The branched session contains a copy of the parent's history.");
-        println!("   Switch to it with: pekobot session switch {} {}", agent, new_session_id);
+        println!(
+            "   Switch to it with: pekobot session switch {} {}",
+            agent, new_session_id
+        );
     }
 
     Ok(())
@@ -633,7 +665,7 @@ async fn create_empty_session(
     parent_id: Option<&str>,
 ) -> Result<()> {
     use chrono::Utc;
-    
+
     let created_event = serde_json::json!({
         "id": "evt_001",
         "type": "session.created",
@@ -644,10 +676,10 @@ async fn create_empty_session(
         "parent_session_id": parent_id,
         "trigger": if parent_id.is_some() { "branch" } else { "user" }
     });
-    
+
     let json = serde_json::to_string(&created_event)?;
     tokio::fs::write(path, json + "\n").await?;
-    
+
     Ok(())
 }
 
@@ -666,15 +698,20 @@ async fn delete_session(
     // Verify session exists
     let jsonl_path = loc.sessions_dir.join(format!("{}.jsonl", session_id));
     let sidecar_path = loc.sessions_dir.join(format!("{}.index.json", session_id));
-    
+
     if !jsonl_path.exists() && !sidecar_path.exists() {
         return Err(anyhow::anyhow!(
-            "Session '{}' not found for agent '{}'", session_id, agent
+            "Session '{}' not found for agent '{}'",
+            session_id,
+            agent
         ));
     }
 
     // Load metadata for display
-    let metadata = load_session_index(&loc.sessions_dir, session_id).await.ok().flatten();
+    let metadata = load_session_index(&loc.sessions_dir, session_id)
+        .await
+        .ok()
+        .flatten();
 
     if !force {
         println!("⚠️  This will permanently delete session '{}'.", session_id);
@@ -682,7 +719,10 @@ async fn delete_session(
             if let Some(ref title) = meta.title {
                 println!("   Title: {}", title);
             }
-            println!("   Turns: {} | Events: {}", meta.turn_count, meta.event_count);
+            println!(
+                "   Turns: {} | Events: {}",
+                meta.turn_count, meta.event_count
+            );
         }
         println!("   This action cannot be undone.");
         print!("   Continue? [y/N] ");
@@ -740,7 +780,9 @@ async fn switch_session(
     let sidecar_path = loc.sessions_dir.join(format!("{}.index.json", session_id));
     if !sidecar_path.exists() {
         return Err(anyhow::anyhow!(
-            "Session '{}' not found for agent '{}'", session_id, agent
+            "Session '{}' not found for agent '{}'",
+            session_id,
+            agent
         ));
     }
 
@@ -760,10 +802,15 @@ async fn switch_session(
     save_active_preference(&loc.sessions_dir, session_id).await?;
 
     if json {
-        println!("{{\"success\": true, \"session_id\": \"{}\", \"agent\": \"{}\"}}", 
-            session_id, agent);
+        println!(
+            "{{\"success\": true, \"session_id\": \"{}\", \"agent\": \"{}\"}}",
+            session_id, agent
+        );
     } else {
-        println!("✅ Set preferred active session for '{}' to '{}'", agent, session_id);
+        println!(
+            "✅ Set preferred active session for '{}' to '{}'",
+            agent, session_id
+        );
         println!();
         if loc.is_runtime {
             println!("   💡 The agent is currently running.");
@@ -782,19 +829,25 @@ async fn send_message(
     session_id: Option<String>,
     message: &str,
 ) -> anyhow::Result<()> {
-    println!("📤 Sending message to instance '{}': {}", instance_id, message);
+    println!(
+        "📤 Sending message to instance '{}': {}",
+        instance_id, message
+    );
     if let Some(sid) = session_id {
         println!("   Session: {}", sid);
     } else {
         println!("   (Using active session)");
     }
-    
+
     println!();
     println!("   💡 Message sending requires the daemon to be running.");
     println!("      Start the daemon with: pekobot daemon start --foreground");
     println!();
-    println!("      Or use: pekobot agent start {} --message \"{}\"", instance_id, message);
-    
+    println!(
+        "      Or use: pekobot agent start {} --message \"{}\"",
+        instance_id, message
+    );
+
     Ok(())
 }
 
@@ -830,10 +883,7 @@ mod tests {
             format_timestamp("2026-03-17T10:30:00+00:00"),
             "2026-03-17 10:30"
         );
-        assert_eq!(
-            format_timestamp("invalid"),
-            "invalid"
-        );
+        assert_eq!(format_timestamp("invalid"), "invalid");
     }
 
     #[test]

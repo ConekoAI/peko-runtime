@@ -1,12 +1,15 @@
-//! Agent Instance API Routes
+//! Agent Configuration API Routes (Stateless Architecture)
 //!
-//! Implements agent instance management endpoints:
-//! - GET /agents - List instances
-//! - POST /agents - Create new instance from image
-//! - GET /agents/{id} - Get instance details
-//! - DELETE /agents/{id} - Remove instance
-//! - POST /agents/{id}/stop - Stop instance
-//! - POST /agents/{id}/upgrade - Upgrade instance image
+//! Implements agent configuration management endpoints for the stateless
+//! cold-start architecture:
+//! - GET /agents - List registered agent configurations
+//! - POST /agents - Register new agent from image
+//! - GET /agents/{name} - Get agent configuration
+//! - DELETE /agents/{name} - Unregister agent
+//! - POST /agents/{name}/execute - Execute agent (stateless)
+//!
+//! Note: No instance lifecycle endpoints (start/stop/status) in stateless model.
+//! Agents are cold-started per request.
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
@@ -22,215 +25,163 @@ use axum::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::RwLock;
+use tracing::info;
 
-/// Instance status
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstanceStatus {
-    Starting,
-    Running,
-    Stopping,
-    Stopped,
-    Error,
-}
-
-/// Instance response object (API_CONTRACT §2.2)
+/// Agent configuration response (stateless model)
 #[derive(Debug, Clone, Serialize)]
-pub struct InstanceResponse {
-    pub id: String,
+pub struct AgentConfigResponse {
+    /// Agent name (unique identifier)
     pub name: String,
+    /// Source image reference
     pub image_ref: String,
+    /// Pinned image digest
     pub image_digest: String,
-    pub status: InstanceStatus,
+    /// Team ID (if assigned)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
+    /// Capabilities
+    pub capabilities: Vec<String>,
+    /// Registration timestamp
+    pub registered_at: String,
+    /// Last updated timestamp
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub team_name: Option<String>,
-    pub created_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stopped_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub updated_at: Option<String>,
 }
 
-/// Create instance request
+/// Register agent request
 #[derive(Debug, Deserialize)]
-pub struct CreateInstanceRequest {
+pub struct RegisterAgentRequest {
     /// Image reference, digest, or path
     pub image: String,
-    /// Human name (auto-generated if omitted)
+    /// Agent name (optional, derived from image if not provided)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Team ID to assign to
+    /// Team ID to assign
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
     /// Environment variables
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
-    /// Auto-start instance
-    #[serde(default = "default_true")]
-    pub auto_start: bool,
 }
 
-/// Stop instance request
+/// Update agent request
 #[derive(Debug, Deserialize)]
-pub struct StopInstanceRequest {
-    #[serde(default)]
-    pub force: bool,
-    #[serde(default = "default_timeout")]
-    pub timeout: u32,
+pub struct UpdateAgentRequest {
+    /// New image reference
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Team ID to assign
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
 }
 
-/// Upgrade instance request
+/// Execute agent request
 #[derive(Debug, Deserialize)]
-pub struct UpgradeInstanceRequest {
-    pub image: String,
-    #[serde(default)]
-    pub force: bool,
-    #[serde(default = "default_upgrade_timeout")]
-    pub timeout: u32,
+pub struct ExecuteAgentRequest {
+    /// Session ID for persistence
+    pub session_id: String,
+    /// Message to send
+    pub message: String,
+    /// Optional execution context
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
+    /// Optional timeout override (seconds)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
 }
 
-fn default_true() -> bool {
-    true
+/// Execute agent response
+#[derive(Debug, Serialize)]
+pub struct ExecuteAgentResponse {
+    /// Execution ID
+    pub execution_id: String,
+    /// Agent response
+    pub response: String,
+    /// Tool calls made
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallResponse>,
+    /// Token usage
+    pub usage: TokenUsageResponse,
+    /// Execution duration in milliseconds
+    pub duration_ms: u64,
+    /// Whether execution succeeded
+    pub success: bool,
+    /// Error message (if failed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
-fn default_timeout() -> u32 {
-    30
+/// Tool call response
+#[derive(Debug, Serialize)]
+pub struct ToolCallResponse {
+    /// Tool name
+    pub name: String,
+    /// Tool parameters
+    pub parameters: serde_json::Value,
+    /// Tool result (if available)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
 }
 
-fn default_upgrade_timeout() -> u32 {
-    60
+/// Token usage response
+#[derive(Debug, Serialize, Default)]
+pub struct TokenUsageResponse {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
 }
 
-/// In-memory instance store (will be replaced with SQLite state)
-pub struct InstanceStore {
-    instances: RwLock<HashMap<String, InstanceRecord>>,
-    next_id: RwLock<u64>,
-}
-
-impl InstanceStore {
-    pub fn new() -> Self {
-        Self {
-            instances: RwLock::new(HashMap::new()),
-            next_id: RwLock::new(1),
-        }
-    }
-
-    async fn generate_id(&self) -> String {
-        let mut id = self.next_id.write().await;
-        let result = format!("inst_{:08x}", *id);
-        *id += 1;
-        result
-    }
-
-    async fn create(&self, record: InstanceRecord) -> String {
-        let id = self.generate_id().await;
-        let mut instances = self.instances.write().await;
-        instances.insert(id.clone(), record);
-        id
-    }
-
-    async fn get(&self, id: &str) -> Option<InstanceRecord> {
-        let instances = self.instances.read().await;
-        instances.get(id).cloned()
-    }
-
-    async fn list(&self) -> Vec<(String, InstanceRecord)> {
-        let instances = self.instances.read().await;
-        instances
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
-    }
-
-    async fn update(&self, id: &str, f: impl FnOnce(&mut InstanceRecord)) -> bool {
-        let mut instances = self.instances.write().await;
-        if let Some(record) = instances.get_mut(id) {
-            f(record);
-            true
-        } else {
-            false
-        }
-    }
-
-    async fn delete(&self, id: &str) -> bool {
-        let mut instances = self.instances.write().await;
-        instances.remove(id).is_some()
-    }
-}
-
-/// Internal instance record
-#[derive(Debug, Clone)]
-struct InstanceRecord {
-    name: String,
-    image_ref: String,
-    image_digest: String,
-    status: InstanceStatus,
-    team_id: Option<String>,
-    workspace_path: String,
-    created_at: String,
-    started_at: Option<String>,
-    stopped_at: Option<String>,
-    active_session_id: Option<String>,
-    error: Option<String>,
-}
-
-impl InstanceRecord {
-    fn to_response(&self, id: &str) -> InstanceResponse {
-        InstanceResponse {
-            id: id.to_string(),
-            name: self.name.clone(),
-            image_ref: self.image_ref.clone(),
-            image_digest: self.image_digest.clone(),
-            status: self.status.clone(),
-            team_id: self.team_id.clone(),
-            team_name: None, // Would look up team name
-            created_at: self.created_at.clone(),
-            started_at: self.started_at.clone(),
-            stopped_at: self.stopped_at.clone(),
-            active_session_id: self.active_session_id.clone(),
-            error: self.error.clone(),
-        }
-    }
-}
-
-/// List all instances
-async fn list_instances(
+/// List all registered agents
+async fn list_agents(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
-) -> Result<Json<PaginatedResponse<InstanceResponse>>, ApiError> {
-    let store = get_instance_store(&state).await?;
-    let instances = store.list().await;
+) -> Result<Json<PaginatedResponse<AgentConfigResponse>>, ApiError> {
+    let registry = state.config_registry();
+    let configs = registry.list().await;
 
-    let items: Vec<InstanceResponse> = instances
+    let items: Vec<AgentConfigResponse> = configs
         .into_iter()
         .skip(params.offset())
         .take(params.limit())
-        .map(|(id, record)| record.to_response(&id))
+        .map(|entry| AgentConfigResponse {
+            name: entry.name.clone(),
+            image_ref: entry.image_ref.clone(),
+            image_digest: entry.image_digest.clone(),
+            team_id: entry.team_id.clone(),
+            capabilities: entry.capabilities(),
+            registered_at: entry.registered_at.to_rfc3339(),
+            updated_at: Some(entry.updated_at.to_rfc3339()),
+        })
         .collect();
 
     Ok(Json(PaginatedResponse::new(items, false)))
 }
 
-/// Create new instance from image
-async fn create_instance(
+/// Register new agent from image
+async fn register_agent(
     State(state): State<AppState>,
-    Json(request): Json<CreateInstanceRequest>,
-) -> Result<Json<InstanceResponse>, ApiError> {
-    // Start warm start timing (REQ-PF-002: < 100ms target)
-    let _warm_start_guard = PerformanceGuard::new("warm_start");
+    Json(request): Json<RegisterAgentRequest>,
+) -> Result<Json<AgentConfigResponse>, ApiError> {
+    // Start timing
+    let _guard = PerformanceGuard::new("register_agent");
 
     // Parse image reference
     let image_ref = ImageRef::parse(&request.image)
         .map_err(|e| ApiError::bad_request(format!("Invalid image reference: {}", e), ""))?;
 
-    // Look up image in registry
+    // Determine agent name
+    let name = request.name.unwrap_or_else(|| {
+        // Derive name from image reference
+        match &image_ref {
+            ImageRef::LocalTag { name, .. } => name.clone(),
+            ImageRef::RegistryRef { path, .. } => {
+                path.split('/').last().unwrap_or("agent").to_string()
+            }
+            _ => format!("agent-{}", generate_short_id()),
+        }
+    });
+
+    // Resolve image in registry
     let registry_path = state.workspace_path.join("registry");
     let config = RegistryConfig::new(&registry_path);
     let registry = ImageRegistry::new(config);
@@ -241,297 +192,242 @@ async fn create_instance(
         .map_err(|e| ApiError::internal(format!("Failed to resolve image: {}", e), ""))?
         .ok_or_else(|| ApiError::not_found("image", request.image.clone(), ""))?;
 
-    // Generate instance name if not provided
-    let name = request
-        .name
-        .unwrap_or_else(|| format!("{}-{}", manifest.name, generate_short_id()));
-
-    // Create workspace directory
-    let workspace_path = if let Some(ref team_id) = request.team_id {
-        state
-            .workspace_path
-            .join("teams")
-            .join(team_id)
-            .join("agents")
-            .join(&name)
-    } else {
-        state.workspace_path.join("agents").join(&name)
-    };
-
-    tokio::fs::create_dir_all(&workspace_path)
+    // Register in config registry
+    let entry = state
+        .config_registry()
+        .register(&name, &image_ref, &registry, request.team_id.clone())
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to create workspace: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to register agent: {}", e), ""))?;
 
-    // Create sessions directory (REQ-AI-001: sessions/ is never in image)
-    tokio::fs::create_dir_all(workspace_path.join("sessions"))
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to create sessions dir: {}", e), ""))?;
+    info!(
+        "Registered agent '{}' from image {} (digest: {})",
+        name, request.image, entry.image_digest
+    );
 
-    // Create memories directory
-    tokio::fs::create_dir_all(workspace_path.join("memories"))
-        .await
-        .ok();
-
-    // Create workspace subdirectory
-    tokio::fs::create_dir_all(workspace_path.join("workspace"))
-        .await
-        .ok();
-
-    // Create instance record
-    let record = InstanceRecord {
-        name: name.clone(),
-        image_ref: request.image.clone(),
-        image_digest: manifest.digest.clone(), // REQ-AI-005: Pin to digest
-        status: InstanceStatus::Starting,
-        team_id: request.team_id.clone(),
-        workspace_path: workspace_path.to_string_lossy().to_string(),
-        created_at: Utc::now().to_rfc3339(),
-        started_at: None,
-        stopped_at: None,
-        active_session_id: None,
-        error: None,
-    };
-
-    let store = get_instance_store(&state).await?;
-    let id = store.create(record.clone()).await;
-
-    // Update state count
-    let count = store.list().await.len() as u64;
-    state.set_instance_count(count).await;
-
-    // Start instance if auto_start
-    if request.auto_start {
-        store
-            .update(&id, |r| {
-                r.status = InstanceStatus::Running;
-                r.started_at = Some(Utc::now().to_rfc3339());
-            })
-            .await;
-    } else {
-        store
-            .update(&id, |r| {
-                r.status = InstanceStatus::Stopped;
-            })
-            .await;
-    }
-
-    let response = store
-        .get(&id)
-        .await
-        .map(|r| r.to_response(&id))
-        .ok_or_else(|| ApiError::internal("Failed to create instance", ""))?;
-
-    Ok(Json(response))
+    Ok(Json(AgentConfigResponse {
+        name: entry.name.clone(),
+        image_ref: entry.image_ref.clone(),
+        image_digest: entry.image_digest.clone(),
+        team_id: entry.team_id.clone(),
+        capabilities: entry.capabilities(),
+        registered_at: entry.registered_at.to_rfc3339(),
+        updated_at: Some(entry.updated_at.to_rfc3339()),
+    }))
 }
 
-/// Get instance by ID
-async fn get_instance(
+/// Get agent configuration by name
+async fn get_agent(
     State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<InstanceResponse>, ApiError> {
-    let store = get_instance_store(&state).await?;
-
-    let record = store
-        .get(&id)
+    Path(name): Path<String>,
+) -> Result<Json<AgentConfigResponse>, ApiError> {
+    let entry = state
+        .config_registry()
+        .get(&name)
         .await
-        .ok_or_else(|| ApiError::not_found("instance", id.clone(), ""))?;
+        .ok_or_else(|| ApiError::not_found("agent", name.clone(), ""))?;
 
-    Ok(Json(record.to_response(&id)))
+    Ok(Json(AgentConfigResponse {
+        name: entry.name.clone(),
+        image_ref: entry.image_ref.clone(),
+        image_digest: entry.image_digest.clone(),
+        team_id: entry.team_id.clone(),
+        capabilities: entry.capabilities(),
+        registered_at: entry.registered_at.to_rfc3339(),
+        updated_at: Some(entry.updated_at.to_rfc3339()),
+    }))
 }
 
-/// Stop instance
-async fn stop_instance(
+/// Unregister agent
+async fn unregister_agent(
     State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(request): Json<StopInstanceRequest>,
-) -> Result<Json<InstanceResponse>, ApiError> {
-    let store = get_instance_store(&state).await?;
-
-    let record = store
-        .get(&id)
-        .await
-        .ok_or_else(|| ApiError::not_found("instance", id.clone(), ""))?;
-
-    // Check current status
-    match record.status {
-        InstanceStatus::Stopped => {
-            return Err(ApiError::conflict(
-                format!("Instance {} is already stopped", id),
-                "",
-            ));
-        }
-        InstanceStatus::Stopping => {
-            return Ok(Json(record.to_response(&id)));
-        }
-        _ => {}
-    }
-
-    // Update status
-    let success = if request.force {
-        store
-            .update(&id, |r| {
-                r.status = InstanceStatus::Stopped;
-                r.stopped_at = Some(Utc::now().to_rfc3339());
-            })
-            .await
-    } else {
-        store
-            .update(&id, |r| {
-                r.status = InstanceStatus::Stopping;
-            })
-            .await;
-
-        // In real implementation, would signal graceful shutdown
-        // and wait for completion
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-        store
-            .update(&id, |r| {
-                r.status = InstanceStatus::Stopped;
-                r.stopped_at = Some(Utc::now().to_rfc3339());
-            })
-            .await
-    };
-
-    if !success {
-        return Err(ApiError::not_found("instance", id.clone(), ""));
-    }
-
-    let record = store
-        .get(&id)
-        .await
-        .ok_or_else(|| ApiError::internal("Instance disappeared", ""))?;
-
-    Ok(Json(record.to_response(&id)))
-}
-
-/// Delete instance query params
-#[derive(Debug, Deserialize)]
-struct DeleteParams {
-    #[serde(default)]
-    purge: bool,
-}
-
-/// Delete instance
-async fn delete_instance(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Query(params): Query<DeleteParams>,
+    Path(name): Path<String>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    let store = get_instance_store(&state).await?;
+    // Check if agent exists
+    if !state.config_registry().exists(&name).await {
+        return Err(ApiError::not_found("agent", name, ""));
+    }
 
-    let record = store
-        .get(&id)
+    // Check if agent is currently executing
+    if state.lifecycle().is_executing(&name).await {
+        return Err(ApiError::conflict(
+            format!("Agent '{}' is currently executing", name),
+            "Wait for execution to complete or cancel it",
+        ));
+    }
+
+    // Unregister
+    state
+        .config_registry()
+        .unregister(&name)
         .await
-        .ok_or_else(|| ApiError::not_found("instance", id.clone(), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to unregister agent: {}", e), ""))?;
 
-    // Check if running
-    match record.status {
-        InstanceStatus::Running | InstanceStatus::Starting | InstanceStatus::Stopping => {
-            return Err(ApiError::conflict(
-                format!("Instance {} must be stopped before deletion", id),
-                "",
-            ));
-        }
-        _ => {}
-    }
-
-    // Delete workspace if purge=true
-    if params.purge {
-        let workspace = std::path::PathBuf::from(&record.workspace_path);
-        if workspace.exists() {
-            tokio::fs::remove_dir_all(&workspace).await.map_err(|e| {
-                ApiError::internal(format!("Failed to delete workspace: {}", e), "")
-            })?;
-        }
-    }
-
-    // Remove from store
-    store.delete(&id).await;
-
-    // Update count
-    let count = store.list().await.len() as u64;
-    state.set_instance_count(count).await;
+    info!("Unregistered agent '{}'", name);
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-/// Upgrade instance to new image
-async fn upgrade_instance(
+/// Execute agent (stateless cold-start)
+async fn execute_agent(
     State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(request): Json<UpgradeInstanceRequest>,
-) -> Result<Json<InstanceResponse>, ApiError> {
-    // Parse new image reference
-    let image_ref = ImageRef::parse(&request.image)
-        .map_err(|e| ApiError::bad_request(format!("Invalid image reference: {}", e), ""))?;
+    Path(name): Path<String>,
+    Json(request): Json<ExecuteAgentRequest>,
+) -> Result<Json<ExecuteAgentResponse>, ApiError> {
+    // Start timing
+    let _guard = PerformanceGuard::new("execute_agent");
 
-    // Look up new image
-    let registry_path = state.workspace_path.join("registry");
-    let config = RegistryConfig::new(&registry_path);
-    let registry = ImageRegistry::new(config);
+    // Check if agent is registered
+    if !state.config_registry().exists(&name).await {
+        return Err(ApiError::not_found("agent", name.clone(), ""));
+    }
 
-    let new_manifest = registry
-        .resolve(&image_ref)
+    // Build execution request
+    let exec_request = crate::agent::stateless_service::ExecutionRequest {
+        agent_name: name.clone(),
+        session_id: request.session_id.clone(),
+        message: request.message.clone(),
+        context: request
+            .context
+            .map(|ctx| crate::agent::stateless_service::ExecutionContext {
+                parent_message_id: ctx
+                    .get("parent_message_id")
+                    .and_then(|v| v.as_str().map(String::from)),
+                metadata: std::collections::HashMap::new(),
+            }),
+        timeout_secs: request.timeout_secs,
+    };
+
+    // Execute
+    let result = state
+        .agent_service()
+        .execute(exec_request)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to resolve image: {}", e), ""))?
-        .ok_or_else(|| ApiError::not_found("image", request.image.clone(), ""))?;
+        .map_err(|e| ApiError::internal(format!("Execution failed: {}", e), ""))?;
 
-    let store = get_instance_store(&state).await?;
+    // Convert tool calls to response format
+    let tool_calls: Vec<ToolCallResponse> = result
+        .tool_calls
+        .into_iter()
+        .map(|tc| ToolCallResponse {
+            name: tc.name,
+            parameters: tc.parameters,
+            result: tc.result,
+        })
+        .collect();
 
-    // Get current instance
-    let record = store
-        .get(&id)
-        .await
-        .ok_or_else(|| ApiError::not_found("instance", id.clone(), ""))?;
+    Ok(Json(ExecuteAgentResponse {
+        execution_id: format!("exec_{}", generate_short_id()),
+        response: result.response,
+        tool_calls,
+        usage: TokenUsageResponse {
+            prompt_tokens: result.usage.input as u32,
+            completion_tokens: result.usage.output as u32,
+            total_tokens: result.usage.total as u32,
+        },
+        duration_ms: result.duration_ms,
+        success: result.success,
+        error: result.error,
+    }))
+}
 
-    // Check if already on this digest
-    if record.image_digest == new_manifest.digest {
+/// Get agent metrics
+async fn get_agent_metrics(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Check if agent exists
+    if !state.config_registry().exists(&name).await {
+        return Err(ApiError::not_found("agent", name.clone(), ""));
+    }
+
+    // Get service metrics
+    let metrics = state.agent_service().metrics().await;
+
+    // Get agent-specific execution count (approximate from active)
+    let is_executing = state.lifecycle().is_executing(&name).await;
+
+    Ok(Json(serde_json::json!({
+        "agent_name": name,
+        "is_executing": is_executing,
+        "service_metrics": {
+            "total_executions": metrics.total_executions,
+            "successful_executions": metrics.successful_executions,
+            "failed_executions": metrics.failed_executions,
+            "avg_cold_start_ms": metrics.avg_cold_start_ms,
+        }
+    })))
+}
+
+/// Update agent configuration
+async fn update_agent(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(request): Json<UpdateAgentRequest>,
+) -> Result<Json<AgentConfigResponse>, ApiError> {
+    // Check if agent exists
+    if !state.config_registry().exists(&name).await {
+        return Err(ApiError::not_found("agent", name.clone(), ""));
+    }
+
+    // Check if agent is currently executing
+    if state.lifecycle().is_executing(&name).await {
         return Err(ApiError::conflict(
-            format!(
-                "Instance {} is already running image {}",
-                id, new_manifest.digest
-            ),
-            "",
+            format!("Agent '{}' is currently executing", name),
+            "Wait for execution to complete",
         ));
     }
 
-    // In real implementation, would:
-    // 1. Stop current instance
-    // 2. Preserve session history
-    // 3. Start new instance with new image
-    // 4. Restore session if needed
+    // Parse new image if provided
+    let (image_ref, image_registry) = if let Some(img) = request.image {
+        let image_ref = ImageRef::parse(&img)
+            .map_err(|e| ApiError::bad_request(format!("Invalid image reference: {}", e), ""))?;
 
-    // Update record
-    store
-        .update(&id, |r| {
-            r.image_ref = request.image;
-            r.image_digest = new_manifest.digest;
-            r.status = InstanceStatus::Running;
-        })
-        .await;
+        let registry_path = state.workspace_path.join("registry");
+        let config = RegistryConfig::new(&registry_path);
+        let registry = ImageRegistry::new(config);
 
-    let record = store
-        .get(&id)
+        // Verify image exists
+        let _manifest = registry
+            .resolve(&image_ref)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to resolve image: {}", e), ""))?
+            .ok_or_else(|| ApiError::not_found("image", img.clone(), ""))?;
+
+        (Some(image_ref), Some(registry))
+    } else {
+        (None, None)
+    };
+
+    // Update configuration
+    let entry = state
+        .config_registry()
+        .update(
+            &name,
+            image_ref.as_ref(),
+            image_registry.as_ref(),
+            request.team_id,
+        )
         .await
-        .ok_or_else(|| ApiError::internal("Instance disappeared", ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to update agent: {}", e), ""))?;
 
-    Ok(Json(record.to_response(&id)))
-}
+    info!("Updated agent '{}' configuration", name);
 
-/// Get or create instance store from app state
-async fn get_instance_store(_state: &AppState) -> Result<&'static InstanceStore, ApiError> {
-    // For now, use a static store. In production, this would be in AppState
-    use std::sync::OnceLock;
-    static STORE: OnceLock<InstanceStore> = OnceLock::new();
-    Ok(STORE.get_or_init(InstanceStore::new))
+    Ok(Json(AgentConfigResponse {
+        name: entry.name.clone(),
+        image_ref: entry.image_ref.clone(),
+        image_digest: entry.image_digest.clone(),
+        team_id: entry.team_id.clone(),
+        capabilities: entry.capabilities(),
+        registered_at: entry.registered_at.to_rfc3339(),
+        updated_at: Some(entry.updated_at.to_rfc3339()),
+    }))
 }
 
 /// Generate a short random ID
 fn generate_short_id() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    let chars: String = (0..6)
+    let chars: String = (0..8)
         .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
         .collect();
     chars.to_lowercase()
@@ -540,10 +436,13 @@ fn generate_short_id() -> String {
 /// Create router for agent routes
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/agents", get(list_instances).post(create_instance))
-        .route("/agents/:id", get(get_instance).delete(delete_instance))
-        .route("/agents/:id/stop", post(stop_instance))
-        .route("/agents/:id/upgrade", post(upgrade_instance))
+        .route("/agents", get(list_agents).post(register_agent))
+        .route(
+            "/agents/:name",
+            get(get_agent).delete(unregister_agent).patch(update_agent),
+        )
+        .route("/agents/:name/execute", post(execute_agent))
+        .route("/agents/:name/metrics", get(get_agent_metrics))
 }
 
 #[cfg(test)]
@@ -551,18 +450,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_instance_status_serialization() {
-        let status = InstanceStatus::Running;
-        let json = serde_json::to_string(&status).unwrap();
-        assert_eq!(json, "\"running\"");
-    }
-
-    #[test]
     fn test_generate_short_id() {
         let id1 = generate_short_id();
         let id2 = generate_short_id();
-        assert_eq!(id1.len(), 6);
-        assert_eq!(id2.len(), 6);
+        assert_eq!(id1.len(), 8);
+        assert_eq!(id2.len(), 8);
         assert_ne!(id1, id2); // Very unlikely to collide
+    }
+
+    #[test]
+    fn test_agent_config_response_serialization() {
+        let response = AgentConfigResponse {
+            name: "test-agent".to_string(),
+            image_ref: "test:latest".to_string(),
+            image_digest: "sha256:abc123".to_string(),
+            team_id: Some("team-1".to_string()),
+            capabilities: vec!["chat".to_string(), "search".to_string()],
+            registered_at: Utc::now().to_rfc3339(),
+            updated_at: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("test-agent"));
+        assert!(json.contains("sha256:abc123"));
     }
 }

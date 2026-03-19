@@ -1,4 +1,5 @@
-//! Agent Management Tools
+//! Agent Management Tools (DEPRECATED)
+#![allow(deprecated)]
 //!
 //! Tools for agents to interact with other agents within their team.
 //! Implements CAPABILITY_INTERFACE.md §3.7, §3.8

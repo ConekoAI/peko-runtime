@@ -57,19 +57,24 @@ mod tests {
     use crate::api::state::{AppState, DaemonConfigSnapshot};
     use axum::body::to_bytes;
     use axum::http::StatusCode;
+    use tempfile::TempDir;
 
-    fn test_state() -> AppState {
-        AppState::new(
-            "/tmp/test-pekobot",
+    async fn test_state() -> AppState {
+        let temp_dir = TempDir::new().unwrap();
+        AppState::with_data_dir(
+            temp_dir.path(),
             "127.0.0.1",
             11435,
             DaemonConfigSnapshot::default(),
+            temp_dir.path().to_path_buf(),
         )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
     async fn test_daemon_info_returns_200() {
-        let state = test_state();
+        let state = test_state().await;
         let response = daemon_info(State(state)).await;
 
         assert_eq!(response.status(), StatusCode::OK);
@@ -77,7 +82,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_daemon_info_response_format() {
-        let state = test_state();
+        let state = test_state().await;
+        let workspace = state.workspace_path.clone();
         let response = daemon_info(State(state)).await;
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -85,7 +91,7 @@ mod tests {
 
         assert!(json["version"].as_str().is_some());
         assert_eq!(json["api_version"], "1.0");
-        assert_eq!(json["workspace"], "/tmp/test-pekobot");
+        assert_eq!(json["workspace"], workspace.to_string_lossy().as_ref());
         assert_eq!(json["port"], 11435);
         assert!(json["pid"].as_u64().is_some());
         assert!(json["platform"].as_str().is_some());
@@ -98,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_daemon_info_platform_format() {
-        let state = test_state();
+        let state = test_state().await;
         let response = daemon_info(State(state)).await;
 
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();

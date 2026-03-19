@@ -12,8 +12,10 @@ use std::collections::HashMap;
 /// Create a test agent configuration
 fn create_test_config(name: &str) -> AgentConfig {
     AgentConfig {
+        version: "1.0".to_string(),
         name: name.to_string(),
         description: Some("Test agent".to_string()),
+        team: None,
         tenant: None,
         capabilities: vec![AgentCapability {
             name: "test_capability".to_string(),

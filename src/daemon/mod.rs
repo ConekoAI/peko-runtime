@@ -163,7 +163,9 @@ impl Daemon {
         };
 
         let (api_shutdown_tx, api_shutdown_rx) = tokio::sync::oneshot::channel();
-        let api_server = crate::api::ApiServer::new(api_config);
+        let api_server = crate::api::ApiServer::new(api_config)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create API server: {}", e))?;
 
         let api_handle = tokio::spawn(async move {
             if let Err(e) = api_server.run(api_shutdown_rx).await {

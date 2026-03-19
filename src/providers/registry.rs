@@ -410,13 +410,17 @@ mod tests {
     fn test_provider_metadata() {
         let registry = ProviderRegistry::new();
 
+        // kimi provider uses AnthropicMessages API
         let kimi = registry.get("kimi").unwrap();
         assert_eq!(kimi.id, "kimi");
-        assert_eq!(kimi.api_type, ApiType::OpenAICompletions);
-        assert!(kimi.base_url.contains("moonshot"));
+        assert_eq!(kimi.api_type, ApiType::AnthropicMessages);
+        assert!(kimi.base_url.contains("kimi"));
 
+        // moonshot provider uses OpenAICompletions API
         let moonshot = registry.get("moonshot").unwrap();
-        assert_eq!(moonshot.id, "kimi"); // resolves to canonical
+        assert_eq!(moonshot.id, "moonshot");
+        assert_eq!(moonshot.api_type, ApiType::OpenAICompletions);
+        assert!(moonshot.base_url.contains("moonshot"));
     }
 
     #[test]

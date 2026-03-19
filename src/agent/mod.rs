@@ -1,24 +1,50 @@
-//! Agent runtime and multi-agent management
+//! Agent runtime and multi-agent management (Stateless Architecture)
+#![allow(deprecated)]
 //!
 //! This module provides:
 //! - Single agent runtime (Agent struct)
-//! - Multi-agent coordination (AgentManager)
-//! - Agent lifecycle management
+//! - Stateless agent management (StatelessAgentManager)
+//! - Configuration registry (ConfigRegistry)
+//! - Stateless execution service (StatelessAgentService)
 //! - Subagent spawning and management
 
 // Single agent runtime
 mod agent;
 pub use agent::Agent;
 
-// Multi-agent management (merged from manager/)
+// Stateless manager (primary architecture)
+pub mod stateless_manager;
+pub use stateless_manager::{StatelessAgentManager, StatelessManagerEvent};
+
+// State management for stateless architecture
+pub mod config_registry;
+pub mod stateless_service;
+
+pub use config_registry::{AgentConfigEntry, ConfigRegistry};
+pub use stateless_service::{
+    ExecutionContext, ExecutionRequest, ExecutionResult, StatelessAgentService,
+};
+
+// Lifecycle management (tracks active executions only)
+pub mod lifecycle;
+pub use lifecycle::{ExecutionRecord, LifecycleManager};
+
+// Legacy components (deprecated, will be removed in future release)
+#[deprecated(since = "0.2.0", note = "Use StatelessAgentManager instead")]
 pub mod manager;
+#[deprecated(since = "0.2.0", note = "Use StatelessAgentManager instead")]
 pub use manager::AgentManager;
 
+#[deprecated(
+    since = "0.2.0",
+    note = "Stateless architecture does not use agent pools"
+)]
 pub mod pool;
+#[deprecated(
+    since = "0.2.0",
+    note = "Stateless architecture does not use agent pools"
+)]
 pub use pool::{AgentHandle, AgentPool, PoolConfig};
-
-pub mod lifecycle;
-pub use lifecycle::LifecycleManager;
 
 pub mod registry;
 pub use registry::{CapabilityRecord, LocalRegistry};

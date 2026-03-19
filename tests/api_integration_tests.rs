@@ -177,14 +177,18 @@ async fn test_404_error_format() {
 async fn test_server_creation_with_loopback() {
     // This test doesn't require a running daemon
     use pekobot::api::{state::DaemonConfigSnapshot, ApiServer, ServerConfig};
+    use tempfile::TempDir;
 
+    let temp_dir = TempDir::new().unwrap();
     let config = ServerConfig {
         host: "127.0.0.1".to_string(),
         port: 0, // Let OS assign port
-        workspace_path: std::path::PathBuf::from("/tmp/test"),
+        workspace_path: temp_dir.path().to_path_buf(),
         daemon_config: DaemonConfigSnapshot::default(),
     };
 
-    let server = ApiServer::new(config);
+    let server = ApiServer::new(config)
+        .await
+        .expect("Failed to create server");
     assert_eq!(server.address(), "127.0.0.1:0");
 }

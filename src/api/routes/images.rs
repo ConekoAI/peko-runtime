@@ -511,14 +511,19 @@ pub fn router() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::api::state::{AppState, DaemonConfigSnapshot};
+    use tempfile::TempDir;
 
-    fn test_state() -> AppState {
-        AppState::new(
-            "/tmp/test",
+    async fn test_state() -> AppState {
+        let temp_dir = TempDir::new().unwrap();
+        AppState::with_data_dir(
+            temp_dir.path(),
             "127.0.0.1",
             11435,
             DaemonConfigSnapshot::default(),
+            temp_dir.path().to_path_buf(),
         )
+        .await
+        .unwrap()
     }
 
     #[test]

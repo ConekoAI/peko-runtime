@@ -1,16 +1,47 @@
-//! Lifecycle Manager - Simple agent state tracking
+//! Lifecycle Manager - Tracks active executions in stateless architecture
+//!
+//! In the stateless cold-start architecture, this manager tracks only
+//! currently executing agents (transient), not persistent instance states.
 
-use crate::engine::state::StateMachine;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, instrument, warn};
+use uuid::Uuid;
 
-/// Simple lifecycle manager - just tracks if agent is idle or busy
+/// Record of an active execution
+#[derive(Debug, Clone)]
+pub struct ExecutionRecord {
+    /// Unique execution ID
+    pub id: String,
+    /// Agent name
+    pub agent_name: String,
+    /// Session ID
+    pub session_id: String,
+    /// When execution started
+    pub started_at: Instant,
+    /// Request metadata
+    pub metadata: Option<serde_json::Value>,
+}
+
+impl ExecutionRecord {
+    /// Get duration since execution started
+    pub fn duration(&self) -> std::time::Duration {
+        self.started_at.elapsed()
+    }
+}
+
+/// Simplified lifecycle manager for stateless architecture
+///
+/// Tracks only currently executing agents (transient state).
+/// No persistent instance lifecycle (Starting/Running/Stopping/Stopped).
 pub struct LifecycleManager {
-    /// State machines for each agent
-    states: Arc<RwLock<HashMap<String, StateMachine>>>,
+    /// Active executions by execution ID
+    active: Arc<RwLock<HashMap<String, ExecutionRecord>>>,
+    /// Active executions by agent name (for quick lookup)
+    by_agent: Arc<RwLock<HashMap<String, String>>>, // agent_name -> execution_id
 }
 
 impl LifecycleManager {
@@ -18,95 +49,346 @@ impl LifecycleManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            states: Arc::new(RwLock::new(HashMap::new())),
+            active: Arc::new(RwLock::new(HashMap::new())),
+            by_agent: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    /// Register a new agent (starts in Idle)
-    pub async fn register(&self, did: &str) -> Result<()> {
-        let mut states = self.states.write().await;
-        states.insert(did.to_string(), StateMachine::new());
-        debug!("Registered agent: {}", did);
-        Ok(())
+    /// Start tracking a new execution
+    #[instrument(skip(self), fields(agent = %agent_name))]
+    pub async fn start_execution(
+        &self,
+        agent_name: &str,
+        session_id: &str,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<String> {
+        let execution_id = format!("exec_{}", Uuid::new_v4().simple());
+
+        let record = ExecutionRecord {
+            id: execution_id.clone(),
+            agent_name: agent_name.to_string(),
+            session_id: session_id.to_string(),
+            started_at: Instant::now(),
+            metadata,
+        };
+
+        {
+            let mut active = self.active.write().await;
+            active.insert(execution_id.clone(), record);
+        }
+
+        {
+            let mut by_agent = self.by_agent.write().await;
+            by_agent.insert(agent_name.to_string(), execution_id.clone());
+        }
+
+        info!(
+            execution_id = %execution_id,
+            agent = %agent_name,
+            session = %session_id,
+            "Started execution tracking"
+        );
+
+        Ok(execution_id)
     }
 
-    /// Start an agent (mark as idle)
-    pub async fn start(&self, did: &str) -> Result<()> {
-        let states = self.states.read().await;
+    /// Complete an execution and remove tracking
+    #[instrument(skip(self), fields(execution_id = %execution_id))]
+    pub async fn complete_execution(&self, execution_id: &str) -> Result<()> {
+        let record = {
+            let mut active = self.active.write().await;
+            active.remove(execution_id)
+        };
 
-        if let Some(sm) = states.get(did) {
-            sm.set_idle();
-            info!("Agent {} started", did);
-            Ok(())
+        if let Some(ref rec) = record {
+            let mut by_agent = self.by_agent.write().await;
+            by_agent.remove(&rec.agent_name);
+
+            info!(
+                execution_id = %execution_id,
+                agent = %rec.agent_name,
+                duration_ms = %rec.started_at.elapsed().as_millis(),
+                "Completed execution"
+            );
         } else {
-            Err(anyhow::anyhow!("Agent not registered: {did}"))
+            warn!(
+                execution_id = %execution_id,
+                "Attempted to complete unknown execution"
+            );
         }
-    }
 
-    /// Mark agent as busy
-    pub async fn set_busy(&self, did: &str) -> Result<()> {
-        let states = self.states.read().await;
-
-        if let Some(sm) = states.get(did) {
-            sm.set_busy();
-        }
         Ok(())
     }
 
-    /// Mark agent as idle
-    pub async fn set_idle(&self, did: &str) -> Result<()> {
-        let states = self.states.read().await;
+    /// Get execution record by ID
+    pub async fn get_execution(&self, execution_id: &str) -> Option<ExecutionRecord> {
+        let active = self.active.read().await;
+        active.get(execution_id).cloned()
+    }
 
-        if let Some(sm) = states.get(did) {
-            sm.set_idle();
+    /// Check if an agent has an active execution
+    pub async fn is_executing(&self, agent_name: &str) -> bool {
+        let by_agent = self.by_agent.read().await;
+        by_agent.contains_key(agent_name)
+    }
+
+    /// Get active execution for an agent
+    pub async fn get_agent_execution(&self, agent_name: &str) -> Option<ExecutionRecord> {
+        let by_agent = self.by_agent.read().await;
+        let active = self.active.read().await;
+
+        by_agent
+            .get(agent_name)
+            .and_then(|id| active.get(id).cloned())
+    }
+
+    /// List all active executions
+    pub async fn active_executions(&self) -> Vec<ExecutionRecord> {
+        let active = self.active.read().await;
+        active.values().cloned().collect()
+    }
+
+    /// Get count of active executions
+    pub async fn active_count(&self) -> usize {
+        let active = self.active.read().await;
+        active.len()
+    }
+
+    /// Get count of active executions for a specific agent
+    pub async fn agent_active_count(&self, agent_name: &str) -> usize {
+        let active = self.active.read().await;
+        active
+            .values()
+            .filter(|rec| rec.agent_name == agent_name)
+            .count()
+    }
+
+    /// Cancel an execution (for timeout/abort scenarios)
+    #[instrument(skip(self), fields(execution_id = %execution_id))]
+    pub async fn cancel_execution(&self, execution_id: &str, reason: &str) -> Result<bool> {
+        let record = {
+            let mut active = self.active.write().await;
+            active.remove(execution_id)
+        };
+
+        match record {
+            Some(rec) => {
+                let mut by_agent = self.by_agent.write().await;
+                by_agent.remove(&rec.agent_name);
+
+                warn!(
+                    execution_id = %execution_id,
+                    agent = %rec.agent_name,
+                    reason = %reason,
+                    duration_ms = %rec.started_at.elapsed().as_millis(),
+                    "Cancelled execution"
+                );
+
+                Ok(true)
+            }
+            None => {
+                debug!(
+                    execution_id = %execution_id,
+                    "Attempted to cancel non-existent execution"
+                );
+                Ok(false)
+            }
         }
+    }
+
+    /// Get executions older than a threshold (for timeout detection)
+    pub async fn stale_executions(&self, threshold: std::time::Duration) -> Vec<ExecutionRecord> {
+        let active = self.active.read().await;
+        active
+            .values()
+            .filter(|rec| rec.started_at.elapsed() > threshold)
+            .cloned()
+            .collect()
+    }
+
+    /// Clear all tracking (emergency cleanup)
+    pub async fn clear_all(&self) {
+        let mut active = self.active.write().await;
+        let mut by_agent = self.by_agent.write().await;
+
+        let count = active.len();
+        active.clear();
+        by_agent.clear();
+
+        if count > 0 {
+            warn!("Cleared {} active executions (emergency)", count);
+        }
+    }
+
+    // =================================================================
+    // Legacy API compatibility (deprecated, to be removed)
+    // =================================================================
+
+    /// Register a new agent (legacy, no-op in stateless)
+    #[deprecated(
+        since = "0.2.0",
+        note = "No persistent registration in stateless architecture"
+    )]
+    pub async fn register(&self, _did: &str) -> Result<()> {
+        debug!("Legacy register() called (no-op in stateless)");
         Ok(())
     }
 
-    /// Stop an agent (mark as idle)
-    pub async fn stop(&self, did: &str) -> Result<()> {
-        let states = self.states.read().await;
-
-        if let Some(sm) = states.get(did) {
-            sm.set_idle();
-            info!("Agent {} stopped", did);
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Agent not registered: {did}"))
-        }
+    /// Start an agent (legacy, no-op in stateless)
+    #[deprecated(
+        since = "0.2.0",
+        note = "No persistent start in stateless architecture"
+    )]
+    pub async fn start(&self, _did: &str) -> Result<()> {
+        debug!("Legacy start() called (no-op in stateless)");
+        Ok(())
     }
 
-    /// Check if agent is idle
+    /// Mark agent as busy (legacy, use start_execution)
+    #[deprecated(since = "0.2.0", note = "Use start_execution() instead")]
+    pub async fn set_busy(&self, _did: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Mark agent as idle (legacy, use complete_execution)
+    #[deprecated(since = "0.2.0", note = "Use complete_execution() instead")]
+    pub async fn set_idle(&self, _did: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Stop an agent (legacy, no-op in stateless)
+    #[deprecated(since = "0.2.0", note = "No persistent stop in stateless architecture")]
+    pub async fn stop(&self, _did: &str) -> Result<()> {
+        debug!("Legacy stop() called (no-op in stateless)");
+        Ok(())
+    }
+
+    /// Check if agent is idle (legacy, always true in stateless unless executing)
+    #[deprecated(since = "0.2.0", note = "Use !is_executing() instead")]
     pub async fn is_idle(&self, did: &str) -> bool {
-        let states = self.states.read().await;
-        states.get(did).is_some_and(|sm| sm.current().is_idle())
+        !self.is_executing(did).await
     }
 
-    /// Check if agent is busy
+    /// Check if agent is busy (legacy, synonym for is_executing)
+    #[deprecated(since = "0.2.0", note = "Use is_executing() instead")]
     pub async fn is_busy(&self, did: &str) -> bool {
-        let states = self.states.read().await;
-        states.get(did).is_some_and(|sm| sm.current().is_busy())
+        self.is_executing(did).await
     }
 
-    /// Try to acquire agent (Idle -> Busy)
-    /// Returns true if successful
-    pub async fn try_acquire(&self, did: &str) -> bool {
-        let states = self.states.read().await;
-        states
-            .get(did)
-            .is_some_and(super::super::engine::state::StateMachine::try_acquire)
+    /// Try to acquire agent (legacy, always succeeds in stateless)
+    #[deprecated(
+        since = "0.2.0",
+        note = "No acquisition needed in stateless architecture"
+    )]
+    pub async fn try_acquire(&self, _did: &str) -> bool {
+        true
     }
 
-    /// Unregister an agent
-    pub async fn unregister(&self, did: &str) {
-        let mut states = self.states.write().await;
-        states.remove(did);
-        debug!("Unregistered agent: {}", did);
+    /// Unregister an agent (legacy, no-op in stateless)
+    #[deprecated(since = "0.2.0", note = "No persistent registration in stateless")]
+    pub async fn unregister(&self, _did: &str) {
+        debug!("Legacy unregister() called (no-op in stateless)");
     }
 }
 
 impl Default for LifecycleManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_lifecycle_manager_basic() {
+        let manager = LifecycleManager::new();
+
+        // Initially no executions
+        assert_eq!(manager.active_count().await, 0);
+        assert!(!manager.is_executing("test-agent").await);
+
+        // Start execution
+        let exec_id = manager
+            .start_execution("test-agent", "test-session", None)
+            .await
+            .unwrap();
+
+        assert_eq!(manager.active_count().await, 1);
+        assert!(manager.is_executing("test-agent").await);
+
+        // Get execution record
+        let record = manager.get_execution(&exec_id).await.unwrap();
+        assert_eq!(record.agent_name, "test-agent");
+        assert_eq!(record.session_id, "test-session");
+
+        // Complete execution
+        manager.complete_execution(&exec_id).await.unwrap();
+
+        assert_eq!(manager.active_count().await, 0);
+        assert!(!manager.is_executing("test-agent").await);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_executions() {
+        let manager = LifecycleManager::new();
+
+        // Start multiple executions for different agents
+        let exec1 = manager
+            .start_execution("agent-1", "session-1", None)
+            .await
+            .unwrap();
+        let exec2 = manager
+            .start_execution("agent-2", "session-2", None)
+            .await
+            .unwrap();
+
+        assert_eq!(manager.active_count().await, 2);
+
+        // Complete one
+        manager.complete_execution(&exec1).await.unwrap();
+
+        assert_eq!(manager.active_count().await, 1);
+        assert!(!manager.is_executing("agent-1").await);
+        assert!(manager.is_executing("agent-2").await);
+
+        // Complete other
+        manager.complete_execution(&exec2).await.unwrap();
+        assert_eq!(manager.active_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cancel_execution() {
+        let manager = LifecycleManager::new();
+
+        let exec_id = manager
+            .start_execution("test-agent", "test-session", None)
+            .await
+            .unwrap();
+
+        assert_eq!(manager.active_count().await, 1);
+
+        // Cancel
+        let cancelled = manager.cancel_execution(&exec_id, "timeout").await.unwrap();
+        assert!(cancelled);
+
+        assert_eq!(manager.active_count().await, 0);
+
+        // Cancel non-existent
+        let cancelled = manager.cancel_execution(&exec_id, "timeout").await.unwrap();
+        assert!(!cancelled);
+    }
+
+    #[tokio::test]
+    async fn test_stale_executions() {
+        let manager = LifecycleManager::new();
+
+        // This test would require time manipulation or a very short threshold
+        // For now, just test the method exists and returns empty for fresh executions
+        let stale = manager
+            .stale_executions(std::time::Duration::from_nanos(1))
+            .await;
+        assert!(stale.is_empty());
     }
 }

@@ -1,4 +1,4 @@
-//! Agent Pool - Manages running agent instances
+//! Agent Pool - Manages running agent instances (DEPRECATED)
 #![allow(dead_code)]
 
 use crate::agent::Agent;

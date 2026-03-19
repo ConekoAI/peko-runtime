@@ -1,8 +1,11 @@
 //! Application State
 //!
 //! Shared state accessible to all API route handlers.
-//! This will expand as more endpoints are implemented.
+//! Updated for stateless cold-start architecture.
 
+use crate::agent::config_registry::ConfigRegistry;
+use crate::agent::lifecycle::LifecycleManager;
+use crate::agent::stateless_service::StatelessAgentService;
 use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
@@ -12,7 +15,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLock;
 
-/// Shared application state for the HTTP API
+/// Shared application state for the HTTP API (Stateless Architecture)
 ///
 /// This struct is passed to all route handlers via Axum's State extractor.
 /// All fields are thread-safe and can be accessed concurrently.
@@ -48,6 +51,15 @@ pub struct AppState {
     /// Observability hub for audit, metrics, and tracing
     observability: Arc<Observability>,
 
+    /// Agent configuration registry (stateless)
+    config_registry: Arc<ConfigRegistry>,
+
+    /// Stateless agent execution service
+    agent_service: Arc<StatelessAgentService>,
+
+    /// Lifecycle manager (tracks active executions only)
+    lifecycle: Arc<LifecycleManager>,
+
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
 }
@@ -61,6 +73,8 @@ impl std::fmt::Debug for AppState {
             .field("host", &self.host)
             .field("config", &self.config)
             .field("team_manager", &"<TeamManager>")
+            .field("config_registry", &"<ConfigRegistry>")
+            .field("agent_service", &"<StatelessAgentService>")
             .finish()
     }
 }
@@ -88,16 +102,34 @@ pub struct DaemonConfigSnapshot {
 }
 
 impl AppState {
-    /// Create new application state
-    pub fn new(
+    /// Create new application state (async constructor for stateless components)
+    pub async fn new(
         workspace_path: impl Into<PathBuf>,
         host: impl Into<String>,
         port: u16,
         config: DaemonConfigSnapshot,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        let workspace_path: PathBuf = workspace_path.into();
+        let data_dir = workspace_path.clone();
+
+        // Create stateless components
+        let config_registry = Arc::new(
+            ConfigRegistry::new(data_dir.join("configs"))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create config registry: {}", e))?,
+        );
+
+        let agent_service = Arc::new(
+            StatelessAgentService::new(config_registry.clone(), data_dir.join("sessions"))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create agent service: {}", e))?,
+        );
+
+        let lifecycle = Arc::new(LifecycleManager::new());
+
+        Ok(Self {
             started_at: SystemTime::now(),
-            workspace_path: workspace_path.into(),
+            workspace_path,
             port,
             host: host.into(),
             config,
@@ -106,31 +138,54 @@ impl AppState {
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability: Arc::new(Observability::new("api")),
+            config_registry,
+            agent_service,
+            lifecycle,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
-        }
+        })
     }
 
     /// Create new application state with custom data directory
-    pub fn with_data_dir(
+    pub async fn with_data_dir(
         workspace_path: impl Into<PathBuf>,
         host: impl Into<String>,
         port: u16,
         config: DaemonConfigSnapshot,
         data_dir: PathBuf,
-    ) -> Self {
-        Self {
+    ) -> anyhow::Result<Self> {
+        let workspace_path: PathBuf = workspace_path.into();
+
+        // Create stateless components
+        let config_registry = Arc::new(
+            ConfigRegistry::new(data_dir.join("configs"))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create config registry: {}", e))?,
+        );
+
+        let agent_service = Arc::new(
+            StatelessAgentService::new(config_registry.clone(), data_dir.join("sessions"))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create agent service: {}", e))?,
+        );
+
+        let lifecycle = Arc::new(LifecycleManager::new());
+
+        Ok(Self {
             started_at: SystemTime::now(),
-            workspace_path: workspace_path.into(),
+            workspace_path,
             port,
             host: host.into(),
             config,
-            team_manager: Arc::new(TeamManager::with_data_dir(data_dir)),
+            team_manager: Arc::new(TeamManager::with_data_dir(data_dir.clone())),
             hook_registry: Arc::new(HookRegistry::new()),
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability: Arc::new(Observability::new("api")),
+            config_registry,
+            agent_service,
+            lifecycle,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
-        }
+        })
     }
 
     /// Get the current uptime in seconds
@@ -220,6 +275,31 @@ impl AppState {
         let mut registry_config = self.registry_config.write().await;
         *registry_config = config;
     }
+
+    /// Get the configuration registry
+    pub fn config_registry(&self) -> &Arc<ConfigRegistry> {
+        &self.config_registry
+    }
+
+    /// Get the agent service
+    pub fn agent_service(&self) -> &Arc<StatelessAgentService> {
+        &self.agent_service
+    }
+
+    /// Get the lifecycle manager
+    pub fn lifecycle(&self) -> &Arc<LifecycleManager> {
+        &self.lifecycle
+    }
+
+    /// Get the count of registered agents
+    pub async fn agent_count(&self) -> usize {
+        self.config_registry.count().await
+    }
+
+    /// Get the count of active executions
+    pub async fn active_execution_count(&self) -> usize {
+        self.lifecycle.active_count().await
+    }
 }
 
 impl Default for DaemonConfigSnapshot {
@@ -235,15 +315,24 @@ impl Default for DaemonConfigSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn test_uptime_tracking() {
-        let state = AppState::new(
-            "/tmp/test",
+    async fn create_test_state() -> AppState {
+        let temp_dir = TempDir::new().unwrap();
+        AppState::with_data_dir(
+            temp_dir.path(),
             "127.0.0.1",
             11435,
             DaemonConfigSnapshot::default(),
-        );
+            temp_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_uptime_tracking() {
+        let state = create_test_state().await;
 
         // Initial uptime should be very small
         let uptime1 = state.uptime_seconds();
@@ -257,12 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_degraded_state() {
-        let state = AppState::new(
-            "/tmp/test",
-            "127.0.0.1",
-            11435,
-            DaemonConfigSnapshot::default(),
-        );
+        let state = create_test_state().await;
 
         assert!(!state.is_degraded().await);
 
@@ -275,16 +359,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_instance_count() {
-        let state = AppState::new(
-            "/tmp/test",
-            "127.0.0.1",
-            11435,
-            DaemonConfigSnapshot::default(),
-        );
+        let state = create_test_state().await;
 
         assert_eq!(state.instance_count().await, 0);
 
         state.set_instance_count(5).await;
         assert_eq!(state.instance_count().await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_stateless_components() {
+        let state = create_test_state().await;
+
+        // Initially no agents registered
+        assert_eq!(state.agent_count().await, 0);
+
+        // Initially no active executions
+        assert_eq!(state.active_execution_count().await, 0);
     }
 }

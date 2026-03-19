@@ -25,8 +25,10 @@ fn test_agent_config(name: &str) -> AgentConfig {
     );
 
     AgentConfig {
+        version: "1.0".to_string(),
         name: name.to_string(),
         description: Some(format!("Test agent: {}", name)),
+        team: None,
         tenant: None,
         capabilities: vec![],
         provider: ProviderConfig {

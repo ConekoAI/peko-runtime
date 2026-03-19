@@ -66,19 +66,24 @@ mod tests {
     use crate::api::state::{AppState, DaemonConfigSnapshot};
     use axum::body::to_bytes;
     use axum::http::StatusCode;
+    use tempfile::TempDir;
 
-    fn test_state() -> AppState {
-        AppState::new(
-            "/tmp/test",
+    async fn test_state() -> AppState {
+        let temp_dir = TempDir::new().unwrap();
+        AppState::with_data_dir(
+            temp_dir.path(),
             "127.0.0.1",
             11435,
             DaemonConfigSnapshot::default(),
+            temp_dir.path().to_path_buf(),
         )
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
     async fn test_health_check_returns_ok() {
-        let state = test_state();
+        let state = test_state().await;
         let response = health_check(State(state)).await;
 
         assert_eq!(response.status(), StatusCode::OK);
@@ -86,7 +91,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check_response_format() {
-        let state = test_state();
+        let state = test_state().await;
         state.set_instance_count(5).await;
         state.set_team_count(2).await;
 
@@ -103,7 +108,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_check_degraded() {
-        let state = test_state();
+        let state = test_state().await;
         state.mark_degraded().await;
 
         let response = health_check(State(state)).await;

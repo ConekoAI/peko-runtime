@@ -1,4 +1,5 @@
-//! Agent manager command handler
+//! Agent manager command handler (DEPRECATED)
+#![allow(deprecated)]
 
 use crate::agent::{
     pool::{AgentHandle, AgentPool},
