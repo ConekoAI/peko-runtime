@@ -54,12 +54,13 @@ pub struct BaseSession {
 impl BaseSession {
     /// Get the storage directory for an agent
     #[must_use]
-    pub fn storage_dir(agent_name: &str) -> PathBuf {
+    pub fn storage_dir(agent_name: &str, team: Option<&str>) -> PathBuf {
+        let team = team.unwrap_or("default");
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pekobot")
             .join("teams")
-            .join("default")
+            .join(team)
             .join("agents")
             .join(agent_name)
             .join("sessions")
@@ -89,7 +90,7 @@ impl BaseSession {
         session_id: &str,
         session_key: &str,
     ) -> Result<Self> {
-        let storage_dir = Self::storage_dir(agent_name);
+        let storage_dir = Self::storage_dir(agent_name, None);
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
 
@@ -155,7 +156,7 @@ impl BaseSession {
 
     /// Open an existing base session by key
     pub async fn open_by_key(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
-        let storage_dir = Self::storage_dir(agent_name);
+        let storage_dir = Self::storage_dir(agent_name, None);
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
 

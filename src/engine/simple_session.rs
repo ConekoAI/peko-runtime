@@ -39,14 +39,19 @@ pub struct SimpleSession {
 
 impl SimpleSession {
     /// Get the storage directory for an agent
-    /// Uses team-based structure: ~/.pekobot/teams/default/agents/{agent}/sessions/
+    /// Uses team-based structure: ~/.pekobot/teams/{team}/agents/{agent}/sessions/
+    ///
+    /// # Arguments
+    /// * `agent_name` - The agent name
+    /// * `team` - Optional team name (defaults to "default")
     #[must_use]
-    pub fn storage_dir(agent_name: &str) -> PathBuf {
+    pub fn storage_dir(agent_name: &str, team: Option<&str>) -> PathBuf {
+        let team = team.unwrap_or("default");
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".pekobot")
             .join("teams")
-            .join("default")
+            .join(team)
             .join("agents")
             .join(agent_name)
             .join("sessions")
@@ -69,7 +74,7 @@ impl SimpleSession {
         session_id: &str,
         session_key: Option<String>,
     ) -> Result<Self> {
-        let storage_dir = Self::storage_dir(agent_name);
+        let storage_dir = Self::storage_dir(agent_name, None);
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
 
@@ -130,7 +135,7 @@ impl SimpleSession {
 
     /// Open an existing session by ID
     pub async fn open(agent_name: &str, session_id: &str) -> Result<Option<Self>> {
-        let storage_dir = Self::storage_dir(agent_name);
+        let storage_dir = Self::storage_dir(agent_name, None);
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
 
@@ -186,7 +191,7 @@ impl SimpleSession {
 
     /// Open or create a session by key (for CLI persistence)
     pub async fn open_or_create_by_key(agent_name: &str, session_key: &str) -> Result<Self> {
-        let storage_dir = Self::storage_dir(agent_name);
+        let storage_dir = Self::storage_dir(agent_name, None);
         let mut index = SessionIndex::open(&storage_dir);
 
         // Ensure index is migrated
@@ -207,7 +212,7 @@ impl SimpleSession {
 
     /// Open an existing session by key (returns None if not found)
     pub async fn open_by_key(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
-        let storage_dir = Self::storage_dir(agent_name);
+        let storage_dir = Self::storage_dir(agent_name, None);
         let mut index = SessionIndex::open(&storage_dir);
 
         // Ensure index is migrated

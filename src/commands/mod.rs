@@ -252,6 +252,33 @@ impl GlobalPaths {
     pub fn mcp_config(&self) -> PathBuf {
         self.config_dir.join("mcp.toml")
     }
+
+    /// Get agent workspace directory
+    ///
+    /// Returns the path to an agent's workspace directory.
+    /// Format: <data_dir>/workspaces/<team>/<agent>
+    ///
+    /// # Arguments
+    /// * `agent` - The agent name
+    /// * `team` - Optional team name (defaults to "default")
+    #[must_use]
+    pub fn agent_workspace(&self, agent: &str, team: Option<&str>) -> PathBuf {
+        let team = team.unwrap_or("default");
+        self.data_dir.join("workspaces").join(team).join(agent)
+    }
+
+    /// Get agent workspace directory with explicit team
+    ///
+    /// Same as `agent_workspace` but requires an explicit team.
+    /// This is useful when the team is already known.
+    ///
+    /// # Arguments
+    /// * `agent` - The agent name
+    /// * `team` - The team name
+    #[must_use]
+    pub fn agent_workspace_with_team(&self, agent: &str, team: &str) -> PathBuf {
+        self.data_dir.join("workspaces").join(team).join(agent)
+    }
 }
 
 /// Initialize logging
