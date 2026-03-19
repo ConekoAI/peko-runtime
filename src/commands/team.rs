@@ -395,10 +395,10 @@ async fn handle_team_delete(
 
 /// Team metadata stored in team.toml
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct TeamMetadata {
-    name: String,
-    description: Option<String>,
-    created_at: String,
+pub struct TeamMetadata {
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: String,
 }
 
 /// Team information for listing

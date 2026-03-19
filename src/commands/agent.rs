@@ -521,14 +521,50 @@ pub mod handlers {
         // Parse identifier to extract team and agent name
         let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
 
-        // Check if team exists
+        // Check if team exists, create it automatically if not
         let team_dir = paths.team_dir(team);
         if !team_dir.exists() {
-            anyhow::bail!(
-                "Team '{}' does not exist. Create it first with: pekobot team create {}",
-                team,
-                team
-            );
+            // Validate team name before creating
+            use crate::commands::identifier::validate_team_name;
+            use crate::commands::identifier::ValidationError;
+            
+            if let Err(e) = validate_team_name(team) {
+                match e {
+                    ValidationError::Empty => anyhow::bail!("Team name cannot be empty"),
+                    ValidationError::TooLong(max) => {
+                        anyhow::bail!("Team name exceeds maximum length of {} characters", max)
+                    }
+                    ValidationError::Reserved(reserved) => {
+                        anyhow::bail!("'{}' is a reserved name and cannot be used", reserved)
+                    }
+                    ValidationError::ContainsPathSeparators => {
+                        anyhow::bail!("Team name cannot contain path separators (/ or \\)")
+                    }
+                    ValidationError::InvalidHyphenPlacement => {
+                        anyhow::bail!("Team name cannot start or end with a hyphen")
+                    }
+                    ValidationError::InvalidCharacter(ch) => {
+                        anyhow::bail!("Team name contains invalid character: '{}'", ch)
+                    }
+                }
+            }
+            
+            // Create team directory structure
+            let agents_dir = team_dir.join("agents");
+            tokio::fs::create_dir_all(&agents_dir).await?;
+            
+            // Create team metadata file
+            let metadata = crate::commands::team::TeamMetadata {
+                name: team.to_string(),
+                description: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            };
+            
+            let metadata_path = team_dir.join("team.toml");
+            let metadata_content = toml::to_string_pretty(&metadata)?;
+            tokio::fs::write(&metadata_path, metadata_content).await?;
+            
+            println!("✅ Created team '{}'", team);
         }
 
         let config_path = paths.agent_config(agent_name, Some(team));
