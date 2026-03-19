@@ -47,24 +47,20 @@ impl ActionTracker {
             .actions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cutoff = Instant::now()
-            .checked_sub(std::time::Duration::from_secs(3600))
-            .unwrap_or_else(Instant::now);
-        actions.retain(|t| *t > cutoff);
+        // Only filter old actions if we can safely calculate the cutoff time
+        if let Some(cutoff) = Instant::now().checked_sub(std::time::Duration::from_secs(3600)) {
+            actions.retain(|t| *t > cutoff);
+        }
         actions.push(Instant::now());
         actions.len()
     }
 
     /// Count actions without recording
     pub fn count(&self) -> usize {
-        let mut actions = self
+        let actions = self
             .actions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cutoff = Instant::now()
-            .checked_sub(std::time::Duration::from_secs(3600))
-            .unwrap_or_else(Instant::now);
-        actions.retain(|t| *t > cutoff);
         actions.len()
     }
 }
