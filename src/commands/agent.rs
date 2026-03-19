@@ -74,7 +74,7 @@ pub enum AgentCommands {
         #[arg(short, long)]
         team: Option<String>,
         /// Use template (minimal, coding, research, full)
-        #[arg(short, long, default_value = "minimal")]
+        #[arg(short = 'T', long, default_value = "minimal")]
         template: String,
         /// Provider to use
         #[arg(short, long, default_value = "kimi_code")]
