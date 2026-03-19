@@ -267,7 +267,7 @@ fn test_cli_session_key() {
 }
 
 /// Test session storage with file locking
-/// 
+///
 /// NOTE: This test is marked as #[ignore] because it has race conditions
 /// when running concurrently with other tests. The file locking mechanism
 /// has issues with concurrent access in the test environment.

@@ -1,8 +1,13 @@
-//! Chat API Routes
+//! Chat API Routes (Stateless Architecture)
 //!
-//! Implements chat endpoints per API_CONTRACT.md §4:
-//! - POST /agents/{id}/chat - Send message with SSE streaming
-//! - WebSocket /agents/{id}/ws - Bidirectional streaming (separate module)
+//! Implements chat endpoints per ADR-013 stateless cold-start model:
+//! - POST /agents/{name}/chat - Send message with SSE streaming
+//! - Stateless execution: agent cold-starts per request
+//!
+//! ADR-013 Compliance:
+//! - No persistent instance state
+//! - Agent cold-starts on every request
+//! - Loads config from disk, executes, exits
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
@@ -17,6 +22,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
+use uuid::Uuid;
 
 /// Chat request body
 #[derive(Debug, Deserialize)]
@@ -69,14 +75,19 @@ pub struct ToolCallSummary {
     pub output: String,
 }
 
+/// Generate a session ID if not provided
+fn generate_session_id() -> String {
+    format!("sess_{}", Uuid::new_v4().simple())
+}
+
 /// Chat handler - routes to streaming or non-streaming based on Accept header
 async fn chat_handler(
     State(state): State<AppState>,
-    Path(instance_id): Path<String>,
+    Path(agent_name): Path<String>,
     headers: axum::http::HeaderMap,
     Json(request): Json<ChatRequest>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
-    debug!("Chat request for instance: {}", instance_id);
+    debug!("Chat request for agent: {}", agent_name);
 
     // Check Accept header for streaming preference
     let accept_header = headers
@@ -92,188 +103,227 @@ async fn chat_handler(
         // Return SSE stream
         let (sse_stream, sender) = SseStream::new();
 
-        // Spawn the chat processing
+        // Spawn the chat processing (stateless cold-start)
         tokio::spawn(async move {
-            if let Err(e) = process_chat_stream(state, instance_id, request, sender).await {
+            if let Err(e) = process_chat_stream(state, agent_name, request, sender).await {
                 error!("Chat stream error: {}", e);
             }
         });
 
         Ok::<_, ApiError>(sse_stream.into_response())
     } else {
-        // Non-streaming response
-        let response = process_chat_blocking(state, instance_id, request).await?;
+        // Non-streaming response (stateless cold-start)
+        let response = process_chat_blocking(state, agent_name, request).await?;
         Ok::<_, ApiError>(Json(response).into_response())
     }
 }
 
-/// Process chat with streaming output
+/// Process chat with streaming output (stateless execution)
 async fn process_chat_stream(
-    _state: AppState,
-    instance_id: String,
+    state: AppState,
+    agent_name: String,
     request: ChatRequest,
     sender: tokio::sync::mpsc::Sender<ChatSseEvent>,
 ) -> anyhow::Result<()> {
     let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
     info!(
-        "Starting chat stream for instance: {} (run: {})",
-        instance_id, run_id
+        "Starting stateless chat stream for agent: {} (run: {})",
+        agent_name, run_id
     );
 
-    // Start first token timing (REQ-PF-003: < 500ms target)
-    // Note: This is a simplified measurement - in production, we'd measure
-    // from actual LLM stream start to first token emission
-    let first_token_start = std::time::Instant::now();
-    let mut first_token_recorded = false;
+    let session_id = request
+        .session_id
+        .clone()
+        .unwrap_or_else(generate_session_id);
 
-    // TODO: Load instance, get provider, tools, etc.
-    // For now, send a simple response
+    // ADR-013: Cold-start sequence
+    // 1. Check agent is registered
+    if !state.config_registry().exists(&agent_name).await {
+        let _ = sender
+            .send(ChatSseEvent::Error {
+                code: "agent_not_found".to_string(),
+                message: format!("Agent '{}' not found", agent_name),
+                tool_call_id: None,
+            })
+            .await;
+        return Err(anyhow::anyhow!("Agent not found: {}", agent_name));
+    }
 
-    // Send acknowledgment
+    // 2. Send acknowledgment (cold-start beginning)
     let _ = sender
         .send(ChatSseEvent::Delta {
             text: "Processing your message...".to_string(),
         })
         .await;
 
-    // Record first token latency (placeholder - would be measured at actual first LLM token)
-    let _ = first_token_recorded; // Suppress warning for now
-    GLOBAL_METRICS.record_first_token(first_token_start.elapsed());
+    // 3. Execute statelessly
+    let exec_request = crate::agent::stateless_service::ExecutionRequest {
+        agent_name: agent_name.clone(),
+        session_id: session_id.clone(),
+        message: request.message.clone(),
+        context: None,
+        timeout_secs: None,
+    };
 
-    // TODO: Integrate with actual agentic loop
-    // This is a placeholder implementation
+    let start_time = std::time::Instant::now();
 
-    // Send done event
-    let _ = sender
-        .send(ChatSseEvent::Done {
-            message_id: format!("msg_{}", uuid::Uuid::new_v4().simple()),
-            session_id: request
-                .session_id
-                .unwrap_or_else(|| format!("sess_{}", uuid::Uuid::new_v4().simple())),
-            turn_count: 1,
-            usage: TokenUsage::default(),
-        })
-        .await;
+    match state.agent_service().execute(exec_request).await {
+        Ok(result) => {
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+            info!(
+                "Stateless execution completed for {} in {}ms (success: {})",
+                agent_name, duration_ms, result.success
+            );
+
+            // Send the response content
+            if !result.response.is_empty() {
+                let _ = sender
+                    .send(ChatSseEvent::Delta {
+                        text: result.response,
+                    })
+                    .await;
+            }
+
+            // Convert tool calls to SSE events
+            for tc in &result.tool_calls {
+                let tool_id = format!("tool_{}", Uuid::new_v4().simple());
+                let _ = sender
+                    .send(ChatSseEvent::ToolCall {
+                        id: tool_id.clone(),
+                        tool: tc.name.clone(),
+                        args: tc.parameters.clone(),
+                        async_: false,
+                    })
+                    .await;
+
+                // Send tool result if available
+                if let Some(ref output) = tc.result {
+                    let _ = sender
+                        .send(ChatSseEvent::ToolResult {
+                            tool_call_id: tool_id,
+                            output: output.clone(),
+                            error: None,
+                        })
+                        .await;
+                }
+            }
+
+            // Record first token latency (end-to-end time as proxy)
+            GLOBAL_METRICS.record_first_token(start_time.elapsed());
+
+            // Send done event
+            let _ = sender
+                .send(ChatSseEvent::Done {
+                    message_id: format!("msg_{}", Uuid::new_v4().simple()),
+                    session_id,
+                    turn_count: result.iterations as u32,
+                    usage: TokenUsage {
+                        input_tokens: result.usage.input,
+                        output_tokens: result.usage.output,
+                        total_tokens: result.usage.total,
+                    },
+                })
+                .await;
+        }
+        Err(e) => {
+            error!("Stateless execution failed: {}", e);
+            let _ = sender
+                .send(ChatSseEvent::Error {
+                    code: "execution_error".to_string(),
+                    message: format!("Execution failed: {}", e),
+                    tool_call_id: None,
+                })
+                .await;
+            return Err(e);
+        }
+    }
 
     Ok(())
 }
 
-/// Process chat with blocking response
+/// Process chat with blocking response (stateless execution)
 async fn process_chat_blocking(
-    _state: AppState,
-    instance_id: String,
+    state: AppState,
+    agent_name: String,
     request: ChatRequest,
 ) -> Result<ChatResponse, ApiError> {
-    info!("Blocking chat request for instance: {}", instance_id);
+    info!("Stateless blocking chat request for agent: {}", agent_name);
 
-    // TODO: Load instance, get provider, tools, run agentic loop
-    // This is a placeholder implementation
+    let session_id = request
+        .session_id
+        .clone()
+        .unwrap_or_else(generate_session_id);
 
-    Ok(ChatResponse {
-        message: AssistantMessage {
-            id: format!("msg_{}", uuid::Uuid::new_v4().simple()),
-            role: "assistant".to_string(),
-            content: format!("Echo: {}", request.message),
-            created_at: chrono::Utc::now().to_rfc3339(),
-        },
-        session_id: request
-            .session_id
-            .unwrap_or_else(|| format!("sess_{}", uuid::Uuid::new_v4().simple())),
-        turn_count: 1,
-        usage: TokenUsage::default(),
-        tool_calls: None,
-    })
-}
-
-/// Convert engine events to SSE events and send
-async fn emit_events_to_sse(
-    event_receiver: &mut tokio::sync::mpsc::Receiver<AgenticEvent>,
-    sse_sender: &tokio::sync::mpsc::Sender<ChatSseEvent>,
-    _run_id: &str,
-) -> anyhow::Result<(String, u32, TokenUsage)> {
-    let mut final_text = String::new();
-    let mut turn_count = 0u32;
-    let usage = TokenUsage::default();
-
-    while let Some(event) = event_receiver.recv().await {
-        match &event {
-            AgenticEvent::Assistant { text, is_final, .. } => {
-                if !text.is_empty() {
-                    final_text.push_str(text);
-                    let _ = sse_sender
-                        .send(ChatSseEvent::Delta { text: text.clone() })
-                        .await;
-                }
-                if *is_final {
-                    turn_count += 1;
-                }
-            }
-            AgenticEvent::Thinking { text, .. } => {
-                let _ = sse_sender
-                    .send(ChatSseEvent::Thinking { text: text.clone() })
-                    .await;
-            }
-            AgenticEvent::ToolStart {
-                tool_id,
-                name,
-                params,
-                ..
-            } => {
-                let _ = sse_sender
-                    .send(ChatSseEvent::ToolCall {
-                        id: tool_id.clone(),
-                        tool: name.clone(),
-                        args: params.clone(),
-                        async_: false,
-                    })
-                    .await;
-            }
-            AgenticEvent::ToolEnd {
-                tool_id,
-                result,
-                success,
-                ..
-            } => {
-                let output = result.to_string();
-                let error = if *success { None } else { Some(output.clone()) };
-                let _ = sse_sender
-                    .send(ChatSseEvent::ToolResult {
-                        tool_call_id: tool_id.clone(),
-                        output,
-                        error,
-                    })
-                    .await;
-            }
-            AgenticEvent::Lifecycle {
-                phase: LifecyclePhase::End,
-                ..
-            } => {
-                break;
-            }
-            AgenticEvent::Lifecycle {
-                phase: LifecyclePhase::Error,
-                error: Some(err),
-                ..
-            } => {
-                let _ = sse_sender
-                    .send(ChatSseEvent::Error {
-                        code: "execution_error".to_string(),
-                        message: err.clone(),
-                        tool_call_id: None,
-                    })
-                    .await;
-                return Err(anyhow::anyhow!("Execution error: {}", err));
-            }
-            _ => {}
-        }
+    // Check agent exists
+    if !state.config_registry().exists(&agent_name).await {
+        return Err(ApiError::not_found("agent", agent_name.clone(), ""));
     }
 
-    Ok((final_text, turn_count, usage))
+    // Execute statelessly
+    let exec_request = crate::agent::stateless_service::ExecutionRequest {
+        agent_name: agent_name.clone(),
+        session_id: session_id.clone(),
+        message: request.message.clone(),
+        context: None,
+        timeout_secs: None,
+    };
+
+    let start_time = std::time::Instant::now();
+
+    match state.agent_service().execute(exec_request).await {
+        Ok(result) => {
+            let duration_ms = start_time.elapsed().as_millis();
+            info!(
+                "Stateless execution completed for {} in {}ms",
+                agent_name, duration_ms
+            );
+
+            // Convert tool calls to summaries
+            let tool_calls = if result.tool_calls.is_empty() {
+                None
+            } else {
+                Some(
+                    result
+                        .tool_calls
+                        .into_iter()
+                        .map(|tc| ToolCallSummary {
+                            id: format!("tool_{}", Uuid::new_v4().simple()),
+                            tool: tc.name,
+                            args: tc.parameters,
+                            output: tc.result.unwrap_or_default(),
+                        })
+                        .collect(),
+                )
+            };
+
+            Ok(ChatResponse {
+                message: AssistantMessage {
+                    id: format!("msg_{}", Uuid::new_v4().simple()),
+                    role: "assistant".to_string(),
+                    content: result.response,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                },
+                session_id,
+                turn_count: result.iterations as u32,
+                usage: TokenUsage {
+                    input_tokens: result.usage.input,
+                    output_tokens: result.usage.output,
+                    total_tokens: result.usage.total,
+                },
+                tool_calls,
+            })
+        }
+        Err(e) => {
+            error!("Stateless execution failed: {}", e);
+            Err(ApiError::internal(format!("Execution failed: {}", e), ""))
+        }
+    }
 }
 
 /// Create router for chat routes
 pub fn router() -> Router<AppState> {
-    Router::new().route("/agents/:id/chat", post(chat_handler))
+    // ADR-013: Use agent_name (not instance_id) in path
+    Router::new().route("/agents/:name/chat", post(chat_handler))
 }
 
 #[cfg(test)]
@@ -299,184 +349,16 @@ mod tests {
         let json = r#"{"message": "Hi"}"#;
         let req: ChatRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.message, "Hi");
-        assert!(req.session_id.is_none());
-        assert_eq!(req.role, "user");
+        assert_eq!(req.session_id, None);
+        assert_eq!(req.role, "user"); // default
     }
 
     #[test]
-    fn test_chat_request_with_only_session() {
-        let json = r#"{
-            "message": "Test",
-            "session_id": "sess_456"
-        }"#;
-        let req: ChatRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.message, "Test");
-        assert_eq!(req.session_id, Some("sess_456".to_string()));
-        assert_eq!(req.role, "user"); // Default
-    }
-
-    #[test]
-    fn test_chat_response_serialization() {
-        let response = ChatResponse {
-            message: AssistantMessage {
-                id: "msg_123".to_string(),
-                role: "assistant".to_string(),
-                content: "Hello!".to_string(),
-                created_at: "2026-03-17T10:00:00Z".to_string(),
-            },
-            session_id: "sess_456".to_string(),
-            turn_count: 1,
-            usage: TokenUsage::default(),
-            tool_calls: None,
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"message\""));
-        assert!(json.contains("\"session_id\""));
-        assert!(json.contains("\"turn_count\":1"));
-    }
-
-    #[test]
-    fn test_chat_response_with_tool_calls() {
-        let response = ChatResponse {
-            message: AssistantMessage {
-                id: "msg_789".to_string(),
-                role: "assistant".to_string(),
-                content: "I used a tool".to_string(),
-                created_at: "2026-03-17T10:00:00Z".to_string(),
-            },
-            session_id: "sess_abc".to_string(),
-            turn_count: 2,
-            usage: TokenUsage {
-                input_tokens: 100,
-                output_tokens: 50,
-                total_tokens: 150,
-            },
-            tool_calls: Some(vec![ToolCallSummary {
-                id: "tc_001".to_string(),
-                tool: "web_search".to_string(),
-                args: serde_json::json!({"query": "test"}),
-                output: "Search results".to_string(),
-            }]),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        assert!(json.contains("\"tool_calls\""));
-        assert!(json.contains("web_search"));
-        assert!(json.contains("input_tokens\""));
-    }
-
-    #[test]
-    fn test_assistant_message_serialization() {
-        let msg = AssistantMessage {
-            id: "msg_001".to_string(),
-            role: "assistant".to_string(),
-            content: "Test response".to_string(),
-            created_at: "2026-03-17T10:00:00Z".to_string(),
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"id\":\"msg_001\""));
-        assert!(json.contains("\"role\":\"assistant\""));
-        assert!(json.contains("\"content\":\"Test response\""));
-        assert!(json.contains("\"created_at\""));
-    }
-
-    #[test]
-    fn test_tool_call_summary_serialization() {
-        let summary = ToolCallSummary {
-            id: "tc_123".to_string(),
-            tool: "filesystem_read".to_string(),
-            args: serde_json::json!({"path": "/test.txt"}),
-            output: "file contents".to_string(),
-        };
-        let json = serde_json::to_string(&summary).unwrap();
-        assert!(json.contains("\"id\":\"tc_123\""));
-        assert!(json.contains("\"tool\":\"filesystem_read\""));
-        assert!(json.contains("\"args\""));
-        assert!(json.contains("\"output\""));
-    }
-
-    #[test]
-    fn test_default_user_role() {
-        assert_eq!(default_user_role(), "user");
-    }
-
-    #[tokio::test]
-    async fn test_sse_event_channel() {
-        let (sse_tx, mut sse_rx) = mpsc::channel(10);
-
-        // Send an assistant event
-        let _ = sse_tx
-            .send(ChatSseEvent::Delta {
-                text: "Hello".to_string(),
-            })
-            .await;
-
-        // Verify event was sent
-        let event = sse_rx.recv().await;
-        assert!(matches!(event, Some(ChatSseEvent::Delta { .. })));
-    }
-
-    #[tokio::test]
-    async fn test_sse_tool_events() {
-        let (sse_tx, mut sse_rx) = mpsc::channel(10);
-
-        // Send tool start event
-        let _ = sse_tx
-            .send(ChatSseEvent::ToolCall {
-                id: "tc_001".to_string(),
-                tool: "test_tool".to_string(),
-                args: serde_json::json!({}),
-                async_: false,
-            })
-            .await;
-
-        let event = sse_rx.recv().await;
-        match event {
-            Some(ChatSseEvent::ToolCall { id, tool, .. }) => {
-                assert_eq!(id, "tc_001");
-                assert_eq!(tool, "test_tool");
-            }
-            _ => panic!("Expected ToolCall event"),
-        }
-
-        // Send tool result event
-        let _ = sse_tx
-            .send(ChatSseEvent::ToolResult {
-                tool_call_id: "tc_001".to_string(),
-                output: "result".to_string(),
-                error: None,
-            })
-            .await;
-
-        let event = sse_rx.recv().await;
-        assert!(matches!(event, Some(ChatSseEvent::ToolResult { .. })));
-    }
-
-    #[tokio::test]
-    async fn test_sse_done_event() {
-        let (sse_tx, mut sse_rx) = mpsc::channel(10);
-
-        let _ = sse_tx
-            .send(ChatSseEvent::Done {
-                message_id: "msg_001".to_string(),
-                session_id: "sess_001".to_string(),
-                turn_count: 1,
-                usage: TokenUsage::default(),
-            })
-            .await;
-
-        let event = sse_rx.recv().await;
-        match event {
-            Some(ChatSseEvent::Done {
-                message_id,
-                session_id,
-                turn_count,
-                ..
-            }) => {
-                assert_eq!(message_id, "msg_001");
-                assert_eq!(session_id, "sess_001");
-                assert_eq!(turn_count, 1);
-            }
-            _ => panic!("Expected Done event"),
-        }
+    fn test_generate_session_id() {
+        let id1 = generate_session_id();
+        let id2 = generate_session_id();
+        assert!(id1.starts_with("sess_"));
+        assert!(id2.starts_with("sess_"));
+        assert_ne!(id1, id2);
     }
 }

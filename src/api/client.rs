@@ -129,70 +129,77 @@ impl ApiClient {
     }
 
     // =================================================================================
-    // Instance (Agent) Endpoints
+    // Agent Endpoints (Stateless - ADR-013)
     // =================================================================================
 
-    /// List all instances
-    pub async fn list_instances(
+    /// List all registered agents
+    ///
+    /// ADR-013: Returns agent configurations, not running instances
+    pub async fn list_agents(
         &self,
-        status: Option<&str>,
         team_id: Option<&str>,
-    ) -> Result<PaginatedInstancesResponse, ClientError> {
+    ) -> Result<PaginatedAgentsResponse, ClientError> {
         let mut query = Vec::new();
-        if let Some(s) = status {
-            query.push(("status", s));
-        }
         if let Some(t) = team_id {
             query.push(("team_id", t));
         }
         self.get_with_query("/agents", &query).await
     }
 
-    /// Create a new instance
-    pub async fn create_instance(
+    /// Register a new agent from image
+    ///
+    /// ADR-013: Creates configuration, does not start instance
+    pub async fn register_agent(
         &self,
         image: &str,
         name: Option<&str>,
         team_id: Option<&str>,
         env: Option<serde_json::Map<String, serde_json::Value>>,
-        auto_start: bool,
-    ) -> Result<InstanceResponse, ClientError> {
+    ) -> Result<AgentConfigResponse, ClientError> {
         let body = serde_json::json!({
             "image": image,
             "name": name,
             "team_id": team_id,
             "env": env,
-            "auto_start": auto_start,
         });
         self.post("/agents", &body).await
     }
 
-    /// Get an instance by ID
-    pub async fn get_instance(&self, id: &str) -> Result<InstanceResponse, ClientError> {
-        let path = format!("/agents/{}", id);
+    /// Get an agent configuration by name
+    pub async fn get_agent(&self, name: &str) -> Result<AgentConfigResponse, ClientError> {
+        let path = format!("/agents/{}", name);
         self.get(&path).await
     }
 
-    /// Stop an instance
-    pub async fn stop_instance(
+    /// Update an agent configuration
+    pub async fn update_agent(
         &self,
-        id: &str,
-        force: bool,
-        timeout: u32,
-    ) -> Result<InstanceResponse, ClientError> {
-        let path = format!("/agents/{}/stop", id);
-        let body = serde_json::json!({
-            "force": force,
-            "timeout": timeout,
-        });
-        self.post(&path, &body).await
+        name: &str,
+        image: Option<&str>,
+        team_id: Option<&str>,
+    ) -> Result<AgentConfigResponse, ClientError> {
+        let path = format!("/agents/{}", name);
+        let mut body = serde_json::Map::new();
+        if let Some(img) = image {
+            body.insert(
+                "image".to_string(),
+                serde_json::Value::String(img.to_string()),
+            );
+        }
+        if let Some(team) = team_id {
+            body.insert(
+                "team_id".to_string(),
+                serde_json::Value::String(team.to_string()),
+            );
+        }
+        let body = serde_json::Value::Object(body);
+        self.patch(&path, &body).await
     }
 
-    /// Delete an instance
-    pub async fn delete_instance(&self, id: &str, purge: bool) -> Result<(), ClientError> {
-        let path = format!("/agents/{}", id);
-        let query = if purge { "?purge=true" } else { "" };
-        let url = format!("{}{}{}", self.base_url, path, query);
+    /// Unregister an agent
+    pub async fn unregister_agent(&self, name: &str) -> Result<(), ClientError> {
+        let path = format!("/agents/{}", name);
+        let url = format!("{}{}", self.base_url, path);
 
         let response = self
             .client
@@ -203,6 +210,69 @@ impl ApiClient {
 
         self.handle_response(response).await?;
         Ok(())
+    }
+
+    /// Execute an agent (stateless cold-start)
+    ///
+    /// ADR-013: Agent cold-starts, executes, and exits
+    pub async fn execute_agent(
+        &self,
+        name: &str,
+        session_id: &str,
+        message: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<ExecuteAgentResponse, ClientError> {
+        let path = format!("/agents/{}/execute", name);
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "message": message,
+            "timeout_secs": timeout_secs,
+        });
+        self.post(&path, &body).await
+    }
+
+    // Legacy method aliases (deprecated)
+    #[deprecated(since = "0.2.0", note = "Use list_agents instead")]
+    pub async fn list_instances(
+        &self,
+        _status: Option<&str>,
+        team_id: Option<&str>,
+    ) -> Result<PaginatedAgentsResponse, ClientError> {
+        self.list_agents(team_id).await
+    }
+
+    #[deprecated(since = "0.2.0", note = "Use register_agent instead")]
+    pub async fn create_instance(
+        &self,
+        image: &str,
+        name: Option<&str>,
+        team_id: Option<&str>,
+        env: Option<serde_json::Map<String, serde_json::Value>>,
+        _auto_start: bool,
+    ) -> Result<AgentConfigResponse, ClientError> {
+        self.register_agent(image, name, team_id, env).await
+    }
+
+    #[deprecated(since = "0.2.0", note = "Use get_agent instead")]
+    pub async fn get_instance(&self, id: &str) -> Result<AgentConfigResponse, ClientError> {
+        self.get_agent(id).await
+    }
+
+    #[deprecated(since = "0.2.0", note = "Instances are stateless - no stop needed")]
+    pub async fn stop_instance(
+        &self,
+        _id: &str,
+        _force: bool,
+        _timeout: u32,
+    ) -> Result<AgentConfigResponse, ClientError> {
+        Err(ClientError::InvalidResponse(
+            "Stop instance is deprecated in stateless architecture".to_string(),
+        ))
+    }
+
+    #[deprecated(since = "0.2.0", note = "Use unregister_agent instead")]
+    pub async fn delete_instance(&self, id: &str, _purge: bool) -> Result<(), ClientError> {
+        self.unregister_agent(id).await
     }
 
     // =================================================================================
@@ -432,6 +502,24 @@ impl ApiClient {
         self.parse_response(response).await
     }
 
+    /// Perform a PATCH request
+    async fn patch<T, B>(&self, path: &str, body: &B) -> Result<T, ClientError>
+    where
+        T: DeserializeOwned,
+        B: Serialize,
+    {
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .client
+            .patch(&url)
+            .json(body)
+            .send()
+            .await
+            .map_err(map_http_error)?;
+
+        self.parse_response(response).await
+    }
+
     /// Handle a response (for empty bodies)
     async fn handle_response(&self, response: Response) -> Result<(), ClientError> {
         let status = response.status();
@@ -515,48 +603,82 @@ pub struct PaginatedResponse<T> {
     pub has_more: bool,
 }
 
-/// Instance status
+/// Agent configuration response (stateless model)
+///
+/// ADR-013: Agents have no persistent runtime state.
+/// They are configurations that cold-start on each request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstanceStatus {
-    Starting,
-    Running,
-    Stopping,
-    Stopped,
-    Error,
-}
-
-/// Instance response
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct InstanceResponse {
-    pub id: String,
+pub struct AgentConfigResponse {
+    /// Agent name (unique identifier)
     pub name: String,
+    /// Source image reference
     pub image_ref: String,
+    /// Pinned image digest
     pub image_digest: String,
-    pub status: InstanceStatus,
+    /// Team ID (if assigned)
     #[serde(default)]
     pub team_id: Option<String>,
+    /// Capabilities
+    pub capabilities: Vec<String>,
+    /// Registration timestamp
+    pub registered_at: String,
+    /// Last updated timestamp
     #[serde(default)]
-    pub team_name: Option<String>,
-    pub created_at: String,
+    pub updated_at: Option<String>,
+}
+
+/// Paginated agents response (replaces PaginatedInstancesResponse)
+pub type PaginatedAgentsResponse = PaginatedResponse<AgentConfigResponse>;
+
+/// Tool call in execute response
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolCallResponse {
+    pub id: String,
+    pub tool: String,
+    #[serde(rename = "args")]
+    pub args: serde_json::Value,
+    pub output: String,
+}
+
+/// Token usage in execute response
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct TokenUsageResponse {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
+/// Execute agent response
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExecuteAgentResponse {
+    pub execution_id: String,
+    pub response: String,
     #[serde(default)]
-    pub started_at: Option<String>,
-    #[serde(default)]
-    pub stopped_at: Option<String>,
-    #[serde(default)]
-    pub active_session_id: Option<String>,
+    pub tool_calls: Vec<ToolCallResponse>,
+    pub usage: TokenUsageResponse,
+    pub duration_ms: u64,
+    pub success: bool,
     #[serde(default)]
     pub error: Option<String>,
 }
 
-/// Paginated instances response
-pub type PaginatedInstancesResponse = PaginatedResponse<InstanceResponse>;
+// Legacy type aliases for backward compatibility (deprecated)
+#[deprecated(since = "0.2.0", note = "Use AgentConfigResponse instead")]
+pub type InstanceResponse = AgentConfigResponse;
+#[deprecated(since = "0.2.0", note = "Use PaginatedAgentsResponse instead")]
+pub type PaginatedInstancesResponse = PaginatedAgentsResponse;
 
 /// Session response
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionResponse {
     pub id: String,
-    pub instance_id: String,
+    /// Agent name (replaces instance_id in stateless model)
+    #[serde(rename = "agent_name")]
+    pub agent_name: String,
+    /// Legacy field name (deprecated)
+    #[serde(rename = "instance_id", default)]
+    #[deprecated(since = "0.2.0", note = "Use agent_name instead")]
+    pub _instance_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub turn_count: u32,
@@ -719,45 +841,44 @@ mod tests {
     }
 
     #[test]
-    fn test_instance_status_serialization() {
-        // Test that status serializes to snake_case
-        let status = InstanceStatus::Running;
-        let json = serde_json::to_string(&status).unwrap();
-        assert_eq!(json, "\"running\"");
+    fn test_agent_config_response_serialization() {
+        // Test agent config response (stateless model)
+        let agent = AgentConfigResponse {
+            name: "test-agent".to_string(),
+            image_ref: "test:v1.0".to_string(),
+            image_digest: "sha256:abc123".to_string(),
+            team_id: Some("team_456".to_string()),
+            capabilities: vec!["chat".to_string(), "search".to_string()],
+            registered_at: "2026-03-17T10:00:00Z".to_string(),
+            updated_at: Some("2026-03-17T11:00:00Z".to_string()),
+        };
 
-        let status = InstanceStatus::Stopped;
-        let json = serde_json::to_string(&status).unwrap();
-        assert_eq!(json, "\"stopped\"");
-    }
+        let json = serde_json::to_string(&agent).unwrap();
+        assert!(json.contains("test-agent"));
+        assert!(json.contains("sha256:abc123"));
 
-    #[test]
-    fn test_instance_response_deserialization() {
+        // Test deserialization
         let json = r#"{
-            "id": "inst_123",
             "name": "test-agent",
             "image_ref": "test:v1.0",
             "image_digest": "sha256:abc123",
-            "status": "running",
-            "created_at": "2026-03-17T10:00:00Z",
-            "active_session_id": "sess_456"
+            "capabilities": ["chat"],
+            "registered_at": "2026-03-17T10:00:00Z"
         }"#;
 
-        let instance: InstanceResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(instance.id, "inst_123");
-        assert_eq!(instance.name, "test-agent");
-        assert_eq!(instance.active_session_id, Some("sess_456".to_string()));
-
-        match instance.status {
-            InstanceStatus::Running => {}
-            _ => panic!("Expected Running status"),
-        }
+        let agent: AgentConfigResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(agent.name, "test-agent");
+        assert_eq!(agent.image_digest, "sha256:abc123");
+        assert_eq!(agent.capabilities, vec!["chat"]);
     }
 
     #[test]
     fn test_session_response_serialization() {
         let session = SessionResponse {
             id: "sess_123".to_string(),
-            instance_id: "inst_456".to_string(),
+            agent_name: "test-agent".to_string(),
+            #[allow(deprecated)]
+            _instance_id: None,
             created_at: "2026-03-17T10:00:00Z".to_string(),
             updated_at: "2026-03-17T10:05:00Z".to_string(),
             turn_count: 5,
@@ -767,6 +888,7 @@ mod tests {
 
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("sess_123"));
+        assert!(json.contains("test-agent"));
         assert!(json.contains("Test Session"));
         assert!(json.contains("sess_parent"));
     }
@@ -819,7 +941,9 @@ mod tests {
     fn test_branch_response() {
         let session = SessionResponse {
             id: "sess_child".to_string(),
-            instance_id: "inst_123".to_string(),
+            agent_name: "test-agent".to_string(),
+            #[allow(deprecated)]
+            _instance_id: None,
             created_at: "2026-03-17T10:00:00Z".to_string(),
             updated_at: "2026-03-17T10:00:00Z".to_string(),
             turn_count: 0,
