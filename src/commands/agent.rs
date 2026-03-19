@@ -19,6 +19,8 @@ use clap::Subcommand;
 #[command(disable_version_flag = true)]
 pub enum AgentCommands {
     /// Send a single message to an agent (non-interactive)
+    ///
+    /// **DEPRECATED:** Use `pekobot send <agent> <message>` instead.
     #[command(alias = "run")]
     Start {
         /// Agent name (defaults to 'peko' if not specified)
@@ -210,6 +212,9 @@ pub mod handlers {
     use tracing::{info, warn};
 
     /// Handle agent start command
+    ///
+    /// **DEPRECATED:** The `agent start --message` flag is deprecated.
+    /// Use `pekobot send <agent> <message>` instead.
     pub async fn handle_agent_start(
         name: Option<String>,
         config_path: Option<String>,
@@ -219,6 +224,13 @@ pub mod handlers {
         message: String,
         new_session: bool,
     ) -> anyhow::Result<()> {
+        use tokio::task::LocalSet;
+
+        // Show deprecation warning
+        eprintln!("⚠️  Warning: 'pekobot agent start --message' is deprecated.");
+        eprintln!("   Use 'pekobot send <agent> \"<message>\"' instead.");
+        eprintln!();
+
         // Determine agent name (default to "peko")
         let agent_name = name.unwrap_or_else(|| "peko".to_string());
 
@@ -244,13 +256,25 @@ pub mod handlers {
             build_default_config(&agent_name, &provider, model, db)
         };
 
-        match Agent::new(agent_config).await {
-            Ok(agent) => {
-                if let Err(e) = agent.start().await {
-                    eprintln!("❌ Failed to start agent: {e}");
-                    return Err(e);
-                }
+        let agent = match Agent::new(agent_config).await {
+            Ok(agent) => agent,
+            Err(e) => {
+                eprintln!("❌ Failed to create agent: {e}");
+                return Err(e);
+            }
+        };
 
+        if let Err(e) = agent.start().await {
+            eprintln!("❌ Failed to start agent: {e}");
+            return Err(e);
+        }
+
+        // Create a LocalSet for the entire execution
+        // This is required because execute_streaming_with_session uses spawn_local internally
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
                 // Single message mode only (non-interactive)
                 // Send message - output is already printed by process_events
                 crate::channels::cli::send_single_message_with_session(
@@ -258,15 +282,11 @@ pub mod handlers {
                     &message,
                     new_session,
                 )
-                .await?;
+                .await
+            })
+            .await?;
 
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("❌ Failed to create agent: {e}");
-                Err(e)
-            }
-        }
+        Ok(())
     }
 
     /// Handle agent list command - organized by teams

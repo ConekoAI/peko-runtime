@@ -22,6 +22,7 @@ pub mod gateway;
 pub mod mcp;
 pub mod orchestration;
 pub mod provider;
+pub mod send;
 pub mod session;
 pub mod system;
 pub mod tool;
@@ -84,6 +85,15 @@ pub enum Commands {
     /// Agent management commands
     #[command(subcommand)]
     Agent(agent::AgentCommands),
+
+    /// Send a message to an agent (unified command)
+    ///
+    /// This is the primary way to interact with agents. Examples:
+    ///   pekobot send myagent "Hello"
+    ///   pekobot send myagent --file prompt.txt
+    ///   echo "Hello" | pekobot send myagent --stdin
+    ///   pekobot send myagent "Hello" --session sess_xxx
+    Send(send::SendArgs),
 
     /// Authentication and credential management
     #[command(subcommand)]

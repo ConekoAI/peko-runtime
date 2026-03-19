@@ -1,7 +1,7 @@
 use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, gateway, init_logging, mcp, orchestration, provider,
+    agent, auth, config, cron, daemon, gateway, init_logging, mcp, orchestration, provider, send,
     session, system, tool, update, Cli, Commands, GlobalPaths,
 };
 use pekobot::types::config::PekobotConfig;
@@ -18,7 +18,7 @@ async fn main() {
     let paths = GlobalPaths::from_cli(&cli);
 
     // Run the command and handle results/exit codes
-    let result = run_command(cli.command, &paths).await;
+    let result = run_command(cli.command, &paths, cli.json).await;
 
     match result {
         Ok(()) => std::process::exit(0),
@@ -45,19 +45,18 @@ async fn main() {
     }
 }
 
-async fn run_command(command: Commands, paths: &GlobalPaths) -> anyhow::Result<()> {
-    let cli = Cli::parse();
-
+async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyhow::Result<()> {
     match command {
-        Commands::Agent(cmd) => agent::handle_agent(cmd, paths, cli.json).await,
-        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, cli.json).await,
-        Commands::Tool(cmd) => tool::handle_tool(cmd, paths, cli.json).await,
-        Commands::Session(cmd) => session::handle_session(cmd, paths, cli.json).await,
-        Commands::Config(cmd) => config::handle_config(cmd, paths, cli.json).await,
-        Commands::System(cmd) => system::handle_system(cmd, paths, cli.json).await,
-        Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, cli.json).await,
-        Commands::Cron(cmd) => cron::handle_cron(cmd, paths, cli.json).await,
-        Commands::Gateway(cmd) => gateway::handle_gateway(cmd, paths, cli.json).await,
+        Commands::Agent(cmd) => agent::handle_agent(cmd, paths, json).await,
+        Commands::Send(args) => send::handle_send(args, paths, json).await,
+        Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json).await,
+        Commands::Tool(cmd) => tool::handle_tool(cmd, paths, json).await,
+        Commands::Session(cmd) => session::handle_session(cmd, paths, json).await,
+        Commands::Config(cmd) => config::handle_config(cmd, paths, json).await,
+        Commands::System(cmd) => system::handle_system(cmd, paths, json).await,
+        Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, json).await,
+        Commands::Cron(cmd) => cron::handle_cron(cmd, paths, json).await,
+        Commands::Gateway(cmd) => gateway::handle_gateway(cmd, paths, json).await,
         Commands::Mcp(cmd) => mcp::handle(cmd, paths.mcp_config()).await,
         Commands::Orchestration(cmd) => {
             // Load configuration for orchestration commands
