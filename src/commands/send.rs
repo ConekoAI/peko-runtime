@@ -113,14 +113,16 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
 
     local
         .run_until(async {
-            // Handle session selection
-            let new_session = args.new || args.session.is_none();
+            // Handle session selection:
+            // --new: Force new session
+            // --session: Use specific session (TODO: implement session switching)
+            // Neither: Resume active session (or create new if none exists)
+            let new_session = args.new;
 
-            // If specific session provided, we need to handle that
-            // For now, new_session flag handles both "--new" and default behavior
-            // TODO: Add session switching when specific session ID provided
             if let Some(ref session_id) = args.session {
                 info!("Using session: {}", session_id);
+                // TODO: Implement session switching when specific session ID provided
+                // For now, we still use the default behavior but log the intent
             }
 
             crate::channels::cli::send_single_message_with_session(&agent, &message, new_session)
