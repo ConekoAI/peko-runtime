@@ -5,7 +5,7 @@
 
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
-use crate::session::index::{IndexEntry, SessionIndex};
+use crate::session::index::{SessionEntry, SessionIndex};
 use crate::session::jsonl::SessionStorage;
 use crate::types::ContentBlock;
 use anyhow::{Context, Result};
@@ -78,12 +78,6 @@ impl SimpleSession {
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
 
-        // Ensure index is migrated
-        index
-            .migrate_from_directory(agent_name)
-            .await
-            .with_context(|| format!("Failed to migrate index for agent: {agent_name}"))?;
-
         // Create session entry
         let cwd = std::env::current_dir()
             .ok()
@@ -101,20 +95,19 @@ impl SimpleSession {
 
         // Create index entry
         let transcript_file = format!("{session_id}.jsonl");
-        let mut entry = IndexEntry::new(
+        let mut entry = SessionEntry::new(
             session_id.to_string(),
             agent_name.to_string(),
             transcript_file,
         );
-        entry.session_key = session_key.clone();
         entry.cwd = cwd;
 
-        // Insert into index
-        let index_key = session_key
+        // Insert into index using create_for_peer
+        let peer_key = session_key
             .clone()
             .unwrap_or_else(|| format!("agent:{agent_name}:session:{session_id}"));
         index
-            .insert(index_key, entry)
+            .create_for_peer(entry, &peer_key)
             .await
             .with_context(|| "Failed to insert into index")?;
 
@@ -139,9 +132,6 @@ impl SimpleSession {
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
 
-        // Ensure index is migrated
-        index.migrate_from_directory(agent_name).await?;
-
         // Load existing entries to find the last message ID
         let entries: Vec<crate::session::jsonl::SessionEntry> =
             storage.load_session(session_id).await?;
@@ -162,15 +152,9 @@ impl SimpleSession {
 
         // Find session key and token counts from index if available
         let index_entry = index.find_by_session_id(session_id).await?;
-        let session_key = index_entry.as_ref().and_then(|e| e.session_key.clone());
-        let input_tokens = index_entry
-            .as_ref()
-            .and_then(|e| e.input_tokens)
-            .unwrap_or(0);
-        let output_tokens = index_entry
-            .as_ref()
-            .and_then(|e| e.output_tokens)
-            .unwrap_or(0);
+        let session_key = None; // session_key is now in peer mapping, not in entry
+        let input_tokens = index_entry.as_ref().map(|e| e.input_tokens).unwrap_or(0);
+        let output_tokens = index_entry.as_ref().map(|e| e.output_tokens).unwrap_or(0);
         let current_provider = index_entry.as_ref().and_then(|e| e.provider.clone());
         let current_model = index_entry.as_ref().and_then(|e| e.model.clone());
 
@@ -194,11 +178,8 @@ impl SimpleSession {
         let storage_dir = Self::storage_dir(agent_name, None);
         let mut index = SessionIndex::open(&storage_dir);
 
-        // Ensure index is migrated
-        index.migrate_from_directory(agent_name).await?;
-
         // Check if session exists
-        if let Some(entry) = index.get(session_key).await? {
+        if let Some(entry) = index.get_active_for_peer(session_key).await? {
             // Open existing
             return Self::open(agent_name, &entry.session_id)
                 .await
@@ -215,11 +196,8 @@ impl SimpleSession {
         let storage_dir = Self::storage_dir(agent_name, None);
         let mut index = SessionIndex::open(&storage_dir);
 
-        // Ensure index is migrated
-        index.migrate_from_directory(agent_name).await?;
-
         // Check if session exists
-        if let Some(entry) = index.get(session_key).await? {
+        if let Some(entry) = index.get_active_for_peer(session_key).await? {
             // Open existing
             Self::open(agent_name, &entry.session_id).await
         } else {
@@ -229,17 +207,15 @@ impl SimpleSession {
 
     /// Update the index with current session metadata
     async fn update_index(&mut self) -> Result<()> {
-        if let Some(ref session_key) = self.session_key {
-            if let Some(mut entry) = self.index.get(session_key).await? {
-                entry.touch();
-                entry.message_count = self.message_count;
-                entry.input_tokens = Some(self.input_tokens);
-                entry.output_tokens = Some(self.output_tokens);
-                entry.total_tokens = Some(self.input_tokens + self.output_tokens);
-                entry.provider = self.current_provider.clone();
-                entry.model = self.current_model.clone();
-                self.index.insert(session_key.clone(), entry).await?;
-            }
+        if let Some(mut entry) = self.index.get(&self.id).await? {
+            entry.touch();
+            entry.message_count = self.message_count;
+            entry.input_tokens = self.input_tokens;
+            entry.output_tokens = self.output_tokens;
+            entry.total_tokens = self.input_tokens + self.output_tokens;
+            entry.provider = self.current_provider.clone();
+            entry.model = self.current_model.clone();
+            self.index.insert(entry).await?;
         }
         Ok(())
     }

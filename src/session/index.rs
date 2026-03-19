@@ -1,9 +1,14 @@
-//! Session index (sessions.json) management
+//! Unified Session Index (TDD-002)
 //!
-//! Provides a central index for session metadata, enabling:
-//! - Fast session lookup by key or ID
-//! - Metadata aggregation across sessions
-//! - Session lifecycle management (prune, cap, rotate)
+//! Two-file architecture:
+//! - sessions.json: Session metadata keyed by session_id (HashMap<String, SessionEntry>)
+//! - peers.json: Peer routing keyed by peer_key (HashMap<String, PeerInfo>)
+//!
+//! This provides:
+//! - O(1) lookup by session_id
+//! - O(1) lookup by peer_key (critical for message routing)
+//! - No data duplication
+//! - Clean separation of concerns
 
 use crate::session::lock::FileLock;
 use anyhow::{Context, Result};
@@ -15,78 +20,39 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info, warn};
 
-/// Default cache TTL (45 seconds, same as `OpenClaw`)
-pub const DEFAULT_CACHE_TTL_MS: u64 = 45_000;
+/// Default cache TTL (30 seconds)
+pub const DEFAULT_CACHE_TTL_MS: u64 = 30_000;
 
 /// Default maintenance settings
 pub const DEFAULT_PRUNE_AFTER_DAYS: u64 = 30;
 pub const DEFAULT_MAX_SESSIONS: usize = 500;
-pub const DEFAULT_ROTATE_BYTES: usize = 10 * 1024 * 1024; // 10MB
 
-/// Entry in the session index
+/// Complete session metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndexEntry {
-    /// Unique session ID (matches filename without .jsonl)
+pub struct SessionEntry {
     pub session_id: String,
-    /// Agent name this session belongs to
     pub agent_name: String,
-    /// Optional session key (e.g., "agent:test:cli:default")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_key: Option<String>,
-    /// Creation timestamp (milliseconds since epoch)
     pub created_at: u64,
-    /// Last update timestamp
     pub updated_at: u64,
-    /// Number of messages in the session
     pub message_count: usize,
-    /// Total tokens used (if tracked)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_tokens: Option<usize>,
-    /// Input tokens
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_tokens: Option<usize>,
-    /// Output tokens
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_tokens: Option<usize>,
-    /// Path to transcript file (relative to index)
+    pub turn_count: u32,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub total_tokens: usize,
     pub transcript_file: String,
-    /// Working directory where session was created
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
-    /// Provider used (e.g., "anthropic", "openai")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    /// Model used (e.g., "claude-3-5-sonnet")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Channel this session belongs to (e.g., "discord", "cli")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    /// Recipient/channel ID for multi-user isolation
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recipient: Option<String>,
-    /// Account ID (for multi-account channels)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-    /// Last error (if any)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-    /// Parent session ID (for branched sessions)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_session_id: Option<String>,
-    /// Session title (auto-generated or user-set)
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// Whether the session has ended
-    #[serde(default)]
+    pub parent_session_id: Option<String>,
     pub ended: bool,
-    /// What triggered this session creation
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger: Option<String>,
+    pub trigger: String,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub channel: Option<String>,
+    pub recipient: Option<String>,
+    pub cwd: Option<String>,
 }
 
-impl IndexEntry {
-    /// Create a new index entry
+impl SessionEntry {
+    /// Create a new session entry
     #[must_use]
     pub fn new(session_id: String, agent_name: String, transcript_file: String) -> Self {
         let now = SystemTime::now()
@@ -97,29 +63,27 @@ impl IndexEntry {
         Self {
             session_id,
             agent_name,
-            session_key: None,
             created_at: now,
             updated_at: now,
             message_count: 0,
-            total_tokens: None,
-            input_tokens: None,
-            output_tokens: None,
+            turn_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
             transcript_file,
-            cwd: None,
+            title: None,
+            parent_session_id: None,
+            ended: false,
+            trigger: "user".to_string(),
             provider: None,
             model: None,
             channel: None,
             recipient: None,
-            account_id: None,
-            last_error: None,
-            parent_session_id: None,
-            title: None,
-            ended: false,
-            trigger: None,
+            cwd: None,
         }
     }
 
-    /// Update the entry with current timestamp
+    /// Update timestamp
     pub fn touch(&mut self) {
         self.updated_at = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -127,127 +91,134 @@ impl IndexEntry {
             .as_millis() as u64;
     }
 
-    /// Get the absolute path to the transcript file
-    #[must_use]
-    pub fn transcript_path(&self, index_dir: &Path) -> PathBuf {
-        index_dir.join(&self.transcript_file)
+    /// Record token usage
+    pub fn record_tokens(&mut self, input: usize, output: usize) {
+        self.input_tokens += input;
+        self.output_tokens += output;
+        self.total_tokens = self.input_tokens + self.output_tokens;
+        self.touch();
+    }
+
+    /// Increment message count
+    pub fn increment_messages(&mut self) {
+        self.message_count += 1;
+        self.touch();
+    }
+
+    /// Increment turn count
+    pub fn increment_turn(&mut self) {
+        self.turn_count += 1;
+        self.touch();
     }
 }
 
-/// Cached index data with timestamp
-#[derive(Debug, Clone)]
-struct CachedIndex {
-    data: HashMap<String, IndexEntry>,
-    loaded_at: SystemTime,
-    mtime_ms: u64,
+/// Peer routing information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerInfo {
+    /// Currently active session for this peer
+    pub active_session_id: String,
+    /// All session IDs for this peer (for switching)
+    pub session_ids: Vec<String>,
+}
+
+impl PeerInfo {
+    /// Create new peer info with initial session
+    #[must_use]
+    pub fn new(active_session_id: String) -> Self {
+        Self {
+            session_ids: vec![active_session_id.clone()],
+            active_session_id,
+        }
+    }
+
+    /// Add session and make it active
+    pub fn add_session(&mut self, session_id: String) {
+        if !self.session_ids.contains(&session_id) {
+            self.session_ids.push(session_id.clone());
+        }
+        self.active_session_id = session_id;
+    }
+
+    /// Switch to different session
+    pub fn switch_to(&mut self, session_id: &str) -> Result<()> {
+        if !self.session_ids.contains(&session_id.to_string()) {
+            return Err(anyhow::anyhow!("Session {} not found for peer", session_id));
+        }
+        self.active_session_id = session_id.to_string();
+        Ok(())
+    }
+
+    /// Get active session ID
+    #[must_use]
+    pub fn active_session_id(&self) -> &str {
+        &self.active_session_id
+    }
+}
+
+/// Peer index structure
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PeerIndex {
+    /// peer_key → peer info
+    pub peers: HashMap<String, PeerInfo>,
 }
 
 /// Maintenance configuration
 #[derive(Debug, Clone)]
 pub struct MaintenanceConfig {
-    /// Maintenance mode
-    pub mode: MaintenanceMode,
-    /// Prune sessions older than this
     pub prune_after: Duration,
-    /// Keep at most this many sessions per agent
     pub max_sessions: usize,
-    /// Rotate index file if larger than this
-    pub rotate_bytes: usize,
 }
 
 impl Default for MaintenanceConfig {
     fn default() -> Self {
         Self {
-            mode: MaintenanceMode::Warn,
             prune_after: Duration::from_secs(DEFAULT_PRUNE_AFTER_DAYS * 24 * 60 * 60),
             max_sessions: DEFAULT_MAX_SESSIONS,
-            rotate_bytes: DEFAULT_ROTATE_BYTES,
         }
     }
-}
-
-/// Maintenance mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MaintenanceMode {
-    /// Automatically perform maintenance
-    Auto,
-    /// Warn but don't auto-maintain
-    Warn,
-    /// Disable maintenance
-    Off,
 }
 
 /// Maintenance report
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MaintenanceReport {
-    /// Number of pruned sessions
     pub pruned: usize,
-    /// Number of sessions removed due to cap
-    pub capped: usize,
-    /// Whether the index was rotated
-    pub rotated: bool,
-    /// Bytes reclaimed
-    pub bytes_reclaimed: u64,
+    pub total: usize,
 }
 
-impl MaintenanceReport {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.pruned == 0 && self.capped == 0 && !self.rotated
-    }
-}
-
-/// Session index manager
+/// Unified session index manager
 #[derive(Debug)]
 pub struct SessionIndex {
-    /// Path to the index file (sessions.json)
-    path: PathBuf,
-    /// Directory containing the index and sessions
+    sessions_path: PathBuf,
+    peers_path: PathBuf,
     dir: PathBuf,
-    /// Cache of loaded index
-    cache: Option<CachedIndex>,
-    /// Cache TTL
+    // In-memory caches
+    sessions_cache: Option<HashMap<String, SessionEntry>>,
+    peers_cache: Option<PeerIndex>,
+    sessions_modified: bool,
+    peers_modified: bool,
     cache_ttl: Duration,
+    sessions_loaded_at: Option<SystemTime>,
+    peers_loaded_at: Option<SystemTime>,
 }
 
 impl SessionIndex {
-    /// Create or open a session index for an agent
-    pub async fn for_agent(agent_name: &str) -> Result<Self> {
-        let dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".pekobot")
-            .join("agents")
-            .join(agent_name)
-            .join("sessions");
-
-        fs::create_dir_all(&dir).await?;
-
-        let path = dir.join("sessions.json");
-        let index = Self {
-            path,
-            dir,
-            cache: None,
-            cache_ttl: Duration::from_millis(DEFAULT_CACHE_TTL_MS),
-        };
-
-        // Ensure index file exists
-        if !index.path.exists() {
-            index.save(&HashMap::new()).await?;
-        }
-
-        Ok(index)
-    }
-
-    /// Open an index at a specific path
+    /// Open index at a specific directory
     pub fn open(dir: impl AsRef<Path>) -> Self {
         let dir = dir.as_ref().to_path_buf();
-        let path = dir.join("sessions.json");
+        let sessions_path = dir.join("sessions.json");
+        let peers_path = dir.join("peers.json");
 
         Self {
-            path,
+            sessions_path,
+            peers_path,
             dir,
-            cache: None,
+            sessions_cache: None,
+            peers_cache: None,
+            sessions_modified: false,
+            peers_modified: false,
             cache_ttl: Duration::from_millis(DEFAULT_CACHE_TTL_MS),
+            sessions_loaded_at: None,
+            peers_loaded_at: None,
         }
     }
 
@@ -258,406 +229,630 @@ impl SessionIndex {
         self
     }
 
-    /// Load the index from disk (with caching)
-    ///
-    /// If the index file doesn't exist, it will be created with an empty index.
-    pub async fn load(&mut self) -> Result<HashMap<String, IndexEntry>> {
-        // Ensure directory exists
+    /// Ensure directory exists
+    async fn ensure_dir(&self) -> Result<()> {
         if !self.dir.exists() {
             fs::create_dir_all(&self.dir).await?;
         }
+        Ok(())
+    }
 
-        // Auto-create empty index file if it doesn't exist
-        if !self.path.exists() {
-            self.save(&HashMap::new()).await?;
-        }
-
-        // Check cache first
-        if let Some(cached) = &self.cache {
-            let age = cached.loaded_at.elapsed().unwrap_or(Duration::MAX);
-            if age < self.cache_ttl {
-                // Verify file hasn't changed
-                let current_mtime = self.get_mtime().await?;
-                if current_mtime == cached.mtime_ms {
-                    debug!("Using cached session index");
-                    return Ok(cached.data.clone());
+    /// Load sessions.json into cache
+    async fn load_sessions(&mut self) -> Result<&HashMap<String, SessionEntry>> {
+        // Check cache validity
+        if let Some(loaded_at) = self.sessions_loaded_at {
+            if loaded_at.elapsed().unwrap_or(Duration::MAX) < self.cache_ttl {
+                if let Some(ref cache) = self.sessions_cache {
+                    return Ok(cache);
                 }
             }
         }
 
+        self.ensure_dir().await?;
+
         // Load from disk
-        debug!("Loading session index from disk");
-        let entries = self.load_from_disk().await?;
+        let entries = if self.sessions_path.exists() {
+            let content = fs::read_to_string(&self.sessions_path)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to read sessions index: {}",
+                        self.sessions_path.display()
+                    )
+                })?;
 
-        // Update cache
-        let mtime = self.get_mtime().await?;
-        self.cache = Some(CachedIndex {
-            data: entries.clone(),
-            loaded_at: SystemTime::now(),
-            mtime_ms: mtime,
-        });
+            if content.trim().is_empty() {
+                HashMap::new()
+            } else {
+                serde_json::from_str(&content).with_context(|| {
+                    format!(
+                        "Failed to parse sessions index: {}",
+                        self.sessions_path.display()
+                    )
+                })?
+            }
+        } else {
+            HashMap::new()
+        };
 
-        Ok(entries)
+        self.sessions_cache = Some(entries);
+        self.sessions_loaded_at = Some(SystemTime::now());
+        self.sessions_modified = false;
+
+        Ok(self.sessions_cache.as_ref().unwrap())
     }
 
-    /// Load index without using cache
-    pub async fn load_fresh(&mut self) -> Result<HashMap<String, IndexEntry>> {
-        self.cache = None;
-        self.load().await
-    }
-
-    /// Load index from disk
-    async fn load_from_disk(&self) -> Result<HashMap<String, IndexEntry>> {
-        if !self.path.exists() {
-            return Ok(HashMap::new());
-        }
-
-        let content = fs::read_to_string(&self.path)
-            .await
-            .with_context(|| format!("Failed to read index: {}", self.path.display()))?;
-
-        if content.trim().is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let entries: HashMap<String, IndexEntry> = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse index: {}", self.path.display()))?;
-
-        Ok(entries)
-    }
-
-    /// Save the index to disk
-    pub async fn save(&self, entries: &HashMap<String, IndexEntry>) -> Result<()> {
-        // Ensure directory exists
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-
-        let _lock = FileLock::acquire(&self.path, 5000).await?;
-
-        // Serialize to JSON
-        let json = serde_json::to_string_pretty(entries)?;
-
-        // Write to temp file then rename for atomicity
-        let temp_path = self.path.with_extension("tmp");
-        {
-            let mut file = fs::File::create(&temp_path).await?;
-            file.write_all(json.as_bytes()).await?;
-            file.flush().await?;
-        }
-
-        fs::rename(&temp_path, &self.path).await?;
-
-        debug!("Saved session index: {} entries", entries.len());
-        Ok(())
-    }
-
-    /// Get an entry by session key or ID
-    pub async fn get(&mut self, key: &str) -> Result<Option<IndexEntry>> {
-        let entries = self.load().await?;
-        Ok(entries.get(key).cloned())
-    }
-
-    /// Insert or update an entry
-    pub async fn insert(&mut self, key: String, entry: IndexEntry) -> Result<()> {
-        let mut entries = self
-            .load()
-            .await
-            .with_context(|| format!("Failed to load index from {:?}", self.path))?;
-        entries.insert(key, entry);
-        self.save(&entries)
-            .await
-            .with_context(|| format!("Failed to save index to {:?}", self.path))?;
-
-        // Update cache
-        if let Some(cache) = &mut self.cache {
-            cache.data = entries;
-            cache.loaded_at = SystemTime::now();
-            // Note: mtime will be updated on next load if needed
-        }
-
-        Ok(())
-    }
-
-    /// Remove an entry
-    pub async fn remove(&mut self, key: &str) -> Result<Option<IndexEntry>> {
-        let mut entries = self.load().await?;
-        let removed = entries.remove(key);
-
-        if removed.is_some() {
-            self.save(&entries).await?;
-
-            // Update cache
-            if let Some(cache) = &mut self.cache {
-                cache.data = entries;
-                cache.loaded_at = SystemTime::now();
+    /// Load peers.json into cache
+    async fn load_peers(&mut self) -> Result<&PeerIndex> {
+        // Check cache validity
+        if let Some(loaded_at) = self.peers_loaded_at {
+            if loaded_at.elapsed().unwrap_or(Duration::MAX) < self.cache_ttl {
+                if let Some(ref cache) = self.peers_cache {
+                    return Ok(cache);
+                }
             }
         }
 
+        self.ensure_dir().await?;
+
+        // Load from disk
+        let index = if self.peers_path.exists() {
+            let content = fs::read_to_string(&self.peers_path)
+                .await
+                .with_context(|| {
+                    format!("Failed to read peers index: {}", self.peers_path.display())
+                })?;
+
+            if content.trim().is_empty() {
+                PeerIndex::default()
+            } else {
+                serde_json::from_str(&content).with_context(|| {
+                    format!("Failed to parse peers index: {}", self.peers_path.display())
+                })?
+            }
+        } else {
+            PeerIndex::default()
+        };
+
+        self.peers_cache = Some(index);
+        self.peers_loaded_at = Some(SystemTime::now());
+        self.peers_modified = false;
+
+        Ok(self.peers_cache.as_ref().unwrap())
+    }
+
+    /// Get mutable sessions cache
+    async fn load_sessions_mut(&mut self) -> Result<&mut HashMap<String, SessionEntry>> {
+        self.load_sessions().await?;
+        Ok(self.sessions_cache.as_mut().unwrap())
+    }
+
+    /// Get mutable peers cache
+    async fn load_peers_mut(&mut self) -> Result<&mut PeerIndex> {
+        self.load_peers().await?;
+        Ok(self.peers_cache.as_mut().unwrap())
+    }
+
+    // =================================================================================
+    // Core CRUD Operations
+    // =================================================================================
+
+    /// Get session by ID (O(1))
+    pub async fn get(&mut self, session_id: &str) -> Result<Option<SessionEntry>> {
+        let sessions = self.load_sessions().await?;
+        Ok(sessions.get(session_id).cloned())
+    }
+
+    /// Insert or update session (O(1))
+    pub async fn insert(&mut self, entry: SessionEntry) -> Result<()> {
+        let sessions = self.load_sessions_mut().await?;
+        sessions.insert(entry.session_id.clone(), entry);
+        self.sessions_modified = true;
+        Ok(())
+    }
+
+    /// Remove session (O(1))
+    pub async fn remove(&mut self, session_id: &str) -> Result<Option<SessionEntry>> {
+        let sessions = self.load_sessions_mut().await?;
+        let removed = sessions.remove(session_id);
+        if removed.is_some() {
+            self.sessions_modified = true;
+        }
         Ok(removed)
     }
 
-    /// List all entries
-    pub async fn list(&mut self) -> Result<Vec<IndexEntry>> {
-        let entries = self.load().await?;
-        Ok(entries.into_values().collect())
+    // =================================================================================
+    // Peer Routing Operations (O(1) for critical path)
+    // =================================================================================
+
+    /// Get active session for peer (O(1)) - CRITICAL for message routing
+    pub async fn get_active_for_peer(&mut self, peer_key: &str) -> Result<Option<SessionEntry>> {
+        let peers = self.load_peers().await?;
+        let active_id = peers
+            .peers
+            .get(peer_key)
+            .map(|p| p.active_session_id.clone());
+        drop(peers); // Release borrow
+
+        let Some(active_id) = active_id else {
+            return Ok(None);
+        };
+
+        let sessions = self.load_sessions().await?;
+        Ok(sessions.get(&active_id).cloned())
     }
 
-    /// Find entries by agent name
-    pub async fn find_by_agent(&mut self, agent: &str) -> Result<Vec<IndexEntry>> {
-        let entries = self.load().await?;
-        Ok(entries
-            .values()
-            .filter(|e| e.agent_name == agent)
-            .cloned()
+    /// Get active session ID for peer (O(1))
+    pub async fn get_active_session_id(&mut self, peer_key: &str) -> Result<Option<String>> {
+        let peers = self.load_peers().await?;
+        Ok(peers
+            .peers
+            .get(peer_key)
+            .map(|p| p.active_session_id.clone()))
+    }
+
+    /// Get active session ID for peer using immutable borrow
+    /// Returns None if peers not loaded in cache
+    pub fn get_active_session_id_cached(&self, peer_key: &str) -> Option<String> {
+        self.peers_cache
+            .as_ref()
+            .and_then(|peers| peers.peers.get(peer_key))
+            .map(|p| p.active_session_id.clone())
+    }
+
+    /// List all sessions for a peer (O(N) where N = sessions for peer, typically small)
+    pub async fn list_for_peer(&mut self, peer_key: &str) -> Result<Vec<SessionEntry>> {
+        let peers = self.load_peers().await?;
+        let session_ids: Vec<String> = peers
+            .peers
+            .get(peer_key)
+            .map(|p| p.session_ids.clone())
+            .unwrap_or_default();
+        drop(peers); // Release borrow
+
+        let sessions = self.load_sessions().await?;
+        Ok(session_ids
+            .iter()
+            .filter_map(|id| sessions.get(id).cloned())
             .collect())
     }
 
-    /// Find entry by session ID
-    pub async fn find_by_session_id(&mut self, session_id: &str) -> Result<Option<IndexEntry>> {
-        let entries = self.load().await?;
-        Ok(entries
-            .values()
-            .find(|e| e.session_id == session_id)
-            .cloned())
+    /// Switch active session for peer (O(1))
+    pub async fn set_active_for_peer(&mut self, peer_key: &str, session_id: &str) -> Result<()> {
+        let peers = self.load_peers_mut().await?;
+
+        let peer_info = peers
+            .peers
+            .get_mut(peer_key)
+            .ok_or_else(|| anyhow::anyhow!("Peer {} not found", peer_key))?;
+
+        peer_info.switch_to(session_id)?;
+        self.peers_modified = true;
+
+        info!("Switched {} to session {}", peer_key, session_id);
+        Ok(())
     }
 
-    /// Perform maintenance on the index
+    /// Create new session for peer (O(1))
+    pub async fn create_for_peer(&mut self, entry: SessionEntry, peer_key: &str) -> Result<()> {
+        let session_id = entry.session_id.clone();
+
+        // Add to sessions.json
+        let sessions = self.load_sessions_mut().await?;
+        sessions.insert(session_id.clone(), entry);
+        self.sessions_modified = true;
+
+        // Update peers.json
+        let peers = self.load_peers_mut().await?;
+        let peer_info = peers
+            .peers
+            .entry(peer_key.to_string())
+            .or_insert_with(|| PeerInfo::new(session_id.clone()));
+
+        peer_info.add_session(session_id.clone());
+        self.peers_modified = true;
+
+        info!("Created session {} for peer {}", session_id, peer_key);
+        Ok(())
+    }
+
+    /// Branch session for peer (O(1))
+    pub async fn branch_for_peer(&mut self, new_entry: SessionEntry, peer_key: &str) -> Result<()> {
+        let new_session_id = new_entry.session_id.clone();
+
+        // Add to sessions.json
+        let sessions = self.load_sessions_mut().await?;
+        sessions.insert(new_session_id.clone(), new_entry);
+        self.sessions_modified = true;
+
+        // Update peers.json - add to peer and make active
+        let peers = self.load_peers_mut().await?;
+        let peer_info = peers
+            .peers
+            .entry(peer_key.to_string())
+            .or_insert_with(|| PeerInfo::new(new_session_id.clone()));
+
+        peer_info.add_session(new_session_id.clone());
+        self.peers_modified = true;
+
+        info!("Branched session {} for peer {}", new_session_id, peer_key);
+        Ok(())
+    }
+
+    /// Create new session without peer association
+    pub async fn create(&mut self, entry: SessionEntry) -> Result<()> {
+        let sessions = self.load_sessions_mut().await?;
+        sessions.insert(entry.session_id.clone(), entry);
+        self.sessions_modified = true;
+        Ok(())
+    }
+
+    // =================================================================================
+    // Listing Operations
+    // =================================================================================
+
+    /// List all sessions (O(N))
+    pub async fn list_all(&mut self) -> Result<Vec<SessionEntry>> {
+        let sessions = self.load_sessions().await?;
+        let mut entries: Vec<_> = sessions.values().cloned().collect();
+        // Sort by updated_at descending (most recent first)
+        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(entries)
+    }
+
+    /// List sessions for agent (O(N))
+    pub async fn list_for_agent(&mut self, agent_name: &str) -> Result<Vec<SessionEntry>> {
+        let sessions = self.load_sessions().await?;
+        let mut entries: Vec<_> = sessions
+            .values()
+            .filter(|e| e.agent_name == agent_name)
+            .cloned()
+            .collect();
+        // Sort by updated_at descending
+        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(entries)
+    }
+
+    /// Find entry by session ID
+    pub async fn find_by_session_id(&mut self, session_id: &str) -> Result<Option<SessionEntry>> {
+        self.get(session_id).await
+    }
+
+    // =================================================================================
+    // Persistence
+    // =================================================================================
+
+    /// Save sessions.json if modified
+    pub async fn save_sessions(&mut self) -> Result<()> {
+        if !self.sessions_modified {
+            return Ok(());
+        }
+
+        let sessions = self.load_sessions().await?;
+        let sessions_clone = sessions.clone();
+        drop(sessions); // Release borrow before calling internal method
+        self.save_sessions_internal(&sessions_clone).await?;
+        self.sessions_modified = false;
+        Ok(())
+    }
+
+    /// Save peers.json if modified
+    pub async fn save_peers(&mut self) -> Result<()> {
+        if !self.peers_modified {
+            return Ok(());
+        }
+
+        let peers = self.load_peers().await?;
+        let peers_clone = peers.clone();
+        drop(peers); // Release borrow before calling internal method
+        self.save_peers_internal(&peers_clone).await?;
+        self.peers_modified = false;
+        Ok(())
+    }
+
+    /// Save both if modified
+    pub async fn save(&mut self) -> Result<()> {
+        self.save_sessions().await?;
+        self.save_peers().await?;
+        Ok(())
+    }
+
+    /// Internal: Save sessions.json
+    async fn save_sessions_internal(&self, sessions: &HashMap<String, SessionEntry>) -> Result<()> {
+        self.ensure_dir().await?;
+
+        let _lock = FileLock::acquire(&self.sessions_path, 5000).await?;
+
+        let json = serde_json::to_string_pretty(sessions)?;
+        let temp_path = self.sessions_path.with_extension("tmp");
+
+        fs::write(&temp_path, json).await?;
+        fs::rename(&temp_path, &self.sessions_path).await?;
+
+        debug!("Saved sessions.json: {} entries", sessions.len());
+        Ok(())
+    }
+
+    /// Internal: Save peers.json
+    async fn save_peers_internal(&self, peers: &PeerIndex) -> Result<()> {
+        self.ensure_dir().await?;
+
+        let _lock = FileLock::acquire(&self.peers_path, 5000).await?;
+
+        let json = serde_json::to_string_pretty(peers)?;
+        let temp_path = self.peers_path.with_extension("tmp");
+
+        fs::write(&temp_path, json).await?;
+        fs::rename(&temp_path, &self.peers_path).await?;
+
+        debug!("Saved peers.json: {} peers", peers.peers.len());
+        Ok(())
+    }
+
+    // =================================================================================
+    // Maintenance
+    // =================================================================================
+
+    /// Perform maintenance (prune old sessions)
     pub async fn maintenance(&mut self, config: &MaintenanceConfig) -> Result<MaintenanceReport> {
-        let mut report = MaintenanceReport {
-            pruned: 0,
-            capped: 0,
-            rotated: false,
-            bytes_reclaimed: 0,
+        // First, collect session IDs to prune without holding mutable borrows
+        let to_prune: Vec<String> = {
+            let sessions = self.load_sessions().await?;
+
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
+
+            let cutoff = now - config.prune_after.as_millis() as u64;
+
+            sessions
+                .iter()
+                .filter(|(_, e)| e.updated_at < cutoff)
+                .map(|(k, _)| k.clone())
+                .collect()
         };
 
-        if config.mode == MaintenanceMode::Off {
-            return Ok(report);
+        let mut pruned = 0;
+        let total_sessions: usize;
+
+        for session_id in to_prune {
+            // Remove from sessions
+            let sessions = self.load_sessions_mut().await?;
+            sessions.remove(&session_id);
+            drop(sessions); // Release borrow before setting flag
+            self.sessions_modified = true;
+
+            // Remove from peers
+            let peers = self.load_peers_mut().await?;
+            for peer_info in peers.peers.values_mut() {
+                peer_info.session_ids.retain(|id| id != &session_id);
+            }
+            // Remove empty peers
+            peers.peers.retain(|_, p| !p.session_ids.is_empty());
+            drop(peers); // Release borrow before setting flag
+            self.peers_modified = true;
+
+            // Delete transcript file
+            let transcript_path = self.dir.join(format!("{}.jsonl", session_id));
+            if transcript_path.exists() {
+                let _ = fs::remove_file(&transcript_path).await;
+            }
+
+            pruned += 1;
         }
 
-        let mut entries = self.load().await?;
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        if pruned > 0 {
+            self.save().await?;
+            info!("Pruned {} old sessions", pruned);
+        }
 
-        // Prune old entries
-        let cutoff = now - config.prune_after.as_millis() as u64;
-        let to_prune: Vec<String> = entries
-            .iter()
-            .filter(|(_, e)| e.updated_at < cutoff)
-            .map(|(k, _)| k.clone())
+        // Get total count for report
+        let sessions = self.load_sessions().await?;
+        total_sessions = sessions.len();
+
+        Ok(MaintenanceReport {
+            pruned,
+            total: total_sessions,
+        })
+    }
+}
+
+// =================================================================================
+// Legacy Migration (One-time, removes old format)
+// =================================================================================
+
+/// Migration report
+#[derive(Debug, Default)]
+pub struct MigrationReport {
+    pub sessions_migrated: usize,
+    pub peers_migrated: usize,
+    pub duplicates_removed: usize,
+    pub sidecars_removed: usize,
+}
+
+/// Migrate from old format to new two-file format
+pub async fn migrate_to_v2(sessions_dir: &Path) -> Result<MigrationReport> {
+    let mut report = MigrationReport::default();
+
+    // Check if already migrated
+    if sessions_dir.join("sessions.json").exists()
+        && sessions_dir.join("peers.json").exists()
+        && !sessions_dir.join("registry.json").exists()
+    {
+        info!("Session index already at v2");
+        return Ok(report);
+    }
+
+    info!("Migrating session index to v2 format...");
+
+    // 1. Load old registry.json if exists
+    let mut peer_mappings: HashMap<String, (String, Vec<String>)> = HashMap::new();
+
+    let registry_path = sessions_dir.join("registry.json");
+    if registry_path.exists() {
+        #[derive(Deserialize)]
+        struct OldRegistry {
+            peers: HashMap<String, OldPeerEntry>,
+        }
+
+        #[derive(Deserialize)]
+        struct OldPeerEntry {
+            active_session_id: String,
+            sessions: HashMap<String, OldSessionInfo>,
+        }
+
+        #[derive(Deserialize)]
+        struct OldSessionInfo {
+            session_id: String,
+            transcript_file: String,
+            created_at: u64,
+            updated_at: u64,
+            message_count: usize,
+            parent_id: Option<String>,
+        }
+
+        let content = fs::read_to_string(&registry_path).await?;
+        let old_registry: OldRegistry = serde_json::from_str(&content)?;
+
+        for (peer_key, peer_entry) in old_registry.peers {
+            let session_ids: Vec<String> = peer_entry.sessions.keys().cloned().collect();
+            peer_mappings.insert(peer_key, (peer_entry.active_session_id, session_ids));
+        }
+
+        report.peers_migrated = peer_mappings.len();
+    }
+
+    // 2. Load old sessions.json (may have duplicates)
+    let mut new_sessions: HashMap<String, SessionEntry> = HashMap::new();
+
+    let old_sessions_path = sessions_dir.join("sessions.json");
+    if old_sessions_path.exists() {
+        #[derive(Deserialize)]
+        struct OldIndexEntry {
+            session_id: String,
+            agent_name: String,
+            session_key: Option<String>,
+            created_at: u64,
+            updated_at: u64,
+            message_count: usize,
+            total_tokens: Option<usize>,
+            transcript_file: String,
+            title: Option<String>,
+            parent_session_id: Option<String>,
+            ended: bool,
+            trigger: Option<String>,
+            provider: Option<String>,
+            model: Option<String>,
+            channel: Option<String>,
+            recipient: Option<String>,
+            cwd: Option<String>,
+        }
+
+        let content = fs::read_to_string(&old_sessions_path).await?;
+        let old_entries: HashMap<String, OldIndexEntry> = serde_json::from_str(&content)?;
+
+        // Deduplicate by session_id (keep most recent)
+        let mut by_session: HashMap<String, Vec<OldIndexEntry>> = HashMap::new();
+        for (_, entry) in old_entries {
+            by_session
+                .entry(entry.session_id.clone())
+                .or_default()
+                .push(entry);
+        }
+
+        for (session_id, mut entries) in by_session {
+            if entries.len() > 1 {
+                report.duplicates_removed += entries.len() - 1;
+            }
+
+            // Keep most recent
+            entries.sort_by_key(|e| std::cmp::Reverse(e.updated_at));
+            let best = &entries[0];
+
+            let entry = SessionEntry {
+                session_id: session_id.clone(),
+                agent_name: best.agent_name.clone(),
+                created_at: best.created_at,
+                updated_at: best.updated_at,
+                message_count: best.message_count,
+                turn_count: 0, // Will be calculated from events
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: best.total_tokens.unwrap_or(0),
+                transcript_file: best.transcript_file.clone(),
+                title: best.title.clone(),
+                parent_session_id: best.parent_session_id.clone(),
+                ended: best.ended,
+                trigger: best.trigger.clone().unwrap_or_else(|| "user".to_string()),
+                provider: best.provider.clone(),
+                model: best.model.clone(),
+                channel: best.channel.clone(),
+                recipient: best.recipient.clone(),
+                cwd: best.cwd.clone(),
+            };
+
+            new_sessions.insert(session_id, entry);
+        }
+
+        report.sessions_migrated = new_sessions.len();
+    }
+
+    // 3. Build new peers.json
+    let mut new_peers = PeerIndex::default();
+    for (peer_key, (active_id, session_ids)) in peer_mappings {
+        // Filter to only existing sessions
+        let valid_ids: Vec<String> = session_ids
+            .into_iter()
+            .filter(|id| new_sessions.contains_key(id))
             .collect();
 
-        for key in to_prune {
-            if let Some(entry) = entries.remove(&key) {
-                // Delete transcript file
-                let transcript_path = self.dir.join(&entry.transcript_file);
-                if transcript_path.exists() {
-                    if let Ok(metadata) = fs::metadata(&transcript_path).await {
-                        report.bytes_reclaimed += metadata.len();
-                    }
-                    let _ = fs::remove_file(&transcript_path).await;
-                }
-                report.pruned += 1;
-            }
-        }
+        if !valid_ids.is_empty() {
+            let active = if valid_ids.contains(&active_id) {
+                active_id
+            } else {
+                valid_ids[0].clone()
+            };
 
-        // Cap total entries (keep most recently updated)
-        if entries.len() > config.max_sessions {
-            let mut sorted: Vec<(_, _)> = entries.iter().collect();
-            sorted.sort_by_key(|(_, e)| std::cmp::Reverse(e.updated_at));
-
-            let to_remove: Vec<String> = sorted
-                .into_iter()
-                .skip(config.max_sessions)
-                .map(|(k, _)| k.clone())
-                .collect();
-
-            for key in to_remove {
-                if let Some(entry) = entries.remove(&key) {
-                    let transcript_path = self.dir.join(&entry.transcript_file);
-                    if transcript_path.exists() {
-                        if let Ok(metadata) = fs::metadata(&transcript_path).await {
-                            report.bytes_reclaimed += metadata.len();
-                        }
-                        let _ = fs::remove_file(&transcript_path).await;
-                    }
-                    report.capped += 1;
-                }
-            }
-        }
-
-        // Save changes
-        if report.pruned > 0 || report.capped > 0 {
-            if config.mode == MaintenanceMode::Warn {
-                warn!(
-                    "Session maintenance would prune {} and cap {} sessions (mode=warn, skipping)",
-                    report.pruned, report.capped
-                );
-                // Don't actually save changes in warn mode
-                return Ok(report);
-            }
-
-            self.save(&entries).await?;
-
-            // Update cache after pruning
-            let mtime = self.get_mtime().await?;
-            self.cache = Some(CachedIndex {
-                data: entries,
-                loaded_at: SystemTime::now(),
-                mtime_ms: mtime,
-            });
-
-            info!(
-                "Session maintenance complete: pruned={}, capped={}, reclaimed={} bytes",
-                report.pruned, report.capped, report.bytes_reclaimed
+            new_peers.peers.insert(
+                peer_key,
+                PeerInfo {
+                    active_session_id: active,
+                    session_ids: valid_ids,
+                },
             );
         }
-
-        // Check rotation
-        if let Ok(metadata) = fs::metadata(&self.path).await {
-            if metadata.len() > config.rotate_bytes as u64 {
-                self.rotate().await?;
-                report.rotated = true;
-            }
-        }
-
-        Ok(report)
     }
 
-    /// Rotate the index file (rename to .bak.{timestamp})
-    async fn rotate(&self) -> Result<()> {
-        let timestamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
+    // 4. Write new files
+    let sessions_json = serde_json::to_string_pretty(&new_sessions)?;
+    fs::write(sessions_dir.join("sessions.json"), sessions_json).await?;
 
-        let backup_path = self.path.with_extension(format!("json.bak.{timestamp}"));
-        fs::rename(&self.path, backup_path).await?;
+    let peers_json = serde_json::to_string_pretty(&new_peers)?;
+    fs::write(sessions_dir.join("peers.json"), peers_json).await?;
 
-        // Create new empty index
-        self.save(&HashMap::new()).await?;
+    // 5. Delete old files
+    fs::remove_file(&registry_path).await?;
 
-        // Clean up old backups (keep only 3 most recent)
-        self.cleanup_backups().await?;
-
-        info!("Rotated session index file");
-        Ok(())
+    // Remove old sidecar files
+    let mut entries = fs::read_dir(sessions_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(".index.json") {
+            fs::remove_file(entry.path()).await?;
+            report.sidecars_removed += 1;
+        }
     }
 
-    /// Clean up old backup files
-    async fn cleanup_backups(&self) -> Result<()> {
-        let mut backups: Vec<PathBuf> = vec![];
-        let mut entries = fs::read_dir(&self.dir).await?;
+    info!(
+        "Migration complete: {} sessions, {} peers, {} duplicates removed, {} sidecars removed",
+        report.sessions_migrated,
+        report.peers_migrated,
+        report.duplicates_removed,
+        report.sidecars_removed
+    );
 
-        while let Some(entry) = entries.next_entry().await? {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("sessions.json.bak.") {
-                backups.push(entry.path());
-            }
-        }
-
-        // Sort by modification time (newest first)
-        let mut backups_with_time: Vec<(_, _)> = vec![];
-        for path in backups {
-            if let Ok(metadata) = fs::metadata(&path).await {
-                if let Ok(modified) = metadata.modified() {
-                    backups_with_time.push((path, modified));
-                }
-            }
-        }
-        backups_with_time.sort_by(|a, b| b.1.cmp(&a.1));
-
-        // Remove old backups
-        for (path, _) in backups_with_time.into_iter().skip(3) {
-            let _ = fs::remove_file(&path).await;
-        }
-
-        Ok(())
-    }
-
-    /// Migrate existing sessions (scan directory and populate index)
-    pub async fn migrate_from_directory(&mut self, agent_name: &str) -> Result<usize> {
-        // Create directory if it doesn't exist
-        if !self.dir.exists() {
-            fs::create_dir_all(&self.dir).await?;
-        }
-
-        let mut entries = HashMap::new();
-        let mut dir_entries = fs::read_dir(&self.dir).await?;
-
-        while let Some(entry) = dir_entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "jsonl") {
-                let filename = path.file_stem().unwrap().to_string_lossy().to_string();
-
-                // Check if already indexed
-                let exists = self.find_by_session_id(&filename).await?.is_some();
-                if exists {
-                    continue;
-                }
-
-                // Get file metadata
-                let metadata = fs::metadata(&path).await?;
-                let modified = metadata.modified()?;
-                let modified_ms = modified
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
-
-                // Create entry
-                let index_entry = IndexEntry {
-                    session_id: filename.clone(),
-                    agent_name: agent_name.to_string(),
-                    session_key: None,
-                    created_at: modified_ms,
-                    updated_at: modified_ms,
-                    message_count: 0, // Will be updated on next access
-                    total_tokens: None,
-                    input_tokens: None,
-                    output_tokens: None,
-                    transcript_file: path.file_name().unwrap().to_string_lossy().to_string(),
-                    cwd: None,
-                    provider: None,
-                    model: None,
-                    channel: None,
-                    recipient: None,
-                    account_id: None,
-                    last_error: None,
-                    parent_session_id: None,
-                    title: None,
-                    ended: false,
-                    trigger: None,
-                };
-
-                let key = format!("agent:{agent_name}:session:{filename}");
-                entries.insert(key, index_entry);
-            }
-        }
-
-        let count = entries.len();
-        if count > 0 {
-            // Merge with existing entries
-            let mut existing = self.load().await?;
-            existing.extend(entries);
-            self.save(&existing).await?;
-            info!("Migrated {} sessions to index", count);
-        }
-
-        Ok(count)
-    }
-
-    /// Get file modification time
-    async fn get_mtime(&self) -> Result<u64> {
-        let metadata = fs::metadata(&self.path).await?;
-        let modified = metadata.modified()?;
-        let ms = modified
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        Ok(ms)
-    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -665,45 +860,107 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // TODO: Fix test_index_create_and_load - temp file cleanup issue
-    // #[tokio::test]
-    // async fn test_index_create_and_load() { ... }
-
     #[tokio::test]
-    async fn test_maintenance_prune() {
+    async fn test_session_entry_crud() {
         let temp = TempDir::new().unwrap();
         let mut index = SessionIndex::open(temp.path());
 
-        // Add old entry
-        let mut old_entry = IndexEntry::new(
-            "old_123".to_string(),
+        // Create
+        let entry = SessionEntry::new(
+            "sess_123".to_string(),
             "testagent".to_string(),
-            "old_123.jsonl".to_string(),
+            "sess_123.jsonl".to_string(),
         );
-        old_entry.updated_at = 0; // Very old
-        index.insert("old".to_string(), old_entry).await.unwrap();
+        index.insert(entry.clone()).await.unwrap();
 
-        // Add new entry
-        let new_entry = IndexEntry::new(
-            "new_456".to_string(),
+        // Read
+        let found = index.get("sess_123").await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().session_id, "sess_123");
+
+        // Update
+        let mut updated = entry.clone();
+        updated.title = Some("New Title".to_string());
+        index.insert(updated).await.unwrap();
+
+        let found = index.get("sess_123").await.unwrap();
+        assert_eq!(found.unwrap().title, Some("New Title".to_string()));
+
+        // Delete
+        let removed = index.remove("sess_123").await.unwrap();
+        assert!(removed.is_some());
+
+        let not_found = index.get("sess_123").await.unwrap();
+        assert!(not_found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_peer_routing() {
+        let temp = TempDir::new().unwrap();
+        let mut index = SessionIndex::open(temp.path());
+
+        let peer_key = "agent:test:peer:user:alice";
+
+        // Create session for peer
+        let entry = SessionEntry::new(
+            "sess_abc".to_string(),
             "testagent".to_string(),
-            "new_456.jsonl".to_string(),
+            "sess_abc.jsonl".to_string(),
         );
-        index.insert("new".to_string(), new_entry).await.unwrap();
+        index.create_for_peer(entry, peer_key).await.unwrap();
 
-        // Run maintenance with 1 day prune
-        let config = MaintenanceConfig {
-            mode: MaintenanceMode::Auto,
-            prune_after: Duration::from_secs(86400),
-            max_sessions: 100,
-            rotate_bytes: 10_000_000,
-        };
+        // Get active
+        let active = index.get_active_for_peer(peer_key).await.unwrap();
+        assert!(active.is_some());
+        assert_eq!(active.unwrap().session_id, "sess_abc");
 
-        let report = index.maintenance(&config).await.unwrap();
-        assert_eq!(report.pruned, 1);
+        // Create another session
+        let entry2 = SessionEntry::new(
+            "sess_def".to_string(),
+            "testagent".to_string(),
+            "sess_def.jsonl".to_string(),
+        );
+        index.create_for_peer(entry2, peer_key).await.unwrap();
 
-        // Verify old entry is gone
-        let entries = index.load().await.unwrap();
-        assert_eq!(entries.len(), 1);
+        // Active should be the new one
+        let active = index.get_active_for_peer(peer_key).await.unwrap();
+        assert_eq!(active.unwrap().session_id, "sess_def");
+
+        // Switch back
+        index
+            .set_active_for_peer(peer_key, "sess_abc")
+            .await
+            .unwrap();
+
+        let active = index.get_active_for_peer(peer_key).await.unwrap();
+        assert_eq!(active.unwrap().session_id, "sess_abc");
+
+        // List all
+        let all = index.list_for_peer(peer_key).await.unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_persistence() {
+        let temp = TempDir::new().unwrap();
+
+        // Create and save
+        {
+            let mut index = SessionIndex::open(temp.path());
+            let entry = SessionEntry::new(
+                "sess_123".to_string(),
+                "testagent".to_string(),
+                "sess_123.jsonl".to_string(),
+            );
+            index.insert(entry).await.unwrap();
+            index.save().await.unwrap();
+        }
+
+        // Load and verify
+        {
+            let mut index = SessionIndex::open(temp.path());
+            let found = index.get("sess_123").await.unwrap();
+            assert!(found.is_some());
+        }
     }
 }

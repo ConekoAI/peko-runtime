@@ -634,7 +634,7 @@ impl Agent {
 
     /// Create a new session (/new command)
     pub async fn session_new(&self, peer: &Peer) -> Result<String> {
-        let manager = self.session_manager.write().await;
+        let mut manager = self.session_manager.write().await;
         let session_id = manager.create_new_session(peer).await?;
         info!("Created new session {} for peer {:?}", session_id, peer);
         Ok(session_id)
@@ -642,7 +642,7 @@ impl Agent {
 
     /// Branch current session (/branch command)
     pub async fn session_branch(&self, peer: &Peer, label: Option<String>) -> Result<String> {
-        let manager = self.session_manager.write().await;
+        let mut manager = self.session_manager.write().await;
         let session_id = manager.branch_session(peer, label).await?;
         info!("Branched session {} from peer {:?}", session_id, peer);
         Ok(session_id)
@@ -650,15 +650,15 @@ impl Agent {
 
     /// Switch to a different session (/switch command)
     pub async fn session_switch(&self, peer: &Peer, session_id: &str) -> Result<()> {
-        let manager = self.session_manager.write().await;
+        let mut manager = self.session_manager.write().await;
         manager.switch_session(peer, session_id).await?;
         info!("Switched peer {:?} to session {}", peer, session_id);
         Ok(())
     }
 
     /// List all sessions for a peer (/sessions command)
-    pub async fn session_list(&self, peer: &Peer) -> Result<Vec<crate::session::SessionInfo>> {
-        let manager = self.session_manager.write().await;
+    pub async fn session_list(&self, peer: &Peer) -> Result<Vec<crate::session::SessionEntry>> {
+        let mut manager = self.session_manager.write().await;
         let sessions = manager.list_sessions(peer).await?;
         Ok(sessions)
     }
@@ -667,7 +667,7 @@ impl Agent {
     #[must_use]
     pub fn format_session_list(
         &self,
-        sessions: &[crate::session::SessionInfo],
+        sessions: &[crate::session::SessionEntry],
         active_id: Option<&str>,
     ) -> String {
         if sessions.is_empty() {
@@ -679,12 +679,12 @@ impl Agent {
         for (i, session) in sessions.iter().enumerate() {
             let is_active = active_id.is_some_and(|id| id == session.session_id);
             let marker = if is_active { "●" } else { "○" };
-            let label = session.label.as_deref().unwrap_or("unnamed");
+            let label = session.title.as_deref().unwrap_or("unnamed");
             let short_id = &session.session_id[..8];
 
             output.push_str(&format!("{} {}. {} ({})", marker, i + 1, label, short_id));
 
-            if let Some(ref parent) = session.parent_id {
+            if let Some(ref parent) = session.parent_session_id {
                 output.push_str(&format!(" [branched from {}]", &parent[..8]));
             }
 

@@ -550,8 +550,11 @@ mod tests {
                 .unwrap(),
         );
 
-        let path_resolver =
-            PathResolver::with_dirs(temp_dir.path().join("config"), temp_dir.path().join("data"), temp_dir.path().join("cache"));
+        let path_resolver = PathResolver::with_dirs(
+            temp_dir.path().join("config"),
+            temp_dir.path().join("data"),
+            temp_dir.path().join("cache"),
+        );
 
         let service = StatelessAgentService::new(registry, path_resolver)
             .await

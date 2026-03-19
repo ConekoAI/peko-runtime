@@ -9,12 +9,9 @@
 //! Per REQ-SM-001 and REQ-RL-003: Session history must be fully recoverable
 //! from JSONL files alone.
 
-use crate::session::events::{SessionEndReason, SessionEvent, SessionTrigger};
+use crate::session::events::SessionEvent;
 use crate::session::jsonl::SessionStorage;
-use crate::session::sidecar::SidecarManager;
-use crate::session::sync::SyncSessionStorage;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, info, warn};
@@ -24,10 +21,7 @@ use tracing::{debug, info, warn};
 pub struct RecoveryReport {
     /// Number of sessions scanned
     pub sessions_scanned: usize,
-    /// Number of sidecars rebuilt
-    pub sidecars_rebuilt: usize,
-    /// Number of sessions marked as uncleanly terminated
-    pub unclean_sessions: usize,
+
     /// Number of temp files cleaned up
     pub temp_files_cleaned: usize,
     /// Sessions that had errors during recovery
@@ -40,8 +34,6 @@ impl RecoveryReport {
     pub fn new() -> Self {
         Self {
             sessions_scanned: 0,
-            sidecars_rebuilt: 0,
-            unclean_sessions: 0,
             temp_files_cleaned: 0,
             errors: vec![],
         }
@@ -98,11 +90,8 @@ impl SessionRecovery {
         }
 
         info!(
-            "Session recovery complete: scanned={}, rebuilt={}, unclean={}, cleaned={}",
-            report.sessions_scanned,
-            report.sidecars_rebuilt,
-            report.unclean_sessions,
-            report.temp_files_cleaned
+            "Session recovery complete: scanned={}, cleaned={}",
+            report.sessions_scanned, report.temp_files_cleaned
         );
 
         Ok(report)
@@ -113,7 +102,6 @@ impl SessionRecovery {
         debug!("Recovering sessions in: {:?}", dir);
 
         let storage = SessionStorage::new(dir.to_path_buf());
-        let sidecar_manager = SidecarManager::new(dir.to_path_buf());
 
         // List all session files
         let sessions = storage.list_sessions().await?;
@@ -132,39 +120,11 @@ impl SessionRecovery {
                 }
             }
 
-            // Check if sidecar exists
-            let sidecar_exists = sidecar_manager.exists(&session_id).await;
-
-            if !sidecar_exists {
-                // Rebuild sidecar from JSONL
-                debug!("Rebuilding sidecar for session: {}", session_id);
-                if let Err(e) = self.rebuild_sidecar(dir, &session_id).await {
-                    warn!("Failed to rebuild sidecar for {}: {}", session_id, e);
-                    report.errors.push((session_id.clone(), e.to_string()));
-                } else {
-                    report.sidecars_rebuilt += 1;
-                }
-            } else {
-                // Verify sidecar is in sync
-                if let Err(e) = self.verify_session(dir, &session_id, report).await {
-                    warn!("Verification failed for {}: {}", session_id, e);
-                }
+            // Verify session and mark unclean terminations
+            if let Err(e) = self.verify_session(dir, &session_id, report).await {
+                warn!("Verification failed for {}: {}", session_id, e);
             }
         }
-
-        Ok(())
-    }
-
-    /// Rebuild sidecar from JSONL
-    async fn rebuild_sidecar(&self, dir: &Path, session_id: &str) -> Result<()> {
-        let storage = SyncSessionStorage::new(dir.to_path_buf());
-
-        // Extract instance_id from directory path
-        // Path format: .../{instance_id}/sessions/ or .../agents/{instance_id}/sessions/
-        let instance_id = self.extract_instance_id(dir)?;
-
-        // Rebuild sidecar
-        storage.recover_sidecar(session_id, &instance_id).await?;
 
         Ok(())
     }
@@ -191,9 +151,6 @@ impl SessionRecovery {
         if !has_ended {
             // Session didn't end cleanly
             debug!("Session {} did not end cleanly", session_id);
-            report.unclean_sessions += 1;
-
-            // Optionally mark as unclean in sidecar
             // This is informational - we don't modify the JSONL
         }
 
@@ -268,28 +225,6 @@ impl SessionRecovery {
             .to_string();
 
         Ok(instance_id)
-    }
-
-    /// Recover a specific session
-    pub async fn recover_session(&self, session_id: &str, instance_id: &str) -> Result<()> {
-        // Find the session directory
-        let sessions_dir = self
-            .workspace_path
-            .join("agents")
-            .join(instance_id)
-            .join("sessions");
-
-        if !sessions_dir.exists() {
-            return Err(anyhow::anyhow!(
-                "Sessions directory not found for instance {}",
-                instance_id
-            ));
-        }
-
-        let storage = SyncSessionStorage::new(sessions_dir);
-        storage.recover_sidecar(session_id, instance_id).await?;
-
-        Ok(())
     }
 
     /// Clean up all temp files in workspace
@@ -368,9 +303,6 @@ mod tests {
     #[tokio::test]
     async fn test_recovery_report() {
         let mut report = RecoveryReport::new();
-        assert!(report.is_success());
-
-        report.sidecars_rebuilt = 5;
         assert!(report.is_success());
 
         report

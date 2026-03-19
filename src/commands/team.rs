@@ -66,11 +66,7 @@ pub enum TeamCommands {
 }
 
 /// Handle team commands
-pub async fn handle_team(
-    cmd: TeamCommands,
-    paths: &GlobalPaths,
-    json: bool,
-) -> Result<()> {
+pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> Result<()> {
     let service = paths.services().team();
 
     match cmd {
@@ -149,7 +145,10 @@ fn render_team_created(result: &TeamCreationResult, json: bool) {
         }
         println!();
         println!("   You can now create agents in this team:");
-        println!("     pekobot agent create {}/<agent-name>", result.metadata.name);
+        println!(
+            "     pekobot agent create {}/<agent-name>",
+            result.metadata.name
+        );
     }
 }
 
@@ -190,12 +189,20 @@ fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
                 println!("   Path: {}", team.path.display());
                 println!();
             } else {
-                let desc_marker = if team.metadata.as_ref().and_then(|m| m.description.as_ref()).is_some() {
+                let desc_marker = if team
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.description.as_ref())
+                    .is_some()
+                {
                     " •"
                 } else {
                     ""
                 };
-                println!("{} {}{} ({} agents)", icon, team.name, desc_marker, team.agent_count);
+                println!(
+                    "{} {}{} ({} agents)",
+                    icon, team.name, desc_marker, team.agent_count
+                );
             }
         }
     }
@@ -243,7 +250,10 @@ fn render_team_show(
 
         if agents.is_empty() {
             println!("   No agents in this team.");
-            println!("   Create one with: pekobot agent create {}/<agent-name>", team.name);
+            println!(
+                "   Create one with: pekobot agent create {}/<agent-name>",
+                team.name
+            );
         } else {
             println!("   Agents ({}):", agents.len());
             for (agent_name, config) in agents {
@@ -251,10 +261,7 @@ fn render_team_show(
                 if let Some(ref desc) = config.description {
                     println!("      {}", desc);
                 }
-                println!(
-                    "      Provider: {:?}",
-                    config.provider.provider_type
-                );
+                println!("      Provider: {:?}", config.provider.provider_type);
             }
         }
     }
@@ -281,7 +288,10 @@ fn render_team_deleted(result: &TeamDeletionResult, json: bool) {
 fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
     println!("⚠️  This will permanently delete team '{}'.", name);
     if agent_count > 0 {
-        println!("   It contains {} agent(s) that will also be deleted.", agent_count);
+        println!(
+            "   It contains {} agent(s) that will also be deleted.",
+            agent_count
+        );
     }
     println!("   This action cannot be undone.");
     print!("   Continue? [y/N] ");
@@ -297,7 +307,11 @@ fn map_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
     match e {
         ValidationError::Empty => anyhow::anyhow!("Team name cannot be empty"),
         ValidationError::TooLong(max) => {
-            anyhow::anyhow!("Team name '{}' exceeds maximum length of {} characters", name, max)
+            anyhow::anyhow!(
+                "Team name '{}' exceeds maximum length of {} characters",
+                name,
+                max
+            )
         }
         ValidationError::Reserved(reserved) => {
             anyhow::anyhow!("'{}' is a reserved name and cannot be used", reserved)

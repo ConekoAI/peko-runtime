@@ -2,7 +2,7 @@
 //!
 //! Provides session storage with Pekobot JSONL format:
 //! - File locking for concurrent access safety
-//! - Session index (.index.json sidecar) for fast lookups
+//! - Unified session index (sessions.json + peers.json) for fast lookups
 //! - Session key derivation for multi-user isolation
 //! - Session overlays (base + channel/spawn layers)
 //! - Atomic writes (tmp + rename) for durability
@@ -11,7 +11,7 @@
 //!
 //! - `events`: Pekobot session event types (13 types per DATA_MODEL §5.3)
 //! - `lock`: File locking with timeout and stale detection
-//! - `index`: Session index (.index.json sidecar) management
+//! - `index`: Unified session index (sessions.json + peers.json) management
 //! - `key`: Session key derivation for scoping
 //! - `jsonl`: JSONL storage format (Pekobot format)
 //! - `types`: Core types (Peer, ChannelType, OverlayType)
@@ -30,8 +30,6 @@ pub mod lock;
 pub mod manager;
 pub mod overlay;
 pub mod recovery;
-pub mod registry;
-pub mod sidecar;
 pub mod spawn;
 pub mod subagent_key;
 pub mod sync;
@@ -47,8 +45,11 @@ pub use events::{
     SessionEvent, SessionTrigger, SpawnRequestEvent, SpawnResultEvent, SystemEvent, ThinkingEvent,
     TokenUsage, ToolCallEvent, ToolResultEvent, UserMessageEvent,
 };
-pub use index::{IndexEntry, MaintenanceConfig, MaintenanceMode, MaintenanceReport, SessionIndex};
-pub use jsonl::{SessionEntry, SessionStorage};
+pub use index::{
+    migrate_to_v2, MaintenanceConfig, MaintenanceReport, MigrationReport, PeerIndex, PeerInfo,
+    SessionEntry, SessionIndex,
+};
+pub use jsonl::{SessionEntry as JsonlSessionEntry, SessionStorage};
 pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
     parse_session_key, parse_session_key_v2, ChatType, ParsedSessionKeyV2, SessionScope,
@@ -64,10 +65,8 @@ pub use spawn::{SpawnOverlay, SpawnOverlayData, SpawnResult, SpawnStatus};
 
 pub use manager::{HybridSession, OverlayRef, SessionManager};
 
-// Re-export session registry for switching/branching
+// Re-export recovery
 pub use recovery::{RecoveryReport, RecoveryState, SessionRecovery};
-pub use registry::{PeerRegistryEntry, SessionInfo, SessionRegistry, SessionRegistryManager};
-pub use sidecar::{SessionSidecarIndex, SidecarManager};
 pub use sync::SyncSessionStorage;
 
 // Re-export subagent key utilities

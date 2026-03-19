@@ -17,8 +17,8 @@
 //!   pekobot send myagent --file prompt.txt
 
 use crate::agent::Agent;
-use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
+use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::types::agent::AgentConfig;
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use anyhow::Result;
@@ -83,12 +83,16 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     let message = resolve_message(&args).await?;
 
     // Parse agent identifier to extract team and agent name
-    let (team, agent_name) = parse_agent_identifier_with_override(&args.agent, args.team.as_deref())?;
+    let (team, agent_name) =
+        parse_agent_identifier_with_override(&args.agent, args.team.as_deref())?;
 
     // Determine config path
     let config_path = resolve_config_path(agent_name, args.config.as_ref(), team, paths)?;
 
-    info!("Sending message to agent '{}' in team '{}'", agent_name, team);
+    info!(
+        "Sending message to agent '{}' in team '{}'",
+        agent_name, team
+    );
     info!("Config path: {}", config_path.display());
 
     // Load or build agent configuration
@@ -294,9 +298,13 @@ mod tests {
             services: crate::common::services::ServiceRegistry::new(resolver),
         };
 
-        let result =
-            resolve_config_path("myagent", Some(&"/custom/config.toml".to_string()), "default", &paths)
-                .unwrap();
+        let result = resolve_config_path(
+            "myagent",
+            Some(&"/custom/config.toml".to_string()),
+            "default",
+            &paths,
+        )
+        .unwrap();
         assert_eq!(result, PathBuf::from("/custom/config.toml"));
     }
 

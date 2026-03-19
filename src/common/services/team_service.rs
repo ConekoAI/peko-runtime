@@ -144,10 +144,7 @@ impl TeamService {
     }
 
     /// Get agents in a team with their configs
-    pub async fn get_team_agents(
-        &self,
-        name: &str,
-    ) -> Result<Vec<(String, AgentConfig)>> {
+    pub async fn get_team_agents(&self, name: &str) -> Result<Vec<(String, AgentConfig)>> {
         let team_dir = self.resolver.team_dir(name);
 
         if !team_dir.exists() {
@@ -219,7 +216,7 @@ async fn load_team_metadata(team_dir: &PathBuf) -> Result<TeamMetadata> {
 /// Only counts directories with a valid, parseable config.toml
 async fn count_agents_in_team(team_dir: &PathBuf) -> usize {
     use crate::types::agent::AgentConfig;
-    
+
     let agents_dir = team_dir.join("agents");
 
     if !agents_dir.exists() {
@@ -234,7 +231,7 @@ async fn count_agents_in_team(team_dir: &PathBuf) -> usize {
                 if !path.is_dir() {
                     continue;
                 }
-                
+
                 // Only count if config.toml exists and is valid
                 let config_path = path.join("config.toml");
                 if config_path.exists() {

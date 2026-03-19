@@ -282,7 +282,8 @@ mod tests {
 
     #[test]
     fn test_resolve_with_override() {
-        let (team, agent) = resolve_team_agent_with_override("myteam/myagent", Some("otherteam")).unwrap();
+        let (team, agent) =
+            resolve_team_agent_with_override("myteam/myagent", Some("otherteam")).unwrap();
         assert_eq!(team, "otherteam");
         assert_eq!(agent, "myagent");
     }

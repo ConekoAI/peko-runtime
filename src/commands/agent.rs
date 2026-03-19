@@ -1,8 +1,8 @@
 //! Agent Management Commands
 #![allow(dead_code)]
 
-use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
+use crate::common::identifiers::parse_agent_identifier_with_override;
 use clap::Subcommand;
 
 /// Agent management subcommands
@@ -203,7 +203,12 @@ pub async fn handle_agent(
             )
             .await
         }
-        AgentCommands::Delete { name, team, purge, force } => {
+        AgentCommands::Delete {
+            name,
+            team,
+            purge,
+            force,
+        } => {
             crate::commands::agent::handlers::handle_agent_delete(paths, name, team, purge, force)
                 .await
         }
@@ -253,8 +258,8 @@ pub async fn handle_agent(
 /// Agent command handlers
 pub mod handlers {
     use crate::agent::Agent;
-    use crate::common::identifiers::parse_agent_identifier_with_override;
     use crate::commands::GlobalPaths;
+    use crate::common::identifiers::parse_agent_identifier_with_override;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
     use tracing::{info, warn};
@@ -527,7 +532,7 @@ pub mod handlers {
             // Validate team name before creating
             use crate::common::identifiers::validate_team_name;
             use crate::common::identifiers::ValidationError;
-            
+
             if let Err(e) = validate_team_name(team) {
                 match e {
                     ValidationError::Empty => anyhow::bail!("Team name cannot be empty"),
@@ -548,22 +553,22 @@ pub mod handlers {
                     }
                 }
             }
-            
+
             // Create team directory structure
             let agents_dir = team_dir.join("agents");
             tokio::fs::create_dir_all(&agents_dir).await?;
-            
+
             // Create team metadata file
             let metadata = crate::common::types::team::TeamMetadata {
                 name: team.to_string(),
                 description: None,
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
-            
+
             let metadata_path = team_dir.join("team.toml");
             let metadata_content = toml::to_string_pretty(&metadata)?;
             tokio::fs::write(&metadata_path, metadata_content).await?;
-            
+
             println!("✅ Created team '{}'", team);
         }
 
@@ -594,7 +599,8 @@ pub mod handlers {
         };
 
         // Build config with stored credentials if available
-        let mut config = build_config_with_auth(paths, agent_name, &selected_provider, None, None).await?;
+        let mut config =
+            build_config_with_auth(paths, agent_name, &selected_provider, None, None).await?;
         // Set the team field in config
         config.team = Some(team.to_string());
 
@@ -616,8 +622,13 @@ pub mod handlers {
         }
 
         // Bootstrap workspace with OpenClaw-style files (always non-interactive)
-        let workspace_dir = paths.data_dir.join("workspaces").join(team).join(agent_name);
-        let bootstrap = crate::commands::agent_bootstrap::AgentBootstrap::new(agent_name, workspace_dir);
+        let workspace_dir = paths
+            .data_dir
+            .join("workspaces")
+            .join(team)
+            .join(agent_name);
+        let bootstrap =
+            crate::commands::agent_bootstrap::AgentBootstrap::new(agent_name, workspace_dir);
         if let Err(e) = bootstrap.run_non_interactive() {
             eprintln!("⚠️  Warning: Failed to bootstrap workspace: {e}");
         }
@@ -677,13 +688,18 @@ pub mod handlers {
         }
 
         // Parse identifier to extract source team and agent name
-        let (from_team, old_agent_name) = parse_agent_identifier_with_override(&old_name, team.as_deref())?;
+        let (from_team, old_agent_name) =
+            parse_agent_identifier_with_override(&old_name, team.as_deref())?;
         let target_team = to_team.as_deref().unwrap_or(from_team);
 
         // Check if source agent exists
         let old_config_path = paths.agent_config(old_agent_name, Some(from_team));
         if !old_config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", old_agent_name, from_team);
+            anyhow::bail!(
+                "Agent '{}' not found in team '{}'",
+                old_agent_name,
+                from_team
+            );
         }
 
         // Check if target team exists
@@ -740,7 +756,10 @@ pub mod handlers {
             );
         } else {
             if from_team == target_team {
-                println!("✅ Renamed agent '{}' to '{}' in team '{}'", old_agent_name, new_name, from_team);
+                println!(
+                    "✅ Renamed agent '{}' to '{}' in team '{}'",
+                    old_agent_name, new_name, from_team
+                );
             } else {
                 println!(
                     "✅ Moved agent '{}' from team '{}' to '{}' as '{}'",
@@ -773,7 +792,10 @@ pub mod handlers {
 
         let output_path = output.unwrap_or_else(|| format!("{}_{}.agent", team, agent_name));
 
-        println!("📦 Exporting agent '{}' from team '{}' to '{}'...", agent_name, team, output_path);
+        println!(
+            "📦 Exporting agent '{}' from team '{}' to '{}'...",
+            agent_name, team, output_path
+        );
 
         if encrypt {
             println!("🔐 Encryption enabled (not yet implemented)");

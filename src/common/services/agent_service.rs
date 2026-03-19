@@ -3,10 +3,14 @@
 //! Provides filesystem-based agent operations used by both CLI and API.
 //! All business logic for agent management lives here.
 
-use crate::common::identifiers::{parse_agent_identifier_with_override, validate_agent_name, ValidationError};
+use crate::common::identifiers::{
+    parse_agent_identifier_with_override, validate_agent_name, ValidationError,
+};
 use crate::common::paths::PathResolver;
 use crate::common::services::agent_config_builder::build_default_config;
-use crate::common::types::agent::{AgentCreationResult, AgentInfo, AgentRenameResult, AgentSummary};
+use crate::common::types::agent::{
+    AgentCreationResult, AgentInfo, AgentRenameResult, AgentSummary,
+};
 use crate::types::agent::AgentConfig;
 use anyhow::Result;
 
@@ -208,12 +212,17 @@ impl AgentService {
             anyhow::bail!("Invalid new agent name '{}': {}", new_name, e);
         }
 
-        let (from_team, old_agent_name) = parse_agent_identifier_with_override(old_name, team.as_deref())?;
+        let (from_team, old_agent_name) =
+            parse_agent_identifier_with_override(old_name, team.as_deref())?;
         let target_team = to_team.as_deref().unwrap_or(from_team);
 
         let old_config_path = self.resolver.agent_config(old_agent_name, Some(from_team));
         if !old_config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", old_agent_name, from_team);
+            anyhow::bail!(
+                "Agent '{}' not found in team '{}'",
+                old_agent_name,
+                from_team
+            );
         }
 
         // Check if target team exists
@@ -257,7 +266,8 @@ impl AgentService {
         }
 
         // Update config with new name and team
-        let mut config: AgentConfig = toml::from_str(&tokio::fs::read_to_string(&new_config_path).await?)?;
+        let mut config: AgentConfig =
+            toml::from_str(&tokio::fs::read_to_string(&new_config_path).await?)?;
         config.name = new_name.to_string();
         config.team = Some(target_team.to_string());
         let updated_toml = toml::to_string_pretty(&config)?;
@@ -372,7 +382,11 @@ fn map_agent_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
     match e {
         ValidationError::Empty => anyhow::anyhow!("Agent name cannot be empty"),
         ValidationError::TooLong(max) => {
-            anyhow::anyhow!("Agent name '{}' exceeds maximum length of {} characters", name, max)
+            anyhow::anyhow!(
+                "Agent name '{}' exceeds maximum length of {} characters",
+                name,
+                max
+            )
         }
         ValidationError::Reserved(reserved) => {
             anyhow::anyhow!("'{}' is a reserved name and cannot be used", reserved)

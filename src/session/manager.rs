@@ -7,13 +7,14 @@
 //! - Cross-channel session sharing
 
 use super::base::BaseSession;
+use super::index::{SessionEntry, SessionIndex};
 use super::key::{derive_base_session_key, derive_overlay_key};
 use super::overlay::{ChannelOverlay, SessionOverlay};
-use super::registry::SessionRegistryManager;
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
 use anyhow::Result;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -162,7 +163,7 @@ impl HybridSession {
 /// - Caching of base sessions
 /// - Creation and tracking of overlays
 /// - Cross-channel session sharing
-/// - Session registry for UUID-based file naming and switching
+/// - Session index for UUID-based file naming and switching
 #[derive(Debug)]
 pub struct SessionManager {
     /// Base sessions: (`agent_id`, peer) -> `BaseSession`
@@ -171,9 +172,11 @@ pub struct SessionManager {
     channel_overlays: HashMap<String, Arc<RwLock<ChannelOverlay>>>,
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
     spawn_overlays: HashMap<String, Arc<RwLock<SpawnOverlay>>>,
-    /// Session registry manager for UUID-based sessions
-    registry: Option<SessionRegistryManager>,
-    /// Agent name for registry operations
+    /// Session index for UUID-based sessions
+    index: Option<SessionIndex>,
+    /// Sessions directory path
+    sessions_dir: Option<PathBuf>,
+    /// Agent name for index operations
     agent_name: Option<String>,
 }
 
@@ -185,97 +188,160 @@ impl SessionManager {
             base_sessions: HashMap::new(),
             channel_overlays: HashMap::new(),
             spawn_overlays: HashMap::new(),
-            registry: None,
+            index: None,
+            sessions_dir: None,
             agent_name: None,
         }
     }
 
-    /// Initialize with session registry for an agent
+    /// Initialize with session index for an agent
     pub async fn with_registry(mut self, agent_name: &str) -> Result<Self> {
-        self.registry = Some(SessionRegistryManager::for_agent(agent_name).await?);
+        let sessions_dir = BaseSession::storage_dir(agent_name, None);
+        self.index = Some(SessionIndex::open(&sessions_dir));
+        self.sessions_dir = Some(sessions_dir);
         self.agent_name = Some(agent_name.to_string());
         Ok(self)
     }
 
-    /// Get the registry manager if initialized
+    /// Get the session index if initialized
     #[must_use]
-    pub fn registry(&self) -> Option<&SessionRegistryManager> {
-        self.registry.as_ref()
+    pub fn index(&self) -> Option<&SessionIndex> {
+        self.index.as_ref()
     }
 
-    /// Check if registry is initialized
+    /// Get the sessions directory if initialized
+    #[must_use]
+    pub fn sessions_dir(&self) -> Option<&PathBuf> {
+        self.sessions_dir.as_ref()
+    }
+
+    /// Check if index is initialized
     #[must_use]
     pub fn has_registry(&self) -> bool {
-        self.registry.is_some()
+        self.index.is_some()
     }
 
     /// Create a new session for a peer (/new command)
-    pub async fn create_new_session(&self, peer: &Peer) -> Result<String> {
-        let registry = self
-            .registry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Registry not initialized"))?;
+    pub async fn create_new_session(&mut self, peer: &Peer) -> Result<String> {
+        let index = self
+            .index
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
         let agent = self
             .agent_name
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
+        let sessions_dir = self
+            .sessions_dir
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
 
         let peer_key = derive_base_session_key(agent, peer);
-        let session_id = registry.create_new(&peer_key).await?;
+        let session_id = format!(
+            "{}_{}_{}",
+            agent,
+            peer.peer_type(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let transcript_file = format!("{}.jsonl", session_id);
+
+        // Create SessionEntry and register with index
+        let entry = SessionEntry::new(session_id.clone(), agent.to_string(), transcript_file);
+        index.create_for_peer(entry, &peer_key).await?;
+        index.save().await?;
 
         info!("Created new session {} for peer {}", session_id, peer_key);
         Ok(session_id)
     }
 
     /// Branch current session (/branch command)
-    pub async fn branch_session(&self, peer: &Peer, label: Option<String>) -> Result<String> {
-        let registry = self
-            .registry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Registry not initialized"))?;
+    pub async fn branch_session(&mut self, peer: &Peer, label: Option<String>) -> Result<String> {
+        let index = self
+            .index
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
         let agent = self
             .agent_name
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
 
         let peer_key = derive_base_session_key(agent, peer);
-        let session_id = registry.branch(&peer_key, label).await?;
 
-        info!("Branched session {} from {}", session_id, peer_key);
+        // Get current active session as parent
+        let parent_id = index
+            .get_active_session_id(&peer_key)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("No active session to branch from"))?;
+
+        let session_id = format!(
+            "{}_{}_{}",
+            agent,
+            peer.peer_type(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let transcript_file = format!("{}.jsonl", session_id);
+
+        // Create new SessionEntry with parent
+        let mut entry = SessionEntry::new(session_id.clone(), agent.to_string(), transcript_file);
+        entry.parent_session_id = Some(parent_id.clone());
+        if let Some(lbl) = label {
+            entry.title = Some(lbl);
+        }
+
+        index.branch_for_peer(entry, &peer_key).await?;
+        index.save().await?;
+
+        info!("Branched session {} from {}", session_id, parent_id);
         Ok(session_id)
     }
 
     /// Switch to a different session (/switch command)
-    pub async fn switch_session(&self, peer: &Peer, session_id: &str) -> Result<()> {
-        let registry = self
-            .registry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Registry not initialized"))?;
+    pub async fn switch_session(&mut self, peer: &Peer, session_id: &str) -> Result<()> {
+        let index = self
+            .index
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
         let agent = self
             .agent_name
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
 
         let peer_key = derive_base_session_key(agent, peer);
-        registry.switch_session(&peer_key, session_id).await?;
+        index.set_active_for_peer(&peer_key, session_id).await?;
+        index.save().await?;
 
         info!("Switched {} to session {}", peer_key, session_id);
         Ok(())
     }
 
     /// List all sessions for a peer
-    pub async fn list_sessions(&self, peer: &Peer) -> Result<Vec<super::registry::SessionInfo>> {
-        let registry = self
-            .registry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Registry not initialized"))?;
+    pub async fn list_sessions(&mut self, peer: &Peer) -> Result<Vec<SessionEntry>> {
+        let index = self
+            .index
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
         let agent = self
             .agent_name
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
 
         let peer_key = derive_base_session_key(agent, peer);
-        registry.list_sessions(&peer_key).await
+        index.list_for_peer(&peer_key).await
+    }
+
+    /// Get active session ID for a peer
+    pub async fn get_active_session_id(&mut self, peer: &Peer) -> Result<Option<String>> {
+        let index = self
+            .index
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
+        let agent = self
+            .agent_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
+
+        let peer_key = derive_base_session_key(agent, peer);
+        index.get_active_session_id(&peer_key).await
     }
 
     /// Get or create a base session for a peer
@@ -296,37 +362,47 @@ impl SessionManager {
             return Ok(session.clone());
         }
 
-        // Use registry if available for UUID-based sessions
-        if let Some(ref registry) = self.registry {
+        // Use index if available for UUID-based sessions
+        if let Some(ref mut index) = self.index {
             let peer_key = derive_base_session_key(agent, peer);
+            let sessions_dir = self.sessions_dir.as_ref().unwrap();
 
-            tracing::debug!("Using registry for session, peer_key: {}", peer_key);
+            tracing::debug!("Using index for session, peer_key: {}", peer_key);
 
-            // Get or create session via registry
-            let session_id =
-                if let Some(existing_id) = registry.get_active_session_id(&peer_key).await? {
-                    tracing::debug!("Found existing session: {}", existing_id);
-                    existing_id
-                } else {
-                    // Create new session through registry (just tracking, no file yet)
-                    let new_id = registry.create_new(&peer_key).await?;
-                    tracing::debug!("Created new session via registry: {}", new_id);
-                    new_id
-                };
+            // Get or create session via index
+            let session_id = if let Some(existing_id) =
+                index.get_active_session_id(&peer_key).await?
+            {
+                tracing::debug!("Found existing session: {}", existing_id);
+                existing_id
+            } else {
+                // Create new session through index (just tracking, no file yet)
+                let new_id = format!(
+                    "{}_{}_{}",
+                    agent,
+                    peer.peer_type(),
+                    uuid::Uuid::new_v4().simple()
+                );
+                let transcript_file = format!("{}.jsonl", new_id);
+                let entry = SessionEntry::new(new_id.clone(), agent.to_string(), transcript_file);
+                index.create_for_peer(entry, &peer_key).await?;
+                index.save().await?;
+                tracing::debug!("Created new session via index: {}", new_id);
+                new_id
+            };
 
             // Check if session file exists by looking for it directly
             let transcript_file = format!("{session_id}.jsonl");
-            let transcript_path = registry.sessions_dir().join(&transcript_file);
+            let transcript_path = sessions_dir.join(&transcript_file);
 
             let session = if transcript_path.exists() {
                 // File exists, open it by ID
                 info!("Opening existing session: {}", transcript_path.display());
-                BaseSession::open_by_id(agent, peer, &session_id, registry.sessions_dir()).await?
+                BaseSession::open_by_id(agent, peer, &session_id, sessions_dir).await?
             } else {
                 // Create the session file
                 info!("Creating new session file: {}", transcript_path.display());
-                BaseSession::create_with_path(agent, peer, &session_id, registry.sessions_dir())
-                    .await?
+                BaseSession::create_with_path(agent, peer, &session_id, sessions_dir).await?
             };
 
             let arc = Arc::new(RwLock::new(session));

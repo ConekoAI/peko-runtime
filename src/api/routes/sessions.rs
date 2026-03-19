@@ -12,7 +12,7 @@ use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
 use crate::common::paths::PathResolver;
 use crate::session::events::SessionEvent;
-use crate::session::sidecar::{SessionSidecarIndex, SidecarManager};
+use crate::session::index::{SessionEntry, SessionIndex};
 use crate::session::sync::SyncSessionStorage;
 use axum::{
     extract::{Path, Query, State},
@@ -36,16 +36,24 @@ pub struct SessionResponse {
     pub title: Option<String>,
 }
 
-impl From<SessionSidecarIndex> for SessionResponse {
-    fn from(index: SessionSidecarIndex) -> Self {
+impl From<SessionEntry> for SessionResponse {
+    fn from(entry: SessionEntry) -> Self {
+        // Convert timestamps from u64 milliseconds to RFC3339 string
+        let created_at = chrono::DateTime::from_timestamp_millis(entry.created_at as i64)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+        let updated_at = chrono::DateTime::from_timestamp_millis(entry.updated_at as i64)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_default();
+
         Self {
-            id: index.session_id,
-            instance_id: index.instance_id,
-            created_at: index.created_at.to_rfc3339(),
-            updated_at: index.updated_at.to_rfc3339(),
-            turn_count: index.turn_count,
-            parent_session_id: index.parent_session_id,
-            title: index.title,
+            id: entry.session_id,
+            instance_id: entry.agent_name,
+            created_at,
+            updated_at,
+            turn_count: entry.turn_count,
+            parent_session_id: entry.parent_session_id,
+            title: entry.title,
         }
     }
 }
@@ -186,19 +194,19 @@ async fn list_sessions(
         return Ok(Json(PaginatedResponse::new(vec![], false)));
     }
 
-    // Load sidecar indices
-    let sidecar_manager = SidecarManager::new(sessions_dir);
-    let indices = sidecar_manager
-        .list_indices()
+    // Load session index
+    let mut index = SessionIndex::open(sessions_dir);
+    let entries = index
+        .list_all()
         .await
         .map_err(|e| ApiError::internal(format!("Failed to list sessions: {}", e), ""))?;
 
-    // Convert to responses
-    let mut responses: Vec<SessionResponse> =
-        indices.into_iter().map(|(_, index)| index.into()).collect();
-
-    // Filter to only sessions for this agent
-    responses.retain(|r| r.instance_id == agent_name);
+    // Convert to responses and filter to only sessions for this agent
+    let mut responses: Vec<SessionResponse> = entries
+        .into_iter()
+        .filter(|e| e.agent_name == agent_name)
+        .map(|e| e.into())
+        .collect();
 
     // Apply pagination
     let total = responses.len();
@@ -217,26 +225,23 @@ async fn get_session(
     State(state): State<AppState>,
     Path((agent_name, session_id)): Path<(String, String)>,
 ) -> Result<Json<SessionResponse>, ApiError> {
-    debug!(
-        "Getting session: {} for agent: {}",
-        session_id, agent_name
-    );
+    debug!("Getting session: {} for agent: {}", session_id, agent_name);
 
     let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
-    let sidecar_manager = SidecarManager::new(sessions_dir);
+    let mut index = SessionIndex::open(sessions_dir);
 
-    let index = sidecar_manager
-        .load(&session_id)
+    let entry = index
+        .get(&session_id)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to load session: {}", e), ""))?
         .ok_or_else(|| ApiError::not_found("session", session_id.clone(), ""))?;
 
     // Verify agent ownership
-    if index.instance_id != agent_name {
+    if entry.agent_name != agent_name {
         return Err(ApiError::not_found("session", session_id, ""));
     }
 
-    Ok(Json(index.into()))
+    Ok(Json(entry.into()))
 }
 
 /// Get session history
@@ -340,23 +345,19 @@ async fn branch_session(
         .await
         .map_err(|e| ApiError::internal(format!("Failed to branch session: {}", e), ""))?;
 
-    // Set label if provided
-    if let Some(label) = request.label {
-        if let Err(e) = storage.set_title(&new_session_id, label).await {
-            warn!("Failed to set label for branched session: {}", e);
-        }
-    }
+    // Note: Session title/label is no longer stored (sidecar removed)
+    // The label from the request is ignored for now
 
     // Load and return new session
-    let sidecar_manager = SidecarManager::new(sessions_dir);
-    let index = sidecar_manager
-        .load(&new_session_id)
+    let mut index = SessionIndex::open(sessions_dir);
+    let entry = index
+        .get(&new_session_id)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to load branched session: {}", e), ""))?
         .ok_or_else(|| ApiError::internal("Branched session not found after creation", ""))?;
 
     Ok(Json(BranchResponse {
-        session: index.into(),
+        session: entry.into(),
         parent_session_id: session_id,
     }))
 }
@@ -366,10 +367,7 @@ async fn delete_session(
     State(state): State<AppState>,
     Path((agent_name, session_id)): Path<(String, String)>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    info!(
-        "Deleting session: {} for agent: {}",
-        session_id, agent_name
-    );
+    info!("Deleting session: {} for agent: {}", session_id, agent_name);
 
     let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
     let storage = SyncSessionStorage::new(sessions_dir);
@@ -471,13 +469,13 @@ mod tests {
     use chrono::Utc;
 
     #[test]
-    fn test_session_response_from_index() {
-        let index = SessionSidecarIndex::new(
-            "sess_123",
-            "inst_456",
-            crate::session::events::SessionTrigger::User,
+    fn test_session_response_from_entry() {
+        let entry = SessionEntry::new(
+            "sess_123".to_string(),
+            "inst_456".to_string(),
+            "sess_123.jsonl".to_string(),
         );
-        let response: SessionResponse = index.into();
+        let response: SessionResponse = entry.into();
 
         assert_eq!(response.id, "sess_123");
         assert_eq!(response.instance_id, "inst_456");
@@ -580,25 +578,31 @@ mod tests {
 
     #[test]
     fn test_session_response_title_optional() {
-        use crate::session::events::SessionTrigger;
-        use crate::session::sidecar::SessionSidecarIndex;
-        use chrono::Utc;
+        use crate::session::index::SessionEntry;
 
-        let index = SessionSidecarIndex {
+        let entry = SessionEntry {
             session_id: "sess_123".to_string(),
-            instance_id: "inst_456".to_string(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            agent_name: "inst_456".to_string(),
+            created_at: 1234567890000,
+            updated_at: 1234567890000,
             turn_count: 0,
-            event_count: 1,
+            message_count: 1,
+            input_tokens: 0,
+            output_tokens: 0,
             total_tokens: 0,
-            parent_session_id: None,
-            trigger: SessionTrigger::User,
-            ended: false,
+            transcript_file: "sess_123.jsonl".to_string(),
             title: None,
+            parent_session_id: None,
+            ended: false,
+            trigger: "user".to_string(),
+            provider: None,
+            model: None,
+            channel: None,
+            recipient: None,
+            cwd: None,
         };
 
-        let response: SessionResponse = index.into();
+        let response: SessionResponse = entry.into();
         assert_eq!(response.id, "sess_123");
         assert_eq!(response.title, None);
         assert_eq!(response.turn_count, 0);
@@ -606,25 +610,31 @@ mod tests {
 
     #[test]
     fn test_session_response_with_parent() {
-        use crate::session::events::SessionTrigger;
-        use crate::session::sidecar::SessionSidecarIndex;
-        use chrono::Utc;
+        use crate::session::index::SessionEntry;
 
-        let index = SessionSidecarIndex {
+        let entry = SessionEntry {
             session_id: "sess_child".to_string(),
-            instance_id: "inst_456".to_string(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            agent_name: "inst_456".to_string(),
+            created_at: 1234567890000,
+            updated_at: 1234567890000,
             turn_count: 5,
-            event_count: 10,
+            message_count: 10,
+            input_tokens: 500,
+            output_tokens: 500,
             total_tokens: 1000,
-            parent_session_id: Some("sess_parent".to_string()),
-            trigger: SessionTrigger::Branch,
-            ended: false,
+            transcript_file: "sess_child.jsonl".to_string(),
             title: Some("Branched Session".to_string()),
+            parent_session_id: Some("sess_parent".to_string()),
+            ended: false,
+            trigger: "branch".to_string(),
+            provider: None,
+            model: None,
+            channel: None,
+            recipient: None,
+            cwd: None,
         };
 
-        let response: SessionResponse = index.into();
+        let response: SessionResponse = entry.into();
         assert_eq!(response.id, "sess_child");
         assert_eq!(response.parent_session_id, Some("sess_parent".to_string()));
         assert_eq!(response.turn_count, 5);

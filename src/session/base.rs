@@ -8,7 +8,7 @@
 //! - Session metadata
 
 use super::derive_base_session_key;
-use super::index::{IndexEntry, SessionIndex};
+use super::index::{SessionEntry, SessionIndex};
 use super::jsonl::SessionStorage;
 use super::types::Peer;
 use crate::providers::ChatMessage;
@@ -94,12 +94,6 @@ impl BaseSession {
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
 
-        // Ensure index is migrated
-        index
-            .migrate_from_directory(agent_name)
-            .await
-            .with_context(|| format!("Failed to migrate index for agent: {agent_name}"))?;
-
         // Create session file
         let cwd = std::env::current_dir()
             .ok()
@@ -116,21 +110,20 @@ impl BaseSession {
                 )
             })?;
 
-        // Create index entry
+        // Create session entry and associate with peer
         let transcript_file = format!("{session_id}.jsonl");
-        let mut entry = IndexEntry::new(
+        let mut entry = SessionEntry::new(
             session_id.to_string(),
             agent_name.to_string(),
             transcript_file,
         );
-        entry.session_key = Some(session_key.to_string());
         entry.cwd = cwd;
 
-        // Insert into index
+        // Insert into index and associate with peer
         index
-            .insert(session_key.to_string(), entry)
+            .create_for_peer(entry, session_key)
             .await
-            .with_context(|| "Failed to insert into index")?;
+            .with_context(|| "Failed to create session for peer")?;
 
         Ok(Self {
             id: session_id.to_string(),
@@ -160,17 +153,15 @@ impl BaseSession {
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
 
-        // Ensure index is migrated
-        index.migrate_from_directory(agent_name).await?;
-
-        // Look up in index
-        let entry = match index.get(session_key).await? {
+        // Look up active session for peer
+        let entry = match index.get_active_for_peer(session_key).await? {
             Some(e) => e,
             None => return Ok(None),
         };
 
         // Load session entries to find last message
-        let entries: Vec<super::SessionEntry> = storage.load_session(&entry.session_id).await?;
+        let entries: Vec<super::JsonlSessionEntry> =
+            storage.load_session(&entry.session_id).await?;
 
         if entries.is_empty() {
             return Ok(None);
@@ -179,7 +170,7 @@ impl BaseSession {
         // Count messages and find last ID
         let mut message_count = 0;
         let last_message_id = entries.iter().rev().find_map(|entry| match entry {
-            super::SessionEntry::Message { id, .. } => {
+            super::JsonlSessionEntry::Message { id, .. } => {
                 message_count += 1;
                 Some(id.clone())
             }
@@ -190,8 +181,8 @@ impl BaseSession {
         let peer = parse_peer_from_key(session_key)?;
 
         // Get token counts from index
-        let input_tokens = entry.input_tokens.unwrap_or(0);
-        let output_tokens = entry.output_tokens.unwrap_or(0);
+        let input_tokens = entry.input_tokens;
+        let output_tokens = entry.output_tokens;
 
         Ok(Some(Self {
             id: entry.session_id.clone(),
@@ -224,12 +215,12 @@ impl BaseSession {
         let session_key = derive_base_session_key(agent_name, peer);
 
         // Load session entries
-        let entries: Vec<super::SessionEntry> = storage.load_session(session_id).await?;
+        let entries: Vec<super::JsonlSessionEntry> = storage.load_session(session_id).await?;
 
         // Count messages and find last ID
         let mut message_count = 0;
         let last_message_id = entries.iter().rev().find_map(|entry| match entry {
-            super::SessionEntry::Message { id, .. } => {
+            super::JsonlSessionEntry::Message { id, .. } => {
                 message_count += 1;
                 Some(id.clone())
             }
@@ -302,15 +293,18 @@ impl BaseSession {
 
     /// Update the index with current metadata
     async fn update_index(&mut self) -> Result<()> {
-        if let Some(mut entry) = self.index.get(&self.session_key).await? {
-            entry.touch();
-            entry.message_count = self.message_count;
-            entry.input_tokens = Some(self.input_tokens);
-            entry.output_tokens = Some(self.output_tokens);
-            entry.total_tokens = Some(self.input_tokens + self.output_tokens);
-            entry.provider = self.current_provider.clone();
-            entry.model = self.current_model.clone();
-            self.index.insert(self.session_key.clone(), entry).await?;
+        // Get the session_id from active session for this peer
+        if let Some(session_id) = self.index.get_active_session_id(&self.session_key).await? {
+            if let Some(mut entry) = self.index.get(&session_id).await? {
+                entry.touch();
+                entry.message_count = self.message_count;
+                entry.input_tokens = self.input_tokens;
+                entry.output_tokens = self.output_tokens;
+                entry.total_tokens = self.input_tokens + self.output_tokens;
+                entry.provider = self.current_provider.clone();
+                entry.model = self.current_model.clone();
+                self.index.insert(entry).await?;
+            }
         }
         Ok(())
     }
@@ -444,7 +438,7 @@ impl BaseSession {
 
         for entry in entries {
             match entry {
-                super::SessionEntry::Message { message, .. } => {
+                super::JsonlSessionEntry::Message { message, .. } => {
                     let role = match message.role.as_str() {
                         "system" => MessageRole::System,
                         "user" => MessageRole::User,
@@ -460,7 +454,7 @@ impl BaseSession {
                         tool_call_id: None,
                     });
                 }
-                super::SessionEntry::ToolResult {
+                super::JsonlSessionEntry::ToolResult {
                     tool_call_id,
                     content,
                     ..
@@ -512,10 +506,10 @@ impl BaseSession {
 
     /// Load the most recent compaction summary
     pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
-        let entries: Vec<super::SessionEntry> = self.storage.load_session(&self.id).await?;
+        let entries: Vec<super::JsonlSessionEntry> = self.storage.load_session(&self.id).await?;
 
         for entry in entries.iter().rev() {
-            if let super::SessionEntry::Compaction { summary, .. } = entry {
+            if let super::JsonlSessionEntry::Compaction { summary, .. } = entry {
                 return Ok(Some(summary.clone()));
             }
         }
@@ -534,7 +528,7 @@ impl BaseSession {
 
         for entry in entries {
             match entry {
-                super::SessionEntry::Message { message, .. } => {
+                super::JsonlSessionEntry::Message { message, .. } => {
                     let role = &message.role;
                     let mut parts: Vec<String> = Vec::new();
 
@@ -568,7 +562,7 @@ impl BaseSession {
                         context.push_str(&format!("{role}: {content_text}\n\n"));
                     }
                 }
-                super::SessionEntry::ToolResult {
+                super::JsonlSessionEntry::ToolResult {
                     tool_name, content, ..
                 } => {
                     let result_text: String = content

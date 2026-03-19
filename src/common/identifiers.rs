@@ -358,8 +358,7 @@ mod tests {
         #[test]
         fn test_override_takes_precedence() {
             assert_eq!(
-                parse_agent_identifier_with_override("myteam/my-agent", Some("otherteam"))
-                    .unwrap(),
+                parse_agent_identifier_with_override("myteam/my-agent", Some("otherteam")).unwrap(),
                 ("otherteam", "my-agent")
             );
         }

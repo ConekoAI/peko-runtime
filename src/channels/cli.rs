@@ -506,7 +506,7 @@ async fn handle_cli_session_command(
     }
 
     let cmd = parts[0].to_lowercase();
-    let peer_key = "default".to_string();
+    let peer = crate::session::types::Peer::User("default".to_string());
 
     // Get session manager reference
     let session_manager = {
@@ -514,23 +514,25 @@ async fn handle_cli_session_command(
         agent_guard.session_manager().clone()
     };
 
-    // Get registry manager reference
-    let registry_manager = {
+    // Check if index is available
+    let has_index = {
         let manager = session_manager.read().await;
-        manager.registry().cloned()
+        manager.has_registry()
     };
 
-    // If no registry, we can't handle session commands
-    let registry = match registry_manager {
-        Some(r) => r,
-        None => return Some(Ok(false)),
-    };
+    // If no index, we can't handle session commands
+    if !has_index {
+        return Some(Ok(false));
+    }
 
     match cmd.as_str() {
         "/new" => {
-            let new_session_id = match registry.create_new(&peer_key).await {
-                Ok(id) => id,
-                Err(e) => return Some(Err(e)),
+            let new_session_id = {
+                let mut manager = session_manager.write().await;
+                match manager.create_new_session(&peer).await {
+                    Ok(id) => id,
+                    Err(e) => return Some(Err(e)),
+                }
             };
             println!("\n✅ Created and switched to new session: {new_session_id}");
 
@@ -552,14 +554,17 @@ async fn handle_cli_session_command(
         "/branch" => {
             let label = parts.get(1..).map(|s| s.join(" "));
 
-            let branch_id = match registry.branch(&peer_key, label.clone()).await {
-                Ok(id) => id,
-                Err(e) => {
-                    if e.to_string().contains("No active session") {
-                        println!("\n❌ No active session to branch from");
-                        return Some(Ok(true));
+            let branch_id = {
+                let mut manager = session_manager.write().await;
+                match manager.branch_session(&peer, label.clone()).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        if e.to_string().contains("No active session") {
+                            println!("\n❌ No active session to branch from");
+                            return Some(Ok(true));
+                        }
+                        return Some(Err(e));
                     }
-                    return Some(Err(e));
                 }
             };
 
@@ -585,13 +590,15 @@ async fn handle_cli_session_command(
             Some(Ok(true))
         }
         "/sessions" => {
-            let sessions = match registry.list_sessions(&peer_key).await {
-                Ok(s) => s,
-                Err(e) => return Some(Err(e)),
-            };
-            let active = match registry.get_active_session_id(&peer_key).await {
-                Ok(id) => id,
-                Err(e) => return Some(Err(e)),
+            let (sessions, active) = {
+                let mut manager = session_manager.write().await;
+                let sessions = match manager.list_sessions(&peer).await {
+                    Ok(s) => s,
+                    Err(e) => return Some(Err(e)),
+                };
+                // Get active session ID from manager
+                let active_id = manager.get_active_session_id(&peer).await.ok().flatten();
+                (sessions, active_id)
             };
 
             println!("\n📁 Sessions:");
@@ -602,7 +609,7 @@ async fn handle_cli_session_command(
                     let is_active = active.as_ref() == Some(&session.session_id);
                     let marker = if is_active { "▶" } else { " " };
                     let label_display = session
-                        .label
+                        .title
                         .as_ref()
                         .map(|l| format!(" [{l}]"))
                         .unwrap_or_default();
@@ -631,9 +638,12 @@ async fn handle_cli_session_command(
             }
 
             let target = parts[1];
-            let sessions = match registry.list_sessions(&peer_key).await {
-                Ok(s) => s,
-                Err(e) => return Some(Err(e)),
+            let sessions = {
+                let mut manager = session_manager.write().await;
+                match manager.list_sessions(&peer).await {
+                    Ok(s) => s,
+                    Err(e) => return Some(Err(e)),
+                }
             };
 
             // Try to parse as number first
@@ -650,8 +660,11 @@ async fn handle_cli_session_command(
                 target.to_string()
             };
 
-            if let Err(e) = registry.switch_session(&peer_key, &session_id).await {
-                return Some(Err(e));
+            {
+                let mut manager = session_manager.write().await;
+                if let Err(e) = manager.switch_session(&peer, &session_id).await {
+                    return Some(Err(e));
+                }
             }
 
             println!("\n✅ Switched to session: {session_id}");

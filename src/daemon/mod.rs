@@ -11,7 +11,7 @@
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
 use crate::observability::Observability;
 use crate::orchestration::events::SystemEvent;
-use crate::session::index::{MaintenanceConfig, MaintenanceMode, SessionIndex};
+use crate::session::index::{MaintenanceConfig, SessionIndex};
 use crate::types::agent::AgentConfig;
 use anyhow::Result;
 use chrono::Utc;
@@ -682,9 +682,6 @@ impl Daemon {
         }
 
         let mut total_pruned = 0;
-        let mut total_capped = 0;
-        let mut total_rotated = 0;
-        let mut total_bytes = 0u64;
 
         let mut entries = tokio::fs::read_dir(&agents_dir).await?;
         while let Some(entry) = entries.next_entry().await? {
@@ -701,21 +698,11 @@ impl Daemon {
             }
 
             let mut index = SessionIndex::open(&sessions_dir);
-            let _ = index.migrate_from_directory(&agent_name).await;
-
-            let config = MaintenanceConfig {
-                mode: MaintenanceMode::Auto,
-                ..Default::default()
-            };
+            let config = MaintenanceConfig::default();
 
             match index.maintenance(&config).await {
                 Ok(report) => {
                     total_pruned += report.pruned;
-                    total_capped += report.capped;
-                    if report.rotated {
-                        total_rotated += 1;
-                    }
-                    total_bytes += report.bytes_reclaimed;
                 }
                 Err(e) => {
                     warn!("Session maintenance failed for {}: {}", agent_name, e);
@@ -723,10 +710,10 @@ impl Daemon {
             }
         }
 
-        if total_pruned > 0 || total_capped > 0 || total_rotated > 0 {
+        if total_pruned > 0 {
             info!(
-                "🔧 Session maintenance complete: pruned={}, capped={}, rotated={}, reclaimed={} bytes",
-                total_pruned, total_capped, total_rotated, total_bytes
+                "🔧 Session maintenance complete: pruned={} sessions",
+                total_pruned
             );
         } else {
             debug!("🔧 Session maintenance complete: no action needed");

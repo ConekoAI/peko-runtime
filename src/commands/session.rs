@@ -10,9 +10,9 @@
 //! - `{data_dir}/agents/{instance_id}/sessions/sessions.json` - Centralized session index
 //! - `{data_dir}/agents/{instance_id}/sessions/.active.json` - Preferred active session (CLI-managed)
 
-use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
-use crate::session::index::{IndexEntry, SessionIndex};
+use crate::common::identifiers::parse_agent_identifier_with_override;
+use crate::session::index::{SessionEntry, SessionIndex};
 use anyhow::Result;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
@@ -131,7 +131,11 @@ pub async fn handle_session(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
-        SessionCommands::List { agent, team, all: _ } => {
+        SessionCommands::List {
+            agent,
+            team,
+            all: _,
+        } => {
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
             list_sessions(paths, team, agent_name, json).await
         }
@@ -162,7 +166,11 @@ pub async fn handle_session(
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
             delete_session(paths, team, agent_name, &session_id, force, json).await
         }
-        SessionCommands::Switch { agent, session_id, team } => {
+        SessionCommands::Switch {
+            agent,
+            session_id,
+            team,
+        } => {
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
             switch_session(paths, team, agent_name, &session_id, json).await
         }
@@ -252,24 +260,10 @@ async fn ensure_sessions_dir(paths: &GlobalPaths, name: &str, team: &str) -> Res
 // Session Index (Centralized) Operations
 // ================================================================================
 
-/// Load session entry from centralized index
-async fn load_session_entry(
-    sessions_dir: &PathBuf,
-    session_id: &str,
-) -> Result<Option<IndexEntry>> {
-    let mut index = SessionIndex::open(sessions_dir);
-    index.find_by_session_id(session_id).await
-}
-
 /// List all sessions from centralized index
-async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<IndexEntry>> {
+async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<SessionEntry>> {
     let mut index = SessionIndex::open(sessions_dir);
-    let entries = index.list().await?;
-    
-    // Sort by updated_at descending (most recent first)
-    let mut entries: Vec<_> = entries.into_iter().collect();
-    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    
+    let entries = index.list_all().await?;
     Ok(entries)
 }
 
@@ -326,12 +320,20 @@ async fn save_active_preference(sessions_dir: &PathBuf, session_id: &str) -> Res
 // ================================================================================
 
 /// List sessions for an agent (offline)
-async fn list_sessions(paths: &GlobalPaths, team: &str, agent: &str, json: bool) -> anyhow::Result<()> {
+async fn list_sessions(
+    paths: &GlobalPaths,
+    team: &str,
+    agent: &str,
+    json: bool,
+) -> anyhow::Result<()> {
     let Some(loc) = locate_agent(paths, agent, team) else {
         if json {
             println!("[]");
         } else {
-            println!("📭 Agent '{}' not found in team '{}' or has no sessions.", agent, team);
+            println!(
+                "📭 Agent '{}' not found in team '{}' or has no sessions.",
+                agent, team
+            );
             println!(
                 "   Create the agent first with: pekobot agent create {}/{}",
                 team, agent
@@ -357,7 +359,12 @@ async fn list_sessions(paths: &GlobalPaths, team: &str, agent: &str, json: bool)
         println!("📭 No sessions found for '{}'.", agent);
         println!("   Start chatting with the agent to create sessions.");
     } else {
-        println!("📋 Sessions for {}/{} ({} found):", team, agent, sessions.len());
+        println!(
+            "📋 Sessions for {}/{} ({} found):",
+            team,
+            agent,
+            sessions.len()
+        );
         if let Some(ref pref) = active_pref {
             println!("   Preferred active: {}", pref);
         }
@@ -380,7 +387,7 @@ async fn list_sessions(paths: &GlobalPaths, team: &str, agent: &str, json: bool)
 
             println!("  {} {}", status_icon, session.session_id);
             println!("     Title: {}", title);
-            let tokens = session.total_tokens.unwrap_or(0);
+            let tokens = session.total_tokens;
             println!(
                 "     Messages: {} | Tokens: {}",
                 session.message_count, tokens
@@ -407,11 +414,16 @@ async fn show_session(
     json: bool,
 ) -> anyhow::Result<()> {
     let Some(loc) = locate_agent(paths, agent, team) else {
-        return Err(anyhow::anyhow!("Agent '{}' not found in team '{}'", agent, team));
+        return Err(anyhow::anyhow!(
+            "Agent '{}' not found in team '{}'",
+            agent,
+            team
+        ));
     };
 
     // Load session entry from centralized index
-    let Some(entry) = load_session_entry(&loc.sessions_dir, session_id).await? else {
+    let mut index = SessionIndex::open(&loc.sessions_dir);
+    let Some(entry) = index.get(session_id).await? else {
         return Err(anyhow::anyhow!(
             "Session '{}' not found for agent '{}'",
             session_id,
@@ -450,14 +462,11 @@ async fn show_session(
                 "Active 🟢"
             }
         );
-        if let Some(ref trigger) = entry.trigger {
-            println!("   Trigger: {}", trigger);
+        if !entry.trigger.is_empty() {
+            println!("   Trigger: {}", entry.trigger);
         }
-        let tokens = entry.total_tokens.unwrap_or(0);
-        println!(
-            "   Messages: {} | Tokens: {}",
-            entry.message_count, tokens
-        );
+        let tokens = entry.total_tokens;
+        println!("   Messages: {} | Tokens: {}", entry.message_count, tokens);
         println!("   Created: {}", format_timestamp_ms(entry.created_at));
         println!("   Updated: {}", format_timestamp_ms(entry.updated_at));
 
@@ -591,7 +600,7 @@ async fn branch_session(
 
     // Verify parent session exists in centralized index
     let mut index = SessionIndex::open(&loc.sessions_dir);
-    let parent_entry = index.find_by_session_id(session_id).await?.ok_or_else(|| {
+    let parent_entry = index.get(session_id).await?.ok_or_else(|| {
         anyhow::anyhow!(
             "Parent session '{}' not found for agent '{}'",
             session_id,
@@ -614,10 +623,9 @@ async fn branch_session(
     }
 
     // Create new index entry for branched session
-    let new_entry = IndexEntry {
+    let new_entry = SessionEntry {
         session_id: new_session_id.clone(),
         agent_name: parent_entry.agent_name.clone(),
-        session_key: parent_entry.session_key.clone(),
         created_at: std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -627,34 +635,29 @@ async fn branch_session(
             .unwrap()
             .as_millis() as u64,
         message_count: parent_entry.message_count,
-        total_tokens: parent_entry.total_tokens,
+        turn_count: 0,
         input_tokens: parent_entry.input_tokens,
         output_tokens: parent_entry.output_tokens,
+        total_tokens: parent_entry.total_tokens,
         transcript_file: format!("{}.jsonl", new_session_id),
-        cwd: parent_entry.cwd.clone(),
-        provider: parent_entry.provider.clone(),
-        model: parent_entry.model.clone(),
-        channel: parent_entry.channel.clone(),
-        recipient: parent_entry.recipient.clone(),
-        account_id: parent_entry.account_id.clone(),
-        last_error: None,
-        parent_session_id: Some(session_id.to_string()),
         title: label.clone().or_else(|| {
             parent_entry
                 .title
                 .as_ref()
                 .map(|t| format!("Branch: {}", t))
         }),
+        parent_session_id: Some(session_id.to_string()),
         ended: false,
-        trigger: Some("branch".to_string()),
+        trigger: "branch".to_string(),
+        provider: parent_entry.provider.clone(),
+        model: parent_entry.model.clone(),
+        channel: parent_entry.channel.clone(),
+        recipient: parent_entry.recipient.clone(),
+        cwd: parent_entry.cwd.clone(),
     };
 
     // Add to centralized index
-    let index_key = parent_entry
-        .session_key
-        .clone()
-        .unwrap_or_else(|| format!("agent:{}:session:{}", agent, new_session_id));
-    index.insert(index_key, new_entry.clone()).await?;
+    index.insert(new_entry.clone()).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&new_entry)?);
@@ -712,15 +715,19 @@ async fn delete_session(
     json: bool,
 ) -> anyhow::Result<()> {
     let Some(loc) = locate_agent(paths, agent, team) else {
-        return Err(anyhow::anyhow!("Agent '{}' not found in team '{}'", agent, team));
+        return Err(anyhow::anyhow!(
+            "Agent '{}' not found in team '{}'",
+            agent,
+            team
+        ));
     };
 
     // Verify session exists
     let jsonl_path = loc.sessions_dir.join(format!("{}.jsonl", session_id));
-    
+
     // Load metadata from centralized index
     let mut index = SessionIndex::open(&loc.sessions_dir);
-    let metadata = index.find_by_session_id(session_id).await?;
+    let metadata = index.get(session_id).await?;
 
     if !jsonl_path.exists() && metadata.is_none() {
         return Err(anyhow::anyhow!(
@@ -736,10 +743,7 @@ async fn delete_session(
             if let Some(ref title) = meta.title {
                 println!("   Title: {}", title);
             }
-            println!(
-                "   Messages: {}",
-                meta.message_count
-            );
+            println!("   Messages: {}", meta.message_count);
         }
         println!("   This action cannot be undone.");
         print!("   Continue? [y/N] ");
@@ -762,18 +766,10 @@ async fn delete_session(
     }
 
     // Remove from centralized index
-    if let Some(ref meta) = metadata {
-        let index_key = meta
-            .session_key
-            .clone()
-            .unwrap_or_else(|| format!("agent:{}:session:{}", agent, session_id));
-        if index.remove(&index_key).await?.is_some() {
+    if metadata.is_some() {
+        if index.remove(session_id).await?.is_some() {
             deleted.push("index");
         }
-        
-        // Also try to remove by alternate key format
-        let alt_key = format!("agent:{}:session:{}", agent, session_id);
-        let _ = index.remove(&alt_key).await;
     }
 
     // Check if this was the preferred active session
@@ -807,12 +803,8 @@ async fn switch_session(
 
     // Verify session exists in centralized index
     let mut index = SessionIndex::open(&loc.sessions_dir);
-    let entry = index.find_by_session_id(session_id).await?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Session '{}' not found for agent '{}'",
-            session_id,
-            agent
-        )
+    let entry = index.get(session_id).await?.ok_or_else(|| {
+        anyhow::anyhow!("Session '{}' not found for agent '{}'", session_id, agent)
     })?;
 
     // Check if session is ended

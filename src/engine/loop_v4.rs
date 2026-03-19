@@ -676,10 +676,19 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
             // Get team from config or default to "default"
             let team = agent.config.team.as_deref().unwrap_or("default");
             dirs::data_dir()
-                .map(|d| d.join("pekobot").join("workspaces").join(team).join(agent.name()))
+                .map(|d| {
+                    d.join("pekobot")
+                        .join("workspaces")
+                        .join(team)
+                        .join(agent.name())
+                })
                 .or_else(|| {
-                    dirs::home_dir()
-                        .map(|h| h.join(".pekobot").join("workspaces").join(team).join(agent.name()))
+                    dirs::home_dir().map(|h| {
+                        h.join(".pekobot")
+                            .join("workspaces")
+                            .join(team)
+                            .join(agent.name())
+                    })
                 })
         })
         .unwrap_or_else(|| PathBuf::from("."));
