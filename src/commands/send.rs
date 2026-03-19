@@ -9,12 +9,15 @@
 //!
 //! Examples:
 //!   pekobot send myagent "What is the weather?"
+//!   pekobot send myteam/myagent "Hello"
+//!   pekobot send myagent --team myteam "Hello"
 //!   pekobot send myagent "Hello" --session sess_xxx
 //!   pekobot send myagent --new "Start fresh"
 //!   echo "Hello" | pekobot send myagent --stdin
 //!   pekobot send myagent --file prompt.txt
 
 use crate::agent::Agent;
+use crate::commands::identifier::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
 use crate::types::agent::AgentConfig;
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -31,14 +34,19 @@ use tracing::info;
 /// then exit and free all resources.
 ///
 /// The message can be provided as an argument, from a file, or via stdin.
+/// Agent can be specified as just "name" (uses default team) or "team/name".
 #[derive(Args, Clone, Debug)]
 #[command(disable_version_flag = true)]
 pub struct SendArgs {
-    /// Agent name (looks up in ~/.pekobot/teams/default/agents/)
+    /// Agent name or team/agent format (e.g., "myagent" or "myteam/myagent")
     pub agent: String,
 
     /// Message to send (optional if --file or --stdin is used)
     pub message: Option<String>,
+
+    /// Team to look in (overrides team/ prefix if both provided)
+    #[arg(short, long)]
+    pub team: Option<String>,
 
     /// Custom configuration file path (optional)
     #[arg(short, long, value_name = "PATH")]
@@ -74,11 +82,13 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     // Resolve the message content
     let message = resolve_message(&args).await?;
 
-    // Determine agent name and config path
-    let agent_name = &args.agent;
-    let config_path = resolve_config_path(agent_name, args.config.as_ref(), paths)?;
+    // Parse agent identifier to extract team and agent name
+    let (team, agent_name) = parse_agent_identifier_with_override(&args.agent, args.team.as_deref())?;
 
-    info!("Sending message to agent '{}'", agent_name);
+    // Determine config path
+    let config_path = resolve_config_path(agent_name, args.config.as_ref(), team, paths)?;
+
+    info!("Sending message to agent '{}' in team '{}'", agent_name, team);
     info!("Config path: {}", config_path.display());
 
     // Load or build agent configuration
@@ -164,13 +174,14 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
 fn resolve_config_path(
     agent_name: &str,
     config_override: Option<&String>,
+    team: &str,
     paths: &GlobalPaths,
 ) -> Result<PathBuf> {
     if let Some(path) = config_override {
         Ok(PathBuf::from(path))
     } else {
-        // Default location: ~/.pekobot/teams/default/agents/{name}/config.toml
-        Ok(paths.agent_config(agent_name, None))
+        // Default location: ~/.pekobot/teams/{team}/agents/{name}/config.toml
+        Ok(paths.agent_config(agent_name, Some(team)))
     }
 }
 
@@ -277,8 +288,38 @@ mod tests {
         };
 
         let result =
-            resolve_config_path("myagent", Some(&"/custom/config.toml".to_string()), &paths)
+            resolve_config_path("myagent", Some(&"/custom/config.toml".to_string()), "default", &paths)
                 .unwrap();
         assert_eq!(result, PathBuf::from("/custom/config.toml"));
+    }
+
+    #[test]
+    fn test_resolve_config_path_default_team() {
+        let paths = GlobalPaths {
+            config_dir: PathBuf::from("/home/test/.pekobot"),
+            data_dir: PathBuf::from("/home/test/.local/share/pekobot"),
+            cache_dir: PathBuf::from("/home/test/.cache/pekobot"),
+        };
+
+        let result = resolve_config_path("myagent", None, "default", &paths).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("/home/test/.pekobot/teams/default/agents/myagent/config.toml")
+        );
+    }
+
+    #[test]
+    fn test_resolve_config_path_custom_team() {
+        let paths = GlobalPaths {
+            config_dir: PathBuf::from("/home/test/.pekobot"),
+            data_dir: PathBuf::from("/home/test/.local/share/pekobot"),
+            cache_dir: PathBuf::from("/home/test/.cache/pekobot"),
+        };
+
+        let result = resolve_config_path("myagent", None, "myteam", &paths).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("/home/test/.pekobot/teams/myteam/agents/myagent/config.toml")
+        );
     }
 }

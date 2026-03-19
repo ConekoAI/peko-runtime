@@ -10,6 +10,7 @@
 //! - `{data_dir}/agents/{instance_id}/sessions/*.index.json` - Metadata sidecars
 //! - `{data_dir}/agents/{instance_id}/sessions/.active.json` - Preferred active session (CLI-managed)
 
+use crate::commands::identifier::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
 use anyhow::Result;
 use clap::Subcommand;
@@ -26,9 +27,11 @@ use uuid::Uuid;
 /// Examples:
 ///   # List sessions for an agent (offline)
 ///   pekobot session list myagent
+///   pekobot session list myteam/myagent
 ///
 ///   # Show session details with history (offline)
 ///   pekobot session show myagent sess_xxx --history
+///   pekobot session show myteam/myagent sess_xxx --history
 ///
 ///   # Create a branch of a session (offline)
 ///   pekobot session branch myagent sess_xxx --label "experiment"
@@ -43,8 +46,11 @@ use uuid::Uuid;
 pub enum SessionCommands {
     /// List sessions for an agent (offline)
     List {
-        /// Agent name or instance ID
+        /// Agent name or team/agent format
         agent: String,
+        /// Team to look in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
         /// Show all sessions including inactive
         #[arg(long)]
         all: bool,
@@ -52,10 +58,13 @@ pub enum SessionCommands {
 
     /// Show session details and history (offline)
     Show {
-        /// Agent name or instance ID
+        /// Agent name or team/agent format
         agent: String,
         /// Session ID
         session_id: String,
+        /// Team to look in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
         /// Show full message history
         #[arg(long)]
         history: bool,
@@ -63,10 +72,13 @@ pub enum SessionCommands {
 
     /// Branch a session (offline - copies session files)
     Branch {
-        /// Agent name or instance ID
+        /// Agent name or team/agent format
         agent: String,
         /// Session ID to branch from
         session_id: String,
+        /// Team to look in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
         /// Optional label for the new session
         #[arg(short, long)]
         label: Option<String>,
@@ -74,10 +86,13 @@ pub enum SessionCommands {
 
     /// Delete a session (offline - removes session files)
     Delete {
-        /// Agent name or instance ID
+        /// Agent name or team/agent format
         agent: String,
         /// Session ID to delete
         session_id: String,
+        /// Team to look in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
         /// Skip confirmation
         #[arg(short, long)]
         force: bool,
@@ -85,10 +100,13 @@ pub enum SessionCommands {
 
     /// Switch active session (offline - updates preference file)
     Switch {
-        /// Agent name or instance ID
+        /// Agent name or team/agent format
         agent: String,
         /// Session ID to activate
         session_id: String,
+        /// Team to look in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
     },
 
     /// Send message to a session (requires daemon)
@@ -112,24 +130,40 @@ pub async fn handle_session(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
-        SessionCommands::List { agent, all: _ } => list_sessions(paths, &agent, json).await,
+        SessionCommands::List { agent, team, all: _ } => {
+            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            list_sessions(paths, team, agent_name, json).await
+        }
         SessionCommands::Show {
             agent,
             session_id,
+            team,
             history,
-        } => show_session(paths, &agent, &session_id, history, json).await,
+        } => {
+            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            show_session(paths, team, agent_name, &session_id, history, json).await
+        }
         SessionCommands::Branch {
             agent,
             session_id,
+            team,
             label,
-        } => branch_session(paths, &agent, &session_id, label, json).await,
+        } => {
+            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            branch_session(paths, team, agent_name, &session_id, label, json).await
+        }
         SessionCommands::Delete {
             agent,
             session_id,
+            team,
             force,
-        } => delete_session(paths, &agent, &session_id, force, json).await,
-        SessionCommands::Switch { agent, session_id } => {
-            switch_session(paths, &agent, &session_id, json).await
+        } => {
+            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            delete_session(paths, team, agent_name, &session_id, force, json).await
+        }
+        SessionCommands::Switch { agent, session_id, team } => {
+            let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
+            switch_session(paths, team, agent_name, &session_id, json).await
         }
         SessionCommands::Send {
             instance_id,
@@ -157,9 +191,9 @@ struct AgentLocation {
 ///
 /// Searches in order:
 /// 1. Runtime data directory (for running instances)
-/// 2. Team config directory
+/// 2. Team config directory (specified team or default)
 /// 3. Standalone agent config directory
-fn locate_agent(paths: &GlobalPaths, name: &str) -> Option<AgentLocation> {
+fn locate_agent(paths: &GlobalPaths, name: &str, team: &str) -> Option<AgentLocation> {
     // 1. Try runtime data directory (running instances)
     let runtime = paths.data_dir.join("agents").join(name);
     let runtime_sessions = runtime.join("sessions");
@@ -171,23 +205,18 @@ fn locate_agent(paths: &GlobalPaths, name: &str) -> Option<AgentLocation> {
         });
     }
 
-    // 2. Try team config directory (default team)
-    let team = paths
-        .config_dir
-        .join("teams")
-        .join("default")
-        .join("agents")
-        .join(name);
-    let team_sessions = team.join("sessions");
+    // 2. Try team config directory (specified team)
+    let team_path = paths.team_dir(team).join("agents").join(name);
+    let team_sessions = team_path.join("sessions");
     if team_sessions.exists() {
         return Some(AgentLocation {
-            workspace: team,
+            workspace: team_path,
             sessions_dir: team_sessions,
             is_runtime: false,
         });
     }
 
-    // 3. Try standalone agent config
+    // 3. Try standalone agent config (for backward compatibility)
     let standalone = paths.agents_dir(None).join(name);
     let standalone_sessions = standalone.join("sessions");
     if standalone_sessions.exists() {
@@ -202,18 +231,18 @@ fn locate_agent(paths: &GlobalPaths, name: &str) -> Option<AgentLocation> {
 }
 
 /// Ensure sessions directory exists
-async fn ensure_sessions_dir(paths: &GlobalPaths, name: &str) -> Result<AgentLocation> {
-    if let Some(loc) = locate_agent(paths, name) {
+async fn ensure_sessions_dir(paths: &GlobalPaths, name: &str, team: &str) -> Result<AgentLocation> {
+    if let Some(loc) = locate_agent(paths, name, team) {
         Ok(loc)
     } else {
-        // Create in runtime data directory
-        let runtime = paths.data_dir.join("agents").join(name);
-        let sessions = runtime.join("sessions");
+        // Create in team config directory
+        let team_dir = paths.team_dir(team).join("agents").join(name);
+        let sessions = team_dir.join("sessions");
         tokio::fs::create_dir_all(&sessions).await?;
         Ok(AgentLocation {
-            workspace: runtime,
+            workspace: team_dir,
             sessions_dir: sessions,
-            is_runtime: true,
+            is_runtime: false,
         })
     }
 }
@@ -333,15 +362,15 @@ async fn save_active_preference(sessions_dir: &PathBuf, session_id: &str) -> Res
 // ================================================================================
 
 /// List sessions for an agent (offline)
-async fn list_sessions(paths: &GlobalPaths, agent: &str, json: bool) -> anyhow::Result<()> {
-    let Some(loc) = locate_agent(paths, agent) else {
+async fn list_sessions(paths: &GlobalPaths, team: &str, agent: &str, json: bool) -> anyhow::Result<()> {
+    let Some(loc) = locate_agent(paths, agent, team) else {
         if json {
             println!("[]");
         } else {
-            println!("📭 Agent '{}' not found or has no sessions.", agent);
+            println!("📭 Agent '{}' not found in team '{}' or has no sessions.", agent, team);
             println!(
-                "   Create the agent first with: pekobot agent create {}",
-                agent
+                "   Create the agent first with: pekobot agent create {}/{}",
+                team, agent
             );
         }
         return Ok(());
@@ -354,12 +383,17 @@ async fn list_sessions(paths: &GlobalPaths, agent: &str, json: bool) -> anyhow::
         .flatten();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        let output = serde_json::json!({
+            "team": team,
+            "agent": agent,
+            "sessions": sessions,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else if sessions.is_empty() {
         println!("📭 No sessions found for '{}'.", agent);
         println!("   Start chatting with the agent to create sessions.");
     } else {
-        println!("📋 Sessions for '{}' ({} found):", agent, sessions.len());
+        println!("📋 Sessions for '{}'/{} ({} found):", team, agent, sessions.len());
         if let Some(ref pref) = active_pref {
             println!("   Preferred active: {}", pref);
         }
@@ -401,13 +435,14 @@ async fn list_sessions(paths: &GlobalPaths, agent: &str, json: bool) -> anyhow::
 /// Show session details (offline)
 async fn show_session(
     paths: &GlobalPaths,
+    team: &str,
     agent: &str,
     session_id: &str,
     show_history: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let Some(loc) = locate_agent(paths, agent) else {
-        return Err(anyhow::anyhow!("Agent '{}' not found", agent));
+    let Some(loc) = locate_agent(paths, agent, team) else {
+        return Err(anyhow::anyhow!("Agent '{}' not found in team '{}'", agent, team));
     };
 
     // Load session index
@@ -436,6 +471,7 @@ async fn show_session(
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("📊 Session Details");
+        println!("   Team: {}", team);
         println!("   Agent: {}", agent);
         println!("   Session ID: {}", index.session_id);
         if let Some(ref title) = index.title {
@@ -577,12 +613,13 @@ fn print_history_event(index: usize, event: &HistoryEvent) {
 /// Branch a session (offline)
 async fn branch_session(
     paths: &GlobalPaths,
+    team: &str,
     agent: &str,
     session_id: &str,
     label: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let loc = ensure_sessions_dir(paths, agent).await?;
+    let loc = ensure_sessions_dir(paths, agent, team).await?;
 
     // Verify parent session exists
     let parent_index = load_session_index(&loc.sessions_dir, session_id)
@@ -651,8 +688,8 @@ async fn branch_session(
         println!();
         println!("   The branched session contains a copy of the parent's history.");
         println!(
-            "   Switch to it with: pekobot session switch {} {}",
-            agent, new_session_id
+            "   Switch to it with: pekobot session switch {}/{} {}",
+            team, agent, new_session_id
         );
     }
 
@@ -688,13 +725,14 @@ async fn create_empty_session(
 /// Delete a session (offline)
 async fn delete_session(
     paths: &GlobalPaths,
+    team: &str,
     agent: &str,
     session_id: &str,
     force: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let Some(loc) = locate_agent(paths, agent) else {
-        return Err(anyhow::anyhow!("Agent '{}' not found", agent));
+    let Some(loc) = locate_agent(paths, agent, team) else {
+        return Err(anyhow::anyhow!("Agent '{}' not found in team '{}'", agent, team));
     };
 
     // Verify session exists
@@ -772,11 +810,12 @@ async fn delete_session(
 /// Switch active session (offline - updates preference file)
 async fn switch_session(
     paths: &GlobalPaths,
+    team: &str,
     agent: &str,
     session_id: &str,
     json: bool,
 ) -> anyhow::Result<()> {
-    let loc = ensure_sessions_dir(paths, agent).await?;
+    let loc = ensure_sessions_dir(paths, agent, team).await?;
 
     // Verify session exists
     let sidecar_path = loc.sessions_dir.join(format!("{}.index.json", session_id));
@@ -805,13 +844,13 @@ async fn switch_session(
 
     if json {
         println!(
-            "{{\"success\": true, \"session_id\": \"{}\", \"agent\": \"{}\"}}",
-            session_id, agent
+            "{{\"success\": true, \"session_id\": \"{}\", \"agent\": \"{}\", \"team\": \"{}\"}}",
+            session_id, agent, team
         );
     } else {
         println!(
-            "✅ Set preferred active session for '{}' to '{}'",
-            agent, session_id
+            "✅ Set preferred active session for '{}'/{} to '{}'",
+            team, agent, session_id
         );
         println!();
         if loc.is_runtime {

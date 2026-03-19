@@ -2,7 +2,7 @@ use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
     agent, auth, config, cron, daemon, gateway, init_logging, mcp, orchestration, provider, send,
-    session, system, tool, update, Cli, Commands, GlobalPaths,
+    session, system, team, tool, update, Cli, Commands, GlobalPaths,
 };
 use pekobot::types::config::PekobotConfig;
 
@@ -48,6 +48,7 @@ async fn main() {
 async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyhow::Result<()> {
     match command {
         Commands::Agent(cmd) => agent::handle_agent(cmd, paths, json).await,
+        Commands::Team(cmd) => team::handle_team(cmd, paths, json).await,
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json).await,
         Commands::Tool(cmd) => tool::handle_tool(cmd, paths, json).await,

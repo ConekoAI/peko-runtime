@@ -1,6 +1,7 @@
 //! Agent Management Commands
 #![allow(dead_code)]
 
+use crate::commands::identifier::parse_agent_identifier_with_override;
 use crate::commands::GlobalPaths;
 use clap::Subcommand;
 
@@ -15,6 +16,10 @@ use clap::Subcommand;
 ///
 ///   # List all agents
 ///   pekobot agent list
+///
+///   # Create agent in a specific team
+///   pekobot agent create myteam/my-agent --provider kimi
+///   pekobot agent create my-agent --team myteam --provider kimi
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AgentCommands {
@@ -54,14 +59,20 @@ pub enum AgentCommands {
 
     /// Show detailed agent information
     Show {
-        /// Agent name
+        /// Agent name or team/agent format
         name: String,
+        /// Team to look in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
     },
 
     /// Create a new agent from template
     Create {
-        /// Agent name
+        /// Agent name or team/agent format
         name: String,
+        /// Team to create agent in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
         /// Use template (minimal, coding, research, full)
         #[arg(short, long, default_value = "minimal")]
         template: String,
@@ -75,8 +86,11 @@ pub enum AgentCommands {
 
     /// Delete an agent and its configuration
     Delete {
-        /// Agent name
+        /// Agent name or team/agent format
         name: String,
+        /// Team to delete from (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
         /// Also delete identity
         #[arg(long)]
         purge: bool,
@@ -85,11 +99,28 @@ pub enum AgentCommands {
         force: bool,
     },
 
+    /// Rename an agent
+    Rename {
+        /// Current agent name or team/agent format
+        old_name: String,
+        /// New agent name (just the name, no team prefix)
+        new_name: String,
+        /// Team of the existing agent (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
+        /// Target team for cross-team move (optional)
+        #[arg(long)]
+        to_team: Option<String>,
+    },
+
     /// Export agent to .agent package
     Export {
-        /// Agent name
+        /// Agent name or team/agent format
         #[arg(short, long)]
         name: String,
+        /// Team to export from (overrides team/ prefix if both provided)
+        #[arg(long)]
+        team: Option<String>,
         /// Output path
         #[arg(short, long)]
         output: Option<String>,
@@ -157,30 +188,46 @@ pub async fn handle_agent(
         AgentCommands::List { long } => {
             crate::commands::agent::handlers::handle_agent_list(paths, long, json).await
         }
-        AgentCommands::Show { name } => {
-            crate::commands::agent::handlers::handle_agent_show(paths, name, json).await
+        AgentCommands::Show { name, team } => {
+            crate::commands::agent::handlers::handle_agent_show(paths, name, team, json).await
         }
         AgentCommands::Create {
             name,
+            team,
             template,
             provider,
             force,
         } => {
             crate::commands::agent::handlers::handle_agent_create(
-                paths, name, template, provider, force,
+                paths, name, team, template, provider, force,
             )
             .await
         }
-        AgentCommands::Delete { name, purge, force } => {
-            crate::commands::agent::handlers::handle_agent_delete(paths, name, purge, force).await
+        AgentCommands::Delete { name, team, purge, force } => {
+            crate::commands::agent::handlers::handle_agent_delete(paths, name, team, purge, force)
+                .await
+        }
+        AgentCommands::Rename {
+            old_name,
+            new_name,
+            team,
+            to_team,
+        } => {
+            crate::commands::agent::handlers::handle_agent_rename(
+                paths, old_name, new_name, team, to_team, json,
+            )
+            .await
         }
         AgentCommands::Export {
             name,
+            team,
             output,
             encrypt,
         } => {
-            crate::commands::agent::handlers::handle_agent_export(paths, name, output, encrypt)
-                .await
+            crate::commands::agent::handlers::handle_agent_export(
+                paths, name, team, output, encrypt,
+            )
+            .await
         }
         AgentCommands::Import { file, name } => {
             crate::commands::agent::handlers::handle_agent_import(paths, file, name).await
@@ -206,6 +253,7 @@ pub async fn handle_agent(
 /// Agent command handlers
 pub mod handlers {
     use crate::agent::Agent;
+    use crate::commands::identifier::parse_agent_identifier_with_override;
     use crate::commands::GlobalPaths;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -421,12 +469,16 @@ pub mod handlers {
     pub async fn handle_agent_show(
         paths: &GlobalPaths,
         name: String,
+        team: Option<String>,
         json: bool,
     ) -> anyhow::Result<()> {
-        let config_path = paths.agent_config(&name, None); // Use default team
+        // Parse identifier to extract team and agent name
+        let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
+
+        let config_path = paths.agent_config(agent_name, Some(team));
 
         if !config_path.exists() {
-            eprintln!("❌ Agent '{name}' not found");
+            eprintln!("❌ Agent '{}' not found in team '{}'", agent_name, team);
             return Ok(());
         }
 
@@ -435,12 +487,14 @@ pub mod handlers {
 
         if json {
             let output = serde_json::json!({
-                "name": name,
+                "name": agent_name,
+                "team": team,
                 "config": config,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);
         } else {
-            println!("📦 Agent: {name}");
+            println!("📦 Agent: {}", agent_name);
+            println!("   Team: {}", team);
             println!("   Config: {}", config_path.display());
             println!("   Provider: {:?}", config.provider.provider_type);
             println!("   Model: {}", config.provider.default_model);
@@ -459,15 +513,31 @@ pub mod handlers {
     pub async fn handle_agent_create(
         paths: &GlobalPaths,
         name: String,
+        team: Option<String>,
         _template: String,
         provider: String,
         force: bool,
     ) -> anyhow::Result<()> {
-        let config_path = paths.agent_config(&name, None); // Use default team
+        // Parse identifier to extract team and agent name
+        let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
+
+        // Check if team exists
+        let team_dir = paths.team_dir(team);
+        if !team_dir.exists() {
+            anyhow::bail!(
+                "Team '{}' does not exist. Create it first with: pekobot team create {}",
+                team,
+                team
+            );
+        }
+
+        let config_path = paths.agent_config(agent_name, Some(team));
 
         if config_path.exists() && !force {
             anyhow::bail!(
-                "Agent '{name}' already exists. Use --force to overwrite or delete it first."
+                "Agent '{}' already exists in team '{}'. Use --force to overwrite or delete it first.",
+                agent_name,
+                team
             );
         }
 
@@ -488,13 +558,16 @@ pub mod handlers {
         };
 
         // Build config with stored credentials if available
-        let config = build_config_with_auth(paths, &name, &selected_provider, None, None).await?;
+        let mut config = build_config_with_auth(paths, agent_name, &selected_provider, None, None).await?;
+        // Set the team field in config
+        config.team = Some(team.to_string());
+
         let toml = toml::to_string_pretty(&config)?;
 
         std::fs::create_dir_all(config_path.parent().unwrap())?;
         std::fs::write(&config_path, toml)?;
 
-        println!("✅ Created agent '{name}'");
+        println!("✅ Created agent '{}' in team '{}'", agent_name, team);
         println!("   Provider: {selected_provider}");
         println!("   Config: {}", config_path.display());
 
@@ -507,8 +580,8 @@ pub mod handlers {
         }
 
         // Bootstrap workspace with OpenClaw-style files (always non-interactive)
-        let workspace_dir = paths.data_dir.join("workspaces").join(&name);
-        let bootstrap = crate::commands::agent_bootstrap::AgentBootstrap::new(&name, workspace_dir);
+        let workspace_dir = paths.data_dir.join("workspaces").join(team).join(agent_name);
+        let bootstrap = crate::commands::agent_bootstrap::AgentBootstrap::new(agent_name, workspace_dir);
         if let Err(e) = bootstrap.run_non_interactive() {
             eprintln!("⚠️  Warning: Failed to bootstrap workspace: {e}");
         }
@@ -523,23 +596,124 @@ pub mod handlers {
     pub async fn handle_agent_delete(
         paths: &GlobalPaths,
         name: String,
+        team: Option<String>,
         purge: bool,
         _force: bool, // Always non-interactive, flag kept for CLI compatibility
     ) -> anyhow::Result<()> {
-        let config_path = paths.agent_config(&name, None); // Use default team
+        // Parse identifier to extract team and agent name
+        let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
+
+        let config_path = paths.agent_config(agent_name, Some(team));
 
         if !config_path.exists() {
-            anyhow::bail!("Agent '{name}' not found");
+            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
         }
 
-        std::fs::remove_file(&config_path)?;
+        // Remove entire agent directory (config.toml and sessions)
+        let agent_dir = config_path.parent().unwrap();
+        std::fs::remove_dir_all(agent_dir)?;
 
         if purge {
             // Also delete identity if requested
-            println!("🗑️  Purged identity for '{name}'");
+            println!("🗑️  Purged identity for '{}'", agent_name);
         }
 
-        println!("✅ Deleted agent '{name}'");
+        println!("✅ Deleted agent '{}' from team '{}'", agent_name, team);
+        Ok(())
+    }
+
+    /// Handle agent rename command
+    ///
+    /// Renames an agent within a team or moves it to another team.
+    pub async fn handle_agent_rename(
+        paths: &GlobalPaths,
+        old_name: String,
+        new_name: String,
+        team: Option<String>,
+        to_team: Option<String>,
+        json: bool,
+    ) -> anyhow::Result<()> {
+        use crate::commands::identifier::validate_agent_name;
+
+        // Validate new agent name
+        if let Err(e) = validate_agent_name(&new_name) {
+            anyhow::bail!("Invalid new agent name '{}': {}", new_name, e);
+        }
+
+        // Parse identifier to extract source team and agent name
+        let (from_team, old_agent_name) = parse_agent_identifier_with_override(&old_name, team.as_deref())?;
+        let target_team = to_team.as_deref().unwrap_or(from_team);
+
+        // Check if source agent exists
+        let old_config_path = paths.agent_config(old_agent_name, Some(from_team));
+        if !old_config_path.exists() {
+            anyhow::bail!("Agent '{}' not found in team '{}'", old_agent_name, from_team);
+        }
+
+        // Check if target team exists
+        let target_team_dir = paths.team_dir(target_team);
+        if !target_team_dir.exists() {
+            anyhow::bail!(
+                "Target team '{}' does not exist. Create it first with: pekobot team create {}",
+                target_team,
+                target_team
+            );
+        }
+
+        // Check if target agent already exists
+        let new_config_path = paths.agent_config(&new_name, Some(target_team));
+        if new_config_path.exists() {
+            anyhow::bail!(
+                "Agent '{}' already exists in team '{}'",
+                new_name,
+                target_team
+            );
+        }
+
+        // Create target directory
+        let new_agent_dir = new_config_path.parent().unwrap();
+        std::fs::create_dir_all(new_agent_dir)?;
+
+        // Move config file
+        std::fs::rename(&old_config_path, &new_config_path)?;
+
+        // Move sessions directory if it exists
+        let old_sessions_dir = old_config_path.parent().unwrap().join("sessions");
+        let new_sessions_dir = new_agent_dir.join("sessions");
+        if old_sessions_dir.exists() {
+            std::fs::rename(&old_sessions_dir, &new_sessions_dir)?;
+        }
+
+        // Remove old agent directory
+        let old_agent_dir = old_config_path.parent().unwrap();
+        if old_agent_dir.exists() {
+            std::fs::remove_dir(old_agent_dir)?;
+        }
+
+        // Update config with new name and team
+        let mut config: AgentConfig = toml::from_str(&std::fs::read_to_string(&new_config_path)?)?;
+        config.name = new_name.clone();
+        config.team = Some(target_team.to_string());
+        let updated_toml = toml::to_string_pretty(&config)?;
+        std::fs::write(&new_config_path, updated_toml)?;
+
+        if json {
+            println!(
+                "{{\"success\": true, \"old_name\": \"{}\", \"new_name\": \"{}\", \"team\": \"{}\"}}",
+                old_agent_name, new_name, target_team
+            );
+        } else {
+            if from_team == target_team {
+                println!("✅ Renamed agent '{}' to '{}' in team '{}'", old_agent_name, new_name, from_team);
+            } else {
+                println!(
+                    "✅ Moved agent '{}' from team '{}' to '{}' as '{}'",
+                    old_agent_name, from_team, target_team, new_name
+                );
+            }
+            println!("   Config: {}", new_config_path.display());
+        }
+
         Ok(())
     }
 
@@ -547,26 +721,30 @@ pub mod handlers {
     pub async fn handle_agent_export(
         paths: &GlobalPaths,
         name: String,
+        team: Option<String>,
         output: Option<String>,
         encrypt: bool,
     ) -> anyhow::Result<()> {
-        let config_path = paths.agent_config(&name, None); // Use default team
+        // Parse identifier to extract team and agent name
+        let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
+
+        let config_path = paths.agent_config(agent_name, Some(team));
 
         if !config_path.exists() {
-            eprintln!("❌ Agent '{name}' not found");
+            eprintln!("❌ Agent '{}' not found in team '{}'", agent_name, team);
             return Ok(());
         }
 
-        let output_path = output.unwrap_or_else(|| format!("{name}.agent"));
+        let output_path = output.unwrap_or_else(|| format!("{}_{}.agent", team, agent_name));
 
-        println!("📦 Exporting agent '{name}' to '{output_path}'...");
+        println!("📦 Exporting agent '{}' from team '{}' to '{}'...", agent_name, team, output_path);
 
         if encrypt {
             println!("🔐 Encryption enabled (not yet implemented)");
         }
 
         // TODO: Implement actual export via Packager
-        println!("✅ Exported agent '{name}'");
+        println!("✅ Exported agent '{}'", agent_name);
 
         Ok(())
     }
