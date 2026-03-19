@@ -237,12 +237,7 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
 
         let peer_key = derive_base_session_key(agent, peer);
-        let session_id = format!(
-            "{}_{}_{}",
-            agent,
-            peer.peer_type(),
-            uuid::Uuid::new_v4().simple()
-        );
+        let session_id = uuid::Uuid::new_v4().to_string();
         let transcript_file = format!("{}.jsonl", session_id);
 
         // Create SessionEntry and register with index
@@ -273,12 +268,7 @@ impl SessionManager {
             .await?
             .ok_or_else(|| anyhow::anyhow!("No active session to branch from"))?;
 
-        let session_id = format!(
-            "{}_{}_{}",
-            agent,
-            peer.peer_type(),
-            uuid::Uuid::new_v4().simple()
-        );
+        let session_id = uuid::Uuid::new_v4().to_string();
         let transcript_file = format!("{}.jsonl", session_id);
 
         // Create new SessionEntry with parent

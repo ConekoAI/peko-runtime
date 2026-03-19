@@ -14,7 +14,6 @@ use super::types::Peer;
 use crate::providers::ChatMessage;
 use crate::types::ContentBlock;
 use anyhow::{Context, Result};
-use chrono::Utc;
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -73,12 +72,7 @@ impl BaseSession {
     /// * `peer` - The peer this session belongs to
     pub async fn create(agent_name: &str, peer: &Peer) -> Result<Self> {
         let session_key = derive_base_session_key(agent_name, peer);
-        let session_id = format!(
-            "{}_{}_{}",
-            agent_name,
-            peer.peer_type(),
-            Utc::now().timestamp_millis()
-        );
+        let session_id = uuid::Uuid::new_v4().to_string();
 
         Self::create_with_key(agent_name, peer, &session_id, &session_key).await
     }
