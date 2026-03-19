@@ -243,10 +243,17 @@ impl SessionIndex {
     }
 
     /// Load the index from disk (with caching)
+    ///
+    /// If the index file doesn't exist, it will be created with an empty index.
     pub async fn load(&mut self) -> Result<HashMap<String, IndexEntry>> {
         // Ensure directory exists
         if !self.dir.exists() {
             fs::create_dir_all(&self.dir).await?;
+        }
+
+        // Auto-create empty index file if it doesn't exist
+        if !self.path.exists() {
+            self.save(&HashMap::new()).await?;
         }
 
         // Check cache first
@@ -266,21 +273,13 @@ impl SessionIndex {
         debug!("Loading session index from disk");
         let entries = self.load_from_disk().await?;
 
-        // Update cache (only if file exists)
-        if self.path.exists() {
-            let mtime = self.get_mtime().await?;
-            self.cache = Some(CachedIndex {
-                data: entries.clone(),
-                loaded_at: SystemTime::now(),
-                mtime_ms: mtime,
-            });
-        } else {
-            self.cache = Some(CachedIndex {
-                data: entries.clone(),
-                loaded_at: SystemTime::now(),
-                mtime_ms: 0,
-            });
-        }
+        // Update cache
+        let mtime = self.get_mtime().await?;
+        self.cache = Some(CachedIndex {
+            data: entries.clone(),
+            loaded_at: SystemTime::now(),
+            mtime_ms: mtime,
+        });
 
         Ok(entries)
     }

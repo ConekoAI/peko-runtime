@@ -280,129 +280,137 @@ pub async fn run_interactive_loop(
 
     channel.print_prompt();
 
-    loop {
-        // Check for input
-        match channel.stdin_rx.try_recv() {
-            Ok(line) => {
-                let trimmed = line.trim();
+    // Create a single LocalSet for the entire interactive loop
+    let local = LocalSet::new();
 
-                if trimmed.is_empty() {
-                    channel.print_prompt();
-                    continue;
-                }
+    local
+        .run_until(async {
+            loop {
+                // Check for input
+                match channel.stdin_rx.try_recv() {
+                    Ok(line) => {
+                        let trimmed = line.trim();
 
-                // Handle special commands
-                if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
-                    println!("\n👋 Goodbye!");
-                    break;
-                }
-
-                if trimmed.eq_ignore_ascii_case("status") {
-                    let agent = agent.lock().unwrap();
-                    println!("\n📊 Agent Status: {:?}", agent.state());
-                    channel.print_prompt();
-                    continue;
-                }
-
-                // Handle session management commands
-                if let Some(cmd_result) = handle_cli_session_command(
-                    trimmed,
-                    &channel,
-                    &agent,
-                    &agent_name,
-                    &mut session_ctx,
-                )
-                .await
-                {
-                    match cmd_result {
-                        Ok(true) => {
+                        if trimmed.is_empty() {
                             channel.print_prompt();
                             continue;
                         }
-                        Ok(false) => {
-                            // Not a session command, continue to normal processing
+
+                        // Handle special commands
+                        if trimmed.eq_ignore_ascii_case("exit")
+                            || trimmed.eq_ignore_ascii_case("quit")
+                        {
+                            println!("\n👋 Goodbye!");
+                            break;
                         }
-                        Err(e) => {
-                            eprintln!("\n❌ Session command error: {e}");
+
+                        if trimmed.eq_ignore_ascii_case("status") {
+                            let agent = agent.lock().unwrap();
+                            println!("\n📊 Agent Status: {:?}", agent.state());
                             channel.print_prompt();
                             continue;
                         }
-                    }
-                }
 
-                // Add user message to session
-                if let Err(e) = session_ctx.add_user_message(trimmed).await {
-                    warn!("Failed to add user message to session: {}", e);
-                }
+                        // Handle session management commands
+                        if let Some(cmd_result) = handle_cli_session_command(
+                            trimmed,
+                            &channel,
+                            &agent,
+                            &agent_name,
+                            &mut session_ctx,
+                        )
+                        .await
+                        {
+                            match cmd_result {
+                                Ok(true) => {
+                                    channel.print_prompt();
+                                    continue;
+                                }
+                                Ok(false) => {
+                                    // Not a session command, continue to normal processing
+                                }
+                                Err(e) => {
+                                    eprintln!("\n❌ Session command error: {e}");
+                                    channel.print_prompt();
+                                    continue;
+                                }
+                            }
+                        }
 
-                // Load history for the agent
-                let history = match session_ctx.load_history().await {
-                    Ok(h) => Some(h),
-                    Err(e) => {
-                        warn!("Failed to load history: {}", e);
-                        None
-                    }
-                };
+                        // Add user message to session
+                        if let Err(e) = session_ctx.add_user_message(trimmed).await {
+                            warn!("Failed to add user message to session: {}", e);
+                        }
 
-                // Process the message with session persistence
-                let local = LocalSet::new();
-                let result = local
-                    .run_until(async {
-                        let agent_lock = agent.lock().unwrap();
-
-                        // Get the base session for resume
-                        let base_session = {
-                            let base = session_ctx.hybrid.base.read().await;
-                            // Convert to SimpleSession for compatibility with existing API
-                            crate::engine::SimpleSession::open_by_key(
-                                &agent_name,
-                                &base.session_key,
-                            )
-                            .await
-                            .ok()
-                            .flatten()
+                        // Load history for the agent
+                        let history = match session_ctx.load_history().await {
+                            Ok(h) => Some(h),
+                            Err(e) => {
+                                warn!("Failed to load history: {}", e);
+                                None
+                            }
                         };
 
-                        let event_rx = agent_lock
-                            .execute_streaming_with_session(trimmed, base_session, history)
-                            .await?;
-                        process_events(event_rx, &agent_name).await
-                    })
-                    .await;
+                        // Process the message with session persistence
+                        let result = async {
+                            let agent_lock = agent.lock().unwrap();
 
-                match result {
-                    Ok(answer) => {
-                        // Add assistant response to session
-                        if let Err(e) = session_ctx.add_assistant_message(&answer, None).await {
-                            warn!("Failed to add assistant message to session: {}", e);
+                            // Get the base session for resume
+                            let base_session = {
+                                let base = session_ctx.hybrid.base.read().await;
+                                // Convert to SimpleSession for compatibility with existing API
+                                crate::engine::SimpleSession::open_by_key(
+                                    &agent_name,
+                                    &base.session_key,
+                                )
+                                .await
+                                .ok()
+                                .flatten()
+                            };
+
+                            let event_rx = agent_lock
+                                .execute_streaming_with_session(trimmed, base_session, history)
+                                .await?;
+                            process_events(event_rx, &agent_name).await
                         }
+                        .await;
+
+                        match result {
+                            Ok(answer) => {
+                                // Add assistant response to session
+                                if let Err(e) =
+                                    session_ctx.add_assistant_message(&answer, None).await
+                                {
+                                    warn!("Failed to add assistant message to session: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                error!("Error in streaming: {}", e);
+                                channel.print_error(&format!("Error: {e}"));
+                            }
+                        }
+
+                        // Reset agent state to Idle for next message
+                        {
+                            let agent_lock = agent.lock().unwrap();
+                            agent_lock.set_state(crate::types::agent::AgentState::Idle);
+                        }
+
+                        // Print new prompt after response
+                        channel.print_prompt();
                     }
-                    Err(e) => {
-                        error!("Error in streaming: {}", e);
-                        channel.print_error(&format!("Error: {e}"));
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        break;
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        // No input available, just wait
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                     }
                 }
-
-                // Reset agent state to Idle for next message
-                {
-                    let agent_lock = agent.lock().unwrap();
-                    agent_lock.set_state(crate::types::agent::AgentState::Idle);
-                }
-
-                // Print new prompt after response
-                channel.print_prompt();
             }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                break;
-            }
-            Err(mpsc::error::TryRecvError::Empty) => {
-                // No input available, just wait
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            }
-        }
-    }
-
-    Ok(())
+            Ok(())
+        })
+        .await
 }
 
 /// Fallback interactive loop without persistence
@@ -422,50 +430,55 @@ async fn run_interactive_loop_without_persistence(
     println!("⚠️  Running without session persistence\n");
     channel.print_prompt();
 
-    loop {
-        match channel.stdin_rx.try_recv() {
-            Ok(line) => {
-                let trimmed = line.trim();
+    let local = LocalSet::new();
 
-                if trimmed.is_empty() {
-                    channel.print_prompt();
-                    continue;
+    local
+        .run_until(async {
+            loop {
+                match channel.stdin_rx.try_recv() {
+                    Ok(line) => {
+                        let trimmed = line.trim();
+
+                        if trimmed.is_empty() {
+                            channel.print_prompt();
+                            continue;
+                        }
+
+                        if trimmed.eq_ignore_ascii_case("exit")
+                            || trimmed.eq_ignore_ascii_case("quit")
+                        {
+                            println!("\n👋 Goodbye!");
+                            break;
+                        }
+
+                        let result = async {
+                            let agent_lock = agent.lock().unwrap();
+                            let event_rx = agent_lock.execute_streaming(trimmed).await?;
+                            process_events(event_rx, &agent_name).await
+                        }
+                        .await;
+
+                        if let Err(e) = result {
+                            error!("Error in streaming: {}", e);
+                            channel.print_error(&format!("Error: {e}"));
+                        }
+
+                        {
+                            let agent_lock = agent.lock().unwrap();
+                            agent_lock.set_state(crate::types::agent::AgentState::Idle);
+                        }
+
+                        channel.print_prompt();
+                    }
+                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    }
                 }
-
-                if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
-                    println!("\n👋 Goodbye!");
-                    break;
-                }
-
-                let local = LocalSet::new();
-                let result = local
-                    .run_until(async {
-                        let agent_lock = agent.lock().unwrap();
-                        let event_rx = agent_lock.execute_streaming(trimmed).await?;
-                        process_events(event_rx, &agent_name).await
-                    })
-                    .await;
-
-                if let Err(e) = result {
-                    error!("Error in streaming: {}", e);
-                    channel.print_error(&format!("Error: {e}"));
-                }
-
-                {
-                    let agent_lock = agent.lock().unwrap();
-                    agent_lock.set_state(crate::types::agent::AgentState::Idle);
-                }
-
-                channel.print_prompt();
             }
-            Err(mpsc::error::TryRecvError::Disconnected) => break,
-            Err(mpsc::error::TryRecvError::Empty) => {
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            }
-        }
-    }
-
-    Ok(())
+            Ok(())
+        })
+        .await
 }
 
 /// Handle CLI session commands
@@ -702,8 +715,6 @@ pub async fn send_single_message_with_session(
     message: &str,
     new_session: bool,
 ) -> Result<String> {
-    use tokio::task::LocalSet;
-
     let agent_name = agent.name().to_string();
 
     // Get or create session context
@@ -779,41 +790,34 @@ pub async fn send_single_message_with_session(
     // Load history (will be empty for new sessions)
     let history = session_ctx.load_history().await.ok();
 
-    // Create a LocalSet for the streaming execution
-    let local = LocalSet::new();
+    // Use the SimpleSession we already looked up (or create new if none)
+    let base_session = if let Some(session) = existing_simple {
+        info!("Resuming session: {}", session.id);
+        Some(session)
+    } else {
+        let base = session_ctx.hybrid.base.read().await;
+        info!("Creating new session: {}", base.id);
+        crate::engine::SimpleSession::create_with_key(
+            &agent_name,
+            &base.id,
+            Some(base.session_key.clone()),
+        )
+        .await
+        .ok()
+    };
 
-    let result = local
-        .run_until(async {
-            // Use the SimpleSession we already looked up (or create new if none)
-            let base_session = if let Some(session) = existing_simple {
-                info!("Resuming session: {}", session.id);
-                Some(session)
-            } else {
-                let base = session_ctx.hybrid.base.read().await;
-                info!("Creating new session: {}", base.id);
-                crate::engine::SimpleSession::create_with_key(
-                    &agent_name,
-                    &base.id,
-                    Some(base.session_key.clone()),
-                )
-                .await
-                .ok()
-            };
-
-            // The engine handles adding user message and assistant response
-            // We don't need to manually add them here
-            let event_rx = agent
-                .execute_streaming_with_session(message, base_session, history)
-                .await?;
-            process_events(event_rx, &agent_name).await
-        })
+    // Execute without LocalSet - the main.rs uses #[tokio::main] which provides a runtime
+    // execute_streaming_with_session uses spawn_local which requires LocalSet
+    // We need to create a LocalSet at the handle_agent_start level, not here
+    let event_rx = agent
+        .execute_streaming_with_session(message, base_session, history)
         .await?;
+    let result = process_events(event_rx, &agent_name).await;
 
     // Note: The engine (AgenticLoopV4) already adds both user and assistant messages
     // to the session during execution, so we don't need to add them manually here.
-    // This fixes the message duplication issue.
 
-    Ok(result)
+    result
 }
 
 /// Reset the CLI session for an agent (create new session)
