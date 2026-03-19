@@ -168,10 +168,15 @@ pub enum Commands {
 }
 
 /// Global paths helper
+///
+/// This struct wraps the common PathResolver to provide CLI-specific
+/// path resolution. It delegates all path operations to the underlying
+/// PathResolver for consistency with the API.
 pub struct GlobalPaths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
+    resolver: crate::common::paths::PathResolver,
 }
 
 impl GlobalPaths {
@@ -201,30 +206,42 @@ impl GlobalPaths {
         let _ = std::fs::create_dir_all(&data_dir);
         let _ = std::fs::create_dir_all(&cache_dir);
 
+        let resolver = crate::common::paths::PathResolver::with_dirs(
+            config_dir.clone(),
+            data_dir.clone(),
+            cache_dir.clone(),
+        );
+
         Self {
             config_dir,
             data_dir,
             cache_dir,
+            resolver,
         }
+    }
+
+    /// Get the underlying path resolver
+    #[must_use]
+    pub fn resolver(&self) -> &crate::common::paths::PathResolver {
+        &self.resolver
     }
 
     /// Get teams configuration directory
     #[must_use]
     pub fn teams_dir(&self) -> PathBuf {
-        self.config_dir.join("teams")
+        self.resolver.teams_dir()
     }
 
     /// Get a specific team's directory
     #[must_use]
     pub fn team_dir(&self, team: &str) -> PathBuf {
-        self.teams_dir().join(team)
+        self.resolver.team_dir(team)
     }
 
     /// Get agents directory for a specific team
     #[must_use]
     pub fn agents_dir(&self, team: Option<&str>) -> PathBuf {
-        let team = team.unwrap_or("default");
-        self.team_dir(team).join("agents")
+        self.resolver.agents_dir(team)
     }
 
     /// Get agent config file path
@@ -232,25 +249,25 @@ impl GlobalPaths {
     /// If team is None, uses the "default" team
     #[must_use]
     pub fn agent_config(&self, name: &str, team: Option<&str>) -> PathBuf {
-        self.agents_dir(team).join(name).join("config.toml")
+        self.resolver.agent_config(name, team)
     }
 
     /// Get agent sessions directory
     #[must_use]
     pub fn agent_sessions_dir(&self, name: &str, team: Option<&str>) -> PathBuf {
-        self.agents_dir(team).join(name).join("sessions")
+        self.resolver.agent_sessions_dir(name, team)
     }
 
     /// Get tools directory
     #[must_use]
     pub fn tools_dir(&self) -> PathBuf {
-        self.data_dir.join("tools")
+        self.resolver.tools_dir()
     }
 
     /// Get MCP configuration file path
     #[must_use]
     pub fn mcp_config(&self) -> PathBuf {
-        self.config_dir.join("mcp.toml")
+        self.resolver.mcp_config()
     }
 
     /// Get agent workspace directory
@@ -263,8 +280,7 @@ impl GlobalPaths {
     /// * `team` - Optional team name (defaults to "default")
     #[must_use]
     pub fn agent_workspace(&self, agent: &str, team: Option<&str>) -> PathBuf {
-        let team = team.unwrap_or("default");
-        self.data_dir.join("workspaces").join(team).join(agent)
+        self.resolver.agent_workspace(agent, team)
     }
 
     /// Get agent workspace directory with explicit team
@@ -277,7 +293,7 @@ impl GlobalPaths {
     /// * `team` - The team name
     #[must_use]
     pub fn agent_workspace_with_team(&self, agent: &str, team: &str) -> PathBuf {
-        self.data_dir.join("workspaces").join(team).join(agent)
+        self.resolver.agent_workspace_with_team(agent, team)
     }
 }
 

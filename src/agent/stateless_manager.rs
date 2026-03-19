@@ -80,10 +80,18 @@ impl StatelessAgentManager {
         let registry_config = RegistryConfig::new(&registry_path);
         let image_registry = Arc::new(RwLock::new(ImageRegistry::new(registry_config)));
 
-        // Create agent service
-        let sessions_path = data_dir.join("sessions");
+        // Create agent service with team-aware paths
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            dirs::home_dir()
+                .map(|d| d.join(".pekobot"))
+                .unwrap_or_else(|| PathBuf::from(".").join(".pekobot")),
+            data_dir.clone(),
+            dirs::cache_dir()
+                .map(|d| d.join("pekobot"))
+                .unwrap_or_else(|| data_dir.join("cache")),
+        );
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_registry.clone(), sessions_path)
+            StatelessAgentService::new(config_registry.clone(), path_resolver)
                 .await
                 .context("Failed to create agent service")?,
         );
@@ -129,10 +137,18 @@ impl StatelessAgentManager {
         let registry_config = RegistryConfig::new(&registry_path);
         let image_registry = Arc::new(RwLock::new(ImageRegistry::new(registry_config)));
 
-        // Create agent service
-        let sessions_path = data_dir.join("sessions");
+        // Create agent service with team-aware paths
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            dirs::home_dir()
+                .map(|d| d.join(".pekobot"))
+                .unwrap_or_else(|| PathBuf::from(".").join(".pekobot")),
+            data_dir.clone(),
+            dirs::cache_dir()
+                .map(|d| d.join("pekobot"))
+                .unwrap_or_else(|| data_dir.join("cache")),
+        );
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_registry.clone(), sessions_path)
+            StatelessAgentService::new(config_registry.clone(), path_resolver)
                 .await
                 .context("Failed to create agent service")?,
         );

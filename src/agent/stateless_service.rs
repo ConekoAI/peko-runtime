@@ -14,12 +14,14 @@
 
 use crate::agent::config_registry::ConfigRegistry;
 use crate::agent::Agent;
+use crate::common::paths::PathResolver;
 use crate::engine::AgenticEvent;
 use crate::providers::{ChatMessage, MessageRole, TokenUsage};
 // Note: Session storage uses jsonl module directly
 use crate::types::message::ContentBlock;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -133,36 +135,39 @@ pub struct StatelessAgentService {
     default_timeout: Duration,
     /// Execution metrics
     metrics: RwLock<ExecutionMetrics>,
-    /// Session storage base path
-    sessions_path: PathBuf,
+    /// Path resolver for team-aware paths
+    path_resolver: PathResolver,
 }
 
-use std::path::PathBuf;
+/// Get team-aware session directory for an agent
+async fn get_agent_session_dir(
+    config_registry: &ConfigRegistry,
+    path_resolver: &PathResolver,
+    agent_name: &str,
+) -> Result<PathBuf> {
+    // Look up agent to get team
+    let team_id: Option<String> = config_registry
+        .get(agent_name)
+        .await
+        .and_then(|entry| entry.team_id.clone());
+
+    Ok(path_resolver.agent_sessions_dir(agent_name, team_id.as_deref()))
+}
 
 impl StatelessAgentService {
     /// Create a new stateless agent service
-    pub async fn new(config_registry: Arc<ConfigRegistry>, sessions_path: PathBuf) -> Result<Self> {
-        // Ensure sessions directory exists
-        tokio::fs::create_dir_all(&sessions_path)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to create sessions directory: {}",
-                    sessions_path.display()
-                )
-            })?;
-
+    pub async fn new(
+        config_registry: Arc<ConfigRegistry>,
+        path_resolver: PathResolver,
+    ) -> Result<Self> {
         let service = Self {
             config_registry,
             default_timeout: Duration::from_secs(300), // 5 minutes default
             metrics: RwLock::new(ExecutionMetrics::default()),
-            sessions_path,
+            path_resolver,
         };
 
-        info!(
-            "StatelessAgentService initialized (sessions: {})",
-            service.sessions_path.display()
-        );
+        info!("StatelessAgentService initialized with team-aware paths");
 
         Ok(service)
     }
@@ -229,7 +234,9 @@ impl StatelessAgentService {
         );
 
         // 2. Load session history
-        let history = self.load_session_history(&request.session_id).await?;
+        let history = self
+            .load_session_history(&request.agent_name, &request.session_id)
+            .await?;
         debug!("Loaded {} messages from session history", history.len());
 
         // 3. Cold-start agent (spawn)
@@ -304,6 +311,7 @@ impl StatelessAgentService {
         if success {
             if let Err(e) = self
                 .save_to_session(
+                    &request.agent_name,
                     &request.session_id,
                     &request.message,
                     &final_response,
@@ -352,7 +360,9 @@ impl StatelessAgentService {
             .ok_or_else(|| anyhow::anyhow!("Agent not registered: {}", request.agent_name))?;
 
         // Load history
-        let history = self.load_session_history(&request.session_id).await?;
+        let history = self
+            .load_session_history(&request.agent_name, &request.session_id)
+            .await?;
 
         // Cold-start agent
         let agent = Agent::new(config_entry.config.clone())
@@ -374,8 +384,14 @@ impl StatelessAgentService {
     }
 
     /// Load session history from storage
-    async fn load_session_history(&self, session_id: &str) -> Result<Vec<ChatMessage>> {
-        let session_path = self.sessions_path.join(session_id);
+    async fn load_session_history(
+        &self,
+        agent_name: &str,
+        session_id: &str,
+    ) -> Result<Vec<ChatMessage>> {
+        let sessions_dir =
+            get_agent_session_dir(&self.config_registry, &self.path_resolver, agent_name).await?;
+        let session_path = sessions_dir.join(session_id);
         let jsonl_path = session_path.join("messages.jsonl");
 
         if !jsonl_path.exists() {
@@ -429,12 +445,15 @@ impl StatelessAgentService {
     /// Save message exchange to session
     async fn save_to_session(
         &self,
+        agent_name: &str,
         session_id: &str,
         user_message: &str,
         assistant_response: &str,
         _tool_calls: &[ToolCallRecord],
     ) -> Result<()> {
-        let session_path = self.sessions_path.join(session_id);
+        let sessions_dir =
+            get_agent_session_dir(&self.config_registry, &self.path_resolver, agent_name).await?;
+        let session_path = sessions_dir.join(session_id);
         tokio::fs::create_dir_all(&session_path).await?;
 
         let jsonl_path = session_path.join("messages.jsonl");
@@ -531,7 +550,10 @@ mod tests {
                 .unwrap(),
         );
 
-        let service = StatelessAgentService::new(registry, temp_dir.path().join("sessions"))
+        let path_resolver =
+            PathResolver::with_dirs(temp_dir.path().join("config"), temp_dir.path().join("data"), temp_dir.path().join("cache"));
+
+        let service = StatelessAgentService::new(registry, path_resolver)
             .await
             .unwrap();
 

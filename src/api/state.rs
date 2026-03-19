@@ -27,6 +27,15 @@ pub struct AppState {
     /// Path to the workspace directory (.pekobot/)
     pub workspace_path: PathBuf,
 
+    /// Configuration directory path
+    pub config_dir: PathBuf,
+
+    /// Data directory path
+    pub data_dir: PathBuf,
+
+    /// Cache directory path
+    pub cache_dir: PathBuf,
+
     /// Port the server is listening on
     pub port: u16,
 
@@ -111,6 +120,12 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         let workspace_path: PathBuf = workspace_path.into();
         let data_dir = workspace_path.clone();
+        let config_dir = dirs::home_dir()
+            .map(|d| d.join(".pekobot"))
+            .unwrap_or_else(|| PathBuf::from(".").join(".pekobot"));
+        let cache_dir = dirs::cache_dir()
+            .map(|d| d.join("pekobot"))
+            .unwrap_or_else(|| data_dir.join("cache"));
 
         // Create stateless components
         let config_registry = Arc::new(
@@ -119,8 +134,14 @@ impl AppState {
                 .map_err(|e| anyhow::anyhow!("Failed to create config registry: {}", e))?,
         );
 
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            config_dir.clone(),
+            data_dir.clone(),
+            cache_dir.clone(),
+        );
+
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_registry.clone(), data_dir.join("sessions"))
+            StatelessAgentService::new(config_registry.clone(), path_resolver)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create agent service: {}", e))?,
         );
@@ -130,6 +151,9 @@ impl AppState {
         Ok(Self {
             started_at: SystemTime::now(),
             workspace_path,
+            config_dir,
+            data_dir,
+            cache_dir,
             port,
             host: host.into(),
             config,
@@ -154,6 +178,12 @@ impl AppState {
         data_dir: PathBuf,
     ) -> anyhow::Result<Self> {
         let workspace_path: PathBuf = workspace_path.into();
+        let config_dir = dirs::home_dir()
+            .map(|d| d.join(".pekobot"))
+            .unwrap_or_else(|| PathBuf::from(".").join(".pekobot"));
+        let cache_dir = dirs::cache_dir()
+            .map(|d| d.join("pekobot"))
+            .unwrap_or_else(|| data_dir.join("cache"));
 
         // Create stateless components
         let config_registry = Arc::new(
@@ -162,8 +192,14 @@ impl AppState {
                 .map_err(|e| anyhow::anyhow!("Failed to create config registry: {}", e))?,
         );
 
+        let path_resolver = crate::common::paths::PathResolver::with_dirs(
+            config_dir.clone(),
+            data_dir.clone(),
+            cache_dir.clone(),
+        );
+
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_registry.clone(), data_dir.join("sessions"))
+            StatelessAgentService::new(config_registry.clone(), path_resolver)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create agent service: {}", e))?,
         );
@@ -173,10 +209,13 @@ impl AppState {
         Ok(Self {
             started_at: SystemTime::now(),
             workspace_path,
+            config_dir,
+            data_dir: data_dir.clone(),
+            cache_dir,
             port,
             host: host.into(),
             config,
-            team_manager: Arc::new(TeamManager::with_data_dir(data_dir.clone())),
+            team_manager: Arc::new(TeamManager::with_data_dir(data_dir)),
             hook_registry: Arc::new(HookRegistry::new()),
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),

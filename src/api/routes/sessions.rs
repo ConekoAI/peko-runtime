@@ -10,6 +10,7 @@
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
+use crate::common::paths::PathResolver;
 use crate::session::events::SessionEvent;
 use crate::session::sidecar::{SessionSidecarIndex, SidecarManager};
 use crate::session::sync::SyncSessionStorage;
@@ -170,17 +171,16 @@ pub struct BranchResponse {
     pub parent_session_id: String,
 }
 
-/// List all sessions for an instance
+/// List all sessions for an agent
 async fn list_sessions(
     State(state): State<AppState>,
-    Path(instance_id): Path<String>,
+    Path(agent_name): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<SessionResponse>>, ApiError> {
-    debug!("Listing sessions for instance: {}", instance_id);
+    debug!("Listing sessions for agent: {}", agent_name);
 
-    // Get instance workspace path
-    let workspace = get_instance_workspace(&state, &instance_id).await?;
-    let sessions_dir = workspace.join("sessions");
+    // Get team-aware sessions directory
+    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
 
     if !sessions_dir.exists() {
         return Ok(Json(PaginatedResponse::new(vec![], false)));
@@ -197,8 +197,8 @@ async fn list_sessions(
     let mut responses: Vec<SessionResponse> =
         indices.into_iter().map(|(_, index)| index.into()).collect();
 
-    // Filter to only sessions for this instance
-    responses.retain(|r| r.instance_id == instance_id);
+    // Filter to only sessions for this agent
+    responses.retain(|r| r.instance_id == agent_name);
 
     // Apply pagination
     let total = responses.len();
@@ -215,15 +215,14 @@ async fn list_sessions(
 /// Get session by ID
 async fn get_session(
     State(state): State<AppState>,
-    Path((instance_id, session_id)): Path<(String, String)>,
+    Path((agent_name, session_id)): Path<(String, String)>,
 ) -> Result<Json<SessionResponse>, ApiError> {
     debug!(
-        "Getting session: {} for instance: {}",
-        session_id, instance_id
+        "Getting session: {} for agent: {}",
+        session_id, agent_name
     );
 
-    let workspace = get_instance_workspace(&state, &instance_id).await?;
-    let sessions_dir = workspace.join("sessions");
+    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
     let sidecar_manager = SidecarManager::new(sessions_dir);
 
     let index = sidecar_manager
@@ -232,8 +231,8 @@ async fn get_session(
         .map_err(|e| ApiError::internal(format!("Failed to load session: {}", e), ""))?
         .ok_or_else(|| ApiError::not_found("session", session_id.clone(), ""))?;
 
-    // Verify instance ownership
-    if index.instance_id != instance_id {
+    // Verify agent ownership
+    if index.instance_id != agent_name {
         return Err(ApiError::not_found("session", session_id, ""));
     }
 
@@ -243,16 +242,15 @@ async fn get_session(
 /// Get session history
 async fn get_session_history(
     State(state): State<AppState>,
-    Path((instance_id, session_id)): Path<(String, String)>,
+    Path((agent_name, session_id)): Path<(String, String)>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<HistoryResponse>, ApiError> {
     debug!(
-        "Getting history for session: {} (instance: {})",
-        session_id, instance_id
+        "Getting history for session: {} (agent: {})",
+        session_id, agent_name
     );
 
-    let workspace = get_instance_workspace(&state, &instance_id).await?;
-    let sessions_dir = workspace.join("sessions");
+    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
     let storage = SyncSessionStorage::new(sessions_dir);
 
     // Verify session exists
@@ -317,16 +315,15 @@ async fn get_session_history(
 /// Branch a session
 async fn branch_session(
     State(state): State<AppState>,
-    Path((instance_id, session_id)): Path<(String, String)>,
+    Path((agent_name, session_id)): Path<(String, String)>,
     Json(request): Json<BranchRequest>,
 ) -> Result<Json<BranchResponse>, ApiError> {
     info!(
-        "Branching session: {} for instance: {}",
-        session_id, instance_id
+        "Branching session: {} for agent: {}",
+        session_id, agent_name
     );
 
-    let workspace = get_instance_workspace(&state, &instance_id).await?;
-    let sessions_dir = workspace.join("sessions");
+    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
     let storage = SyncSessionStorage::new(sessions_dir.clone());
 
     // Verify parent session exists
@@ -339,7 +336,7 @@ async fn branch_session(
 
     // Create branched session
     storage
-        .create_branched_session(&new_session_id, &instance_id, &session_id, None)
+        .create_branched_session(&new_session_id, &agent_name, &session_id, None)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to branch session: {}", e), ""))?;
 
@@ -367,15 +364,14 @@ async fn branch_session(
 /// Delete a session
 async fn delete_session(
     State(state): State<AppState>,
-    Path((instance_id, session_id)): Path<(String, String)>,
+    Path((agent_name, session_id)): Path<(String, String)>,
 ) -> Result<axum::http::StatusCode, ApiError> {
     info!(
-        "Deleting session: {} for instance: {}",
-        session_id, instance_id
+        "Deleting session: {} for agent: {}",
+        session_id, agent_name
     );
 
-    let workspace = get_instance_workspace(&state, &instance_id).await?;
-    let sessions_dir = workspace.join("sessions");
+    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
     let storage = SyncSessionStorage::new(sessions_dir);
 
     // Verify session exists
@@ -395,18 +391,55 @@ async fn delete_session(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
-/// Get instance workspace path
-async fn get_instance_workspace(
+/// Get agent sessions directory using team-aware path resolution
+///
+/// Looks up the agent in the config registry to get its team assignment,
+/// then returns the appropriate sessions directory path.
+async fn get_agent_sessions_dir(
     state: &AppState,
-    instance_id: &str,
+    agent_name: &str,
 ) -> Result<std::path::PathBuf, ApiError> {
-    // In a real implementation, this would look up the instance in the state
-    // and return its workspace path. For now, we construct a path.
-    let workspace = state.workspace_path.join("agents").join(instance_id);
+    // Look up agent in config registry to get team
+    let config_registry = state.config_registry();
+    let entry = config_registry
+        .get(agent_name)
+        .await
+        .ok_or_else(|| ApiError::not_found("agent", agent_name.to_string(), ""))?;
 
-    if !workspace.exists() {
-        return Err(ApiError::not_found("instance", instance_id.to_string(), ""));
-    }
+    // Use PathResolver for consistent path resolution
+    let resolver = PathResolver::with_dirs(
+        state.config_dir.clone(),
+        state.data_dir.clone(),
+        state.cache_dir.clone(),
+    );
+
+    // Get team-aware sessions directory
+    let sessions_dir = resolver.agent_sessions_dir(agent_name, entry.team_id.as_deref());
+
+    Ok(sessions_dir)
+}
+
+/// Get agent workspace directory using team-aware path resolution
+async fn get_agent_workspace_dir(
+    state: &AppState,
+    agent_name: &str,
+) -> Result<std::path::PathBuf, ApiError> {
+    // Look up agent in config registry to get team
+    let config_registry = state.config_registry();
+    let entry = config_registry
+        .get(agent_name)
+        .await
+        .ok_or_else(|| ApiError::not_found("agent", agent_name.to_string(), ""))?;
+
+    // Use PathResolver for consistent path resolution
+    let resolver = PathResolver::with_dirs(
+        state.config_dir.clone(),
+        state.data_dir.clone(),
+        state.cache_dir.clone(),
+    );
+
+    // Get team-aware workspace directory
+    let workspace = resolver.agent_workspace(agent_name, entry.team_id.as_deref());
 
     Ok(workspace)
 }
