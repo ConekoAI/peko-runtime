@@ -298,6 +298,7 @@ impl BaseSession {
                 entry.provider = self.current_provider.clone();
                 entry.model = self.current_model.clone();
                 self.index.insert(entry).await?;
+                self.index.save().await?;
             }
         }
         Ok(())
