@@ -109,7 +109,9 @@ impl UnifiedSession {
     /// # Arguments
     /// * `agent_name` - The agent name
     /// * `peer` - The peer this session belongs to
-    pub async fn create(agent_name: &str, peer: &Peer) -> Result<Self> {
+    ///
+    /// NOTE: This is crate-private. Only SessionManager should create sessions.
+    pub(crate) async fn create(agent_name: &str, peer: &Peer) -> Result<Self> {
         let session_key = derive_session_key(agent_name, peer);
         let session_id = uuid::Uuid::new_v4().to_string();
 
@@ -119,7 +121,8 @@ impl UnifiedSession {
     /// Create a new unified session with specific ID and key
     ///
     /// This is useful when you need deterministic session IDs or custom keys.
-    pub async fn create_with_key(
+    /// NOTE: This is crate-private. Only SessionManager should create sessions.
+    pub(crate) async fn create_with_key(
         agent_name: &str,
         peer: &Peer,
         session_id: &str,
@@ -182,7 +185,8 @@ impl UnifiedSession {
     /// Create a new unified session from a specific directory (registry-based)
     ///
     /// This is used by SessionManager when it has already determined the sessions directory.
-    pub async fn create_with_path(
+    /// NOTE: This is crate-private. Only SessionManager should create sessions.
+    pub(crate) async fn create_with_path(
         agent_name: &str,
         peer: &Peer,
         session_id: &str,

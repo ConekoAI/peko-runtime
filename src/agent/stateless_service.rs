@@ -17,6 +17,8 @@ use crate::agent::Agent;
 use crate::common::paths::PathResolver;
 use crate::engine::AgenticEvent;
 use crate::providers::{ChatMessage, MessageRole, TokenUsage};
+use crate::session::manager::SessionManager;
+use crate::session::types::Peer;
 // Note: Session storage uses jsonl module directly
 use crate::types::message::ContentBlock;
 use anyhow::{Context, Result};
@@ -369,10 +371,19 @@ impl StatelessAgentService {
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
+        // Create session via SessionManager
+        let mut session_manager = SessionManager::new()
+            .with_registry(&request.agent_name)
+            .await?;
+        let peer = Peer::User("default".to_string());
+        let session = session_manager
+            .get_or_create_base(&request.agent_name, &peer)
+            .await?;
+
         // Start streaming execution
         let prompt = self.build_prompt(&request.message, &history)?;
         let event_rx = agent
-            .execute_streaming_with_session(&prompt, None, Some(history))
+            .execute_streaming_with_session(&prompt, session, Some(history))
             .await?;
 
         Ok(event_rx)

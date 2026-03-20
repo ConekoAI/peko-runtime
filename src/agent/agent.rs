@@ -418,15 +418,14 @@ impl Agent {
         Ok(event_rx)
     }
 
-    /// Execute with streaming support, optionally resuming from an existing session.
+    /// Execute with streaming support using the provided session.
     ///
-    /// If `existing_session` is provided, the agent will resume from that session
-    /// with the given history. This enables conversation continuity across
-    /// separate command invocations.
+    /// The session must be provided by the caller (typically via SessionManager).
+    /// This ensures session lifecycle is managed centrally.
     pub async fn execute_streaming_with_session(
         &self,
         prompt: &str,
-        existing_session: Option<crate::session::UnifiedSession>,
+        session: std::sync::Arc<tokio::sync::RwLock<crate::session::UnifiedSession>>,
         history: Option<Vec<crate::providers::ChatMessage>>,
     ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
         // Use a large buffer to prevent event loss during bursts
@@ -461,7 +460,7 @@ impl Agent {
                                 warn!("Agent event dropped (channel full)");
                             }
                         },
-                        existing_session,
+                        session,
                         history,
                     )
                     .await;

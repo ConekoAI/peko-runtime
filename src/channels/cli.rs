@@ -223,24 +223,9 @@ pub async fn send_single_message_with_session(
     // Load history (will be empty for new sessions)
     let history = session_ctx.load_history().await.ok();
 
-    // With UnifiedSession, we no longer need to sync between two session types
-    // The session is managed consistently through SessionContext
-    let base = session_ctx.hybrid.base.read().await;
-    let _unified_session: Option<crate::session::UnifiedSession> = if new_session {
-        info!("Creating new session: {}", base.id);
-        None
-    } else {
-        info!("Resuming session: {}", base.id);
-        // Clone the UnifiedSession for the engine
-        // We can't easily clone the session, so we'll use the session from context
-        // The engine will use the same session through the context
-        None
-    };
-    drop(base);
-
-    // For backward compatibility with engine API, we pass None
-    // The engine now creates its own UnifiedSession internally
-    let base_session: Option<crate::session::UnifiedSession> = None;
+    // Get the session from context to pass to engine
+    // The engine will use the same session through the Arc<RwLock<>>
+    let base_session = session_ctx.hybrid.base.clone();
 
     // Execute without LocalSet - the main.rs uses #[tokio::main] which provides a runtime
     // execute_streaming_with_session uses spawn_local which requires LocalSet

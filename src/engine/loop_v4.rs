@@ -10,14 +10,13 @@ use crate::agent::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase, TaskManager};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
-use crate::session::index::SessionIndex;
-use crate::session::types::Peer;
 use crate::session::UnifiedSession;
 use crate::tools::Tool;
 use crate::types::message::ContentBlock;
 use anyhow::{Context as _, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Result of running the agentic loop
@@ -89,45 +88,16 @@ impl AgenticLoopV4 {
         &self,
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
-        existing_session: Option<UnifiedSession>,
+        session: Arc<RwLock<UnifiedSession>>,
         history: Option<Vec<ChatMessage>>,
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
 
-        // Use existing session or create new one
-        let mut session = if let Some(s) = existing_session {
-            info!("Resuming session: {}", s.id);
-            s
-        } else {
-            // Check if there's already an active session for this agent/peer
-            let peer = Peer::User("default".to_string());
-            let peer_key = format!("agent:{}:peer:user:default", self.agent.name());
-            let sessions_dir = UnifiedSession::storage_dir(self.agent.name(), None);
-            
-            let session = if let Ok(mut index) = SessionIndex::open(&sessions_dir).get_active_for_peer(&peer_key).await {
-                if let Some(entry) = index {
-                    // Open existing session
-                    info!("Opening existing session from index: {}", entry.session_id);
-                    UnifiedSession::open_by_id(self.agent.name(), &entry.session_id, &sessions_dir).await
-                        .context("Failed to open existing session")?
-                } else {
-                    // Create new session
-                    let s = UnifiedSession::create(self.agent.name(), &peer)
-                        .await
-                        .context("Failed to create session")?;
-                    info!("Created new session: {}", s.id);
-                    s
-                }
-            } else {
-                // Create new session
-                let s = UnifiedSession::create(self.agent.name(), &peer)
-                    .await
-                    .context("Failed to create session")?;
-                info!("Created new session: {}", s.id);
-                s
-            };
-            session
+        let session_id = {
+            let s = session.read().await;
+            s.id.clone()
         };
+        info!("Using session: {}", session_id);
 
         // Emit start event
         on_event(AgenticEvent::Lifecycle {
@@ -136,10 +106,14 @@ impl AgenticLoopV4 {
             error: None,
         });
 
+        let session_id = {
+            let s = session.read().await;
+            s.id.clone()
+        };
         info!(
             "Starting v4 agentic loop for agent: {} (session: {})",
             self.agent.name(),
-            session.id
+            session_id
         );
 
         // Build messages - either from history or fresh start
@@ -177,7 +151,10 @@ impl AgenticLoopV4 {
             }];
 
             // Add system prompt to session
-            session.add_system(&self.system_prompt).await?;
+            {
+                let mut s = session.write().await;
+                s.add_system(&self.system_prompt).await?;
+            }
 
             msgs
         };
@@ -193,26 +170,41 @@ impl AgenticLoopV4 {
         });
 
         // Add user message to session
-        session.add_user(prompt).await?;
+        {
+            let mut s = session.write().await;
+            s.add_user(prompt).await?;
+        }
 
         // Continue with the rest of the run logic
         self.run_loop(messages, session, on_event, run_id).await
     }
 
-    /// Original run method - creates new session
+    /// Original run method - creates new session via SessionManager
     pub async fn run(
         &self,
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
     ) -> Result<AgenticResult> {
-        self.run_with_resume(prompt, on_event, None, None).await
+        use crate::session::manager::SessionManager;
+        use crate::session::types::Peer;
+        
+        // Create session via SessionManager
+        let mut session_manager = SessionManager::new()
+            .with_registry(self.agent.name())
+            .await?;
+        let peer = Peer::User("default".to_string());
+        let session = session_manager
+            .get_or_create_base(self.agent.name(), &peer)
+            .await?;
+        
+        self.run_with_resume(prompt, on_event, session, None).await
     }
 
     /// Main agent loop logic
     async fn run_loop(
         &self,
         mut messages: Vec<ChatMessage>,
-        mut session: UnifiedSession,
+        session: Arc<RwLock<UnifiedSession>>,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
     ) -> Result<AgenticResult> {
@@ -223,11 +215,13 @@ impl AgenticLoopV4 {
         let mut total_usage = crate::providers::TokenUsage::default();
 
         // Load previous compaction summary from session for cumulative updates
-        let previous_summary = session
-            .load_previous_compaction_summary()
-            .await
-            .ok()
-            .flatten();
+        let previous_summary = {
+            let s = session.read().await;
+            s.load_previous_compaction_summary()
+                .await
+                .ok()
+                .flatten()
+        };
         if previous_summary.is_some() {
             info!("Found previous compaction summary for cumulative updates");
         }
@@ -270,11 +264,13 @@ impl AgenticLoopV4 {
                     signature: None,
                 });
 
-                let prev_summary = session
-                    .load_previous_compaction_summary()
-                    .await
-                    .ok()
-                    .flatten();
+                let prev_summary = {
+                    let s = session.read().await;
+                    s.load_previous_compaction_summary()
+                        .await
+                        .ok()
+                        .flatten()
+                };
                 match background_compactor
                     .request_compaction(messages.clone(), prev_summary)
                     .await
@@ -308,17 +304,20 @@ impl AgenticLoopV4 {
                                 );
 
                                 // Record compaction entry in session
-                                if let Err(e) = session
-                                    .record_compaction(
-                                        &result.entry.summary,
-                                        result.entry.messages_compacted,
-                                        result.entry.tokens_before,
-                                        result.entry.tokens_after,
-                                        result.entry.compaction_number,
-                                    )
-                                    .await
                                 {
-                                    warn!("Failed to record compaction entry: {}", e);
+                                    let mut s = session.write().await;
+                                    if let Err(e) = s
+                                        .record_compaction(
+                                            &result.entry.summary,
+                                            result.entry.messages_compacted,
+                                            result.entry.tokens_before,
+                                            result.entry.tokens_after,
+                                            result.entry.compaction_number,
+                                        )
+                                        .await
+                                    {
+                                        warn!("Failed to record compaction entry: {}", e);
+                                    }
                                 }
                             }
                             crate::compaction::background::CompactionResponse::NotNeeded => {
@@ -487,9 +486,11 @@ impl AgenticLoopV4 {
                         }
                     })
                     .collect();
-                session
-                    .add_assistant_with_tool_calls(&assistant_text, tool_call_blocks)
-                    .await?;
+                {
+                    let mut s = session.write().await;
+                    s.add_assistant_with_tool_calls(&assistant_text, tool_call_blocks)
+                        .await?;
+                }
 
                 // Emit assistant text BEFORE tool calls so user sees what's happening
                 if !assistant_text.is_empty() {
@@ -552,7 +553,10 @@ impl AgenticLoopV4 {
                         let duration_ms = start_time.elapsed().as_millis() as u64;
 
                         // Add tool result to session
-                        session.add_tool_result(id, name, &tool_result).await?;
+                        {
+                            let mut s = session.write().await;
+                            s.add_tool_result(id, name, &tool_result).await?;
+                        }
 
                         // Emit tool end event
                         on_event(AgenticEvent::ToolEnd {
@@ -602,7 +606,10 @@ impl AgenticLoopV4 {
             info!("Final answer received after {} iterations", iteration);
 
             // Add final answer to session
-            session.add_assistant(&final_text, None).await?;
+            {
+                let mut s = session.write().await;
+                s.add_assistant(&final_text, None).await?;
+            }
 
             // Emit final assistant event
             on_event(AgenticEvent::Assistant {
