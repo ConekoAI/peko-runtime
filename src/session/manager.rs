@@ -367,12 +367,7 @@ impl SessionManager {
                 existing_id
             } else {
                 // Create new session through index (just tracking, no file yet)
-                let new_id = format!(
-                    "{}_{}_{}",
-                    agent,
-                    peer.peer_type(),
-                    uuid::Uuid::new_v4().simple()
-                );
+                let new_id = uuid::Uuid::new_v4().to_string();
                 let transcript_file = format!("{}.jsonl", new_id);
                 let entry = SessionEntry::new(new_id.clone(), agent.to_string(), transcript_file);
                 index.create_for_peer(entry, &peer_key).await?;
