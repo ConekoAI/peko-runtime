@@ -291,12 +291,18 @@ impl BaseSession {
         if let Some(session_id) = self.index.get_active_session_id(&self.session_key).await? {
             if let Some(mut entry) = self.index.get(&session_id).await? {
                 entry.touch();
-                entry.message_count = self.message_count;
+                // Only update message_count if we've actually counted messages
+                // (don't overwrite SimpleSession's count with 0 for new sessions)
+                if self.message_count > 0 {
+                    entry.message_count = self.message_count;
+                }
                 entry.input_tokens = self.input_tokens;
                 entry.output_tokens = self.output_tokens;
                 entry.total_tokens = self.input_tokens + self.output_tokens;
                 entry.provider = self.current_provider.clone();
                 entry.model = self.current_model.clone();
+                tracing::debug!("BaseSession::update_index writing for {}: message_count={}, tokens={}/{}",
+                    session_id, entry.message_count, entry.input_tokens, entry.output_tokens);
                 self.index.insert(entry).await?;
                 self.index.save().await?;
             }
@@ -306,6 +312,8 @@ impl BaseSession {
 
     /// Record token usage
     pub async fn record_usage(&mut self, input: usize, output: usize) -> Result<()> {
+        tracing::debug!("BaseSession::record_usage called for {}: input={}, output={}, current_message_count={}", 
+            self.id, input, output, self.message_count);
         self.input_tokens += input;
         self.output_tokens += output;
         self.update_index().await
