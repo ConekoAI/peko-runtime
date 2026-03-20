@@ -252,6 +252,11 @@ impl SessionManager {
 
         index.save().await?;
 
+        // Cache the session so get_or_create_base() finds it
+        let session = UnifiedSession::open_by_id(agent, &session_id, sessions_dir).await?;
+        let key = (agent.to_string(), peer.clone());
+        self.base_sessions.insert(key, Arc::new(RwLock::new(session)));
+
         info!("Created new session {} for peer {}", session_id, peer_key);
         Ok(session_id)
     }
@@ -364,13 +369,10 @@ impl SessionManager {
             let peer_key = derive_base_session_key(agent, peer);
             let sessions_dir = self.sessions_dir.as_ref().unwrap();
 
-            tracing::debug!("Using index for session, peer_key: {}", peer_key);
-
             // Get or create session via index
             let session_id = if let Some(existing_id) =
                 index.get_active_session_id(&peer_key).await?
             {
-                tracing::debug!("Found existing session: {}", existing_id);
                 existing_id
             } else {
                 // Create new session through index (just tracking, no file yet)
@@ -379,7 +381,7 @@ impl SessionManager {
                 let entry = SessionEntry::new(new_id.clone(), agent.to_string(), transcript_file);
                 index.create_for_peer(entry, &peer_key).await?;
                 index.save().await?;
-                tracing::debug!("Created new session via index: {}", new_id);
+                tracing::info!("Created new session via index: {}", new_id);
                 new_id
             };
 

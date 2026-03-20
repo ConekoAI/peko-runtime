@@ -10,6 +10,7 @@ use crate::agent::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase, TaskManager};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
+use crate::session::index::SessionIndex;
 use crate::session::types::Peer;
 use crate::session::UnifiedSession;
 use crate::tools::Tool;
@@ -98,13 +99,34 @@ impl AgenticLoopV4 {
             info!("Resuming session: {}", s.id);
             s
         } else {
-            // Create new session with default peer
+            // Check if there's already an active session for this agent/peer
             let peer = Peer::User("default".to_string());
-            let s = UnifiedSession::create(self.agent.name(), &peer)
-                .await
-                .context("Failed to create session")?;
-            info!("Created new session: {}", s.id);
-            s
+            let peer_key = format!("agent:{}:peer:user:default", self.agent.name());
+            let sessions_dir = UnifiedSession::storage_dir(self.agent.name(), None);
+            
+            let session = if let Ok(mut index) = SessionIndex::open(&sessions_dir).get_active_for_peer(&peer_key).await {
+                if let Some(entry) = index {
+                    // Open existing session
+                    info!("Opening existing session from index: {}", entry.session_id);
+                    UnifiedSession::open_by_id(self.agent.name(), &entry.session_id, &sessions_dir).await
+                        .context("Failed to open existing session")?
+                } else {
+                    // Create new session
+                    let s = UnifiedSession::create(self.agent.name(), &peer)
+                        .await
+                        .context("Failed to create session")?;
+                    info!("Created new session: {}", s.id);
+                    s
+                }
+            } else {
+                // Create new session
+                let s = UnifiedSession::create(self.agent.name(), &peer)
+                    .await
+                    .context("Failed to create session")?;
+                info!("Created new session: {}", s.id);
+                s
+            };
+            session
         };
 
         // Emit start event

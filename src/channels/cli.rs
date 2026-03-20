@@ -189,19 +189,19 @@ pub async fn send_single_message_with_session(
         let manager = agent.session_manager();
         let mut manager_guard = manager.write().await;
 
-        // Create a new session via registry (if available)
-        let new_session_id = manager_guard.create_new_session(&peer).await.ok();
-        if let Some(ref sid) = new_session_id {
-            info!("Created new session via registry: {}", sid);
-        }
-
         // Remove existing CLI overlay if present
         let base_key = crate::session::derive_base_session_key(&agent_name, &peer);
         let overlay_key = format!("{base_key}:overlay:channel:cli:default");
         manager_guard.remove_channel_overlay(&overlay_key);
 
-        // Also remove from base_sessions cache to force re-creation
+        // Remove old base session from cache (if any) before creating new one
         manager_guard.remove_base_session(&agent_name, &peer);
+
+        // Create a new session - this caches it in base_sessions
+        let new_session_id = manager_guard.create_new_session(&peer).await.ok();
+        if let Some(ref sid) = new_session_id {
+            info!("Created new session via registry: {}", sid);
+        }
 
         let hybrid = manager_guard
             .get_session_for_channel(&agent_name, &peer, ChannelType::Cli, "default")
