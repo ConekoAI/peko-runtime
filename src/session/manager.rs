@@ -222,7 +222,10 @@ impl SessionManager {
     }
 
     /// Create a new session for a peer (/new command)
-    pub async fn create_new_session(&mut self, peer: &Peer) -> Result<String> {
+    ///
+    /// Creates both the index entry AND the transcript file atomically,
+    /// then returns the loaded session to avoid duplicate creation.
+    pub async fn create_new_session(&mut self, peer: &Peer) -> Result<Arc<RwLock<UnifiedSession>>> {
         let index = self
             .index
             .as_mut()
@@ -238,15 +241,30 @@ impl SessionManager {
 
         let peer_key = derive_base_session_key(agent, peer);
         let session_id = uuid::Uuid::new_v4().to_string();
-        let transcript_file = format!("{}.jsonl", session_id);
+        let transcript_file = format!("{}.jsonl", &session_id);
 
         // Create SessionEntry and register with index
         let entry = SessionEntry::new(session_id.clone(), agent.to_string(), transcript_file);
         index.create_for_peer(entry, &peer_key).await?;
         index.save().await?;
 
+        // Create the transcript file using the SAME index instance
+        let session = UnifiedSession::create_with_index(
+            agent,
+            peer,
+            &session_id,
+            sessions_dir,
+            index, // Pass the shared index
+        )
+        .await?;
+
+        // Cache the session
+        let key = (agent.to_string(), peer.clone());
+        let arc = Arc::new(RwLock::new(session));
+        self.base_sessions.insert(key, arc.clone());
+
         info!("Created new session {} for peer {}", session_id, peer_key);
-        Ok(session_id)
+        Ok(arc)
     }
 
     /// Branch current session (/branch command)
@@ -456,6 +474,46 @@ impl SessionManager {
 
         // Create new overlay
         let overlay = ChannelOverlay::new(&base_key, peer.clone(), channel_type, channel_id);
+        let overlay_arc = Arc::new(RwLock::new(overlay));
+        self.channel_overlays
+            .insert(overlay_key, overlay_arc.clone());
+
+        Ok(HybridSession::new(base, OverlayRef::Channel(overlay_arc)))
+    }
+
+    /// Create a channel overlay on top of an existing base session
+    ///
+    /// This is used when the base session was already created (e.g., via create_new_session)
+    /// and we just need to add a channel overlay on top of it.
+    pub async fn create_channel_overlay_on_base(
+        &mut self,
+        base: Arc<RwLock<UnifiedSession>>,
+        channel_type: ChannelType,
+        channel_id: &str,
+    ) -> Result<HybridSession> {
+        let base_key = {
+            let base_read = base.read().await;
+            base_read.session_key.clone()
+        };
+
+        // Generate overlay key
+        let overlay_id = format!("{}:{}", channel_type.as_str(), channel_id);
+        let overlay_key = derive_overlay_key(&base_key, "channel", &overlay_id);
+
+        // Check if overlay already exists
+        if let Some(overlay) = self.channel_overlays.get(&overlay_key) {
+            return Ok(HybridSession::new(
+                base,
+                OverlayRef::Channel(overlay.clone()),
+            ));
+        }
+
+        // Create new overlay
+        let peer = {
+            let base_read = base.read().await;
+            base_read.peer.clone()
+        };
+        let overlay = ChannelOverlay::new(&base_key, peer, channel_type, channel_id);
         let overlay_arc = Arc::new(RwLock::new(overlay));
         self.channel_overlays
             .insert(overlay_key, overlay_arc.clone());

@@ -27,7 +27,6 @@ use crate::agent::subagent_registry::{
 use crate::session::context::{SessionContext, SessionRouter};
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
-use crate::session::UnifiedSession;
 use crate::types::agent::AgentConfig;
 
 /// Channel for announcing completed subagent runs

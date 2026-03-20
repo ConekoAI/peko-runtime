@@ -17,8 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use tokio::fs;
-use tokio::io::AsyncWriteExt;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Default cache TTL (30 seconds)
 pub const DEFAULT_CACHE_TTL_MS: u64 = 30_000;

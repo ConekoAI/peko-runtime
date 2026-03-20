@@ -182,6 +182,8 @@ impl UnifiedSession {
     /// Create a new unified session from a specific directory (registry-based)
     ///
     /// This is used by SessionManager when it has already determined the sessions directory.
+    /// NOTE: This creates a NEW SessionIndex instance. Prefer `create_with_index` when
+    /// the index is already available to avoid cache inconsistency.
     pub async fn create_with_path(
         agent_name: &str,
         peer: &Peer,
@@ -210,6 +212,51 @@ impl UnifiedSession {
             peer: peer.clone(),
             storage,
             index,
+            last_message_id: None,
+            message_count: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            current_provider: None,
+            current_model: None,
+        })
+    }
+
+    /// Create a new unified session using an existing SessionIndex
+    ///
+    /// This is the preferred method when the SessionIndex is already available
+    /// (e.g., from SessionManager) to ensure cache consistency.
+    pub async fn create_with_index(
+        agent_name: &str,
+        peer: &Peer,
+        session_id: &str,
+        sessions_dir: impl AsRef<std::path::Path>,
+        index: &mut SessionIndex,
+    ) -> Result<Self> {
+        let sessions_dir = sessions_dir.as_ref().to_path_buf();
+        let storage = SessionStorage::new(sessions_dir.clone());
+        let session_key = derive_session_key(agent_name, peer);
+
+        // Create session file
+        let cwd = std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string());
+
+        storage.create_session(session_id, cwd.clone()).await?;
+
+        // Update the index entry with cwd if available
+        if let Some(mut entry) = index.get(session_id).await? {
+            entry.cwd = cwd;
+            index.insert(entry).await?;
+            index.save().await?;
+        }
+
+        Ok(Self {
+            id: session_id.to_string(),
+            agent_name: agent_name.to_string(),
+            session_key,
+            peer: peer.clone(),
+            storage,
+            index: SessionIndex::open(&sessions_dir), // Create a new index for this session
             last_message_id: None,
             message_count: 0,
             input_tokens: 0,
@@ -301,6 +348,7 @@ impl UnifiedSession {
             index,
             entries,
         )
+        .await
     }
 
     /// Open an existing session by key (returns None if not found)
@@ -376,13 +424,16 @@ impl UnifiedSession {
     }
 
     /// Build a UnifiedSession from raw entries (for open_by_id)
-    fn from_entries(
+    ///
+    /// NOTE: This function also looks up the session in the index to restore
+    /// metadata like token counts that aren't stored in the JSONL file.
+    async fn from_entries(
         session_id: String,
         agent_name: String,
         session_key: String,
         peer: Peer,
         storage: SessionStorage,
-        index: SessionIndex,
+        mut index: SessionIndex,
         entries: Vec<crate::session::JsonlSessionEntry>,
     ) -> Result<Self> {
         // Count messages and find last ID
@@ -395,6 +446,22 @@ impl UnifiedSession {
             _ => None,
         });
 
+        // Try to restore token counts and other metadata from index
+        let (input_tokens, output_tokens, current_provider, current_model) = index
+            .get(&session_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|entry| {
+                (
+                    entry.input_tokens,
+                    entry.output_tokens,
+                    entry.provider,
+                    entry.model,
+                )
+            })
+            .unwrap_or((0, 0, None, None));
+
         Ok(Self {
             id: session_id,
             agent_name,
@@ -404,10 +471,10 @@ impl UnifiedSession {
             index,
             last_message_id,
             message_count,
-            input_tokens: 0,
-            output_tokens: 0,
-            current_provider: None,
-            current_model: None,
+            input_tokens,
+            output_tokens,
+            current_provider,
+            current_model,
         })
     }
 
