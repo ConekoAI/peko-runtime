@@ -586,6 +586,14 @@ impl AgenticLoopV4 {
                 is_final: true,
             });
 
+            // Emit usage event
+            on_event(AgenticEvent::Usage {
+                run_id: run_id.clone(),
+                prompt_tokens: total_usage.input as u32,
+                completion_tokens: total_usage.output as u32,
+                total_tokens: total_usage.total as u32,
+            });
+
             // Emit end event
             on_event(AgenticEvent::Lifecycle {
                 run_id: run_id.clone(),

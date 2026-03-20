@@ -30,6 +30,8 @@ pub struct SessionResponse {
     pub created_at: String,
     pub updated_at: String,
     pub turn_count: u32,
+    pub message_count: usize,
+    pub total_tokens: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,6 +54,8 @@ impl From<SessionEntry> for SessionResponse {
             created_at,
             updated_at,
             turn_count: entry.turn_count,
+            message_count: entry.message_count,
+            total_tokens: entry.total_tokens,
             parent_session_id: entry.parent_session_id,
             title: entry.title,
         }

@@ -70,6 +70,7 @@ impl Channel for CliChannel {
 pub async fn process_events(
     mut event_rx: tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>,
     agent_name: &str,
+    session_ctx: Option<&crate::session::context::SessionContext>,
 ) -> Result<String> {
     use crate::engine::{AgenticEvent, LifecyclePhase};
 
@@ -140,6 +141,14 @@ pub async fn process_events(
                 last_was_thinking = false;
             }
             AgenticEvent::ToolEnd { .. } => {}
+            AgenticEvent::Usage { prompt_tokens, completion_tokens, .. } => {
+                // Record token usage to session context
+                if let Some(ctx) = session_ctx {
+                    if let Err(e) = ctx.record_usage(prompt_tokens as usize, completion_tokens as usize).await {
+                        warn!("Failed to record token usage: {}", e);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -260,7 +269,7 @@ pub async fn send_single_message_with_session(
     let event_rx = agent
         .execute_streaming_with_session(message, base_session, history)
         .await?;
-    let result = process_events(event_rx, &agent_name).await;
+    let result = process_events(event_rx, &agent_name, Some(&session_ctx)).await;
 
     // Note: The engine (AgenticLoopV4) already adds both user and assistant messages
     // to the session during execution, so we don't need to add them manually here.
