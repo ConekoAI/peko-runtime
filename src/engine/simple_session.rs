@@ -210,7 +210,6 @@ impl SimpleSession {
 
     /// Update the index with current session metadata
     async fn update_index(&mut self) -> Result<()> {
-        tracing::debug!("SimpleSession::update_index called for {} with message_count={}", self.id, self.message_count);
         if let Some(mut entry) = self.index.get(&self.id).await? {
             entry.touch();
             entry.message_count = self.message_count;
@@ -219,12 +218,8 @@ impl SimpleSession {
             entry.total_tokens = self.input_tokens + self.output_tokens;
             entry.provider = self.current_provider.clone();
             entry.model = self.current_model.clone();
-            tracing::debug!("Updating index entry for {}: message_count={}", self.id, entry.message_count);
             self.index.insert(entry).await?;
             self.index.save().await?;
-            tracing::debug!("Index saved for {}", self.id);
-        } else {
-            tracing::warn!("Session {} not found in index during update_index", self.id);
         }
         Ok(())
     }
@@ -380,7 +375,6 @@ impl SimpleSession {
             .await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
-        tracing::debug!("SimpleSession::add_user: {} message_count now {}", self.id, self.message_count);
         self.update_index().await?;
         Ok(())
     }
@@ -427,7 +421,6 @@ impl SimpleSession {
             .await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
-        tracing::debug!("SimpleSession::add_assistant_with_tool_calls: {} message_count now {}", self.id, self.message_count);
         self.update_index().await?;
         Ok(())
     }
@@ -474,7 +467,6 @@ impl SimpleSession {
             .await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
-        tracing::debug!("SimpleSession::add_assistant: {} message_count now {}", self.id, self.message_count);
         self.update_index().await?;
         Ok(())
     }
