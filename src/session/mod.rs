@@ -20,7 +20,6 @@
 //! - `base`: Base session (shared conversation context)
 //! - `manager`: SessionManager for overlay lifecycle
 
-pub mod base;
 pub mod context;
 pub mod events;
 pub mod index;
@@ -34,9 +33,9 @@ pub mod spawn;
 pub mod subagent_key;
 pub mod sync;
 pub mod types;
+pub mod unified;
 
-// Re-export commonly used types from existing modules
-pub use base::BaseSession;
+// Re-export UnifiedSession (replaces both BaseSession and SimpleSession)
 pub use context::{SessionContext, SessionRouter};
 pub use events::{
     generate_event_id, generate_message_id, generate_tool_call_id, A2aMessageType,
@@ -55,6 +54,7 @@ pub use key::{
     parse_session_key, parse_session_key_v2, ChatType, ParsedSessionKeyV2, SessionScope,
 };
 pub use lock::FileLock;
+pub use unified::UnifiedSession;
 
 // Re-export overlay architecture types
 pub use types::{ChannelType, OverlayType, Peer, SpawnCleanupPolicy};

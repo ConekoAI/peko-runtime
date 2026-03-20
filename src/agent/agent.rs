@@ -426,7 +426,7 @@ impl Agent {
     pub async fn execute_streaming_with_session(
         &self,
         prompt: &str,
-        existing_session: Option<crate::engine::SimpleSession>,
+        existing_session: Option<crate::session::UnifiedSession>,
         history: Option<Vec<crate::providers::ChatMessage>>,
     ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
         // Use a large buffer to prevent event loss during bursts

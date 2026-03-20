@@ -9,7 +9,7 @@ pub mod execution;
 pub mod input;
 pub mod loop_v4;
 pub mod runner;
-pub mod simple_session;
+// Note: SimpleSession merged into UnifiedSession in src/session/unified.rs
 pub mod state;
 pub mod task_manager;
 pub mod tool_stream;
@@ -20,7 +20,7 @@ pub use execution::{ExecutionMode, TaskExecutor, TaskId, TaskStatus, TaskSummary
 pub use input::{A2AMessageType, AgentInput, HookType, InputContext};
 pub use loop_v4::{AgenticLoopV4, AgenticResult as AgenticResultV4, ToolCall};
 pub use runner::AgentRunner;
-pub use simple_session::SimpleSession;
+// SimpleSession now unified - use crate::session::UnifiedSession
 pub use state::{AgentState, StateMachine};
 pub use task_manager::{TaskManager, TaskManagerConfig, TaskManagerStats};
 pub use tool_stream::{

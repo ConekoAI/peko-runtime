@@ -6,12 +6,12 @@
 //! - Providing `HybridSession` views
 //! - Cross-channel session sharing
 
-use super::base::BaseSession;
 use super::index::{SessionEntry, SessionIndex};
 use super::key::{derive_base_session_key, derive_overlay_key};
 use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
+use super::unified::UnifiedSession;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -76,19 +76,19 @@ impl OverlayRef {
 #[derive(Debug, Clone)]
 pub struct HybridSession {
     /// Base session (shared across all overlays for a peer)
-    pub base: Arc<RwLock<BaseSession>>,
+    pub base: Arc<RwLock<UnifiedSession>>,
     /// Active overlay (channel or spawn)
     pub overlay: OverlayRef,
 }
 
 impl HybridSession {
     /// Create a new hybrid session
-    pub fn new(base: Arc<RwLock<BaseSession>>, overlay: OverlayRef) -> Self {
+    pub fn new(base: Arc<RwLock<UnifiedSession>>, overlay: OverlayRef) -> Self {
         Self { base, overlay }
     }
 
     /// Create a hybrid session with no overlay
-    pub fn base_only(base: Arc<RwLock<BaseSession>>) -> Self {
+    pub fn base_only(base: Arc<RwLock<UnifiedSession>>) -> Self {
         Self {
             base,
             overlay: OverlayRef::None,
@@ -166,8 +166,8 @@ impl HybridSession {
 /// - Session index for UUID-based file naming and switching
 #[derive(Debug)]
 pub struct SessionManager {
-    /// Base sessions: (`agent_id`, peer) -> `BaseSession`
-    base_sessions: HashMap<(String, Peer), Arc<RwLock<BaseSession>>>,
+    /// Base sessions: (`agent_id`, peer) -> `UnifiedSession`
+    base_sessions: HashMap<(String, Peer), Arc<RwLock<UnifiedSession>>>,
     /// Channel overlays: `overlay_key` -> `ChannelOverlay`
     channel_overlays: HashMap<String, Arc<RwLock<ChannelOverlay>>>,
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
@@ -196,7 +196,7 @@ impl SessionManager {
 
     /// Initialize with session index for an agent
     pub async fn with_registry(mut self, agent_name: &str) -> Result<Self> {
-        let sessions_dir = BaseSession::storage_dir(agent_name, None);
+        let sessions_dir = UnifiedSession::storage_dir(agent_name, None);
         self.index = Some(SessionIndex::open(&sessions_dir));
         self.sessions_dir = Some(sessions_dir);
         self.agent_name = Some(agent_name.to_string());
@@ -344,7 +344,7 @@ impl SessionManager {
         &mut self,
         agent: &str,
         peer: &Peer,
-    ) -> Result<Arc<RwLock<BaseSession>>> {
+    ) -> Result<Arc<RwLock<UnifiedSession>>> {
         let key = (agent.to_string(), peer.clone());
 
         // Check cache first
@@ -383,11 +383,11 @@ impl SessionManager {
             let session = if transcript_path.exists() {
                 // File exists, open it by ID
                 info!("Opening existing session: {}", transcript_path.display());
-                BaseSession::open_by_id(agent, peer, &session_id, sessions_dir).await?
+                UnifiedSession::open_by_id(agent, &session_id, sessions_dir).await?
             } else {
                 // Create the session file
                 info!("Creating new session file: {}", transcript_path.display());
-                BaseSession::create_with_path(agent, peer, &session_id, sessions_dir).await?
+                UnifiedSession::create_with_path(agent, peer, &session_id, sessions_dir).await?
             };
 
             let arc = Arc::new(RwLock::new(session));
@@ -399,14 +399,14 @@ impl SessionManager {
 
         // Fallback to old behavior (no registry)
         // Try to open existing
-        if let Some(session) = BaseSession::open(agent, peer).await? {
+        if let Some(session) = UnifiedSession::open(agent, peer).await? {
             let arc = Arc::new(RwLock::new(session));
             self.base_sessions.insert(key, arc.clone());
             return Ok(arc);
         }
 
         // Create new
-        let session = BaseSession::create(agent, peer).await?;
+        let session = UnifiedSession::create(agent, peer).await?;
         let arc = Arc::new(RwLock::new(session));
         self.base_sessions.insert(key, arc.clone());
         Ok(arc)
@@ -414,7 +414,11 @@ impl SessionManager {
 
     /// Get an existing base session if it exists
     #[must_use]
-    pub fn get_existing_base(&self, agent: &str, peer: &Peer) -> Option<Arc<RwLock<BaseSession>>> {
+    pub fn get_existing_base(
+        &self,
+        agent: &str,
+        peer: &Peer,
+    ) -> Option<Arc<RwLock<UnifiedSession>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.get(&key).cloned()
     }
@@ -570,7 +574,10 @@ impl SessionManager {
     }
 
     /// Get the parent's base session from a session key (which may be an overlay key)
-    async fn get_parent_base_session(&self, session_key: &str) -> Option<Arc<RwLock<BaseSession>>> {
+    async fn get_parent_base_session(
+        &self,
+        session_key: &str,
+    ) -> Option<Arc<RwLock<UnifiedSession>>> {
         // Extract base key from overlay key if needed
         let base_key = crate::session::key::base_key_from_overlay(session_key)
             .unwrap_or_else(|| session_key.to_string());
@@ -637,7 +644,7 @@ impl SessionManager {
         &mut self,
         agent: &str,
         peer: &Peer,
-    ) -> Option<Arc<RwLock<BaseSession>>> {
+    ) -> Option<Arc<RwLock<UnifiedSession>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.remove(&key)
     }
@@ -881,8 +888,8 @@ impl SessionManager {
 /// This is used for shared-context spawns where the child should start with
 /// the parent's conversation history.
 async fn copy_session_context(
-    parent: &Arc<RwLock<BaseSession>>,
-    child: &Arc<RwLock<BaseSession>>,
+    parent: &Arc<RwLock<UnifiedSession>>,
+    child: &Arc<RwLock<UnifiedSession>>,
 ) -> Result<()> {
     use crate::providers::MessageRole;
     use crate::types::message::ContentBlock;

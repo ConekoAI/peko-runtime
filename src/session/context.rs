@@ -5,6 +5,7 @@
 
 use super::manager::{HybridSession, OverlayRef, SessionManager};
 use super::types::{ChannelType, Peer};
+use super::UnifiedSession;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -360,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_context_agent_name() {
-        // Note: This would require filesystem access to create a BaseSession
+        // Note: This would require filesystem access to create a UnifiedSession
         // The test documents the expected behavior
     }
 

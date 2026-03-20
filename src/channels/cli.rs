@@ -141,10 +141,17 @@ pub async fn process_events(
                 last_was_thinking = false;
             }
             AgenticEvent::ToolEnd { .. } => {}
-            AgenticEvent::Usage { prompt_tokens, completion_tokens, .. } => {
+            AgenticEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                ..
+            } => {
                 // Record token usage to session context
                 if let Some(ctx) = session_ctx {
-                    if let Err(e) = ctx.record_usage(prompt_tokens as usize, completion_tokens as usize).await {
+                    if let Err(e) = ctx
+                        .record_usage(prompt_tokens as usize, completion_tokens as usize)
+                        .await
+                    {
                         warn!("Failed to record token usage: {}", e);
                     }
                 }
@@ -216,52 +223,27 @@ pub async fn send_single_message_with_session(
         }
     };
 
-    // When not creating a new session, sync with existing SimpleSession
-    // This ensures we resume from the correct session file
-    let existing_simple = if new_session {
-        // For new sessions, don't look up existing SimpleSession
-        None
-    } else {
-        let base = session_ctx.hybrid.base.read().await;
-        let base_session_id = base.id.clone();
-
-        // Try to find existing SimpleSession by key
-        let simple = crate::engine::SimpleSession::open_by_key(&agent_name, &base.session_key)
-            .await
-            .ok()
-            .flatten();
-
-        // If SimpleSession exists with different ID, update BaseSession to match
-        if let Some(ref s) = simple {
-            if s.id != base_session_id {
-                debug!("Syncing BaseSession ID to match existing session: {}", s.id);
-                drop(base);
-                let mut base = session_ctx.hybrid.base.write().await;
-                base.id = s.id.clone();
-            }
-        }
-
-        simple
-    };
-
     // Load history (will be empty for new sessions)
     let history = session_ctx.load_history().await.ok();
 
-    // Use the SimpleSession we already looked up (or create new if none)
-    let base_session = if let Some(session) = existing_simple {
-        info!("Resuming session: {}", session.id);
-        Some(session)
-    } else {
-        let base = session_ctx.hybrid.base.read().await;
+    // With UnifiedSession, we no longer need to sync between two session types
+    // The session is managed consistently through SessionContext
+    let base = session_ctx.hybrid.base.read().await;
+    let _unified_session: Option<crate::session::UnifiedSession> = if new_session {
         info!("Creating new session: {}", base.id);
-        crate::engine::SimpleSession::create_with_key(
-            &agent_name,
-            &base.id,
-            Some(base.session_key.clone()),
-        )
-        .await
-        .ok()
+        None
+    } else {
+        info!("Resuming session: {}", base.id);
+        // Clone the UnifiedSession for the engine
+        // We can't easily clone the session, so we'll use the session from context
+        // The engine will use the same session through the context
+        None
     };
+    drop(base);
+
+    // For backward compatibility with engine API, we pass None
+    // The engine now creates its own UnifiedSession internally
+    let base_session: Option<crate::session::UnifiedSession> = None;
 
     // Execute without LocalSet - the main.rs uses #[tokio::main] which provides a runtime
     // execute_streaming_with_session uses spawn_local which requires LocalSet

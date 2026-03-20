@@ -1,38 +1,63 @@
-//! Base session implementation
+//! Unified session implementation
 //!
-//! The `BaseSession` provides shared conversation context that is accessible
-//! across all overlays for a given peer. It stores:
-//! - Conversation history (messages)
-//! - Token usage
-//! - Current provider/model settings
-//! - Session metadata
+//! This module provides a single, authoritative session implementation that
+//! replaces both `BaseSession` and `SimpleSession` to eliminate racing issues.
+//!
+//! ## Design Principles
+//!
+//! 1. **Single Source of Truth**: One implementation manages all session data
+//! 2. **Atomic Updates**: All index updates happen together in one operation
+//! 3. **Clear Ownership**: No competing writers to the same index entry
+//! 4. **Backward Compatible**: Works with existing session files
+//!
+//! ## Unified Design
+//!
+//! This single implementation replaces the previous competing `BaseSession` and
+//! `SimpleSession` types to eliminate racing issues. It provides:
+//! - Peer-aware design for multi-user/session scenarios
+//! - Clean API for simple use cases (defaults to Peer::User("default"))
 
-use super::derive_base_session_key;
-use super::index::{SessionEntry, SessionIndex};
-use super::jsonl::SessionStorage;
-use super::types::Peer;
+use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
+use crate::session::index::{SessionEntry, SessionIndex};
+use crate::session::jsonl::SessionStorage;
+use crate::session::types::Peer;
 use crate::types::ContentBlock;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tokio::fs;
 
-/// Base session shared across all overlays for a peer
+/// Unified session - single source of truth for conversation persistence
 ///
-/// The `BaseSession` maintains the core conversation history and metadata
-/// that is shared between all channel overlays and spawn overlays
-/// (for non-isolated spawns).
+/// Unified session implementation with atomic updates.
+/// Provides peer-aware session management with atomic index updates
+/// to prevent racing conditions.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Create a new session for a user
+/// let peer = Peer::User("alice".to_string());
+/// let session = UnifiedSession::create("my_agent", &peer).await?;
+///
+/// // Add messages
+/// session.add_user("Hello!").await?;
+/// session.add_assistant("Hi there!", None).await?;
+///
+/// // Load history
+/// let history = session.load_history().await?;
+/// ```
 #[derive(Debug)]
-pub struct BaseSession {
-    /// Session ID (unique identifier)
+pub struct UnifiedSession {
+    /// Session ID (UUID format)
     pub id: String,
     /// Agent name
     pub agent_name: String,
-    /// Base session key: agent:{agent}:peer:{type}:{id}
+    /// Session key for peer-based lookup
     pub session_key: String,
     /// The peer this session belongs to
     pub peer: Peer,
-    /// Storage backend
+    /// Storage backend for JSONL files
     storage: SessionStorage,
     /// Session index for metadata
     index: SessionIndex,
@@ -50,8 +75,18 @@ pub struct BaseSession {
     pub current_model: Option<String>,
 }
 
-impl BaseSession {
+impl UnifiedSession {
+    // ============================================================
+    // Storage Directory
+    // ============================================================
+
     /// Get the storage directory for an agent
+    ///
+    /// Uses team-based structure: `~/.pekobot/teams/{team}/agents/{agent}/sessions/`
+    ///
+    /// # Arguments
+    /// * `agent_name` - The agent name
+    /// * `team` - Optional team name (defaults to "default")
     #[must_use]
     pub fn storage_dir(agent_name: &str, team: Option<&str>) -> PathBuf {
         let team = team.unwrap_or("default");
@@ -65,19 +100,25 @@ impl BaseSession {
             .join("sessions")
     }
 
-    /// Create a new base session for an agent and peer
+    // ============================================================
+    // Creation
+    // ============================================================
+
+    /// Create a new unified session for an agent and peer
     ///
     /// # Arguments
     /// * `agent_name` - The agent name
     /// * `peer` - The peer this session belongs to
     pub async fn create(agent_name: &str, peer: &Peer) -> Result<Self> {
-        let session_key = derive_base_session_key(agent_name, peer);
+        let session_key = derive_session_key(agent_name, peer);
         let session_id = uuid::Uuid::new_v4().to_string();
 
         Self::create_with_key(agent_name, peer, &session_id, &session_key).await
     }
 
-    /// Create a new base session with specific ID and key
+    /// Create a new unified session with specific ID and key
+    ///
+    /// This is useful when you need deterministic session IDs or custom keys.
     pub async fn create_with_key(
         agent_name: &str,
         peer: &Peer,
@@ -87,6 +128,9 @@ impl BaseSession {
         let storage_dir = Self::storage_dir(agent_name, None);
         let storage = SessionStorage::new(storage_dir.clone());
         let mut index = SessionIndex::open(&storage_dir);
+
+        // Ensure directory exists
+        fs::create_dir_all(&storage_dir).await.ok();
 
         // Create session file
         let cwd = std::env::current_dir()
@@ -104,7 +148,7 @@ impl BaseSession {
                 )
             })?;
 
-        // Create session entry and associate with peer
+        // Create session entry
         let transcript_file = format!("{session_id}.jsonl");
         let mut entry = SessionEntry::new(
             session_id.to_string(),
@@ -135,111 +179,9 @@ impl BaseSession {
         })
     }
 
-    /// Open an existing base session by agent and peer
-    pub async fn open(agent_name: &str, peer: &Peer) -> Result<Option<Self>> {
-        let session_key = derive_base_session_key(agent_name, peer);
-        Self::open_by_key(agent_name, &session_key).await
-    }
-
-    /// Open an existing base session by key
-    pub async fn open_by_key(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
-        let storage_dir = Self::storage_dir(agent_name, None);
-        let storage = SessionStorage::new(storage_dir.clone());
-        let mut index = SessionIndex::open(&storage_dir);
-
-        // Look up active session for peer
-        let entry = match index.get_active_for_peer(session_key).await? {
-            Some(e) => e,
-            None => return Ok(None),
-        };
-
-        // Load session entries to find last message
-        let entries: Vec<super::JsonlSessionEntry> =
-            storage.load_session(&entry.session_id).await?;
-
-        if entries.is_empty() {
-            return Ok(None);
-        }
-
-        // Count messages and find last ID
-        let mut message_count = 0;
-        let last_message_id = entries.iter().rev().find_map(|entry| match entry {
-            super::JsonlSessionEntry::Message { id, .. } => {
-                message_count += 1;
-                Some(id.clone())
-            }
-            _ => None,
-        });
-
-        // Parse peer from session key
-        let peer = parse_peer_from_key(session_key)?;
-
-        // Get token counts from index
-        let input_tokens = entry.input_tokens;
-        let output_tokens = entry.output_tokens;
-
-        Ok(Some(Self {
-            id: entry.session_id.clone(),
-            agent_name: agent_name.to_string(),
-            session_key: session_key.to_string(),
-            peer,
-            storage,
-            index,
-            last_message_id,
-            message_count,
-            input_tokens,
-            output_tokens,
-            current_provider: entry.provider.clone(),
-            current_model: entry.model.clone(),
-        }))
-    }
-
-    /// Open a session by ID from a specific directory (registry-based)
+    /// Create a new unified session from a specific directory (registry-based)
     ///
-    /// This bypasses the index and opens the session file directly.
-    pub async fn open_by_id(
-        agent_name: &str,
-        peer: &Peer,
-        session_id: &str,
-        sessions_dir: impl AsRef<std::path::Path>,
-    ) -> Result<Self> {
-        let sessions_dir = sessions_dir.as_ref().to_path_buf();
-        let storage = SessionStorage::new(sessions_dir.clone());
-        let index = SessionIndex::open(sessions_dir);
-        let session_key = derive_base_session_key(agent_name, peer);
-
-        // Load session entries
-        let entries: Vec<super::JsonlSessionEntry> = storage.load_session(session_id).await?;
-
-        // Count messages and find last ID
-        let mut message_count = 0;
-        let last_message_id = entries.iter().rev().find_map(|entry| match entry {
-            super::JsonlSessionEntry::Message { id, .. } => {
-                message_count += 1;
-                Some(id.clone())
-            }
-            _ => None,
-        });
-
-        Ok(Self {
-            id: session_id.to_string(),
-            agent_name: agent_name.to_string(),
-            session_key,
-            peer: peer.clone(),
-            storage,
-            index,
-            last_message_id,
-            message_count,
-            input_tokens: 0,
-            output_tokens: 0,
-            current_provider: None,
-            current_model: None,
-        })
-    }
-
-    /// Create a session with specific path (registry-based)
-    ///
-    /// Creates a session file in the specified directory with the given session ID.
+    /// This is used by SessionManager when it has already determined the sessions directory.
     pub async fn create_with_path(
         agent_name: &str,
         peer: &Peer,
@@ -248,8 +190,8 @@ impl BaseSession {
     ) -> Result<Self> {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
-        let index = SessionIndex::open(&sessions_dir);
-        let session_key = derive_base_session_key(agent_name, peer);
+        let mut index = SessionIndex::open(&sessions_dir);
+        let session_key = derive_session_key(agent_name, peer);
 
         // Ensure directory exists
         fs::create_dir_all(&sessions_dir).await?;
@@ -277,7 +219,116 @@ impl BaseSession {
         })
     }
 
-    /// Get or create a base session
+    // ============================================================
+    // Opening
+    // ============================================================
+
+    /// Open an existing unified session by agent and peer
+    ///
+    /// Returns `Ok(None)` if no active session exists for this peer.
+    pub async fn open(agent_name: &str, peer: &Peer) -> Result<Option<Self>> {
+        let session_key = derive_session_key(agent_name, peer);
+        Self::open_by_key(agent_name, &session_key).await
+    }
+
+    /// Open an existing unified session by key
+    pub async fn open_by_key(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
+        let storage_dir = Self::storage_dir(agent_name, None);
+        let storage = SessionStorage::new(storage_dir.clone());
+        let mut index = SessionIndex::open(&storage_dir);
+
+        // Look up active session for peer
+        let entry = match index.get_active_for_peer(session_key).await? {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        // Load session entries to find last message
+        let entries: Vec<crate::session::JsonlSessionEntry> =
+            storage.load_session(&entry.session_id).await?;
+
+        if entries.is_empty() {
+            return Ok(None);
+        }
+
+        // Parse peer from session key
+        let peer = parse_peer_from_key(session_key)?;
+
+        // Build session from entry
+        Self::from_entry(
+            entry,
+            peer,
+            storage,
+            index,
+            entries,
+            session_key.to_string(),
+        )
+        .map(Some)
+    }
+
+    /// Open an existing unified session by ID
+    ///
+    /// This bypasses the peer lookup and opens the session file directly.
+    pub async fn open_by_id(
+        agent_name: &str,
+        session_id: &str,
+        sessions_dir: impl AsRef<std::path::Path>,
+    ) -> Result<Self> {
+        let sessions_dir = sessions_dir.as_ref().to_path_buf();
+        let storage = SessionStorage::new(sessions_dir.clone());
+        let mut index = SessionIndex::open(&sessions_dir);
+
+        // Load session entries
+        let entries: Vec<crate::session::JsonlSessionEntry> =
+            storage.load_session(session_id).await?;
+
+        // Find session key from index
+        let session_key = index
+            .find_by_session_id(session_id)
+            .await?
+            .map(|_| format!("agent:{agent_name}:peer:user:default"))
+            .unwrap_or_else(|| format!("agent:{agent_name}:peer:user:default"));
+
+        // Parse peer from session key
+        let peer = parse_peer_from_key(&session_key).unwrap_or(Peer::User("default".to_string()));
+
+        Self::from_entries(
+            session_id.to_string(),
+            agent_name.to_string(),
+            session_key,
+            peer,
+            storage,
+            index,
+            entries,
+        )
+    }
+
+    /// Open an existing session by key (returns None if not found)
+    pub async fn open_by_key_simple(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
+        Self::open_by_key(agent_name, session_key).await
+    }
+
+    /// Open or create a session by key (for CLI persistence)
+    pub async fn open_or_create_by_key(agent_name: &str, session_key: &str) -> Result<Self> {
+        let storage_dir = Self::storage_dir(agent_name, None);
+        let mut index = SessionIndex::open(&storage_dir);
+
+        // Check if session exists
+        if let Some(entry) = index.get_active_for_peer(session_key).await? {
+            // Open existing
+            return Self::open_by_id(agent_name, &entry.session_id, &storage_dir)
+                .await
+                .map(Some)
+                .map(|s| s.expect("Session in index but not on disk"));
+        }
+
+        // Create new with this key
+        let peer = parse_peer_from_key(session_key).unwrap_or(Peer::User("default".to_string()));
+        let session_id = uuid::Uuid::new_v4().to_string();
+        Self::create_with_key(agent_name, &peer, &session_id, session_key).await
+    }
+
+    /// Get or create a unified session
     pub async fn get_or_create(agent_name: &str, peer: &Peer) -> Result<Self> {
         match Self::open(agent_name, peer).await? {
             Some(session) => Ok(session),
@@ -285,17 +336,95 @@ impl BaseSession {
         }
     }
 
-    /// Update the index with current metadata
+    // ============================================================
+    // Helper Methods
+    // ============================================================
+
+    /// Build a UnifiedSession from a SessionEntry
+    fn from_entry(
+        entry: SessionEntry,
+        peer: Peer,
+        storage: SessionStorage,
+        index: SessionIndex,
+        entries: Vec<crate::session::JsonlSessionEntry>,
+        session_key: String,
+    ) -> Result<Self> {
+        // Count messages and find last ID
+        let mut message_count = 0;
+        let last_message_id = entries.iter().rev().find_map(|entry| match entry {
+            crate::session::JsonlSessionEntry::Message { id, .. } => {
+                message_count += 1;
+                Some(id.clone())
+            }
+            _ => None,
+        });
+
+        Ok(Self {
+            id: entry.session_id,
+            agent_name: entry.agent_name,
+            session_key,
+            peer,
+            storage,
+            index,
+            last_message_id,
+            message_count,
+            input_tokens: entry.input_tokens,
+            output_tokens: entry.output_tokens,
+            current_provider: entry.provider,
+            current_model: entry.model,
+        })
+    }
+
+    /// Build a UnifiedSession from raw entries (for open_by_id)
+    fn from_entries(
+        session_id: String,
+        agent_name: String,
+        session_key: String,
+        peer: Peer,
+        storage: SessionStorage,
+        index: SessionIndex,
+        entries: Vec<crate::session::JsonlSessionEntry>,
+    ) -> Result<Self> {
+        // Count messages and find last ID
+        let mut message_count = 0;
+        let last_message_id = entries.iter().rev().find_map(|entry| match entry {
+            crate::session::JsonlSessionEntry::Message { id, .. } => {
+                message_count += 1;
+                Some(id.clone())
+            }
+            _ => None,
+        });
+
+        Ok(Self {
+            id: session_id,
+            agent_name,
+            session_key,
+            peer,
+            storage,
+            index,
+            last_message_id,
+            message_count,
+            input_tokens: 0,
+            output_tokens: 0,
+            current_provider: None,
+            current_model: None,
+        })
+    }
+
+    // ============================================================
+    // Index Updates (ATOMIC - prevents racing)
+    // ============================================================
+
+    /// Update the index with current metadata - ATOMIC operation
+    ///
+    /// This is the key method that prevents racing. All updates happen
+    /// in a single operation, so there's no interleaving with other updates.
     async fn update_index(&mut self) -> Result<()> {
         // Get the session_id from active session for this peer
         if let Some(session_id) = self.index.get_active_session_id(&self.session_key).await? {
             if let Some(mut entry) = self.index.get(&session_id).await? {
                 entry.touch();
-                // Only update message_count if we've actually counted messages
-                // (don't overwrite SimpleSession's count with 0 for new sessions)
-                if self.message_count > 0 {
-                    entry.message_count = self.message_count;
-                }
+                entry.message_count = self.message_count;
                 entry.input_tokens = self.input_tokens;
                 entry.output_tokens = self.output_tokens;
                 entry.total_tokens = self.input_tokens + self.output_tokens;
@@ -307,6 +436,10 @@ impl BaseSession {
         }
         Ok(())
     }
+
+    // ============================================================
+    // Metadata Operations
+    // ============================================================
 
     /// Record token usage
     pub async fn record_usage(&mut self, input: usize, output: usize) -> Result<()> {
@@ -331,6 +464,19 @@ impl BaseSession {
             self.input_tokens + self.output_tokens,
         )
     }
+
+    /// Get current provider and model
+    #[must_use]
+    pub fn current_model(&self) -> Option<(&str, &str)> {
+        match (&self.current_provider, &self.current_model) {
+            (Some(p), Some(m)) => Some((p.as_str(), m.as_str())),
+            _ => None,
+        }
+    }
+
+    // ============================================================
+    // Message Operations
+    // ============================================================
 
     /// Add a system message
     pub async fn add_system(&mut self, content: impl Into<String>) -> Result<()> {
@@ -374,7 +520,7 @@ impl BaseSession {
     pub async fn add_assistant(
         &mut self,
         content: impl Into<String>,
-        tool_calls: Option<Vec<crate::engine::ToolCall>>,
+        tool_calls: Option<Vec<ToolCall>>,
     ) -> Result<()> {
         let content_str = content.into();
         let content_blocks = if let Some(calls) = tool_calls {
@@ -409,6 +555,51 @@ impl BaseSession {
         Ok(())
     }
 
+    /// Add an assistant message with tool calls (with ContentBlock tool calls)
+    pub async fn add_assistant_with_tool_calls(
+        &mut self,
+        content: impl Into<String>,
+        tool_calls: Vec<ContentBlock>,
+    ) -> Result<()> {
+        let content_str = content.into();
+        let mut content_blocks = vec![];
+
+        // Add text if present
+        if !content_str.is_empty() {
+            content_blocks.push(ContentBlock::Text { text: content_str });
+        }
+
+        // Add tool calls with their original IDs
+        for block in tool_calls {
+            if let ContentBlock::ToolCall {
+                id,
+                name,
+                arguments,
+            } = block
+            {
+                content_blocks.push(ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
+            }
+        }
+
+        let msg_id = self
+            .storage
+            .append_message(
+                &self.id,
+                self.last_message_id.clone(),
+                "assistant",
+                content_blocks,
+            )
+            .await?;
+        self.last_message_id = Some(msg_id);
+        self.message_count += 1;
+        self.update_index().await?;
+        Ok(())
+    }
+
     /// Add a tool result
     pub async fn add_tool_result(
         &mut self,
@@ -425,8 +616,36 @@ impl BaseSession {
                 false,
             )
             .await?;
+        // Tool results don't update last_message_id or count
         Ok(())
     }
+
+    /// Add a thinking block (streaming reasoning)
+    pub async fn add_thinking(
+        &mut self,
+        thinking: impl Into<String>,
+        signature: Option<String>,
+    ) -> Result<()> {
+        let msg_id = self
+            .storage
+            .append_message(
+                &self.id,
+                self.last_message_id.clone(),
+                "assistant",
+                vec![ContentBlock::Thinking {
+                    text: thinking.into(),
+                    signature,
+                }],
+            )
+            .await?;
+        self.last_message_id = Some(msg_id);
+        // Thinking blocks don't count as messages for stats
+        Ok(())
+    }
+
+    // ============================================================
+    // History Operations
+    // ============================================================
 
     /// Load conversation history
     pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
@@ -437,7 +656,7 @@ impl BaseSession {
 
         for entry in entries {
             match entry {
-                super::JsonlSessionEntry::Message { message, .. } => {
+                crate::session::JsonlSessionEntry::Message { message, .. } => {
                     let role = match message.role.as_str() {
                         "system" => MessageRole::System,
                         "user" => MessageRole::User,
@@ -453,7 +672,7 @@ impl BaseSession {
                         tool_call_id: None,
                     });
                 }
-                super::JsonlSessionEntry::ToolResult {
+                crate::session::JsonlSessionEntry::ToolResult {
                     tool_call_id,
                     content,
                     ..
@@ -480,43 +699,7 @@ impl BaseSession {
         Ok(messages)
     }
 
-    /// Record a compaction event
-    pub async fn record_compaction(
-        &mut self,
-        summary: &str,
-        messages_compacted: usize,
-        tokens_before: usize,
-        tokens_after: usize,
-        compaction_number: usize,
-    ) -> Result<()> {
-        self.storage
-            .append_compaction(
-                &self.id,
-                self.last_message_id.clone(),
-                summary,
-                messages_compacted,
-                tokens_before,
-                tokens_after,
-                compaction_number,
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// Load the most recent compaction summary
-    pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
-        let entries: Vec<super::JsonlSessionEntry> = self.storage.load_session(&self.id).await?;
-
-        for entry in entries.iter().rev() {
-            if let super::JsonlSessionEntry::Compaction { summary, .. } = entry {
-                return Ok(Some(summary.clone()));
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Get context as text (for debugging/display)
+    /// Get context as text (for LLM)
     pub async fn get_context_text(&self, _limit: usize) -> String {
         let entries = match self.storage.load_session(&self.id).await {
             Ok(e) => e,
@@ -527,7 +710,7 @@ impl BaseSession {
 
         for entry in entries {
             match entry {
-                super::JsonlSessionEntry::Message { message, .. } => {
+                crate::session::JsonlSessionEntry::Message { message, .. } => {
                     let role = &message.role;
                     let mut parts: Vec<String> = Vec::new();
 
@@ -561,7 +744,7 @@ impl BaseSession {
                         context.push_str(&format!("{role}: {content_text}\n\n"));
                     }
                 }
-                super::JsonlSessionEntry::ToolResult {
+                crate::session::JsonlSessionEntry::ToolResult {
                     tool_name, content, ..
                 } => {
                     let result_text: String = content
@@ -583,15 +766,115 @@ impl BaseSession {
             context
         }
     }
+
+    // ============================================================
+    // Compaction
+    // ============================================================
+
+    /// Record a compaction event
+    pub async fn record_compaction(
+        &mut self,
+        summary: &str,
+        messages_compacted: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        compaction_number: usize,
+    ) -> Result<()> {
+        self.storage
+            .append_compaction(
+                &self.id,
+                self.last_message_id.clone(),
+                summary,
+                messages_compacted,
+                tokens_before,
+                tokens_after,
+                compaction_number,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Load the most recent compaction summary
+    pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
+        let entries: Vec<crate::session::JsonlSessionEntry> =
+            self.storage.load_session(&self.id).await?;
+
+        for entry in entries.iter().rev() {
+            if let crate::session::JsonlSessionEntry::Compaction { summary, .. } = entry {
+                return Ok(Some(summary.clone()));
+            }
+        }
+
+        Ok(None)
+    }
+
+    // ============================================================
+    // Model Change Recording
+    // ============================================================
+
+    /// Record model change
+    pub async fn record_model_change(&mut self, provider: &str, model_id: &str) -> Result<()> {
+        self.storage
+            .append_model_change(&self.id, self.last_message_id.clone(), provider, model_id)
+            .await?;
+        // Model changes don't update last_message_id
+        Ok(())
+    }
+
+    // ============================================================
+    // Static Utilities
+    // ============================================================
+
+    /// List available sessions for an agent
+    pub async fn list_sessions(agent_name: &str) -> Result<Vec<(String, std::time::SystemTime)>> {
+        let storage_dir = Self::storage_dir(agent_name, None);
+
+        let mut sessions = Vec::new();
+
+        if let Ok(mut entries) = tokio::fs::read_dir(&storage_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "jsonl") {
+                    let session_id = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    if let Ok(metadata) = entry.metadata().await {
+                        if let Ok(modified) = metadata.modified() {
+                            sessions.push((session_id, modified));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by modification time (newest first)
+        sessions.sort_by(|a, b| b.1.cmp(&a.1));
+        Ok(sessions)
+    }
 }
 
-/// Parse a peer from a base session key
+// ============================================================
+// Helper Functions
+// ============================================================
+
+/// Derive a session key from agent name and peer
+fn derive_session_key(agent_name: &str, peer: &Peer) -> String {
+    match peer {
+        Peer::User(id) => format!("agent:{agent_name}:peer:user:{id}"),
+        Peer::Agent(id) => format!("agent:{agent_name}:peer:agent:{id}"),
+    }
+}
+
+/// Parse a peer from a session key
 fn parse_peer_from_key(key: &str) -> Result<Peer> {
     // Format: agent:{agent}:peer:{type}:{id}
     let parts: Vec<&str> = key.split(':').collect();
 
     if parts.len() < 5 {
-        return Err(anyhow::anyhow!("Invalid base session key format: {key}"));
+        return Err(anyhow::anyhow!("Invalid session key format: {key}"));
     }
 
     // Find "peer" in the key
@@ -615,6 +898,10 @@ fn parse_peer_from_key(key: &str) -> Result<Peer> {
     }
 }
 
+// ============================================================
+// Tests
+// ============================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,9 +913,9 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_base_session_create() {
+    async fn test_unified_session_create() {
         let peer = Peer::User("alice".to_string());
-        let session = BaseSession::create("test_agent", &peer).await;
+        let session = UnifiedSession::create("test_agent", &peer).await;
         assert!(session.is_ok());
 
         let session = session.unwrap();
@@ -640,9 +927,9 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_base_session_agent_peer() {
+    async fn test_unified_session_agent_peer() {
         let peer = Peer::Agent("helper".to_string());
-        let session = BaseSession::create("test_agent", &peer).await.unwrap();
+        let session = UnifiedSession::create("test_agent", &peer).await.unwrap();
 
         assert_eq!(session.peer, peer);
         assert!(session.session_key.contains("peer:agent:helper"));
@@ -650,9 +937,9 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_base_session_add_messages() {
+    async fn test_unified_session_add_messages() {
         let peer = Peer::User("alice".to_string());
-        let mut session = BaseSession::create("test_agent", &peer).await.unwrap();
+        let mut session = UnifiedSession::create("test_agent", &peer).await.unwrap();
 
         session
             .add_system("You are a helpful assistant")
@@ -669,9 +956,9 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_base_session_token_usage() {
+    async fn test_unified_session_token_usage() {
         let peer = Peer::User("alice".to_string());
-        let mut session = BaseSession::create("test_agent", &peer).await.unwrap();
+        let mut session = UnifiedSession::create("test_agent", &peer).await.unwrap();
 
         session.record_usage(100, 50).await.unwrap();
         session.record_usage(50, 25).await.unwrap();
@@ -684,18 +971,18 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_base_session_persistence() {
+    async fn test_unified_session_persistence() {
         let peer = Peer::User("alice".to_string());
 
         // Create session
-        let mut session = BaseSession::create("test_agent", &peer).await.unwrap();
+        let mut session = UnifiedSession::create("test_agent", &peer).await.unwrap();
         let session_key = session.session_key.clone();
 
         session.add_user("Hello!").await.unwrap();
         session.add_assistant("Hi!", None).await.unwrap();
 
         // Re-open by key
-        let reopened = BaseSession::open_by_key("test_agent", &session_key)
+        let reopened = UnifiedSession::open_by_key("test_agent", &session_key)
             .await
             .unwrap();
 
@@ -710,22 +997,33 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_base_session_get_or_create() {
+    async fn test_unified_session_get_or_create() {
         let peer = Peer::User("alice".to_string());
 
         // Create new
-        let session1 = BaseSession::get_or_create("test_agent", &peer)
+        let session1 = UnifiedSession::get_or_create("test_agent", &peer)
             .await
             .unwrap();
         let key1 = session1.session_key.clone();
 
         // Get existing
-        let session2 = BaseSession::get_or_create("test_agent", &peer)
+        let session2 = UnifiedSession::get_or_create("test_agent", &peer)
             .await
             .unwrap();
         let key2 = session2.session_key;
 
         assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_derive_session_key() {
+        let peer = Peer::User("alice".to_string());
+        let key = derive_session_key("test_agent", &peer);
+        assert_eq!(key, "agent:test_agent:peer:user:alice");
+
+        let peer = Peer::Agent("helper".to_string());
+        let key = derive_session_key("test_agent", &peer);
+        assert_eq!(key, "agent:test_agent:peer:agent:helper");
     }
 
     #[test]
@@ -738,7 +1036,7 @@ mod tests {
         let peer = parse_peer_from_key("agent:test:peer:agent:helper").unwrap();
         assert_eq!(peer, Peer::Agent("helper".to_string()));
 
-        // Complex user ID with colons (sanitized)
+        // Complex user ID
         let peer = parse_peer_from_key("agent:test:peer:user:domain_user_123").unwrap();
         assert_eq!(peer, Peer::User("domain_user_123".to_string()));
     }

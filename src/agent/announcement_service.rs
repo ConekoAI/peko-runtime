@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 use crate::agent::subagent_executor::{AnnouncementReceiver, SubagentExecutor};
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
+use crate::session::UnifiedSession;
 
 /// Service for announcing subagent results to parent sessions
 pub struct AnnouncementService {

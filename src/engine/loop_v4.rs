@@ -7,9 +7,11 @@
 //! - Streaming support with incremental tool call construction
 
 use crate::agent::Agent;
-use crate::engine::{AgenticEvent, LifecyclePhase, SimpleSession, TaskManager};
+use crate::engine::{AgenticEvent, LifecyclePhase, TaskManager};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
+use crate::session::types::Peer;
+use crate::session::UnifiedSession;
 use crate::tools::Tool;
 use crate::types::message::ContentBlock;
 use anyhow::{Context as _, Result};
@@ -86,7 +88,7 @@ impl AgenticLoopV4 {
         &self,
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
-        existing_session: Option<SimpleSession>,
+        existing_session: Option<UnifiedSession>,
         history: Option<Vec<ChatMessage>>,
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
@@ -96,7 +98,9 @@ impl AgenticLoopV4 {
             info!("Resuming session: {}", s.id);
             s
         } else {
-            let s = SimpleSession::create(self.agent.name())
+            // Create new session with default peer
+            let peer = Peer::User("default".to_string());
+            let s = UnifiedSession::create(self.agent.name(), &peer)
                 .await
                 .context("Failed to create session")?;
             info!("Created new session: {}", s.id);
@@ -186,7 +190,7 @@ impl AgenticLoopV4 {
     async fn run_loop(
         &self,
         mut messages: Vec<ChatMessage>,
-        mut session: SimpleSession,
+        mut session: UnifiedSession,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
     ) -> Result<AgenticResult> {
