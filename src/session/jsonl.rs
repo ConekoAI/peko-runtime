@@ -9,7 +9,7 @@
 use crate::session::events::SessionEvent;
 use crate::session::lock::FileLock;
 use crate::types::ContentBlock;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

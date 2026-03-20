@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Event envelope - every line in JSONL shares this structure
 ///

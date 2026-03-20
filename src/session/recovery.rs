@@ -9,6 +9,7 @@
 //! Per REQ-SM-001 and REQ-RL-003: Session history must be fully recoverable
 //! from JSONL files alone.
 
+use crate::session::events::SessionEvent;
 use crate::session::jsonl::SessionStorage;
 use anyhow::Result;
 use std::path::{Path, PathBuf};

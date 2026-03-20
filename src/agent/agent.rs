@@ -635,11 +635,7 @@ impl Agent {
     /// Create a new session (/new command)
     pub async fn session_new(&self, peer: &Peer) -> Result<String> {
         let mut manager = self.session_manager.write().await;
-        let session = manager.create_new_session(peer).await?;
-        let session_id = {
-            let session_guard = session.read().await;
-            session_guard.id.clone()
-        };
+        let session_id = manager.create_new_session(peer).await?;
         info!("Created new session {} for peer {:?}", session_id, peer);
         Ok(session_id)
     }

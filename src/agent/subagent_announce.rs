@@ -6,6 +6,7 @@
 use crate::agent::subagent_registry::{SubagentResult, SubagentRun, SubagentStatus};
 use crate::session::context::SessionContext;
 use anyhow::{Context, Result};
+use chrono::Utc;
 
 /// Format a subagent result as an announcement message
 #[must_use]

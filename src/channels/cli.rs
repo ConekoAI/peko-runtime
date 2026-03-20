@@ -9,7 +9,7 @@
 use super::{Channel, StreamingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::session::context::SessionContext;
 use crate::session::types::{ChannelType, Peer};
@@ -189,22 +189,24 @@ pub async fn send_single_message_with_session(
         let manager = agent.session_manager();
         let mut manager_guard = manager.write().await;
 
+        // Create a new session via registry (if available)
+        let new_session_id = manager_guard.create_new_session(&peer).await.ok();
+        if let Some(ref sid) = new_session_id {
+            info!("Created new session via registry: {}", sid);
+        }
+
         // Remove existing CLI overlay if present
         let base_key = crate::session::derive_base_session_key(&agent_name, &peer);
         let overlay_key = format!("{base_key}:overlay:channel:cli:default");
         manager_guard.remove_channel_overlay(&overlay_key);
 
-        // Remove old base session from cache to ensure clean state
+        // Also remove from base_sessions cache to force re-creation
         manager_guard.remove_base_session(&agent_name, &peer);
 
-        // Create a new session - this creates BOTH index entry AND transcript file
-        // and returns the cached session directly
-        let base_session = manager_guard.create_new_session(&peer).await?;
-
-        // Create channel overlay on top of the new base session
         let hybrid = manager_guard
-            .create_channel_overlay_on_base(base_session, ChannelType::Cli, "default")
+            .get_session_for_channel(&agent_name, &peer, ChannelType::Cli, "default")
             .await?;
+
 
         SessionContext::new(hybrid).await
     } else {

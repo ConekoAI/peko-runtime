@@ -5,6 +5,7 @@
 
 use super::manager::{HybridSession, OverlayRef, SessionManager};
 use super::types::{ChannelType, Peer};
+use super::UnifiedSession;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
