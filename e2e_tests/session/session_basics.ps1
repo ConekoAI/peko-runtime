@@ -20,6 +20,10 @@ if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
     exit 1
 }
 
+# Build pekobot (assumes Rust toolchain is installed)
+Write-Host "Building pekobot..." -ForegroundColor Cyan
+pushd "D:\Workplace\pekobot\pekobot\";$env:RUSTFLAGS="-A warnings"; cargo build; popd
+
 # Reset pekobot config data (Windows)
 $pekobotDir = "$env:USERPROFILE/.pekobot"
 $pekobotWorkspaceDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
