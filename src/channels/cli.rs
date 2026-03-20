@@ -220,7 +220,13 @@ pub async fn send_single_message_with_session(
     };
 
     // Load history (will be empty for new sessions)
-    let history = session_ctx.load_history().await.ok();
+    // CRITICAL: Use filter to convert empty history to None, so the engine
+    // knows to add the system prompt for fresh sessions
+    let history = session_ctx
+        .load_history()
+        .await
+        .ok()
+        .filter(|h| !h.is_empty());
 
     // Get the session from context to pass to engine
     // The engine will use the same session through the Arc<RwLock<>>

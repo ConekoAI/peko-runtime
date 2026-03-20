@@ -205,7 +205,24 @@ impl UnifiedSession {
             .ok()
             .map(|p| p.to_string_lossy().to_string());
 
-        storage.create_session(session_id, cwd).await?;
+        storage.create_session(session_id, cwd.clone()).await?;
+
+        // CRITICAL: Create index entry for this session
+        // This ensures the session appears in listings immediately
+        let transcript_file = format!("{}.jsonl", session_id);
+        let entry = SessionEntry::new(
+            session_id.to_string(),
+            agent_name.to_string(),
+            transcript_file,
+        );
+        index.create_for_peer(entry, &session_key).await?;
+        index.save().await?;
+
+        tracing::info!(
+            "Created session {} with index entry for peer {}",
+            session_id,
+            session_key
+        );
 
         Ok(Self {
             id: session_id.to_string(),
@@ -267,6 +284,7 @@ impl UnifiedSession {
             entries,
             session_key.to_string(),
         )
+        .await
         .map(Some)
     }
 
@@ -346,26 +364,58 @@ impl UnifiedSession {
     // ============================================================
 
     /// Build a UnifiedSession from a SessionEntry
-    fn from_entry(
+    async fn from_entry(
         entry: SessionEntry,
         peer: Peer,
         storage: SessionStorage,
-        index: SessionIndex,
+        mut index: SessionIndex,
         entries: Vec<crate::session::JsonlSessionEntry>,
         session_key: String,
     ) -> Result<Self> {
+        let session_id = entry.session_id.clone();
+
         // Count messages and find last ID
         let mut message_count = 0;
-        let last_message_id = entries.iter().rev().find_map(|entry| match entry {
-            crate::session::JsonlSessionEntry::Message { id, .. } => {
+        let mut last_message_id = None;
+
+        for e in entries.iter().rev() {
+            if let crate::session::JsonlSessionEntry::Message { id, .. } = e {
                 message_count += 1;
-                Some(id.clone())
+                if last_message_id.is_none() {
+                    last_message_id = Some(id.clone());
+                }
             }
-            _ => None,
-        });
+        }
+
+        // CRITICAL: Reconcile message count with index if needed
+        // The JSONL file is the source of truth for message count
+        if entry.message_count != message_count {
+            tracing::warn!(
+                "Session {} message count mismatch: index={}, jsonl={}. Reconciling.",
+                session_id,
+                entry.message_count,
+                message_count
+            );
+
+            if let Ok(Some(mut index_entry)) = index.get(&session_id).await {
+                index_entry.message_count = message_count;
+                index_entry.touch();
+                if let Err(e) = index.insert(index_entry).await {
+                    tracing::error!("Failed to reconcile session {}: {}", session_id, e);
+                } else if let Err(e) = index.save().await {
+                    tracing::error!("Failed to save reconciled index for {}: {}", session_id, e);
+                } else {
+                    tracing::info!(
+                        "Reconciled session {} message count to {}",
+                        session_id,
+                        message_count
+                    );
+                }
+            }
+        }
 
         Ok(Self {
-            id: entry.session_id,
+            id: session_id,
             agent_name: entry.agent_name,
             session_key,
             peer,
@@ -392,13 +442,39 @@ impl UnifiedSession {
     ) -> Result<Self> {
         // Count messages and find last ID
         let mut message_count = 0;
-        let last_message_id = entries.iter().rev().find_map(|entry| match entry {
-            crate::session::JsonlSessionEntry::Message { id, .. } => {
-                message_count += 1;
-                Some(id.clone())
+        let mut session_entries = 0;
+        let mut tool_result_entries = 0;
+        let mut model_change_entries = 0;
+        let mut compaction_entries = 0;
+        let mut custom_entries = 0;
+        let mut last_message_id = None;
+
+        // Count all entries (don't use find_map as it stops at first match!)
+        for entry in entries.iter().rev() {
+            match entry {
+                crate::session::JsonlSessionEntry::Message { id, .. } => {
+                    message_count += 1;
+                    if last_message_id.is_none() {
+                        last_message_id = Some(id.clone());
+                    }
+                }
+                crate::session::JsonlSessionEntry::Session { .. } => {
+                    session_entries += 1;
+                }
+                crate::session::JsonlSessionEntry::ToolResult { .. } => {
+                    tool_result_entries += 1;
+                }
+                crate::session::JsonlSessionEntry::ModelChange { .. } => {
+                    model_change_entries += 1;
+                }
+                crate::session::JsonlSessionEntry::Compaction { .. } => {
+                    compaction_entries += 1;
+                }
+                crate::session::JsonlSessionEntry::Custom { .. } => {
+                    custom_entries += 1;
+                }
             }
-            _ => None,
-        });
+        }
 
         // Restore token counts and metadata from index
         let (input_tokens, output_tokens, current_provider, current_model) = index
@@ -408,6 +484,32 @@ impl UnifiedSession {
             .flatten()
             .map(|e| (e.input_tokens, e.output_tokens, e.provider, e.model))
             .unwrap_or((0, 0, None, None));
+
+        // CRITICAL: Reconcile message count with index if needed
+        // The JSONL file is the source of truth for message count
+        if let Ok(Some(mut entry)) = index.get(&session_id).await {
+            if entry.message_count != message_count {
+                tracing::warn!(
+                    "Session {} message count mismatch: index={}, jsonl={}. Reconciling.",
+                    session_id,
+                    entry.message_count,
+                    message_count
+                );
+                entry.message_count = message_count;
+                entry.touch();
+                if let Err(e) = index.insert(entry).await {
+                    tracing::error!("Failed to reconcile session {}: {}", session_id, e);
+                } else if let Err(e) = index.save().await {
+                    tracing::error!("Failed to save reconciled index for {}: {}", session_id, e);
+                } else {
+                    tracing::info!(
+                        "Reconciled session {} message count to {}",
+                        session_id,
+                        message_count
+                    );
+                }
+            }
+        }
 
         Ok(Self {
             id: session_id,
@@ -434,19 +536,27 @@ impl UnifiedSession {
     /// This is the key method that prevents racing. All updates happen
     /// in a single operation, so there's no interleaving with other updates.
     async fn update_index(&mut self) -> Result<()> {
-        // Get the session_id from active session for this peer
-        if let Some(session_id) = self.index.get_active_session_id(&self.session_key).await? {
-            if let Some(mut entry) = self.index.get(&session_id).await? {
-                entry.touch();
-                entry.message_count = self.message_count;
-                entry.input_tokens = self.input_tokens;
-                entry.output_tokens = self.output_tokens;
-                entry.total_tokens = self.input_tokens + self.output_tokens;
-                entry.provider = self.current_provider.clone();
-                entry.model = self.current_model.clone();
-                self.index.insert(entry).await?;
-                self.index.save().await?;
-            }
+        // CRITICAL FIX: Use self.id (the actual session ID) directly,
+        // NOT get_active_session_id() which returns the active session for the peer.
+        // If a peer has multiple sessions, using get_active_session_id would update
+        // the wrong session's metadata!
+        let session_id = &self.id;
+
+        if let Some(mut entry) = self.index.get(session_id).await? {
+            entry.touch();
+            entry.message_count = self.message_count;
+            entry.input_tokens = self.input_tokens;
+            entry.output_tokens = self.output_tokens;
+            entry.total_tokens = self.input_tokens + self.output_tokens;
+            entry.provider = self.current_provider.clone();
+            entry.model = self.current_model.clone();
+            self.index.insert(entry).await?;
+            self.index.save().await?;
+        } else {
+            tracing::warn!(
+                "Session {} not found in index when updating metadata. This may indicate the session was not properly registered.",
+                session_id
+            );
         }
         Ok(())
     }

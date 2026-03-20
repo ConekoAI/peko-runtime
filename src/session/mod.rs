@@ -27,6 +27,8 @@ pub mod jsonl;
 pub mod key;
 pub mod lock;
 pub mod manager;
+pub mod metadata;
+pub mod metadata_controller;
 pub mod overlay;
 pub mod recovery;
 pub mod spawn;
@@ -54,6 +56,8 @@ pub use key::{
     parse_session_key, parse_session_key_v2, ChatType, ParsedSessionKeyV2, SessionScope,
 };
 pub use lock::FileLock;
+pub use metadata::{MetadataDiscrepancy, ReconciliationResult, SessionMetadata};
+pub use metadata_controller::{ConsistencyStatus, MetadataController};
 pub use unified::UnifiedSession;
 
 // Re-export overlay architecture types

@@ -358,6 +358,7 @@ impl SessionStorage {
         self.cleanup_temp_files(session_id).await?;
 
         if !path.exists() {
+            tracing::debug!("Session file not found: {}", path.display());
             return Ok(vec![]);
         }
 
@@ -365,7 +366,18 @@ impl SessionStorage {
         let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
 
         let content = fs::read_to_string(&path).await?;
+        let line_count = content.lines().count();
+        let byte_count = content.len();
+        tracing::debug!(
+            "Loaded session {}: {} bytes, {} lines from {}",
+            session_id,
+            byte_count,
+            line_count,
+            path.display()
+        );
+
         let mut entries = vec![];
+        let mut parse_errors = 0;
 
         for line in content.lines() {
             if line.trim().is_empty() {
@@ -374,10 +386,18 @@ impl SessionStorage {
             match serde_json::from_str::<SessionEntry>(line) {
                 Ok(entry) => entries.push(entry),
                 Err(e) => {
+                    parse_errors += 1;
                     debug!("Failed to parse session entry: {}", e);
                 }
             }
         }
+
+        tracing::debug!(
+            "Parsed session {}: {} entries ({} parse errors)",
+            session_id,
+            entries.len(),
+            parse_errors
+        );
 
         Ok(entries)
     }

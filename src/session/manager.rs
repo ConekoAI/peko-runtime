@@ -5,10 +5,19 @@
 //! - Creating and tracking overlays (channel, spawn)
 //! - Providing `HybridSession` views
 //! - Cross-channel session sharing
+//!
+//! # Architecture
+//!
+//! The SessionManager is the SINGLE POINT OF TRUTH for all session operations:
+//! - All session creation goes through SessionManager
+//! - All metadata updates go through MetadataController
+//! - All session listings are verified for consistency
 
 use super::index::{SessionEntry, SessionIndex};
 use super::jsonl::SessionStorage;
 use super::key::{derive_base_session_key, derive_overlay_key};
+use super::metadata::SessionMetadata;
+use super::metadata_controller::MetadataController;
 use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
@@ -18,7 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 /// Reference to an overlay
 #[derive(Debug, Clone)]
@@ -158,6 +167,180 @@ impl HybridSession {
     }
 }
 
+/// Opaque handle to a managed session
+///
+/// External code uses this handle to interact with sessions.
+/// All operations go through SessionManager to ensure consistency.
+#[derive(Debug, Clone)]
+pub struct SessionHandle {
+    session_id: String,
+    base: Arc<RwLock<UnifiedSession>>,
+    manager: Arc<RwLock<SessionManager>>,
+}
+
+impl SessionHandle {
+    /// Create a new session handle
+    fn new(
+        session_id: impl Into<String>,
+        base: Arc<RwLock<UnifiedSession>>,
+        manager: Arc<RwLock<SessionManager>>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            base,
+            manager,
+        }
+    }
+
+    /// Get the session ID
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Get the base session (for internal operations)
+    pub(crate) fn base(&self) -> &Arc<RwLock<UnifiedSession>> {
+        &self.base
+    }
+
+    /// Add a user message to the session
+    ///
+    /// This automatically updates the message count in the metadata.
+    pub async fn add_user(&self, content: impl Into<String>) -> Result<()> {
+        let content = content.into();
+
+        // 1. Add to JSONL
+        {
+            let mut base = self.base.write().await;
+            base.add_user(&content).await?;
+        }
+
+        // 2. Recompute and update metadata
+        self.update_metadata_counts().await?;
+
+        Ok(())
+    }
+
+    /// Add an assistant message to the session
+    ///
+    /// This automatically updates the message count in the metadata.
+    pub async fn add_assistant(
+        &self,
+        content: impl Into<String>,
+        tool_calls: Option<Vec<crate::engine::ToolCall>>,
+    ) -> Result<()> {
+        let content = content.into();
+
+        // 1. Add to JSONL
+        {
+            let mut base = self.base.write().await;
+            base.add_assistant(&content, tool_calls).await?;
+        }
+
+        // 2. Recompute and update metadata
+        self.update_metadata_counts().await?;
+
+        Ok(())
+    }
+
+    /// Add a tool result to the session
+    pub async fn add_tool_result(
+        &self,
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        result: impl Into<String>,
+    ) -> Result<()> {
+        let mut base = self.base.write().await;
+        base.add_tool_result(tool_call_id, tool_name, result).await
+    }
+
+    /// Load conversation history
+    pub async fn load_history(&self) -> Result<Vec<crate::providers::ChatMessage>> {
+        let base = self.base.read().await;
+        base.load_history().await
+    }
+
+    /// Get context as text
+    pub async fn get_context_text(&self, limit: usize) -> String {
+        let base = self.base.read().await;
+        base.get_context_text(limit).await
+    }
+
+    /// Get session metadata
+    pub async fn get_metadata(&self) -> Result<SessionMetadata> {
+        let manager = self.manager.read().await;
+        manager.get_session_metadata(&self.session_id).await
+    }
+
+    /// Record token usage
+    pub async fn record_usage(&self, input: usize, output: usize) -> Result<()> {
+        let mut manager = self.manager.write().await;
+        manager
+            .record_token_usage(&self.session_id, input, output)
+            .await
+    }
+
+    /// Set model information
+    pub async fn set_model(&self, provider: &str, model: &str) -> Result<()> {
+        let mut manager = self.manager.write().await;
+        manager
+            .set_session_model(&self.session_id, provider, model)
+            .await
+    }
+
+    /// Internal: Update message counts in metadata
+    async fn update_metadata_counts(&self) -> Result<()> {
+        // Compute actual message count from JSONL
+        let message_count = {
+            let base = self.base.read().await;
+            base.message_count
+        };
+
+        // Update via manager
+        let mut manager = self.manager.write().await;
+        manager
+            .metadata_controller
+            .update_message_counts(&self.session_id, message_count, 0, 0)
+            .await
+    }
+}
+
+/// Options for creating a new session
+#[derive(Debug, Clone, Default)]
+pub struct SessionCreateOptions {
+    pub parent_session_id: Option<String>,
+    pub title: Option<String>,
+    pub trigger: String,
+    pub cwd: Option<String>,
+}
+
+impl SessionCreateOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_parent(mut self, parent_id: impl Into<String>) -> Self {
+        self.parent_session_id = Some(parent_id.into());
+        self.trigger = "branch".to_string();
+        self
+    }
+
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn with_trigger(mut self, trigger: impl Into<String>) -> Self {
+        self.trigger = trigger.into();
+        self
+    }
+
+    pub fn with_cwd(mut self, cwd: impl Into<String>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+}
+
 /// Session manager for overlay lifecycle
 ///
 /// Manages the lifecycle of base sessions and overlays, including:
@@ -165,6 +348,11 @@ impl HybridSession {
 /// - Creation and tracking of overlays
 /// - Cross-channel session sharing
 /// - Session index for UUID-based file naming and switching
+///
+/// # Single Point of Truth
+///
+/// The SessionManager is the SOLE authority for session operations.
+/// All session metadata goes through the MetadataController.
 #[derive(Debug)]
 pub struct SessionManager {
     /// Base sessions: (`agent_id`, peer) -> `UnifiedSession`
@@ -173,7 +361,9 @@ pub struct SessionManager {
     channel_overlays: HashMap<String, Arc<RwLock<ChannelOverlay>>>,
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
     spawn_overlays: HashMap<String, Arc<RwLock<SpawnOverlay>>>,
-    /// Session index for UUID-based sessions
+    /// Metadata controller (single point of truth for metadata)
+    pub(crate) metadata_controller: MetadataController,
+    /// Session index for peer routing (legacy, will be absorbed into MetadataController)
     index: Option<SessionIndex>,
     /// Sessions directory path
     sessions_dir: Option<PathBuf>,
@@ -185,10 +375,15 @@ impl SessionManager {
     /// Create a new session manager
     #[must_use]
     pub fn new() -> Self {
+        // Create a temporary metadata controller (will be replaced in with_registry)
+        let temp_dir = std::env::temp_dir();
+        let metadata_controller = MetadataController::new(temp_dir);
+
         Self {
             base_sessions: HashMap::new(),
             channel_overlays: HashMap::new(),
             spawn_overlays: HashMap::new(),
+            metadata_controller,
             index: None,
             sessions_dir: None,
             agent_name: None,
@@ -199,15 +394,22 @@ impl SessionManager {
     pub async fn with_registry(mut self, agent_name: &str) -> Result<Self> {
         let sessions_dir = UnifiedSession::storage_dir(agent_name, None);
         self.index = Some(SessionIndex::open(&sessions_dir));
-        self.sessions_dir = Some(sessions_dir);
+        self.sessions_dir = Some(sessions_dir.clone());
         self.agent_name = Some(agent_name.to_string());
+
+        // Initialize metadata controller with correct directory
+        self.metadata_controller = MetadataController::new(sessions_dir);
+
         Ok(self)
     }
 
-    /// Get the session index if initialized
-    #[must_use]
-    pub fn index(&self) -> Option<&SessionIndex> {
-        self.index.as_ref()
+    /// Initialize with a specific sessions directory
+    pub fn with_directory(mut self, sessions_dir: impl Into<PathBuf>) -> Self {
+        let sessions_dir = sessions_dir.into();
+        self.sessions_dir = Some(sessions_dir.clone());
+        self.index = Some(SessionIndex::open(&sessions_dir));
+        self.metadata_controller = MetadataController::new(sessions_dir);
+        self
     }
 
     /// Get the sessions directory if initialized
@@ -222,60 +424,225 @@ impl SessionManager {
         self.index.is_some()
     }
 
-    /// Create a new session for a peer (/new command)
-    pub async fn create_new_session(&mut self, peer: &Peer) -> Result<String> {
-        let index = self
-            .index
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
-        let agent = self
-            .agent_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
+    // ====================================================================================
+    // NEW API: Session Lifecycle (Phase 2)
+    // ====================================================================================
+
+    /// Create a completely new session
+    ///
+    /// This is the PREFERRED way to create a session. It ensures:
+    /// - JSONL file is created
+    /// - Index entry is created
+    /// - Metadata is properly initialized
+    pub async fn create_session(
+        &mut self,
+        agent: &str,
+        peer: &Peer,
+        options: SessionCreateOptions,
+    ) -> Result<SessionHandle> {
         let sessions_dir = self
             .sessions_dir
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?;
+            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?
+            .clone();
 
-        let peer_key = derive_base_session_key(agent, peer);
         let session_id = uuid::Uuid::new_v4().to_string();
-        let transcript_file = format!("{}.jsonl", session_id);
+        let session_key = derive_base_session_key(agent, peer);
 
-        // Create SessionEntry and register with index
-        let entry = SessionEntry::new(session_id.clone(), agent.to_string(), transcript_file);
-        index.create_for_peer(entry, &peer_key).await?;
+        // 1. Create JSONL file via UnifiedSession
+        let session =
+            UnifiedSession::create_with_path(agent, peer, &session_id, &sessions_dir).await?;
 
-        // Create the transcript file (not just index entry)
-        let storage = SessionStorage::new(sessions_dir.clone());
-        let cwd = std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().to_string());
-        storage.create_session(&session_id, cwd).await?;
+        // 2. Create metadata
+        let mut metadata =
+            SessionMetadata::new(&session_id, agent, format!("{}.jsonl", session_id));
+        if let Some(parent_id) = options.parent_session_id {
+            metadata.parent_session_id = Some(parent_id);
+        }
+        if let Some(title) = options.title {
+            metadata.title = Some(title);
+        }
+        metadata.trigger = options.trigger;
+        metadata.cwd = options.cwd.or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        });
 
-        index.save().await?;
+        // 3. Store metadata
+        self.metadata_controller.create_metadata(metadata).await?;
 
-        // Cache the session so get_or_create_base() finds it
-        let session = UnifiedSession::open_by_id(agent, &session_id, sessions_dir).await?;
+        // 4. Update peer routing in index (for backward compatibility)
+        if let Some(ref mut index) = self.index {
+            let entry = SessionEntry::new(
+                session_id.clone(),
+                agent.to_string(),
+                format!("{}.jsonl", session_id),
+            );
+            index.create_for_peer(entry, &session_key).await?;
+            index.save().await?;
+        }
+
+        // 5. Cache and return handle
+        let arc = Arc::new(RwLock::new(session));
         let key = (agent.to_string(), peer.clone());
-        self.base_sessions
-            .insert(key, Arc::new(RwLock::new(session)));
+        self.base_sessions.insert(key, arc.clone());
 
-        info!("Created new session {} for peer {}", session_id, peer_key);
-        Ok(session_id)
+        info!(
+            "Created new session {} for peer {}",
+            session_id, session_key
+        );
+
+        // Create self reference for handle
+        let manager_clone = Arc::new(RwLock::new(self.clone_manager()));
+        Ok(SessionHandle::new(session_id, arc, manager_clone))
+    }
+
+    /// Open an existing session by ID
+    ///
+    /// Automatically reconciles metadata with JSONL content.
+    pub async fn open_session(&mut self, session_id: &str) -> Result<Option<SessionHandle>> {
+        let sessions_dir = self
+            .sessions_dir
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?
+            .clone();
+
+        // 1. Get metadata (with consistency check)
+        let metadata = match self
+            .metadata_controller
+            .get_metadata(session_id, true)
+            .await?
+        {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+
+        // 2. Load UnifiedSession from JSONL
+        let session =
+            UnifiedSession::open_by_id(&metadata.agent_name, session_id, &sessions_dir).await?;
+        let peer = session.peer.clone();
+
+        // 3. Cache and return handle
+        let arc = Arc::new(RwLock::new(session));
+        let key = (metadata.agent_name.clone(), peer);
+        self.base_sessions.insert(key, arc.clone());
+
+        let manager_clone = Arc::new(RwLock::new(self.clone_manager()));
+        Ok(Some(SessionHandle::new(
+            session_id.to_string(),
+            arc,
+            manager_clone,
+        )))
+    }
+
+    /// Get metadata for any session (doesn't require open session)
+    pub async fn get_session_metadata(&self, session_id: &str) -> Result<SessionMetadata> {
+        // Use a new controller instance to avoid borrowing issues
+        let sessions_dir = self
+            .sessions_dir
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir());
+        let mut controller = MetadataController::new(sessions_dir);
+
+        match controller.get_metadata(session_id, false).await? {
+            Some(m) => Ok(m),
+            None => Err(anyhow::anyhow!("Session {} not found", session_id)),
+        }
+    }
+
+    /// Record token usage for a session
+    pub async fn record_token_usage(
+        &mut self,
+        session_id: &str,
+        input_tokens: usize,
+        output_tokens: usize,
+    ) -> Result<()> {
+        // Record via controller
+        self.metadata_controller
+            .record_token_usage(session_id, input_tokens, output_tokens)
+            .await
+    }
+
+    /// Set model information for a session
+    pub async fn set_session_model(
+        &mut self,
+        session_id: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<()> {
+        // Get metadata first, then update
+        let mut metadata = match self
+            .metadata_controller
+            .get_metadata_fast(session_id)
+            .await?
+        {
+            Some(m) => m,
+            None => return Err(anyhow::anyhow!("Session {} not found", session_id)),
+        };
+
+        // Update the metadata
+        metadata.set_model(provider, model);
+
+        // Now update via controller
+        self.metadata_controller.update_metadata(metadata).await
+    }
+
+    /// List all sessions with metadata
+    ///
+    /// By default, verifies consistency for each session.
+    pub async fn list_all_sessions(
+        &mut self,
+        verify_consistency: bool,
+    ) -> Result<Vec<SessionMetadata>> {
+        self.metadata_controller
+            .list_metadata(verify_consistency)
+            .await
+    }
+
+    /// Reconcile all sessions (for maintenance)
+    pub async fn reconcile_all_sessions(
+        &mut self,
+    ) -> Result<Vec<super::metadata::ReconciliationResult>> {
+        self.metadata_controller.reconcile_all().await
+    }
+
+    // ====================================================================================
+    // Legacy API (Backward Compatibility)
+    // ====================================================================================
+
+    /// Create a new session for a peer (/new command)
+    ///
+    /// DEPRECATED: Use `create_session()` instead.
+    #[deprecated(since = "0.9.0", note = "Use create_session() instead")]
+    pub async fn create_new_session(&mut self, peer: &Peer) -> Result<String> {
+        let agent = self
+            .agent_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
+            .clone();
+
+        let options = SessionCreateOptions::new().with_trigger("user");
+
+        let handle = self.create_session(&agent, peer, options).await?;
+        Ok(handle.session_id().to_string())
     }
 
     /// Branch current session (/branch command)
     pub async fn branch_session(&mut self, peer: &Peer, label: Option<String>) -> Result<String> {
+        // Get agent name first to avoid borrow issues
+        let agent = self
+            .agent_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
+            .clone();
+
         let index = self
             .index
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
-        let agent = self
-            .agent_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
 
-        let peer_key = derive_base_session_key(agent, peer);
+        let peer_key = derive_base_session_key(&agent, peer);
 
         // Get current active session as parent
         let parent_id = index
@@ -283,18 +650,13 @@ impl SessionManager {
             .await?
             .ok_or_else(|| anyhow::anyhow!("No active session to branch from"))?;
 
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let transcript_file = format!("{}.jsonl", session_id);
+        // Create new session with parent
+        let options = SessionCreateOptions::new()
+            .with_parent(&parent_id)
+            .with_title(label.unwrap_or_default());
 
-        // Create new SessionEntry with parent
-        let mut entry = SessionEntry::new(session_id.clone(), agent.to_string(), transcript_file);
-        entry.parent_session_id = Some(parent_id.clone());
-        if let Some(lbl) = label {
-            entry.title = Some(lbl);
-        }
-
-        index.branch_for_peer(entry, &peer_key).await?;
-        index.save().await?;
+        let handle = self.create_session(&agent, peer, options).await?;
+        let session_id = handle.session_id().to_string();
 
         info!("Branched session {} from {}", session_id, parent_id);
         Ok(session_id)
@@ -319,33 +681,51 @@ impl SessionManager {
         Ok(())
     }
 
-    /// List all sessions for a peer
-    pub async fn list_sessions(&mut self, peer: &Peer) -> Result<Vec<SessionEntry>> {
+    /// List all sessions for a peer (legacy)
+    ///
+    /// NOTE: This returns SessionEntry for backward compatibility.
+    /// Consider using `list_sessions()` for new code.
+    pub async fn list_sessions_for_peer(&mut self, peer: &Peer) -> Result<Vec<SessionEntry>> {
+        let agent = self
+            .agent_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
+            .clone();
+
         let index = self
             .index
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
-        let agent = self
-            .agent_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
 
-        let peer_key = derive_base_session_key(agent, peer);
+        let peer_key = derive_base_session_key(&agent, peer);
         index.list_for_peer(&peer_key).await
+    }
+
+    /// List all sessions for a peer (old API - DEPRECATED)
+    ///
+    /// DEPRECATED: Use `list_sessions_for_peer()` or `list_sessions()` instead.
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use list_sessions_for_peer() or list_sessions() instead"
+    )]
+    pub async fn list_sessions(&mut self, peer: &Peer) -> Result<Vec<SessionEntry>> {
+        self.list_sessions_for_peer(peer).await
     }
 
     /// Get active session ID for a peer
     pub async fn get_active_session_id(&mut self, peer: &Peer) -> Result<Option<String>> {
+        let agent = self
+            .agent_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
+            .clone();
+
         let index = self
             .index
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
-        let agent = self
-            .agent_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
 
-        let peer_key = derive_base_session_key(agent, peer);
+        let peer_key = derive_base_session_key(&agent, peer);
         index.get_active_session_id(&peer_key).await
     }
 
@@ -893,6 +1273,31 @@ impl SessionManager {
             .filter(|(session_agent, _)| session_agent == agent_id)
             .count()
     }
+
+    // Helper to clone manager for SessionHandle
+    fn clone_manager(&self) -> Self {
+        // Create a new manager with same state
+        // Note: This is a shallow clone for SessionHandle's reference
+        let sessions_dir = self
+            .sessions_dir
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir());
+        Self {
+            base_sessions: self.base_sessions.clone(),
+            channel_overlays: self.channel_overlays.clone(),
+            spawn_overlays: self.spawn_overlays.clone(),
+            metadata_controller: MetadataController::new(&sessions_dir),
+            index: Some(SessionIndex::open(&sessions_dir)),
+            sessions_dir: self.sessions_dir.clone(),
+            agent_name: self.agent_name.clone(),
+        }
+    }
+}
+
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Copy conversation context from parent base session to child base session
@@ -996,12 +1401,6 @@ async fn copy_session_context(
     }
 
     Ok(())
-}
-
-impl Default for SessionManager {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[cfg(test)]
@@ -1226,5 +1625,33 @@ mod tests {
 
         // Can't test Channel/Spawn variants without actual data,
         // but the methods are exercised in other tests
+    }
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
+    async fn test_session_handle() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_directory(temp.path());
+        let peer = Peer::User("alice".to_string());
+
+        // Create session
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+
+        // Add messages
+        handle.add_user("Hello").await.unwrap();
+        handle.add_assistant("Hi there!", None).await.unwrap();
+
+        // Verify metadata
+        let metadata = handle.get_metadata().await.unwrap();
+        assert_eq!(metadata.message_count, 3); // system + user + assistant
+
+        // Load history
+        let history = handle.load_history().await.unwrap();
+        assert_eq!(history.len(), 3);
     }
 }
