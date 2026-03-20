@@ -187,7 +187,7 @@ impl AgenticLoopV4 {
     ) -> Result<AgenticResult> {
         use crate::session::manager::SessionManager;
         use crate::session::types::Peer;
-        
+
         // Create session via SessionManager
         let mut session_manager = SessionManager::new()
             .with_registry(self.agent.name())
@@ -196,7 +196,7 @@ impl AgenticLoopV4 {
         let session = session_manager
             .get_or_create_base(self.agent.name(), &peer)
             .await?;
-        
+
         self.run_with_resume(prompt, on_event, session, None).await
     }
 
@@ -217,10 +217,7 @@ impl AgenticLoopV4 {
         // Load previous compaction summary from session for cumulative updates
         let previous_summary = {
             let s = session.read().await;
-            s.load_previous_compaction_summary()
-                .await
-                .ok()
-                .flatten()
+            s.load_previous_compaction_summary().await.ok().flatten()
         };
         if previous_summary.is_some() {
             info!("Found previous compaction summary for cumulative updates");
@@ -266,10 +263,7 @@ impl AgenticLoopV4 {
 
                 let prev_summary = {
                     let s = session.read().await;
-                    s.load_previous_compaction_summary()
-                        .await
-                        .ok()
-                        .flatten()
+                    s.load_previous_compaction_summary().await.ok().flatten()
                 };
                 match background_compactor
                     .request_compaction(messages.clone(), prev_summary)

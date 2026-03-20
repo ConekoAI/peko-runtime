@@ -207,7 +207,6 @@ pub async fn send_single_message_with_session(
             .get_session_for_channel(&agent_name, &peer, ChannelType::Cli, "default")
             .await?;
 
-
         SessionContext::new(hybrid).await
     } else {
         // Use agent's method to get context

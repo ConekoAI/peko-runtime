@@ -247,7 +247,9 @@ impl SessionManager {
 
         // Create the transcript file (not just index entry)
         let storage = SessionStorage::new(sessions_dir.clone());
-        let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+        let cwd = std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string());
         storage.create_session(&session_id, cwd).await?;
 
         index.save().await?;
@@ -255,7 +257,8 @@ impl SessionManager {
         // Cache the session so get_or_create_base() finds it
         let session = UnifiedSession::open_by_id(agent, &session_id, sessions_dir).await?;
         let key = (agent.to_string(), peer.clone());
-        self.base_sessions.insert(key, Arc::new(RwLock::new(session)));
+        self.base_sessions
+            .insert(key, Arc::new(RwLock::new(session)));
 
         info!("Created new session {} for peer {}", session_id, peer_key);
         Ok(session_id)
