@@ -18,7 +18,6 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use uuid::Uuid;
 
 /// Session management subcommands
 ///
@@ -188,8 +187,6 @@ pub async fn handle_session(
 
 /// Result of locating an agent's workspace
 struct AgentLocation {
-    /// Directory containing the sessions/ subdirectory
-    workspace: PathBuf,
     /// Sessions directory path
     sessions_dir: PathBuf,
     /// Whether this is a running instance (data dir) or config
@@ -204,11 +201,9 @@ struct AgentLocation {
 /// 3. Standalone agent config directory
 fn locate_agent(paths: &GlobalPaths, name: &str, team: &str) -> Option<AgentLocation> {
     // 1. Try runtime data directory (running instances)
-    let runtime = paths.data_dir.join("agents").join(name);
-    let runtime_sessions = runtime.join("sessions");
+    let runtime_sessions = paths.data_dir.join("agents").join(name).join("sessions");
     if runtime_sessions.exists() {
         return Some(AgentLocation {
-            workspace: runtime,
             sessions_dir: runtime_sessions,
             is_runtime: true,
         });
@@ -219,7 +214,6 @@ fn locate_agent(paths: &GlobalPaths, name: &str, team: &str) -> Option<AgentLoca
     let team_sessions = team_path.join("sessions");
     if team_sessions.exists() {
         return Some(AgentLocation {
-            workspace: team_path,
             sessions_dir: team_sessions,
             is_runtime: false,
         });
@@ -230,7 +224,6 @@ fn locate_agent(paths: &GlobalPaths, name: &str, team: &str) -> Option<AgentLoca
     let standalone_sessions = standalone.join("sessions");
     if standalone_sessions.exists() {
         return Some(AgentLocation {
-            workspace: standalone,
             sessions_dir: standalone_sessions,
             is_runtime: false,
         });
@@ -249,7 +242,6 @@ async fn ensure_sessions_dir(paths: &GlobalPaths, name: &str, team: &str) -> Res
         let sessions = team_dir.join("sessions");
         tokio::fs::create_dir_all(&sessions).await?;
         Ok(AgentLocation {
-            workspace: team_dir,
             sessions_dir: sessions,
             is_runtime: false,
         })
@@ -494,24 +486,25 @@ async fn show_session(
     Ok(())
 }
 
-/// History event from JSONL
-#[derive(Debug, Deserialize, Serialize)]
-struct HistoryEvent {
-    #[serde(rename = "type")]
-    event_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ts: Option<String>,
-    #[serde(flatten)]
-    extra: serde_json::Value,
+/// History display entry - represents a parsed JSONL entry for display
+#[derive(Debug, Serialize)]
+enum HistoryDisplayEntry {
+    Session { timestamp: String },
+    Message { role: String, content: String, timestamp: String },
+    ToolResult { tool_name: String, content: String },
+    ModelChange { provider: String, model_id: String },
+    Compaction { summary: String },
+    Custom { custom_type: String },
 }
 
-/// Load session history from JSONL file
+/// Load session history from JSONL file using proper SessionEntry types
 async fn load_session_history(
     sessions_dir: &PathBuf,
     session_id: &str,
-) -> Result<Vec<HistoryEvent>> {
+) -> Result<Vec<HistoryDisplayEntry>> {
+    use crate::session::jsonl::SessionEntry;
+    use crate::types::ContentBlock;
+    
     let path = sessions_dir.join(format!("{}.jsonl", session_id));
     if !path.exists() {
         return Ok(vec![]);
@@ -524,8 +517,60 @@ async fn load_session_history(
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(event) = serde_json::from_str::<HistoryEvent>(line) {
-            events.push(event);
+        if let Ok(entry) = serde_json::from_str::<SessionEntry>(line) {
+            let display_entry = match entry {
+                SessionEntry::Session { timestamp, .. } => {
+                    HistoryDisplayEntry::Session {
+                        timestamp: timestamp.to_rfc3339(),
+                    }
+                }
+                SessionEntry::Message { timestamp, message, .. } => {
+                    // Extract text content from ContentBlock array
+                    let text: String = message
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            ContentBlock::Thinking { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    
+                    HistoryDisplayEntry::Message {
+                        role: message.role,
+                        content: text,
+                        timestamp: timestamp.to_rfc3339(),
+                    }
+                }
+                SessionEntry::ToolResult { tool_name, content, .. } => {
+                    let text: String = content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    
+                    HistoryDisplayEntry::ToolResult {
+                        tool_name,
+                        content: text,
+                    }
+                }
+                SessionEntry::ModelChange { provider, model_id, .. } => {
+                    HistoryDisplayEntry::ModelChange {
+                        provider,
+                        model_id,
+                    }
+                }
+                SessionEntry::Compaction { summary, .. } => {
+                    HistoryDisplayEntry::Compaction { summary }
+                }
+                SessionEntry::Custom { custom_type, .. } => {
+                    HistoryDisplayEntry::Custom { custom_type }
+                }
+            };
+            events.push(display_entry);
         }
     }
 
@@ -533,56 +578,53 @@ async fn load_session_history(
 }
 
 /// Print a history event
-fn print_history_event(index: usize, event: &HistoryEvent) {
-    let event_type = &event.event_type;
-    let timestamp = event
-        .ts
-        .as_deref()
-        .map(format_timestamp)
-        .unwrap_or_default();
-
-    match event_type.as_str() {
-        "user.message" => {
-            if let Some(ref content) = event.content {
-                println!("  [{}] 👤 User ({}):", index, timestamp);
-                println!("      {}", truncate(content, 200));
+fn print_history_event(index: usize, event: &HistoryDisplayEntry) {
+    match event {
+        HistoryDisplayEntry::Session { timestamp } => {
+            println!("  [{}] 🆕 Session Created ({})", index, format_timestamp(timestamp));
+        }
+        HistoryDisplayEntry::Message { role, content, timestamp } => {
+            let time_str = format_timestamp(timestamp);
+            match role.as_str() {
+                "system" => {
+                    println!("  [{}] ⚙️  System ({}):", index, time_str);
+                    println!("      {}", truncate(content, 200));
+                }
+                "user" => {
+                    println!("  [{}] 👤 User ({}):", index, time_str);
+                    println!("      {}", truncate(content, 200));
+                }
+                "assistant" => {
+                    println!("  [{}] 🤖 Assistant ({}):", index, time_str);
+                    println!("      {}", truncate(content, 200));
+                }
+                "tool" => {
+                    println!("  [{}] 🔧 Tool ({}):", index, time_str);
+                    println!("      {}", truncate(content, 200));
+                }
+                _ => {
+                    println!("  [{}] {} ({}):", index, role, time_str);
+                    println!("      {}", truncate(content, 200));
+                }
             }
         }
-        "assistant.message" => {
-            if let Some(ref content) = event.content {
-                println!("  [{}] 🤖 Assistant ({}):", index, timestamp);
-                println!("      {}", truncate(content, 200));
+        HistoryDisplayEntry::ToolResult { tool_name, content } => {
+            println!("  [{}] ✅ Tool Result:", index);
+            println!("      Tool: {}", tool_name);
+            if !content.is_empty() {
+                println!("      Output: {}", truncate(content, 150));
             }
         }
-        "thinking" => {
-            if let Some(ref content) = event.content {
-                println!("  [{}] 💭 Thinking ({}):", index, timestamp);
-                println!("      {}", truncate(content, 150));
-            }
+        HistoryDisplayEntry::ModelChange { provider, model_id } => {
+            println!("  [{}] 🔄 Model Change:", index);
+            println!("      Provider: {}, Model: {}", provider, model_id);
         }
-        "tool.call" => {
-            println!("  [{}] 🔧 Tool Call ({})", index, timestamp);
-            if let Some(tool) = event.extra.get("tool").and_then(|v| v.as_str()) {
-                println!("      Tool: {}", tool);
-            }
+        HistoryDisplayEntry::Compaction { summary } => {
+            println!("  [{}] 📦 Compaction:", index);
+            println!("      {}", truncate(summary, 150));
         }
-        "tool.result" => {
-            println!("  [{}] ✅ Tool Result ({})", index, timestamp);
-            if let Some(output) = event.extra.get("output").and_then(|v| v.as_str()) {
-                println!("      Output: {}", truncate(output, 150));
-            }
-            if let Some(error) = event.extra.get("error").and_then(|v| v.as_str()) {
-                println!("      Error: {}", error);
-            }
-        }
-        "session.created" => {
-            println!("  [{}] 🆕 Session Created ({})", index, timestamp);
-        }
-        "session.ended" => {
-            println!("  [{}] 🏁 Session Ended ({})", index, timestamp);
-        }
-        _ => {
-            println!("  [{}] {} ({})", index, event_type, timestamp);
+        HistoryDisplayEntry::Custom { custom_type } => {
+            println!("  [{}] 📎 Custom ({})", index, custom_type);
         }
     }
 }
@@ -596,71 +638,30 @@ async fn branch_session(
     label: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let loc = ensure_sessions_dir(paths, agent, team).await?;
+    // Use SessionManager for the branch operation
+    let mut manager = crate::session::SessionManager::for_cli(agent, Some(team));
 
-    // Verify parent session exists in centralized index
-    let mut index = SessionIndex::open(&loc.sessions_dir);
-    let parent_entry = index.get(session_id).await?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Parent session '{}' not found for agent '{}'",
-            session_id,
-            agent
-        )
-    })?;
+    // Verify parent session exists
+    let parent_metadata = manager
+        .get_session_metadata(session_id)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Parent session '{}' not found for agent '{}'",
+                session_id,
+                agent
+            )
+        })?;
 
-    // Generate new session ID
-    let new_session_id = format!("sess_{}", Uuid::new_v4().simple());
+    // Perform the branch using SessionManager
+    let new_session_id = manager.branch_session_by_id(session_id, label.clone()).await?;
 
-    // Copy parent JSONL file
-    let parent_jsonl = loc.sessions_dir.join(format!("{}.jsonl", session_id));
-    let new_jsonl = loc.sessions_dir.join(format!("{}.jsonl", new_session_id));
-
-    if parent_jsonl.exists() {
-        tokio::fs::copy(&parent_jsonl, &new_jsonl).await?;
-    } else {
-        // Create empty JSONL with just session.created event
-        create_empty_session(&new_jsonl, &new_session_id, agent, Some(session_id)).await?;
-    }
-
-    // Create new index entry for branched session
-    let new_entry = SessionEntry {
-        session_id: new_session_id.clone(),
-        agent_name: parent_entry.agent_name.clone(),
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
-        updated_at: std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64,
-        message_count: parent_entry.message_count,
-        turn_count: 0,
-        input_tokens: parent_entry.input_tokens,
-        output_tokens: parent_entry.output_tokens,
-        total_tokens: parent_entry.total_tokens,
-        transcript_file: format!("{}.jsonl", new_session_id),
-        title: label.clone().or_else(|| {
-            parent_entry
-                .title
-                .as_ref()
-                .map(|t| format!("Branch: {}", t))
-        }),
-        parent_session_id: Some(session_id.to_string()),
-        ended: false,
-        trigger: "branch".to_string(),
-        provider: parent_entry.provider.clone(),
-        model: parent_entry.model.clone(),
-        channel: parent_entry.channel.clone(),
-        recipient: parent_entry.recipient.clone(),
-        cwd: parent_entry.cwd.clone(),
-    };
-
-    // Add to centralized index
-    index.insert(new_entry.clone()).await?;
+    // Get the new session metadata for display
+    let new_metadata = manager.get_session_metadata(&new_session_id).await?;
+    let entry = new_metadata.to_entry();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&new_entry)?);
+        println!("{}", serde_json::to_string_pretty(&entry)?);
     } else {
         println!("✅ Branched session '{}'", session_id);
         println!("   New Session ID: {}", new_session_id);
@@ -675,32 +676,6 @@ async fn branch_session(
             team, agent, new_session_id
         );
     }
-
-    Ok(())
-}
-
-/// Create an empty session JSONL with session.created event
-async fn create_empty_session(
-    path: &PathBuf,
-    session_id: &str,
-    agent: &str,
-    parent_id: Option<&str>,
-) -> Result<()> {
-    use chrono::Utc;
-
-    let created_event = serde_json::json!({
-        "id": "evt_001",
-        "type": "session.created",
-        "session_id": session_id,
-        "ts": Utc::now().to_rfc3339(),
-        "seq": 1,
-        "instance_id": agent,
-        "parent_session_id": parent_id,
-        "trigger": if parent_id.is_some() { "branch" } else { "user" }
-    });
-
-    let json = serde_json::to_string(&created_event)?;
-    tokio::fs::write(path, json + "\n").await?;
 
     Ok(())
 }
@@ -722,20 +697,25 @@ async fn delete_session(
         ));
     };
 
-    // Verify session exists
-    let jsonl_path = loc.sessions_dir.join(format!("{}.jsonl", session_id));
+    // Use MetadataController for delete operation
+    let mut controller = crate::session::MetadataController::new(&loc.sessions_dir);
 
-    // Load metadata from centralized index
-    let mut index = SessionIndex::open(&loc.sessions_dir);
-    let metadata = index.get(session_id).await?;
-
-    if !jsonl_path.exists() && metadata.is_none() {
-        return Err(anyhow::anyhow!(
-            "Session '{}' not found for agent '{}'",
-            session_id,
-            agent
-        ));
-    }
+    // Check if session exists and get metadata for confirmation
+    let metadata = match controller.get_metadata_fast(session_id).await? {
+        Some(m) => Some(m),
+        None => {
+            // Check if JSONL file exists without metadata (orphaned)
+            let jsonl_path = loc.sessions_dir.join(format!("{}.jsonl", session_id));
+            if !jsonl_path.exists() {
+                return Err(anyhow::anyhow!(
+                    "Session '{}' not found for agent '{}'",
+                    session_id,
+                    agent
+                ));
+            }
+            None
+        }
+    };
 
     if !force {
         println!("⚠️  This will permanently delete session '{}'.", session_id);
@@ -758,19 +738,8 @@ async fn delete_session(
         }
     }
 
-    // Delete files
-    let mut deleted = vec![];
-    if jsonl_path.exists() {
-        tokio::fs::remove_file(&jsonl_path).await?;
-        deleted.push("jsonl");
-    }
-
-    // Remove from centralized index
-    if metadata.is_some() {
-        if index.remove(session_id).await?.is_some() {
-            deleted.push("index");
-        }
-    }
+    // Delete via MetadataController (handles both file and metadata)
+    let deleted = controller.delete_session(session_id).await?;
 
     // Check if this was the preferred active session
     if let Ok(Some(pref)) = load_active_preference(&loc.sessions_dir).await {
@@ -780,11 +749,12 @@ async fn delete_session(
     }
 
     if json {
-        println!("{{\"success\": true, \"deleted\": {:?}}}", deleted);
+        let deleted_items = if deleted { vec!["jsonl", "index"] } else { vec![] };
+        println!("{{\"success\": true, \"deleted\": {:?}}}", deleted_items);
     } else {
         println!("✅ Deleted session '{}'", session_id);
-        if !deleted.is_empty() {
-            println!("   Removed: {}", deleted.join(", "));
+        if deleted {
+            println!("   Removed: jsonl, index");
         }
     }
 

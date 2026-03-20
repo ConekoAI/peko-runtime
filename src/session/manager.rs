@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Reference to an overlay
 #[derive(Debug, Clone)]
@@ -412,6 +412,28 @@ impl SessionManager {
         self
     }
 
+    /// Create a SessionManager for CLI operations (offline)
+    ///
+    /// This factory method creates a SessionManager configured for CLI use,
+    /// with the correct sessions directory for the agent/team.
+    ///
+    /// # Arguments
+    /// * `agent_name` - The agent name
+    /// * `team` - Optional team name (defaults to "default")
+    pub fn for_cli(agent_name: &str, team: Option<&str>) -> Self {
+        let sessions_dir = UnifiedSession::storage_dir(agent_name, team);
+        Self::new()
+            .with_directory(sessions_dir)
+            .with_agent_name(agent_name)
+    }
+
+    /// Set the agent name
+    #[must_use]
+    pub fn with_agent_name(mut self, agent_name: &str) -> Self {
+        self.agent_name = Some(agent_name.to_string());
+        self
+    }
+
     /// Get the sessions directory if initialized
     #[must_use]
     pub fn sessions_dir(&self) -> Option<&PathBuf> {
@@ -660,6 +682,80 @@ impl SessionManager {
 
         info!("Branched session {} from {}", session_id, parent_id);
         Ok(session_id)
+    }
+
+    /// Branch a specific session by ID (for CLI operations)
+    ///
+    /// Creates a new session with the parent's history copied.
+    /// Updates the index atomically.
+    ///
+    /// # Arguments
+    /// * `parent_session_id` - The session ID to branch from
+    /// * `label` - Optional label/title for the new session
+    ///
+    /// # Returns
+    /// The new session ID
+    pub async fn branch_session_by_id(
+        &mut self,
+        parent_session_id: &str,
+        label: Option<String>,
+    ) -> Result<String> {
+        let agent = self
+            .agent_name
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
+            .clone();
+
+        let sessions_dir = self
+            .sessions_dir
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?
+            .clone();
+
+        // Verify parent session exists
+        let parent_metadata = self
+            .metadata_controller
+            .get_metadata_fast(parent_session_id)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("Parent session '{}' not found", parent_session_id)
+            })?;
+
+        // Generate new session ID
+        let new_session_id = uuid::Uuid::new_v4().to_string();
+
+        // Copy parent JSONL file to new session
+        let storage = SessionStorage::new(sessions_dir.clone());
+        storage
+            .copy_session(parent_session_id, &new_session_id)
+            .await?;
+
+        // Create metadata for new session
+        let mut new_metadata = SessionMetadata::new(
+            &new_session_id,
+            &agent,
+            format!("{}.jsonl", new_session_id),
+        );
+        new_metadata.parent_session_id = Some(parent_session_id.to_string());
+        new_metadata.title = label.or_else(|| {
+            parent_metadata
+                .title
+                .as_ref()
+                .map(|t| format!("Branch: {}", t))
+        });
+        new_metadata.trigger = "branch".to_string();
+        new_metadata.message_count = parent_metadata.message_count;
+        new_metadata.input_tokens = parent_metadata.input_tokens;
+        new_metadata.output_tokens = parent_metadata.output_tokens;
+
+        // Store metadata
+        self.metadata_controller.create_metadata(new_metadata).await?;
+
+        info!(
+            "Branched session {} from {}",
+            new_session_id, parent_session_id
+        );
+        Ok(new_session_id)
     }
 
     /// Switch to a different session (/switch command)

@@ -6,7 +6,7 @@
 //! - Single point of truth for metadata
 //! - Centralized caching and reconciliation
 
-use crate::session::index::{SessionEntry, SessionIndex};
+use crate::session::index::SessionIndex;
 use crate::session::jsonl::SessionStorage;
 use crate::session::metadata::{ReconciliationResult, SessionMetadata};
 use anyhow::{Context, Result};
@@ -237,6 +237,35 @@ impl MetadataController {
             info!("Deleted metadata for session {}", session_id);
         }
 
+        Ok(removed)
+    }
+
+    /// Delete session completely (metadata + JSONL file)
+    ///
+    /// This is the preferred way to delete a session. It ensures:
+    /// - Metadata is removed from the index
+    /// - JSONL file is deleted
+    /// - Cache is updated
+    ///
+    /// Returns Ok(true) if session existed and was deleted, Ok(false) if not found.
+    pub async fn delete_session(&mut self, session_id: &str) -> Result<bool> {
+        debug!("Deleting session {} (metadata + file)", session_id);
+
+        // Check if session exists
+        let exists = self.index.get(session_id).await?.is_some();
+        if !exists {
+            // Still try to delete the file if it exists (cleanup)
+            self.storage.delete_session(session_id).await.ok();
+            return Ok(false);
+        }
+
+        // Delete JSONL file first (idempotent - can retry if needed)
+        self.storage.delete_session(session_id).await?;
+
+        // Delete metadata
+        let removed = self.delete_metadata(session_id).await?;
+
+        info!("Deleted session {} (file + metadata)", session_id);
         Ok(removed)
     }
 
