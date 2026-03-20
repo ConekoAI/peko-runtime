@@ -301,6 +301,7 @@ impl UnifiedSession {
             index,
             entries,
         )
+        .await
     }
 
     /// Open an existing session by key (returns None if not found)
@@ -376,13 +377,13 @@ impl UnifiedSession {
     }
 
     /// Build a UnifiedSession from raw entries (for open_by_id)
-    fn from_entries(
+    async fn from_entries(
         session_id: String,
         agent_name: String,
         session_key: String,
         peer: Peer,
         storage: SessionStorage,
-        index: SessionIndex,
+        mut index: SessionIndex,
         entries: Vec<crate::session::JsonlSessionEntry>,
     ) -> Result<Self> {
         // Count messages and find last ID
@@ -395,6 +396,15 @@ impl UnifiedSession {
             _ => None,
         });
 
+        // Restore token counts and metadata from index
+        let (input_tokens, output_tokens, current_provider, current_model) = index
+            .get(&session_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|e| (e.input_tokens, e.output_tokens, e.provider, e.model))
+            .unwrap_or((0, 0, None, None));
+
         Ok(Self {
             id: session_id,
             agent_name,
@@ -404,10 +414,10 @@ impl UnifiedSession {
             index,
             last_message_id,
             message_count,
-            input_tokens: 0,
-            output_tokens: 0,
-            current_provider: None,
-            current_model: None,
+            input_tokens,
+            output_tokens,
+            current_provider,
+            current_model,
         })
     }
 

@@ -7,6 +7,7 @@
 //! - Cross-channel session sharing
 
 use super::index::{SessionEntry, SessionIndex};
+use super::jsonl::SessionStorage;
 use super::key::{derive_base_session_key, derive_overlay_key};
 use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
@@ -243,6 +244,12 @@ impl SessionManager {
         // Create SessionEntry and register with index
         let entry = SessionEntry::new(session_id.clone(), agent.to_string(), transcript_file);
         index.create_for_peer(entry, &peer_key).await?;
+
+        // Create the transcript file (not just index entry)
+        let storage = SessionStorage::new(sessions_dir.clone());
+        let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+        storage.create_session(&session_id, cwd).await?;
+
         index.save().await?;
 
         info!("Created new session {} for peer {}", session_id, peer_key);
