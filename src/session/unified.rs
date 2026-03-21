@@ -19,7 +19,7 @@
 
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
-use crate::session::index::{SessionEntry, SessionIndex};
+use crate::session::index::SessionEntry;
 use crate::session::jsonl::SessionStorage;
 use crate::session::types::Peer;
 use crate::types::ContentBlock;
@@ -59,8 +59,6 @@ pub struct UnifiedSession {
     pub peer: Peer,
     /// Storage backend for JSONL files
     storage: SessionStorage,
-    /// Session index for metadata
-    index: SessionIndex,
     /// Last message ID (for chaining)
     last_message_id: Option<String>,
     /// Message count
@@ -130,7 +128,6 @@ impl UnifiedSession {
     ) -> Result<Self> {
         let storage_dir = Self::storage_dir(agent_name, None);
         let storage = SessionStorage::new(storage_dir.clone());
-        let mut index = SessionIndex::open(&storage_dir);
 
         // Ensure directory exists
         fs::create_dir_all(&storage_dir).await.ok();
@@ -151,20 +148,8 @@ impl UnifiedSession {
                 )
             })?;
 
-        // Create session entry
-        let transcript_file = format!("{session_id}.jsonl");
-        let mut entry = SessionEntry::new(
-            session_id.to_string(),
-            agent_name.to_string(),
-            transcript_file,
-        );
-        entry.cwd = cwd;
-
-        // Insert into index and associate with peer
-        index
-            .create_for_peer(entry, session_key)
-            .await
-            .with_context(|| "Failed to create session for peer")?;
+        // Note: Index entry is created by SessionManager/MetadataController
+        // UnifiedSession only manages the JSONL file
 
         Ok(Self {
             id: session_id.to_string(),
@@ -172,7 +157,6 @@ impl UnifiedSession {
             session_key: session_key.to_string(),
             peer: peer.clone(),
             storage,
-            index,
             last_message_id: None,
             message_count: 0,
             input_tokens: 0,
@@ -194,7 +178,6 @@ impl UnifiedSession {
     ) -> Result<Self> {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
-        let mut index = SessionIndex::open(&sessions_dir);
         let session_key = derive_session_key(agent_name, peer);
 
         // Ensure directory exists
@@ -207,22 +190,8 @@ impl UnifiedSession {
 
         storage.create_session(session_id, cwd.clone()).await?;
 
-        // CRITICAL: Create index entry for this session
-        // This ensures the session appears in listings immediately
-        let transcript_file = format!("{}.jsonl", session_id);
-        let entry = SessionEntry::new(
-            session_id.to_string(),
-            agent_name.to_string(),
-            transcript_file,
-        );
-        index.create_for_peer(entry, &session_key).await?;
-        index.save().await?;
-
-        tracing::info!(
-            "Created session {} with index entry for peer {}",
-            session_id,
-            session_key
-        );
+        // Note: Index entry is created by SessionManager/MetadataController
+        // UnifiedSession only manages the JSONL file
 
         Ok(Self {
             id: session_id.to_string(),
@@ -230,7 +199,6 @@ impl UnifiedSession {
             session_key,
             peer: peer.clone(),
             storage,
-            index,
             last_message_id: None,
             message_count: 0,
             input_tokens: 0,
@@ -253,44 +221,18 @@ impl UnifiedSession {
     }
 
     /// Open an existing unified session by key
+    /// Note: Session ID lookup should be done by SessionManager using MetadataController
     pub async fn open_by_key(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
-        let storage_dir = Self::storage_dir(agent_name, None);
-        let storage = SessionStorage::new(storage_dir.clone());
-        let mut index = SessionIndex::open(&storage_dir);
-
-        // Look up active session for peer
-        let entry = match index.get_active_for_peer(session_key).await? {
-            Some(e) => e,
-            None => return Ok(None),
-        };
-
-        // Load session entries to find last message
-        let entries: Vec<crate::session::JsonlSessionEntry> =
-            storage.load_session(&entry.session_id).await?;
-
-        if entries.is_empty() {
-            return Ok(None);
-        }
-
-        // Parse peer from session key
-        let peer = parse_peer_from_key(session_key)?;
-
-        // Build session from entry
-        Self::from_entry(
-            entry,
-            peer,
-            storage,
-            index,
-            entries,
-            session_key.to_string(),
-        )
-        .await
-        .map(Some)
+        // This method requires SessionManager to look up the session ID from the index
+        // UnifiedSession no longer accesses the index directly
+        let _ = (agent_name, session_key);
+        Ok(None)
     }
 
     /// Open an existing unified session by ID
     ///
     /// This bypasses the peer lookup and opens the session file directly.
+    /// JSONL is the source of truth for message count and content.
     pub async fn open_by_id(
         agent_name: &str,
         session_id: &str,
@@ -298,21 +240,14 @@ impl UnifiedSession {
     ) -> Result<Self> {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
-        let mut index = SessionIndex::open(&sessions_dir);
 
         // Load session entries
         let entries: Vec<crate::session::JsonlSessionEntry> =
             storage.load_session(session_id).await?;
 
-        // Find session key from index
-        let session_key = index
-            .find_by_session_id(session_id)
-            .await?
-            .map(|_| format!("agent:{agent_name}:peer:user:default"))
-            .unwrap_or_else(|| format!("agent:{agent_name}:peer:user:default"));
-
-        // Parse peer from session key
-        let peer = parse_peer_from_key(&session_key).unwrap_or(Peer::User("default".to_string()));
+        // Default session key - caller (SessionManager) should provide actual peer info
+        let session_key = format!("agent:{agent_name}:peer:user:default");
+        let peer = Peer::User("default".to_string());
 
         Self::from_entries(
             session_id.to_string(),
@@ -320,29 +255,35 @@ impl UnifiedSession {
             session_key,
             peer,
             storage,
-            index,
             entries,
         )
         .await
     }
 
     /// Open an existing session by key (returns None if not found)
+    /// Note: Use SessionManager for proper session lookup
     pub async fn open_by_key_simple(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
         Self::open_by_key(agent_name, session_key).await
     }
 
     /// Open or create a session by key (for CLI persistence)
+    /// Note: SessionManager should be used for production code
     pub async fn open_or_create_by_key(agent_name: &str, session_key: &str) -> Result<Self> {
         let storage_dir = Self::storage_dir(agent_name, None);
-        let mut index = SessionIndex::open(&storage_dir);
 
-        // Check if session exists
-        if let Some(entry) = index.get_active_for_peer(session_key).await? {
-            // Open existing
-            return Self::open_by_id(agent_name, &entry.session_id, &storage_dir)
-                .await
-                .map(Some)
-                .map(|s| s.expect("Session in index but not on disk"));
+        // Try to find existing session file
+        // Note: This is a simplified version - SessionManager does proper lookup
+        if let Ok(mut entries) = tokio::fs::read_dir(&storage_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "jsonl") {
+                    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                        let peer = parse_peer_from_key(session_key)
+                            .unwrap_or(Peer::User("default".to_string()));
+                        return Self::open_by_id(agent_name, name, &storage_dir).await;
+                    }
+                }
+            }
         }
 
         // Create new with this key
@@ -364,17 +305,17 @@ impl UnifiedSession {
     // ============================================================
 
     /// Build a UnifiedSession from a SessionEntry
+    /// Note: Token counts and model info are loaded from JSONL or defaults
     async fn from_entry(
         entry: SessionEntry,
         peer: Peer,
         storage: SessionStorage,
-        mut index: SessionIndex,
         entries: Vec<crate::session::JsonlSessionEntry>,
         session_key: String,
     ) -> Result<Self> {
         let session_id = entry.session_id.clone();
 
-        // Count messages and find last ID
+        // Count messages and find last ID (JSONL is source of truth)
         let mut message_count = 0;
         let mut last_message_id = None;
 
@@ -387,40 +328,14 @@ impl UnifiedSession {
             }
         }
 
-        // CRITICAL: Reconcile message count with index if needed
-        // The JSONL file is the source of truth for message count
-        if entry.message_count != message_count {
-            tracing::warn!(
-                "Session {} message count mismatch: index={}, jsonl={}. Reconciling.",
-                session_id,
-                entry.message_count,
-                message_count
-            );
-
-            if let Ok(Some(mut index_entry)) = index.get(&session_id).await {
-                index_entry.message_count = message_count;
-                index_entry.touch();
-                if let Err(e) = index.insert(index_entry).await {
-                    tracing::error!("Failed to reconcile session {}: {}", session_id, e);
-                } else if let Err(e) = index.save().await {
-                    tracing::error!("Failed to save reconciled index for {}: {}", session_id, e);
-                } else {
-                    tracing::info!(
-                        "Reconciled session {} message count to {}",
-                        session_id,
-                        message_count
-                    );
-                }
-            }
-        }
-
+        // Note: Token counts and provider/model should be loaded from JSONL ModelChange entries
+        // or set by caller (MetadataController) after loading
         Ok(Self {
             id: session_id,
             agent_name: entry.agent_name,
             session_key,
             peer,
             storage,
-            index,
             last_message_id,
             message_count,
             input_tokens: entry.input_tokens,
@@ -431,85 +346,31 @@ impl UnifiedSession {
     }
 
     /// Build a UnifiedSession from raw entries (for open_by_id)
+    /// JSONL is the source of truth for message count.
     async fn from_entries(
         session_id: String,
         agent_name: String,
         session_key: String,
         peer: Peer,
         storage: SessionStorage,
-        mut index: SessionIndex,
         entries: Vec<crate::session::JsonlSessionEntry>,
     ) -> Result<Self> {
-        // Count messages and find last ID
+        // Count messages and find last ID (JSONL is source of truth)
         let mut message_count = 0;
-        let mut session_entries = 0;
-        let mut tool_result_entries = 0;
-        let mut model_change_entries = 0;
-        let mut compaction_entries = 0;
-        let mut custom_entries = 0;
         let mut last_message_id = None;
 
-        // Count all entries (don't use find_map as it stops at first match!)
         for entry in entries.iter().rev() {
-            match entry {
-                crate::session::JsonlSessionEntry::Message { id, .. } => {
-                    message_count += 1;
-                    if last_message_id.is_none() {
-                        last_message_id = Some(id.clone());
-                    }
-                }
-                crate::session::JsonlSessionEntry::Session { .. } => {
-                    session_entries += 1;
-                }
-                crate::session::JsonlSessionEntry::ToolResult { .. } => {
-                    tool_result_entries += 1;
-                }
-                crate::session::JsonlSessionEntry::ModelChange { .. } => {
-                    model_change_entries += 1;
-                }
-                crate::session::JsonlSessionEntry::Compaction { .. } => {
-                    compaction_entries += 1;
-                }
-                crate::session::JsonlSessionEntry::Custom { .. } => {
-                    custom_entries += 1;
+            if let crate::session::JsonlSessionEntry::Message { id, .. } = entry {
+                message_count += 1;
+                if last_message_id.is_none() {
+                    last_message_id = Some(id.clone());
                 }
             }
         }
 
-        // Restore token counts and metadata from index
-        let (input_tokens, output_tokens, current_provider, current_model) = index
-            .get(&session_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|e| (e.input_tokens, e.output_tokens, e.provider, e.model))
-            .unwrap_or((0, 0, None, None));
-
-        // CRITICAL: Reconcile message count with index if needed
-        // The JSONL file is the source of truth for message count
-        if let Ok(Some(mut entry)) = index.get(&session_id).await {
-            if entry.message_count != message_count {
-                tracing::warn!(
-                    "Session {} message count mismatch: index={}, jsonl={}. Reconciling.",
-                    session_id,
-                    entry.message_count,
-                    message_count
-                );
-                entry.message_count = message_count;
-                entry.touch();
-                if let Err(e) = index.insert(entry).await {
-                    tracing::error!("Failed to reconcile session {}: {}", session_id, e);
-                } else if let Err(e) = index.save().await {
-                    tracing::error!("Failed to save reconciled index for {}: {}", session_id, e);
-                } else {
-                    tracing::info!(
-                        "Reconciled session {} message count to {}",
-                        session_id,
-                        message_count
-                    );
-                }
-            }
-        }
+        // Note: Token counts and provider/model info are not stored in JSONL messages
+        // They should be tracked by MetadataController separately
+        // or we could add ModelChange entry tracking here in the future
 
         Ok(Self {
             id: session_id,
@@ -517,66 +378,29 @@ impl UnifiedSession {
             session_key,
             peer,
             storage,
-            index,
             last_message_id,
             message_count,
-            input_tokens,
-            output_tokens,
-            current_provider,
-            current_model,
+            input_tokens: 0,
+            output_tokens: 0,
+            current_provider: None,
+            current_model: None,
         })
-    }
-
-    // ============================================================
-    // Index Updates (ATOMIC - prevents racing)
-    // ============================================================
-
-    /// Update the index with current metadata - ATOMIC operation
-    ///
-    /// This is the key method that prevents racing. All updates happen
-    /// in a single operation, so there's no interleaving with other updates.
-    async fn update_index(&mut self) -> Result<()> {
-        // CRITICAL FIX: Use self.id (the actual session ID) directly,
-        // NOT get_active_session_id() which returns the active session for the peer.
-        // If a peer has multiple sessions, using get_active_session_id would update
-        // the wrong session's metadata!
-        let session_id = &self.id;
-
-        if let Some(mut entry) = self.index.get(session_id).await? {
-            entry.touch();
-            entry.message_count = self.message_count;
-            entry.input_tokens = self.input_tokens;
-            entry.output_tokens = self.output_tokens;
-            entry.total_tokens = self.input_tokens + self.output_tokens;
-            entry.provider = self.current_provider.clone();
-            entry.model = self.current_model.clone();
-            self.index.insert(entry).await?;
-            self.index.save().await?;
-        } else {
-            tracing::warn!(
-                "Session {} not found in index when updating metadata. This may indicate the session was not properly registered.",
-                session_id
-            );
-        }
-        Ok(())
     }
 
     // ============================================================
     // Metadata Operations
     // ============================================================
 
-    /// Record token usage
-    pub async fn record_usage(&mut self, input: usize, output: usize) -> Result<()> {
+    /// Record token usage (in-memory only, persists to index via MetadataController)
+    pub fn record_usage(&mut self, input: usize, output: usize) {
         self.input_tokens += input;
         self.output_tokens += output;
-        self.update_index().await
     }
 
-    /// Set the current model
-    pub async fn set_model(&mut self, provider: &str, model: &str) -> Result<()> {
+    /// Set the current model (in-memory only, persists to index via MetadataController)
+    pub fn set_model(&mut self, provider: &str, model: &str) {
         self.current_provider = Some(provider.to_string());
         self.current_model = Some(model.to_string());
-        self.update_index().await
     }
 
     /// Get token usage
@@ -617,7 +441,6 @@ impl UnifiedSession {
             .await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
-        self.update_index().await?;
         Ok(())
     }
 
@@ -636,7 +459,6 @@ impl UnifiedSession {
             .await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
-        self.update_index().await?;
         Ok(())
     }
 
@@ -675,7 +497,6 @@ impl UnifiedSession {
             .await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
-        self.update_index().await?;
         Ok(())
     }
 
@@ -720,7 +541,6 @@ impl UnifiedSession {
             .await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
-        self.update_index().await?;
         Ok(())
     }
 

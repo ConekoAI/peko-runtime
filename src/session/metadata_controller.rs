@@ -91,17 +91,17 @@ impl MetadataController {
 
     /// Get metadata for a session
     ///
-    /// If `verify_consistency` is true, the metadata will be verified against
-    /// the actual JSONL content and reconciled if necessary.
+    /// If `sync_from_jsonl` is true, the message count will be synced from
+    /// the actual JSONL content (source of truth).
     pub async fn get_metadata(
         &mut self,
         session_id: &str,
-        verify_consistency: bool,
+        sync_from_jsonl: bool,
     ) -> Result<Option<SessionMetadata>> {
-        // Check cache first
-        if let Some(cached) = self.cache.read().await.get(session_id).cloned() {
-            debug!("Cache hit for session {}", session_id);
-            if !verify_consistency {
+        // Check cache first (only if not syncing)
+        if !sync_from_jsonl {
+            if let Some(cached) = self.cache.read().await.get(session_id).cloned() {
+                debug!("Cache hit for session {}", session_id);
                 return Ok(Some(cached));
             }
         }
@@ -114,14 +114,23 @@ impl MetadataController {
 
         let mut metadata = SessionMetadata::from_entry(entry);
 
-        // Verify and reconcile if requested
-        if verify_consistency {
-            let result = self.reconcile_metadata(session_id, &mut metadata).await?;
-            if result.was_reconciled {
-                warn!(
-                    "Session {} was reconciled: message count {} -> {}",
-                    session_id, result.old_message_count, result.new_message_count
-                );
+        // Sync message count from JSONL if requested
+        if sync_from_jsonl {
+            match self.count_messages_from_jsonl(session_id).await {
+                Ok(actual_count) => {
+                    if metadata.message_count != actual_count {
+                        debug!(
+                            "Session {} message count synced: {} -> {}",
+                            session_id, metadata.message_count, actual_count
+                        );
+                        metadata.set_message_count(actual_count);
+                        // Update index with corrected count
+                        self.update_metadata(metadata.clone()).await?;
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to count messages from JSONL for {}: {}", session_id, e);
+                }
             }
         }
 
@@ -275,10 +284,11 @@ impl MetadataController {
 
     /// List all sessions with metadata
     ///
-    /// Optionally verifies consistency for each session.
+    /// If `sync_from_jsonl` is true, message counts will be synced from
+    /// the actual JSONL content (source of truth).
     pub async fn list_metadata(
         &mut self,
-        verify_consistency: bool,
+        sync_from_jsonl: bool,
     ) -> Result<Vec<SessionMetadata>> {
         let entries = self.index.list_all().await?;
         let mut result = Vec::new();
@@ -287,10 +297,21 @@ impl MetadataController {
             let session_id = entry.session_id.clone();
             let mut metadata = SessionMetadata::from_entry(entry);
 
-            if verify_consistency {
-                if let Err(e) = self.reconcile_metadata(&session_id, &mut metadata).await {
-                    warn!("Failed to reconcile session {}: {}", session_id, e);
-                    // Continue with index values even if reconciliation fails
+            if sync_from_jsonl {
+                // Sync message count from JSONL (source of truth)
+                match self.count_messages_from_jsonl(&session_id).await {
+                    Ok(actual_count) => {
+                        if metadata.message_count != actual_count {
+                            debug!(
+                                "Session {} message count synced: {} -> {}",
+                                session_id, metadata.message_count, actual_count
+                            );
+                            metadata.set_message_count(actual_count);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to count messages for {}: {}", session_id, e);
+                    }
                 }
             }
 
@@ -320,7 +341,7 @@ impl MetadataController {
     pub async fn list_for_peer(
         &mut self,
         peer_key: &str,
-        verify_consistency: bool,
+        sync_from_jsonl: bool,
     ) -> Result<Vec<SessionMetadata>> {
         let entries = self.index.list_for_peer(peer_key).await?;
         let mut result = Vec::new();
@@ -329,9 +350,20 @@ impl MetadataController {
             let session_id = entry.session_id.clone();
             let mut metadata = SessionMetadata::from_entry(entry);
 
-            if verify_consistency {
-                if let Err(e) = self.reconcile_metadata(&session_id, &mut metadata).await {
-                    warn!("Failed to reconcile session {}: {}", session_id, e);
+            if sync_from_jsonl {
+                match self.count_messages_from_jsonl(&session_id).await {
+                    Ok(actual_count) => {
+                        if metadata.message_count != actual_count {
+                            debug!(
+                                "Session {} message count synced: {} -> {}",
+                                session_id, metadata.message_count, actual_count
+                            );
+                            metadata.set_message_count(actual_count);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to count messages for {}: {}", session_id, e);
+                    }
                 }
             }
 
@@ -342,26 +374,68 @@ impl MetadataController {
     }
 
     // ====================================================================================
-    // Consistency & Reconciliation
+    // JSONL Sync (Source of Truth)
     // ====================================================================================
 
-    /// Reconcile metadata with actual JSONL content
-    ///
-    /// The JSONL file is the SOURCE OF TRUTH for message count.
-    /// If there's a discrepancy, the index will be updated to match.
-    pub async fn reconcile_metadata(
-        &mut self,
-        session_id: &str,
-        metadata: &mut SessionMetadata,
-    ) -> Result<ReconciliationResult> {
-        // Load JSONL entries
+    /// Compute message count from JSONL (source of truth)
+    pub async fn count_messages_from_jsonl(&self, session_id: &str) -> Result<usize> {
         let entries = self
             .storage
             .load_session(session_id)
             .await
             .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
 
-        // Count actual messages in JSONL
+        Ok(entries
+            .iter()
+            .filter(|e| matches!(e, crate::session::jsonl::SessionEntry::Message { .. }))
+            .count())
+    }
+
+    /// Sync metadata from JSONL (source of truth)
+    ///
+    /// This is the PRIMARY method for ensuring metadata matches JSONL.
+    /// The JSONL file is the source of truth for message count.
+    pub async fn sync_from_jsonl(&mut self, session_id: &str) -> Result<usize> {
+        let actual_count = self.count_messages_from_jsonl(session_id).await?;
+
+        // Get current metadata
+        let mut metadata = match self.get_metadata_fast(session_id).await? {
+            Some(m) => m,
+            None => {
+                return Err(anyhow::anyhow!(
+                    "Cannot sync non-existent session {}",
+                    session_id
+                ));
+            }
+        };
+
+        // Always update to match JSONL (JSONL is source of truth)
+        if metadata.message_count != actual_count {
+            debug!(
+                "Syncing session {} message count: {} -> {}",
+                session_id, metadata.message_count, actual_count
+            );
+            metadata.set_message_count(actual_count);
+            self.update_metadata(metadata).await?;
+        }
+
+        Ok(actual_count)
+    }
+
+    /// DEPRECATED: Use sync_from_jsonl instead
+    /// Reconcile metadata with actual JSONL content
+    #[deprecated(since = "0.9.0", note = "Use sync_from_jsonl instead")]
+    pub async fn reconcile_metadata(
+        &mut self,
+        session_id: &str,
+        metadata: &mut SessionMetadata,
+    ) -> Result<ReconciliationResult> {
+        let entries = self
+            .storage
+            .load_session(session_id)
+            .await
+            .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
+
         let actual_count = entries
             .iter()
             .filter(|e| matches!(e, crate::session::jsonl::SessionEntry::Message { .. }))
@@ -370,39 +444,20 @@ impl MetadataController {
         let old_count = metadata.message_count;
 
         if actual_count != old_count {
-            warn!(
-                "Session {} message count mismatch: index={}, jsonl={}",
-                session_id, old_count, actual_count
-            );
-
-            // Update metadata
             metadata.set_message_count(actual_count);
-
-            // Clone metadata for operations that consume it
             let metadata_for_index = metadata.clone();
             let metadata_for_cache = metadata.clone();
-
-            // Update index
             let entry = metadata_for_index.to_entry();
             self.index.insert(entry).await?;
             self.index.save().await?;
-
-            // Update cache
             self.cache
                 .write()
                 .await
                 .insert(session_id.to_string(), metadata_for_cache);
 
-            let result = ReconciliationResult::new(session_id)
+            Ok(ReconciliationResult::new(session_id)
                 .with_discrepancy("message_count", old_count, actual_count)
-                .reconciled(old_count, actual_count);
-
-            info!(
-                "Reconciled session {}: message count {} -> {}",
-                session_id, old_count, actual_count
-            );
-
-            Ok(result)
+                .reconciled(old_count, actual_count))
         } else {
             Ok(ReconciliationResult::new(session_id))
         }
@@ -446,9 +501,12 @@ impl MetadataController {
         })
     }
 
-    /// Reconcile all sessions (for maintenance)
+    /// Sync all sessions from JSONL (for maintenance)
+    /// 
+    /// This syncs the index with the actual JSONL content (source of truth).
+    #[deprecated(since = "0.9.0", note = "Use list_metadata with sync_from_jsonl=true instead")]
     pub async fn reconcile_all(&mut self) -> Result<Vec<ReconciliationResult>> {
-        info!("Starting reconciliation of all sessions");
+        info!("Starting sync of all sessions from JSONL");
 
         let entries = self.index.list_all().await?;
         let mut results = Vec::new();
@@ -457,24 +515,31 @@ impl MetadataController {
             let session_id = entry.session_id.clone();
             let mut metadata = SessionMetadata::from_entry(entry);
 
-            match self.reconcile_metadata(&session_id, &mut metadata).await {
-                Ok(result) => {
-                    if result.was_reconciled {
-                        info!("Reconciled session {}", session_id);
+            match self.sync_from_jsonl(&session_id).await {
+                Ok(new_count) => {
+                    let old_count = metadata.message_count;
+                    if new_count != old_count {
+                        info!("Synced session {}: {} -> {}", session_id, old_count, new_count);
+                        results.push(
+                            ReconciliationResult::new(&session_id)
+                                .with_discrepancy("message_count", old_count, new_count)
+                                .reconciled(old_count, new_count),
+                        );
+                    } else {
+                        results.push(ReconciliationResult::new(&session_id));
                     }
-                    results.push(result);
                 }
                 Err(e) => {
-                    warn!("Failed to reconcile session {}: {}", session_id, e);
-                    // Continue with other sessions
+                    warn!("Failed to sync session {}: {}", session_id, e);
+                    results.push(ReconciliationResult::new(&session_id));
                 }
             }
         }
 
-        let reconciled_count = results.iter().filter(|r| r.was_reconciled).count();
+        let synced_count = results.iter().filter(|r| r.was_reconciled).count();
         info!(
-            "Reconciliation complete: {}/{} sessions reconciled",
-            reconciled_count,
+            "Sync complete: {}/{} sessions updated",
+            synced_count,
             results.len()
         );
 

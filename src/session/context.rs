@@ -155,7 +155,8 @@ impl SessionContext {
     /// Record token usage
     pub async fn record_usage(&self, input_tokens: usize, output_tokens: usize) -> Result<()> {
         let mut base = self.hybrid.base.write().await;
-        base.record_usage(input_tokens, output_tokens).await
+        base.record_usage(input_tokens, output_tokens);
+        Ok(())
     }
 
     /// Get channel-specific state (if channel overlay)

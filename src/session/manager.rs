@@ -205,42 +205,22 @@ impl SessionHandle {
 
     /// Add a user message to the session
     ///
-    /// This automatically updates the message count in the metadata.
+    /// Note: Metadata updates are handled by MetadataController at turn boundary
     pub async fn add_user(&self, content: impl Into<String>) -> Result<()> {
-        let content = content.into();
-
-        // 1. Add to JSONL
-        {
-            let mut base = self.base.write().await;
-            base.add_user(&content).await?;
-        }
-
-        // 2. Recompute and update metadata
-        self.update_metadata_counts().await?;
-
-        Ok(())
+        let mut base = self.base.write().await;
+        base.add_user(content).await
     }
 
     /// Add an assistant message to the session
     ///
-    /// This automatically updates the message count in the metadata.
+    /// Note: Metadata updates are handled by MetadataController at turn boundary
     pub async fn add_assistant(
         &self,
         content: impl Into<String>,
         tool_calls: Option<Vec<crate::engine::ToolCall>>,
     ) -> Result<()> {
-        let content = content.into();
-
-        // 1. Add to JSONL
-        {
-            let mut base = self.base.write().await;
-            base.add_assistant(&content, tool_calls).await?;
-        }
-
-        // 2. Recompute and update metadata
-        self.update_metadata_counts().await?;
-
-        Ok(())
+        let mut base = self.base.write().await;
+        base.add_assistant(content, tool_calls).await
     }
 
     /// Add a tool result to the session
@@ -288,20 +268,17 @@ impl SessionHandle {
             .await
     }
 
-    /// Internal: Update message counts in metadata
-    async fn update_metadata_counts(&self) -> Result<()> {
-        // Compute actual message count from JSONL
-        let message_count = {
-            let base = self.base.read().await;
-            base.message_count
-        };
-
-        // Update via manager
+    /// Sync metadata from JSONL (source of truth)
+    ///
+    /// This should be called at the end of an engine turn to update
+    /// the index with the actual message count from JSONL.
+    pub async fn sync_metadata(&self) -> Result<()> {
         let mut manager = self.manager.write().await;
         manager
             .metadata_controller
-            .update_message_counts(&self.session_id, message_count, 0, 0)
-            .await
+            .sync_from_jsonl(&self.session_id)
+            .await?;
+        Ok(())
     }
 }
 
