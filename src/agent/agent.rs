@@ -370,6 +370,70 @@ impl Agent {
         result
     }
 
+    /// Execute with a specific session and history.
+    ///
+    /// This allows resuming an existing conversation with full context.
+    /// The session is used for persistence, and history provides the conversation context.
+    pub async fn execute_with_session(
+        &self,
+        prompt: &str,
+        session: Arc<tokio::sync::RwLock<crate::session::UnifiedSession>>,
+        history: Option<Vec<crate::providers::ChatMessage>>,
+        on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+    ) -> Result<crate::engine::AgenticResultV4> {
+        use crate::engine::loop_v4::AgenticLoopV4;
+        use std::sync::Arc;
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        let result = if let Some(provider) = &self.provider {
+            // Load tools including MCP tools
+            let tools = match self.create_tools_async().await {
+                Ok(tools) => tools,
+                Err(e) => {
+                    self.set_state(AgentState::Idle);
+                    return Err(anyhow::anyhow!("Failed to create tools: {e}"));
+                }
+            };
+
+            let supports_native = provider.supports_native_tools();
+            info!(
+                "Executing with session and {} tool calling ({} tools available)",
+                if supports_native {
+                    "native"
+                } else {
+                    "text-based"
+                },
+                tools.len()
+            );
+
+            let provider_arc = Arc::clone(provider);
+            let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
+
+            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+
+            match loop_.run_with_resume(prompt, on_event, session, history).await {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    error!("Agentic loop V4 error: {}", e);
+                    Err(e)
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!("No provider configured"))
+        };
+
+        self.set_state(AgentState::Idle);
+        result
+    }
+
     /// Execute with a channel-based event interface.
     ///
     /// Convenience wrapper around `execute()` that returns a receiver for

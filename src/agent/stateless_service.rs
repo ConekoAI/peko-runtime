@@ -248,7 +248,30 @@ impl StatelessAgentService {
             .await?;
         debug!("Loaded {} messages from session history", history.len());
 
-        // 3. Cold-start agent (spawn)
+        // 3. Get or create session via SessionManager
+        let sessions_dir =
+            get_agent_session_dir(&self.config_service, &self.path_resolver, &request.agent_name)
+                .await?;
+        let mut session_manager = SessionManager::new().with_directory(sessions_dir.clone());
+        let peer = Peer::User("default".to_string());
+        let session = session_manager
+            .get_or_create_base(&request.agent_name, &peer)
+            .await?;
+        
+        // CRITICAL: Update the session ID to match the requested session
+        // This ensures we're writing to the correct session file
+        {
+            let mut base = session.write().await;
+            if base.id != request.session_id {
+                debug!("Session ID mismatch: base has '{}', request is for '{}'. Using request session ID.", 
+                       base.id, request.session_id);
+                // Note: The session file is keyed by ID, so we need to ensure
+                // we're writing to the right file. For now, we update the base id.
+                base.id = request.session_id.clone();
+            }
+        }
+
+        // 4. Cold-start agent (spawn)
         let agent_start = Instant::now();
         let agent = Agent::new(config_entry.config.clone())
             .await
@@ -260,15 +283,18 @@ impl StatelessAgentService {
             request.agent_name, cold_start_ms
         );
 
-        // 4. Build full prompt with history
-        let prompt = self.build_prompt(&request.message, &history)?;
-
-        // 5. Execute agent (ignore events - use result)
+        // 5. Execute agent with session and history
+        // Use the new execute_with_session method that properly handles session resumption
         let execute_result = agent
-            .execute(&prompt, |_event| {
-                // Events are ignored for non-streaming execution
-                // All data comes from the AgenticResult
-            })
+            .execute_with_session(
+                &request.message,
+                session.clone(),
+                Some(history),
+                |_event| {
+                    // Events are ignored for non-streaming execution
+                    // All data comes from the AgenticResult
+                },
+            )
             .await;
 
         let (success, final_response, token_usage, iterations, tool_calls, error_msg) =
@@ -324,6 +350,7 @@ impl StatelessAgentService {
                     &request.session_id,
                     &request.message,
                     &final_response,
+                    &token_usage,
                     &tool_calls,
                 )
                 .await
@@ -335,11 +362,13 @@ impl StatelessAgentService {
         let duration = start.elapsed();
 
         info!(
-            "Execution complete for '{}' (success: {}, duration: {}ms, iterations: {})",
+            "Execution complete for '{}' (success: {}, duration: {}ms, iterations: {}, tokens: {}/{})",
             request.agent_name,
             success,
             duration.as_millis(),
-            iterations
+            iterations,
+            token_usage.input,
+            token_usage.output
         );
 
         // 7. Agent is dropped here (stateless)
@@ -464,6 +493,7 @@ impl StatelessAgentService {
         session_id: &str,
         user_message: &str,
         assistant_response: &str,
+        token_usage: &TokenUsage,
         _tool_calls: &[ToolCallRecord],
     ) -> Result<()> {
         let sessions_dir =
@@ -509,7 +539,7 @@ impl StatelessAgentService {
         });
         storage.append_event(session_id, &user_event).await?;
 
-        // Append assistant message event
+        // Append assistant message event with actual token usage
         let assistant_event = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
                 id: format!(
@@ -523,14 +553,14 @@ impl StatelessAgentService {
             message_id: format!("msg_{}", Uuid::new_v4().simple()),
             content: assistant_response.to_string(),
             usage: crate::session::events::TokenUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
+                input_tokens: token_usage.input as u32,
+                output_tokens: token_usage.output as u32,
+                total_tokens: token_usage.total as u32,
             },
         });
         storage.append_event(session_id, &assistant_event).await?;
 
-        // Update SessionIndex so sessions appear in listings
+        // Update SessionIndex so sessions appear in listings with token counts
         let transcript_file = format!("{}.jsonl", session_id);
         let mut index = SessionIndex::open(&sessions_dir);
 
@@ -541,16 +571,23 @@ impl StatelessAgentService {
                 entry.increment_messages();
                 entry.increment_messages(); // Both user and assistant messages
                 entry.increment_turn();
+                // Accumulate token counts
+                entry.input_tokens += token_usage.input as usize;
+                entry.output_tokens += token_usage.output as usize;
+                entry.total_tokens += token_usage.total as usize;
                 entry.touch();
                 index.insert(entry).await?;
             }
             None => {
-                // Create new entry
-                let entry = SessionEntry::new(
+                // Create new entry with token counts
+                let mut entry = SessionEntry::new(
                     session_id.to_string(),
                     agent_name.to_string(),
                     transcript_file,
                 );
+                entry.input_tokens = token_usage.input as usize;
+                entry.output_tokens = token_usage.output as usize;
+                entry.total_tokens = token_usage.total as usize;
                 index.insert(entry).await?;
             }
         }
