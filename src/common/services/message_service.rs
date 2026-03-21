@@ -365,7 +365,7 @@ impl MessageService {
 }
 
 /// Generate a unique session ID
-/// 
+///
 /// Uses standard UUID format to match CLI session generation.
 /// This ensures consistency between HTTP API and CLI interfaces.
 pub fn generate_session_id() -> String {

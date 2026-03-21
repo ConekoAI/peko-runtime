@@ -186,7 +186,8 @@ impl AgentService {
         tokio::fs::write(&config_path, toml).await?;
 
         // Bootstrap workspace with standard files
-        self.bootstrap_agent_workspace(agent_dir, agent_name).await?;
+        self.bootstrap_agent_workspace(agent_dir, agent_name)
+            .await?;
 
         Ok(AgentCreationResult {
             name: agent_name.to_string(),
@@ -445,9 +446,10 @@ impl AgentService {
         }
 
         let agent_name = opts.name.unwrap_or_else(|| {
-            file_path
-                .file_stem()
-                .map_or_else(|| "imported".to_string(), |s| s.to_string_lossy().to_string())
+            file_path.file_stem().map_or_else(
+                || "imported".to_string(),
+                |s| s.to_string_lossy().to_string(),
+            )
         });
 
         let team = opts.team.unwrap_or_else(|| "default".to_string());
@@ -482,11 +484,7 @@ impl AgentService {
     // ============================================================================
 
     /// Bootstrap agent workspace with standard files
-    async fn bootstrap_agent_workspace(
-        &self,
-        agent_dir: &Path,
-        agent_name: &str,
-    ) -> Result<()> {
+    async fn bootstrap_agent_workspace(&self, agent_dir: &Path, agent_name: &str) -> Result<()> {
         // Create .gitignore
         let gitignore_content = r#"# Pekobot agent - gitignore
 sessions/

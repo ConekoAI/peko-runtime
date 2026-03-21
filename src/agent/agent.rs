@@ -419,7 +419,10 @@ impl Agent {
 
             let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
 
-            match loop_.run_with_resume(prompt, on_event, session, history).await {
+            match loop_
+                .run_with_resume(prompt, on_event, session, history)
+                .await
+            {
                 Ok(result) => Ok(result),
                 Err(e) => {
                     error!("Agentic loop V4 error: {}", e);

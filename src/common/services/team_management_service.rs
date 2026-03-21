@@ -12,13 +12,13 @@
 //! - Runtime operations (deploy, stop, scale) use `TeamRuntimeManager`
 //! - Both CLI and API use this unified service
 
+use crate::api::state::AppState;
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
 use crate::common::types::team::*;
 use crate::team::config::TeamConfig;
 use crate::team::{TeamManager, TeamStatus};
-use crate::api::state::AppState;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 
@@ -154,23 +154,26 @@ impl TeamManagementService {
     ///
     /// Returns information about a running team instance.
     pub async fn get_runtime_team(&self, team_id: &str) -> Option<TeamRuntimeInfo> {
-        self.runtime_manager.get_team(&team_id.to_string()).await.map(|team| {
-            let instance_ids = team.all_instance_ids();
-            TeamRuntimeInfo {
-                id: team.id,
-                name: team.name.clone(),
-                status: match team.status {
-                    TeamStatus::Starting => TeamRuntimeStatus::Starting,
-                    TeamStatus::Running => TeamRuntimeStatus::Running,
-                    TeamStatus::Stopping => TeamRuntimeStatus::Stopping,
-                    TeamStatus::Stopped => TeamRuntimeStatus::Stopped,
-                    TeamStatus::Error => TeamRuntimeStatus::Error,
-                },
-                agent_count: team.agent_instances.len(),
-                instance_ids,
-                created_at: team.created_at.to_rfc3339(),
-            }
-        })
+        self.runtime_manager
+            .get_team(&team_id.to_string())
+            .await
+            .map(|team| {
+                let instance_ids = team.all_instance_ids();
+                TeamRuntimeInfo {
+                    id: team.id,
+                    name: team.name.clone(),
+                    status: match team.status {
+                        TeamStatus::Starting => TeamRuntimeStatus::Starting,
+                        TeamStatus::Running => TeamRuntimeStatus::Running,
+                        TeamStatus::Stopping => TeamRuntimeStatus::Stopping,
+                        TeamStatus::Stopped => TeamRuntimeStatus::Stopped,
+                        TeamStatus::Error => TeamRuntimeStatus::Error,
+                    },
+                    agent_count: team.agent_instances.len(),
+                    instance_ids,
+                    created_at: team.created_at.to_rfc3339(),
+                }
+            })
     }
 
     /// List all runtime teams
@@ -220,7 +223,12 @@ impl TeamManagementService {
     ) -> Result<TeamScaleResult> {
         let result = self
             .runtime_manager
-            .scale_agent(&request.team_id, &request.agent_name, request.instances, app_state)
+            .scale_agent(
+                &request.team_id,
+                &request.agent_name,
+                request.instances,
+                app_state,
+            )
             .await
             .context("Failed to scale team")?;
 
@@ -241,10 +249,8 @@ impl TeamManagementService {
     /// Build team configuration from deploy request
     async fn build_team_config(&self, request: TeamDeployRequest) -> Result<TeamConfig> {
         match request.config_source {
-            TeamConfigSource::FilePath(path) => {
-                TeamConfig::from_file(&path)
-                    .with_context(|| format!("Failed to load team config from: {}", path.display()))
-            }
+            TeamConfigSource::FilePath(path) => TeamConfig::from_file(&path)
+                .with_context(|| format!("Failed to load team config from: {}", path.display())),
             TeamConfigSource::Inline { agents } => {
                 // Build TeamConfig from inline definition
                 let agent_definitions: Vec<crate::team::config::AgentDefinition> = agents

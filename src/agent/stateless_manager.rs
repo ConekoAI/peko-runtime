@@ -358,8 +358,8 @@ mod tests {
                 .unwrap();
 
         // Initially no agents
-        assert_eq!(manager.list().await.len(), 0);
-        assert!(!manager.exists("test-agent").await);
+        assert_eq!(manager.list().await.unwrap().len(), 0);
+        assert!(!manager.exists("test-agent", None).await.unwrap());
     }
 
     #[tokio::test]

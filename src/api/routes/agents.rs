@@ -17,9 +17,7 @@
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
-use crate::common::types::agent::{
-    AgentCreateRequest, AgentDeleteOptions, AgentUpdateRequest,
-};
+use crate::common::types::agent::{AgentCreateRequest, AgentDeleteOptions, AgentUpdateRequest};
 use crate::observability::performance::PerformanceGuard;
 use axum::{
     extract::{Path, Query, State},
@@ -70,7 +68,7 @@ impl From<crate::common::services::AgentConfigEntry> for AgentConfigResponse {
             team_id: Some(entry.team),
             capabilities,
             registered_at: chrono::Utc::now().to_rfc3339(), // Not directly available, use current time
-            updated_at: None,                       // Not directly available
+            updated_at: None,                               // Not directly available
         }
     }
 }

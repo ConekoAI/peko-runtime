@@ -8,9 +8,8 @@ pub mod team;
 
 pub use agent::{
     AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult,
-    AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult,
-    AgentInfo, AgentInitRequest, AgentInitResult, AgentRenameResult, AgentSummary,
-    AgentUpdateRequest,
+    AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult, AgentInfo,
+    AgentInitRequest, AgentInitResult, AgentRenameResult, AgentSummary, AgentUpdateRequest,
 };
 pub use team::{
     TeamAgentDefinition, TeamConfigSource, TeamCreationResult, TeamDeletionResult,

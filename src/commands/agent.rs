@@ -187,9 +187,7 @@ pub async fn handle_agent(
             eprintln!("   Use 'pekobot send <agent> \"<message>\"' instead.");
             Ok(())
         }
-        AgentCommands::List { long } => {
-            handlers::handle_agent_list(paths, long, json).await
-        }
+        AgentCommands::List { long } => handlers::handle_agent_list(paths, long, json).await,
         AgentCommands::Show { name, team } => {
             handlers::handle_agent_show(paths, name, team, json).await
         }
@@ -199,60 +197,35 @@ pub async fn handle_agent(
             template,
             provider,
             force,
-        } => {
-            handlers::handle_agent_create(
-                paths, name, team, template, provider, force,
-            )
-            .await
-        }
+        } => handlers::handle_agent_create(paths, name, team, template, provider, force).await,
         AgentCommands::Delete {
             name,
             team,
             purge,
             force,
-        } => {
-            handlers::handle_agent_delete(paths, name, team, purge, force)
-                .await
-        }
+        } => handlers::handle_agent_delete(paths, name, team, purge, force).await,
         AgentCommands::Rename {
             old_name,
             new_name,
             team,
             to_team,
-        } => {
-            handlers::handle_agent_rename(
-                paths, old_name, new_name, team, to_team, json,
-            )
-            .await
-        }
+        } => handlers::handle_agent_rename(paths, old_name, new_name, team, to_team, json).await,
         AgentCommands::Export {
             name,
             team,
             output,
             encrypt,
-        } => {
-            handlers::handle_agent_export(
-                paths, name, team, output, encrypt,
-            )
-            .await
-        }
+        } => handlers::handle_agent_export(paths, name, team, output, encrypt).await,
         AgentCommands::Import { file, name } => {
             handlers::handle_agent_import(paths, file, name).await
         }
-        AgentCommands::Inspect { file } => {
-            handlers::handle_agent_inspect(file, json).await
-        }
+        AgentCommands::Inspect { file } => handlers::handle_agent_inspect(file, json).await,
         AgentCommands::Init {
             path,
             name,
             provider,
             model,
             force,
-        } => {
-            handlers::handle_agent_init(
-                paths, path, name, provider, model, force, json,
-            )
-            .await
-        }
+        } => handlers::handle_agent_init(paths, path, name, provider, model, force, json).await,
     }
 }

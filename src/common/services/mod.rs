@@ -67,11 +67,8 @@ impl ServiceRegistry {
         runtime_manager: Arc<crate::team::TeamManager>,
     ) -> Self {
         let config_service = TeamService::new(resolver.clone());
-        let team_management = TeamManagementService::new(
-            config_service.clone(),
-            runtime_manager,
-            resolver.clone(),
-        );
+        let team_management =
+            TeamManagementService::new(config_service.clone(), runtime_manager, resolver.clone());
 
         Self {
             agent: AgentService::new(resolver.clone()),

@@ -77,11 +77,10 @@ impl SessionResolver {
         );
 
         match strategy {
-            ResolutionStrategy::ForceNew => {
-                self.create_new_session(agent_name, team, channel, channel_id)
-                    .await
-                    .map(|ctx| (ctx, true))
-            }
+            ResolutionStrategy::ForceNew => self
+                .create_new_session(agent_name, team, channel, channel_id)
+                .await
+                .map(|ctx| (ctx, true)),
             ResolutionStrategy::Specific => {
                 let sid = session_id.unwrap();
                 self.resume_specific_session(agent_name, team, channel, channel_id, &sid)
@@ -121,7 +120,11 @@ impl SessionResolver {
                             );
                             return self
                                 .resume_specific_session(
-                                    agent_name, team, channel, channel_id, preferred_id,
+                                    agent_name,
+                                    team,
+                                    channel,
+                                    channel_id,
+                                    preferred_id,
                                 )
                                 .await
                                 .map(|ctx| (ctx, false));
@@ -152,7 +155,10 @@ impl SessionResolver {
         }
 
         // No active session found, create new
-        debug!("No active session found for agent '{}', creating new", agent_name);
+        debug!(
+            "No active session found for agent '{}', creating new",
+            agent_name
+        );
         self.create_new_session(agent_name, team, channel, channel_id)
             .await
             .map(|ctx| (ctx, true))
@@ -182,7 +188,12 @@ impl SessionResolver {
 
         // CRITICAL: Clear peer routing in SessionIndex to ensure a new session is created
         // Otherwise get_session_for_channel will load the existing session from disk
-        let peer_key = format!("agent:{}:peer:{}:{}", agent_name, peer.peer_type(), peer.id());
+        let peer_key = format!(
+            "agent:{}:peer:{}:{}",
+            agent_name,
+            peer.peer_type(),
+            peer.id()
+        );
         let mut index = SessionIndex::open(&sessions_dir);
         if let Err(e) = index.clear_active_for_peer(&peer_key).await {
             warn!("Failed to clear peer routing: {}", e);
@@ -206,17 +217,21 @@ impl SessionResolver {
             .await?;
 
         let ctx = SessionContext::new(hybrid).await;
-        
+
         // Get session ID for logging
         let session_id = {
             let base = ctx.hybrid.base.read().await;
             base.id.clone()
         };
-        
-        // Save as active preference for future auto-resume
-        self.save_active_preference(&sessions_dir, &session_id).await?;
 
-        info!("Created new session '{}' for agent '{}'", session_id, agent_name);
+        // Save as active preference for future auto-resume
+        self.save_active_preference(&sessions_dir, &session_id)
+            .await?;
+
+        info!(
+            "Created new session '{}' for agent '{}'",
+            session_id, agent_name
+        );
         Ok(ctx)
     }
 
@@ -244,7 +259,10 @@ impl SessionResolver {
             .with_context(|| format!("Failed to lookup session '{}'", session_id))?
             .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", session_id))?;
 
-        debug!("Found session '{}' with {} messages", entry.session_id, entry.message_count);
+        debug!(
+            "Found session '{}' with {} messages",
+            entry.session_id, entry.message_count
+        );
 
         let peer = Peer::User(channel_id.to_string());
         let mut session_manager = SessionManager::for_cli(agent_name, team);
@@ -266,18 +284,15 @@ impl SessionResolver {
         let ctx = SessionContext::new(hybrid).await;
 
         // Update active preference
-        self.save_active_preference(&sessions_dir, session_id).await?;
+        self.save_active_preference(&sessions_dir, session_id)
+            .await?;
 
         info!("Successfully resumed session '{}'", session_id);
         Ok(ctx)
     }
 
     /// Save active session preference
-    async fn save_active_preference(
-        &self,
-        sessions_dir: &PathBuf,
-        session_id: &str,
-    ) -> Result<()> {
+    async fn save_active_preference(&self, sessions_dir: &PathBuf, session_id: &str) -> Result<()> {
         let pref_path = sessions_dir.join(".active.json");
         let pref = serde_json::json!({
             "session_id": session_id,

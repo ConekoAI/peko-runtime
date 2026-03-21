@@ -129,7 +129,10 @@ impl MetadataController {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to count messages from JSONL for {}: {}", session_id, e);
+                    warn!(
+                        "Failed to count messages from JSONL for {}: {}",
+                        session_id, e
+                    );
                 }
             }
         }
@@ -286,10 +289,7 @@ impl MetadataController {
     ///
     /// If `sync_from_jsonl` is true, message counts will be synced from
     /// the actual JSONL content (source of truth).
-    pub async fn list_metadata(
-        &mut self,
-        sync_from_jsonl: bool,
-    ) -> Result<Vec<SessionMetadata>> {
+    pub async fn list_metadata(&mut self, sync_from_jsonl: bool) -> Result<Vec<SessionMetadata>> {
         let entries = self.index.list_all().await?;
         let mut result = Vec::new();
 
@@ -502,9 +502,12 @@ impl MetadataController {
     }
 
     /// Sync all sessions from JSONL (for maintenance)
-    /// 
+    ///
     /// This syncs the index with the actual JSONL content (source of truth).
-    #[deprecated(since = "0.9.0", note = "Use list_metadata with sync_from_jsonl=true instead")]
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use list_metadata with sync_from_jsonl=true instead"
+    )]
     pub async fn reconcile_all(&mut self) -> Result<Vec<ReconciliationResult>> {
         info!("Starting sync of all sessions from JSONL");
 
@@ -519,7 +522,10 @@ impl MetadataController {
                 Ok(new_count) => {
                     let old_count = metadata.message_count;
                     if new_count != old_count {
-                        info!("Synced session {}: {} -> {}", session_id, old_count, new_count);
+                        info!(
+                            "Synced session {}: {} -> {}",
+                            session_id, old_count, new_count
+                        );
                         results.push(
                             ReconciliationResult::new(&session_id)
                                 .with_discrepancy("message_count", old_count, new_count)

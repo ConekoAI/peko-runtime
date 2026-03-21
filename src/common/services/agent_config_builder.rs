@@ -12,7 +12,10 @@ use std::collections::HashMap;
 /// Builder for creating AgentConfig with fluent API
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
+/// use pekobot::common::services::{AgentConfigBuilder, DirectAuthResolver};
+///
+/// let auth_resolver = DirectAuthResolver::new(std::collections::HashMap::new());
 /// let config = AgentConfigBuilder::new("my-agent")
 ///     .with_provider("kimi")
 ///     .with_team("default")

@@ -249,15 +249,18 @@ impl StatelessAgentService {
         debug!("Loaded {} messages from session history", history.len());
 
         // 3. Get or create session via SessionManager
-        let sessions_dir =
-            get_agent_session_dir(&self.config_service, &self.path_resolver, &request.agent_name)
-                .await?;
+        let sessions_dir = get_agent_session_dir(
+            &self.config_service,
+            &self.path_resolver,
+            &request.agent_name,
+        )
+        .await?;
         let mut session_manager = SessionManager::new().with_directory(sessions_dir.clone());
         let peer = Peer::User("default".to_string());
         let session = session_manager
             .get_or_create_base(&request.agent_name, &peer)
             .await?;
-        
+
         // CRITICAL: Update the session ID to match the requested session
         // This ensures we're writing to the correct session file
         {
@@ -286,15 +289,10 @@ impl StatelessAgentService {
         // 5. Execute agent with session and history
         // Use the new execute_with_session method that properly handles session resumption
         let execute_result = agent
-            .execute_with_session(
-                &request.message,
-                session.clone(),
-                Some(history),
-                |_event| {
-                    // Events are ignored for non-streaming execution
-                    // All data comes from the AgenticResult
-                },
-            )
+            .execute_with_session(&request.message, session.clone(), Some(history), |_event| {
+                // Events are ignored for non-streaming execution
+                // All data comes from the AgenticResult
+            })
             .await;
 
         let (success, final_response, token_usage, iterations, tool_calls, error_msg) =
@@ -621,6 +619,7 @@ impl StatelessAgentService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::ConfigRegistry;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -644,11 +643,6 @@ mod tests {
     #[tokio::test]
     async fn test_stateless_service_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let registry = Arc::new(
-            ConfigRegistry::new(temp_dir.path().join("configs"))
-                .await
-                .unwrap(),
-        );
 
         let path_resolver = PathResolver::with_dirs(
             temp_dir.path().join("config"),
@@ -656,7 +650,9 @@ mod tests {
             temp_dir.path().join("cache"),
         );
 
-        let service = StatelessAgentService::new(registry, path_resolver)
+        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+
+        let service = StatelessAgentService::new(config_service, path_resolver)
             .await
             .unwrap();
 

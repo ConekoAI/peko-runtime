@@ -239,8 +239,7 @@ async fn handle_client_message(
                 socket,
                 WsServerMessage::Done {
                     message_id: format!("msg_{}", uuid::Uuid::new_v4().simple()),
-                    session_id: session_id
-                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    session_id: session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                     turn_count: 1,
                     usage: TokenUsage::default(),
                 },

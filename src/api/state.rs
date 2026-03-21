@@ -172,7 +172,10 @@ impl AppState {
             team_manager.clone(),
         ));
 
-        let message_service = Arc::new(MessageService::new(agent_service.clone(), path_resolver_clone.clone()));
+        let message_service = Arc::new(MessageService::new(
+            agent_service.clone(),
+            path_resolver_clone.clone(),
+        ));
 
         let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
 
@@ -252,7 +255,10 @@ impl AppState {
             team_manager.clone(),
         ));
 
-        let message_service = Arc::new(MessageService::new(agent_service.clone(), path_resolver_clone.clone()));
+        let message_service = Arc::new(MessageService::new(
+            agent_service.clone(),
+            path_resolver_clone.clone(),
+        ));
 
         let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
 
@@ -501,7 +507,7 @@ mod tests {
         let state = create_test_state().await;
 
         // Initially no agents registered
-        assert_eq!(state.agent_count().await, 0);
+        assert_eq!(state.agent_count().await.unwrap(), 0);
 
         // Initially no active executions
         assert_eq!(state.active_execution_count().await, 0);

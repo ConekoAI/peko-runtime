@@ -904,8 +904,8 @@ mod tests {
         let peer = Peer::User("alice".to_string());
         let mut session = UnifiedSession::create("test_agent", &peer).await.unwrap();
 
-        session.record_usage(100, 50).await.unwrap();
-        session.record_usage(50, 25).await.unwrap();
+        session.record_usage(100, 50);
+        session.record_usage(50, 25);
 
         let (input, output, total) = session.token_usage();
         assert_eq!(input, 150);

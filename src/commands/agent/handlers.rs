@@ -12,18 +12,13 @@ use crate::common::types::agent::{
 };
 
 /// Handle agent list command
-pub async fn handle_agent_list(
-    paths: &GlobalPaths,
-    long: bool,
-    json: bool,
-) -> anyhow::Result<()> {
+pub async fn handle_agent_list(paths: &GlobalPaths, long: bool, json: bool) -> anyhow::Result<()> {
     let service = paths.services().agent();
     let agents = service.list_agents(None).await?;
 
     if json {
         // Build JSON output with team structure
-        let mut teams: std::collections::HashMap<String, Vec<_>> =
-            std::collections::HashMap::new();
+        let mut teams: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
         let mut total_agents = 0;
 
         for agent in &agents {
@@ -33,10 +28,7 @@ pub async fn handle_agent_list(
                 "model": agent.config.provider.default_model,
                 "description": agent.config.description,
             });
-            teams
-                .entry(agent.team.clone())
-                .or_default()
-                .push(entry);
+            teams.entry(agent.team.clone()).or_default().push(entry);
             total_agents += 1;
         }
 
@@ -59,8 +51,7 @@ pub async fn handle_agent_list(
         println!("🐱 Configured Agents ({}):", agents.len());
 
         // Group by team
-        let mut teams: std::collections::HashMap<String, Vec<_>> =
-            std::collections::HashMap::new();
+        let mut teams: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
         for agent in agents {
             teams.entry(agent.team.clone()).or_default().push(agent);
         }
