@@ -13,10 +13,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::agent::async_tool_framework::{
-    AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, SessionMessageType,
-    UnifiedAsyncExecutor,
-};
+use crate::agent::async_tool_framework::{AsyncResultDeliveryMode, UnifiedAsyncExecutor};
 use crate::session::context::SessionRouter;
 use crate::session::manager::SessionManager;
 use crate::tools::Tool;
@@ -196,7 +193,7 @@ impl SessionsSendTool {
     /// (agents must use A2A bus, not sessions_send, for team communication)
     async fn check_cross_team_permission(&self, target_session_id: &str) -> Result<()> {
         // If we're not in a team, no restriction
-        let team_id = match &self.team_id {
+        let _team_id = match &self.team_id {
             Some(id) => id,
             None => return Ok(()),
         };
@@ -242,7 +239,7 @@ impl SessionsSendTool {
     async fn execute_async(
         &self,
         target_session_id: String,
-        message: String,
+        _message: String,
     ) -> Result<serde_json::Value> {
         // Check cross-team permission
         self.check_cross_team_permission(&target_session_id).await?;
@@ -266,7 +263,7 @@ impl SessionsSendTool {
         &self,
         target_session_id: String,
         message: String,
-        timeout_ms: u64,
+        _timeout_ms: u64,
     ) -> Result<serde_json::Value> {
         // Check cross-team permission
         self.check_cross_team_permission(&target_session_id).await?;

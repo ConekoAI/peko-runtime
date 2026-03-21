@@ -8,7 +8,6 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
@@ -502,7 +501,7 @@ impl ApplyPatchTool {
     fn preview_changes(
         &self,
         operations: &[Operation],
-        working_dir: Option<&str>,
+        _working_dir: Option<&str>,
     ) -> anyhow::Result<Vec<(String, String, String)>> {
         let mut preview = Vec::new();
 

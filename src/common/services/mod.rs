@@ -4,11 +4,27 @@
 //! CLI commands and API routes, ensuring consistent behavior across interfaces.
 
 pub mod agent_config_builder;
+pub mod agent_creation_service;
 pub mod agent_service;
+pub mod auth_resolver;
+pub mod message_service;
+pub mod session_service;
 pub mod team_service;
 
+pub use agent_config_builder::{build_config_with_auth, build_default_config, AgentConfigBuilder};
+pub use agent_creation_service::{
+    AgentCreationRequest, AgentCreationResult, AgentCreationService, AgentSource,
+};
 pub use agent_service::AgentService;
+pub use auth_resolver::{AuthResolver, DirectAuthResolver, FilesystemAuthResolver};
+pub use message_service::{ChatEvent, MessageRequest, MessageResult, MessageService, ToolCallInfo};
+pub use session_service::{
+    BranchResult, HistoryEvent, HistoryQuery, HistoryResult, SessionInfo, SessionService,
+};
 pub use team_service::TeamService;
+
+// Re-export config registry types
+pub use crate::agent::config_registry::{AgentConfigEntry, ConfigSource};
 
 use crate::common::paths::PathResolver;
 

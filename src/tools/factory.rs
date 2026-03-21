@@ -199,7 +199,7 @@ impl ToolFactory {
     pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult {
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
         let mut disabled = Vec::new();
-        let disabled_set: HashSet<String> = config
+        let _disabled_set: HashSet<String> = config
             .disabled_tools
             .iter()
             .map(|s| s.to_lowercase())
@@ -431,7 +431,7 @@ impl ToolFactory {
         disabled_tools: &[String],
         existing_names: &std::collections::HashSet<String>,
     ) -> anyhow::Result<(Vec<Arc<dyn crate::tools::Tool>>, CustomToolsDiscoveryResult)> {
-        use crate::tools::custom::{create_custom_tools, CustomTool};
+        use crate::tools::custom::create_custom_tools;
 
         if !tools_dir.exists() {
             tracing::debug!("Custom tools directory does not exist: {:?}", tools_dir);
@@ -451,7 +451,7 @@ impl ToolFactory {
 
         // Filter tools
         let mut loaded_tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
-        let mut failed_tools: Vec<(String, String)> = Vec::new();
+        let failed_tools: Vec<(String, String)> = Vec::new();
 
         for tool in custom_tools {
             let name = tool.name().to_lowercase();
@@ -561,7 +561,7 @@ impl ToolFactory {
 
         // Try to initialize (connect to servers)
         let init_result = {
-            let mut manager_guard = manager.write().await;
+            let manager_guard = manager.write().await;
             manager_guard.init().await
         };
 

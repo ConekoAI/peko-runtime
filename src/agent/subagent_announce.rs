@@ -3,10 +3,9 @@
 //! Handles announcing subagent results back to parent sessions.
 //! When a subagent completes, its result is added as a message to the parent's base session.
 
-use crate::agent::subagent_registry::{SubagentResult, SubagentRun, SubagentStatus};
+use crate::agent::subagent_registry::{SubagentRun, SubagentStatus};
 use crate::session::context::SessionContext;
 use anyhow::{Context, Result};
-use chrono::Utc;
 
 /// Format a subagent result as an announcement message
 #[must_use]
@@ -200,7 +199,8 @@ pub async fn on_subagent_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::subagent_registry::{SubagentRun, SubagentStatus};
+    use crate::agent::subagent_registry::{SubagentResult, SubagentRun, SubagentStatus};
+    use chrono::Utc;
 
     #[test]
     fn test_format_announcement_completed() {

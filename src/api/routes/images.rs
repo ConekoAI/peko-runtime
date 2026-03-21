@@ -15,7 +15,7 @@ use crate::image::builder::{BuildOptions, BuildProgress, ImageBuilder};
 use crate::image::manifest::ImageManifest;
 use crate::image::registry::ImageRegistry;
 use crate::image::RegistryConfig as LocalRegistryConfig;
-use crate::registry::{load_from_workspace, ProgressEvent, RegistryClient, RegistryConfig};
+use crate::registry::{load_from_workspace, ProgressEvent, RegistryClient};
 use axum::{
     extract::{Path, Query, State},
     response::Sse,

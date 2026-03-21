@@ -285,7 +285,7 @@ async fn list_agents_in_team(team_dir: &PathBuf) -> Result<Vec<(String, AgentCon
 }
 
 /// Map validation error to anyhow error with descriptive message
-fn map_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
+fn map_validation_error(_name: &str, e: ValidationError) -> anyhow::Error {
     match e {
         ValidationError::Empty => anyhow::anyhow!("Team name cannot be empty"),
         ValidationError::TooLong(max) => {

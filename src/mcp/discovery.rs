@@ -4,7 +4,6 @@
 //! Provides status information about available MCP servers.
 
 use crate::mcp::{McpConfig, McpServerConfig};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 

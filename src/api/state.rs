@@ -6,6 +6,7 @@
 use crate::agent::config_registry::ConfigRegistry;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
+use crate::common::services::{AgentCreationService, MessageService, SessionService};
 use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
@@ -68,6 +69,15 @@ pub struct AppState {
 
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
+
+    /// Agent creation service (unified for CLI and API)
+    agent_creation_service: Arc<AgentCreationService>,
+
+    /// Message service (unified for CLI and API)
+    message_service: Arc<MessageService>,
+
+    /// Session service (unified for CLI and API)
+    session_service: Arc<SessionService>,
 
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
@@ -140,6 +150,7 @@ impl AppState {
             cache_dir.clone(),
         );
 
+        let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
             StatelessAgentService::new(config_registry.clone(), path_resolver)
                 .await
@@ -147,6 +158,17 @@ impl AppState {
         );
 
         let lifecycle = Arc::new(LifecycleManager::new());
+        let team_manager = Arc::new(TeamManager::new());
+
+        let agent_creation_service = Arc::new(AgentCreationService::new(
+            config_registry.clone(),
+            path_resolver_clone.clone(),
+            team_manager.clone(),
+        ));
+
+        let message_service = Arc::new(MessageService::new(agent_service.clone()));
+
+        let session_service = Arc::new(SessionService::new(path_resolver_clone));
 
         Ok(Self {
             started_at: SystemTime::now(),
@@ -157,7 +179,7 @@ impl AppState {
             port,
             host: host.into(),
             config,
-            team_manager: Arc::new(TeamManager::new()),
+            team_manager,
             hook_registry: Arc::new(HookRegistry::new()),
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
@@ -165,6 +187,9 @@ impl AppState {
             config_registry,
             agent_service,
             lifecycle,
+            agent_creation_service,
+            message_service,
+            session_service,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
     }
@@ -198,6 +223,7 @@ impl AppState {
             cache_dir.clone(),
         );
 
+        let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
             StatelessAgentService::new(config_registry.clone(), path_resolver)
                 .await
@@ -205,6 +231,17 @@ impl AppState {
         );
 
         let lifecycle = Arc::new(LifecycleManager::new());
+        let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
+
+        let agent_creation_service = Arc::new(AgentCreationService::new(
+            config_registry.clone(),
+            path_resolver_clone.clone(),
+            team_manager.clone(),
+        ));
+
+        let message_service = Arc::new(MessageService::new(agent_service.clone()));
+
+        let session_service = Arc::new(SessionService::new(path_resolver_clone));
 
         Ok(Self {
             started_at: SystemTime::now(),
@@ -215,7 +252,7 @@ impl AppState {
             port,
             host: host.into(),
             config,
-            team_manager: Arc::new(TeamManager::with_data_dir(data_dir)),
+            team_manager,
             hook_registry: Arc::new(HookRegistry::new()),
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
@@ -223,6 +260,9 @@ impl AppState {
             config_registry,
             agent_service,
             lifecycle,
+            agent_creation_service,
+            message_service,
+            session_service,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
     }
@@ -328,6 +368,21 @@ impl AppState {
     /// Get the lifecycle manager
     pub fn lifecycle(&self) -> &Arc<LifecycleManager> {
         &self.lifecycle
+    }
+
+    /// Get the agent creation service
+    pub fn agent_creation_service(&self) -> &Arc<AgentCreationService> {
+        &self.agent_creation_service
+    }
+
+    /// Get the message service
+    pub fn message_service(&self) -> &Arc<MessageService> {
+        &self.message_service
+    }
+
+    /// Get the session service
+    pub fn session_service(&self) -> &Arc<SessionService> {
+        &self.session_service
     }
 
     /// Get the count of registered agents

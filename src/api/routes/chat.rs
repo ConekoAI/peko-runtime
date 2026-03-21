@@ -8,12 +8,13 @@
 //! - No persistent instance state
 //! - Agent cold-starts on every request
 //! - Loads config from disk, executes, exits
+//!
+//! NOTE: This module now delegates to MessageService for unified handling
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::streaming::{ChatSseEvent, SseStream, TokenUsage};
-use crate::engine::{AgenticEvent, LifecyclePhase};
-use crate::observability::performance::GLOBAL_METRICS;
+use crate::common::services::{ChatEvent, MessageRequest};
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -75,11 +76,6 @@ pub struct ToolCallSummary {
     pub output: String,
 }
 
-/// Generate a session ID if not provided
-fn generate_session_id() -> String {
-    format!("sess_{}", Uuid::new_v4().simple())
-}
-
 /// Chat handler - routes to streaming or non-streaming based on Accept header
 async fn chat_handler(
     State(state): State<AppState>,
@@ -100,224 +96,167 @@ async fn chat_handler(
         || accept_header.is_empty();
 
     if streaming {
-        // Return SSE stream
+        // Return SSE stream using MessageService
         let (sse_stream, sender) = SseStream::new();
 
-        // Spawn the chat processing (stateless cold-start)
+        // Build message request
+        let msg_request = MessageRequest::new(agent_name.clone(), request.message.clone())
+            .with_session(request.session_id.clone().unwrap_or_default())
+            .with_new_session(request.session_id.is_none());
+
+        // Spawn the chat processing
         tokio::spawn(async move {
-            if let Err(e) = process_chat_stream(state, agent_name, request, sender).await {
+            if let Err(e) = process_chat_stream(state, msg_request, sender).await {
                 error!("Chat stream error: {}", e);
             }
         });
 
         Ok::<_, ApiError>(sse_stream.into_response())
     } else {
-        // Non-streaming response (stateless cold-start)
+        // Non-streaming response using MessageService
         let response = process_chat_blocking(state, agent_name, request).await?;
         Ok::<_, ApiError>(Json(response).into_response())
     }
 }
 
-/// Process chat with streaming output (stateless execution)
+/// Process chat with streaming output using MessageService
 async fn process_chat_stream(
     state: AppState,
-    agent_name: String,
-    request: ChatRequest,
+    request: MessageRequest,
     sender: tokio::sync::mpsc::Sender<ChatSseEvent>,
 ) -> anyhow::Result<()> {
+    let agent_name = request.agent_name.clone();
     let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
     info!(
-        "Starting stateless chat stream for agent: {} (run: {})",
+        "Starting chat stream for agent: {} (run: {})",
         agent_name, run_id
     );
 
-    let session_id = request
-        .session_id
-        .clone()
-        .unwrap_or_else(generate_session_id);
+    // Use MessageService for streaming
+    let mut event_rx = state
+        .message_service()
+        .send_message_streaming(request)
+        .await?;
 
-    // ADR-013: Cold-start sequence
-    // 1. Check agent is registered
-    if !state.config_registry().exists(&agent_name).await {
-        let _ = sender
-            .send(ChatSseEvent::Error {
-                code: "agent_not_found".to_string(),
-                message: format!("Agent '{}' not found", agent_name),
-                tool_call_id: None,
-            })
-            .await;
-        return Err(anyhow::anyhow!("Agent not found: {}", agent_name));
-    }
-
-    // 2. Send acknowledgment (cold-start beginning)
-    let _ = sender
-        .send(ChatSseEvent::Delta {
-            text: "Processing your message...".to_string(),
-        })
-        .await;
-
-    // 3. Execute statelessly
-    let exec_request = crate::agent::stateless_service::ExecutionRequest {
-        agent_name: agent_name.clone(),
-        session_id: session_id.clone(),
-        message: request.message.clone(),
-        context: None,
-        timeout_secs: None,
-    };
-
-    let start_time = std::time::Instant::now();
-
-    match state.agent_service().execute(exec_request).await {
-        Ok(result) => {
-            let duration_ms = start_time.elapsed().as_millis() as u64;
-            info!(
-                "Stateless execution completed for {} in {}ms (success: {})",
-                agent_name, duration_ms, result.success
-            );
-
-            // Send the response content
-            if !result.response.is_empty() {
-                let _ = sender
-                    .send(ChatSseEvent::Delta {
-                        text: result.response,
-                    })
-                    .await;
+    // Forward events from service to SSE sender
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            ChatEvent::Delta { text } => {
+                let _ = sender.send(ChatSseEvent::Delta { text }).await;
             }
-
-            // Convert tool calls to SSE events
-            for tc in &result.tool_calls {
-                let tool_id = format!("tool_{}", Uuid::new_v4().simple());
+            ChatEvent::ToolCall { id, name, args } => {
                 let _ = sender
                     .send(ChatSseEvent::ToolCall {
-                        id: tool_id.clone(),
-                        tool: tc.name.clone(),
-                        args: tc.parameters.clone(),
+                        id,
+                        tool: name,
+                        args,
                         async_: false,
                     })
                     .await;
-
-                // Send tool result if available
-                if let Some(ref output) = tc.result {
-                    let _ = sender
-                        .send(ChatSseEvent::ToolResult {
-                            tool_call_id: tool_id,
-                            output: output.clone(),
-                            error: None,
-                        })
-                        .await;
-                }
             }
-
-            // Record first token latency (end-to-end time as proxy)
-            GLOBAL_METRICS.record_first_token(start_time.elapsed());
-
-            // Send done event
-            let _ = sender
-                .send(ChatSseEvent::Done {
-                    message_id: format!("msg_{}", Uuid::new_v4().simple()),
-                    session_id,
-                    turn_count: result.iterations as u32,
-                    usage: TokenUsage {
-                        input_tokens: result.usage.input,
-                        output_tokens: result.usage.output,
-                        total_tokens: result.usage.total,
-                    },
-                })
-                .await;
-        }
-        Err(e) => {
-            error!("Stateless execution failed: {}", e);
-            let _ = sender
-                .send(ChatSseEvent::Error {
-                    code: "execution_error".to_string(),
-                    message: format!("Execution failed: {}", e),
-                    tool_call_id: None,
-                })
-                .await;
-            return Err(e);
+            ChatEvent::ToolResult {
+                tool_call_id,
+                output,
+                error,
+            } => {
+                let _ = sender
+                    .send(ChatSseEvent::ToolResult {
+                        tool_call_id,
+                        output,
+                        error,
+                    })
+                    .await;
+            }
+            ChatEvent::Done {
+                message_id,
+                session_id,
+                turn_count,
+                usage,
+            } => {
+                let _ = sender
+                    .send(ChatSseEvent::Done {
+                        message_id,
+                        session_id,
+                        turn_count,
+                        usage: TokenUsage {
+                            input_tokens: usage.input,
+                            output_tokens: usage.output,
+                            total_tokens: usage.total,
+                        },
+                    })
+                    .await;
+                break;
+            }
+            ChatEvent::Error { code, message } => {
+                let _ = sender
+                    .send(ChatSseEvent::Error {
+                        code,
+                        message,
+                        tool_call_id: None,
+                    })
+                    .await;
+                break;
+            }
         }
     }
 
     Ok(())
 }
 
-/// Process chat with blocking response (stateless execution)
+/// Process chat with blocking response using MessageService
 async fn process_chat_blocking(
     state: AppState,
     agent_name: String,
     request: ChatRequest,
 ) -> Result<ChatResponse, ApiError> {
-    info!("Stateless blocking chat request for agent: {}", agent_name);
+    info!("Blocking chat request for agent: {}", agent_name);
 
-    let session_id = request
-        .session_id
-        .clone()
-        .unwrap_or_else(generate_session_id);
+    // Build message request
+    let msg_request = MessageRequest::new(agent_name.clone(), request.message)
+        .with_session(request.session_id.clone().unwrap_or_default())
+        .with_new_session(request.session_id.is_none());
 
-    // Check agent exists
-    if !state.config_registry().exists(&agent_name).await {
-        return Err(ApiError::not_found("agent", agent_name.clone(), ""));
-    }
+    // Use MessageService
+    let result = state
+        .message_service()
+        .send_message(msg_request)
+        .await
+        .map_err(|e| ApiError::internal(format!("Execution failed: {}", e), ""))?;
 
-    // Execute statelessly
-    let exec_request = crate::agent::stateless_service::ExecutionRequest {
-        agent_name: agent_name.clone(),
-        session_id: session_id.clone(),
-        message: request.message.clone(),
-        context: None,
-        timeout_secs: None,
+    // Convert tool calls to summaries
+    let tool_calls = if result.tool_calls.is_empty() {
+        None
+    } else {
+        Some(
+            result
+                .tool_calls
+                .into_iter()
+                .map(|tc| ToolCallSummary {
+                    id: tc.id,
+                    tool: tc.name,
+                    args: tc.parameters,
+                    output: tc.result.unwrap_or_default(),
+                })
+                .collect(),
+        )
     };
 
-    let start_time = std::time::Instant::now();
-
-    match state.agent_service().execute(exec_request).await {
-        Ok(result) => {
-            let duration_ms = start_time.elapsed().as_millis();
-            info!(
-                "Stateless execution completed for {} in {}ms",
-                agent_name, duration_ms
-            );
-
-            // Convert tool calls to summaries
-            let tool_calls = if result.tool_calls.is_empty() {
-                None
-            } else {
-                Some(
-                    result
-                        .tool_calls
-                        .into_iter()
-                        .map(|tc| ToolCallSummary {
-                            id: format!("tool_{}", Uuid::new_v4().simple()),
-                            tool: tc.name,
-                            args: tc.parameters,
-                            output: tc.result.unwrap_or_default(),
-                        })
-                        .collect(),
-                )
-            };
-
-            Ok(ChatResponse {
-                message: AssistantMessage {
-                    id: format!("msg_{}", Uuid::new_v4().simple()),
-                    role: "assistant".to_string(),
-                    content: result.response,
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                },
-                session_id,
-                turn_count: result.iterations as u32,
-                usage: TokenUsage {
-                    input_tokens: result.usage.input,
-                    output_tokens: result.usage.output,
-                    total_tokens: result.usage.total,
-                },
-                tool_calls,
-            })
-        }
-        Err(e) => {
-            error!("Stateless execution failed: {}", e);
-            Err(ApiError::internal(format!("Execution failed: {}", e), ""))
-        }
-    }
+    Ok(ChatResponse {
+        message: AssistantMessage {
+            id: format!("msg_{}", Uuid::new_v4().simple()),
+            role: "assistant".to_string(),
+            content: result.content,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        },
+        session_id: result.session_id,
+        turn_count: result.iterations as u32,
+        usage: TokenUsage {
+            input_tokens: result.usage.input,
+            output_tokens: result.usage.output,
+            total_tokens: result.usage.total,
+        },
+        tool_calls,
+    })
 }
 
 /// Create router for chat routes
@@ -329,6 +268,7 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::services::message_service::generate_session_id;
     use tokio::sync::mpsc;
 
     #[test]

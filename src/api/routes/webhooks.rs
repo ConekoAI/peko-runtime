@@ -11,7 +11,7 @@ use axum::{
 };
 use serde_json::json;
 use std::collections::HashMap;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
@@ -105,7 +105,7 @@ async fn handle_webhook(
     };
 
     // Create the trigger
-    let trigger = crate::hooks::HookTrigger::new(hook.clone(), trigger_source);
+    let _trigger = crate::hooks::HookTrigger::new(hook.clone(), trigger_source);
 
     // Process the trigger
     // TODO: Integrate with session manager to actually create/inject session
@@ -194,7 +194,7 @@ async fn handle_webhook_no_token(
                 headers: HashMap::new(),
             };
 
-            let trigger = crate::hooks::HookTrigger::new(hook.clone(), trigger_source);
+            let _trigger = crate::hooks::HookTrigger::new(hook.clone(), trigger_source);
 
             info!(
                 "Processing webhook trigger for instance {}: hook={}",

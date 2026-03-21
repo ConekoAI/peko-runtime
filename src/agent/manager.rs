@@ -285,7 +285,7 @@ impl AgentManager {
 
     /// Create agent communication tools
     #[must_use]
-    pub fn create_communication_tools(&self, agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
+    pub fn create_communication_tools(&self, _agent_did: &str) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{AgentInfoTool, AgentsListTool};
         use std::sync::Arc;
 

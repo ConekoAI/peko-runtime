@@ -9,7 +9,7 @@
 use super::{Channel, StreamingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::session::context::SessionContext;
 use crate::session::types::{ChannelType, Peer};

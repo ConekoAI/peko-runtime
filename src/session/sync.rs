@@ -7,7 +7,7 @@ use crate::session::events::SessionTrigger;
 use crate::session::jsonl::SessionStorage;
 use anyhow::Result;
 use std::path::PathBuf;
-use tracing::{debug, info};
+use tracing::info;
 
 /// Synchronized session storage
 ///

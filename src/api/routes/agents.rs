@@ -22,7 +22,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::info;
@@ -51,17 +50,31 @@ pub struct AgentConfigResponse {
 /// Register agent request
 #[derive(Debug, Deserialize)]
 pub struct RegisterAgentRequest {
-    /// Image reference, digest, or path
-    pub image: String,
-    /// Agent name (optional, derived from image if not provided)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Image reference, digest, or path (optional if provider is specified)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Provider to use (e.g., "kimi", "openai") - alternative to image
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model name (optional, used with provider)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Agent name (optional, derived from image or generated)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Team ID to assign
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
     /// Environment variables
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
+    /// Auto-create team if it doesn't exist (default: true)
+    #[serde(default = "default_true")]
+    pub auto_create_team: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Update agent request
@@ -145,8 +158,8 @@ async fn list_agents(
         .take(params.limit())
         .map(|entry| AgentConfigResponse {
             name: entry.name.clone(),
-            image_ref: entry.image_ref.clone(),
-            image_digest: entry.image_digest.clone(),
+            image_ref: entry.image_ref().to_string(),
+            image_digest: entry.image_digest().to_string(),
             team_id: entry.team_id.clone(),
             capabilities: entry.capabilities(),
             registered_at: entry.registered_at.to_rfc3339(),
@@ -165,49 +178,72 @@ async fn register_agent(
     // Start timing
     let _guard = PerformanceGuard::new("register_agent");
 
-    // Parse image reference
-    let image_ref = ImageRef::parse(&request.image)
-        .map_err(|e| ApiError::bad_request(format!("Invalid image reference: {}", e), ""))?;
+    use crate::common::services::{AgentCreationRequest, AgentSource, DirectAuthResolver};
 
-    // Determine agent name
-    let name = request.name.unwrap_or_else(|| {
-        // Derive name from image reference
-        match &image_ref {
-            ImageRef::LocalTag { name, .. } => name.clone(),
-            ImageRef::RegistryRef { path, .. } => {
-                path.split('/').last().unwrap_or("agent").to_string()
-            }
-            _ => format!("agent-{}", generate_short_id()),
+    // Determine agent name or generate one
+    let name = request
+        .name
+        .unwrap_or_else(|| format!("agent-{}", generate_short_id()));
+
+    // Extract env before moving request
+    let env = request.env.clone().unwrap_or_default();
+
+    // Determine source (image or provider config)
+    let source = if let Some(image_ref) = request.image {
+        AgentSource::Image { image_ref }
+    } else if let Some(provider) = request.provider {
+        AgentSource::Config {
+            provider,
+            model: request.model,
+            env: env.clone(),
         }
-    });
+    } else {
+        return Err(ApiError::bad_request(
+            "Either 'image' or 'provider' must be specified".to_string(),
+            "",
+        ));
+    };
 
-    // Resolve image in registry
-    let registry_path = state.workspace_path.join("registry");
-    let config = RegistryConfig::new(&registry_path);
-    let registry = ImageRegistry::new(config);
+    // Create request
+    let creation_request = AgentCreationRequest {
+        name: name.clone(),
+        team: request.team_id.clone(),
+        source,
+        auto_create_team: request.auto_create_team,
+        description: None,
+    };
 
-    let manifest = registry
-        .resolve(&image_ref)
+    // Create auth resolver from request env
+    let auth_resolver = DirectAuthResolver::new(env);
+
+    // Create agent using the unified service
+    let result = state
+        .agent_creation_service()
+        .create(creation_request, &auth_resolver)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to resolve image: {}", e), ""))?
-        .ok_or_else(|| ApiError::not_found("image", request.image.clone(), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to create agent: {}", e), ""))?;
 
-    // Register in config registry
+    // Get the registered entry
     let entry = state
         .config_registry()
-        .register(&name, &image_ref, &registry, request.team_id.clone())
+        .get(&result.name)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to register agent: {}", e), ""))?;
+        .ok_or_else(|| {
+            ApiError::internal(
+                "Agent creation succeeded but entry not found".to_string(),
+                "",
+            )
+        })?;
 
     info!(
-        "Registered agent '{}' from image {} (digest: {})",
-        name, request.image, entry.image_digest
+        "Registered agent '{}' in team '{}' (provider: {})",
+        result.name, result.team, result.provider
     );
 
     Ok(Json(AgentConfigResponse {
         name: entry.name.clone(),
-        image_ref: entry.image_ref.clone(),
-        image_digest: entry.image_digest.clone(),
+        image_ref: entry.image_ref().to_string(),
+        image_digest: entry.image_digest().to_string(),
         team_id: entry.team_id.clone(),
         capabilities: entry.capabilities(),
         registered_at: entry.registered_at.to_rfc3339(),
@@ -228,8 +264,8 @@ async fn get_agent(
 
     Ok(Json(AgentConfigResponse {
         name: entry.name.clone(),
-        image_ref: entry.image_ref.clone(),
-        image_digest: entry.image_digest.clone(),
+        image_ref: entry.image_ref().to_string(),
+        image_digest: entry.image_digest().to_string(),
         team_id: entry.team_id.clone(),
         capabilities: entry.capabilities(),
         registered_at: entry.registered_at.to_rfc3339(),
@@ -414,8 +450,8 @@ async fn update_agent(
 
     Ok(Json(AgentConfigResponse {
         name: entry.name.clone(),
-        image_ref: entry.image_ref.clone(),
-        image_digest: entry.image_digest.clone(),
+        image_ref: entry.image_ref().to_string(),
+        image_digest: entry.image_digest().to_string(),
         team_id: entry.team_id.clone(),
         capabilities: entry.capabilities(),
         registered_at: entry.registered_at.to_rfc3339(),
@@ -448,6 +484,7 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     #[test]
     fn test_generate_short_id() {

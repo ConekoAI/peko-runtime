@@ -717,9 +717,7 @@ impl SessionManager {
             .metadata_controller
             .get_metadata_fast(parent_session_id)
             .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!("Parent session '{}' not found", parent_session_id)
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("Parent session '{}' not found", parent_session_id))?;
 
         // Generate new session ID
         let new_session_id = uuid::Uuid::new_v4().to_string();
@@ -731,11 +729,8 @@ impl SessionManager {
             .await?;
 
         // Create metadata for new session
-        let mut new_metadata = SessionMetadata::new(
-            &new_session_id,
-            &agent,
-            format!("{}.jsonl", new_session_id),
-        );
+        let mut new_metadata =
+            SessionMetadata::new(&new_session_id, &agent, format!("{}.jsonl", new_session_id));
         new_metadata.parent_session_id = Some(parent_session_id.to_string());
         new_metadata.title = label.or_else(|| {
             parent_metadata
@@ -749,7 +744,9 @@ impl SessionManager {
         new_metadata.output_tokens = parent_metadata.output_tokens;
 
         // Store metadata
-        self.metadata_controller.create_metadata(new_metadata).await?;
+        self.metadata_controller
+            .create_metadata(new_metadata)
+            .await?;
 
         info!(
             "Branched session {} from {}",

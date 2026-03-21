@@ -6,7 +6,7 @@ use super::{HookAction, HookType, RegisteredHook, SessionTarget, TokenValidation
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 /// Hook registry for managing all registered hooks
 pub struct HookRegistry {
@@ -44,7 +44,7 @@ impl HookRegistry {
 
         // Add to appropriate index
         match &hook.hook_type {
-            HookType::Webhook { path, token } => {
+            HookType::Webhook { path, token: _ } => {
                 let mut webhooks = self.webhooks.write().await;
                 webhooks.insert((instance_id.clone(), path.clone()), hook_id.clone());
                 info!(

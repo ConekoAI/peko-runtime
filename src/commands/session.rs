@@ -18,7 +18,6 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-
 /// Session management subcommands
 ///
 /// Sessions store the conversation history with an agent.
@@ -489,12 +488,28 @@ async fn show_session(
 /// History display entry - represents a parsed JSONL entry for display
 #[derive(Debug, Serialize)]
 enum HistoryDisplayEntry {
-    Session { timestamp: String },
-    Message { role: String, content: String, timestamp: String },
-    ToolResult { tool_name: String, content: String },
-    ModelChange { provider: String, model_id: String },
-    Compaction { summary: String },
-    Custom { custom_type: String },
+    Session {
+        timestamp: String,
+    },
+    Message {
+        role: String,
+        content: String,
+        timestamp: String,
+    },
+    ToolResult {
+        tool_name: String,
+        content: String,
+    },
+    ModelChange {
+        provider: String,
+        model_id: String,
+    },
+    Compaction {
+        summary: String,
+    },
+    Custom {
+        custom_type: String,
+    },
 }
 
 /// Load session history from JSONL file using proper SessionEntry types
@@ -504,7 +519,7 @@ async fn load_session_history(
 ) -> Result<Vec<HistoryDisplayEntry>> {
     use crate::session::jsonl::SessionEntry;
     use crate::types::ContentBlock;
-    
+
     let path = sessions_dir.join(format!("{}.jsonl", session_id));
     if !path.exists() {
         return Ok(vec![]);
@@ -519,12 +534,12 @@ async fn load_session_history(
         }
         if let Ok(entry) = serde_json::from_str::<SessionEntry>(line) {
             let display_entry = match entry {
-                SessionEntry::Session { timestamp, .. } => {
-                    HistoryDisplayEntry::Session {
-                        timestamp: timestamp.to_rfc3339(),
-                    }
-                }
-                SessionEntry::Message { timestamp, message, .. } => {
+                SessionEntry::Session { timestamp, .. } => HistoryDisplayEntry::Session {
+                    timestamp: timestamp.to_rfc3339(),
+                },
+                SessionEntry::Message {
+                    timestamp, message, ..
+                } => {
                     // Extract text content from ContentBlock array
                     let text: String = message
                         .content
@@ -536,14 +551,16 @@ async fn load_session_history(
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    
+
                     HistoryDisplayEntry::Message {
                         role: message.role,
                         content: text,
                         timestamp: timestamp.to_rfc3339(),
                     }
                 }
-                SessionEntry::ToolResult { tool_name, content, .. } => {
+                SessionEntry::ToolResult {
+                    tool_name, content, ..
+                } => {
                     let text: String = content
                         .iter()
                         .filter_map(|block| match block {
@@ -551,18 +568,15 @@ async fn load_session_history(
                             _ => None,
                         })
                         .collect();
-                    
+
                     HistoryDisplayEntry::ToolResult {
                         tool_name,
                         content: text,
                     }
                 }
-                SessionEntry::ModelChange { provider, model_id, .. } => {
-                    HistoryDisplayEntry::ModelChange {
-                        provider,
-                        model_id,
-                    }
-                }
+                SessionEntry::ModelChange {
+                    provider, model_id, ..
+                } => HistoryDisplayEntry::ModelChange { provider, model_id },
                 SessionEntry::Compaction { summary, .. } => {
                     HistoryDisplayEntry::Compaction { summary }
                 }
@@ -581,9 +595,17 @@ async fn load_session_history(
 fn print_history_event(index: usize, event: &HistoryDisplayEntry) {
     match event {
         HistoryDisplayEntry::Session { timestamp } => {
-            println!("  [{}] 🆕 Session Created ({})", index, format_timestamp(timestamp));
+            println!(
+                "  [{}] 🆕 Session Created ({})",
+                index,
+                format_timestamp(timestamp)
+            );
         }
-        HistoryDisplayEntry::Message { role, content, timestamp } => {
+        HistoryDisplayEntry::Message {
+            role,
+            content,
+            timestamp,
+        } => {
             let time_str = format_timestamp(timestamp);
             match role.as_str() {
                 "system" => {
@@ -631,7 +653,7 @@ fn print_history_event(index: usize, event: &HistoryDisplayEntry) {
 
 /// Branch a session (offline)
 async fn branch_session(
-    paths: &GlobalPaths,
+    _paths: &GlobalPaths,
     team: &str,
     agent: &str,
     session_id: &str,
@@ -642,7 +664,7 @@ async fn branch_session(
     let mut manager = crate::session::SessionManager::for_cli(agent, Some(team));
 
     // Verify parent session exists
-    let parent_metadata = manager
+    let _parent_metadata = manager
         .get_session_metadata(session_id)
         .await
         .map_err(|_| {
@@ -654,7 +676,9 @@ async fn branch_session(
         })?;
 
     // Perform the branch using SessionManager
-    let new_session_id = manager.branch_session_by_id(session_id, label.clone()).await?;
+    let new_session_id = manager
+        .branch_session_by_id(session_id, label.clone())
+        .await?;
 
     // Get the new session metadata for display
     let new_metadata = manager.get_session_metadata(&new_session_id).await?;
@@ -749,7 +773,11 @@ async fn delete_session(
     }
 
     if json {
-        let deleted_items = if deleted { vec!["jsonl", "index"] } else { vec![] };
+        let deleted_items = if deleted {
+            vec!["jsonl", "index"]
+        } else {
+            vec![]
+        };
         println!("{{\"success\": true, \"deleted\": {:?}}}", deleted_items);
     } else {
         println!("✅ Deleted session '{}'", session_id);

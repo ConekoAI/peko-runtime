@@ -3,7 +3,7 @@
 //! Emits system events during instance and team lifecycle transitions.
 
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::hooks::{

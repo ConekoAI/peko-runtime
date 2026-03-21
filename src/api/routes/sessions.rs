@@ -6,21 +6,22 @@
 //! - GET /agents/{id}/sessions/{session_id}/history - Get session history
 //! - POST /agents/{id}/sessions/{session_id}/branch - Branch session
 //! - DELETE /agents/{id}/sessions/{session_id} - Delete session
+//!
+//! NOTE: This module now delegates to SessionService for unified handling
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
-use crate::common::paths::PathResolver;
+use crate::common::services::{HistoryEvent, HistoryQuery, SessionInfo};
 use crate::session::events::SessionEvent;
-use crate::session::index::{SessionEntry, SessionIndex};
-use crate::session::sync::SyncSessionStorage;
+
 use axum::{
     extract::{Path, Query, State},
-    routing::{delete, get, post},
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Session response object (API_CONTRACT §2.3)
 #[derive(Debug, Clone, Serialize)]
@@ -38,28 +39,27 @@ pub struct SessionResponse {
     pub title: Option<String>,
 }
 
-impl From<SessionEntry> for SessionResponse {
-    fn from(entry: SessionEntry) -> Self {
-        // Convert timestamps from u64 milliseconds to RFC3339 string
-        let created_at = chrono::DateTime::from_timestamp_millis(entry.created_at as i64)
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_default();
-        let updated_at = chrono::DateTime::from_timestamp_millis(entry.updated_at as i64)
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_default();
-
+impl From<SessionInfo> for SessionResponse {
+    fn from(info: SessionInfo) -> Self {
         Self {
-            id: entry.session_id,
-            instance_id: entry.agent_name,
-            created_at,
-            updated_at,
-            turn_count: entry.turn_count,
-            message_count: entry.message_count,
-            total_tokens: entry.total_tokens,
-            parent_session_id: entry.parent_session_id,
-            title: entry.title,
+            id: info.id,
+            instance_id: info.agent_name,
+            created_at: format_timestamp(info.created_at),
+            updated_at: format_timestamp(info.updated_at),
+            turn_count: info.turn_count,
+            message_count: info.message_count,
+            total_tokens: info.total_tokens,
+            parent_session_id: info.parent_session_id,
+            title: info.title,
         }
     }
+}
+
+/// Format a millisecond timestamp to RFC3339 string
+fn format_timestamp(ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms as i64)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default()
 }
 
 /// History event response (API_CONTRACT §5.3)
@@ -138,6 +138,121 @@ impl From<&SessionEvent> for HistoryEventResponse {
     }
 }
 
+impl From<HistoryEvent> for HistoryEventResponse {
+    fn from(event: HistoryEvent) -> Self {
+        match event {
+            HistoryEvent::Session { timestamp } => Self {
+                id: String::new(),
+                event_type: "session".to_string(),
+                role: None,
+                content: None,
+                tool: None,
+                args: None,
+                tool_call_id: None,
+                output: None,
+                error: None,
+                created_at: timestamp,
+            },
+            HistoryEvent::Message {
+                role,
+                content,
+                timestamp,
+            } => Self {
+                id: String::new(),
+                event_type: "message".to_string(),
+                role: Some(role),
+                content: Some(content),
+                tool: None,
+                args: None,
+                tool_call_id: None,
+                output: None,
+                error: None,
+                created_at: timestamp,
+            },
+            HistoryEvent::ToolCall {
+                tool_name,
+                args,
+                tool_call_id,
+            } => Self {
+                id: String::new(),
+                event_type: "tool.call".to_string(),
+                role: None,
+                content: None,
+                tool: Some(tool_name),
+                args: Some(args),
+                tool_call_id: Some(tool_call_id),
+                output: None,
+                error: None,
+                created_at: String::new(),
+            },
+            HistoryEvent::ToolResult {
+                tool_call_id,
+                output,
+                error,
+            } => Self {
+                id: String::new(),
+                event_type: "tool.result".to_string(),
+                role: None,
+                content: None,
+                tool: None,
+                args: None,
+                tool_call_id: Some(tool_call_id),
+                output,
+                error,
+                created_at: String::new(),
+            },
+            HistoryEvent::Thinking { content } => Self {
+                id: String::new(),
+                event_type: "thinking".to_string(),
+                role: None,
+                content: Some(content),
+                tool: None,
+                args: None,
+                tool_call_id: None,
+                output: None,
+                error: None,
+                created_at: String::new(),
+            },
+            HistoryEvent::ModelChange { provider, model_id } => Self {
+                id: String::new(),
+                event_type: "model.change".to_string(),
+                role: None,
+                content: Some(format!("{} / {}", provider, model_id)),
+                tool: None,
+                args: None,
+                tool_call_id: None,
+                output: None,
+                error: None,
+                created_at: String::new(),
+            },
+            HistoryEvent::Compaction { summary } => Self {
+                id: String::new(),
+                event_type: "compaction".to_string(),
+                role: None,
+                content: Some(summary),
+                tool: None,
+                args: None,
+                tool_call_id: None,
+                output: None,
+                error: None,
+                created_at: String::new(),
+            },
+            HistoryEvent::Custom { custom_type } => Self {
+                id: String::new(),
+                event_type: custom_type,
+                role: None,
+                content: None,
+                tool: None,
+                args: None,
+                tool_call_id: None,
+                output: None,
+                error: None,
+                created_at: String::new(),
+            },
+        }
+    }
+}
+
 /// History response
 #[derive(Debug, Clone, Serialize)]
 pub struct HistoryResponse {
@@ -191,26 +306,15 @@ async fn list_sessions(
 ) -> Result<Json<PaginatedResponse<SessionResponse>>, ApiError> {
     debug!("Listing sessions for agent: {}", agent_name);
 
-    // Get team-aware sessions directory
-    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
-
-    if !sessions_dir.exists() {
-        return Ok(Json(PaginatedResponse::new(vec![], false)));
-    }
-
-    // Load session index
-    let mut index = SessionIndex::open(sessions_dir);
-    let entries = index
-        .list_all()
+    // Use SessionService
+    let sessions = state
+        .session_service()
+        .list_sessions(&agent_name, None) // TODO: Extract team from agent_name or query param
         .await
         .map_err(|e| ApiError::internal(format!("Failed to list sessions: {}", e), ""))?;
 
-    // Convert to responses and filter to only sessions for this agent
-    let mut responses: Vec<SessionResponse> = entries
-        .into_iter()
-        .filter(|e| e.agent_name == agent_name)
-        .map(|e| e.into())
-        .collect();
+    // Convert to responses
+    let responses: Vec<SessionResponse> = sessions.into_iter().map(Into::into).collect();
 
     // Apply pagination
     let total = responses.len();
@@ -218,7 +322,6 @@ async fn list_sessions(
     let limit = params.limit();
 
     let items: Vec<SessionResponse> = responses.into_iter().skip(offset).take(limit).collect();
-
     let has_more = offset + items.len() < total;
 
     Ok(Json(PaginatedResponse::new(items, has_more)))
@@ -231,21 +334,15 @@ async fn get_session(
 ) -> Result<Json<SessionResponse>, ApiError> {
     debug!("Getting session: {} for agent: {}", session_id, agent_name);
 
-    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
-    let mut index = SessionIndex::open(sessions_dir);
-
-    let entry = index
-        .get(&session_id)
+    // Use SessionService
+    let session = state
+        .session_service()
+        .get_session(&agent_name, None, &session_id)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to load session: {}", e), ""))?
         .ok_or_else(|| ApiError::not_found("session", session_id.clone(), ""))?;
 
-    // Verify agent ownership
-    if entry.agent_name != agent_name {
-        return Err(ApiError::not_found("session", session_id, ""));
-    }
-
-    Ok(Json(entry.into()))
+    Ok(Json(session.into()))
 }
 
 /// Get session history
@@ -259,65 +356,29 @@ async fn get_session_history(
         session_id, agent_name
     );
 
-    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
-    let storage = SyncSessionStorage::new(sessions_dir);
+    // Build query parameters
+    let query = HistoryQuery {
+        include_tool_calls: params.include_tool_calls,
+        include_thinking: params.include_thinking,
+        limit: params.limit.min(100),
+        cursor: params.cursor.clone(),
+    };
 
-    // Verify session exists
-    if !storage.session_exists(&session_id).await {
-        return Err(ApiError::not_found("session", session_id, ""));
-    }
-
-    // Load events
-    let events = storage
-        .load_events(&session_id)
+    // Delegate everything to SessionService (filtering, pagination, conversion)
+    let result = state
+        .session_service()
+        .get_history(&agent_name, None, &session_id, query)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to load session history: {}", e), ""))?;
 
-    // Convert and filter events
-    let mut items: Vec<HistoryEventResponse> = events
-        .iter()
-        .filter_map(|event| {
-            let event_type = event.event_type();
-
-            // Filter based on include params
-            if !params.include_tool_calls {
-                if event_type == "tool.call" || event_type == "tool.result" {
-                    return None;
-                }
-            }
-
-            if !params.include_thinking && event_type == "thinking" {
-                return None;
-            }
-
-            Some(event.into())
-        })
-        .collect();
-
-    // Apply pagination (newest first by default)
-    items.reverse();
-    let total = items.len();
-    let limit = params.limit.min(100);
-    let offset = params
-        .cursor
-        .as_ref()
-        .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
-
-    let items: Vec<HistoryEventResponse> = items.into_iter().skip(offset).take(limit).collect();
-
-    let has_more = offset + items.len() < total;
-    let next_cursor = if has_more {
-        Some((offset + items.len()).to_string())
-    } else {
-        None
-    };
+    // Convert HistoryEvent to HistoryEventResponse
+    let items: Vec<HistoryEventResponse> = result.events.into_iter().map(Into::into).collect();
 
     Ok(Json(HistoryResponse {
         session_id,
         items,
-        cursor: next_cursor,
-        has_more,
+        cursor: result.cursor,
+        has_more: result.has_more,
     }))
 }
 
@@ -325,43 +386,30 @@ async fn get_session_history(
 async fn branch_session(
     State(state): State<AppState>,
     Path((agent_name, session_id)): Path<(String, String)>,
-    Json(request): Json<BranchRequest>,
+    _request: Json<BranchRequest>,
 ) -> Result<Json<BranchResponse>, ApiError> {
     info!(
         "Branching session: {} for agent: {}",
         session_id, agent_name
     );
 
-    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
-    let storage = SyncSessionStorage::new(sessions_dir.clone());
-
-    // Verify parent session exists
-    if !storage.session_exists(&session_id).await {
-        return Err(ApiError::not_found("session", session_id.clone(), ""));
-    }
-
-    // Generate new session ID
-    let new_session_id = format!("sess_{}", uuid::Uuid::new_v4().simple());
-
-    // Create branched session
-    storage
-        .create_branched_session(&new_session_id, &agent_name, &session_id, None)
+    // Use SessionService to create branch
+    let branch_result = state
+        .session_service()
+        .branch_session(&agent_name, None, &session_id, None)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to branch session: {}", e), ""))?;
 
-    // Note: Session title/label is no longer stored (sidecar removed)
-    // The label from the request is ignored for now
-
-    // Load and return new session
-    let mut index = SessionIndex::open(sessions_dir);
-    let entry = index
-        .get(&new_session_id)
+    // Get the branched session info
+    let new_session = state
+        .session_service()
+        .get_session(&agent_name, None, &branch_result.new_session_id)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to load branched session: {}", e), ""))?
+        .map_err(|e| ApiError::internal(format!("Failed to get branched session: {}", e), ""))?
         .ok_or_else(|| ApiError::internal("Branched session not found after creation", ""))?;
 
     Ok(Json(BranchResponse {
-        session: entry.into(),
+        session: new_session.into(),
         parent_session_id: session_id,
     }))
 }
@@ -373,77 +421,14 @@ async fn delete_session(
 ) -> Result<axum::http::StatusCode, ApiError> {
     info!("Deleting session: {} for agent: {}", session_id, agent_name);
 
-    let sessions_dir = get_agent_sessions_dir(&state, &agent_name).await?;
-    let storage = SyncSessionStorage::new(sessions_dir);
-
-    // Verify session exists
-    if !storage.session_exists(&session_id).await {
-        return Err(ApiError::not_found("session", session_id, ""));
-    }
-
-    // Check if this is the active session of a running instance
-    // (Would need to check instance state - simplified here)
-
-    // Delete session
-    storage
-        .delete_session(&session_id)
+    // Use SessionService
+    state
+        .session_service()
+        .delete_session(&agent_name, None, &session_id)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to delete session: {}", e), ""))?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-/// Get agent sessions directory using team-aware path resolution
-///
-/// Looks up the agent in the config registry to get its team assignment,
-/// then returns the appropriate sessions directory path.
-async fn get_agent_sessions_dir(
-    state: &AppState,
-    agent_name: &str,
-) -> Result<std::path::PathBuf, ApiError> {
-    // Look up agent in config registry to get team
-    let config_registry = state.config_registry();
-    let entry = config_registry
-        .get(agent_name)
-        .await
-        .ok_or_else(|| ApiError::not_found("agent", agent_name.to_string(), ""))?;
-
-    // Use PathResolver for consistent path resolution
-    let resolver = PathResolver::with_dirs(
-        state.config_dir.clone(),
-        state.data_dir.clone(),
-        state.cache_dir.clone(),
-    );
-
-    // Get team-aware sessions directory
-    let sessions_dir = resolver.agent_sessions_dir(agent_name, entry.team_id.as_deref());
-
-    Ok(sessions_dir)
-}
-
-/// Get agent workspace directory using team-aware path resolution
-async fn get_agent_workspace_dir(
-    state: &AppState,
-    agent_name: &str,
-) -> Result<std::path::PathBuf, ApiError> {
-    // Look up agent in config registry to get team
-    let config_registry = state.config_registry();
-    let entry = config_registry
-        .get(agent_name)
-        .await
-        .ok_or_else(|| ApiError::not_found("agent", agent_name.to_string(), ""))?;
-
-    // Use PathResolver for consistent path resolution
-    let resolver = PathResolver::with_dirs(
-        state.config_dir.clone(),
-        state.data_dir.clone(),
-        state.cache_dir.clone(),
-    );
-
-    // Get team-aware workspace directory
-    let workspace = resolver.agent_workspace(agent_name, entry.team_id.as_deref());
-
-    Ok(workspace)
 }
 
 /// Create router for session routes
@@ -468,22 +453,30 @@ pub fn router() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::session::events::{
-        AssistantMessageEvent, EventEnvelope, TokenUsage, UserMessageEvent,
+        AssistantMessageEvent, EventEnvelope, TokenUsage as EventTokenUsage, UserMessageEvent,
     };
     use chrono::Utc;
 
     #[test]
-    fn test_session_response_from_entry() {
-        let entry = SessionEntry::new(
-            "sess_123".to_string(),
-            "inst_456".to_string(),
-            "sess_123.jsonl".to_string(),
-        );
-        let response: SessionResponse = entry.into();
+    fn test_session_response_from_session_info() {
+        let info = SessionInfo {
+            id: "sess_123".to_string(),
+            agent_name: "myagent".to_string(),
+            created_at: 1234567890000,
+            updated_at: 1234567890000,
+            turn_count: 5,
+            message_count: 10,
+            total_tokens: 1000,
+            parent_session_id: None,
+            title: Some("Test Session".to_string()),
+            ended: false,
+        };
+        let response: SessionResponse = info.into();
 
         assert_eq!(response.id, "sess_123");
-        assert_eq!(response.instance_id, "inst_456");
-        assert_eq!(response.turn_count, 0);
+        assert_eq!(response.instance_id, "myagent");
+        assert_eq!(response.turn_count, 5);
+        assert_eq!(response.title, Some("Test Session".to_string()));
     }
 
     #[test]
@@ -534,8 +527,6 @@ mod tests {
 
     #[test]
     fn test_history_response_from_assistant_message() {
-        use crate::session::events::{AssistantMessageEvent, TokenUsage};
-
         let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_003".to_string(),
@@ -545,7 +536,7 @@ mod tests {
             },
             message_id: "msg_002".to_string(),
             content: "The answer is 42.".to_string(),
-            usage: TokenUsage {
+            usage: EventTokenUsage {
                 input_tokens: 100,
                 output_tokens: 50,
                 total_tokens: 150,
@@ -582,31 +573,20 @@ mod tests {
 
     #[test]
     fn test_session_response_title_optional() {
-        use crate::session::index::SessionEntry;
-
-        let entry = SessionEntry {
-            session_id: "sess_123".to_string(),
-            agent_name: "inst_456".to_string(),
+        let info = SessionInfo {
+            id: "sess_123".to_string(),
+            agent_name: "myagent".to_string(),
             created_at: 1234567890000,
             updated_at: 1234567890000,
             turn_count: 0,
             message_count: 1,
-            input_tokens: 0,
-            output_tokens: 0,
             total_tokens: 0,
-            transcript_file: "sess_123.jsonl".to_string(),
-            title: None,
             parent_session_id: None,
+            title: None,
             ended: false,
-            trigger: "user".to_string(),
-            provider: None,
-            model: None,
-            channel: None,
-            recipient: None,
-            cwd: None,
         };
 
-        let response: SessionResponse = entry.into();
+        let response: SessionResponse = info.into();
         assert_eq!(response.id, "sess_123");
         assert_eq!(response.title, None);
         assert_eq!(response.turn_count, 0);
@@ -614,31 +594,20 @@ mod tests {
 
     #[test]
     fn test_session_response_with_parent() {
-        use crate::session::index::SessionEntry;
-
-        let entry = SessionEntry {
-            session_id: "sess_child".to_string(),
-            agent_name: "inst_456".to_string(),
+        let info = SessionInfo {
+            id: "sess_child".to_string(),
+            agent_name: "myagent".to_string(),
             created_at: 1234567890000,
             updated_at: 1234567890000,
             turn_count: 5,
             message_count: 10,
-            input_tokens: 500,
-            output_tokens: 500,
             total_tokens: 1000,
-            transcript_file: "sess_child.jsonl".to_string(),
-            title: Some("Branched Session".to_string()),
             parent_session_id: Some("sess_parent".to_string()),
+            title: Some("Branched Session".to_string()),
             ended: false,
-            trigger: "branch".to_string(),
-            provider: None,
-            model: None,
-            channel: None,
-            recipient: None,
-            cwd: None,
         };
 
-        let response: SessionResponse = entry.into();
+        let response: SessionResponse = info.into();
         assert_eq!(response.id, "sess_child");
         assert_eq!(response.parent_session_id, Some("sess_parent".to_string()));
         assert_eq!(response.turn_count, 5);

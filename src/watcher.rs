@@ -167,7 +167,7 @@ impl FileWatcher {
 
     /// Create the notify watcher
     fn create_notify_watcher(
-        watch_path: PathBuf,
+        _watch_path: PathBuf,
         debounce_tx: mpsc::Sender<Event>,
     ) -> anyhow::Result<RecommendedWatcher> {
         let watcher = RecommendedWatcher::new(

@@ -5,10 +5,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::info;
 
-use crate::hooks::{HookRegistry, HookTrigger, RegisteredHook, TriggerSource};
-use crate::team::bus::{A2aMessage, A2aMessageType, EventBus};
+use crate::hooks::{HookRegistry, HookTrigger, TriggerSource};
+use crate::team::bus::{A2aMessage, EventBus};
 
 /// Event bus hook integration
 ///
@@ -146,7 +146,7 @@ impl EventBusHookIntegration {
                 payload: message.payload.clone(),
             };
 
-            let trigger = HookTrigger::new(hook, trigger_source);
+            let _trigger = HookTrigger::new(hook, trigger_source);
 
             results.push(HookTriggerResult {
                 hook_id: subscription.hook_id.clone(),
@@ -212,8 +212,8 @@ pub struct HookTriggerResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::{HookAction, HookType, SessionTarget};
-    use crate::image::config::Hook;
+    use crate::hooks::{HookAction, HookType, RegisteredHook, SessionTarget};
+    use crate::team::bus::A2aMessageType;
 
     async fn create_test_registry() -> Arc<HookRegistry> {
         Arc::new(HookRegistry::new())

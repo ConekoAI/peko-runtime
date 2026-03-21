@@ -166,7 +166,7 @@ pub trait EventBus: Send + Sync {
 /// Event bus factory - creates appropriate backend
 pub async fn create_bus(
     backend: crate::team::config::BusBackend,
-    url: Option<String>,
+    _url: Option<String>,
 ) -> anyhow::Result<Arc<dyn EventBus>> {
     match backend {
         crate::team::config::BusBackend::InMemory => Ok(Arc::new(InMemoryBus::new())),

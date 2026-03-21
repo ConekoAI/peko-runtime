@@ -13,7 +13,7 @@ use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDe
 use crate::session::UnifiedSession;
 use crate::tools::Tool;
 use crate::types::message::ContentBlock;
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;

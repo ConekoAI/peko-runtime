@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
 use crate::api::state::AppState;
-use crate::hooks::{EventFilter, SystemEvent};
+use crate::hooks::EventFilter;
 
 /// Create events routes
 pub fn router() -> Router<AppState> {

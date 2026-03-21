@@ -4,10 +4,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
-use crate::hooks::{HookRegistry, HookTrigger, RegisteredHook, TriggerSource};
+use crate::hooks::{HookRegistry, HookTrigger, TriggerSource};
 
 /// File watch hook manager
 ///
@@ -118,7 +117,7 @@ impl FileWatchHookManager {
                     change_type: change_type.to_string(),
                 };
 
-                let trigger = HookTrigger::new(hook, trigger_source);
+                let _trigger = HookTrigger::new(hook, trigger_source);
 
                 // In a real implementation, this would process the trigger
                 // For now, just record that we found a match
@@ -183,8 +182,7 @@ pub struct HookTriggerResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::{HookAction, HookType, SessionTarget};
-    use crate::image::config::Hook;
+    use crate::hooks::{HookAction, HookType, RegisteredHook, SessionTarget};
     use std::sync::Arc;
 
     async fn create_test_registry() -> Arc<HookRegistry> {

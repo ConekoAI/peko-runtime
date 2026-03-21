@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 use crate::commands::GlobalPaths;
-use crate::common::identifiers::parse_agent_identifier_with_override;
 use clap::Subcommand;
 
 /// Agent management subcommands
@@ -262,7 +261,7 @@ pub mod handlers {
     use crate::common::identifiers::parse_agent_identifier_with_override;
     use crate::types::agent::AgentConfig;
     use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
-    use tracing::{info, warn};
+    use tracing::info;
 
     /// Handle agent start command
     ///

@@ -2,9 +2,9 @@
 //!
 //! Handles triggering hooks and routing them to agent sessions.
 
-use super::{HookAction, HookType, RegisteredHook, SessionTarget, SystemEventType};
+use super::{HookAction, HookType, RegisteredHook, SessionTarget};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 /// Source of a hook trigger
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,7 +230,7 @@ impl HookTriggerProcessor {
     pub async fn create_session(
         &self,
         instance_id: &str,
-        message: &str,
+        _message: &str,
         trigger_source: &TriggerSource,
     ) -> anyhow::Result<String> {
         // Placeholder: Create session via session manager

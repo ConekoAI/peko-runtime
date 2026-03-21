@@ -8,7 +8,6 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::{validate_team_name, ValidationError};
-use crate::common::services::TeamService;
 use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
 use anyhow::Result;
 use clap::Subcommand;

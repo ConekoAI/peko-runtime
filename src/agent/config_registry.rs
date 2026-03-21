@@ -24,6 +24,50 @@ use std::path::PathBuf;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+/// Source of agent configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConfigSource {
+    /// Configuration loaded from an image
+    Image {
+        /// Image reference
+        image_ref: String,
+        /// Image digest
+        image_digest: String,
+    },
+    /// Configuration created directly (e.g., via CLI or API)
+    Direct {
+        /// Reason/source of creation
+        reason: String,
+    },
+}
+
+impl ConfigSource {
+    /// Get image reference (if from image)
+    pub fn image_ref(&self) -> Option<&str> {
+        match self {
+            ConfigSource::Image { image_ref, .. } => Some(image_ref),
+            ConfigSource::Direct { .. } => None,
+        }
+    }
+
+    /// Get image digest (if from image)
+    pub fn image_digest(&self) -> Option<&str> {
+        match self {
+            ConfigSource::Image { image_digest, .. } => Some(image_digest),
+            ConfigSource::Direct { .. } => None,
+        }
+    }
+}
+
+impl Default for ConfigSource {
+    fn default() -> Self {
+        ConfigSource::Direct {
+            reason: "default".to_string(),
+        }
+    }
+}
+
 /// Agent configuration entry in the registry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfigEntry {
@@ -31,10 +75,9 @@ pub struct AgentConfigEntry {
     pub name: String,
     /// Agent configuration
     pub config: AgentConfig,
-    /// Source image reference
-    pub image_ref: String,
-    /// Pinned image digest
-    pub image_digest: String,
+    /// Source of configuration
+    #[serde(flatten)]
+    pub source: ConfigSource,
     /// Team assignment
     pub team_id: Option<String>,
     /// Registration timestamp
@@ -56,6 +99,16 @@ impl AgentConfigEntry {
     /// Check if agent has a specific capability
     pub fn has_capability(&self, name: &str) -> bool {
         self.config.capabilities.iter().any(|c| c.name == name)
+    }
+
+    /// Get image reference (backward compatibility)
+    pub fn image_ref(&self) -> &str {
+        self.source.image_ref().unwrap_or("direct")
+    }
+
+    /// Get image digest (backward compatibility)
+    pub fn image_digest(&self) -> &str {
+        self.source.image_digest().unwrap_or("direct")
     }
 }
 
@@ -138,8 +191,10 @@ impl ConfigRegistry {
         let entry = AgentConfigEntry {
             name: name.to_string(),
             config,
-            image_ref: image_ref.display(),
-            image_digest: manifest.digest.clone(),
+            source: ConfigSource::Image {
+                image_ref: image_ref.display(),
+                image_digest: manifest.digest.clone(),
+            },
             team_id,
             registered_at: Utc::now(),
             updated_at: Utc::now(),
@@ -156,7 +211,63 @@ impl ConfigRegistry {
 
         info!(
             "Registered agent '{}' from image {} (digest: {})",
-            name, entry.image_ref, entry.image_digest
+            name,
+            entry.image_ref(),
+            entry.image_digest()
+        );
+
+        Ok(entry)
+    }
+
+    /// Register a new agent configuration directly (without an image)
+    ///
+    /// # Arguments
+    /// * `name` - Unique name for the agent
+    /// * `config` - Agent configuration
+    /// * `team_id` - Optional team assignment
+    /// * `reason` - Reason for direct registration (e.g., "created_via_api")
+    pub async fn register_direct(
+        &self,
+        name: &str,
+        config: AgentConfig,
+        team_id: Option<String>,
+        reason: impl Into<String>,
+    ) -> Result<AgentConfigEntry> {
+        // Check if name already exists
+        {
+            let configs = self.configs.read().await;
+            if configs.contains_key(name) {
+                return Err(anyhow::anyhow!(
+                    "Agent '{}' already registered. Use update() to modify.",
+                    name
+                ));
+            }
+        }
+
+        let entry = AgentConfigEntry {
+            name: name.to_string(),
+            config,
+            source: ConfigSource::Direct {
+                reason: reason.into(),
+            },
+            team_id,
+            registered_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        // Save to disk
+        self.save(&entry).await?;
+
+        // Add to in-memory cache
+        {
+            let mut configs = self.configs.write().await;
+            configs.insert(name.to_string(), entry.clone());
+        }
+
+        info!(
+            "Registered agent '{}' directly (reason: {})",
+            name,
+            entry.source.image_ref().unwrap_or("direct")
         );
 
         Ok(entry)
@@ -182,42 +293,42 @@ impl ConfigRegistry {
         }
 
         // Load new config if image changed
-        let (config, image_ref_str, image_digest) =
-            if let (Some(img_ref), Some(img_reg)) = (image_ref, image_registry) {
-                let manifest = img_reg
-                    .resolve(img_ref)
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("Image not found: {}", img_ref.display()))?;
+        let (config, source) = if let (Some(img_ref), Some(img_reg)) = (image_ref, image_registry) {
+            let manifest = img_reg
+                .resolve(img_ref)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Image not found: {}", img_ref.display()))?;
 
-                let config = self.load_config_from_manifest(&manifest, img_reg).await?;
-                (config, img_ref.display(), manifest.digest.clone())
-            } else {
-                // Keep existing image/config, just update team
-                let configs = self.configs.read().await;
-                let existing = configs.get(name).unwrap();
-                (
-                    existing.config.clone(),
-                    existing.image_ref.clone(),
-                    existing.image_digest.clone(),
-                )
+            let config = self.load_config_from_manifest(&manifest, img_reg).await?;
+            let source = ConfigSource::Image {
+                image_ref: img_ref.display(),
+                image_digest: manifest.digest.clone(),
             };
+            (config, source)
+        } else {
+            // Keep existing source/config, just update team
+            let configs = self.configs.read().await;
+            let existing = configs.get(name).unwrap();
+            (existing.config.clone(), existing.source.clone())
+        };
+
+        let registered_at = {
+            let configs = self.configs.read().await;
+            configs
+                .get(name)
+                .map(|e| e.registered_at)
+                .unwrap_or_else(Utc::now)
+        };
 
         let entry = AgentConfigEntry {
             name: name.to_string(),
             config,
-            image_ref: image_ref_str,
-            image_digest,
+            source,
             team_id: team_id.or_else(|| {
                 let configs = self.configs.blocking_read();
                 configs.get(name).and_then(|e| e.team_id.clone())
             }),
-            registered_at: {
-                let configs = self.configs.read().await;
-                configs
-                    .get(name)
-                    .map(|e| e.registered_at)
-                    .unwrap_or_else(Utc::now)
-            },
+            registered_at,
             updated_at: Utc::now(),
         };
 
@@ -444,8 +555,10 @@ mod tests {
             let entry = AgentConfigEntry {
                 name: "test-agent".to_string(),
                 config: AgentConfig::default(),
-                image_ref: "test:latest".to_string(),
-                image_digest: "sha256:abc123".to_string(),
+                source: ConfigSource::Image {
+                    image_ref: "test:latest".to_string(),
+                    image_digest: "sha256:abc123".to_string(),
+                },
                 team_id: None,
                 registered_at: Utc::now(),
                 updated_at: Utc::now(),
@@ -462,7 +575,7 @@ mod tests {
 
             let entry = registry.get("test-agent").await.unwrap();
             assert_eq!(entry.name, "test-agent");
-            assert_eq!(entry.image_ref, "test:latest");
+            assert_eq!(entry.image_ref(), "test:latest");
         }
     }
 }

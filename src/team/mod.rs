@@ -234,7 +234,7 @@ impl TeamManager {
         team_id: &TeamId,
         agent_def: &AgentDefinition,
         team_workspace: &PathBuf,
-        app_state: &Arc<AppState>,
+        _app_state: &Arc<AppState>,
     ) -> Result<Vec<String>> {
         let mut instances = Vec::new();
 
