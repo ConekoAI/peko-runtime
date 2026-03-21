@@ -10,19 +10,22 @@
 //!
 //! Note: No instance lifecycle endpoints (start/stop/status) in stateless model.
 //! Agents are cold-started per request.
+//!
+//! NOTE: This module now delegates to AgentService for unified handling.
+//! All business logic has been moved to the service layer.
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
-use crate::image::registry::{ImageRegistry, RegistryConfig};
-use crate::image::ImageRef;
+use crate::common::types::agent::{
+    AgentCreateRequest, AgentDeleteOptions, AgentUpdateRequest,
+};
 use crate::observability::performance::PerformanceGuard;
 use axum::{
     extract::{Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::info;
@@ -66,7 +69,7 @@ impl From<crate::common::services::AgentConfigEntry> for AgentConfigResponse {
             image_digest: "sha256:unknown".to_string(), // Not directly available in new structure
             team_id: Some(entry.team),
             capabilities,
-            registered_at: Utc::now().to_rfc3339(), // Not directly available, use current time
+            registered_at: chrono::Utc::now().to_rfc3339(), // Not directly available, use current time
             updated_at: None,                       // Not directly available
         }
     }
@@ -174,17 +177,31 @@ async fn list_agents(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<AgentConfigResponse>>, ApiError> {
-    let configs = state
-        .config_service()
-        .list_all()
+    // Delegate to unified service
+    let agents = state
+        .agent_mgmt_service()
+        .list_agents(None)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to list agents: {}", e), ""))?;
 
-    let items: Vec<AgentConfigResponse> = configs
+    let items: Vec<AgentConfigResponse> = agents
         .into_iter()
+        .map(|summary| AgentConfigResponse {
+            name: summary.name,
+            image_ref: summary.config.provider.default_model.clone(),
+            image_digest: "sha256:unknown".to_string(),
+            team_id: Some(summary.team),
+            capabilities: summary
+                .config
+                .capabilities
+                .iter()
+                .map(|c| c.name.clone())
+                .collect(),
+            registered_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: None,
+        })
         .skip(params.offset())
         .take(params.limit())
-        .map(AgentConfigResponse::from)
         .collect();
 
     Ok(Json(PaginatedResponse::new(items, false)))
@@ -198,52 +215,28 @@ async fn register_agent(
     // Start timing
     let _guard = PerformanceGuard::new("register_agent");
 
-    use crate::common::services::{AgentCreationRequest, AgentSource, DirectAuthResolver};
-
-    // Determine agent name or generate one
+    // Determine agent name
     let name = request
         .name
         .unwrap_or_else(|| format!("agent-{}", generate_short_id()));
 
-    // Extract env before moving request
-    let env = request.env.clone().unwrap_or_default();
+    // Determine provider (from image or explicit provider)
+    let provider = request.provider.unwrap_or_else(|| "openai".to_string());
 
-    // Determine source (image or provider config)
-    let source = if let Some(image_ref) = request.image {
-        AgentSource::Image { image_ref }
-    } else if let Some(provider) = request.provider {
-        AgentSource::Config {
-            provider,
-            model: request.model,
-            env: env.clone(),
-        }
-    } else {
-        return Err(ApiError::bad_request(
-            "Either 'image' or 'provider' must be specified".to_string(),
-            "",
-        ));
-    };
+    // Build service request
+    let service_request = AgentCreateRequest::new(&name, &provider)
+        .with_team(request.team_id.as_deref().unwrap_or("default"))
+        .with_model_opt(request.model)
+        .with_auto_create_team(request.auto_create_team);
 
-    // Create request
-    let creation_request = AgentCreationRequest {
-        name: name.clone(),
-        team: request.team_id.clone(),
-        source,
-        auto_create_team: request.auto_create_team,
-        description: None,
-    };
-
-    // Create auth resolver from request env
-    let auth_resolver = DirectAuthResolver::new(env);
-
-    // Create agent using the unified service
+    // Delegate to unified service
     let result = state
-        .agent_creation_service()
-        .create(creation_request, &auth_resolver)
+        .agent_mgmt_service()
+        .create_agent(service_request)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to create agent: {}", e), ""))?;
 
-    // Get the registered entry
+    // Get the registered entry for response
     let entry = state
         .config_service()
         .get(&result.name, None)
@@ -269,14 +262,27 @@ async fn get_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<AgentConfigResponse>, ApiError> {
-    let entry = state
-        .config_service()
-        .get(&name, None)
+    let agent = state
+        .agent_mgmt_service()
+        .get_agent(&name, None)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to get agent: {}", e), ""))?
         .ok_or_else(|| ApiError::not_found("agent", name.clone(), ""))?;
 
-    Ok(Json(AgentConfigResponse::from(entry)))
+    Ok(Json(AgentConfigResponse {
+        name: agent.name,
+        image_ref: agent.config.provider.default_model.clone(),
+        image_digest: "sha256:unknown".to_string(),
+        team_id: Some(agent.team),
+        capabilities: agent
+            .config
+            .capabilities
+            .iter()
+            .map(|c| c.name.clone())
+            .collect(),
+        registered_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: None,
+    }))
 }
 
 /// Unregister agent
@@ -284,14 +290,6 @@ async fn unregister_agent(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    // Get the agent entry to find its team
-    let entry = state
-        .config_service()
-        .get(&name, None)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to get agent: {}", e), ""))?
-        .ok_or_else(|| ApiError::not_found("agent", name.clone(), ""))?;
-
     // Check if agent is currently executing
     if state.lifecycle().is_executing(&name).await {
         return Err(ApiError::conflict(
@@ -300,10 +298,10 @@ async fn unregister_agent(
         ));
     }
 
-    // Unregister (delete the agent config)
-    state
-        .config_service()
-        .delete(&name, &entry.team)
+    // Delegate to unified service
+    let _result = state
+        .agent_mgmt_service()
+        .delete_agent(&name, None, AgentDeleteOptions::default())
         .await
         .map_err(|e| ApiError::internal(format!("Failed to unregister agent: {}", e), ""))?;
 
@@ -321,7 +319,7 @@ async fn execute_agent(
     // Start timing
     let _guard = PerformanceGuard::new("execute_agent");
 
-    // Check if agent is registered
+    // Check if agent exists
     let exists = state
         .config_service()
         .exists(&name, None)
@@ -419,14 +417,6 @@ async fn update_agent(
     Path(name): Path<String>,
     Json(request): Json<UpdateAgentRequest>,
 ) -> Result<Json<AgentConfigResponse>, ApiError> {
-    // Check if agent exists and get current entry
-    let entry = state
-        .config_service()
-        .get(&name, None)
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to get agent: {}", e), ""))?
-        .ok_or_else(|| ApiError::not_found("agent", name.clone(), ""))?;
-
     // Check if agent is currently executing
     if state.lifecycle().is_executing(&name).await {
         return Err(ApiError::conflict(
@@ -435,56 +425,35 @@ async fn update_agent(
         ));
     }
 
-    // Parse new image if provided
-    let mut updated_config = entry.config.clone();
+    // Build update request
+    let update = AgentUpdateRequest {
+        image: request.image,
+        team_id: request.team_id,
+    };
 
-    if let Some(img) = request.image {
-        let image_ref = ImageRef::parse(&img)
-            .map_err(|e| ApiError::bad_request(format!("Invalid image reference: {}", e), ""))?;
-
-        let registry_path = state.workspace_path.join("registry");
-        let config = RegistryConfig::new(&registry_path);
-        let registry = ImageRegistry::new(config);
-
-        // Verify image exists
-        let _manifest = registry
-            .resolve(&image_ref)
-            .await
-            .map_err(|e| ApiError::internal(format!("Failed to resolve image: {}", e), ""))?
-            .ok_or_else(|| ApiError::not_found("image", img.clone(), ""))?;
-
-        // Update config with new image reference if applicable
-        // Note: The new structure stores this differently, so we update what we can
-        let model_name = match &image_ref {
-            ImageRef::RegistryRef { tag, .. } => tag.clone(),
-            ImageRef::LocalTag { tag, .. } => tag.clone(),
-            ImageRef::Digest(_) => "unknown".to_string(),
-            ImageRef::Path(_) => "local".to_string(),
-        };
-        updated_config.provider.default_model = model_name;
-    }
-
-    // Update team if provided
-    let team = request.team_id.unwrap_or_else(|| entry.team.clone());
-
-    // Save updated configuration
-    state
-        .config_service()
-        .save(&name, &team, &updated_config)
+    // Delegate to unified service
+    let agent = state
+        .agent_mgmt_service()
+        .update_agent(&name, None, update)
         .await
         .map_err(|e| ApiError::internal(format!("Failed to update agent: {}", e), ""))?;
 
-    // Get the updated entry
-    let updated_entry = state
-        .config_service()
-        .get(&name, Some(&team))
-        .await
-        .map_err(|e| ApiError::internal(format!("Failed to get updated agent: {}", e), ""))?
-        .ok_or_else(|| ApiError::not_found("agent", name.clone(), ""))?;
-
     info!("Updated agent '{}' configuration", name);
 
-    Ok(Json(AgentConfigResponse::from(updated_entry)))
+    Ok(Json(AgentConfigResponse {
+        name: agent.name,
+        image_ref: agent.config.provider.default_model.clone(),
+        image_digest: "sha256:unknown".to_string(),
+        team_id: Some(agent.team),
+        capabilities: agent
+            .config
+            .capabilities
+            .iter()
+            .map(|c| c.name.clone())
+            .collect(),
+        registered_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: Some(chrono::Utc::now().to_rfc3339()),
+    }))
 }
 
 /// Generate a short random ID
@@ -538,5 +507,17 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("test-agent"));
         assert!(json.contains("sha256:abc123"));
+    }
+}
+
+// Helper trait for optional values
+trait AgentCreateRequestExt {
+    fn with_model_opt(self, model: Option<String>) -> Self;
+}
+
+impl AgentCreateRequestExt for AgentCreateRequest {
+    fn with_model_opt(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 }

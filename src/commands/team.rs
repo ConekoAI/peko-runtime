@@ -7,7 +7,6 @@
 //! This module only handles CLI argument parsing and output formatting.
 
 use crate::commands::GlobalPaths;
-use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
 use anyhow::Result;
 use clap::Subcommand;
@@ -93,11 +92,6 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             }
         }
         TeamCommands::Delete { name, force } => {
-            // Pre-validate for better error messages
-            if let Err(e) = validate_team_name(&name) {
-                return Err(map_validation_error(&name, e));
-            }
-
             // Get team info for confirmation
             let team_info = match service.get_team(&name).await? {
                 Some(info) => info,
@@ -300,31 +294,6 @@ fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
     std::io::stdin().read_line(&mut input)?;
 
     Ok(input.trim().eq_ignore_ascii_case("y"))
-}
-
-fn map_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
-    match e {
-        ValidationError::Empty => anyhow::anyhow!("Team name cannot be empty"),
-        ValidationError::TooLong(max) => {
-            anyhow::anyhow!(
-                "Team name '{}' exceeds maximum length of {} characters",
-                name,
-                max
-            )
-        }
-        ValidationError::Reserved(reserved) => {
-            anyhow::anyhow!("'{}' is a reserved name and cannot be used", reserved)
-        }
-        ValidationError::ContainsPathSeparators => {
-            anyhow::anyhow!("Team name cannot contain path separators (/ or \\)")
-        }
-        ValidationError::InvalidHyphenPlacement => {
-            anyhow::anyhow!("Team name cannot start or end with a hyphen")
-        }
-        ValidationError::InvalidCharacter(ch) => {
-            anyhow::anyhow!("Team name contains invalid character: '{}'", ch)
-        }
-    }
 }
 
 fn format_timestamp(ts: &str) -> String {

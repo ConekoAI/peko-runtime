@@ -6,12 +6,16 @@
 //! - GET /teams/{id} - Get team details
 //! - DELETE /teams/{id} - Stop and remove team
 //! - POST /teams/{id}/scale - Scale agent instances
+//!
+//! NOTE: This module now delegates to TeamManagementService for unified handling.
+//! All business logic has been moved to the service layer.
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
-use crate::team::config::TeamConfig;
-use crate::team::Team;
+use crate::common::types::team::{
+    TeamAgentDefinition, TeamConfigSource, TeamDeployRequest, TeamRuntimeInfo, TeamScaleRequest,
+};
 use axum::{
     extract::{Path, Query, State},
     routing::{get, post},
@@ -32,10 +36,24 @@ pub struct TeamResponse {
     pub instance_ids: Vec<String>,
 }
 
-/// Deploy team request
+impl From<TeamRuntimeInfo> for TeamResponse {
+    fn from(info: TeamRuntimeInfo) -> Self {
+        Self {
+            id: info.id,
+            name: info.name,
+            status: info.status.to_string(),
+            config_path: None, // Runtime teams don't have config paths
+            created_at: info.created_at,
+            agent_count: info.agent_count,
+            instance_ids: info.instance_ids,
+        }
+    }
+}
+
+/// Deploy team request (API format)
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub enum DeployTeamRequest {
+pub enum DeployTeamRequestApi {
     /// Deploy from inline configuration
     Inline {
         /// Team name
@@ -79,7 +97,7 @@ fn default_one() -> u32 {
 
 /// Scale team request
 #[derive(Debug, Deserialize)]
-pub struct ScaleTeamRequest {
+pub struct ScaleTeamRequestApi {
     /// Agent name to scale
     pub agent_name: String,
     /// Desired number of instances
@@ -99,8 +117,8 @@ pub struct ScaleTeamResponse {
     pub removed_instance_ids: Vec<String>,
 }
 
-impl From<crate::team::ScaleResult> for ScaleTeamResponse {
-    fn from(result: crate::team::ScaleResult) -> Self {
+impl From<crate::common::types::team::TeamScaleResult> for ScaleTeamResponse {
+    fn from(result: crate::common::types::team::TeamScaleResult) -> Self {
         Self {
             team_id: result.team_id,
             agent_name: result.agent_name,
@@ -108,20 +126,6 @@ impl From<crate::team::ScaleResult> for ScaleTeamResponse {
             new_count: result.new_count,
             added_instance_ids: result.added_instance_ids,
             removed_instance_ids: result.removed_instance_ids,
-        }
-    }
-}
-
-impl From<Team> for TeamResponse {
-    fn from(team: Team) -> Self {
-        Self {
-            id: team.id.clone(),
-            name: team.name.clone(),
-            status: team.status.to_string(),
-            config_path: Some(format!(".pekobot/teams/{}/config.toml", team.name)),
-            created_at: team.created_at.to_rfc3339(),
-            agent_count: team.agent_instances.len(),
-            instance_ids: team.all_instance_ids(),
         }
     }
 }
@@ -134,13 +138,13 @@ pub fn routes() -> Router<AppState> {
         .route("/teams/{id}/scale", post(scale_team))
 }
 
-/// GET /teams - List all teams
+/// GET /teams - List all runtime teams
 async fn list_teams(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<TeamResponse>>, ApiError> {
-    let team_manager = &state.team_manager;
-    let teams = team_manager.list_teams().await;
+    // Delegate to unified service
+    let teams = state.team_service().list_runtime_teams().await;
 
     // Apply pagination
     let limit = params.limit();
@@ -171,53 +175,50 @@ async fn list_teams(
 /// POST /teams - Deploy a new team
 async fn deploy_team(
     State(state): State<AppState>,
-    Json(request): Json<DeployTeamRequest>,
+    Json(request): Json<DeployTeamRequestApi>,
 ) -> Result<Json<TeamResponse>, ApiError> {
-    let config = match request {
-        DeployTeamRequest::FilePath { config_path } => {
-            // Load from file
-            TeamConfig::from_file(&config_path).map_err(|e| {
-                ApiError::invalid_request(format!("Failed to load team config: {}", e))
-            })?
-        }
-        DeployTeamRequest::Inline { name, config } => {
-            // Convert inline config to TeamConfig
+    // Convert API request to service request
+    let service_request = match request {
+        DeployTeamRequestApi::FilePath { config_path } => TeamDeployRequest {
+            name: "deployed".to_string(), // Will be read from config
+            config_source: TeamConfigSource::FilePath(config_path.into()),
+        },
+        DeployTeamRequestApi::Inline { name, config } => {
             let agents = config
                 .agents
                 .into_iter()
-                .map(|a| crate::team::config::AgentDefinition {
+                .map(|a| TeamAgentDefinition {
                     name: a.name,
                     image: a.image,
                     instances: a.instances,
-                    role: a.role.and_then(|r| match r.as_str() {
-                        "coordinator" => Some(crate::team::config::AgentRole::Coordinator),
-                        "worker" => Some(crate::team::config::AgentRole::Worker),
-                        _ => None,
-                    }),
-                    env: a.env,
+                    role: a.role,
                 })
                 .collect();
 
-            TeamConfig {
-                identity: crate::team::config::TeamIdentity {
-                    name,
-                    description: None,
-                },
-                agents,
-                shared: None, // TODO: Parse shared from JSON
+            TeamDeployRequest {
+                name,
+                config_source: TeamConfigSource::Inline { agents },
             }
         }
     };
 
-    // Deploy the team (use the Arc from team_manager - it holds the same Arc)
-    let team_manager = state.team_manager.clone();
-    let state_arc = std::sync::Arc::new(state);
-    let team = team_manager
-        .deploy(config, state_arc)
+    // Delegate to unified service - clone state for Arc
+    let state_arc = std::sync::Arc::new(state.clone());
+    let result = state
+        .team_service()
+        .deploy_runtime(service_request, state_arc)
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to deploy team: {}", e)))?;
 
-    Ok(Json(TeamResponse::from(team)))
+    Ok(Json(TeamResponse {
+        id: result.id,
+        name: result.name,
+        status: result.status,
+        config_path: None,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        agent_count: result.agent_count,
+        instance_ids: result.instance_ids,
+    }))
 }
 
 /// GET /teams/{id} - Get team details
@@ -226,8 +227,8 @@ async fn get_team(
     Path(id): Path<String>,
 ) -> Result<Json<TeamResponse>, ApiError> {
     let team = state
-        .team_manager
-        .get_team(&id)
+        .team_service()
+        .get_runtime_team(&id)
         .await
         .ok_or_else(|| ApiError::not_found_simple("Team", &id))?;
 
@@ -240,8 +241,8 @@ async fn stop_team(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     state
-        .team_manager
-        .remove_team(&id)
+        .team_service()
+        .stop_runtime(&id)
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to stop team: {}", e)))?;
 
@@ -256,14 +257,19 @@ async fn stop_team(
 async fn scale_team(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(request): Json<ScaleTeamRequest>,
+    Json(request): Json<ScaleTeamRequestApi>,
 ) -> Result<Json<ScaleTeamResponse>, ApiError> {
-    // Clone the team_manager reference before moving state into Arc
-    let team_manager = state.team_manager.clone();
-    let state_arc = std::sync::Arc::new(state);
+    let service_request = TeamScaleRequest {
+        team_id: id,
+        agent_name: request.agent_name,
+        instances: request.instances,
+    };
 
-    let result = team_manager
-        .scale_agent(&id, &request.agent_name, request.instances, state_arc)
+    // Clone state for Arc
+    let state_arc = std::sync::Arc::new(state.clone());
+    let result = state
+        .team_service()
+        .scale_runtime(service_request, state_arc)
         .await
         .map_err(|e| ApiError::invalid_request(format!("Failed to scale team: {}", e)))?;
 
@@ -296,9 +302,9 @@ mod tests {
     fn test_deploy_request_deserialization() {
         // Test file path variant
         let json = r#"{"config_path": "/path/to/team.toml"}"#;
-        let req: DeployTeamRequest = serde_json::from_str(json).unwrap();
+        let req: DeployTeamRequestApi = serde_json::from_str(json).unwrap();
         match req {
-            DeployTeamRequest::FilePath { config_path } => {
+            DeployTeamRequestApi::FilePath { config_path } => {
                 assert_eq!(config_path, "/path/to/team.toml");
             }
             _ => panic!("Expected FilePath variant"),
@@ -318,9 +324,9 @@ mod tests {
                 ]
             }
         }"#;
-        let req: DeployTeamRequest = serde_json::from_str(json).unwrap();
+        let req: DeployTeamRequestApi = serde_json::from_str(json).unwrap();
         match req {
-            DeployTeamRequest::Inline { name, config } => {
+            DeployTeamRequestApi::Inline { name, config } => {
                 assert_eq!(name, "research-team");
                 assert_eq!(config.agents.len(), 1);
             }

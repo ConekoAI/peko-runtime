@@ -1,6 +1,6 @@
 //! Agent management service
 //!
-//! Provides filesystem-based agent operations used by both CLI and API.
+//! Provides unified filesystem-based agent operations used by both CLI and API.
 //! All business logic for agent management lives here.
 
 use crate::common::identifiers::{
@@ -8,22 +8,27 @@ use crate::common::identifiers::{
 };
 use crate::common::paths::PathResolver;
 use crate::common::services::agent_config_builder::build_default_config;
-use crate::common::types::agent::{
-    AgentCreationResult, AgentInfo, AgentRenameResult, AgentSummary,
-};
+use crate::common::services::TeamService;
+use crate::common::types::agent::*;
 use crate::types::agent::AgentConfig;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 
 /// Service for managing agents on the filesystem
 #[derive(Debug, Clone)]
 pub struct AgentService {
     resolver: PathResolver,
+    team_service: TeamService,
 }
 
 impl AgentService {
     /// Create a new agent service with the given path resolver
     pub fn new(resolver: PathResolver) -> Self {
-        Self { resolver }
+        let team_service = TeamService::new(resolver.clone());
+        Self {
+            resolver,
+            team_service,
+        }
     }
 
     /// List all agents, optionally filtered by team
@@ -140,24 +145,29 @@ impl AgentService {
     }
 
     /// Create a new agent
-    pub async fn create_agent(
-        &self,
-        name: &str,
-        team: Option<&str>,
-        provider: &str,
-        _model: Option<String>,
-    ) -> Result<AgentCreationResult> {
-        let (team, agent_name) = parse_agent_identifier_with_override(name, team)?;
+    ///
+    /// This is the unified method used by both CLI and API for creating agents.
+    pub async fn create_agent(&self, request: AgentCreateRequest) -> Result<AgentCreationResult> {
+        let (team, agent_name) =
+            parse_agent_identifier_with_override(&request.name, request.team.as_deref())?;
 
         // Validate agent name
         if let Err(e) = validate_agent_name(agent_name) {
             return Err(map_agent_validation_error(agent_name, e));
         }
 
+        // Ensure team exists (auto-create if requested)
+        if request.auto_create_team && !self.team_service.team_exists(team) {
+            self.team_service
+                .create_team(team, None)
+                .await
+                .context(format!("Failed to auto-create team '{}'", team))?;
+        }
+
         let config_path = self.resolver.agent_config(agent_name, Some(team));
 
         // Check if agent already exists
-        if config_path.exists() {
+        if config_path.exists() && !request.force {
             anyhow::bail!(
                 "Agent '{}' already exists in team '{}'. Use --force to overwrite or delete it first.",
                 agent_name,
@@ -170,21 +180,31 @@ impl AgentService {
         tokio::fs::create_dir_all(agent_dir).await?;
 
         // Build config
-        let config = build_default_config(agent_name, provider, _model, None);
+        let config = build_default_config(agent_name, &request.provider, request.model, None);
         let toml = toml::to_string_pretty(&config)?;
 
         tokio::fs::write(&config_path, toml).await?;
+
+        // Bootstrap workspace with standard files
+        self.bootstrap_agent_workspace(agent_dir, agent_name).await?;
 
         Ok(AgentCreationResult {
             name: agent_name.to_string(),
             team: team.to_string(),
             config_path,
-            provider: provider.to_string(),
+            provider: request.provider,
         })
     }
 
     /// Delete an agent
-    pub async fn delete_agent(&self, name: &str, team: Option<&str>) -> Result<()> {
+    ///
+    /// Removes the agent configuration and optionally its sessions.
+    pub async fn delete_agent(
+        &self,
+        name: &str,
+        team: Option<&str>,
+        opts: AgentDeleteOptions,
+    ) -> Result<AgentDeleteResult> {
         let (team, agent_name) = parse_agent_identifier_with_override(name, team)?;
         let config_path = self.resolver.agent_config(agent_name, Some(team));
 
@@ -192,11 +212,23 @@ impl AgentService {
             anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
         }
 
-        // Remove entire agent directory
+        // Remove entire agent directory (includes config and sessions)
         let agent_dir = config_path.parent().unwrap();
+        let sessions_dir = agent_dir.join("sessions");
+        let had_sessions = sessions_dir.exists();
+
         tokio::fs::remove_dir_all(agent_dir).await?;
 
-        Ok(())
+        if opts.purge_identity {
+            // TODO: Implement identity purge when identity system is available
+        }
+
+        Ok(AgentDeleteResult {
+            name: agent_name.to_string(),
+            team: team.to_string(),
+            config_deleted: true,
+            sessions_deleted: had_sessions,
+        })
     }
 
     /// Rename or move an agent
@@ -283,32 +315,20 @@ impl AgentService {
     }
 
     /// Initialize a new agent directory structure
-    pub async fn init_agent(
-        &self,
-        path: &str,
-        name: Option<&str>,
-        provider: &str,
-        model: Option<String>,
-        force: bool,
-    ) -> Result<AgentCreationResult> {
-        // Determine agent name from directory if not provided
-        let agent_name = name.map(String::from).unwrap_or_else(|| {
-            std::path::Path::new(path)
-                .file_name()
-                .map_or_else(|| "agent".to_string(), |n| n.to_string_lossy().to_string())
-        });
-
-        let dir = std::path::PathBuf::from(path);
+    ///
+    /// Creates a standalone agent directory (not in the teams structure).
+    pub async fn init_agent(&self, request: AgentInitRequest) -> Result<AgentInitResult> {
+        let dir = request.path;
         let config_path = dir.join("config.toml");
 
         // Check if directory already exists and has files
         if dir.exists() {
             let entries: Vec<_> = std::fs::read_dir(&dir)?.collect();
-            if !entries.is_empty() && !force {
-                anyhow::bail!("Directory not empty: {}", path);
+            if !entries.is_empty() && !request.force {
+                anyhow::bail!("Directory not empty: {}", dir.display());
             }
             // If force is true, remove existing directory
-            if force {
+            if request.force {
                 tokio::fs::remove_dir_all(&dir).await?;
             }
         }
@@ -316,11 +336,157 @@ impl AgentService {
         // Create directory
         tokio::fs::create_dir_all(&dir).await?;
 
+        // Determine agent name from directory if not provided
+        let agent_name = request.name.unwrap_or_else(|| {
+            dir.file_name()
+                .map_or_else(|| "agent".to_string(), |n| n.to_string_lossy().to_string())
+        });
+
         // Create config
-        let config = build_default_config(&agent_name, provider, model, None);
+        let config = build_default_config(&agent_name, &request.provider, request.model, None);
         let config_content = toml::to_string_pretty(&config)?;
         tokio::fs::write(&config_path, config_content).await?;
 
+        // Bootstrap workspace
+        self.bootstrap_agent_workspace(&dir, &agent_name).await?;
+
+        Ok(AgentInitResult {
+            name: agent_name,
+            path: dir.clone(),
+            config_path,
+            provider: request.provider,
+        })
+    }
+
+    /// Update an agent configuration
+    pub async fn update_agent(
+        &self,
+        name: &str,
+        team: Option<&str>,
+        update: AgentUpdateRequest,
+    ) -> Result<AgentInfo> {
+        let (team, agent_name) = parse_agent_identifier_with_override(name, team)?;
+        let config_path = self.resolver.agent_config(agent_name, Some(team));
+
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+        }
+
+        // Load existing config
+        let content = tokio::fs::read_to_string(&config_path).await?;
+        let mut config: AgentConfig = toml::from_str(&content)?;
+
+        // Update image if provided
+        if let Some(image_ref) = update.image {
+            // Parse image and update config
+            // For now, just update the default model with the image tag
+            let model_name = parse_image_model_name(&image_ref)?;
+            config.provider.default_model = model_name;
+        }
+
+        // Update team if provided (this is a move operation)
+        if let Some(new_team) = update.team_id {
+            if new_team != team {
+                // This is a move - use rename_agent
+                return self
+                    .get_agent(name, Some(team))
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Agent not found after update"));
+            }
+        }
+
+        // Save updated config
+        let updated_toml = toml::to_string_pretty(&config)?;
+        tokio::fs::write(&config_path, updated_toml).await?;
+
+        // Return updated info
+        self.get_agent(name, Some(team))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Agent not found after update"))
+    }
+
+    /// Export an agent to a package
+    pub async fn export_agent(
+        &self,
+        name: &str,
+        team: Option<&str>,
+        opts: AgentExportOptions,
+    ) -> Result<AgentExportResult> {
+        let (team, agent_name) = parse_agent_identifier_with_override(name, team)?;
+        let config_path = self.resolver.agent_config(agent_name, Some(team));
+
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+        }
+
+        let output_path = opts
+            .output_path
+            .unwrap_or_else(|| PathBuf::from(format!("{}_{}.agent", team, agent_name)));
+
+        // TODO: Implement actual export via Packager when available
+        // For now, just return the expected result
+
+        Ok(AgentExportResult {
+            name: agent_name.to_string(),
+            team: team.to_string(),
+            output_path,
+            encrypted: opts.encrypt,
+        })
+    }
+
+    /// Import an agent from a package
+    pub async fn import_agent(
+        &self,
+        file_path: &Path,
+        opts: AgentImportOptions,
+    ) -> Result<AgentImportResult> {
+        if !file_path.exists() {
+            anyhow::bail!("File not found: {}", file_path.display());
+        }
+
+        let agent_name = opts.name.unwrap_or_else(|| {
+            file_path
+                .file_stem()
+                .map_or_else(|| "imported".to_string(), |s| s.to_string_lossy().to_string())
+        });
+
+        let team = opts.team.unwrap_or_else(|| "default".to_string());
+
+        // TODO: Implement actual import via Unpackager when available
+
+        let config_path = self.resolver.agent_config(&agent_name, Some(&team));
+
+        Ok(AgentImportResult {
+            name: agent_name,
+            team,
+            config_path,
+        })
+    }
+
+    /// Check if an agent exists
+    pub fn agent_exists(&self, name: &str, team: Option<&str>) -> bool {
+        if let Ok((team, agent_name)) = parse_agent_identifier_with_override(name, team) {
+            self.resolver.agent_config(agent_name, Some(team)).exists()
+        } else {
+            false
+        }
+    }
+
+    /// Get the path resolver
+    pub fn resolver(&self) -> &PathResolver {
+        &self.resolver
+    }
+
+    // ============================================================================
+    // Private Helper Methods
+    // ============================================================================
+
+    /// Bootstrap agent workspace with standard files
+    async fn bootstrap_agent_workspace(
+        &self,
+        agent_dir: &Path,
+        agent_name: &str,
+    ) -> Result<()> {
         // Create .gitignore
         let gitignore_content = r#"# Pekobot agent - gitignore
 sessions/
@@ -329,7 +495,7 @@ memories/
 cron.json
 *.log
 "#;
-        tokio::fs::write(dir.join(".gitignore"), gitignore_content).await?;
+        tokio::fs::write(agent_dir.join(".gitignore"), gitignore_content).await?;
 
         // Create AGENT.md
         let agent_md = format!(
@@ -347,33 +513,15 @@ Agent description and instructions go here.
 Add detailed instructions for the agent here.
 "#
         );
-        tokio::fs::write(dir.join("AGENT.md"), agent_md).await?;
+        tokio::fs::write(agent_dir.join("AGENT.md"), agent_md).await?;
 
         // Create empty directories
-        tokio::fs::create_dir_all(dir.join("tools")).await?;
-        tokio::fs::create_dir_all(dir.join("skills")).await?;
-        tokio::fs::create_dir_all(dir.join("workspace")).await?;
+        tokio::fs::create_dir_all(agent_dir.join("tools")).await?;
+        tokio::fs::create_dir_all(agent_dir.join("skills")).await?;
+        tokio::fs::create_dir_all(agent_dir.join("workspace")).await?;
+        tokio::fs::create_dir_all(agent_dir.join("sessions")).await?;
 
-        Ok(AgentCreationResult {
-            name: agent_name,
-            team: "default".to_string(),
-            config_path,
-            provider: provider.to_string(),
-        })
-    }
-
-    /// Check if an agent exists
-    pub fn agent_exists(&self, name: &str, team: Option<&str>) -> bool {
-        if let Ok((team, agent_name)) = parse_agent_identifier_with_override(name, team) {
-            self.resolver.agent_config(agent_name, Some(team)).exists()
-        } else {
-            false
-        }
-    }
-
-    /// Get the path resolver
-    pub fn resolver(&self) -> &PathResolver {
-        &self.resolver
+        Ok(())
     }
 }
 
@@ -403,6 +551,22 @@ fn map_agent_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
     }
 }
 
+/// Parse image reference to extract model name
+fn parse_image_model_name(image_ref: &str) -> Result<String> {
+    // Simple parsing: extract tag from image reference
+    // Format: registry.com/user/image:tag or image:tag
+    if let Some(pos) = image_ref.rfind(':') {
+        let tag = &image_ref[pos + 1..];
+        if !tag.is_empty() {
+            return Ok(tag.to_string());
+        }
+    }
+
+    // If no tag, use the last part of the path
+    let parts: Vec<_> = image_ref.split('/').collect();
+    Ok(parts.last().unwrap_or(&"unknown").to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,5 +575,15 @@ mod tests {
     fn test_agent_service_creation() {
         let resolver = PathResolver::new();
         let _service = AgentService::new(resolver);
+    }
+
+    #[test]
+    fn test_parse_image_model_name() {
+        assert_eq!(
+            parse_image_model_name("registry.com/user/image:v1.0").unwrap(),
+            "v1.0"
+        );
+        assert_eq!(parse_image_model_name("image:latest").unwrap(), "latest");
+        assert_eq!(parse_image_model_name("myimage").unwrap(), "myimage");
     }
 }

@@ -6,7 +6,8 @@
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
-    AgentConfigService, AgentCreationService, MessageService, SessionService,
+    AgentConfigService, AgentCreationService, AgentService, MessageService, SessionService,
+    TeamManagementService, TeamService,
 };
 use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::observability::Observability;
@@ -68,6 +69,9 @@ pub struct AppState {
     /// Stateless agent execution service
     agent_service: Arc<StatelessAgentService>,
 
+    /// Agent service (unified for CLI and API)
+    agent_mgmt_service: Arc<AgentService>,
+
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
 
@@ -79,6 +83,9 @@ pub struct AppState {
 
     /// Session service (unified for CLI and API)
     session_service: Arc<SessionService>,
+
+    /// Team management service (unified for CLI and API)
+    team_service: Arc<TeamManagementService>,
 
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
@@ -95,6 +102,8 @@ impl std::fmt::Debug for AppState {
             .field("team_manager", &"<TeamManager>")
             .field("config_service", &"<AgentConfigService>")
             .field("agent_service", &"<StatelessAgentService>")
+            .field("agent_mgmt_service", &"<AgentService>")
+            .field("team_service", &"<TeamManagementService>")
             .finish()
     }
 }
@@ -165,7 +174,16 @@ impl AppState {
 
         let message_service = Arc::new(MessageService::new(agent_service.clone(), path_resolver_clone.clone()));
 
-        let session_service = Arc::new(SessionService::new(path_resolver_clone));
+        let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
+
+        // Create unified services
+        let team_service = Arc::new(TeamManagementService::new(
+            TeamService::new(path_resolver_clone.clone()),
+            team_manager.clone(),
+            path_resolver_clone.clone(),
+        ));
+
+        let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone));
 
         Ok(Self {
             started_at: SystemTime::now(),
@@ -183,10 +201,12 @@ impl AppState {
             observability: Arc::new(Observability::new("api")),
             config_service,
             agent_service,
+            agent_mgmt_service,
             lifecycle,
             agent_creation_service,
             message_service,
             session_service,
+            team_service,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
     }
@@ -234,7 +254,16 @@ impl AppState {
 
         let message_service = Arc::new(MessageService::new(agent_service.clone(), path_resolver_clone.clone()));
 
-        let session_service = Arc::new(SessionService::new(path_resolver_clone));
+        let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
+
+        // Create unified services
+        let team_service = Arc::new(TeamManagementService::new(
+            TeamService::new(path_resolver_clone.clone()),
+            team_manager.clone(),
+            path_resolver_clone.clone(),
+        ));
+
+        let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone));
 
         Ok(Self {
             started_at: SystemTime::now(),
@@ -252,10 +281,12 @@ impl AppState {
             observability: Arc::new(Observability::new("api")),
             config_service,
             agent_service,
+            agent_mgmt_service,
             lifecycle,
             agent_creation_service,
             message_service,
             session_service,
+            team_service,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
     }
@@ -376,6 +407,16 @@ impl AppState {
     /// Get the session service
     pub fn session_service(&self) -> &Arc<SessionService> {
         &self.session_service
+    }
+
+    /// Get the team management service (unified)
+    pub fn team_service(&self) -> &Arc<TeamManagementService> {
+        &self.team_service
+    }
+
+    /// Get the agent management service (unified)
+    pub fn agent_mgmt_service(&self) -> &Arc<AgentService> {
+        &self.agent_mgmt_service
     }
 
     /// Get the count of registered agents

@@ -117,6 +117,22 @@ pub struct BranchResult {
     pub label: Option<String>,
 }
 
+/// Session details with full metadata
+#[derive(Debug, Clone)]
+pub struct SessionDetails {
+    pub info: SessionInfo,
+    pub history_summary: HistorySummary,
+}
+
+/// History summary for session overview
+#[derive(Debug, Clone, Default)]
+pub struct HistorySummary {
+    pub user_messages: usize,
+    pub assistant_messages: usize,
+    pub tool_calls: usize,
+    pub thinking_blocks: usize,
+}
+
 /// Unified session service
 pub struct SessionService {
     path_resolver: PathResolver,
@@ -399,6 +415,72 @@ impl SessionService {
             .get("session_id")
             .and_then(|v| v.as_str())
             .map(String::from))
+    }
+
+    /// Get session details with history summary
+    pub async fn get_session_details(
+        &self,
+        agent_name: &str,
+        team: Option<&str>,
+        session_id: &str,
+    ) -> Result<Option<SessionDetails>> {
+        let info = match self.get_session(agent_name, team, session_id).await? {
+            Some(info) => info,
+            None => return Ok(None),
+        };
+
+        // Get history for summary
+        let history = self
+            .get_history(
+                agent_name,
+                team,
+                session_id,
+                HistoryQuery {
+                    include_tool_calls: true,
+                    include_thinking: true,
+                    limit: 10000, // Get all for summary
+                    cursor: None,
+                },
+            )
+            .await?;
+
+        let mut summary = HistorySummary::default();
+        for event in &history.events {
+            match event {
+                HistoryEvent::Message { role, .. } => {
+                    if role == "user" {
+                        summary.user_messages += 1;
+                    } else if role == "assistant" {
+                        summary.assistant_messages += 1;
+                    }
+                }
+                HistoryEvent::ToolCall { .. } => summary.tool_calls += 1,
+                HistoryEvent::Thinking { .. } => summary.thinking_blocks += 1,
+                _ => {}
+            }
+        }
+
+        Ok(Some(SessionDetails {
+            info,
+            history_summary: summary,
+        }))
+    }
+
+    /// Check if a session exists
+    pub async fn session_exists(
+        &self,
+        agent_name: &str,
+        team: Option<&str>,
+        session_id: &str,
+    ) -> Result<bool> {
+        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
+
+        if !sessions_dir.exists() {
+            return Ok(false);
+        }
+
+        let storage = SyncSessionStorage::new(sessions_dir);
+        Ok(storage.session_exists(session_id).await)
     }
 
     /// Get sessions directory for an agent

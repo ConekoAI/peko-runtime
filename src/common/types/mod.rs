@@ -6,5 +6,14 @@
 pub mod agent;
 pub mod team;
 
-pub use agent::{AgentCreationResult, AgentInfo, AgentRenameResult, AgentSummary};
-pub use team::{TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMetadata};
+pub use agent::{
+    AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult,
+    AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult,
+    AgentInfo, AgentInitRequest, AgentInitResult, AgentRenameResult, AgentSummary,
+    AgentUpdateRequest,
+};
+pub use team::{
+    TeamAgentDefinition, TeamConfigSource, TeamCreationResult, TeamDeletionResult,
+    TeamDeployRequest, TeamDeployResult, TeamInfo, TeamMetadata, TeamRuntimeInfo,
+    TeamRuntimeStatus, TeamScaleRequest, TeamScaleResult,
+};

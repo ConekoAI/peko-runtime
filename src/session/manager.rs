@@ -925,6 +925,43 @@ impl SessionManager {
         Ok(HybridSession::new(base, OverlayRef::Channel(overlay_arc)))
     }
 
+    /// Create a channel overlay on an existing base session
+    ///
+    /// This is used when a session has been explicitly opened by ID (e.g., for
+    /// session resumption), and we need to create a channel overlay on top of it.
+    pub async fn create_channel_overlay_on_base(
+        &mut self,
+        base: Arc<RwLock<UnifiedSession>>,
+        peer: &Peer,
+        channel_type: ChannelType,
+        channel_id: &str,
+    ) -> Result<HybridSession> {
+        let base_key = {
+            let base_read = base.read().await;
+            base_read.session_key.clone()
+        };
+
+        // Generate overlay key
+        let overlay_id = format!("{}:{}", channel_type.as_str(), channel_id);
+        let overlay_key = derive_overlay_key(&base_key, "channel", &overlay_id);
+
+        // Check if overlay already exists
+        if let Some(overlay) = self.channel_overlays.get(&overlay_key) {
+            return Ok(HybridSession::new(
+                base,
+                OverlayRef::Channel(overlay.clone()),
+            ));
+        }
+
+        // Create new overlay
+        let overlay = ChannelOverlay::new(&base_key, peer.clone(), channel_type, channel_id);
+        let overlay_arc = Arc::new(RwLock::new(overlay));
+        self.channel_overlays
+            .insert(overlay_key, overlay_arc.clone());
+
+        Ok(HybridSession::new(base, OverlayRef::Channel(overlay_arc)))
+    }
+
     /// Get an existing channel overlay
     #[must_use]
     pub fn get_channel_overlay(&self, overlay_key: &str) -> Option<Arc<RwLock<ChannelOverlay>>> {

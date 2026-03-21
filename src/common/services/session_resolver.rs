@@ -249,24 +249,21 @@ impl SessionResolver {
         let peer = Peer::User(channel_id.to_string());
         let mut session_manager = SessionManager::for_cli(agent_name, team);
 
-        // Use SessionManager to get the session for this channel
+        // FIX: Open the SPECIFIC session by ID (not peer-based lookup)
+        let handle = session_manager
+            .open_session(session_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", session_id))?;
+
+        // Get the base session from the handle
+        let base = handle.base().clone();
+
+        // FIX: Create channel overlay on the opened base session
         let hybrid = session_manager
-            .get_session_for_channel(agent_name, &peer, channel, channel_id)
+            .create_channel_overlay_on_base(base, &peer, channel, channel_id)
             .await?;
 
         let ctx = SessionContext::new(hybrid).await;
-
-        // Verify the session IDs match
-        {
-            let base = ctx.hybrid.base.read().await;
-            if base.id != session_id {
-                warn!(
-                    "Session ID mismatch: requested '{}', got '{}'",
-                    session_id,
-                    base.id
-                );
-            }
-        }
 
         // Update active preference
         self.save_active_preference(&sessions_dir, session_id).await?;
