@@ -3,6 +3,7 @@
 //! Provides unified filesystem-based agent operations used by both CLI and API.
 //! All business logic for agent management lives here.
 
+use crate::commands::agent_bootstrap::AgentBootstrap;
 use crate::common::identifiers::{
     parse_agent_identifier_with_override, validate_agent_name, ValidationError,
 };
@@ -179,14 +180,19 @@ impl AgentService {
         let agent_dir = config_path.parent().unwrap();
         tokio::fs::create_dir_all(agent_dir).await?;
 
-        // Build config
-        let config = build_default_config(agent_name, &request.provider, request.model, None);
+        // Get workspace path and create directory
+        let workspace_dir = self.resolver.agent_workspace(agent_name, Some(team));
+        tokio::fs::create_dir_all(&workspace_dir).await?;
+
+        // Build config with workspace set
+        let mut config = build_default_config(agent_name, &request.provider, request.model, None);
+        config.workspace = Some(workspace_dir.clone());
         let toml = toml::to_string_pretty(&config)?;
 
         tokio::fs::write(&config_path, toml).await?;
 
-        // Bootstrap workspace with standard files
-        self.bootstrap_agent_workspace(agent_dir, agent_name)
+        // Bootstrap workspace with bootstrap files (AGENTS.md, SOUL.md, etc.)
+        self.bootstrap_agent_workspace(agent_dir, agent_name, &workspace_dir)
             .await?;
 
         Ok(AgentCreationResult {
@@ -343,13 +349,18 @@ impl AgentService {
                 .map_or_else(|| "agent".to_string(), |n| n.to_string_lossy().to_string())
         });
 
-        // Create config
-        let config = build_default_config(&agent_name, &request.provider, request.model, None);
+        // Determine workspace path (agent_dir/workspace for standalone agents)
+        let workspace_dir = dir.join("workspace");
+        tokio::fs::create_dir_all(&workspace_dir).await?;
+
+        // Create config with workspace set
+        let mut config = build_default_config(&agent_name, &request.provider, request.model, None);
+        config.workspace = Some(workspace_dir.clone());
         let config_content = toml::to_string_pretty(&config)?;
         tokio::fs::write(&config_path, config_content).await?;
 
-        // Bootstrap workspace
-        self.bootstrap_agent_workspace(&dir, &agent_name).await?;
+        // Bootstrap workspace with bootstrap files
+        self.bootstrap_agent_workspace(&dir, &agent_name, &workspace_dir).await?;
 
         Ok(AgentInitResult {
             name: agent_name,
@@ -484,7 +495,12 @@ impl AgentService {
     // ============================================================================
 
     /// Bootstrap agent workspace with standard files
-    async fn bootstrap_agent_workspace(&self, agent_dir: &Path, agent_name: &str) -> Result<()> {
+    async fn bootstrap_agent_workspace(
+        &self,
+        agent_dir: &Path,
+        agent_name: &str,
+        workspace_dir: &Path,
+    ) -> Result<()> {
         // Create .gitignore
         let gitignore_content = r#"# Pekobot agent - gitignore
 sessions/
@@ -495,29 +511,15 @@ cron.json
 "#;
         tokio::fs::write(agent_dir.join(".gitignore"), gitignore_content).await?;
 
-        // Create AGENT.md
-        let agent_md = format!(
-            r#"# {agent_name}
-
-Agent description and instructions go here.
-
-## Capabilities
-
-- Add specific capabilities here
-- Describe what this agent can do
-
-## Instructions
-
-Add detailed instructions for the agent here.
-"#
-        );
-        tokio::fs::write(agent_dir.join("AGENT.md"), agent_md).await?;
-
-        // Create empty directories
+        // Create empty directories for tools and skills (in agent_dir, not workspace)
         tokio::fs::create_dir_all(agent_dir.join("tools")).await?;
         tokio::fs::create_dir_all(agent_dir.join("skills")).await?;
-        tokio::fs::create_dir_all(agent_dir.join("workspace")).await?;
         tokio::fs::create_dir_all(agent_dir.join("sessions")).await?;
+
+        // Create bootstrap files in workspace using AgentBootstrap
+        let bootstrap = AgentBootstrap::new(agent_name, workspace_dir.to_path_buf());
+        // Run in blocking task since AgentBootstrap uses std::fs
+        tokio::task::block_in_place(|| bootstrap.run())?;
 
         Ok(())
     }

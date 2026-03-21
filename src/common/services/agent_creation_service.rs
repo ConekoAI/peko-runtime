@@ -3,6 +3,7 @@
 //! Provides unified agent creation for both CLI and HTTP API.
 //! Supports creating agents from images or from direct configuration.
 
+use crate::commands::agent_bootstrap::AgentBootstrap;
 use crate::common::identifiers::{parse_agent_identifier_with_override, validate_agent_name};
 use crate::common::paths::PathResolver;
 use crate::common::services::auth_resolver::AuthResolver;
@@ -178,8 +179,11 @@ impl AgentCreationService {
             );
         }
 
+        // Get workspace path
+        let workspace_dir = self.path_resolver.agent_workspace(agent_name, Some(team));
+
         // Build configuration based on source
-        let (config, provider) = match request.source {
+        let (mut config, provider) = match request.source {
             AgentSource::Image { image_ref } => {
                 self.create_from_image(agent_name, team, &image_ref).await?
             }
@@ -201,6 +205,9 @@ impl AgentCreationService {
             }
         };
 
+        // Set workspace in config
+        config.workspace = Some(workspace_dir.clone());
+
         // Save agent configuration to TOML
         self.config_service
             .save(agent_name, team, &config)
@@ -208,7 +215,9 @@ impl AgentCreationService {
             .with_context(|| format!("Failed to save agent '{}' config", agent_name))?;
 
         // Create agent directory structure (workspace, sessions, etc.)
-        let config_path = self.setup_agent_directory(agent_name, team).await?;
+        let config_path = self
+            .setup_agent_directory(agent_name, team, &workspace_dir)
+            .await?;
 
         info!(
             "Created agent '{}' in team '{}' (provider: {}, team_created: {})",
@@ -325,13 +334,18 @@ impl AgentCreationService {
     }
 
     /// Set up agent directory structure
-    async fn setup_agent_directory(&self, agent_name: &str, team: &str) -> Result<PathBuf> {
+    async fn setup_agent_directory(
+        &self,
+        agent_name: &str,
+        team: &str,
+        workspace_dir: &PathBuf,
+    ) -> Result<PathBuf> {
         let agent_dir = self.path_resolver.agents_dir(Some(team)).join(agent_name);
 
         // Create directories
         tokio::fs::create_dir_all(&agent_dir).await?;
         tokio::fs::create_dir_all(agent_dir.join("sessions")).await?;
-        tokio::fs::create_dir_all(agent_dir.join("workspace")).await?;
+        tokio::fs::create_dir_all(workspace_dir).await?;
 
         // Create .gitignore
         let gitignore_content = r#"# Pekobot agent - gitignore
@@ -342,6 +356,10 @@ cron.json
 *.log
 "#;
         tokio::fs::write(agent_dir.join(".gitignore"), gitignore_content).await?;
+
+        // Create bootstrap files using AgentBootstrap
+        let bootstrap = AgentBootstrap::new(agent_name, workspace_dir.clone());
+        tokio::task::block_in_place(|| bootstrap.run())?;
 
         Ok(agent_dir.join("config.toml"))
     }

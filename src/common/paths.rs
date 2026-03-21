@@ -13,14 +13,10 @@
 //!         └── agents/
 //!             └── {agent}/
 //!                 ├── config.toml
-//!                 └── sessions/
-//!                     └── {session_id}.jsonl
-//!
-//! ~/.local/share/pekobot/              # Data root (data_dir)
-//! └── workspaces/
-//!     └── {team}/
-//!         └── {agent}/
-//!             └── ...workspace files
+//!                 ├── sessions/
+//!                 │   └── {session_id}.jsonl
+//!                 └── workspace/          # Bootstrap files (AGENTS.md, etc.)
+//!                     └── ...workspace files
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -172,17 +168,27 @@ impl PathResolver {
 
     /// Get the path to an agent's workspace directory
     ///
-    /// Path: `{data_dir}/workspaces/{team}/{agent}`
+    /// Path: `{config_dir}/teams/{team}/agents/{agent}/workspace`
     pub fn agent_workspace(&self, agent: &str, team: Option<&str>) -> PathBuf {
         let team = team.unwrap_or(DEFAULT_TEAM);
-        self.data_dir.join("workspaces").join(team).join(agent)
+        self.config_dir
+            .join("teams")
+            .join(team)
+            .join("agents")
+            .join(agent)
+            .join("workspace")
     }
 
     /// Get the path to an agent's workspace directory with explicit team
     ///
     /// Same as `agent_workspace` but requires an explicit team.
     pub fn agent_workspace_with_team(&self, agent: &str, team: &str) -> PathBuf {
-        self.data_dir.join("workspaces").join(team).join(agent)
+        self.config_dir
+            .join("teams")
+            .join(team)
+            .join("agents")
+            .join(agent)
+            .join("workspace")
     }
 
     /// Get the tools directory
@@ -319,7 +325,7 @@ mod tests {
 
         assert_eq!(
             resolver.agent_workspace("myagent", Some("myteam")),
-            PathBuf::from("/data/workspaces/myteam/myagent")
+            PathBuf::from("/config/teams/myteam/agents/myagent/workspace")
         );
     }
 }

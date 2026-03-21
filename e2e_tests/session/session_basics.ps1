@@ -26,14 +26,9 @@ pushd "D:\Workplace\pekobot\pekobot\";$env:RUSTFLAGS="-A warnings"; cargo build;
 
 # Reset pekobot config data (Windows)
 $pekobotDir = "$env:USERPROFILE/.pekobot"
-$pekobotWorkspaceDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
 if (Test-Path $pekobotDir) {
     Remove-Item -Recurse -Force $pekobotDir
     Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
-}
-if (Test-Path $pekobotWorkspaceDir) {
-    Remove-Item -Recurse -Force $pekobotWorkspaceDir
-    Write-Host "Reset pekobot workspace directory" -ForegroundColor Yellow
 }
 
 # Set kimi api key
