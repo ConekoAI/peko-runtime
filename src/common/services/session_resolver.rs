@@ -180,6 +180,26 @@ impl SessionResolver {
         session_manager.remove_channel_overlay(&overlay_key);
         session_manager.remove_base_session(agent_name, &peer);
 
+        // CRITICAL: Clear peer routing in SessionIndex to ensure a new session is created
+        // Otherwise get_session_for_channel will load the existing session from disk
+        let peer_key = format!("agent:{}:peer:{}:{}", agent_name, peer.peer_type(), peer.id());
+        let mut index = SessionIndex::open(&sessions_dir);
+        if let Err(e) = index.clear_active_for_peer(&peer_key).await {
+            warn!("Failed to clear peer routing: {}", e);
+        }
+        // Save the index changes immediately
+        if let Err(e) = index.save_peers().await {
+            warn!("Failed to save peer index: {}", e);
+        }
+
+        // Also clear any active preference
+        let active_pref_path = sessions_dir.join(".active.json");
+        if active_pref_path.exists() {
+            if let Err(e) = tokio::fs::remove_file(&active_pref_path).await {
+                warn!("Failed to remove active preference: {}", e);
+            }
+        }
+
         // Get or create session through SessionManager
         let hybrid = session_manager
             .get_session_for_channel(agent_name, &peer, channel, channel_id)

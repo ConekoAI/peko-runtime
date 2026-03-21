@@ -101,7 +101,7 @@ async fn chat_handler(
 
         // Build message request
         let msg_request = MessageRequest::new(agent_name.clone(), request.message.clone())
-            .with_session(request.session_id.clone().unwrap_or_default())
+            .with_session_opt(request.session_id.clone())
             .with_new_session(request.session_id.is_none());
 
         // Spawn the chat processing
@@ -213,7 +213,7 @@ async fn process_chat_blocking(
 
     // Build message request
     let msg_request = MessageRequest::new(agent_name.clone(), request.message)
-        .with_session(request.session_id.clone().unwrap_or_default())
+        .with_session_opt(request.session_id.clone())
         .with_new_session(request.session_id.is_none());
 
     // Use MessageService

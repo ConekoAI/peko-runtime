@@ -16,15 +16,16 @@
 //!   echo "Hello" | pekobot send myagent --stdin
 //!   pekobot send myagent --file prompt.txt
 
-use crate::agent::Agent;
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
+use crate::common::services::{MessageRequest, MessageService};
 use crate::types::agent::AgentConfig;
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use anyhow::Result;
 use clap::Args;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::info;
 
 /// Send a message to an agent (unified command)
@@ -86,63 +87,36 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     let (team, agent_name) =
         parse_agent_identifier_with_override(&args.agent, args.team.as_deref())?;
 
-    // Determine config path
-    let config_path = resolve_config_path(agent_name, args.config.as_ref(), team, paths)?;
-
     info!(
         "Sending message to agent '{}' in team '{}'",
         agent_name, team
     );
-    info!("Config path: {}", config_path.display());
 
-    // Load or build agent configuration
-    let agent_config = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path)?;
-        toml::from_str(&content)?
-    } else {
-        info!(
-            "No config file found at {}, using default configuration",
-            config_path.display()
-        );
-        let provider = args.provider.as_deref().unwrap_or("kimi_code");
-        build_default_config(agent_name, provider, args.model, None)
-    };
+    // Use MessageService for unified session handling (same as HTTP API)
+    let path_resolver = paths.resolver.clone();
+    let config_service = Arc::new(crate::common::services::AgentConfigService::new(
+        path_resolver.clone(),
+    ));
+    let agent_service = Arc::new(
+        crate::agent::stateless_service::StatelessAgentService::new(
+            config_service,
+            path_resolver.clone(),
+        )
+        .await?,
+    );
+    let message_service = MessageService::new(agent_service, path_resolver);
 
-    // Create and start the agent (cold-start)
-    let agent = match Agent::new(agent_config).await {
-        Ok(agent) => agent,
-        Err(e) => {
-            eprintln!("❌ Failed to create agent: {e}");
-            return Err(e);
-        }
-    };
+    // Build message request (same logic as HTTP API)
+    let request = MessageRequest::new(agent_name, message)
+        .with_team(team)
+        .with_session_opt(args.session.clone())
+        .with_new_session(args.new);
 
-    if let Err(e) = agent.start().await {
-        eprintln!("❌ Failed to start agent: {e}");
-        return Err(e);
-    }
+    // Send message and get response
+    let result = message_service.send_message(request).await?;
 
-    // Execute in a LocalSet for spawn_local compatibility
-    let local = tokio::task::LocalSet::new();
-
-    local
-        .run_until(async {
-            // Handle session selection:
-            // --new: Force new session
-            // --session: Use specific session (TODO: implement session switching)
-            // Neither: Resume active session (or create new if none exists)
-            let new_session = args.new;
-
-            if let Some(ref session_id) = args.session {
-                info!("Using session: {}", session_id);
-                // TODO: Implement session switching when specific session ID provided
-                // For now, we still use the default behavior but log the intent
-            }
-
-            crate::channels::cli::send_single_message_with_session(&agent, &message, new_session)
-                .await
-        })
-        .await?;
+    // Output response (CLI presentation layer)
+    println!("{}: {}", args.agent, result.content);
 
     Ok(())
 }

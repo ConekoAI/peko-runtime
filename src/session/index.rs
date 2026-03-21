@@ -432,6 +432,18 @@ impl SessionIndex {
         Ok(())
     }
 
+    /// Clear active session for peer (used when creating new session)
+    pub async fn clear_active_for_peer(&mut self, peer_key: &str) -> Result<()> {
+        let peers = self.load_peers_mut().await?;
+        
+        if peers.peers.remove(peer_key).is_some() {
+            self.peers_modified = true;
+            info!("Cleared peer routing for {}", peer_key);
+        }
+        
+        Ok(())
+    }
+
     /// Create new session for peer (O(1))
     pub async fn create_for_peer(&mut self, entry: SessionEntry, peer_key: &str) -> Result<()> {
         let session_id = entry.session_id.clone();

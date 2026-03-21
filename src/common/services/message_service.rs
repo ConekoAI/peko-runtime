@@ -60,6 +60,12 @@ impl MessageRequest {
         self
     }
 
+    /// Set session ID from Option (preserves None)
+    pub fn with_session_opt(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
+        self
+    }
+
     /// Set new session flag
     pub fn with_new_session(mut self, new: bool) -> Self {
         self.new_session = new;
