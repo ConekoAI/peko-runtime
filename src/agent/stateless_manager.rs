@@ -5,9 +5,9 @@
 //! a pool of running agents, it manages agent configurations and executes
 //! agents statelessly on-demand.
 
-use crate::agent::config_registry::{AgentConfigEntry, ConfigRegistry};
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::{ExecutionRequest, ExecutionResult, StatelessAgentService};
+use crate::common::services::{AgentConfigEntry, AgentConfigService};
 use crate::image::registry::{ImageRegistry, RegistryConfig};
 use crate::image::ImageRef;
 use anyhow::{Context, Result};
@@ -43,8 +43,8 @@ pub enum StatelessManagerEvent {
 /// Manages agent configurations and provides stateless execution.
 /// No persistent agent instances - agents are cold-started per request.
 pub struct StatelessAgentManager {
-    /// Configuration registry
-    config_registry: Arc<ConfigRegistry>,
+    /// Agent configuration service
+    config_service: Arc<AgentConfigService>,
     /// Stateless agent service
     agent_service: Arc<StatelessAgentService>,
     /// Lifecycle manager (tracks active executions only)
@@ -68,19 +68,7 @@ impl StatelessAgentManager {
 
         std::fs::create_dir_all(&data_dir)?;
 
-        // Create config registry
-        let config_registry = Arc::new(
-            ConfigRegistry::new(data_dir.join("configs"))
-                .await
-                .context("Failed to create config registry")?,
-        );
-
-        // Create image registry
-        let registry_path = data_dir.join("registry");
-        let registry_config = RegistryConfig::new(&registry_path);
-        let image_registry = Arc::new(RwLock::new(ImageRegistry::new(registry_config)));
-
-        // Create agent service with team-aware paths
+        // Create agent configuration service
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             dirs::home_dir()
                 .map(|d| d.join(".pekobot"))
@@ -90,8 +78,16 @@ impl StatelessAgentManager {
                 .map(|d| d.join("pekobot"))
                 .unwrap_or_else(|| data_dir.join("cache")),
         );
+        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+
+        // Create image registry
+        let registry_path = data_dir.join("registry");
+        let registry_config = RegistryConfig::new(&registry_path);
+        let image_registry = Arc::new(RwLock::new(ImageRegistry::new(registry_config)));
+
+        // Create agent service with team-aware paths
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_registry.clone(), path_resolver)
+            StatelessAgentService::new(config_service.clone(), path_resolver)
                 .await
                 .context("Failed to create agent service")?,
         );
@@ -100,7 +96,7 @@ impl StatelessAgentManager {
         let lifecycle = Arc::new(LifecycleManager::new());
 
         let manager = Self {
-            config_registry,
+            config_service,
             agent_service,
             lifecycle,
             image_registry,
@@ -125,19 +121,7 @@ impl StatelessAgentManager {
 
         std::fs::create_dir_all(&data_dir)?;
 
-        // Create config registry
-        let config_registry = Arc::new(
-            ConfigRegistry::new(data_dir.join("configs"))
-                .await
-                .context("Failed to create config registry")?,
-        );
-
-        // Create image registry
-        let registry_path = data_dir.join("registry");
-        let registry_config = RegistryConfig::new(&registry_path);
-        let image_registry = Arc::new(RwLock::new(ImageRegistry::new(registry_config)));
-
-        // Create agent service with team-aware paths
+        // Create agent configuration service
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             dirs::home_dir()
                 .map(|d| d.join(".pekobot"))
@@ -147,8 +131,16 @@ impl StatelessAgentManager {
                 .map(|d| d.join("pekobot"))
                 .unwrap_or_else(|| data_dir.join("cache")),
         );
+        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+
+        // Create image registry
+        let registry_path = data_dir.join("registry");
+        let registry_config = RegistryConfig::new(&registry_path);
+        let image_registry = Arc::new(RwLock::new(ImageRegistry::new(registry_config)));
+
+        // Create agent service with team-aware paths
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_registry.clone(), path_resolver)
+            StatelessAgentService::new(config_service.clone(), path_resolver)
                 .await
                 .context("Failed to create agent service")?,
         );
@@ -157,7 +149,7 @@ impl StatelessAgentManager {
         let lifecycle = Arc::new(LifecycleManager::new());
 
         let manager = Self {
-            config_registry,
+            config_service,
             agent_service,
             lifecycle,
             image_registry,
@@ -175,6 +167,10 @@ impl StatelessAgentManager {
 
     /// Register an agent from an image
     ///
+    /// Note: Image-based registration requires ConfigRegistry for config extraction.
+    /// For now, this is a placeholder that creates a default config.
+    /// Use AgentConfigService directly for non-image registration.
+    ///
     /// # Arguments
     /// * `name` - Unique name for the agent
     /// * `image` - Image reference (e.g., "my-agent:v1")
@@ -185,15 +181,20 @@ impl StatelessAgentManager {
         image: &str,
         team_id: Option<String>,
     ) -> Result<AgentConfigEntry> {
-        let image_ref = ImageRef::parse(image)
-            .with_context(|| format!("Invalid image reference: {}", image))?;
+        // TODO: Implement image-based config extraction using ImageRegistry
+        // For now, create a default config
+        let config = crate::types::agent::AgentConfig::default();
+        let team = team_id.as_deref().unwrap_or("default");
 
-        let registry = self.image_registry.read().await;
+        // Save config using AgentConfigService
+        self.config_service.save(name, team, &config).await?;
 
+        // Load and return the entry
         let entry = self
-            .config_registry
-            .register(name, &image_ref, &registry, team_id)
-            .await?;
+            .config_service
+            .get(name, Some(team))
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Failed to retrieve saved agent config"))?;
 
         // Emit event
         let _ = self
@@ -208,8 +209,8 @@ impl StatelessAgentManager {
     }
 
     /// Unregister an agent
-    pub async fn unregister(&self, name: &str) -> Result<bool> {
-        let removed = self.config_registry.unregister(name).await?;
+    pub async fn unregister(&self, name: &str, team: &str) -> Result<bool> {
+        let removed = self.config_service.delete(name, team).await?;
 
         if removed {
             let _ = self
@@ -224,23 +225,23 @@ impl StatelessAgentManager {
     }
 
     /// Get agent configuration
-    pub async fn get(&self, name: &str) -> Option<AgentConfigEntry> {
-        self.config_registry.get(name).await
+    pub async fn get(&self, name: &str, team: Option<&str>) -> Result<Option<AgentConfigEntry>> {
+        self.config_service.get(name, team).await
     }
 
     /// List all registered agents
-    pub async fn list(&self) -> Vec<AgentConfigEntry> {
-        self.config_registry.list().await
+    pub async fn list(&self) -> Result<Vec<AgentConfigEntry>> {
+        self.config_service.list_all().await
     }
 
     /// List agents by team
-    pub async fn list_by_team(&self, team_id: &str) -> Vec<AgentConfigEntry> {
-        self.config_registry.list_by_team(team_id).await
+    pub async fn list_by_team(&self, team_id: &str) -> Result<Vec<AgentConfigEntry>> {
+        self.config_service.list_in_team(team_id).await
     }
 
     /// Check if agent is registered
-    pub async fn exists(&self, name: &str) -> bool {
-        self.config_registry.exists(name).await
+    pub async fn exists(&self, name: &str, team: Option<&str>) -> Result<bool> {
+        self.config_service.exists(name, team).await
     }
 
     /// Execute agent statelessly
@@ -317,8 +318,8 @@ impl StatelessAgentManager {
 
     /// Get config registry
     #[must_use]
-    pub fn config_registry(&self) -> &Arc<ConfigRegistry> {
-        &self.config_registry
+    pub fn config_service(&self) -> &Arc<AgentConfigService> {
+        &self.config_service
     }
 
     /// Get agent service

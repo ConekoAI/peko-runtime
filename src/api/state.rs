@@ -3,10 +3,11 @@
 //! Shared state accessible to all API route handlers.
 //! Updated for stateless cold-start architecture.
 
-use crate::agent::config_registry::ConfigRegistry;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
-use crate::common::services::{AgentCreationService, MessageService, SessionService};
+use crate::common::services::{
+    AgentConfigService, AgentCreationService, MessageService, SessionService,
+};
 use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
@@ -61,8 +62,8 @@ pub struct AppState {
     /// Observability hub for audit, metrics, and tracing
     observability: Arc<Observability>,
 
-    /// Agent configuration registry (stateless)
-    config_registry: Arc<ConfigRegistry>,
+    /// Agent configuration service (unified)
+    config_service: Arc<AgentConfigService>,
 
     /// Stateless agent execution service
     agent_service: Arc<StatelessAgentService>,
@@ -92,7 +93,7 @@ impl std::fmt::Debug for AppState {
             .field("host", &self.host)
             .field("config", &self.config)
             .field("team_manager", &"<TeamManager>")
-            .field("config_registry", &"<ConfigRegistry>")
+            .field("config_service", &"<AgentConfigService>")
             .field("agent_service", &"<StatelessAgentService>")
             .finish()
     }
@@ -138,21 +139,17 @@ impl AppState {
             .unwrap_or_else(|| data_dir.join("cache"));
 
         // Create stateless components
-        let config_registry = Arc::new(
-            ConfigRegistry::new(data_dir.join("configs"))
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create config registry: {}", e))?,
-        );
-
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             config_dir.clone(),
             data_dir.clone(),
             cache_dir.clone(),
         );
 
+        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+
         let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_registry.clone(), path_resolver)
+            StatelessAgentService::new(config_service.clone(), path_resolver)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create agent service: {}", e))?,
         );
@@ -161,7 +158,7 @@ impl AppState {
         let team_manager = Arc::new(TeamManager::new());
 
         let agent_creation_service = Arc::new(AgentCreationService::new(
-            config_registry.clone(),
+            config_service.clone(),
             path_resolver_clone.clone(),
             team_manager.clone(),
         ));
@@ -184,7 +181,7 @@ impl AppState {
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability: Arc::new(Observability::new("api")),
-            config_registry,
+            config_service,
             agent_service,
             lifecycle,
             agent_creation_service,
@@ -211,21 +208,17 @@ impl AppState {
             .unwrap_or_else(|| data_dir.join("cache"));
 
         // Create stateless components
-        let config_registry = Arc::new(
-            ConfigRegistry::new(data_dir.join("configs"))
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create config registry: {}", e))?,
-        );
-
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             config_dir.clone(),
             data_dir.clone(),
             cache_dir.clone(),
         );
 
+        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+
         let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
-            StatelessAgentService::new(config_registry.clone(), path_resolver)
+            StatelessAgentService::new(config_service.clone(), path_resolver)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create agent service: {}", e))?,
         );
@@ -234,7 +227,7 @@ impl AppState {
         let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
 
         let agent_creation_service = Arc::new(AgentCreationService::new(
-            config_registry.clone(),
+            config_service.clone(),
             path_resolver_clone.clone(),
             team_manager.clone(),
         ));
@@ -257,7 +250,7 @@ impl AppState {
             event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability: Arc::new(Observability::new("api")),
-            config_registry,
+            config_service,
             agent_service,
             lifecycle,
             agent_creation_service,
@@ -355,9 +348,9 @@ impl AppState {
         *registry_config = config;
     }
 
-    /// Get the configuration registry
-    pub fn config_registry(&self) -> &Arc<ConfigRegistry> {
-        &self.config_registry
+    /// Get the agent configuration service
+    pub fn config_service(&self) -> &Arc<AgentConfigService> {
+        &self.config_service
     }
 
     /// Get the agent service
@@ -386,8 +379,9 @@ impl AppState {
     }
 
     /// Get the count of registered agents
-    pub async fn agent_count(&self) -> usize {
-        self.config_registry.count().await
+    pub async fn agent_count(&self) -> anyhow::Result<usize> {
+        let agents = self.config_service.list_all().await?;
+        Ok(agents.len())
     }
 
     /// Get the count of active executions

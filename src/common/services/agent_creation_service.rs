@@ -3,11 +3,10 @@
 //! Provides unified agent creation for both CLI and HTTP API.
 //! Supports creating agents from images or from direct configuration.
 
-use crate::agent::config_registry::ConfigRegistry;
 use crate::common::identifiers::{parse_agent_identifier_with_override, validate_agent_name};
 use crate::common::paths::PathResolver;
 use crate::common::services::auth_resolver::AuthResolver;
-use crate::common::services::AgentConfigBuilder;
+use crate::common::services::{AgentConfigBuilder, AgentConfigService};
 use crate::team::TeamManager;
 use crate::types::agent::AgentConfig;
 use anyhow::{Context, Result};
@@ -119,7 +118,7 @@ pub struct AgentCreationResult {
 
 /// Unified service for creating agents
 pub struct AgentCreationService {
-    config_registry: Arc<ConfigRegistry>,
+    config_service: Arc<AgentConfigService>,
     path_resolver: PathResolver,
     team_manager: Arc<TeamManager>,
 }
@@ -127,12 +126,12 @@ pub struct AgentCreationService {
 impl AgentCreationService {
     /// Create a new agent creation service
     pub fn new(
-        config_registry: Arc<ConfigRegistry>,
+        config_service: Arc<AgentConfigService>,
         path_resolver: PathResolver,
         team_manager: Arc<TeamManager>,
     ) -> Self {
         Self {
-            config_registry,
+            config_service,
             path_resolver,
             team_manager,
         }
@@ -171,7 +170,7 @@ impl AgentCreationService {
         };
 
         // Check if agent already exists
-        if self.config_registry.exists(agent_name).await {
+        if self.config_service.exists(agent_name, Some(team)).await? {
             anyhow::bail!(
                 "Agent '{}' already exists in team '{}'. Use update() to modify.",
                 agent_name,
@@ -202,17 +201,11 @@ impl AgentCreationService {
             }
         };
 
-        // Register in ConfigRegistry
-        let _entry = self
-            .config_registry
-            .register_direct(
-                agent_name,
-                config,
-                Some(team.to_string()),
-                "created_via_api",
-            )
+        // Save agent configuration to TOML
+        self.config_service
+            .save(agent_name, team, &config)
             .await
-            .with_context(|| format!("Failed to register agent '{}'", agent_name))?;
+            .with_context(|| format!("Failed to save agent '{}' config", agent_name))?;
 
         // Create agent directory structure (workspace, sessions, etc.)
         let config_path = self.setup_agent_directory(agent_name, team).await?;

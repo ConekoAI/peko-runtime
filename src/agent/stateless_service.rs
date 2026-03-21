@@ -12,9 +12,9 @@
 //! - Agent is dropped after execution (stateless)
 //! - Session state is persisted separately
 
-use crate::agent::config_registry::ConfigRegistry;
 use crate::agent::Agent;
 use crate::common::paths::PathResolver;
+use crate::common::services::AgentConfigService;
 use crate::engine::AgenticEvent;
 use crate::providers::{ChatMessage, MessageRole, TokenUsage};
 use crate::session::events::{
@@ -138,8 +138,8 @@ pub struct ExecutionMetrics {
 
 /// Stateless agent service - cold-start execution
 pub struct StatelessAgentService {
-    /// Configuration registry
-    config_registry: Arc<ConfigRegistry>,
+    /// Agent configuration service
+    config_service: Arc<AgentConfigService>,
     /// Default execution timeout
     default_timeout: Duration,
     /// Execution metrics
@@ -150,15 +150,15 @@ pub struct StatelessAgentService {
 
 /// Get team-aware session directory for an agent
 async fn get_agent_session_dir(
-    config_registry: &ConfigRegistry,
+    config_service: &AgentConfigService,
     path_resolver: &PathResolver,
     agent_name: &str,
 ) -> Result<PathBuf> {
     // Look up agent to get team
-    let team_id: Option<String> = config_registry
-        .get(agent_name)
-        .await
-        .and_then(|entry| entry.team_id.clone());
+    let team_id: Option<String> = config_service
+        .get(agent_name, None)
+        .await?
+        .map(|entry| entry.team);
 
     Ok(path_resolver.agent_sessions_dir(agent_name, team_id.as_deref()))
 }
@@ -166,11 +166,11 @@ async fn get_agent_session_dir(
 impl StatelessAgentService {
     /// Create a new stateless agent service
     pub async fn new(
-        config_registry: Arc<ConfigRegistry>,
+        config_service: Arc<AgentConfigService>,
         path_resolver: PathResolver,
     ) -> Result<Self> {
         let service = Self {
-            config_registry,
+            config_service,
             default_timeout: Duration::from_secs(300), // 5 minutes default
             metrics: RwLock::new(ExecutionMetrics::default()),
             path_resolver,
@@ -231,10 +231,10 @@ impl StatelessAgentService {
 
         // 1. Load agent configuration (fast - from in-memory cache)
         let config_entry = self
-            .config_registry
-            .get(&request.agent_name)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Agent not registered: {}", request.agent_name))?;
+            .config_service
+            .get(&request.agent_name, None)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
         debug!(
             "Loaded config for '{}' in {:?}",
@@ -363,10 +363,10 @@ impl StatelessAgentService {
     ) -> Result<tokio::sync::mpsc::Receiver<AgenticEvent>> {
         // Load config
         let config_entry = self
-            .config_registry
-            .get(&request.agent_name)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Agent not registered: {}", request.agent_name))?;
+            .config_service
+            .get(&request.agent_name, None)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
         // Load history
         let history = self
@@ -408,38 +408,35 @@ impl StatelessAgentService {
         session_id: &str,
     ) -> Result<Vec<ChatMessage>> {
         let sessions_dir =
-            get_agent_session_dir(&self.config_registry, &self.path_resolver, agent_name).await?;
-        let session_path = sessions_dir.join(session_id);
-        let jsonl_path = session_path.join("messages.jsonl");
+            get_agent_session_dir(&self.config_service, &self.path_resolver, agent_name).await?;
 
-        if !jsonl_path.exists() {
-            return Ok(Vec::new());
-        }
+        // Use standard SessionStorage (reads {session_id}.jsonl)
+        let storage = SessionStorage::new(sessions_dir);
 
-        // Read messages from JSONL
-        let content = tokio::fs::read_to_string(&jsonl_path).await?;
+        // Load events from storage
+        let events = storage.load_events(session_id).await?;
         let mut messages = Vec::new();
 
-        for line in content.lines().filter(|l| !l.is_empty()) {
-            match serde_json::from_str::<JsonlMessage>(line) {
-                Ok(msg) => {
-                    let role = match msg.role.as_str() {
-                        "system" => MessageRole::System,
-                        "user" => MessageRole::User,
-                        "assistant" => MessageRole::Assistant,
-                        _ => MessageRole::User,
-                    };
-
+        for event in events {
+            match event {
+                SessionEvent::UserMessage(msg) => {
                     messages.push(ChatMessage {
-                        role,
+                        role: MessageRole::User,
                         content: vec![ContentBlock::Text { text: msg.content }],
                         tool_calls: None,
                         tool_call_id: None,
                     });
                 }
-                Err(e) => {
-                    warn!("Failed to parse message line: {}", e);
+                SessionEvent::AssistantMessage(msg) => {
+                    messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: vec![ContentBlock::Text { text: msg.content }],
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
                 }
+                // Skip other event types for history loading
+                _ => {}
             }
         }
 
@@ -470,7 +467,7 @@ impl StatelessAgentService {
         _tool_calls: &[ToolCallRecord],
     ) -> Result<()> {
         let sessions_dir =
-            get_agent_session_dir(&self.config_registry, &self.path_resolver, agent_name).await?;
+            get_agent_session_dir(&self.config_service, &self.path_resolver, agent_name).await?;
 
         // Use standard SessionStorage (stores as {session_id}.jsonl)
         let storage = SessionStorage::new(sessions_dir.clone());
@@ -582,15 +579,6 @@ impl StatelessAgentService {
             metrics.avg_cold_start_ms = metrics.total_duration_ms / metrics.total_executions;
         }
     }
-}
-
-/// JSONL message format for session storage
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct JsonlMessage {
-    pub id: String,
-    pub role: String,
-    pub content: String,
-    pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
 #[cfg(test)]
