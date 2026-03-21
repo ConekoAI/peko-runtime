@@ -223,17 +223,15 @@ impl AppState {
         data_dir: PathBuf,
     ) -> anyhow::Result<Self> {
         let workspace_path: PathBuf = workspace_path.into();
-        let config_dir = dirs::home_dir()
-            .map(|d| d.join(".pekobot"))
-            .unwrap_or_else(|| PathBuf::from(".").join(".pekobot"));
         let cache_dir = dirs::cache_dir()
             .map(|d| d.join("pekobot"))
             .unwrap_or_else(|| data_dir.join("cache"));
 
         // Create stateless components
+        // Use data_dir for config as well to ensure isolation in tests
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            config_dir.clone(),
-            data_dir.clone(),
+            data_dir.join("config"),
+            data_dir.join("data"),
             cache_dir.clone(),
         );
 
@@ -274,7 +272,7 @@ impl AppState {
         Ok(Self {
             started_at: SystemTime::now(),
             workspace_path,
-            config_dir,
+            config_dir: data_dir.join("config"),
             data_dir: data_dir.clone(),
             cache_dir,
             port,

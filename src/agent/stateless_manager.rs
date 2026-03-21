@@ -122,14 +122,11 @@ impl StatelessAgentManager {
         std::fs::create_dir_all(&data_dir)?;
 
         // Create agent configuration service
+        // Use data_dir for both config and data to ensure isolation in tests
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            dirs::home_dir()
-                .map(|d| d.join(".pekobot"))
-                .unwrap_or_else(|| PathBuf::from(".").join(".pekobot")),
-            data_dir.clone(),
-            dirs::cache_dir()
-                .map(|d| d.join("pekobot"))
-                .unwrap_or_else(|| data_dir.join("cache")),
+            data_dir.join("config"),
+            data_dir.join("data"),
+            data_dir.join("cache"),
         );
         let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
 
