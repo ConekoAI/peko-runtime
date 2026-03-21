@@ -406,6 +406,12 @@ impl ConfigRegistry {
     /// Save configuration entry to disk
     async fn save(&self, entry: &AgentConfigEntry) -> Result<()> {
         let path = self.config_path(&entry.name);
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
         let json =
             serde_json::to_string_pretty(entry).with_context(|| "Failed to serialize config")?;
 

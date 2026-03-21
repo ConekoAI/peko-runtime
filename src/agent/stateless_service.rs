@@ -17,8 +17,15 @@ use crate::agent::Agent;
 use crate::common::paths::PathResolver;
 use crate::engine::AgenticEvent;
 use crate::providers::{ChatMessage, MessageRole, TokenUsage};
+use crate::session::events::{
+    AssistantMessageEvent, EventEnvelope, MessageSource, SessionCreatedEvent, SessionEvent,
+    UserMessageEvent,
+};
+use crate::session::index::{SessionEntry, SessionIndex};
+use crate::session::jsonl::SessionStorage;
 use crate::session::manager::SessionManager;
 use crate::session::types::Peer;
+use chrono::Utc;
 // Note: Session storage uses jsonl module directly
 use crate::types::message::ContentBlock;
 use anyhow::{Context, Result};
@@ -464,38 +471,95 @@ impl StatelessAgentService {
     ) -> Result<()> {
         let sessions_dir =
             get_agent_session_dir(&self.config_registry, &self.path_resolver, agent_name).await?;
-        let session_path = sessions_dir.join(session_id);
-        tokio::fs::create_dir_all(&session_path).await?;
 
-        let jsonl_path = session_path.join("messages.jsonl");
+        // Use standard SessionStorage (stores as {session_id}.jsonl)
+        let storage = SessionStorage::new(sessions_dir.clone());
 
-        // Append user message
-        let user_line = serde_json::to_string(&JsonlMessage {
-            id: Uuid::new_v4().to_string(),
-            role: "user".to_string(),
+        // Check if this is a new session
+        let is_new = !storage.session_exists(session_id).await;
+
+        if is_new {
+            // Create session.created event
+            let created_event = SessionEvent::SessionCreated(SessionCreatedEvent {
+                envelope: EventEnvelope {
+                    id: "evt_001".to_string(),
+                    session_id: session_id.to_string(),
+                    ts: Utc::now(),
+                    seq: 1,
+                },
+                instance_id: agent_name.to_string(),
+                image_digest: String::new(),
+                parent_session_id: None,
+                trigger: crate::session::events::SessionTrigger::User,
+            });
+            storage.append_event(session_id, &created_event).await?;
+        }
+
+        // Append user message event
+        let user_event = SessionEvent::UserMessage(UserMessageEvent {
+            envelope: EventEnvelope {
+                id: format!(
+                    "evt_{:03}",
+                    storage.load_events(session_id).await?.len() as u64 + 1
+                ),
+                session_id: session_id.to_string(),
+                ts: Utc::now(),
+                seq: storage.load_events(session_id).await?.len() as u64 + 1,
+            },
+            message_id: format!("msg_{}", Uuid::new_v4().simple()),
             content: user_message.to_string(),
-            timestamp: chrono::Utc::now(),
-        })?;
+            source: MessageSource::User,
+        });
+        storage.append_event(session_id, &user_event).await?;
 
-        // Append assistant response
-        let assistant_line = serde_json::to_string(&JsonlMessage {
-            id: Uuid::new_v4().to_string(),
-            role: "assistant".to_string(),
+        // Append assistant message event
+        let assistant_event = SessionEvent::AssistantMessage(AssistantMessageEvent {
+            envelope: EventEnvelope {
+                id: format!(
+                    "evt_{:03}",
+                    storage.load_events(session_id).await?.len() as u64 + 1
+                ),
+                session_id: session_id.to_string(),
+                ts: Utc::now(),
+                seq: storage.load_events(session_id).await?.len() as u64 + 1,
+            },
+            message_id: format!("msg_{}", Uuid::new_v4().simple()),
             content: assistant_response.to_string(),
-            timestamp: chrono::Utc::now(),
-        })?;
+            usage: crate::session::events::TokenUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+            },
+        });
+        storage.append_event(session_id, &assistant_event).await?;
 
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&jsonl_path)
-            .await?;
+        // Update SessionIndex so sessions appear in listings
+        let transcript_file = format!("{}.jsonl", session_id);
+        let mut index = SessionIndex::open(&sessions_dir);
 
-        use tokio::io::AsyncWriteExt;
-        file.write_all(user_line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
-        file.write_all(assistant_line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
+        // Check if session already exists in index
+        match index.get(session_id).await? {
+            Some(mut entry) => {
+                // Update existing entry
+                entry.increment_messages();
+                entry.increment_messages(); // Both user and assistant messages
+                entry.increment_turn();
+                entry.touch();
+                index.insert(entry).await?;
+            }
+            None => {
+                // Create new entry
+                let entry = SessionEntry::new(
+                    session_id.to_string(),
+                    agent_name.to_string(),
+                    transcript_file,
+                );
+                index.insert(entry).await?;
+            }
+        }
+
+        // Persist the index changes
+        index.save().await?;
 
         Ok(())
     }
