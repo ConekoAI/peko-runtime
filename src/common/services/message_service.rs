@@ -2,9 +2,15 @@
 //!
 //! Provides unified message sending for both CLI and HTTP API.
 //! Handles session management, agent execution, and response formatting.
+//!
+//! This service now uses SessionResolver for consistent session resolution
+//! across CLI and HTTP API interfaces.
 
 use crate::agent::stateless_service::{ExecutionRequest, StatelessAgentService};
+use crate::common::paths::PathResolver;
+use crate::common::services::SessionResolver;
 use crate::providers::TokenUsage;
+use crate::session::types::ChannelType;
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Instant;
@@ -128,28 +134,51 @@ pub enum ChatEvent {
 }
 
 /// Unified message service
+///
+/// Uses SessionResolver for consistent session resolution between CLI and API.
 pub struct MessageService {
     agent_service: Arc<StatelessAgentService>,
+    session_resolver: SessionResolver,
 }
 
 impl MessageService {
     /// Create a new message service
-    pub fn new(agent_service: Arc<StatelessAgentService>) -> Self {
-        Self { agent_service }
+    pub fn new(agent_service: Arc<StatelessAgentService>, path_resolver: PathResolver) -> Self {
+        let session_resolver = SessionResolver::new(path_resolver);
+        Self {
+            agent_service,
+            session_resolver,
+        }
     }
 
     /// Send a message and get a blocking response
     ///
-    /// This is used by CLI and non-streaming API requests
+    /// This is used by CLI and non-streaming API requests.
+    /// Uses SessionResolver for consistent session resolution.
     #[instrument(skip(self, request), fields(agent = %request.agent_name))]
     pub async fn send_message(&self, request: MessageRequest) -> Result<MessageResult> {
         let start = Instant::now();
 
-        // Generate or use provided session ID
-        let (session_id, is_new_session) = if request.new_session || request.session_id.is_none() {
-            (generate_session_id(), true)
-        } else {
-            (request.session_id.unwrap(), false)
+        // Use SessionResolver for consistent session resolution
+        let team = request.team.as_deref();
+        let channel = ChannelType::Http; // HTTP API uses Http channel
+        let channel_id = "default";
+
+        let (session_ctx, is_new_session) = self
+            .session_resolver
+            .resolve_session(
+                &request.agent_name,
+                team,
+                channel,
+                channel_id,
+                request.session_id.clone(),
+                request.new_session,
+            )
+            .await?;
+
+        let session_id = {
+            let base = session_ctx.hybrid.base.read().await;
+            base.id.clone()
         };
 
         info!(
@@ -206,17 +235,33 @@ impl MessageService {
 
     /// Send a message with streaming response
     ///
-    /// Returns a channel that receives events as they occur
+    /// Returns a channel that receives events as they occur.
+    /// Uses SessionResolver for consistent session resolution.
     #[instrument(skip(self, request), fields(agent = %request.agent_name))]
     pub async fn send_message_streaming(
         &self,
         request: MessageRequest,
     ) -> Result<mpsc::Receiver<ChatEvent>> {
-        // Generate or use provided session ID
-        let (session_id, _is_new_session) = if request.new_session || request.session_id.is_none() {
-            (generate_session_id(), true)
-        } else {
-            (request.session_id.unwrap(), false)
+        // Use SessionResolver for consistent session resolution
+        let team = request.team.as_deref();
+        let channel = ChannelType::Http; // HTTP API uses Http channel
+        let channel_id = "default";
+
+        let (session_ctx, _is_new_session) = self
+            .session_resolver
+            .resolve_session(
+                &request.agent_name,
+                team,
+                channel,
+                channel_id,
+                request.session_id.clone(),
+                request.new_session,
+            )
+            .await?;
+
+        let session_id = {
+            let base = session_ctx.hybrid.base.read().await;
+            base.id.clone()
         };
 
         info!(
@@ -314,8 +359,11 @@ impl MessageService {
 }
 
 /// Generate a unique session ID
+/// 
+/// Uses standard UUID format to match CLI session generation.
+/// This ensures consistency between HTTP API and CLI interfaces.
 pub fn generate_session_id() -> String {
-    format!("sess_{}", Uuid::new_v4().simple())
+    Uuid::new_v4().to_string()
 }
 
 #[cfg(test)]
@@ -343,8 +391,15 @@ mod tests {
         let id1 = generate_session_id();
         let id2 = generate_session_id();
 
-        assert!(id1.starts_with("sess_"));
-        assert!(id2.starts_with("sess_"));
+        // Should be valid UUID format (36 characters with hyphens)
+        assert_eq!(id1.len(), 36);
+        assert_eq!(id2.len(), 36);
+        // Should contain hyphens at expected positions
+        assert_eq!(id1.chars().nth(8), Some('-'));
+        assert_eq!(id1.chars().nth(13), Some('-'));
+        assert_eq!(id1.chars().nth(18), Some('-'));
+        assert_eq!(id1.chars().nth(23), Some('-'));
+        // Should be unique
         assert_ne!(id1, id2);
     }
 }

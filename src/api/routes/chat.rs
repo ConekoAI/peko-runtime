@@ -297,8 +297,10 @@ mod tests {
     fn test_generate_session_id() {
         let id1 = generate_session_id();
         let id2 = generate_session_id();
-        assert!(id1.starts_with("sess_"));
-        assert!(id2.starts_with("sess_"));
+        // Should be valid UUID format (36 characters with hyphens)
+        assert_eq!(id1.len(), 36);
+        assert_eq!(id2.len(), 36);
+        // Should be unique
         assert_ne!(id1, id2);
     }
 }

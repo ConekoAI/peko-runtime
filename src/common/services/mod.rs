@@ -9,6 +9,7 @@ pub mod agent_creation_service;
 pub mod agent_service;
 pub mod auth_resolver;
 pub mod message_service;
+pub mod session_resolver;
 pub mod session_service;
 pub mod team_service;
 
@@ -20,6 +21,7 @@ pub use agent_creation_service::{
 pub use agent_service::AgentService;
 pub use auth_resolver::{AuthResolver, DirectAuthResolver, FilesystemAuthResolver};
 pub use message_service::{ChatEvent, MessageRequest, MessageResult, MessageService, ToolCallInfo};
+pub use session_resolver::{ResolutionStrategy, SessionResolver};
 pub use session_service::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, SessionInfo, SessionService,
 };

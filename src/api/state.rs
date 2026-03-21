@@ -163,7 +163,7 @@ impl AppState {
             team_manager.clone(),
         ));
 
-        let message_service = Arc::new(MessageService::new(agent_service.clone()));
+        let message_service = Arc::new(MessageService::new(agent_service.clone(), path_resolver_clone.clone()));
 
         let session_service = Arc::new(SessionService::new(path_resolver_clone));
 
@@ -232,7 +232,7 @@ impl AppState {
             team_manager.clone(),
         ));
 
-        let message_service = Arc::new(MessageService::new(agent_service.clone()));
+        let message_service = Arc::new(MessageService::new(agent_service.clone(), path_resolver_clone.clone()));
 
         let session_service = Arc::new(SessionService::new(path_resolver_clone));
 

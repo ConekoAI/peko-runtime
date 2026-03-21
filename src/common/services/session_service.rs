@@ -284,6 +284,8 @@ impl SessionService {
     }
 
     /// Delete a session
+    ///
+    /// Removes both the session JSONL file and its metadata from the index.
     pub async fn delete_session(
         &self,
         agent_name: &str,
@@ -304,11 +306,16 @@ impl SessionService {
             );
         }
 
-        // Delete the session
+        // Delete the session file
         storage
             .delete_session(session_id)
             .await
             .with_context(|| format!("Failed to delete session '{}'", session_id))?;
+
+        // CRITICAL: Remove from SessionIndex so it doesn't appear in listings
+        let mut index = SessionIndex::open(&sessions_dir);
+        index.remove(session_id).await?;
+        index.save().await?;
 
         // Also remove from active preference if set
         let active_pref_path = sessions_dir.join(".active.json");
