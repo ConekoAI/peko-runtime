@@ -50,7 +50,7 @@ pub use index::{
     migrate_to_v2, MaintenanceConfig, MaintenanceReport, MigrationReport, PeerIndex, PeerInfo,
     SessionEntry, SessionIndex,
 };
-pub use jsonl::{SessionEntry as JsonlSessionEntry, SessionStorage};
+pub use jsonl::{NormalizedEntry, SessionEntry as JsonlSessionEntry, SessionStorage};
 pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
     parse_session_key, parse_session_key_v2, ChatType, ParsedSessionKeyV2, SessionScope,

@@ -19,11 +19,17 @@
 
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
+use crate::session::events::{
+    generate_event_id, generate_message_id, AssistantMessageEvent, EventEnvelope,
+    MessageSource, SessionEvent, ThinkingEvent, TokenUsage as EventTokenUsage, ToolResultEvent,
+    UserMessageEvent,
+};
 use crate::session::index::SessionEntry;
 use crate::session::jsonl::SessionStorage;
 use crate::session::types::Peer;
 use crate::types::ContentBlock;
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::path::PathBuf;
 use tokio::fs;
 
@@ -456,144 +462,194 @@ impl UnifiedSession {
     }
 
     /// Add a user message
+    /// 
+    /// Writes as Event Format (user.message) for consistency with the Pekobot
+    /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_user(&mut self, content: impl Into<String>) -> Result<()> {
-        let msg_id = self
-            .storage
-            .append_message(
-                &self.id,
-                self.last_message_id.clone(),
-                "user",
-                vec![ContentBlock::Text {
-                    text: content.into(),
-                }],
-            )
-            .await?;
+        let content_str = content.into();
+        let msg_id = generate_message_id();
+        let seq = self.message_count as u64 + 1;
+        
+        let event = SessionEvent::UserMessage(UserMessageEvent {
+            envelope: EventEnvelope {
+                id: generate_event_id(seq),
+                session_id: self.id.clone(),
+                ts: Utc::now(),
+                seq,
+            },
+            message_id: msg_id.clone(),
+            content: content_str,
+            source: MessageSource::User,
+        });
+        
+        self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
         Ok(())
     }
 
     /// Add an assistant message with optional tool calls
+    /// 
+    /// Writes as Event Format (assistant.message) for consistency with the Pekobot
+    /// session specification (DATA_MODEL.md §5.3).
+    /// 
+    /// Note: Tool calls are currently stored in the message content as they are
+    /// part of the assistant's response. Dedicated tool.call events may be added
+    /// in the future for more granular tracking.
     pub async fn add_assistant(
         &mut self,
         content: impl Into<String>,
         tool_calls: Option<Vec<ToolCall>>,
     ) -> Result<()> {
         let content_str = content.into();
-        let content_blocks = if let Some(calls) = tool_calls {
-            let mut blocks = vec![];
-            if !content_str.is_empty() {
-                blocks.push(ContentBlock::Text { text: content_str });
-            }
+        
+        // For tool calls, we include them in the content for now
+        // The Event Format assistant.message has a simple text content field
+        // TODO: Add separate tool.call events for granular tool tracking
+        let final_content = if let Some(calls) = tool_calls {
+            let mut full_content = content_str;
             for (idx, call) in calls.iter().enumerate() {
-                blocks.push(ContentBlock::ToolCall {
-                    id: format!("call_{}_{}", self.id, idx),
-                    name: call.name.clone(),
-                    arguments: call.parameters.clone(),
-                });
+                let tool_call_str = format!(
+                    "\n[ToolCall: {}({})]",
+                    call.name,
+                    serde_json::to_string(&call.parameters).unwrap_or_default()
+                );
+                full_content.push_str(&tool_call_str);
             }
-            blocks
+            full_content
         } else {
-            vec![ContentBlock::Text { text: content_str }]
+            content_str
         };
 
-        let msg_id = self
-            .storage
-            .append_message(
-                &self.id,
-                self.last_message_id.clone(),
-                "assistant",
-                content_blocks,
-            )
-            .await?;
+        let msg_id = generate_message_id();
+        let seq = self.message_count as u64 + 1;
+        
+        let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
+            envelope: EventEnvelope {
+                id: generate_event_id(seq),
+                session_id: self.id.clone(),
+                ts: Utc::now(),
+                seq,
+            },
+            message_id: msg_id.clone(),
+            content: final_content,
+            usage: EventTokenUsage {
+                input_tokens: self.input_tokens as u32,
+                output_tokens: self.output_tokens as u32,
+                total_tokens: (self.input_tokens + self.output_tokens) as u32,
+            },
+        });
+        
+        self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
         Ok(())
     }
 
     /// Add an assistant message with tool calls (with ContentBlock tool calls)
+    /// 
+    /// Writes as Event Format (assistant.message) for consistency with the Pekobot
+    /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_assistant_with_tool_calls(
         &mut self,
         content: impl Into<String>,
         tool_calls: Vec<ContentBlock>,
     ) -> Result<()> {
         let content_str = content.into();
-        let mut content_blocks = vec![];
+        let mut final_content = content_str;
 
-        // Add text if present
-        if !content_str.is_empty() {
-            content_blocks.push(ContentBlock::Text { text: content_str });
-        }
-
-        // Add tool calls with their original IDs
+        // Add tool calls as text annotations
         for block in tool_calls {
-            if let ContentBlock::ToolCall {
-                id,
-                name,
-                arguments,
-            } = block
-            {
-                content_blocks.push(ContentBlock::ToolCall {
-                    id,
+            if let ContentBlock::ToolCall { name, arguments, .. } = block {
+                let tool_call_str = format!(
+                    "\n[ToolCall: {}({})]",
                     name,
-                    arguments,
-                });
+                    serde_json::to_string(&arguments).unwrap_or_default()
+                );
+                final_content.push_str(&tool_call_str);
             }
         }
 
-        let msg_id = self
-            .storage
-            .append_message(
-                &self.id,
-                self.last_message_id.clone(),
-                "assistant",
-                content_blocks,
-            )
-            .await?;
+        let msg_id = generate_message_id();
+        let seq = self.message_count as u64 + 1;
+        
+        let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
+            envelope: EventEnvelope {
+                id: generate_event_id(seq),
+                session_id: self.id.clone(),
+                ts: Utc::now(),
+                seq,
+            },
+            message_id: msg_id.clone(),
+            content: final_content,
+            usage: EventTokenUsage {
+                input_tokens: self.input_tokens as u32,
+                output_tokens: self.output_tokens as u32,
+                total_tokens: (self.input_tokens + self.output_tokens) as u32,
+            },
+        });
+        
+        self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
         Ok(())
     }
 
     /// Add a tool result
+    /// 
+    /// Writes as Event Format (tool.result) for consistency with the Pekobot
+    /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_tool_result(
         &mut self,
         tool_call_id: impl Into<String>,
-        tool_name: impl Into<String>,
+        _tool_name: impl Into<String>,
         result: impl Into<String>,
     ) -> Result<()> {
-        self.storage
-            .append_tool_result(
-                &self.id,
-                &tool_call_id.into(),
-                &tool_name.into(),
-                result.into(),
-                false,
-            )
-            .await?;
+        let tool_call_id_str = tool_call_id.into();
+        let result_str = result.into();
+        let seq = self.message_count as u64 + 1;
+        
+        let event = SessionEvent::ToolResult(ToolResultEvent {
+            envelope: EventEnvelope {
+                id: generate_event_id(seq),
+                session_id: self.id.clone(),
+                ts: Utc::now(),
+                seq,
+            },
+            tool_call_id: tool_call_id_str,
+            output: Some(result_str),
+            error: None,
+            duration_ms: 0, // TODO: Track actual duration
+        });
+        
+        self.storage.append_event(&self.id, &event).await?;
         // Tool results don't update last_message_id or count
         Ok(())
     }
 
     /// Add a thinking block (streaming reasoning)
+    /// 
+    /// Writes as Event Format (thinking) for consistency with the Pekobot
+    /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_thinking(
         &mut self,
         thinking: impl Into<String>,
-        signature: Option<String>,
+        _signature: Option<String>,
     ) -> Result<()> {
-        let msg_id = self
-            .storage
-            .append_message(
-                &self.id,
-                self.last_message_id.clone(),
-                "assistant",
-                vec![ContentBlock::Thinking {
-                    text: thinking.into(),
-                    signature,
-                }],
-            )
-            .await?;
-        self.last_message_id = Some(msg_id);
+        let content = thinking.into();
+        let seq = self.message_count as u64 + 1;
+        
+        let event = SessionEvent::Thinking(ThinkingEvent {
+            envelope: EventEnvelope {
+                id: generate_event_id(seq),
+                session_id: self.id.clone(),
+                ts: Utc::now(),
+                seq,
+            },
+            content,
+        });
+        
+        self.storage.append_event(&self.id, &event).await?;
         // Thinking blocks don't count as messages for stats
         Ok(())
     }
@@ -603,50 +659,51 @@ impl UnifiedSession {
     // ============================================================
 
     /// Load conversation history
+    /// 
+    /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
+    /// This ensures backward compatibility during the format transition.
     pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
         use crate::providers::MessageRole;
+        use crate::session::NormalizedEntry;
 
-        let entries = self.storage.load_session(&self.id).await?;
+        let entries = self.storage.load_normalized(&self.id).await?;
         let mut messages = Vec::new();
 
         for entry in entries {
             match entry {
-                crate::session::JsonlSessionEntry::Message { message, .. } => {
-                    let role = match message.role.as_str() {
-                        "system" => MessageRole::System,
-                        "user" => MessageRole::User,
-                        "assistant" => MessageRole::Assistant,
-                        "tool" => MessageRole::Tool,
-                        _ => continue,
-                    };
-
+                NormalizedEntry::UserMessage { content, .. } => {
                     messages.push(ChatMessage {
-                        role,
-                        content: message.content,
+                        role: MessageRole::User,
+                        content: vec![ContentBlock::Text { text: content }],
                         tool_calls: None,
                         tool_call_id: None,
                     });
                 }
-                crate::session::JsonlSessionEntry::ToolResult {
-                    tool_call_id,
-                    content,
-                    ..
-                } => {
-                    let result_text: String = content
-                        .iter()
-                        .filter_map(|c| match c {
-                            ContentBlock::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-
+                NormalizedEntry::AssistantMessage { content, .. } => {
+                    messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: vec![ContentBlock::Text { text: content }],
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                NormalizedEntry::SystemMessage { content, .. } => {
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text { text: content }],
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                NormalizedEntry::ToolResult { content, tool_call_id, .. } => {
                     messages.push(ChatMessage {
                         role: MessageRole::Tool,
-                        content: vec![ContentBlock::Text { text: result_text }],
+                        content: vec![ContentBlock::Text { text: content }],
                         tool_calls: None,
                         tool_call_id: Some(tool_call_id),
                     });
                 }
+                // Session headers and other entries don't contribute to chat history
                 _ => {}
             }
         }
@@ -655,8 +712,12 @@ impl UnifiedSession {
     }
 
     /// Get context as text (for LLM)
+    /// 
+    /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
     pub async fn get_context_text(&self, _limit: usize) -> String {
-        let entries = match self.storage.load_session(&self.id).await {
+        use crate::session::NormalizedEntry;
+
+        let entries = match self.storage.load_normalized(&self.id).await {
             Ok(e) => e,
             Err(_) => return format!("Session: {}", self.id),
         };
@@ -665,51 +726,23 @@ impl UnifiedSession {
 
         for entry in entries {
             match entry {
-                crate::session::JsonlSessionEntry::Message { message, .. } => {
-                    let role = &message.role;
-                    let mut parts: Vec<String> = Vec::new();
-
-                    for block in &message.content {
-                        match block {
-                            ContentBlock::Text { text } => parts.push(text.clone()),
-                            ContentBlock::Thinking { text, .. } => parts.push(text.clone()),
-                            ContentBlock::ToolCall {
-                                name, arguments, ..
-                            } => {
-                                let args_str =
-                                    serde_json::to_string(&arguments).unwrap_or_default();
-                                parts.push(format!("[ToolCall: {name}({args_str})]"));
-                            }
-                            ContentBlock::ToolResult { content, .. } => {
-                                let result_text: String = content
-                                    .iter()
-                                    .filter_map(|c| match c {
-                                        ContentBlock::Text { text } => Some(text.clone()),
-                                        _ => None,
-                                    })
-                                    .collect();
-                                parts.push(format!("[ToolResult: {result_text}]"));
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    let content_text = parts.join("\n");
-                    if !content_text.is_empty() {
-                        context.push_str(&format!("{role}: {content_text}\n\n"));
+                NormalizedEntry::UserMessage { content, .. } => {
+                    if !content.is_empty() {
+                        context.push_str(&format!("user: {content}\n\n"));
                     }
                 }
-                crate::session::JsonlSessionEntry::ToolResult {
-                    tool_name, content, ..
-                } => {
-                    let result_text: String = content
-                        .iter()
-                        .filter_map(|c| match c {
-                            ContentBlock::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect();
-                    context.push_str(&format!("tool: [{tool_name} result: {result_text}]\n\n"));
+                NormalizedEntry::AssistantMessage { content, .. } => {
+                    if !content.is_empty() {
+                        context.push_str(&format!("assistant: {content}\n\n"));
+                    }
+                }
+                NormalizedEntry::SystemMessage { content, .. } => {
+                    if !content.is_empty() {
+                        context.push_str(&format!("system: {content}\n\n"));
+                    }
+                }
+                NormalizedEntry::ToolResult { content, tool_name, .. } => {
+                    context.push_str(&format!("tool: [{tool_name} result: {content}]\n\n"));
                 }
                 _ => {}
             }
@@ -750,12 +783,15 @@ impl UnifiedSession {
     }
 
     /// Load the most recent compaction summary
+    /// 
+    /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
     pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
-        let entries: Vec<crate::session::JsonlSessionEntry> =
-            self.storage.load_session(&self.id).await?;
+        use crate::session::NormalizedEntry;
+
+        let entries = self.storage.load_normalized(&self.id).await?;
 
         for entry in entries.iter().rev() {
-            if let crate::session::JsonlSessionEntry::Compaction { summary, .. } = entry {
+            if let NormalizedEntry::Compaction { summary, .. } = entry {
                 return Ok(Some(summary.clone()));
             }
         }

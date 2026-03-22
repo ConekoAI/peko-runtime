@@ -17,15 +17,11 @@ use crate::common::paths::PathResolver;
 use crate::common::services::AgentConfigService;
 use crate::engine::AgenticEvent;
 use crate::providers::{ChatMessage, MessageRole, TokenUsage};
-use crate::session::events::{
-    AssistantMessageEvent, EventEnvelope, MessageSource, SessionCreatedEvent, SessionEvent,
-    UserMessageEvent,
-};
-use crate::session::index::{SessionEntry, SessionIndex};
+use crate::session::events::SessionEvent;
+
 use crate::session::jsonl::SessionStorage;
 use crate::session::manager::SessionManager;
 use crate::session::types::Peer;
-use chrono::Utc;
 // Note: Session storage uses jsonl module directly
 use crate::types::message::ContentBlock;
 use anyhow::{Context, Result};
@@ -36,7 +32,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{debug, info, instrument, warn};
-use uuid::Uuid;
+
 
 /// Execution request for stateless agent
 #[derive(Debug, Clone)]
@@ -340,22 +336,10 @@ impl StatelessAgentService {
                 }
             };
 
-        // 6. Save to session
-        if success {
-            if let Err(e) = self
-                .save_to_session(
-                    &request.agent_name,
-                    &request.session_id,
-                    &request.message,
-                    &final_response,
-                    &token_usage,
-                    &tool_calls,
-                )
-                .await
-            {
-                warn!("Failed to save to session: {}", e);
-            }
-        }
+        // Note: Session persistence is handled by the engine loop via UnifiedSession.
+        // The engine loop's session.add_user() and session.add_assistant() methods
+        // already write to the session file during execution.
+        // We do NOT write here to avoid duplication and format conflicts.
 
         let duration = start.elapsed();
 
@@ -482,118 +466,6 @@ impl StatelessAgentService {
             // The agent's system prompt handles the conversation format
             Ok(message.to_string())
         }
-    }
-
-    /// Save message exchange to session
-    async fn save_to_session(
-        &self,
-        agent_name: &str,
-        session_id: &str,
-        user_message: &str,
-        assistant_response: &str,
-        token_usage: &TokenUsage,
-        _tool_calls: &[ToolCallRecord],
-    ) -> Result<()> {
-        let sessions_dir =
-            get_agent_session_dir(&self.config_service, &self.path_resolver, agent_name).await?;
-
-        // Use standard SessionStorage (stores as {session_id}.jsonl)
-        let storage = SessionStorage::new(sessions_dir.clone());
-
-        // Check if this is a new session
-        let is_new = !storage.session_exists(session_id).await;
-
-        if is_new {
-            // Create session.created event
-            let created_event = SessionEvent::SessionCreated(SessionCreatedEvent {
-                envelope: EventEnvelope {
-                    id: "evt_001".to_string(),
-                    session_id: session_id.to_string(),
-                    ts: Utc::now(),
-                    seq: 1,
-                },
-                instance_id: agent_name.to_string(),
-                image_digest: String::new(),
-                parent_session_id: None,
-                trigger: crate::session::events::SessionTrigger::User,
-            });
-            storage.append_event(session_id, &created_event).await?;
-        }
-
-        // Append user message event
-        let user_event = SessionEvent::UserMessage(UserMessageEvent {
-            envelope: EventEnvelope {
-                id: format!(
-                    "evt_{:03}",
-                    storage.load_events(session_id).await?.len() as u64 + 1
-                ),
-                session_id: session_id.to_string(),
-                ts: Utc::now(),
-                seq: storage.load_events(session_id).await?.len() as u64 + 1,
-            },
-            message_id: format!("msg_{}", Uuid::new_v4().simple()),
-            content: user_message.to_string(),
-            source: MessageSource::User,
-        });
-        storage.append_event(session_id, &user_event).await?;
-
-        // Append assistant message event with actual token usage
-        let assistant_event = SessionEvent::AssistantMessage(AssistantMessageEvent {
-            envelope: EventEnvelope {
-                id: format!(
-                    "evt_{:03}",
-                    storage.load_events(session_id).await?.len() as u64 + 1
-                ),
-                session_id: session_id.to_string(),
-                ts: Utc::now(),
-                seq: storage.load_events(session_id).await?.len() as u64 + 1,
-            },
-            message_id: format!("msg_{}", Uuid::new_v4().simple()),
-            content: assistant_response.to_string(),
-            usage: crate::session::events::TokenUsage {
-                input_tokens: token_usage.input as u32,
-                output_tokens: token_usage.output as u32,
-                total_tokens: token_usage.total as u32,
-            },
-        });
-        storage.append_event(session_id, &assistant_event).await?;
-
-        // Update SessionIndex so sessions appear in listings with token counts
-        let transcript_file = format!("{}.jsonl", session_id);
-        let mut index = SessionIndex::open(&sessions_dir);
-
-        // Check if session already exists in index
-        match index.get(session_id).await? {
-            Some(mut entry) => {
-                // Update existing entry
-                entry.increment_messages();
-                entry.increment_messages(); // Both user and assistant messages
-                entry.increment_turn();
-                // Accumulate token counts
-                entry.input_tokens += token_usage.input as usize;
-                entry.output_tokens += token_usage.output as usize;
-                entry.total_tokens += token_usage.total as usize;
-                entry.touch();
-                index.insert(entry).await?;
-            }
-            None => {
-                // Create new entry with token counts
-                let mut entry = SessionEntry::new(
-                    session_id.to_string(),
-                    agent_name.to_string(),
-                    transcript_file,
-                );
-                entry.input_tokens = token_usage.input as usize;
-                entry.output_tokens = token_usage.output as usize;
-                entry.total_tokens = token_usage.total as usize;
-                index.insert(entry).await?;
-            }
-        }
-
-        // Persist the index changes
-        index.save().await?;
-
-        Ok(())
     }
 
     /// Update execution metrics

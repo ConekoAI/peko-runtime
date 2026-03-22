@@ -104,6 +104,74 @@ pub struct MessageContent {
     pub timestamp: Option<i64>,
 }
 
+/// Normalized session entry (format-agnostic)
+/// 
+/// Provides a unified view over both Legacy V3 and Event Format entries.
+/// This enables backward compatibility while transitioning to Event Format.
+#[derive(Debug, Clone)]
+pub enum NormalizedEntry {
+    /// Session header/metadata
+    Session {
+        id: String,
+        version: i32,
+        timestamp: DateTime<Utc>,
+        cwd: Option<String>,
+    },
+    /// User message
+    UserMessage {
+        id: String,
+        content: String,
+        timestamp: DateTime<Utc>,
+        source: crate::session::events::MessageSource,
+    },
+    /// Assistant message
+    AssistantMessage {
+        id: String,
+        content: String,
+        timestamp: DateTime<Utc>,
+        input_tokens: u32,
+        output_tokens: u32,
+    },
+    /// System message
+    SystemMessage {
+        content: String,
+        timestamp: DateTime<Utc>,
+    },
+    /// Tool call (from legacy format)
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    /// Tool result
+    ToolResult {
+        tool_call_id: String,
+        tool_name: String,
+        content: String,
+        is_error: bool,
+    },
+    /// Compaction record
+    Compaction {
+        summary: String,
+        messages_compacted: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+        compaction_number: usize,
+        timestamp: DateTime<Utc>,
+    },
+    /// Model change
+    ModelChange {
+        provider: String,
+        model_id: String,
+        timestamp: DateTime<Utc>,
+    },
+    /// Custom/unknown entry
+    Custom {
+        custom_type: String,
+        data: serde_json::Value,
+    },
+}
+
 /// Session storage with atomic writes
 #[derive(Debug, Clone)]
 pub struct SessionStorage {
@@ -439,6 +507,168 @@ impl SessionStorage {
         }
 
         Ok(events)
+    }
+
+    /// Load session normalizing both Legacy V3 and Event Format entries
+    ///
+    /// This method provides a unified view over session data regardless of format:
+    /// - Legacy V3 format (SessionEntry): {"type":"message",...}
+    /// - Event Format (SessionEvent): {"type":"user.message",...}
+    ///
+    /// This enables backward compatibility during the format transition.
+    pub async fn load_normalized(&self, session_id: &str) -> Result<Vec<NormalizedEntry>> {
+        let path = self.session_path(session_id);
+
+        // Clean up any partial tmp files from previous crashes
+        self.cleanup_temp_files(session_id).await?;
+
+        if !path.exists() {
+            return Ok(vec![]);
+        }
+
+        // Acquire lock to ensure consistent read
+        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+
+        let content = fs::read_to_string(&path).await?;
+        let mut entries = vec![];
+
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            // Try Event Format first (new standard)
+            if let Ok(event) = serde_json::from_str::<SessionEvent>(line) {
+                if let Some(entry) = Self::normalize_event(event) {
+                    entries.push(entry);
+                }
+                continue;
+            }
+
+            // Fall back to Legacy V3 format
+            if let Ok(legacy) = serde_json::from_str::<SessionEntry>(line) {
+                if let Some(entry) = Self::normalize_legacy(legacy) {
+                    entries.push(entry);
+                }
+                continue;
+            }
+
+            // Neither format parsed - log warning
+            warn!("Failed to parse session line as either format: {}", line);
+        }
+
+        Ok(entries)
+    }
+
+    /// Convert Event Format to NormalizedEntry
+    fn normalize_event(event: SessionEvent) -> Option<NormalizedEntry> {
+        use crate::session::events::SessionEvent::*;
+
+        match event {
+            SessionCreated(e) => Some(NormalizedEntry::Session {
+                id: e.envelope.session_id,
+                version: 3,
+                timestamp: e.envelope.ts,
+                cwd: None,
+            }),
+            UserMessage(e) => Some(NormalizedEntry::UserMessage {
+                id: e.message_id,
+                content: e.content,
+                timestamp: e.envelope.ts,
+                source: e.source,
+            }),
+            AssistantMessage(e) => Some(NormalizedEntry::AssistantMessage {
+                id: e.message_id,
+                content: e.content,
+                timestamp: e.envelope.ts,
+                input_tokens: e.usage.input_tokens,
+                output_tokens: e.usage.output_tokens,
+            }),
+            ToolResult(e) => Some(NormalizedEntry::ToolResult {
+                tool_call_id: e.tool_call_id,
+                tool_name: String::new(), // Not available in Event Format
+                content: e.output.unwrap_or_default(),
+                is_error: e.error.is_some(),
+            }),
+            _ => {
+                // Other event types (thinking, tool.call, etc.) can be added as needed
+                debug!("Unnormalized event type: {}", event.event_type());
+                None
+            }
+        }
+    }
+
+    /// Convert Legacy V3 format to NormalizedEntry
+    fn normalize_legacy(entry: SessionEntry) -> Option<NormalizedEntry> {
+        match entry {
+            SessionEntry::Session { id, version, timestamp, cwd } => {
+                Some(NormalizedEntry::Session { id, version, timestamp, cwd })
+            }
+            SessionEntry::Message { id, timestamp, message, .. } => {
+                let content = message.content.iter()
+                    .filter_map(|c| match c {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+
+                match message.role.as_str() {
+                    "user" => Some(NormalizedEntry::UserMessage {
+                        id,
+                        content,
+                        timestamp,
+                        source: crate::session::events::MessageSource::User,
+                    }),
+                    "assistant" => Some(NormalizedEntry::AssistantMessage {
+                        id,
+                        content,
+                        timestamp,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    }),
+                    "system" => Some(NormalizedEntry::SystemMessage {
+                        content,
+                        timestamp,
+                    }),
+                    _ => None,
+                }
+            }
+            SessionEntry::ToolResult { tool_call_id, tool_name, content, is_error } => {
+                let result_text = content.iter()
+                    .filter_map(|c| match c {
+                        ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<String>();
+                Some(NormalizedEntry::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    content: result_text,
+                    is_error: is_error.unwrap_or(false),
+                })
+            }
+            SessionEntry::Compaction { timestamp, summary, messages_compacted, tokens_before, tokens_after, compaction_number, .. } => {
+                Some(NormalizedEntry::Compaction {
+                    summary,
+                    messages_compacted,
+                    tokens_before,
+                    tokens_after,
+                    compaction_number,
+                    timestamp,
+                })
+            }
+            SessionEntry::ModelChange { timestamp, provider, model_id, .. } => {
+                Some(NormalizedEntry::ModelChange {
+                    provider,
+                    model_id,
+                    timestamp,
+                })
+            }
+            SessionEntry::Custom { custom_type, data, .. } => {
+                Some(NormalizedEntry::Custom { custom_type, data })
+            }
+        }
     }
 
     /// Clean up partial .tmp files from a previous crash
