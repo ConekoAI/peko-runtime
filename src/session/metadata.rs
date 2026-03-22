@@ -34,6 +34,10 @@ pub struct SessionMetadata {
     pub channel: Option<String>,
     pub recipient: Option<String>,
     pub cwd: Option<String>,
+    /// Peer type ("user" or "agent")
+    pub peer_type: Option<String>,
+    /// Peer ID
+    pub peer_id: Option<String>,
 }
 
 impl SessionMetadata {
@@ -68,6 +72,8 @@ impl SessionMetadata {
             channel: None,
             recipient: None,
             cwd: None,
+            peer_type: None,
+            peer_id: None,
         }
     }
 
@@ -106,6 +112,8 @@ impl SessionMetadata {
             channel: entry.channel,
             recipient: entry.recipient,
             cwd: entry.cwd,
+            peer_type: entry.peer_type,
+            peer_id: entry.peer_id,
         }
     }
 
@@ -131,6 +139,8 @@ impl SessionMetadata {
             channel: self.channel,
             recipient: self.recipient,
             cwd: self.cwd,
+            peer_type: self.peer_type,
+            peer_id: self.peer_id,
         }
     }
 

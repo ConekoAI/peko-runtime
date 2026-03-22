@@ -48,6 +48,10 @@ pub struct SessionEntry {
     pub channel: Option<String>,
     pub recipient: Option<String>,
     pub cwd: Option<String>,
+    /// Peer type ("user" or "agent") - for session identity restoration
+    pub peer_type: Option<String>,
+    /// Peer ID - for session identity restoration
+    pub peer_id: Option<String>,
 }
 
 impl SessionEntry {
@@ -79,7 +83,24 @@ impl SessionEntry {
             channel: None,
             recipient: None,
             cwd: None,
+            peer_type: None,
+            peer_id: None,
         }
+    }
+
+    /// Create a new session entry with peer information
+    #[must_use]
+    pub fn with_peer(
+        session_id: String,
+        agent_name: String,
+        transcript_file: String,
+        peer_type: impl Into<String>,
+        peer_id: impl Into<String>,
+    ) -> Self {
+        let mut entry = Self::new(session_id, agent_name, transcript_file);
+        entry.peer_type = Some(peer_type.into());
+        entry.peer_id = Some(peer_id.into());
+        entry
     }
 
     /// Update timestamp
@@ -801,6 +822,8 @@ pub async fn migrate_to_v2(sessions_dir: &Path) -> Result<MigrationReport> {
                 channel: best.channel.clone(),
                 recipient: best.recipient.clone(),
                 cwd: best.cwd.clone(),
+                peer_type: None, // Migration: peer info not available in old format
+                peer_id: None,
             };
 
             new_sessions.insert(session_id, entry);

@@ -268,7 +268,8 @@ impl SessionService {
         label: Option<String>,
     ) -> Result<BranchResult> {
         // Use SessionManager for branching
-        let mut manager = SessionManager::for_cli(agent_name, team);
+        let config_dir = self.path_resolver.config_dir();
+        let mut manager = SessionManager::for_cli(agent_name, team, Some(config_dir));
 
         // Verify parent exists
         let _parent_metadata = manager

@@ -11,12 +11,11 @@
 
 use crate::common::paths::PathResolver;
 use crate::session::context::SessionContext;
-use crate::session::index::SessionIndex;
 use crate::session::types::{ChannelType, Peer};
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Session resolution strategy
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -105,48 +104,19 @@ impl SessionResolver {
         let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
         let peer = Peer::User(channel_id.to_string());
 
-        // Check if there's an active session preference
-        let active_pref_path = sessions_dir.join(".active.json");
-        if active_pref_path.exists() {
-            if let Ok(content) = tokio::fs::read_to_string(&active_pref_path).await {
-                if let Ok(pref) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(preferred_id) = pref.get("session_id").and_then(|v| v.as_str()) {
-                        // Verify the session exists
-                        let mut index = SessionIndex::open(&sessions_dir);
-                        if index.get(preferred_id).await?.is_some() {
-                            info!(
-                                "Auto-resuming preferred session '{}' for agent '{}'",
-                                preferred_id, agent_name
-                            );
-                            return self
-                                .resume_specific_session(
-                                    agent_name,
-                                    team,
-                                    channel,
-                                    channel_id,
-                                    preferred_id,
-                                )
-                                .await
-                                .map(|ctx| (ctx, false));
-                        } else {
-                            warn!(
-                                "Preferred session '{}' not found, creating new session",
-                                preferred_id
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        // Use SessionManager as the single authority for session lookup
+        let config_dir = self.path_resolver.config_dir();
+        let mut session_manager = SessionManager::for_cli(agent_name, team, Some(config_dir));
 
-        // Check peer routing in SessionIndex
-        let mut index = SessionIndex::open(&sessions_dir);
-        let peer_key = format!("agent:{}:peer:{:?}", agent_name, peer);
-        if let Ok(Some(active_entry)) = index.get_active_for_peer(&peer_key).await {
-            let session_id = active_entry.session_id;
+        // Check peer routing via SessionManager (which uses the index internally)
+        let peer_key = crate::session::key::derive_base_session_key(agent_name, &peer);
+        if let Some(session_id) = session_manager
+            .get_active_session_id(&peer)
+            .await?
+        {
             info!(
-                "Auto-resuming active session '{}' for peer '{:?}'",
-                session_id, peer
+                "Auto-resuming active session '{}' for peer '{}'",
+                session_id, peer_key
             );
             return self
                 .resume_specific_session(agent_name, team, channel, channel_id, &session_id)
@@ -177,43 +147,24 @@ impl SessionResolver {
         let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
         let peer = Peer::User(channel_id.to_string());
 
-        // Use SessionManager for creation to ensure proper indexing
-        let mut session_manager = SessionManager::for_cli(agent_name, team);
+        // Use SessionManager for creation - it's the single authority
+        let config_dir = self.path_resolver.config_dir();
+        let mut session_manager = SessionManager::for_cli(agent_name, team, Some(config_dir));
 
-        // Remove any existing overlay for this channel to ensure clean state
-        let base_key = crate::session::derive_base_session_key(agent_name, &peer);
-        let overlay_key = format!("{}:overlay:{:?}:{}", base_key, channel, channel_id);
-        session_manager.remove_channel_overlay(&overlay_key);
+        // Clear the in-memory cache to ensure we don't reuse an old session
         session_manager.remove_base_session(agent_name, &peer);
 
-        // CRITICAL: Clear peer routing in SessionIndex to ensure a new session is created
-        // Otherwise get_session_for_channel will load the existing session from disk
-        let peer_key = format!(
-            "agent:{}:peer:{}:{}",
-            agent_name,
-            peer.peer_type(),
-            peer.id()
-        );
-        let mut index = SessionIndex::open(&sessions_dir);
-        if let Err(e) = index.clear_active_for_peer(&peer_key).await {
-            warn!("Failed to clear peer routing: {}", e);
-        }
-        // Save the index changes immediately
-        if let Err(e) = index.save_peers().await {
-            warn!("Failed to save peer index: {}", e);
-        }
+        // Create a fresh session explicitly (not get-or-create)
+        let options = crate::session::SessionCreateOptions::new()
+            .with_trigger("user");
+        let handle = session_manager
+            .create_session(agent_name, &peer, options)
+            .await?;
 
-        // Also clear any active preference
-        let active_pref_path = sessions_dir.join(".active.json");
-        if active_pref_path.exists() {
-            if let Err(e) = tokio::fs::remove_file(&active_pref_path).await {
-                warn!("Failed to remove active preference: {}", e);
-            }
-        }
-
-        // Get or create session through SessionManager
+        // Create channel overlay on the new base session
+        let base = handle.base().clone();
         let hybrid = session_manager
-            .get_session_for_channel(agent_name, &peer, channel, channel_id)
+            .create_channel_overlay_on_base(base, &peer, channel, channel_id)
             .await?;
 
         let ctx = SessionContext::new(hybrid).await;
@@ -223,10 +174,6 @@ impl SessionResolver {
             let base = ctx.hybrid.base.read().await;
             base.id.clone()
         };
-
-        // Save as active preference for future auto-resume
-        self.save_active_preference(&sessions_dir, &session_id)
-            .await?;
 
         info!(
             "Created new session '{}' for agent '{}'",
@@ -249,23 +196,9 @@ impl SessionResolver {
             session_id, agent_name
         );
 
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
-
-        // Verify session exists
-        let mut index = SessionIndex::open(&sessions_dir);
-        let entry = index
-            .get(session_id)
-            .await
-            .with_context(|| format!("Failed to lookup session '{}'", session_id))?
-            .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", session_id))?;
-
-        debug!(
-            "Found session '{}' with {} messages",
-            entry.session_id, entry.message_count
-        );
-
         let peer = Peer::User(channel_id.to_string());
-        let mut session_manager = SessionManager::for_cli(agent_name, team);
+        let config_dir = self.path_resolver.config_dir();
+        let mut session_manager = SessionManager::for_cli(agent_name, team, Some(config_dir));
 
         // FIX: Open the SPECIFIC session by ID (not peer-based lookup)
         let handle = session_manager
@@ -283,29 +216,8 @@ impl SessionResolver {
 
         let ctx = SessionContext::new(hybrid).await;
 
-        // Update active preference
-        self.save_active_preference(&sessions_dir, session_id)
-            .await?;
-
         info!("Successfully resumed session '{}'", session_id);
         Ok(ctx)
-    }
-
-    /// Save active session preference
-    async fn save_active_preference(&self, sessions_dir: &PathBuf, session_id: &str) -> Result<()> {
-        let pref_path = sessions_dir.join(".active.json");
-        let pref = serde_json::json!({
-            "session_id": session_id,
-            "set_at": chrono::Utc::now().to_rfc3339(),
-            "set_by": "session_resolver",
-        });
-
-        let temp_path = pref_path.with_extension("tmp");
-        tokio::fs::write(&temp_path, serde_json::to_string_pretty(&pref)?).await?;
-        tokio::fs::rename(&temp_path, &pref_path).await?;
-
-        debug!("Saved active session preference: {}", session_id);
-        Ok(())
     }
 
     /// Get sessions directory for an agent

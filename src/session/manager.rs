@@ -369,7 +369,7 @@ impl SessionManager {
 
     /// Initialize with session index for an agent
     pub async fn with_registry(mut self, agent_name: &str) -> Result<Self> {
-        let sessions_dir = UnifiedSession::storage_dir(agent_name, None);
+        let sessions_dir = UnifiedSession::storage_dir(None, agent_name, None);
         self.index = Some(SessionIndex::open(&sessions_dir));
         self.sessions_dir = Some(sessions_dir.clone());
         self.agent_name = Some(agent_name.to_string());
@@ -397,8 +397,11 @@ impl SessionManager {
     /// # Arguments
     /// * `agent_name` - The agent name
     /// * `team` - Optional team name (defaults to "default")
-    pub fn for_cli(agent_name: &str, team: Option<&str>) -> Self {
-        let sessions_dir = UnifiedSession::storage_dir(agent_name, team);
+    /// * `config_dir` - Optional config directory (defaults to `~/.pekobot`)
+    pub fn for_cli(agent_name: &str, team: Option<&str>, config_dir: Option<&std::path::Path>) -> Self {
+        let sessions_dir = config_dir
+            .map(|d| d.join("teams").join(team.unwrap_or("default")).join("agents").join(agent_name).join("sessions"))
+            .unwrap_or_else(|| UnifiedSession::storage_dir(None, agent_name, team));
         Self::new()
             .with_directory(sessions_dir)
             .with_agent_name(agent_name)
@@ -473,10 +476,12 @@ impl SessionManager {
 
         // 4. Update peer routing in index (for backward compatibility)
         if let Some(ref mut index) = self.index {
-            let entry = SessionEntry::new(
+            let entry = SessionEntry::with_peer(
                 session_id.clone(),
                 agent.to_string(),
                 format!("{}.jsonl", session_id),
+                peer.peer_type(),
+                peer.id(),
             );
             index.create_for_peer(entry, &session_key).await?;
             index.save().await?;
@@ -517,12 +522,28 @@ impl SessionManager {
             None => return Ok(None),
         };
 
-        // 2. Load UnifiedSession from JSONL
+        // 2. Try to get peer info from index
+        let peer = if let Some(ref mut index) = self.index {
+            if let Ok(Some(entry)) = index.get(session_id).await {
+                // Restore peer from entry
+                match (entry.peer_type.as_deref(), entry.peer_id) {
+                    (Some("agent"), Some(id)) => Peer::Agent(id),
+                    (Some("user"), Some(id)) => Peer::User(id),
+                    _ => Peer::User("default".to_string()),
+                }
+            } else {
+                Peer::User("default".to_string())
+            }
+        } else {
+            Peer::User("default".to_string())
+        };
+
+        // 3. Load UnifiedSession from JSONL with peer info
         let session =
-            UnifiedSession::open_by_id(&metadata.agent_name, session_id, &sessions_dir).await?;
+            UnifiedSession::open_by_id(&metadata.agent_name, session_id, &sessions_dir, Some(&peer)).await?;
         let peer = session.peer.clone();
 
-        // 3. Cache and return handle
+        // 4. Cache and return handle
         let arc = Arc::new(RwLock::new(session));
         let key = (metadata.agent_name.clone(), peer);
         self.base_sessions.insert(key, arc.clone());
@@ -831,7 +852,13 @@ impl SessionManager {
                 // Create new session through index (just tracking, no file yet)
                 let new_id = uuid::Uuid::new_v4().to_string();
                 let transcript_file = format!("{}.jsonl", new_id);
-                let entry = SessionEntry::new(new_id.clone(), agent.to_string(), transcript_file);
+                let entry = SessionEntry::with_peer(
+                    new_id.clone(),
+                    agent.to_string(),
+                    transcript_file,
+                    peer.peer_type(),
+                    peer.id(),
+                );
                 index.create_for_peer(entry, &peer_key).await?;
                 index.save().await?;
                 tracing::info!("Created new session via index: {}", new_id);
@@ -845,7 +872,7 @@ impl SessionManager {
             let session = if transcript_path.exists() {
                 // File exists, open it by ID
                 info!("Opening existing session: {}", transcript_path.display());
-                UnifiedSession::open_by_id(agent, &session_id, sessions_dir).await?
+                UnifiedSession::open_by_id(agent, &session_id, sessions_dir, Some(peer)).await?
             } else {
                 // Create the session file
                 info!("Creating new session file: {}", transcript_path.display());

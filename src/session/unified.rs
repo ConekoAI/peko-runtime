@@ -80,18 +80,21 @@ impl UnifiedSession {
 
     /// Get the storage directory for an agent
     ///
-    /// Uses team-based structure: `~/.pekobot/teams/{team}/agents/{agent}/sessions/`
+    /// Uses team-based structure: `{base_dir}/teams/{team}/agents/{agent}/sessions/`
     ///
     /// # Arguments
+    /// * `base_dir` - Base configuration directory (defaults to `~/.pekobot`)
     /// * `agent_name` - The agent name
     /// * `team` - Optional team name (defaults to "default")
     #[must_use]
-    pub fn storage_dir(agent_name: &str, team: Option<&str>) -> PathBuf {
+    pub fn storage_dir(base_dir: Option<&std::path::Path>, agent_name: &str, team: Option<&str>) -> PathBuf {
         let team = team.unwrap_or("default");
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".pekobot")
-            .join("teams")
+        let base = base_dir.map(PathBuf::from).unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".pekobot")
+        });
+        base.join("teams")
             .join(team)
             .join("agents")
             .join(agent_name)
@@ -110,7 +113,7 @@ impl UnifiedSession {
     ///
     /// NOTE: This is crate-private. Only SessionManager should create sessions.
     pub(crate) async fn create(agent_name: &str, peer: &Peer) -> Result<Self> {
-        let session_key = derive_session_key(agent_name, peer);
+        let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
         let session_id = uuid::Uuid::new_v4().to_string();
 
         Self::create_with_key(agent_name, peer, &session_id, &session_key).await
@@ -126,7 +129,7 @@ impl UnifiedSession {
         session_id: &str,
         session_key: &str,
     ) -> Result<Self> {
-        let storage_dir = Self::storage_dir(agent_name, None);
+        let storage_dir = Self::storage_dir(None, agent_name, None);
         let storage = SessionStorage::new(storage_dir.clone());
 
         // Ensure directory exists
@@ -178,7 +181,7 @@ impl UnifiedSession {
     ) -> Result<Self> {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
-        let session_key = derive_session_key(agent_name, peer);
+        let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
 
         // Ensure directory exists
         fs::create_dir_all(&sessions_dir).await?;
@@ -216,7 +219,7 @@ impl UnifiedSession {
     ///
     /// Returns `Ok(None)` if no active session exists for this peer.
     pub async fn open(agent_name: &str, peer: &Peer) -> Result<Option<Self>> {
-        let session_key = derive_session_key(agent_name, peer);
+        let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
         Self::open_by_key(agent_name, &session_key).await
     }
 
@@ -233,10 +236,18 @@ impl UnifiedSession {
     ///
     /// This bypasses the peer lookup and opens the session file directly.
     /// JSONL is the source of truth for message count and content.
+    ///
+    /// # Arguments
+    /// * `agent_name` - The agent name
+    /// * `session_id` - The session ID
+    /// * `sessions_dir` - The sessions directory
+    /// * `peer` - Optional peer info. If provided, restores session identity from this peer.
+    ///            If None, defaults to Peer::User("default")
     pub async fn open_by_id(
         agent_name: &str,
         session_id: &str,
         sessions_dir: impl AsRef<std::path::Path>,
+        peer: Option<&Peer>,
     ) -> Result<Self> {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
@@ -245,9 +256,9 @@ impl UnifiedSession {
         let entries: Vec<crate::session::JsonlSessionEntry> =
             storage.load_session(session_id).await?;
 
-        // Default session key - caller (SessionManager) should provide actual peer info
-        let session_key = format!("agent:{agent_name}:peer:user:default");
-        let peer = Peer::User("default".to_string());
+        // Use provided peer or default
+        let peer = peer.cloned().unwrap_or_else(|| Peer::User("default".to_string()));
+        let session_key = crate::session::key::derive_base_session_key(agent_name, &peer);
 
         Self::from_entries(
             session_id.to_string(),
@@ -269,7 +280,7 @@ impl UnifiedSession {
     /// Open or create a session by key (for CLI persistence)
     /// Note: SessionManager should be used for production code
     pub async fn open_or_create_by_key(agent_name: &str, session_key: &str) -> Result<Self> {
-        let storage_dir = Self::storage_dir(agent_name, None);
+        let storage_dir = Self::storage_dir(None, agent_name, None);
 
         // Try to find existing session file
         // Note: This is a simplified version - SessionManager does proper lookup
@@ -280,7 +291,7 @@ impl UnifiedSession {
                     if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                         let peer = parse_peer_from_key(session_key)
                             .unwrap_or(Peer::User("default".to_string()));
-                        return Self::open_by_id(agent_name, name, &storage_dir).await;
+                        return Self::open_by_id(agent_name, name, &storage_dir, Some(&peer)).await;
                     }
                 }
             }
@@ -771,7 +782,7 @@ impl UnifiedSession {
 
     /// List available sessions for an agent
     pub async fn list_sessions(agent_name: &str) -> Result<Vec<(String, std::time::SystemTime)>> {
-        let storage_dir = Self::storage_dir(agent_name, None);
+        let storage_dir = Self::storage_dir(None, agent_name, None);
 
         let mut sessions = Vec::new();
 
@@ -803,14 +814,6 @@ impl UnifiedSession {
 // ============================================================
 // Helper Functions
 // ============================================================
-
-/// Derive a session key from agent name and peer
-fn derive_session_key(agent_name: &str, peer: &Peer) -> String {
-    match peer {
-        Peer::User(id) => format!("agent:{agent_name}:peer:user:{id}"),
-        Peer::Agent(id) => format!("agent:{agent_name}:peer:agent:{id}"),
-    }
-}
 
 /// Parse a peer from a session key
 fn parse_peer_from_key(key: &str) -> Result<Peer> {
@@ -962,11 +965,11 @@ mod tests {
     #[test]
     fn test_derive_session_key() {
         let peer = Peer::User("alice".to_string());
-        let key = derive_session_key("test_agent", &peer);
+        let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:user:alice");
 
         let peer = Peer::Agent("helper".to_string());
-        let key = derive_session_key("test_agent", &peer);
+        let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
     }
 
