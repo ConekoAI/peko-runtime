@@ -5,10 +5,6 @@
 //!
 //! Kimi Code uses Anthropic Claude Code's backend, so it follows
 //! the Anthropic API format rather than the Moonshot API format.
-#![deprecated(
-    since = "0.9.0",
-    note = "KimiCodeProvider is deprecated. Use AnthropicProvider or MoonshotProvider instead."
-)]
 
 use super::traits::Provider;
 use async_trait::async_trait;
