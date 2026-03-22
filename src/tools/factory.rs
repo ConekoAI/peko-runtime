@@ -117,6 +117,61 @@ impl Default for ToolFactoryConfig {
     }
 }
 
+impl ToolFactoryConfig {
+    /// Create a minimal configuration (filesystem + process only)
+    ///
+    /// Use this for restricted environments where only basic file and process
+    /// operations are needed.
+    pub fn minimal(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir,
+            enable_filesystem: true,
+            enable_apply_patch: false,
+            enable_process: true,
+            enable_session_tools: false,
+            enable_cron: false,
+            mcp: McpFactoryConfig::disabled(),
+            ..Default::default()
+        }
+    }
+
+    /// Create a coding configuration (filesystem + apply_patch + process)
+    ///
+    /// Use this for code editing tasks where patch-based file modifications
+    /// are preferred over direct file writes.
+    pub fn coding(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir,
+            enable_session_tools: false,
+            enable_cron: false,
+            mcp: McpFactoryConfig::disabled(),
+            ..Default::default()
+        }
+    }
+
+    /// Create a full configuration (all built-in tools)
+    ///
+    /// This enables all built-in tools except MCP. Use `create_tools_async`
+    /// if you need MCP tools as well.
+    pub fn full(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir,
+            mcp: McpFactoryConfig::disabled(),
+            ..Default::default()
+        }
+    }
+}
+
+impl McpFactoryConfig {
+    /// Create a disabled MCP configuration
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Default::default()
+        }
+    }
+}
+
 /// Tool factory for creating configured tool instances
 pub struct ToolFactory;
 
