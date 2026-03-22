@@ -430,6 +430,9 @@ impl SessionManager {
     }
 
     /// Initialize with a specific sessions directory
+    ///
+    /// DEPRECATED: Use `SessionManager::for_cli()` instead for proper team-aware path resolution.
+    #[deprecated(since = "0.9.1", note = "Use SessionManager::for_cli() instead")]
     pub fn with_directory(mut self, sessions_dir: impl Into<PathBuf>) -> Self {
         let sessions_dir = sessions_dir.into();
         self.sessions_dir = Some(sessions_dir.clone());
@@ -440,13 +443,22 @@ impl SessionManager {
 
     /// Create a SessionManager for CLI operations (offline)
     ///
-    /// This factory method creates a SessionManager configured for CLI use,
-    /// with the correct sessions directory for the agent/team.
+    /// This is the PRIMARY factory method for creating a SessionManager.
+    /// It ensures proper team-aware path resolution and consistent behavior.
     ///
     /// # Arguments
     /// * `path_resolver` - The path resolver for consistent path resolution
     /// * `agent_name` - The agent name
     /// * `team` - Optional team name (defaults to "default")
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let manager = SessionManager::for_cli(
+    ///     path_resolver,
+    ///     "myagent",
+    ///     Some("myteam")
+    /// );
+    /// ```
     pub fn for_cli(path_resolver: PathResolver, agent_name: &str, team: Option<&str>) -> Self {
         let sessions_dir = path_resolver.agent_sessions_dir(agent_name, team);
         Self::new()
@@ -1144,6 +1156,12 @@ impl SessionManager {
         tracing::debug!("No registry available, using legacy session naming");
 
         // Fallback to old behavior (no registry)
+        // Use sessions_dir if available (set via for_cli), otherwise use default path
+        let sessions_dir = self.sessions_dir.clone().unwrap_or_else(|| {
+            let resolver = crate::common::paths::PathResolver::new();
+            resolver.agent_sessions_dir(agent, None)
+        });
+
         // Try to open existing
         if let Some(session) = UnifiedSession::open(agent, peer).await? {
             let arc = Arc::new(RwLock::new(session));
@@ -1151,8 +1169,10 @@ impl SessionManager {
             return Ok(arc);
         }
 
-        // Create new
-        let session = UnifiedSession::create(agent, peer).await?;
+        // Create new using the correct sessions_dir (team-aware)
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let session =
+            UnifiedSession::create_with_path(agent, peer, &session_id, &sessions_dir).await?;
         let arc = Arc::new(RwLock::new(session));
         self.base_sessions.insert(key, arc.clone());
         Ok(arc)

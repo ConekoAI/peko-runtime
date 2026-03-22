@@ -236,9 +236,9 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-pekobot agent delete $defaultAgent --force 2>&1 | Out-Null
-pekobot agent delete "$teamName/$teamAgent" --force 2>&1 | Out-Null
-pekobot team delete $teamName --force 2>&1 | Out-Null
-Write-Host "Deleted test agents and team" -ForegroundColor Green
+# pekobot agent delete $defaultAgent --force 2>&1 | Out-Null
+# pekobot agent delete "$teamName/$teamAgent" --force 2>&1 | Out-Null
+# pekobot team delete $teamName --force 2>&1 | Out-Null
+# Write-Host "Deleted test agents and team" -ForegroundColor Green
 
 Write-Host "`n✅ All send command tests completed successfully!" -ForegroundColor Green

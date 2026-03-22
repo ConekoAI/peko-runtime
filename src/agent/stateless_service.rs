@@ -244,13 +244,10 @@ impl StatelessAgentService {
         debug!("Loaded {} messages from session history", history.len());
 
         // 3. Get or create session via SessionManager
-        let sessions_dir = get_agent_session_dir(
-            &self.config_service,
-            &self.path_resolver,
-            &request.agent_name,
-        )
-        .await?;
-        let mut session_manager = SessionManager::new().with_directory(sessions_dir.clone());
+        // Use for_cli() for proper team-aware path resolution
+        let team = Some(config_entry.team.as_str());
+        let mut session_manager =
+            SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team);
         let peer = Peer::User("default".to_string());
         let session = session_manager
             .get_or_create_base(&request.agent_name, &peer)

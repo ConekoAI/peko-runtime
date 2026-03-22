@@ -9,6 +9,7 @@
 //!
 //! # Module Structure
 //!
+//! - `directory`: Explicit session directory management (no side effects)
 //! - `events`: Pekobot session event types (13 types per DATA_MODEL §5.3)
 //! - `lock`: File locking with timeout and stale detection
 //! - `index`: Unified session index (sessions.json + peers.json) management
@@ -21,6 +22,7 @@
 //! - `manager`: SessionManager for overlay lifecycle
 
 pub mod context;
+pub mod directory;
 pub mod events;
 pub mod index;
 pub mod jsonl;
@@ -73,6 +75,7 @@ pub use manager::{
 };
 
 // Re-export recovery
+pub use directory::SessionDirectory;
 pub use recovery::{RecoveryReport, RecoveryState, SessionRecovery};
 pub use sync::SyncSessionStorage;
 

@@ -7,6 +7,7 @@ pub mod agent_config_builder;
 pub mod agent_config_service;
 pub mod agent_creation_service;
 pub mod agent_service;
+pub mod agent_validator;
 pub mod auth_resolver;
 pub mod message_service;
 pub mod session_resolver;
@@ -19,6 +20,7 @@ pub use agent_config_service::{AgentConfigEntry, AgentConfigService};
 // AgentCreationService is deprecated - use AgentService::create_agent() instead
 // pub use agent_creation_service::...;
 pub use agent_service::AgentService;
+pub use agent_validator::AgentValidator;
 pub use auth_resolver::{AuthResolver, DirectAuthResolver, FilesystemAuthResolver};
 pub use message_service::{ChatEvent, MessageRequest, MessageResult, MessageService, ToolCallInfo};
 pub use session_resolver::{ResolutionStrategy, SessionResolver};

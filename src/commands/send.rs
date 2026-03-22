@@ -18,7 +18,7 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
-use crate::common::services::{MessageRequest, MessageService};
+use crate::common::services::{AgentConfigService, AgentValidator, MessageRequest, MessageService};
 use anyhow::Result;
 use clap::Args;
 use std::sync::Arc;
@@ -78,9 +78,17 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
 
     // Use MessageService for unified session handling (same as HTTP API)
     let path_resolver = paths.resolver.clone();
-    let config_service = Arc::new(crate::common::services::AgentConfigService::new(
-        path_resolver.clone(),
-    ));
+    let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+
+    // EARLY VALIDATION: Check agent exists BEFORE creating session infrastructure
+    // This prevents creating session directories for non-existent agents
+    let validator = AgentValidator::new(config_service.clone());
+    let agent_entry = validator.validate_exists(agent_name, Some(team)).await?;
+    info!(
+        "Validated agent '{}' in team '{}'",
+        agent_entry.name, agent_entry.team
+    );
+
     let agent_service = Arc::new(
         crate::agent::stateless_service::StatelessAgentService::new(
             config_service,

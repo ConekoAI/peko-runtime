@@ -44,7 +44,7 @@ use tokio::fs;
 /// ```rust,ignore
 /// // Create a new session for a user
 /// let peer = Peer::User("alice".to_string());
-/// let session = UnifiedSession::create("my_agent", &peer).await?;
+/// let session = UnifiedSession::create("my_agent", &peer, Some("default")).await?;
 ///
 /// // Add messages
 /// session.add_user("Hello!").await?;
@@ -119,13 +119,14 @@ impl UnifiedSession {
     /// # Arguments
     /// * `agent_name` - The agent name
     /// * `peer` - The peer this session belongs to
+    /// * `team` - Optional team name (defaults to "default")
     ///
     /// NOTE: This is crate-private. Only SessionManager should create sessions.
-    pub(crate) async fn create(agent_name: &str, peer: &Peer) -> Result<Self> {
+    pub(crate) async fn create(agent_name: &str, peer: &Peer, team: Option<&str>) -> Result<Self> {
         let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
         let session_id = uuid::Uuid::new_v4().to_string();
 
-        Self::create_with_key(agent_name, peer, &session_id, &session_key).await
+        Self::create_with_key(agent_name, peer, &session_id, &session_key, team).await
     }
 
     /// Create a new unified session with explicit PathResolver
@@ -161,8 +162,9 @@ impl UnifiedSession {
         peer: &Peer,
         session_id: &str,
         session_key: &str,
+        team: Option<&str>,
     ) -> Result<Self> {
-        let storage_dir = Self::storage_dir(None, agent_name, None);
+        let storage_dir = Self::storage_dir(None, agent_name, team);
         let storage = SessionStorage::new(storage_dir.clone());
 
         // Ensure directory exists
@@ -314,10 +316,14 @@ impl UnifiedSession {
 
     /// Open or create a session by key (for CLI persistence)
     /// Note: SessionManager should be used for production code
-    pub async fn open_or_create_by_key(agent_name: &str, session_key: &str) -> Result<Self> {
+    pub async fn open_or_create_by_key(
+        agent_name: &str,
+        session_key: &str,
+        team: Option<&str>,
+    ) -> Result<Self> {
         // Use PathResolver for consistent path resolution
         let resolver = crate::common::paths::PathResolver::new();
-        let storage_dir = resolver.agent_sessions_dir(agent_name, None);
+        let storage_dir = resolver.agent_sessions_dir(agent_name, team);
 
         // Try to find existing session file
         // Note: This is a simplified version - SessionManager does proper lookup
@@ -341,10 +347,10 @@ impl UnifiedSession {
     }
 
     /// Get or create a unified session
-    pub async fn get_or_create(agent_name: &str, peer: &Peer) -> Result<Self> {
+    pub async fn get_or_create(agent_name: &str, peer: &Peer, team: Option<&str>) -> Result<Self> {
         match Self::open(agent_name, peer).await? {
             Some(session) => Ok(session),
-            None => Self::create(agent_name, peer).await,
+            None => Self::create(agent_name, peer, team).await,
         }
     }
 
@@ -857,10 +863,13 @@ impl UnifiedSession {
     // ============================================================
 
     /// List available sessions for an agent
-    pub async fn list_sessions(agent_name: &str) -> Result<Vec<(String, std::time::SystemTime)>> {
+    pub async fn list_sessions(
+        agent_name: &str,
+        team: Option<&str>,
+    ) -> Result<Vec<(String, std::time::SystemTime)>> {
         // Use PathResolver for consistent path resolution
         let resolver = crate::common::paths::PathResolver::new();
-        let storage_dir = resolver.agent_sessions_dir(agent_name, None);
+        let storage_dir = resolver.agent_sessions_dir(agent_name, team);
 
         let mut sessions = Vec::new();
 
@@ -940,7 +949,7 @@ mod tests {
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_unified_session_create() {
         let peer = Peer::User("alice".to_string());
-        let session = UnifiedSession::create("test_agent", &peer).await;
+        let session = UnifiedSession::create("test_agent", &peer, None).await;
         assert!(session.is_ok());
 
         let session = session.unwrap();
@@ -954,7 +963,9 @@ mod tests {
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_unified_session_agent_peer() {
         let peer = Peer::Agent("helper".to_string());
-        let session = UnifiedSession::create("test_agent", &peer).await.unwrap();
+        let session = UnifiedSession::create("test_agent", &peer, None)
+            .await
+            .unwrap();
 
         assert_eq!(session.peer, peer);
         assert!(session.session_key.contains("peer:agent:helper"));
@@ -964,7 +975,9 @@ mod tests {
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_unified_session_add_messages() {
         let peer = Peer::User("alice".to_string());
-        let mut session = UnifiedSession::create("test_agent", &peer).await.unwrap();
+        let mut session = UnifiedSession::create("test_agent", &peer, None)
+            .await
+            .unwrap();
 
         session
             .add_system("You are a helpful assistant")
@@ -983,7 +996,9 @@ mod tests {
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_unified_session_token_usage() {
         let peer = Peer::User("alice".to_string());
-        let mut session = UnifiedSession::create("test_agent", &peer).await.unwrap();
+        let mut session = UnifiedSession::create("test_agent", &peer, None)
+            .await
+            .unwrap();
 
         session.record_usage(100, 50);
         session.record_usage(50, 25);
@@ -1000,7 +1015,9 @@ mod tests {
         let peer = Peer::User("alice".to_string());
 
         // Create session
-        let mut session = UnifiedSession::create("test_agent", &peer).await.unwrap();
+        let mut session = UnifiedSession::create("test_agent", &peer, None)
+            .await
+            .unwrap();
         let session_key = session.session_key.clone();
 
         session.add_user("Hello!").await.unwrap();
@@ -1026,13 +1043,13 @@ mod tests {
         let peer = Peer::User("alice".to_string());
 
         // Create new
-        let session1 = UnifiedSession::get_or_create("test_agent", &peer)
+        let session1 = UnifiedSession::get_or_create("test_agent", &peer, None)
             .await
             .unwrap();
         let key1 = session1.session_key.clone();
 
         // Get existing
-        let session2 = UnifiedSession::get_or_create("test_agent", &peer)
+        let session2 = UnifiedSession::get_or_create("test_agent", &peer, None)
             .await
             .unwrap();
         let key2 = session2.session_key;

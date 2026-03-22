@@ -258,6 +258,9 @@ impl SessionIndex {
     }
 
     /// Load sessions.json into cache
+    ///
+    /// NOTE: This method does NOT create the directory. Directory creation
+    /// is deferred to write operations to avoid side effects during lookups.
     async fn load_sessions(&mut self) -> Result<&HashMap<String, SessionEntry>> {
         // Check cache validity
         if let Some(loaded_at) = self.sessions_loaded_at {
@@ -268,9 +271,7 @@ impl SessionIndex {
             }
         }
 
-        self.ensure_dir().await?;
-
-        // Load from disk
+        // Load from disk (directory may not exist yet - that's OK)
         let entries = if self.sessions_path.exists() {
             let content = fs::read_to_string(&self.sessions_path)
                 .await
@@ -303,6 +304,9 @@ impl SessionIndex {
     }
 
     /// Load peers.json into cache
+    ///
+    /// NOTE: This method does NOT create the directory. Directory creation
+    /// is deferred to write operations to avoid side effects during lookups.
     async fn load_peers(&mut self) -> Result<&PeerIndex> {
         // Check cache validity
         if let Some(loaded_at) = self.peers_loaded_at {
@@ -313,9 +317,7 @@ impl SessionIndex {
             }
         }
 
-        self.ensure_dir().await?;
-
-        // Load from disk
+        // Load from disk (directory may not exist yet - that's OK)
         let index = if self.peers_path.exists() {
             let content = fs::read_to_string(&self.peers_path)
                 .await
