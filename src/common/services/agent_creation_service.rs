@@ -24,7 +24,10 @@ use std::sync::Arc;
 use tracing::info;
 
 /// Source of agent creation (DEPRECATED)
-#[deprecated(since = "0.9.0", note = "Use AgentCreateRequest in AgentService instead")]
+#[deprecated(
+    since = "0.9.0",
+    note = "Use AgentCreateRequest in AgentService instead"
+)]
 #[derive(Debug, Clone)]
 pub enum AgentSource {
     /// Create from an image reference
@@ -38,7 +41,10 @@ pub enum AgentSource {
 }
 
 /// Request to create an agent (DEPRECATED)
-#[deprecated(since = "0.9.0", note = "Use AgentCreateRequest in types::agent instead")]
+#[deprecated(
+    since = "0.9.0",
+    note = "Use AgentCreateRequest in types::agent instead"
+)]
 #[derive(Debug, Clone)]
 pub struct AgentCreationRequest {
     /// Agent name
@@ -112,7 +118,10 @@ impl AgentCreationRequest {
 }
 
 /// Result of agent creation (DEPRECATED)
-#[deprecated(since = "0.9.0", note = "Use AgentCreationResult in types::agent instead")]
+#[deprecated(
+    since = "0.9.0",
+    note = "Use AgentCreationResult in types::agent instead"
+)]
 #[derive(Debug, Clone)]
 pub struct AgentCreationResult {
     /// Agent name
@@ -128,7 +137,7 @@ pub struct AgentCreationResult {
 }
 
 /// Unified service for creating agents (DEPRECATED)
-/// 
+///
 /// Use `AgentService` instead. This type will be removed in a future version.
 #[deprecated(since = "0.9.0", note = "Use AgentService instead")]
 pub struct AgentCreationService {

@@ -734,9 +734,12 @@ impl ToolFactory {
 
     /// Create minimal tools (filesystem + process only)
     /// Respects disabled_tools
-    /// 
+    ///
     /// DEPRECATED: Use `create_tools` with `ToolFactoryConfig::minimal()` instead.
-    #[deprecated(since = "0.9.0", note = "Use create_tools with ToolFactoryConfig::minimal() instead")]
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use create_tools with ToolFactoryConfig::minimal() instead"
+    )]
     #[must_use]
     pub fn create_minimal_tools(
         workspace_dir: PathBuf,
@@ -755,9 +758,12 @@ impl ToolFactory {
 
     /// Create coding tools (filesystem + apply_patch + process)
     /// Respects disabled_tools
-    /// 
+    ///
     /// DEPRECATED: Use `create_tools` with `ToolFactoryConfig::coding()` instead.
-    #[deprecated(since = "0.9.0", note = "Use create_tools with ToolFactoryConfig::coding() instead")]
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use create_tools with ToolFactoryConfig::coding() instead"
+    )]
     #[must_use]
     pub fn create_coding_tools(
         workspace_dir: PathBuf,
@@ -774,9 +780,12 @@ impl ToolFactory {
 
     /// Create full toolset (core tools only, sync version)
     /// Respects disabled_tools
-    /// 
+    ///
     /// DEPRECATED: Use `create_tools` with `ToolFactoryConfig::full()` instead.
-    #[deprecated(since = "0.9.0", note = "Use create_tools with ToolFactoryConfig::full() instead")]
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use create_tools with ToolFactoryConfig::full() instead"
+    )]
     #[must_use]
     pub fn create_full_tools(
         workspace_dir: PathBuf,
@@ -792,9 +801,12 @@ impl ToolFactory {
 
     /// Create full toolset including MCP tools (async version)
     /// Respects disabled_tools
-    /// 
+    ///
     /// DEPRECATED: Use `create_tools_async` with `ToolFactoryConfig::full()` instead.
-    #[deprecated(since = "0.9.0", note = "Use create_tools_async with ToolFactoryConfig::full() instead")]
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use create_tools_async with ToolFactoryConfig::full() instead"
+    )]
     pub async fn create_full_tools_async(
         workspace_dir: PathBuf,
         disabled_tools: Vec<String>,

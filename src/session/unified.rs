@@ -20,9 +20,8 @@
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
 use crate::session::events::{
-    generate_event_id, generate_message_id, AssistantMessageEvent, EventEnvelope,
-    MessageSource, SessionEvent, ThinkingEvent, TokenUsage as EventTokenUsage, ToolResultEvent,
-    UserMessageEvent,
+    generate_event_id, generate_message_id, AssistantMessageEvent, EventEnvelope, MessageSource,
+    SessionEvent, ThinkingEvent, TokenUsage as EventTokenUsage, ToolResultEvent, UserMessageEvent,
 };
 use crate::session::index::SessionEntry;
 use crate::session::jsonl::SessionStorage;
@@ -93,7 +92,11 @@ impl UnifiedSession {
     /// * `agent_name` - The agent name
     /// * `team` - Optional team name (defaults to "default")
     #[must_use]
-    pub fn storage_dir(base_dir: Option<&std::path::Path>, agent_name: &str, team: Option<&str>) -> PathBuf {
+    pub fn storage_dir(
+        base_dir: Option<&std::path::Path>,
+        agent_name: &str,
+        team: Option<&str>,
+    ) -> PathBuf {
         let team = team.unwrap_or("default");
         let base = base_dir.map(PathBuf::from).unwrap_or_else(|| {
             dirs::home_dir()
@@ -263,7 +266,9 @@ impl UnifiedSession {
             storage.load_session(session_id).await?;
 
         // Use provided peer or default
-        let peer = peer.cloned().unwrap_or_else(|| Peer::User("default".to_string()));
+        let peer = peer
+            .cloned()
+            .unwrap_or_else(|| Peer::User("default".to_string()));
         let session_key = crate::session::key::derive_base_session_key(agent_name, &peer);
 
         Self::from_entries(
@@ -462,14 +467,14 @@ impl UnifiedSession {
     }
 
     /// Add a user message
-    /// 
+    ///
     /// Writes as Event Format (user.message) for consistency with the Pekobot
     /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_user(&mut self, content: impl Into<String>) -> Result<()> {
         let content_str = content.into();
         let msg_id = generate_message_id();
         let seq = self.message_count as u64 + 1;
-        
+
         let event = SessionEvent::UserMessage(UserMessageEvent {
             envelope: EventEnvelope {
                 id: generate_event_id(seq),
@@ -481,7 +486,7 @@ impl UnifiedSession {
             content: content_str,
             source: MessageSource::User,
         });
-        
+
         self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
@@ -489,10 +494,10 @@ impl UnifiedSession {
     }
 
     /// Add an assistant message with optional tool calls
-    /// 
+    ///
     /// Writes as Event Format (assistant.message) for consistency with the Pekobot
     /// session specification (DATA_MODEL.md §5.3).
-    /// 
+    ///
     /// Note: Tool calls are currently stored in the message content as they are
     /// part of the assistant's response. Dedicated tool.call events may be added
     /// in the future for more granular tracking.
@@ -502,7 +507,7 @@ impl UnifiedSession {
         tool_calls: Option<Vec<ToolCall>>,
     ) -> Result<()> {
         let content_str = content.into();
-        
+
         // For tool calls, we include them in the content for now
         // The Event Format assistant.message has a simple text content field
         // TODO: Add separate tool.call events for granular tool tracking
@@ -523,7 +528,7 @@ impl UnifiedSession {
 
         let msg_id = generate_message_id();
         let seq = self.message_count as u64 + 1;
-        
+
         let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
                 id: generate_event_id(seq),
@@ -539,7 +544,7 @@ impl UnifiedSession {
                 total_tokens: (self.input_tokens + self.output_tokens) as u32,
             },
         });
-        
+
         self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
@@ -547,7 +552,7 @@ impl UnifiedSession {
     }
 
     /// Add an assistant message with tool calls (with ContentBlock tool calls)
-    /// 
+    ///
     /// Writes as Event Format (assistant.message) for consistency with the Pekobot
     /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_assistant_with_tool_calls(
@@ -560,7 +565,10 @@ impl UnifiedSession {
 
         // Add tool calls as text annotations
         for block in tool_calls {
-            if let ContentBlock::ToolCall { name, arguments, .. } = block {
+            if let ContentBlock::ToolCall {
+                name, arguments, ..
+            } = block
+            {
                 let tool_call_str = format!(
                     "\n[ToolCall: {}({})]",
                     name,
@@ -572,7 +580,7 @@ impl UnifiedSession {
 
         let msg_id = generate_message_id();
         let seq = self.message_count as u64 + 1;
-        
+
         let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
                 id: generate_event_id(seq),
@@ -588,7 +596,7 @@ impl UnifiedSession {
                 total_tokens: (self.input_tokens + self.output_tokens) as u32,
             },
         });
-        
+
         self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
@@ -596,7 +604,7 @@ impl UnifiedSession {
     }
 
     /// Add a tool result
-    /// 
+    ///
     /// Writes as Event Format (tool.result) for consistency with the Pekobot
     /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_tool_result(
@@ -608,7 +616,7 @@ impl UnifiedSession {
         let tool_call_id_str = tool_call_id.into();
         let result_str = result.into();
         let seq = self.message_count as u64 + 1;
-        
+
         let event = SessionEvent::ToolResult(ToolResultEvent {
             envelope: EventEnvelope {
                 id: generate_event_id(seq),
@@ -621,14 +629,14 @@ impl UnifiedSession {
             error: None,
             duration_ms: 0, // TODO: Track actual duration
         });
-        
+
         self.storage.append_event(&self.id, &event).await?;
         // Tool results don't update last_message_id or count
         Ok(())
     }
 
     /// Add a thinking block (streaming reasoning)
-    /// 
+    ///
     /// Writes as Event Format (thinking) for consistency with the Pekobot
     /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_thinking(
@@ -638,7 +646,7 @@ impl UnifiedSession {
     ) -> Result<()> {
         let content = thinking.into();
         let seq = self.message_count as u64 + 1;
-        
+
         let event = SessionEvent::Thinking(ThinkingEvent {
             envelope: EventEnvelope {
                 id: generate_event_id(seq),
@@ -648,7 +656,7 @@ impl UnifiedSession {
             },
             content,
         });
-        
+
         self.storage.append_event(&self.id, &event).await?;
         // Thinking blocks don't count as messages for stats
         Ok(())
@@ -659,7 +667,7 @@ impl UnifiedSession {
     // ============================================================
 
     /// Load conversation history
-    /// 
+    ///
     /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
     /// This ensures backward compatibility during the format transition.
     pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
@@ -695,7 +703,11 @@ impl UnifiedSession {
                         tool_call_id: None,
                     });
                 }
-                NormalizedEntry::ToolResult { content, tool_call_id, .. } => {
+                NormalizedEntry::ToolResult {
+                    content,
+                    tool_call_id,
+                    ..
+                } => {
                     messages.push(ChatMessage {
                         role: MessageRole::Tool,
                         content: vec![ContentBlock::Text { text: content }],
@@ -712,7 +724,7 @@ impl UnifiedSession {
     }
 
     /// Get context as text (for LLM)
-    /// 
+    ///
     /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
     pub async fn get_context_text(&self, _limit: usize) -> String {
         use crate::session::NormalizedEntry;
@@ -741,7 +753,9 @@ impl UnifiedSession {
                         context.push_str(&format!("system: {content}\n\n"));
                     }
                 }
-                NormalizedEntry::ToolResult { content, tool_name, .. } => {
+                NormalizedEntry::ToolResult {
+                    content, tool_name, ..
+                } => {
                     context.push_str(&format!("tool: [{tool_name} result: {content}]\n\n"));
                 }
                 _ => {}
@@ -783,7 +797,7 @@ impl UnifiedSession {
     }
 
     /// Load the most recent compaction summary
-    /// 
+    ///
     /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
     pub async fn load_previous_compaction_summary(&self) -> Result<Option<String>> {
         use crate::session::NormalizedEntry;

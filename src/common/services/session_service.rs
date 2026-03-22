@@ -268,11 +268,7 @@ impl SessionService {
         label: Option<String>,
     ) -> Result<BranchResult> {
         // Use SessionManager for branching
-        let mut manager = SessionManager::for_cli(
-            self.path_resolver.clone(),
-            agent_name,
-            team,
-        );
+        let mut manager = SessionManager::for_cli(self.path_resolver.clone(), agent_name, team);
 
         // Verify parent exists
         let _parent_metadata = manager

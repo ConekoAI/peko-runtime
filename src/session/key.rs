@@ -21,7 +21,7 @@ pub enum SessionScope {
 }
 
 /// Context for deriving a session key
-/// 
+///
 /// This type is used for parsing and validating session key formats,
 /// NOT for runtime execution context (see `session::context::SessionContext`).
 #[derive(Debug, Clone, Default)]

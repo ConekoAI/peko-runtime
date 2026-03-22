@@ -30,9 +30,15 @@ pub mod lifecycle;
 pub use lifecycle::{ExecutionRecord, LifecycleManager};
 
 // Pool (used by command handler, deprecated but still needed)
-#[deprecated(since = "0.2.0", note = "Stateless architecture does not use agent pools")]
+#[deprecated(
+    since = "0.2.0",
+    note = "Stateless architecture does not use agent pools"
+)]
 pub mod pool;
-#[deprecated(since = "0.2.0", note = "Stateless architecture does not use agent pools")]
+#[deprecated(
+    since = "0.2.0",
+    note = "Stateless architecture does not use agent pools"
+)]
 pub use pool::{AgentHandle, AgentPool, PoolConfig};
 
 pub mod registry;

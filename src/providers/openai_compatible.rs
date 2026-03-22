@@ -108,7 +108,7 @@ impl OpenAICompatibleConfig {
 }
 
 /// OpenAI-compatible provider base
-/// 
+///
 /// This struct provides full OpenAI API compatibility including tool calling.
 /// All OpenAI-compatible providers (Groq, Together, Fireworks, Kimi) use this.
 pub struct OpenAICompatibleProvider {
@@ -153,7 +153,10 @@ impl OpenAICompatibleProvider {
 
     /// Create a Fireworks AI provider
     pub fn fireworks(api_key: &str, model: &str) -> anyhow::Result<Self> {
-        Self::new("fireworks", OpenAICompatibleConfig::fireworks(api_key, model))
+        Self::new(
+            "fireworks",
+            OpenAICompatibleConfig::fireworks(api_key, model),
+        )
     }
 
     /// Create a Moonshot (Kimi) provider
@@ -774,22 +777,20 @@ impl OpenAIStreamState {
             // Handle tool calls
             if let Some(tool_calls_delta) = delta.get("tool_calls").and_then(|t| t.as_array()) {
                 for tc_delta in tool_calls_delta {
-                    let index = tc_delta
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as usize;
+                    let index = tc_delta.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
 
-                    let tc_state = if let Some(tc) = self.tool_calls.iter_mut().find(|t| t.index == index) {
-                        tc
-                    } else {
-                        self.tool_calls.push(PartialToolCall {
-                            index,
-                            id: String::new(),
-                            name: String::new(),
-                            arguments: String::new(),
-                        });
-                        self.tool_calls.last_mut().unwrap()
-                    };
+                    let tc_state =
+                        if let Some(tc) = self.tool_calls.iter_mut().find(|t| t.index == index) {
+                            tc
+                        } else {
+                            self.tool_calls.push(PartialToolCall {
+                                index,
+                                id: String::new(),
+                                name: String::new(),
+                                arguments: String::new(),
+                            });
+                            self.tool_calls.last_mut().unwrap()
+                        };
 
                     if let Some(id) = tc_delta.get("id").and_then(|i| i.as_str()) {
                         tc_state.id.push_str(id);
@@ -824,8 +825,8 @@ impl OpenAIStreamState {
 
                 // Emit tool call ends
                 if let Some(tc) = self.tool_calls.first() {
-                    let arguments = serde_json::from_str(&tc.arguments)
-                        .unwrap_or_else(|_| json!({}));
+                    let arguments =
+                        serde_json::from_str(&tc.arguments).unwrap_or_else(|_| json!({}));
                     return Ok(Some(StreamEvent::ToolCallEnd {
                         content_index: tc.index,
                         tool_call: crate::types::message::ContentBlock::ToolCall {

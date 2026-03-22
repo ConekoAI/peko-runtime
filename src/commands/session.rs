@@ -661,11 +661,8 @@ async fn branch_session(
     json: bool,
 ) -> anyhow::Result<()> {
     // Use SessionManager for the branch operation
-    let mut manager = crate::session::SessionManager::for_cli(
-        _paths.resolver.clone(),
-        agent,
-        Some(team),
-    );
+    let mut manager =
+        crate::session::SessionManager::for_cli(_paths.resolver.clone(), agent, Some(team));
 
     // Verify parent session exists
     let _parent_metadata = manager

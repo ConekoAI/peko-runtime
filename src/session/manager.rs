@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 /// Reference to an overlay
 #[derive(Debug, Clone)]
@@ -399,12 +399,17 @@ impl SessionManager {
     ///
     /// This is the PREFERRED way to initialize SessionManager as it ensures
     /// consistent path resolution across all components.
-    pub async fn with_path_resolver(mut self, path_resolver: PathResolver, agent_name: &str, team: Option<&str>) -> Result<Self> {
+    pub async fn with_path_resolver(
+        mut self,
+        path_resolver: PathResolver,
+        agent_name: &str,
+        team: Option<&str>,
+    ) -> Result<Self> {
         let sessions_dir = path_resolver.agent_sessions_dir(agent_name, team);
-        
+
         // Ensure directory exists
         tokio::fs::create_dir_all(&sessions_dir).await.ok();
-        
+
         self.index = Some(SessionIndex::open(&sessions_dir));
         self.sessions_dir = Some(sessions_dir.clone());
         self.agent_name = Some(agent_name.to_string());
@@ -420,7 +425,8 @@ impl SessionManager {
     #[deprecated(since = "0.9.0", note = "Use with_path_resolver instead")]
     pub async fn with_registry(mut self, agent_name: &str) -> Result<Self> {
         let path_resolver = PathResolver::new();
-        self.with_path_resolver(path_resolver, agent_name, None).await
+        self.with_path_resolver(path_resolver, agent_name, None)
+            .await
     }
 
     /// Initialize with a specific sessions directory
@@ -560,10 +566,10 @@ impl SessionManager {
         channel_id: &str,
     ) -> Result<ResolvedSession> {
         let peer = Peer::User(channel_id.to_string());
-        
+
         // Derive peer key ONCE and use it consistently
         let peer_key = derive_base_session_key(agent_name, &peer);
-        
+
         debug!("Auto-resuming session for peer_key: {}", peer_key);
 
         // Check peer routing via index (single lookup)
@@ -600,7 +606,7 @@ impl SessionManager {
     }
 
     /// Create a fresh session (internal helper for resolution)
-    /// 
+    ///
     /// This is different from the public `create_new_session` which is deprecated.
     /// This method handles the full context creation for the resolution flow.
     async fn create_fresh_session(
@@ -786,8 +792,13 @@ impl SessionManager {
         };
 
         // 3. Load UnifiedSession from JSONL with peer info
-        let session =
-            UnifiedSession::open_by_id(&metadata.agent_name, session_id, &sessions_dir, Some(&peer)).await?;
+        let session = UnifiedSession::open_by_id(
+            &metadata.agent_name,
+            session_id,
+            &sessions_dir,
+            Some(&peer),
+        )
+        .await?;
         let peer = session.peer.clone();
 
         // 4. Cache and return handle
@@ -1091,26 +1102,25 @@ impl SessionManager {
             let sessions_dir = self.sessions_dir.as_ref().unwrap();
 
             // Get or create session via index
-            let session_id = if let Some(existing_id) =
-                index.get_active_session_id(&peer_key).await?
-            {
-                existing_id
-            } else {
-                // Create new session through index (just tracking, no file yet)
-                let new_id = uuid::Uuid::new_v4().to_string();
-                let transcript_file = format!("{}.jsonl", new_id);
-                let entry = SessionEntry::with_peer(
-                    new_id.clone(),
-                    agent.to_string(),
-                    transcript_file,
-                    peer.peer_type(),
-                    peer.id(),
-                );
-                index.create_for_peer(entry, &peer_key).await?;
-                index.save().await?;
-                tracing::info!("Created new session via index: {}", new_id);
-                new_id
-            };
+            let session_id =
+                if let Some(existing_id) = index.get_active_session_id(&peer_key).await? {
+                    existing_id
+                } else {
+                    // Create new session through index (just tracking, no file yet)
+                    let new_id = uuid::Uuid::new_v4().to_string();
+                    let transcript_file = format!("{}.jsonl", new_id);
+                    let entry = SessionEntry::with_peer(
+                        new_id.clone(),
+                        agent.to_string(),
+                        transcript_file,
+                        peer.peer_type(),
+                        peer.id(),
+                    );
+                    index.create_for_peer(entry, &peer_key).await?;
+                    index.save().await?;
+                    tracing::info!("Created new session via index: {}", new_id);
+                    new_id
+                };
 
             // Check if session file exists by looking for it directly
             let transcript_file = format!("{session_id}.jsonl");

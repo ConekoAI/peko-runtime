@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::agent::StatelessAgentManager;
 use crate::agent::stateless_service::ExecutionRequest;
+use crate::agent::StatelessAgentManager;
 use crate::orchestration::events::SystemEvent;
 
 /// Handler function type for event processing
@@ -178,9 +178,7 @@ impl EventRouter {
             Ok(result) => {
                 info!(
                     "Agent {} execution completed: success={}, duration={}ms",
-                    agent_id,
-                    result.success,
-                    result.duration_ms
+                    agent_id, result.success, result.duration_ms
                 );
             }
             Err(e) => {

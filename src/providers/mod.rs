@@ -18,7 +18,10 @@ pub mod traits;
 pub mod moonshot;
 
 // Legacy provider (deprecated, will be removed)
-#[deprecated(since = "0.9.0", note = "Use AnthropicProvider or OpenAICompatibleProvider::moonshot() instead")]
+#[deprecated(
+    since = "0.9.0",
+    note = "Use AnthropicProvider or OpenAICompatibleProvider::moonshot() instead"
+)]
 pub mod kimi_code;
 
 pub use anthropic::{AnthropicConfig, AnthropicProvider};
@@ -32,5 +35,8 @@ pub use traits::{
 };
 
 // Backward compatibility: KimiProvider is now MoonshotProvider
-#[deprecated(since = "0.9.0", note = "Use MoonshotProvider or OpenAICompatibleProvider::moonshot() instead")]
+#[deprecated(
+    since = "0.9.0",
+    note = "Use MoonshotProvider or OpenAICompatibleProvider::moonshot() instead"
+)]
 pub type KimiProvider = OpenAICompatibleProvider;

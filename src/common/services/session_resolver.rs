@@ -14,7 +14,7 @@ use crate::session::{ResolvedSession, SessionManager};
 use anyhow::Result;
 
 /// Session resolution strategy
-/// 
+///
 /// DEPRECATED: Use `session::ResolutionStrategy` directly.
 pub use crate::session::ResolutionStrategy;
 
@@ -22,7 +22,7 @@ pub use crate::session::ResolutionStrategy;
 ///
 /// This is a thin wrapper around SessionManager for backward compatibility.
 /// SessionManager is the single authority for session operations.
-/// 
+///
 /// DEPRECATED: Use SessionManager directly.
 pub struct SessionResolver {
     path_resolver: PathResolver,
@@ -58,11 +58,8 @@ impl SessionResolver {
         force_new: bool,
     ) -> Result<(SessionContext, bool)> {
         // Create SessionManager with proper path resolution
-        let mut session_manager = SessionManager::for_cli(
-            self.path_resolver.clone(),
-            agent_name,
-            team,
-        );
+        let mut session_manager =
+            SessionManager::for_cli(self.path_resolver.clone(), agent_name, team);
 
         // Delegate to SessionManager (single authority)
         let resolved = session_manager

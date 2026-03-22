@@ -105,7 +105,7 @@ pub struct MessageContent {
 }
 
 /// Normalized session entry (format-agnostic)
-/// 
+///
 /// Provides a unified view over both Legacy V3 and Event Format entries.
 /// This enables backward compatibility while transitioning to Event Format.
 #[derive(Debug, Clone)]
@@ -601,11 +601,26 @@ impl SessionStorage {
     /// Convert Legacy V3 format to NormalizedEntry
     fn normalize_legacy(entry: SessionEntry) -> Option<NormalizedEntry> {
         match entry {
-            SessionEntry::Session { id, version, timestamp, cwd } => {
-                Some(NormalizedEntry::Session { id, version, timestamp, cwd })
-            }
-            SessionEntry::Message { id, timestamp, message, .. } => {
-                let content = message.content.iter()
+            SessionEntry::Session {
+                id,
+                version,
+                timestamp,
+                cwd,
+            } => Some(NormalizedEntry::Session {
+                id,
+                version,
+                timestamp,
+                cwd,
+            }),
+            SessionEntry::Message {
+                id,
+                timestamp,
+                message,
+                ..
+            } => {
+                let content = message
+                    .content
+                    .iter()
                     .filter_map(|c| match c {
                         ContentBlock::Text { text } => Some(text.clone()),
                         _ => None,
@@ -627,15 +642,18 @@ impl SessionStorage {
                         input_tokens: 0,
                         output_tokens: 0,
                     }),
-                    "system" => Some(NormalizedEntry::SystemMessage {
-                        content,
-                        timestamp,
-                    }),
+                    "system" => Some(NormalizedEntry::SystemMessage { content, timestamp }),
                     _ => None,
                 }
             }
-            SessionEntry::ToolResult { tool_call_id, tool_name, content, is_error } => {
-                let result_text = content.iter()
+            SessionEntry::ToolResult {
+                tool_call_id,
+                tool_name,
+                content,
+                is_error,
+            } => {
+                let result_text = content
+                    .iter()
                     .filter_map(|c| match c {
                         ContentBlock::Text { text } => Some(text.clone()),
                         _ => None,
@@ -648,26 +666,35 @@ impl SessionStorage {
                     is_error: is_error.unwrap_or(false),
                 })
             }
-            SessionEntry::Compaction { timestamp, summary, messages_compacted, tokens_before, tokens_after, compaction_number, .. } => {
-                Some(NormalizedEntry::Compaction {
-                    summary,
-                    messages_compacted,
-                    tokens_before,
-                    tokens_after,
-                    compaction_number,
-                    timestamp,
-                })
-            }
-            SessionEntry::ModelChange { timestamp, provider, model_id, .. } => {
-                Some(NormalizedEntry::ModelChange {
-                    provider,
-                    model_id,
-                    timestamp,
-                })
-            }
-            SessionEntry::Custom { custom_type, data, .. } => {
-                Some(NormalizedEntry::Custom { custom_type, data })
-            }
+            SessionEntry::Compaction {
+                timestamp,
+                summary,
+                messages_compacted,
+                tokens_before,
+                tokens_after,
+                compaction_number,
+                ..
+            } => Some(NormalizedEntry::Compaction {
+                summary,
+                messages_compacted,
+                tokens_before,
+                tokens_after,
+                compaction_number,
+                timestamp,
+            }),
+            SessionEntry::ModelChange {
+                timestamp,
+                provider,
+                model_id,
+                ..
+            } => Some(NormalizedEntry::ModelChange {
+                provider,
+                model_id,
+                timestamp,
+            }),
+            SessionEntry::Custom {
+                custom_type, data, ..
+            } => Some(NormalizedEntry::Custom { custom_type, data }),
         }
     }
 

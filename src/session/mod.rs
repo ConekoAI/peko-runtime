@@ -67,7 +67,10 @@ pub use overlay::{ChannelContext, ChannelOverlay, ChannelOverlayData, SessionOve
 
 pub use spawn::{SpawnOverlay, SpawnOverlayData, SpawnResult, SpawnStatus};
 
-pub use manager::{HybridSession, OverlayRef, ResolutionStrategy, ResolvedSession, SessionCreateOptions, SessionManager};
+pub use manager::{
+    HybridSession, OverlayRef, ResolutionStrategy, ResolvedSession, SessionCreateOptions,
+    SessionManager,
+};
 
 // Re-export recovery
 pub use recovery::{RecoveryReport, RecoveryState, SessionRecovery};

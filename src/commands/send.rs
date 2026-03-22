@@ -60,7 +60,6 @@ pub struct SendArgs {
     /// Read message from stdin
     #[arg(long, conflicts_with = "file")]
     pub stdin: bool,
-
 }
 
 /// Handle the send command

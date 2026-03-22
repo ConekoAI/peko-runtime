@@ -10,7 +10,7 @@
 use crate::providers::OpenAICompatibleProvider;
 
 /// Re-export the OpenAI-compatible provider as Kimi
-/// 
+///
 /// DEPRECATED: Use `OpenAICompatibleProvider` directly with `OpenAICompatibleConfig::moonshot()`.
 pub type KimiProvider = OpenAICompatibleProvider;
 
@@ -24,7 +24,7 @@ mod tests {
         // KimiProvider is just an alias for OpenAICompatibleProvider
         let provider = OpenAICompatibleProvider::moonshot("test_key", "kimi-k2.5");
         assert!(provider.is_ok());
-        
+
         let provider = provider.unwrap();
         assert_eq!(provider.name(), "kimi");
     }

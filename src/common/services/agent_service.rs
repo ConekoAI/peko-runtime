@@ -360,7 +360,8 @@ impl AgentService {
         tokio::fs::write(&config_path, config_content).await?;
 
         // Bootstrap workspace with bootstrap files
-        self.bootstrap_agent_workspace(&dir, &agent_name, &workspace_dir).await?;
+        self.bootstrap_agent_workspace(&dir, &agent_name, &workspace_dir)
+            .await?;
 
         Ok(AgentInitResult {
             name: agent_name,

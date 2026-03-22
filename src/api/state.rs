@@ -6,8 +6,8 @@
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
-    AgentConfigService, AgentService, MessageService, SessionService,
-    TeamManagementService, TeamService,
+    AgentConfigService, AgentService, MessageService, SessionService, TeamManagementService,
+    TeamService,
 };
 use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::observability::Observability;

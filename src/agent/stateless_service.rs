@@ -33,7 +33,6 @@ use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::{debug, info, instrument, warn};
 
-
 /// Execution request for stateless agent
 #[derive(Debug, Clone)]
 pub struct ExecutionRequest {

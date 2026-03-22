@@ -1,6 +1,6 @@
 //! Kimi Code provider implementation (DEPRECATED)
 //!
-//! DEPRECATED: This provider is being phased out. Use AnthropicProvider 
+//! DEPRECATED: This provider is being phased out. Use AnthropicProvider
 //! directly or migrate to MoonshotProvider (providers::kimi).
 //!
 //! Kimi Code uses Anthropic Claude Code's backend, so it follows
@@ -14,7 +14,10 @@ use std::time::Duration;
 use tracing::{debug, error, info};
 
 /// Kimi Code API configuration (DEPRECATED)
-#[deprecated(since = "0.9.0", note = "Use AnthropicConfig or MoonshotConfig instead")]
+#[deprecated(
+    since = "0.9.0",
+    note = "Use AnthropicConfig or MoonshotConfig instead"
+)]
 #[derive(Debug, Clone)]
 pub struct KimiCodeConfig {
     pub api_key: String,
@@ -61,10 +64,13 @@ impl KimiCodeConfig {
 /// Kimi Code provider (DEPRECATED)
 ///
 /// DEPRECATED: Use AnthropicProvider or MoonshotProvider instead.
-/// 
+///
 /// Note: Kimi Code uses Anthropic Claude Code's backend, so it follows
 /// the Anthropic API format (x-api-key header, /v1/messages endpoint).
-#[deprecated(since = "0.9.0", note = "Use AnthropicProvider or MoonshotProvider instead")]
+#[deprecated(
+    since = "0.9.0",
+    note = "Use AnthropicProvider or MoonshotProvider instead"
+)]
 pub struct KimiCodeProvider {
     config: KimiCodeConfig,
     client: Client,
