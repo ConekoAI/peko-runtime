@@ -21,8 +21,11 @@ pub enum SessionScope {
 }
 
 /// Context for deriving a session key
+/// 
+/// This type is used for parsing and validating session key formats,
+/// NOT for runtime execution context (see `session::context::SessionContext`).
 #[derive(Debug, Clone, Default)]
-pub struct SessionContext {
+pub struct SessionKeyContext {
     /// Channel type (discord, cli, web, etc.)
     pub channel: Option<String>,
     /// Sender/user ID
@@ -61,15 +64,15 @@ pub enum ChatType {
 ///
 /// # Examples
 /// ```
-/// use pekobot::session::key::{derive_session_key, SessionScope, SessionContext, ChatType};
+/// use pekobot::session::key::{derive_session_key, SessionScope, SessionKeyContext, ChatType};
 ///
 /// // CLI default session
-/// let ctx = SessionContext::default();
+/// let ctx = SessionKeyContext::default();
 /// let key = derive_session_key("myagent", SessionScope::CliDefault, &ctx);
 /// assert_eq!(key, "agent:myagent:cli:default");
 ///
 /// // Discord DM
-/// let ctx = SessionContext {
+/// let ctx = SessionKeyContext {
 ///     channel: Some("discord".to_string()),
 ///     sender_id: Some("123456".to_string()),
 ///     chat_type: ChatType::Direct,
@@ -79,7 +82,7 @@ pub enum ChatType {
 /// assert_eq!(key, "agent:myagent:discord:123456");
 /// ```
 #[must_use]
-pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionContext) -> String {
+pub fn derive_session_key(agent: &str, scope: SessionScope, ctx: &SessionKeyContext) -> String {
     match scope {
         SessionScope::Global => {
             format!("agent:{agent}:global")
@@ -220,7 +223,7 @@ pub fn discord_session_key(
     match (user_id, guild_id, channel_id, thread_id) {
         // DM conversation
         (Some(user), None, _, _) => {
-            let ctx = SessionContext {
+            let ctx = SessionKeyContext {
                 channel: Some("discord".to_string()),
                 sender_id: Some(user.to_string()),
                 chat_type: ChatType::Direct,
@@ -355,21 +358,21 @@ mod tests {
 
     #[test]
     fn test_cli_default_key() {
-        let ctx = SessionContext::default();
+        let ctx = SessionKeyContext::default();
         let key = derive_session_key("testagent", SessionScope::CliDefault, &ctx);
         assert_eq!(key, "agent:testagent:cli:default");
     }
 
     #[test]
     fn test_global_key() {
-        let ctx = SessionContext::default();
+        let ctx = SessionKeyContext::default();
         let key = derive_session_key("testagent", SessionScope::Global, &ctx);
         assert_eq!(key, "agent:testagent:global");
     }
 
     #[test]
     fn test_per_sender_key() {
-        let ctx = SessionContext {
+        let ctx = SessionKeyContext {
             channel: Some("discord".to_string()),
             sender_id: Some("123456".to_string()),
             chat_type: ChatType::Direct,
@@ -381,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_per_channel_key() {
-        let ctx = SessionContext {
+        let ctx = SessionKeyContext {
             channel: Some("discord".to_string()),
             channel_id: Some("987654".to_string()),
             chat_type: ChatType::Channel,
@@ -393,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_thread_key() {
-        let ctx = SessionContext {
+        let ctx = SessionKeyContext {
             channel: Some("discord".to_string()),
             channel_id: Some("987654".to_string()),
             thread_id: Some("thread123".to_string()),
@@ -509,6 +512,11 @@ mod tests {
         assert_eq!(parsed.peer_type, "agent");
         assert_eq!(parsed.peer_id, "helper");
     }
+
+    // Backward compatibility type alias
+    // DEPRECATED: Use SessionKeyContext instead
+    #[deprecated(since = "0.9.0", note = "Use SessionKeyContext instead")]
+    pub type SessionContext = SessionKeyContext;
 
     #[test]
     fn test_base_key_from_overlay() {
