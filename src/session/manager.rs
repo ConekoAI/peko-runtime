@@ -13,6 +13,7 @@
 //! - All metadata updates go through MetadataController
 //! - All session listings are verified for consistency
 
+use super::context::SessionContext;
 use super::index::{SessionEntry, SessionIndex};
 use super::jsonl::SessionStorage;
 use super::key::{derive_base_session_key, derive_overlay_key};
@@ -22,12 +23,13 @@ use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
 use super::unified::UnifiedSession;
+use crate::common::paths::PathResolver;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, debug};
 
 /// Reference to an overlay
 #[derive(Debug, Clone)]
@@ -318,11 +320,33 @@ impl SessionCreateOptions {
     }
 }
 
+/// Session resolution strategy
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResolutionStrategy {
+    /// Auto-resume active session, create new if none exists
+    AutoResume,
+    /// Always create a new session
+    ForceNew,
+    /// Resume specific session by ID, fail if not found
+    Specific,
+}
+
+/// Result of session resolution
+#[derive(Debug)]
+pub struct ResolvedSession {
+    /// The session context
+    pub context: SessionContext,
+    /// Whether this is a new session
+    pub is_new: bool,
+    /// The session ID
+    pub session_id: String,
+}
+
 /// Session manager for overlay lifecycle
 ///
 /// Manages the lifecycle of base sessions and overlays, including:
 /// - Caching of base sessions
-/// - Creation and tracking of overlays
+/// - Creating and tracking overlays
 /// - Cross-channel session sharing
 /// - Session index for UUID-based file naming and switching
 ///
@@ -330,6 +354,7 @@ impl SessionCreateOptions {
 ///
 /// The SessionManager is the SOLE authority for session operations.
 /// All session metadata goes through the MetadataController.
+/// All session resolution goes through this manager.
 #[derive(Debug)]
 pub struct SessionManager {
     /// Base sessions: (`agent_id`, peer) -> `UnifiedSession`
@@ -340,12 +365,14 @@ pub struct SessionManager {
     spawn_overlays: HashMap<String, Arc<RwLock<SpawnOverlay>>>,
     /// Metadata controller (single point of truth for metadata)
     pub(crate) metadata_controller: MetadataController,
-    /// Session index for peer routing (legacy, will be absorbed into MetadataController)
+    /// Session index for peer routing
     index: Option<SessionIndex>,
     /// Sessions directory path
     sessions_dir: Option<PathBuf>,
     /// Agent name for index operations
     agent_name: Option<String>,
+    /// Path resolver for consistent path resolution
+    path_resolver: Option<PathResolver>,
 }
 
 impl SessionManager {
@@ -364,20 +391,36 @@ impl SessionManager {
             index: None,
             sessions_dir: None,
             agent_name: None,
+            path_resolver: None,
         }
     }
 
-    /// Initialize with session index for an agent
-    pub async fn with_registry(mut self, agent_name: &str) -> Result<Self> {
-        let sessions_dir = UnifiedSession::storage_dir(None, agent_name, None);
+    /// Initialize with session index for an agent using PathResolver
+    ///
+    /// This is the PREFERRED way to initialize SessionManager as it ensures
+    /// consistent path resolution across all components.
+    pub async fn with_path_resolver(mut self, path_resolver: PathResolver, agent_name: &str, team: Option<&str>) -> Result<Self> {
+        let sessions_dir = path_resolver.agent_sessions_dir(agent_name, team);
+        
+        // Ensure directory exists
+        tokio::fs::create_dir_all(&sessions_dir).await.ok();
+        
         self.index = Some(SessionIndex::open(&sessions_dir));
         self.sessions_dir = Some(sessions_dir.clone());
         self.agent_name = Some(agent_name.to_string());
+        self.path_resolver = Some(path_resolver);
 
         // Initialize metadata controller with correct directory
         self.metadata_controller = MetadataController::new(sessions_dir);
 
         Ok(self)
+    }
+
+    /// Initialize with session index for an agent (legacy, use with_path_resolver)
+    #[deprecated(since = "0.9.0", note = "Use with_path_resolver instead")]
+    pub async fn with_registry(mut self, agent_name: &str) -> Result<Self> {
+        let path_resolver = PathResolver::new();
+        self.with_path_resolver(path_resolver, agent_name, None).await
     }
 
     /// Initialize with a specific sessions directory
@@ -395,16 +438,21 @@ impl SessionManager {
     /// with the correct sessions directory for the agent/team.
     ///
     /// # Arguments
+    /// * `path_resolver` - The path resolver for consistent path resolution
     /// * `agent_name` - The agent name
     /// * `team` - Optional team name (defaults to "default")
-    /// * `config_dir` - Optional config directory (defaults to `~/.pekobot`)
-    pub fn for_cli(agent_name: &str, team: Option<&str>, config_dir: Option<&std::path::Path>) -> Self {
-        let sessions_dir = config_dir
-            .map(|d| d.join("teams").join(team.unwrap_or("default")).join("agents").join(agent_name).join("sessions"))
-            .unwrap_or_else(|| UnifiedSession::storage_dir(None, agent_name, team));
+    pub fn for_cli(path_resolver: PathResolver, agent_name: &str, team: Option<&str>) -> Self {
+        let sessions_dir = path_resolver.agent_sessions_dir(agent_name, team);
         Self::new()
             .with_directory(sessions_dir)
             .with_agent_name(agent_name)
+            .with_path_resolver_internal(path_resolver)
+    }
+
+    /// Set the path resolver (internal use only, for builder pattern)
+    fn with_path_resolver_internal(mut self, path_resolver: PathResolver) -> Self {
+        self.path_resolver = Some(path_resolver);
+        self
     }
 
     /// Set the agent name
@@ -412,6 +460,11 @@ impl SessionManager {
     pub fn with_agent_name(mut self, agent_name: &str) -> Self {
         self.agent_name = Some(agent_name.to_string());
         self
+    }
+
+    /// Get the path resolver if available
+    pub fn path_resolver(&self) -> Option<&PathResolver> {
+        self.path_resolver.as_ref()
     }
 
     /// Get the sessions directory if initialized
@@ -424,6 +477,200 @@ impl SessionManager {
     #[must_use]
     pub fn has_registry(&self) -> bool {
         self.index.is_some()
+    }
+
+    // ====================================================================================
+    // UNIFIED SESSION RESOLUTION API (Single Point of Truth)
+    // ====================================================================================
+
+    /// Resolve a session for an agent - SINGLE POINT OF TRUTH
+    ///
+    /// This method centralizes all session resolution logic:
+    /// - Auto-resumes active session when no session_id provided
+    /// - Creates new session when explicitly requested or no active session exists
+    /// - Resumes specific session when session_id is provided
+    ///
+    /// # Arguments
+    /// * `agent_name` - Name of the agent
+    /// * `team` - Optional team name
+    /// * `channel` - Channel type (Cli, Http, etc.)
+    /// * `channel_id` - Channel identifier (used as peer ID)
+    /// * `session_id` - Optional specific session ID to resume
+    /// * `force_new` - Force creation of a new session
+    ///
+    /// # Returns
+    /// A `ResolvedSession` containing the context, session ID, and whether it's new
+    pub async fn resolve_session(
+        &mut self,
+        agent_name: &str,
+        team: Option<&str>,
+        channel: ChannelType,
+        channel_id: &str,
+        session_id: Option<String>,
+        force_new: bool,
+    ) -> Result<ResolvedSession> {
+        let strategy = if force_new {
+            ResolutionStrategy::ForceNew
+        } else if session_id.is_some() {
+            ResolutionStrategy::Specific
+        } else {
+            ResolutionStrategy::AutoResume
+        };
+
+        info!(
+            "Resolving session for agent '{}' (team: {:?}) with strategy {:?}",
+            agent_name, team, strategy
+        );
+
+        match strategy {
+            ResolutionStrategy::ForceNew => {
+                let (ctx, session_id) = self
+                    .create_fresh_session(agent_name, team, channel, channel_id)
+                    .await?;
+                Ok(ResolvedSession {
+                    context: ctx,
+                    is_new: true,
+                    session_id,
+                })
+            }
+            ResolutionStrategy::Specific => {
+                let sid = session_id.unwrap();
+                let ctx = self
+                    .resume_specific_session(agent_name, team, channel, channel_id, &sid)
+                    .await?;
+                Ok(ResolvedSession {
+                    context: ctx,
+                    is_new: false,
+                    session_id: sid,
+                })
+            }
+            ResolutionStrategy::AutoResume => {
+                self.auto_resume_session(agent_name, team, channel, channel_id)
+                    .await
+            }
+        }
+    }
+
+    /// Auto-resume session: try to resume active, create new if none exists
+    async fn auto_resume_session(
+        &mut self,
+        agent_name: &str,
+        team: Option<&str>,
+        channel: ChannelType,
+        channel_id: &str,
+    ) -> Result<ResolvedSession> {
+        let peer = Peer::User(channel_id.to_string());
+        
+        // Derive peer key ONCE and use it consistently
+        let peer_key = derive_base_session_key(agent_name, &peer);
+        
+        debug!("Auto-resuming session for peer_key: {}", peer_key);
+
+        // Check peer routing via index (single lookup)
+        if let Some(ref mut index) = self.index {
+            if let Some(session_id) = index.get_active_session_id(&peer_key).await? {
+                info!(
+                    "Found active session '{}' for peer_key '{}'",
+                    session_id, peer_key
+                );
+                let ctx = self
+                    .resume_specific_session(agent_name, team, channel, channel_id, &session_id)
+                    .await?;
+                return Ok(ResolvedSession {
+                    context: ctx,
+                    is_new: false,
+                    session_id,
+                });
+            }
+        }
+
+        // No active session found, create new
+        debug!(
+            "No active session found for agent '{}' (peer_key: {}), creating new",
+            agent_name, peer_key
+        );
+        let (ctx, session_id) = self
+            .create_fresh_session(agent_name, team, channel, channel_id)
+            .await?;
+        Ok(ResolvedSession {
+            context: ctx,
+            is_new: true,
+            session_id,
+        })
+    }
+
+    /// Create a fresh session (internal helper for resolution)
+    /// 
+    /// This is different from the public `create_new_session` which is deprecated.
+    /// This method handles the full context creation for the resolution flow.
+    async fn create_fresh_session(
+        &mut self,
+        agent_name: &str,
+        _team: Option<&str>,
+        channel: ChannelType,
+        channel_id: &str,
+    ) -> Result<(SessionContext, String)> {
+        info!("Creating fresh session for agent '{}'", agent_name);
+
+        let peer = Peer::User(channel_id.to_string());
+
+        // Clear any existing base session for this peer to ensure fresh start
+        self.remove_base_session(agent_name, &peer);
+
+        // Create session using the existing create_session method
+        let options = SessionCreateOptions::new().with_trigger("user");
+        let handle = self.create_session(agent_name, &peer, options).await?;
+        let session_id = handle.session_id().to_string();
+
+        // Create channel overlay on the new base session
+        let base = handle.base().clone();
+        let hybrid = self
+            .create_channel_overlay_on_base(base, &peer, channel, channel_id)
+            .await?;
+
+        let ctx = SessionContext::new(hybrid).await;
+
+        info!(
+            "Created fresh session '{}' for agent '{}'",
+            session_id, agent_name
+        );
+        Ok((ctx, session_id))
+    }
+
+    /// Resume a specific session by ID
+    async fn resume_specific_session(
+        &mut self,
+        agent_name: &str,
+        _team: Option<&str>,
+        channel: ChannelType,
+        channel_id: &str,
+        session_id: &str,
+    ) -> Result<SessionContext> {
+        info!(
+            "Resuming specific session '{}' for agent '{}'",
+            session_id, agent_name
+        );
+
+        let peer = Peer::User(channel_id.to_string());
+
+        // Open the SPECIFIC session by ID
+        let handle = self
+            .open_session(session_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", session_id))?;
+
+        // Get the base session from the handle
+        let base = handle.base().clone();
+
+        // Create channel overlay on the opened base session
+        let hybrid = self
+            .create_channel_overlay_on_base(base, &peer, channel, channel_id)
+            .await?;
+
+        let ctx = SessionContext::new(hybrid).await;
+
+        info!("Successfully resumed session '{}'", session_id);
+        Ok(ctx)
     }
 
     // ====================================================================================
@@ -1424,6 +1671,7 @@ impl SessionManager {
             index: Some(SessionIndex::open(&sessions_dir)),
             sessions_dir: self.sessions_dir.clone(),
             agent_name: self.agent_name.clone(),
+            path_resolver: self.path_resolver.clone(),
         }
     }
 }

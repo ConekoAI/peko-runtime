@@ -19,7 +19,11 @@ use tokio::sync::{mpsc, RwLock};
 
 use tracing::{info, warn};
 
-/// Unified agent manager
+/// Unified agent manager (DEPRECATED - Use StatelessAgentManager)
+/// 
+/// This type is deprecated and will be removed in a future version.
+/// Use `StatelessAgentManager` instead for all new code.
+#[deprecated(since = "0.9.0", note = "Use StatelessAgentManager instead")]
 pub struct AgentManager {
     /// Agent pool (running agents)
     pool: Arc<RwLock<AgentPool>>,

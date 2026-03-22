@@ -86,7 +86,7 @@ Write-Host "TEST 2: Send with --team option" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending message to $teamAgent with --team $teamName..." -ForegroundColor Yellow
-$result = pekobot send $teamAgent "What about Germany?" --team $teamName 2>&1
+$result = pekobot send $teamAgent "What's Germany's capital?" --team $teamName 2>&1
 Write-Host "Response: $result"
 
 # Verify session was created

@@ -1,7 +1,14 @@
-//! Agent configuration builder
+//! Agent configuration builder (DEPRECATED)
+//!
+//! DEPRECATED: This module is being merged into AgentService.
+//! Use `AgentService::create_agent()` which handles config building internally.
 //!
 //! Provides functions for building agent configurations with
 //! authentication and provider detection.
+#![deprecated(
+    since = "0.9.0",
+    note = "AgentConfigBuilder is deprecated. Use AgentService::create_agent() instead."
+)]
 
 use crate::common::paths::PathResolver;
 use crate::common::services::auth_resolver::AuthResolver;
@@ -9,7 +16,9 @@ use crate::types::agent::AgentConfig;
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use std::collections::HashMap;
 
-/// Builder for creating AgentConfig with fluent API
+/// Builder for creating AgentConfig with fluent API (DEPRECATED)
+///
+/// DEPRECATED: Use `AgentService::create_agent()` instead.
 ///
 /// # Example
 /// ```rust,ignore
@@ -22,6 +31,7 @@ use std::collections::HashMap;
 ///     .build(&auth_resolver)
 ///     .await?;
 /// ```
+#[deprecated(since = "0.9.0", note = "Use AgentService::create_agent() instead")]
 pub struct AgentConfigBuilder {
     name: String,
     provider: String,

@@ -1,7 +1,14 @@
-//! Agent Creation Service
+//! Agent Creation Service (DEPRECATED)
+//!
+//! DEPRECATED: This service is being merged into AgentService.
+//! Use `AgentService::create_agent()` instead for all new code.
 //!
 //! Provides unified agent creation for both CLI and HTTP API.
 //! Supports creating agents from images or from direct configuration.
+#![deprecated(
+    since = "0.9.0",
+    note = "AgentCreationService is deprecated. Use AgentService::create_agent() instead."
+)]
 
 use crate::commands::agent_bootstrap::AgentBootstrap;
 use crate::common::identifiers::{parse_agent_identifier_with_override, validate_agent_name};
@@ -16,7 +23,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
-/// Source of agent creation
+/// Source of agent creation (DEPRECATED)
+#[deprecated(since = "0.9.0", note = "Use AgentCreateRequest in AgentService instead")]
 #[derive(Debug, Clone)]
 pub enum AgentSource {
     /// Create from an image reference
@@ -29,7 +37,8 @@ pub enum AgentSource {
     },
 }
 
-/// Request to create an agent
+/// Request to create an agent (DEPRECATED)
+#[deprecated(since = "0.9.0", note = "Use AgentCreateRequest in types::agent instead")]
 #[derive(Debug, Clone)]
 pub struct AgentCreationRequest {
     /// Agent name
@@ -102,7 +111,8 @@ impl AgentCreationRequest {
     }
 }
 
-/// Result of agent creation
+/// Result of agent creation (DEPRECATED)
+#[deprecated(since = "0.9.0", note = "Use AgentCreationResult in types::agent instead")]
 #[derive(Debug, Clone)]
 pub struct AgentCreationResult {
     /// Agent name
@@ -117,7 +127,10 @@ pub struct AgentCreationResult {
     pub team_created: bool,
 }
 
-/// Unified service for creating agents
+/// Unified service for creating agents (DEPRECATED)
+/// 
+/// Use `AgentService` instead. This type will be removed in a future version.
+#[deprecated(since = "0.9.0", note = "Use AgentService instead")]
 pub struct AgentCreationService {
     config_service: Arc<AgentConfigService>,
     path_resolver: PathResolver,
