@@ -1,9 +1,11 @@
-//! Kimi (Moonshot) provider - Thin wrapper around OpenAICompatibleProvider
+//! Moonshot (Kimi) provider - Thin wrapper around OpenAICompatibleProvider
+//!
+//! This module provides a thin wrapper for the Moonshot API (Kimi).
+//! Moonshot uses OpenAI-compatible API format.
 //!
 //! DEPRECATED: Use `OpenAICompatibleProvider::moonshot()` instead.
-//!
-//! Kimi uses OpenAI-compatible API, so this is just a thin wrapper
-//! with Moonshot-specific defaults.
+
+#![allow(deprecated)]
 
 use crate::providers::OpenAICompatibleProvider;
 

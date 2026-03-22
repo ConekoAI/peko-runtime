@@ -15,9 +15,9 @@ pub mod registry;
 pub mod sse;
 pub mod traits;
 
-// Legacy providers (deprecated, will be removed)
-#[deprecated(since = "0.9.0", note = "Use OpenAICompatibleProvider::moonshot() instead")]
-pub mod kimi;
+pub mod moonshot;
+
+// Legacy provider (deprecated, will be removed)
 #[deprecated(since = "0.9.0", note = "Use AnthropicProvider or OpenAICompatibleProvider::moonshot() instead")]
 pub mod kimi_code;
 
@@ -30,3 +30,7 @@ pub use traits::{
     ChatMessage, ChatOptions, ChatResponse, MessageRole, Provider, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
 };
+
+// Backward compatibility: KimiProvider is now MoonshotProvider
+#[deprecated(since = "0.9.0", note = "Use MoonshotProvider or OpenAICompatibleProvider::moonshot() instead")]
+pub type KimiProvider = OpenAICompatibleProvider;
