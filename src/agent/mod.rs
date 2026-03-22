@@ -29,21 +29,10 @@ pub use stateless_service::{
 pub mod lifecycle;
 pub use lifecycle::{ExecutionRecord, LifecycleManager};
 
-// Legacy components (deprecated, will be removed in future release)
-#[deprecated(since = "0.2.0", note = "Use StatelessAgentManager instead")]
-pub mod manager;
-#[deprecated(since = "0.2.0", note = "Use StatelessAgentManager instead")]
-pub use manager::AgentManager;
-
-#[deprecated(
-    since = "0.2.0",
-    note = "Stateless architecture does not use agent pools"
-)]
+// Pool (used by command handler, deprecated but still needed)
+#[deprecated(since = "0.2.0", note = "Stateless architecture does not use agent pools")]
 pub mod pool;
-#[deprecated(
-    since = "0.2.0",
-    note = "Stateless architecture does not use agent pools"
-)]
+#[deprecated(since = "0.2.0", note = "Stateless architecture does not use agent pools")]
 pub use pool::{AgentHandle, AgentPool, PoolConfig};
 
 pub mod registry;
@@ -70,29 +59,8 @@ pub use async_tool_framework::{
     UnifiedAsyncExecutor, WaitResult,
 };
 
-// Deprecated: AsyncTool trait is deprecated, use UnifiedAsyncExecutor directly
-#[allow(deprecated)]
-pub use async_tool_framework::AsyncTool;
-
-// Re-export manager components for convenience
-pub use commands::command_handler_loop;
-pub use context::{AgentContext, AgentRegistryView, CapabilityIndex};
+// Re-export types for backward compatibility
 pub use types::{AgentInfo, IdentityInfo, ManagerEvent};
 
-// Re-export subagent components
-pub use announcement_service::{AnnouncementService, ChannelAnnouncementService};
-pub use subagent_announce::{
-    announce_to_parent, build_subagent_system_prompt, build_subagent_task_message,
-    format_announcement, handle_cleanup, on_subagent_complete,
-};
-pub use subagent_executor::{
-    AnnouncementReceiver, AnnouncementSender, BackgroundTaskManager, CompletedRun, ExecutionConfig,
-    SubagentExecutor,
-};
-pub use subagent_registry::{
-    create_shared_registry, SharedSubagentRegistry, SubagentRegistry, SubagentResult, SubagentRun,
-    SubagentStatus,
-};
-
-#[cfg(test)]
-mod tests;
+// Context for agent execution
+pub use context::AgentContext;

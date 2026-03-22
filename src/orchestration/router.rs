@@ -1,5 +1,4 @@
-//! Event Router for orchestration layer (DEPRECATED)
-#![allow(deprecated)]
+//! Event Router for orchestration layer
 //!
 //! Routes system events to appropriate agents based on registered handlers.
 
@@ -9,7 +8,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-use crate::agent::AgentManager;
+use crate::agent::StatelessAgentManager;
+use crate::agent::stateless_service::ExecutionRequest;
 use crate::orchestration::events::SystemEvent;
 
 /// Handler function type for event processing
@@ -36,7 +36,7 @@ pub struct EventRouter {
     /// Event type -> handlers mapping
     handlers: RwLock<HashMap<String, Vec<EventHandler>>>,
     /// Agent manager for invoking agents
-    agent_manager: Arc<RwLock<AgentManager>>,
+    agent_manager: Arc<RwLock<StatelessAgentManager>>,
     /// Event history for audit/debugging
     event_history: RwLock<Vec<(chrono::DateTime<chrono::Utc>, SystemEvent)>>,
     /// Maximum history size
@@ -45,7 +45,7 @@ pub struct EventRouter {
 
 impl EventRouter {
     /// Create a new event router
-    pub fn new(agent_manager: Arc<RwLock<AgentManager>>) -> Self {
+    pub fn new(agent_manager: Arc<RwLock<StatelessAgentManager>>) -> Self {
         Self {
             handlers: RwLock::new(HashMap::new()),
             agent_manager,
@@ -158,34 +158,35 @@ impl EventRouter {
     async fn execute_invoke(&self, agent_id: String, prompt: String) -> anyhow::Result<()> {
         info!("Invoking agent {} with prompt", agent_id);
 
-        // Get the agent from the pool
+        // Get the agent manager
         let manager = self.agent_manager.read().await;
 
-        // Try to find by name first, then by DID
-        let agent_handle = if let Some(agent) = manager.get_by_name(&agent_id).await {
-            Some(agent)
-        } else {
-            manager.get(&agent_id).await
-        };
+        // Check if agent exists
+        let agent_exists = manager.exists(&agent_id, None).await?;
 
-        if let Some(agent) = agent_handle {
-            // Execute the prompt on the agent
-            match agent.execute(&prompt).await {
-                Ok(result) => {
-                    info!(
-                        "Agent {} execution completed: {}",
-                        agent_id,
-                        result.chars().take(100).collect::<String>()
-                    );
-                }
-                Err(e) => {
-                    error!("Agent {} execution failed: {}", agent_id, e);
-                    return Err(e);
-                }
-            }
-        } else {
+        if !agent_exists {
             warn!("Agent {} not found for invocation", agent_id);
             return Err(anyhow::anyhow!("Agent {agent_id} not found"));
+        }
+
+        // Create execution request
+        let session_id = format!("router_{}", uuid::Uuid::new_v4());
+        let request = ExecutionRequest::new(&agent_id, &session_id, &prompt);
+
+        // Execute the prompt on the agent
+        match manager.execute(request).await {
+            Ok(result) => {
+                info!(
+                    "Agent {} execution completed: success={}, duration={}ms",
+                    agent_id,
+                    result.success,
+                    result.duration_ms
+                );
+            }
+            Err(e) => {
+                error!("Agent {} execution failed: {}", agent_id, e);
+                return Err(e);
+            }
         }
 
         Ok(())
@@ -248,10 +249,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_handler_registration_and_routing() {
-        // Create a real AgentManager for integration testing
-        let (agent_manager, _events) = AgentManager::new()
+        // Create a real StatelessAgentManager for integration testing
+        let (agent_manager, _events) = StatelessAgentManager::new()
             .await
-            .expect("Failed to create AgentManager");
+            .expect("Failed to create StatelessAgentManager");
         let agent_manager = Arc::new(RwLock::new(agent_manager));
 
         let router = EventRouter::new(agent_manager);
@@ -314,9 +315,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_routing_no_handler() {
-        let (agent_manager, _events) = AgentManager::new()
+        let (agent_manager, _events) = StatelessAgentManager::new()
             .await
-            .expect("Failed to create AgentManager");
+            .expect("Failed to create StatelessAgentManager");
         let agent_manager = Arc::new(RwLock::new(agent_manager));
 
         let router = EventRouter::new(agent_manager);
@@ -336,9 +337,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_handlers_for_event() {
-        let (agent_manager, _events) = AgentManager::new()
+        let (agent_manager, _events) = StatelessAgentManager::new()
             .await
-            .expect("Failed to create AgentManager");
+            .expect("Failed to create StatelessAgentManager");
         let agent_manager = Arc::new(RwLock::new(agent_manager));
 
         let router = EventRouter::new(agent_manager);
