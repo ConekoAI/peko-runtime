@@ -6,7 +6,7 @@
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
-    AgentConfigService, AgentCreationService, AgentService, MessageService, SessionService,
+    AgentConfigService, AgentService, MessageService, SessionService,
     TeamManagementService, TeamService,
 };
 use crate::hooks::{EventBroadcaster, HookRegistry};
@@ -74,9 +74,6 @@ pub struct AppState {
 
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
-
-    /// Agent creation service (unified for CLI and API)
-    agent_creation_service: Arc<AgentCreationService>,
 
     /// Message service (unified for CLI and API)
     message_service: Arc<MessageService>,
@@ -166,12 +163,6 @@ impl AppState {
         let lifecycle = Arc::new(LifecycleManager::new());
         let team_manager = Arc::new(TeamManager::new());
 
-        let agent_creation_service = Arc::new(AgentCreationService::new(
-            config_service.clone(),
-            path_resolver_clone.clone(),
-            team_manager.clone(),
-        ));
-
         let message_service = Arc::new(MessageService::new(
             agent_service.clone(),
             path_resolver_clone.clone(),
@@ -206,7 +197,6 @@ impl AppState {
             agent_service,
             agent_mgmt_service,
             lifecycle,
-            agent_creation_service,
             message_service,
             session_service,
             team_service,
@@ -247,12 +237,6 @@ impl AppState {
         let lifecycle = Arc::new(LifecycleManager::new());
         let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
 
-        let agent_creation_service = Arc::new(AgentCreationService::new(
-            config_service.clone(),
-            path_resolver_clone.clone(),
-            team_manager.clone(),
-        ));
-
         let message_service = Arc::new(MessageService::new(
             agent_service.clone(),
             path_resolver_clone.clone(),
@@ -287,7 +271,6 @@ impl AppState {
             agent_service,
             agent_mgmt_service,
             lifecycle,
-            agent_creation_service,
             message_service,
             session_service,
             team_service,
@@ -396,11 +379,6 @@ impl AppState {
     /// Get the lifecycle manager
     pub fn lifecycle(&self) -> &Arc<LifecycleManager> {
         &self.lifecycle
-    }
-
-    /// Get the agent creation service
-    pub fn agent_creation_service(&self) -> &Arc<AgentCreationService> {
-        &self.agent_creation_service
     }
 
     /// Get the message service

@@ -16,9 +16,8 @@ pub mod team_service;
 
 pub use agent_config_builder::{build_config_with_auth, build_default_config, AgentConfigBuilder};
 pub use agent_config_service::{AgentConfigEntry, AgentConfigService};
-pub use agent_creation_service::{
-    AgentCreationRequest, AgentCreationResult, AgentCreationService, AgentSource,
-};
+// AgentCreationService is deprecated - use AgentService::create_agent() instead
+// pub use agent_creation_service::...;
 pub use agent_service::AgentService;
 pub use auth_resolver::{AuthResolver, DirectAuthResolver, FilesystemAuthResolver};
 pub use message_service::{ChatEvent, MessageRequest, MessageResult, MessageService, ToolCallInfo};
