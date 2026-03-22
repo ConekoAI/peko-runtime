@@ -117,23 +117,22 @@ impl AgentService {
         let content = tokio::fs::read_to_string(&config_path).await?;
         let config: AgentConfig = toml::from_str(&content)?;
 
-        let sessions_dir = config_path.parent().unwrap().join("sessions");
-        let session_count = if sessions_dir.exists() {
+        // Use PathResolver for consistent path resolution (sessions in data_dir)
+        let sessions_dir = self.resolver.agent_sessions_dir(agent_name, Some(team));
+        let mut session_count = 0;
+
+        if sessions_dir.exists() {
             match tokio::fs::read_dir(&sessions_dir).await {
                 Ok(mut entries) => {
-                    let mut count = 0;
                     while let Ok(Some(entry)) = entries.next_entry().await {
                         if entry.path().extension().map_or(false, |e| e == "jsonl") {
-                            count += 1;
+                            session_count += 1;
                         }
                     }
-                    count
                 }
-                Err(_) => 0,
+                Err(_) => {}
             }
-        } else {
-            0
-        };
+        }
 
         Ok(Some(AgentInfo {
             name: agent_name.to_string(),
@@ -205,7 +204,7 @@ impl AgentService {
 
     /// Delete an agent
     ///
-    /// Removes the agent configuration and optionally its sessions.
+    /// Removes the agent configuration, sessions, and workspace.
     pub async fn delete_agent(
         &self,
         name: &str,
@@ -219,12 +218,22 @@ impl AgentService {
             anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
         }
 
-        // Remove entire agent directory (includes config and sessions)
+        // Remove agent config directory
         let agent_dir = config_path.parent().unwrap();
-        let sessions_dir = agent_dir.join("sessions");
-        let had_sessions = sessions_dir.exists();
-
         tokio::fs::remove_dir_all(agent_dir).await?;
+
+        // Remove sessions from data_dir
+        let sessions_dir = self.resolver.agent_sessions_dir(agent_name, Some(team));
+        let had_sessions = sessions_dir.exists();
+        if had_sessions {
+            tokio::fs::remove_dir_all(&sessions_dir).await.ok();
+        }
+
+        // Remove workspace from data_dir
+        let workspace_dir = self.resolver.agent_workspace(agent_name, Some(team));
+        if workspace_dir.exists() {
+            tokio::fs::remove_dir_all(&workspace_dir).await.ok();
+        }
 
         if opts.purge_identity {
             // TODO: Implement identity purge when identity system is available
@@ -291,11 +300,32 @@ impl AgentService {
         // Move config file
         tokio::fs::rename(&old_config_path, &new_config_path).await?;
 
-        // Move sessions directory if it exists
-        let old_sessions_dir = old_config_path.parent().unwrap().join("sessions");
-        let new_sessions_dir = new_agent_dir.join("sessions");
+        // Move sessions directory (in data_dir)
+        let old_sessions_dir = self
+            .resolver
+            .agent_sessions_dir(old_agent_name, Some(from_team));
+        let new_sessions_dir = self
+            .resolver
+            .agent_sessions_dir(new_name, Some(target_team));
         if old_sessions_dir.exists() {
-            tokio::fs::rename(&old_sessions_dir, &new_sessions_dir).await?;
+            tokio::fs::create_dir_all(new_sessions_dir.parent().unwrap())
+                .await
+                .ok();
+            tokio::fs::rename(&old_sessions_dir, &new_sessions_dir)
+                .await
+                .ok();
+        }
+
+        // Move workspace directory (in data_dir)
+        let old_workspace = self
+            .resolver
+            .agent_workspace(old_agent_name, Some(from_team));
+        let new_workspace = self.resolver.agent_workspace(new_name, Some(target_team));
+        if old_workspace.exists() {
+            tokio::fs::create_dir_all(new_workspace.parent().unwrap())
+                .await
+                .ok();
+            tokio::fs::rename(&old_workspace, &new_workspace).await.ok();
         }
 
         // Remove old agent directory
@@ -304,10 +334,11 @@ impl AgentService {
             tokio::fs::remove_dir(old_agent_dir).await?;
         }
 
-        // Update config with new name and team
+        // Update config with new name, team, and workspace
         let mut config: AgentConfig =
             toml::from_str(&tokio::fs::read_to_string(&new_config_path).await?)?;
         config.name = new_name.to_string();
+        config.workspace = Some(new_workspace);
         config.team = Some(target_team.to_string());
         let updated_toml = toml::to_string_pretty(&config)?;
         tokio::fs::write(&new_config_path, updated_toml).await?;
@@ -515,7 +546,7 @@ cron.json
         // Create empty directories for tools and skills (in agent_dir, not workspace)
         tokio::fs::create_dir_all(agent_dir.join("tools")).await?;
         tokio::fs::create_dir_all(agent_dir.join("skills")).await?;
-        tokio::fs::create_dir_all(agent_dir.join("sessions")).await?;
+        // Note: sessions directory is now in data_dir, created on first use via SessionManager
 
         // Create bootstrap files in workspace using AgentBootstrap
         let bootstrap = AgentBootstrap::new(agent_name, workspace_dir.to_path_buf());

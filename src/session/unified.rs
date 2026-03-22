@@ -17,6 +17,7 @@
 //! - Peer-aware design for multi-user/session scenarios
 //! - Clean API for simple use cases (defaults to Peer::User("default"))
 
+use crate::common::paths::PathResolver;
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
 use crate::session::events::{
@@ -85,29 +86,28 @@ impl UnifiedSession {
 
     /// Get the storage directory for an agent
     ///
-    /// Uses team-based structure: `{base_dir}/teams/{team}/agents/{agent}/sessions/`
+    /// Uses team-based structure: `{data_dir}/sessions/{team}/{agent}/`
+    ///
+    /// DEPRECATED: Use `PathResolver::agent_sessions_dir()` instead.
+    /// This method is kept for backward compatibility.
     ///
     /// # Arguments
-    /// * `base_dir` - Base configuration directory (defaults to `~/.pekobot`)
+    /// * `base_dir` - **Ignored**, kept for backward compatibility
     /// * `agent_name` - The agent name
     /// * `team` - Optional team name (defaults to "default")
     #[must_use]
+    #[deprecated(
+        since = "0.9.0",
+        note = "Use PathResolver::agent_sessions_dir() instead"
+    )]
     pub fn storage_dir(
-        base_dir: Option<&std::path::Path>,
+        _base_dir: Option<&std::path::Path>,
         agent_name: &str,
         team: Option<&str>,
     ) -> PathBuf {
-        let team = team.unwrap_or("default");
-        let base = base_dir.map(PathBuf::from).unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".pekobot")
-        });
-        base.join("teams")
-            .join(team)
-            .join("agents")
-            .join(agent_name)
-            .join("sessions")
+        // Delegate to PathResolver for consistent path resolution
+        let resolver = crate::common::paths::PathResolver::new();
+        resolver.agent_sessions_dir(agent_name, team)
     }
 
     // ============================================================
@@ -126,6 +126,30 @@ impl UnifiedSession {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         Self::create_with_key(agent_name, peer, &session_id, &session_key).await
+    }
+
+    /// Create a new unified session with explicit PathResolver
+    ///
+    /// This is the PREFERRED method as it ensures consistent path resolution.
+    ///
+    /// # Arguments
+    /// * `resolver` - PathResolver for consistent path resolution
+    /// * `agent_name` - The agent name
+    /// * `peer` - The peer this session belongs to
+    /// * `team` - Optional team name
+    ///
+    /// NOTE: This is crate-private. Only SessionManager should create sessions.
+    pub(crate) async fn create_with_resolver(
+        resolver: &crate::common::paths::PathResolver,
+        agent_name: &str,
+        peer: &Peer,
+        team: Option<&str>,
+    ) -> Result<Self> {
+        let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let sessions_dir = resolver.agent_sessions_dir(agent_name, team);
+
+        Self::create_with_path(agent_name, peer, &session_id, sessions_dir).await
     }
 
     /// Create a new unified session with specific ID and key
@@ -291,7 +315,9 @@ impl UnifiedSession {
     /// Open or create a session by key (for CLI persistence)
     /// Note: SessionManager should be used for production code
     pub async fn open_or_create_by_key(agent_name: &str, session_key: &str) -> Result<Self> {
-        let storage_dir = Self::storage_dir(None, agent_name, None);
+        // Use PathResolver for consistent path resolution
+        let resolver = crate::common::paths::PathResolver::new();
+        let storage_dir = resolver.agent_sessions_dir(agent_name, None);
 
         // Try to find existing session file
         // Note: This is a simplified version - SessionManager does proper lookup
@@ -311,7 +337,7 @@ impl UnifiedSession {
         // Create new with this key
         let peer = parse_peer_from_key(session_key).unwrap_or(Peer::User("default".to_string()));
         let session_id = uuid::Uuid::new_v4().to_string();
-        Self::create_with_key(agent_name, &peer, &session_id, session_key).await
+        Self::create_with_path(agent_name, &peer, &session_id, storage_dir).await
     }
 
     /// Get or create a unified session
@@ -832,7 +858,9 @@ impl UnifiedSession {
 
     /// List available sessions for an agent
     pub async fn list_sessions(agent_name: &str) -> Result<Vec<(String, std::time::SystemTime)>> {
-        let storage_dir = Self::storage_dir(None, agent_name, None);
+        // Use PathResolver for consistent path resolution
+        let resolver = crate::common::paths::PathResolver::new();
+        let storage_dir = resolver.agent_sessions_dir(agent_name, None);
 
         let mut sessions = Vec::new();
 

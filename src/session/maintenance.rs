@@ -7,6 +7,7 @@
 //!
 //! Only active in daemon mode.
 
+use crate::common::paths::PathResolver;
 use crate::session::index::{MaintenanceConfig, MaintenanceMode, SessionIndex};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -143,16 +144,11 @@ impl MaintenanceScheduler {
 /// Run maintenance for a specific agent
 pub async fn maintain_agent(
     agent_name: &str,
+    team: Option<&str>,
     config: &MaintenanceConfig,
 ) -> anyhow::Result<crate::session::index::MaintenanceReport> {
-    let sessions_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".pekobot")
-        .join("teams")
-        .join("default")
-        .join("agents")
-        .join(agent_name)
-        .join("sessions");
+    let resolver = PathResolver::new();
+    let sessions_dir = resolver.agent_sessions_dir(agent_name, team);
 
     let mut index = SessionIndex::open(&sessions_dir);
 

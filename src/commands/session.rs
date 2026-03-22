@@ -184,48 +184,21 @@ pub async fn handle_session(
 // Path Resolution
 // ================================================================================
 
-/// Result of locating an agent's workspace
+/// Result of locating an agent's sessions
 struct AgentLocation {
     /// Sessions directory path
     sessions_dir: PathBuf,
-    /// Whether this is a running instance (data dir) or config
-    is_runtime: bool,
 }
 
 /// Locate an agent's sessions directory
 ///
-/// Searches in order:
-/// 1. Runtime data directory (for running instances)
-/// 2. Team config directory (specified team or default)
-/// 3. Standalone agent config directory
+/// Uses PathResolver to get the correct sessions directory.
+/// Structure: `{data_dir}/sessions/{team}/{agent}/`
 fn locate_agent(paths: &GlobalPaths, name: &str, team: &str) -> Option<AgentLocation> {
-    // 1. Try runtime data directory (running instances)
-    let runtime_sessions = paths.data_dir.join("agents").join(name).join("sessions");
-    if runtime_sessions.exists() {
-        return Some(AgentLocation {
-            sessions_dir: runtime_sessions,
-            is_runtime: true,
-        });
-    }
+    let sessions_dir = paths.resolver().agent_sessions_dir(name, Some(team));
 
-    // 2. Try team config directory (specified team)
-    let team_path = paths.team_dir(team).join("agents").join(name);
-    let team_sessions = team_path.join("sessions");
-    if team_sessions.exists() {
-        return Some(AgentLocation {
-            sessions_dir: team_sessions,
-            is_runtime: false,
-        });
-    }
-
-    // 3. Try standalone agent config (for backward compatibility)
-    let standalone = paths.agents_dir(None).join(name);
-    let standalone_sessions = standalone.join("sessions");
-    if standalone_sessions.exists() {
-        return Some(AgentLocation {
-            sessions_dir: standalone_sessions,
-            is_runtime: false,
-        });
+    if sessions_dir.exists() {
+        return Some(AgentLocation { sessions_dir });
     }
 
     None
@@ -236,14 +209,10 @@ async fn ensure_sessions_dir(paths: &GlobalPaths, name: &str, team: &str) -> Res
     if let Some(loc) = locate_agent(paths, name, team) {
         Ok(loc)
     } else {
-        // Create in team config directory
-        let team_dir = paths.team_dir(team).join("agents").join(name);
-        let sessions = team_dir.join("sessions");
-        tokio::fs::create_dir_all(&sessions).await?;
-        Ok(AgentLocation {
-            sessions_dir: sessions,
-            is_runtime: false,
-        })
+        // Create using PathResolver (in data_dir)
+        let sessions_dir = paths.resolver().agent_sessions_dir(name, Some(team));
+        tokio::fs::create_dir_all(&sessions_dir).await?;
+        Ok(AgentLocation { sessions_dir })
     }
 }
 
@@ -827,12 +796,7 @@ async fn switch_session(
             team, agent, session_id
         );
         println!();
-        if loc.is_runtime {
-            println!("   💡 The agent is currently running.");
-            println!("      Restart the agent to use this session, or use the API directly.");
-        } else {
-            println!("   This session will be activated when the agent starts.");
-        }
+        println!("   This session will be activated when the agent starts.");
     }
 
     Ok(())

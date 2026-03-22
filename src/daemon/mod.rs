@@ -8,6 +8,7 @@
 //! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
 
+use crate::common::paths::PathResolver;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
 use crate::observability::Observability;
 use crate::orchestration::events::SystemEvent;
@@ -652,16 +653,22 @@ impl Daemon {
     }
 
     /// Load agent configuration by ID
+    ///
+    /// Searches for agent in teams directory structure.
+    /// For now, defaults to "default" team.
     async fn load_agent_config(&self, agent_id: &str) -> Result<AgentConfig> {
-        let config_path = self
-            .config
-            .config_dir
-            .join("agents")
-            .join(format!("{agent_id}.toml"));
+        let resolver = PathResolver::with_dirs(
+            self.config.config_dir.clone(),
+            self.config.data_dir.clone(),
+            self.config.data_dir.join("cache"),
+        );
+
+        // Try default team first
+        let config_path = resolver.agent_config(agent_id, Some("default"));
 
         if !config_path.exists() {
             return Err(anyhow::anyhow!(
-                "Agent config not found: {}",
+                "Agent config not found: {} (looked in default team)",
                 config_path.display()
             ));
         }
@@ -676,36 +683,53 @@ impl Daemon {
     async fn run_session_maintenance(&self) -> Result<()> {
         info!("🔧 Running session maintenance...");
 
-        let agents_dir = self.config.config_dir.join("agents");
-        if !agents_dir.exists() {
-            return Ok(());
-        }
+        let resolver = PathResolver::with_dirs(
+            self.config.config_dir.clone(),
+            self.config.data_dir.clone(),
+            self.config.data_dir.join("cache"),
+        );
 
         let mut total_pruned = 0;
 
-        let mut entries = tokio::fs::read_dir(&agents_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let metadata = entry.metadata().await?;
-            if !metadata.is_dir() {
-                continue;
-            }
-
-            let agent_name = entry.file_name().to_string_lossy().to_string();
-            let sessions_dir = entry.path().join("sessions");
-
-            if !sessions_dir.exists() {
-                continue;
-            }
-
-            let mut index = SessionIndex::open(&sessions_dir);
-            let config = MaintenanceConfig::default();
-
-            match index.maintenance(&config).await {
-                Ok(report) => {
-                    total_pruned += report.pruned;
+        // Maintain sessions in new location (data_dir/sessions)
+        let sessions_root = resolver.sessions_root();
+        if sessions_root.exists() {
+            let mut team_entries = tokio::fs::read_dir(&sessions_root).await?;
+            while let Some(team_entry) = team_entries.next_entry().await? {
+                let team_path = team_entry.path();
+                if !team_path.is_dir() {
+                    continue;
                 }
-                Err(e) => {
-                    warn!("Session maintenance failed for {}: {}", agent_name, e);
+
+                let team_name = team_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                let mut agent_entries = tokio::fs::read_dir(&team_path).await?;
+                while let Some(agent_entry) = agent_entries.next_entry().await? {
+                    let agent_path = agent_entry.path();
+                    if !agent_path.is_dir() {
+                        continue;
+                    }
+
+                    let agent_name = agent_entry.file_name().to_string_lossy().to_string();
+                    let sessions_dir = agent_path;
+
+                    let mut index = SessionIndex::open(&sessions_dir);
+                    let config = MaintenanceConfig::default();
+
+                    match index.maintenance(&config).await {
+                        Ok(report) => {
+                            total_pruned += report.pruned;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Session maintenance failed for {}/{}: {}",
+                                team_name, agent_name, e
+                            );
+                        }
+                    }
                 }
             }
         }

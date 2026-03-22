@@ -366,8 +366,8 @@ impl AgentCreationService {
 
         // Create directories
         tokio::fs::create_dir_all(&agent_dir).await?;
-        tokio::fs::create_dir_all(agent_dir.join("sessions")).await?;
         tokio::fs::create_dir_all(workspace_dir).await?;
+        // Note: sessions directory is created on-demand in data_dir via PathResolver
 
         // Create .gitignore
         let gitignore_content = r#"# Pekobot agent - gitignore
