@@ -1,19 +1,12 @@
-refactor: unify HTTP API and CLI session/message handling
+refactor: move sessions and workspaces to data_dir
 
-Phase 4-5: API/CLI Unification
+Move sessions from config_dir to data_dir/sessions/{team}/{agent}/
+Move workspaces from config_dir to data_dir/workspaces/{team}/{agent}/
+Update PathResolver with new path methods and proper separation
+Remove legacy path resolution code
+Update all services to use PathResolver consistently
 
-- Add MessageService for unified message sending (CLI + API)
-- Add SessionService for unified session management (CLI + API)
-- Refactor api/routes/sessions.rs to use SessionService
-- Refactor api/routes/chat.rs to use MessageService
-- Implement From<SessionInfo> for SessionResponse to eliminate DRY violations
-- Implement From<HistoryEvent> for HistoryEventResponse
-- Remove load_events() from public API (encapsulation)
-- Fix cargo fix warnings and remove unused imports
-- All 880 tests pass
-
-Architecture improvements:
-- Routes are now thin HTTP adapters (SRP compliant)
-- Business logic consolidated in service layer
-- Consistent path resolution via PathResolver
-- Clean separation between API contracts and internal types
+This follows XDG conventions:
+- config_dir: Agent configurations (configs, credentials)
+- data_dir: Sessions, workspaces, tools, runtime data
+- cache_dir: Temporary files and caches

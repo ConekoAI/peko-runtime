@@ -10,7 +10,7 @@ use pekobot::session::index::SessionEntry;
 use pekobot::session::jsonl::SessionStorage;
 use pekobot::session::key::{
     cli_session_key, derive_session_key, discord_session_key, parse_session_key, ChatType,
-    SessionContext, SessionScope,
+    SessionKeyContext, SessionScope,
 };
 use pekobot::session::lock::FileLock;
 use pekobot::types::ContentBlock;
@@ -78,6 +78,8 @@ async fn test_session_index_create_and_load() {
         channel: None,
         recipient: None,
         cwd: None,
+        peer_type: None,
+        peer_id: None,
     };
 
     // Insert and verify
@@ -124,6 +126,8 @@ async fn test_peer_session_operations() {
         channel: Some("cli".to_string()),
         recipient: None,
         cwd: Some("/tmp".to_string()),
+        peer_type: Some("user".to_string()),
+        peer_id: Some("default".to_string()),
     };
 
     // Save session
@@ -150,7 +154,7 @@ async fn test_peer_session_operations() {
 #[test]
 fn test_session_key_derivation() {
     // CLI default
-    let ctx = SessionContext::default();
+    let ctx = SessionKeyContext::default();
     let key = derive_session_key("myagent", SessionScope::CliDefault, &ctx);
     assert_eq!(key, "agent:myagent:cli:default");
 
@@ -159,7 +163,7 @@ fn test_session_key_derivation() {
     assert_eq!(key, "agent:myagent:global");
 
     // Per-sender
-    let ctx = SessionContext {
+    let ctx = SessionKeyContext {
         channel: Some("discord".to_string()),
         sender_id: Some("123456".to_string()),
         chat_type: ChatType::Direct,
@@ -169,7 +173,7 @@ fn test_session_key_derivation() {
     assert_eq!(key, "agent:myagent:discord:123456");
 
     // Per-channel
-    let ctx = SessionContext {
+    let ctx = SessionKeyContext {
         channel: Some("discord".to_string()),
         channel_id: Some("987654".to_string()),
         chat_type: ChatType::Channel,
@@ -317,6 +321,8 @@ async fn test_full_session_lifecycle() {
         channel: None,
         recipient: None,
         cwd: Some("/tmp".to_string()),
+        peer_type: None,
+        peer_id: None,
     };
     index.insert(entry).await.unwrap();
 
