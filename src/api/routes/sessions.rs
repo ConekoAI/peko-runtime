@@ -484,9 +484,9 @@ mod tests {
         let event = SessionEvent::UserMessage(UserMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
-                session_id: "sess_123".to_string(),
                 ts: Utc::now(),
-                seq: 1,
+                session_id: None,
+                seq: None,
             },
             message_id: "msg_001".to_string(),
             content: "Hello".to_string(),
@@ -508,9 +508,9 @@ mod tests {
         let event = SessionEvent::ToolCall(ToolCallEvent {
             envelope: EventEnvelope {
                 id: "evt_002".to_string(),
-                session_id: "sess_123".to_string(),
                 ts: Utc::now(),
-                seq: 2,
+                session_id: None,
+                seq: None,
             },
             tool_call_id: "tc_001".to_string(),
             tool: "web_search".to_string(),
@@ -530,9 +530,9 @@ mod tests {
         let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_003".to_string(),
-                session_id: "sess_123".to_string(),
                 ts: Utc::now(),
-                seq: 3,
+                session_id: None,
+                seq: None,
             },
             message_id: "msg_002".to_string(),
             content: "The answer is 42.".to_string(),
@@ -556,9 +556,9 @@ mod tests {
         let event = SessionEvent::Thinking(ThinkingEvent {
             envelope: EventEnvelope {
                 id: "evt_004".to_string(),
-                session_id: "sess_123".to_string(),
                 ts: Utc::now(),
-                seq: 4,
+                session_id: None,
+                seq: None,
             },
             content: "Let me think about this...".to_string(),
         });

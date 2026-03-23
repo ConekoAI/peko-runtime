@@ -420,29 +420,49 @@ impl StatelessAgentService {
         // Use standard SessionStorage (reads {session_id}.jsonl)
         let storage = SessionStorage::new(sessions_dir);
 
-        // Load events from storage
-        let events = storage.load_events(session_id).await?;
+        // Load events from storage using normalized format for backward compatibility
+        let entries = storage.load_normalized(session_id).await?;
         let mut messages = Vec::new();
 
-        for event in events {
-            match event {
-                SessionEvent::UserMessage(msg) => {
+        for entry in entries {
+            match entry {
+                crate::session::NormalizedEntry::UserMessage { content, .. } => {
                     messages.push(ChatMessage {
                         role: MessageRole::User,
-                        content: vec![ContentBlock::Text { text: msg.content }],
+                        content: vec![ContentBlock::Text { text: content }],
                         tool_calls: None,
                         tool_call_id: None,
                     });
                 }
-                SessionEvent::AssistantMessage(msg) => {
+                crate::session::NormalizedEntry::AssistantMessage { content, .. } => {
                     messages.push(ChatMessage {
                         role: MessageRole::Assistant,
-                        content: vec![ContentBlock::Text { text: msg.content }],
+                        content: vec![ContentBlock::Text { text: content }],
                         tool_calls: None,
                         tool_call_id: None,
                     });
                 }
-                // Skip other event types for history loading
+                crate::session::NormalizedEntry::SystemMessage { content, .. } => {
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text { text: content }],
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                crate::session::NormalizedEntry::ToolResult {
+                    content,
+                    tool_call_id,
+                    ..
+                } => {
+                    messages.push(ChatMessage {
+                        role: MessageRole::Tool,
+                        content: vec![ContentBlock::Text { text: content }],
+                        tool_calls: None,
+                        tool_call_id: Some(tool_call_id),
+                    });
+                }
+                // Skip other entry types for history loading
                 _ => {}
             }
         }

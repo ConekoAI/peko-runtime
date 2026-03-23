@@ -53,9 +53,9 @@ impl SyncSessionStorage {
         let created_event = SessionEvent::SessionCreated(SessionCreatedEvent {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
-                session_id: session_id.to_string(),
                 ts: Utc::now(),
-                seq: 1,
+                session_id: None,
+                seq: None,
             },
             instance_id: instance_id.to_string(),
             image_digest: String::new(), // Will be set when instance starts
@@ -124,9 +124,9 @@ impl SyncSessionStorage {
                     "evt_{:03}",
                     self.get_next_seq(session_id).await.unwrap_or(1)
                 ),
-                session_id: session_id.to_string(),
                 ts: Utc::now(),
-                seq: 0, // Will be determined by append
+                session_id: None,
+                seq: None,
             },
             reason: reason.clone(),
             turn_count,
@@ -211,9 +211,9 @@ mod tests {
         let user_event = SessionEvent::UserMessage(UserMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
-                session_id: "sess_123".to_string(),
                 ts: Utc::now(),
-                seq: 1,
+                session_id: None,
+                seq: None,
             },
             message_id: "msg_001".to_string(),
             content: "Hello".to_string(),
@@ -226,9 +226,9 @@ mod tests {
         let assistant_event = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_002".to_string(),
-                session_id: "sess_123".to_string(),
                 ts: Utc::now(),
-                seq: 2,
+                session_id: None,
+                seq: None,
             },
             message_id: "msg_002".to_string(),
             content: "Hi there!".to_string(),

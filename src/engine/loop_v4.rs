@@ -482,8 +482,12 @@ impl AgenticLoopV4 {
                     .collect();
                 {
                     let mut s = session.write().await;
-                    s.add_assistant_with_tool_calls(&assistant_text, tool_call_blocks)
-                        .await?;
+                    s.add_assistant_with_tool_calls(
+                        &assistant_text,
+                        tool_call_blocks,
+                        Some(response.usage.clone()),
+                    )
+                    .await?;
                 }
 
                 // Emit assistant text BEFORE tool calls so user sees what's happening
@@ -602,7 +606,8 @@ impl AgenticLoopV4 {
             // Add final answer to session
             {
                 let mut s = session.write().await;
-                s.add_assistant(&final_text, None).await?;
+                s.add_assistant(&final_text, None, Some(response.usage.clone()))
+                    .await?;
             }
 
             // Emit final assistant event

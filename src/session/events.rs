@@ -14,14 +14,16 @@ use serde::{Deserialize, Serialize};
 /// This avoids serialization conflicts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
-    /// Unique event ID within the session (e.g., "evt_001")
+    /// Unique event ID (UUID)
     pub id: String,
-    /// Session ID this event belongs to
-    pub session_id: String,
     /// ISO 8601 timestamp
     pub ts: DateTime<Utc>,
-    /// Monotonically increasing sequence number, starting at 1
-    pub seq: u64,
+    /// Session ID (for backward compatibility, not used in new writes)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<String>,
+    /// Sequence number (deprecated, kept for backward compatibility)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub seq: Option<u64>,
 }
 
 /// Trigger type for session creation
@@ -278,6 +280,41 @@ pub struct SystemEvent {
     pub detail: serde_json::Value,
 }
 
+/// system.message - A system prompt message
+/// 
+/// This is the new unified format for system messages, replacing the legacy
+/// format that used SessionEntry::Message with role="system".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemMessageEvent {
+    #[serde(flatten)]
+    pub envelope: EventEnvelope,
+    /// System prompt content
+    pub content: String,
+}
+
+/// Unified message format - LLM-native storage
+///
+/// Stores messages in the same format providers use, eliminating
+/// conversion overhead. This is the preferred format for new sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageEvent {
+    #[serde(flatten)]
+    pub envelope: EventEnvelope,
+    /// Message role: system, user, assistant, tool
+    pub role: String,
+    /// Message content blocks (serialized JSON array of ContentBlock)
+    pub content: String,
+    /// Tool calls (for assistant messages with tool calls)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_calls: Option<String>,
+    /// Tool call ID (for tool messages)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_call_id: Option<String>,
+    /// Token usage (for assistant messages)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub usage: Option<TokenUsage>,
+}
+
 /// Session end reason
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -315,6 +352,12 @@ pub enum SessionEvent {
     UserMessage(UserMessageEvent),
     #[serde(rename = "assistant.message")]
     AssistantMessage(AssistantMessageEvent),
+    /// System message in new unified format (preferred)
+    #[serde(rename = "system.message")]
+    SystemMessage(SystemMessageEvent),
+    /// Unified message format (LLM-native, preferred for new code)
+    #[serde(rename = "message")]
+    Message(MessageEvent),
     #[serde(rename = "thinking")]
     Thinking(ThinkingEvent),
     #[serde(rename = "tool.call")]
@@ -344,6 +387,8 @@ impl SessionEvent {
             SessionEvent::SessionCreated(e) => &e.envelope,
             SessionEvent::UserMessage(e) => &e.envelope,
             SessionEvent::AssistantMessage(e) => &e.envelope,
+            SessionEvent::SystemMessage(e) => &e.envelope,
+            SessionEvent::Message(e) => &e.envelope,
             SessionEvent::Thinking(e) => &e.envelope,
             SessionEvent::ToolCall(e) => &e.envelope,
             SessionEvent::ToolResult(e) => &e.envelope,
@@ -363,6 +408,8 @@ impl SessionEvent {
             SessionEvent::SessionCreated(_) => "session.created",
             SessionEvent::UserMessage(_) => "user.message",
             SessionEvent::AssistantMessage(_) => "assistant.message",
+            SessionEvent::SystemMessage(_) => "system.message",
+            SessionEvent::Message(_) => "message",
             SessionEvent::Thinking(_) => "thinking",
             SessionEvent::ToolCall(_) => "tool.call",
             SessionEvent::ToolResult(_) => "tool.result",
@@ -395,9 +442,9 @@ impl SessionEvent {
     }
 }
 
-/// Generate a new event ID
-pub fn generate_event_id(seq: u64) -> String {
-    format!("evt_{:03}", seq)
+/// Generate a new event ID (UUID-based)
+pub fn generate_event_id() -> String {
+    format!("evt_{}", uuid::Uuid::new_v4().to_string().replace('-', "").chars().take(8).collect::<String>())
 }
 
 /// Generate a new message ID
@@ -428,9 +475,9 @@ mod tests {
         let event = SessionEvent::SessionCreated(SessionCreatedEvent {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
-                session_id: "sess_abc123".to_string(),
                 ts: Utc::now(),
-                seq: 1,
+                session_id: None,
+                seq: None,
             },
             instance_id: "inst_7k2mxp3q".to_string(),
             image_digest: "sha256:a3b5c7d9".to_string(),
@@ -449,9 +496,9 @@ mod tests {
         let event = SessionEvent::UserMessage(UserMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_002".to_string(),
-                session_id: "sess_abc123".to_string(),
                 ts: Utc::now(),
-                seq: 2,
+                session_id: None,
+                seq: None,
             },
             message_id: "msg_3xpwqr7n".to_string(),
             content: "Hello, world!".to_string(),
@@ -468,9 +515,9 @@ mod tests {
         let event = SessionEvent::SessionCreated(SessionCreatedEvent {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
-                session_id: "sess_abc123".to_string(),
                 ts: Utc::now(),
-                seq: 1,
+                session_id: None,
+                seq: None,
             },
             instance_id: "inst_7k2mxp3q".to_string(),
             image_digest: "sha256:a3b5c7d9".to_string(),
@@ -484,8 +531,8 @@ mod tests {
 
     #[test]
     fn test_generate_ids() {
-        let event_id = generate_event_id(1);
-        assert_eq!(event_id, "evt_001");
+        let event_id = generate_event_id();
+        assert!(event_id.starts_with("evt_"));
 
         let msg_id = generate_message_id();
         assert!(msg_id.starts_with("msg_"));
@@ -504,9 +551,9 @@ mod tests {
         let created = SessionEvent::SessionCreated(SessionCreatedEvent {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 1,
+                session_id: None,
+                seq: None,
             },
             instance_id: "inst_001".to_string(),
             image_digest: "sha256:abc".to_string(),
@@ -519,9 +566,9 @@ mod tests {
         let user_msg = SessionEvent::UserMessage(UserMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_002".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 2,
+                session_id: None,
+                seq: None,
             },
             message_id: "msg_001".to_string(),
             content: "Hello".to_string(),
@@ -533,9 +580,9 @@ mod tests {
         let assistant_msg = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_003".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 3,
+                session_id: None,
+                seq: None,
             },
             message_id: "msg_002".to_string(),
             content: "Hi there".to_string(),
@@ -553,9 +600,9 @@ mod tests {
         let thinking = SessionEvent::Thinking(ThinkingEvent {
             envelope: EventEnvelope {
                 id: "evt_004".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 4,
+                session_id: None,
+                seq: None,
             },
             content: "Thinking...".to_string(),
         });
@@ -565,9 +612,9 @@ mod tests {
         let tool_call = SessionEvent::ToolCall(ToolCallEvent {
             envelope: EventEnvelope {
                 id: "evt_005".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 5,
+                session_id: None,
+                seq: None,
             },
             tool_call_id: "tc_001".to_string(),
             tool: "web_search".to_string(),
@@ -581,9 +628,9 @@ mod tests {
         let tool_result = SessionEvent::ToolResult(ToolResultEvent {
             envelope: EventEnvelope {
                 id: "evt_006".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 6,
+                session_id: None,
+                seq: None,
             },
             tool_call_id: "tc_001".to_string(),
             output: Some("Results found".to_string()),
@@ -596,9 +643,9 @@ mod tests {
         let spawn_req = SessionEvent::SpawnRequest(SpawnRequestEvent {
             envelope: EventEnvelope {
                 id: "evt_007".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 7,
+                session_id: None,
+                seq: None,
             },
             tool_call_id: "tc_002".to_string(),
             child_image: "researcher:v1".to_string(),
@@ -613,9 +660,9 @@ mod tests {
         let spawn_res = SessionEvent::SpawnResult(SpawnResultEvent {
             envelope: EventEnvelope {
                 id: "evt_008".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 8,
+                session_id: None,
+                seq: None,
             },
             tool_call_id: "tc_002".to_string(),
             child_instance_id: "inst_child".to_string(),
@@ -630,9 +677,9 @@ mod tests {
         let a2a_sent = SessionEvent::A2aSent(A2aSentEvent {
             envelope: EventEnvelope {
                 id: "evt_009".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 9,
+                session_id: None,
+                seq: None,
             },
             message_type: A2aMessageType::Task,
             topic: "team.tasks".to_string(),
@@ -645,9 +692,9 @@ mod tests {
         let a2a_recv = SessionEvent::A2aReceived(A2aReceivedEvent {
             envelope: EventEnvelope {
                 id: "evt_010".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 10,
+                session_id: None,
+                seq: None,
             },
             message_type: A2aMessageType::TaskResult,
             topic: "team.results".to_string(),
@@ -660,9 +707,9 @@ mod tests {
         let hook = SessionEvent::HookTrigger(HookTriggerEvent {
             envelope: EventEnvelope {
                 id: "evt_011".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 11,
+                session_id: None,
+                seq: None,
             },
             hook_type: HookType::Cron,
             schedule: Some("0 0 * * *".to_string()),
@@ -674,9 +721,9 @@ mod tests {
         let system = SessionEvent::System(SystemEvent {
             envelope: EventEnvelope {
                 id: "evt_012".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 12,
+                session_id: None,
+                seq: None,
             },
             event: "context_truncated".to_string(),
             detail: serde_json::json!({"reason": "too long"}),
@@ -687,9 +734,9 @@ mod tests {
         let ended = SessionEvent::SessionEnded(SessionEndedEvent {
             envelope: EventEnvelope {
                 id: "evt_013".to_string(),
-                session_id: session_id.clone(),
                 ts,
-                seq: 13,
+                session_id: None,
+                seq: None,
             },
             reason: SessionEndReason::UserClosed,
             turn_count: 5,

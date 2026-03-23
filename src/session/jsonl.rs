@@ -566,7 +566,7 @@ impl SessionStorage {
 
         match event {
             SessionCreated(e) => Some(NormalizedEntry::Session {
-                id: e.envelope.session_id,
+                id: e.envelope.session_id.unwrap_or_default(),
                 version: 3,
                 timestamp: e.envelope.ts,
                 cwd: None,
@@ -584,6 +584,42 @@ impl SessionStorage {
                 input_tokens: e.usage.input_tokens,
                 output_tokens: e.usage.output_tokens,
             }),
+            SystemMessage(e) => Some(NormalizedEntry::SystemMessage {
+                content: e.content,
+                timestamp: e.envelope.ts,
+            }),
+            Message(e) => {
+                // Unified message format - convert based on role
+                match e.role.as_str() {
+                    "user" => Some(NormalizedEntry::UserMessage {
+                        id: e.envelope.id.clone(),
+                        content: e.content,
+                        timestamp: e.envelope.ts,
+                        source: crate::session::events::MessageSource::User,
+                    }),
+                    "assistant" => Some(NormalizedEntry::AssistantMessage {
+                        id: e.envelope.id.clone(),
+                        content: e.content,
+                        timestamp: e.envelope.ts,
+                        input_tokens: e.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
+                        output_tokens: e.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
+                    }),
+                    "system" => Some(NormalizedEntry::SystemMessage {
+                        content: e.content,
+                        timestamp: e.envelope.ts,
+                    }),
+                    "tool" => Some(NormalizedEntry::ToolResult {
+                        tool_call_id: e.tool_call_id.unwrap_or_default(),
+                        tool_name: String::new(),
+                        content: e.content,
+                        is_error: false,
+                    }),
+                    _ => {
+                        debug!("Unknown role in Message event: {}", e.role);
+                        None
+                    }
+                }
+            }
             ToolResult(e) => Some(NormalizedEntry::ToolResult {
                 tool_call_id: e.tool_call_id,
                 tool_name: String::new(), // Not available in Event Format

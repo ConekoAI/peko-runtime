@@ -21,9 +21,11 @@ use crate::common::paths::PathResolver;
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
 use crate::session::events::{
-    generate_event_id, generate_message_id, AssistantMessageEvent, EventEnvelope, MessageSource,
-    SessionEvent, ThinkingEvent, TokenUsage as EventTokenUsage, ToolResultEvent, UserMessageEvent,
+    generate_event_id, generate_message_id, AssistantMessageEvent, EventEnvelope, MessageEvent,
+    MessageSource, SessionEvent, SystemMessageEvent, ThinkingEvent, TokenUsage as EventTokenUsage,
+    ToolResultEvent, UserMessageEvent,
 };
+use crate::providers::TokenUsage;
 use crate::session::index::SessionEntry;
 use crate::session::jsonl::SessionStorage;
 use crate::session::types::Peer;
@@ -48,7 +50,7 @@ use tokio::fs;
 ///
 /// // Add messages
 /// session.add_user("Hello!").await?;
-/// session.add_assistant("Hi there!", None).await?;
+/// session.add_assistant("Hi there!", None, None).await?;
 ///
 /// // Load history
 /// let history = session.load_history().await?;
@@ -481,18 +483,24 @@ impl UnifiedSession {
     // ============================================================
 
     /// Add a system message
+    ///
+    /// Writes as Event Format (system.message) for consistency with the Pekobot
+    /// session specification.
     pub async fn add_system(&mut self, content: impl Into<String>) -> Result<()> {
-        let msg_id = self
-            .storage
-            .append_message(
-                &self.id,
-                self.last_message_id.clone(),
-                "system",
-                vec![ContentBlock::Text {
-                    text: content.into(),
-                }],
-            )
-            .await?;
+        let content_str = content.into();
+        let msg_id = generate_message_id();
+
+        let event = SessionEvent::SystemMessage(SystemMessageEvent {
+            envelope: EventEnvelope {
+                id: generate_event_id(),
+                ts: Utc::now(),
+                session_id: None,
+                seq: None,
+            },
+            content: content_str,
+        });
+
+        self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
         self.message_count += 1;
         Ok(())
@@ -505,14 +513,13 @@ impl UnifiedSession {
     pub async fn add_user(&mut self, content: impl Into<String>) -> Result<()> {
         let content_str = content.into();
         let msg_id = generate_message_id();
-        let seq = self.message_count as u64 + 1;
 
         let event = SessionEvent::UserMessage(UserMessageEvent {
             envelope: EventEnvelope {
-                id: generate_event_id(seq),
-                session_id: self.id.clone(),
+                id: generate_event_id(),
                 ts: Utc::now(),
-                seq,
+                session_id: None,
+                seq: None,
             },
             message_id: msg_id.clone(),
             content: content_str,
@@ -537,15 +544,21 @@ impl UnifiedSession {
         &mut self,
         content: impl Into<String>,
         tool_calls: Option<Vec<ToolCall>>,
+        usage: Option<TokenUsage>,
     ) -> Result<()> {
         let content_str = content.into();
+
+        // Update token usage if provided
+        if let Some(u) = usage {
+            self.record_usage(u.input as usize, u.output as usize);
+        }
 
         // For tool calls, we include them in the content for now
         // The Event Format assistant.message has a simple text content field
         // TODO: Add separate tool.call events for granular tool tracking
         let final_content = if let Some(calls) = tool_calls {
             let mut full_content = content_str;
-            for (idx, call) in calls.iter().enumerate() {
+            for call in calls.iter() {
                 let tool_call_str = format!(
                     "\n[ToolCall: {}({})]",
                     call.name,
@@ -559,14 +572,13 @@ impl UnifiedSession {
         };
 
         let msg_id = generate_message_id();
-        let seq = self.message_count as u64 + 1;
 
         let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
-                id: generate_event_id(seq),
-                session_id: self.id.clone(),
+                id: generate_event_id(),
                 ts: Utc::now(),
-                seq,
+                session_id: None,
+                seq: None,
             },
             message_id: msg_id.clone(),
             content: final_content,
@@ -591,9 +603,15 @@ impl UnifiedSession {
         &mut self,
         content: impl Into<String>,
         tool_calls: Vec<ContentBlock>,
+        usage: Option<TokenUsage>,
     ) -> Result<()> {
         let content_str = content.into();
         let mut final_content = content_str;
+
+        // Update token usage if provided
+        if let Some(u) = usage {
+            self.record_usage(u.input as usize, u.output as usize);
+        }
 
         // Add tool calls as text annotations
         for block in tool_calls {
@@ -611,14 +629,13 @@ impl UnifiedSession {
         }
 
         let msg_id = generate_message_id();
-        let seq = self.message_count as u64 + 1;
 
         let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
             envelope: EventEnvelope {
-                id: generate_event_id(seq),
-                session_id: self.id.clone(),
+                id: generate_event_id(),
                 ts: Utc::now(),
-                seq,
+                session_id: None,
+                seq: None,
             },
             message_id: msg_id.clone(),
             content: final_content,
@@ -647,14 +664,13 @@ impl UnifiedSession {
     ) -> Result<()> {
         let tool_call_id_str = tool_call_id.into();
         let result_str = result.into();
-        let seq = self.message_count as u64 + 1;
 
         let event = SessionEvent::ToolResult(ToolResultEvent {
             envelope: EventEnvelope {
-                id: generate_event_id(seq),
-                session_id: self.id.clone(),
+                id: generate_event_id(),
                 ts: Utc::now(),
-                seq,
+                session_id: None,
+                seq: None,
             },
             tool_call_id: tool_call_id_str,
             output: Some(result_str),
@@ -677,14 +693,13 @@ impl UnifiedSession {
         _signature: Option<String>,
     ) -> Result<()> {
         let content = thinking.into();
-        let seq = self.message_count as u64 + 1;
 
         let event = SessionEvent::Thinking(ThinkingEvent {
             envelope: EventEnvelope {
-                id: generate_event_id(seq),
-                session_id: self.id.clone(),
+                id: generate_event_id(),
                 ts: Utc::now(),
-                seq,
+                session_id: None,
+                seq: None,
             },
             content,
         });
@@ -984,7 +999,7 @@ mod tests {
             .await
             .unwrap();
         session.add_user("Hello!").await.unwrap();
-        session.add_assistant("Hi there!", None).await.unwrap();
+        session.add_assistant("Hi there!", None, None).await.unwrap();
 
         assert_eq!(session.message_count, 3);
 
@@ -1021,7 +1036,7 @@ mod tests {
         let session_key = session.session_key.clone();
 
         session.add_user("Hello!").await.unwrap();
-        session.add_assistant("Hi!", None).await.unwrap();
+        session.add_assistant("Hi!", None, None).await.unwrap();
 
         // Re-open by key
         let reopened = UnifiedSession::open_by_key("test_agent", &session_key)

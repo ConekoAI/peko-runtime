@@ -75,7 +75,7 @@ pub async fn announce_to_parent(parent_ctx: &SessionContext, run: &SubagentRun) 
 
     // Add the announcement as an assistant message to the parent session
     parent_ctx
-        .add_assistant_message(&announcement, None)
+        .add_assistant_message(&announcement, None, None)
         .await
         .with_context(|| {
             format!(

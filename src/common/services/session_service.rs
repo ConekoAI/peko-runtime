@@ -541,6 +541,16 @@ impl SessionService {
             SessionEvent::HookTrigger(e) => HistoryEvent::Custom {
                 custom_type: format!("hook:{:?}", e.hook_type),
             },
+            SessionEvent::SystemMessage(e) => HistoryEvent::Message {
+                role: "system".to_string(),
+                content: e.content.clone(),
+                timestamp: e.envelope.ts.to_rfc3339(),
+            },
+            SessionEvent::Message(e) => HistoryEvent::Message {
+                role: e.role.clone(),
+                content: e.content.clone(),
+                timestamp: e.envelope.ts.to_rfc3339(),
+            },
             SessionEvent::SpawnRequest(_)
             | SessionEvent::SpawnResult(_)
             | SessionEvent::A2aSent(_)

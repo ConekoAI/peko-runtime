@@ -130,9 +130,10 @@ impl SessionContext {
         &self,
         content: impl Into<String>,
         tool_calls: Option<Vec<crate::engine::ToolCall>>,
+        usage: Option<crate::providers::TokenUsage>,
     ) -> Result<()> {
         let mut base = self.hybrid.base.write().await;
-        base.add_assistant(content, tool_calls).await
+        base.add_assistant(content, tool_calls, usage).await
     }
 
     /// Add a system message to the base session

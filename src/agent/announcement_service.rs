@@ -199,7 +199,7 @@ impl ChannelAnnouncementService {
                 Some(ctx) => {
                     // Add the announcement message directly
                     if let Err(e) = ctx
-                        .add_assistant_message(&completed.announcement, None)
+                        .add_assistant_message(&completed.announcement, None, None)
                         .await
                     {
                         error!(

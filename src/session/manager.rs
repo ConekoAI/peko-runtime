@@ -220,9 +220,10 @@ impl SessionHandle {
         &self,
         content: impl Into<String>,
         tool_calls: Option<Vec<crate::engine::ToolCall>>,
+        usage: Option<crate::providers::TokenUsage>,
     ) -> Result<()> {
         let mut base = self.base.write().await;
-        base.add_assistant(content, tool_calls).await
+        base.add_assistant(content, tool_calls, usage).await
     }
 
     /// Add a tool result to the session
@@ -1803,7 +1804,7 @@ async fn copy_session_context(
                         .collect()
                 });
 
-                child_guard.add_assistant(&text, tool_calls).await?;
+                child_guard.add_assistant(&text, tool_calls, None).await?;
             }
             MessageRole::Tool => {
                 // Tool results - skip for now as they require tool_call_id linking
@@ -2056,7 +2057,7 @@ mod tests {
 
         // Add messages
         handle.add_user("Hello").await.unwrap();
-        handle.add_assistant("Hi there!", None).await.unwrap();
+        handle.add_assistant("Hi there!", None, None).await.unwrap();
 
         // Verify metadata
         let metadata = handle.get_metadata().await.unwrap();
