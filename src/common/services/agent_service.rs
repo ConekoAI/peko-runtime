@@ -325,13 +325,17 @@ impl AgentService {
             tokio::fs::create_dir_all(new_workspace.parent().unwrap())
                 .await
                 .ok();
+            // Remove target workspace if it exists (e.g., from previous failed move)
+            if new_workspace.exists() {
+                tokio::fs::remove_dir_all(&new_workspace).await.ok();
+            }
             tokio::fs::rename(&old_workspace, &new_workspace).await.ok();
         }
 
         // Remove old agent directory
         let old_agent_dir = old_config_path.parent().unwrap();
         if old_agent_dir.exists() {
-            tokio::fs::remove_dir(old_agent_dir).await?;
+            tokio::fs::remove_dir_all(old_agent_dir).await?;
         }
 
         // Update config with new name, team, and workspace

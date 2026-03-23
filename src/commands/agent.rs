@@ -205,7 +205,7 @@ pub async fn handle_agent(
             team,
             purge,
             force,
-        } => handlers::handle_agent_remove(paths, name, team, purge, force).await,
+        } => handlers::handle_agent_remove(paths, name, team, purge, force, json).await,
         AgentCommands::Move {
             old_name,
             new_name,

@@ -164,6 +164,7 @@ pub async fn handle_agent_remove(
     team: Option<String>,
     purge: bool,
     _force: bool,
+    json: bool,
 ) -> anyhow::Result<()> {
     let service = paths.services().agent();
 
@@ -176,14 +177,23 @@ pub async fn handle_agent_remove(
 
     let result = service.delete_agent(agent_name, Some(team), opts).await?;
 
-    if purge {
-        println!("🗑️  Purged identity for '{}'", result.name);
-    }
+    if json {
+        println!(
+            "{{\"success\": true, \"name\": \"{}\", \"team\": \"{}\", \"purged\": {}}}",
+            result.name,
+            result.team,
+            purge
+        );
+    } else {
+        if purge {
+            println!("🗑️  Purged identity for '{}'", result.name);
+        }
 
-    println!(
-        "✅ Deleted agent '{}' from team '{}'",
-        result.name, result.team
-    );
+        println!(
+            "✅ Deleted agent '{}' from team '{}'",
+            result.name, result.team
+        );
+    }
     Ok(())
 }
 
