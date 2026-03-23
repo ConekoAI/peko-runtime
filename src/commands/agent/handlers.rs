@@ -157,8 +157,8 @@ pub async fn handle_agent_create(
     Ok(())
 }
 
-/// Handle agent delete command
-pub async fn handle_agent_delete(
+/// Handle agent remove command
+pub async fn handle_agent_remove(
     paths: &GlobalPaths,
     name: String,
     team: Option<String>,
@@ -187,8 +187,8 @@ pub async fn handle_agent_delete(
     Ok(())
 }
 
-/// Handle agent rename command
-pub async fn handle_agent_rename(
+/// Handle agent move command
+pub async fn handle_agent_move(
     paths: &GlobalPaths,
     old_name: String,
     new_name: String,

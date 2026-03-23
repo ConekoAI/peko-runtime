@@ -86,14 +86,15 @@ pub enum AgentCommands {
         force: bool,
     },
 
-    /// Delete an agent and its configuration
-    Delete {
+    /// Remove an agent and its configuration
+    #[command(alias = "delete")]
+    Remove {
         /// Agent name or team/agent format
         name: String,
-        /// Team to delete from (overrides team/ prefix if both provided)
+        /// Team to remove from (overrides team/ prefix if both provided)
         #[arg(short, long)]
         team: Option<String>,
-        /// Also delete identity
+        /// Also remove identity
         #[arg(long)]
         purge: bool,
         /// Skip confirmation
@@ -101,8 +102,9 @@ pub enum AgentCommands {
         force: bool,
     },
 
-    /// Rename an agent
-    Rename {
+    /// Move/rename an agent
+    #[command(alias = "rename")]
+    Move {
         /// Current agent name or team/agent format
         old_name: String,
         /// New agent name (just the name, no team prefix)
@@ -198,18 +200,18 @@ pub async fn handle_agent(
             provider,
             force,
         } => handlers::handle_agent_create(paths, name, team, template, provider, force).await,
-        AgentCommands::Delete {
+        AgentCommands::Remove {
             name,
             team,
             purge,
             force,
-        } => handlers::handle_agent_delete(paths, name, team, purge, force).await,
-        AgentCommands::Rename {
+        } => handlers::handle_agent_remove(paths, name, team, purge, force).await,
+        AgentCommands::Move {
             old_name,
             new_name,
             team,
             to_team,
-        } => handlers::handle_agent_rename(paths, old_name, new_name, team, to_team, json).await,
+        } => handlers::handle_agent_move(paths, old_name, new_name, team, to_team, json).await,
         AgentCommands::Export {
             name,
             team,
