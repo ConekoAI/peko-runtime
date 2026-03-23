@@ -53,8 +53,9 @@ pub enum TeamCommands {
         name: String,
     },
 
-    /// Delete a team and all its agents
-    Delete {
+    /// Remove a team and all its agents
+    #[command(alias = "delete")]
+    Remove {
         /// Team name
         name: String,
         /// Skip confirmation
@@ -91,7 +92,7 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
                 }
             }
         }
-        TeamCommands::Delete { name, force } => {
+        TeamCommands::Remove { name, force } => {
             // Get team info for confirmation
             let team_info = match service.get_team(&name).await? {
                 Some(info) => info,
