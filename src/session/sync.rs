@@ -218,6 +218,7 @@ mod tests {
             message_id: "msg_001".to_string(),
             content: "Hello".to_string(),
             source: crate::session::events::MessageSource::User,
+            native_payload: None,
         });
 
         storage.append_event("sess_123", &user_event).await.unwrap();
@@ -237,6 +238,7 @@ mod tests {
                 output_tokens: 10,
                 total_tokens: 15,
             },
+            native_payload: None,
         });
 
         storage
@@ -318,13 +320,14 @@ mod tests {
         let user_event = SessionEvent::UserMessage(UserMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
-                session_id: "parent_sess".to_string(),
+                session_id: Some("parent_sess".to_string()),
                 ts: Utc::now(),
-                seq: 2,
+                seq: Some(2),
             },
             message_id: "msg_001".to_string(),
             content: "Hello".to_string(),
             source: crate::session::events::MessageSource::User,
+            native_payload: None,
         });
         storage
             .append_event("parent_sess", &user_event)

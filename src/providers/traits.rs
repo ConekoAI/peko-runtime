@@ -176,6 +176,9 @@ pub struct ChatResponse {
     pub provider: String,
     /// Model used
     pub model: String,
+    /// Native provider response payload (for audit trail)
+    /// Stores the exact JSON response from the provider
+    pub native_payload: Option<serde_json::Value>,
 }
 
 /// Token usage statistics
@@ -242,6 +245,7 @@ pub trait Provider: Send + Sync {
             usage: TokenUsage::default(),
             provider: self.name().to_string(),
             model: "default".to_string(),
+            native_payload: None,
         })
     }
 
@@ -335,6 +339,21 @@ pub trait Provider: Send + Sync {
             }
         }
     }
+}
+
+/// Extension trait for providers that can expose native request/response payloads
+///
+/// This enables accurate audit trails by storing the exact format sent to/received
+/// from LLM providers, eliminating conversion overhead.
+pub trait NativeFormatProvider: Provider {
+    /// Get the last request payload sent to the provider (native format)
+    fn last_request_payload(&self) -> Option<&serde_json::Value>;
+
+    /// Get the last response payload received from the provider (native format)
+    fn last_response_payload(&self) -> Option<&serde_json::Value>;
+
+    /// Clear stored payloads (call after storing to session to free memory)
+    fn clear_stored_payloads(&mut self);
 }
 
 /// Helper: Convert chat messages to a single prompt string (for fallback)

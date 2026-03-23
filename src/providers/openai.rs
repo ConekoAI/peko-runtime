@@ -272,6 +272,9 @@ impl Provider for OpenAIProvider {
 
         let completion: OpenAIChatResponse = response.json().await?;
 
+        // Store the native response for audit trail (before consuming completion)
+        let native_payload = serde_json::to_value(&completion).ok();
+
         let choice = completion
             .choices
             .into_iter()
@@ -323,6 +326,7 @@ impl Provider for OpenAIProvider {
             },
             provider: self.name().to_string(),
             model: self.config.model.clone(),
+            native_payload,
         })
     }
 
@@ -597,18 +601,18 @@ struct Message {
     content: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ChatCompletionResponse {
     choices: Vec<Choice>,
     usage: Usage,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Choice {
     message: Message,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct Usage {
     total_tokens: u32,
 }
@@ -668,19 +672,19 @@ struct OpenAIFunctionCall {
     arguments: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIChatResponse {
     choices: Vec<OpenAIChatChoice>,
     usage: OpenAIUsage,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIChatChoice {
     message: OpenAIResponseMessage,
     finish_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIResponseMessage {
     role: String,
     content: String,
@@ -688,7 +692,7 @@ struct OpenAIResponseMessage {
     tool_calls: Option<Vec<OpenAIToolCall>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -696,21 +700,21 @@ struct OpenAIUsage {
 }
 
 // Streaming types
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIStreamChunk {
     id: String,
     object: String,
     choices: Vec<OpenAIStreamChoice>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIStreamChoice {
     index: u32,
     delta: OpenAIDelta,
     finish_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 struct OpenAIDelta {
     role: Option<String>,
     content: Option<String>,
@@ -718,7 +722,7 @@ struct OpenAIDelta {
     tool_calls: Option<Vec<OpenAIToolCallDelta>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIToolCallDelta {
     index: u32,
     id: Option<String>,
@@ -727,7 +731,7 @@ struct OpenAIToolCallDelta {
     function: Option<OpenAIDeltaFunction>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIDeltaFunction {
     name: Option<String>,
     arguments: Option<String>,

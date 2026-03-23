@@ -115,6 +115,10 @@ pub struct OpenAICompatibleProvider {
     config: OpenAICompatibleConfig,
     client: Client,
     name: String,
+    /// Last request payload sent (for audit trail)
+    last_request: Option<serde_json::Value>,
+    /// Last response payload received (for audit trail)
+    last_response: Option<serde_json::Value>,
 }
 
 impl OpenAICompatibleProvider {
@@ -138,6 +142,8 @@ impl OpenAICompatibleProvider {
             config,
             client,
             name: name.to_string(),
+            last_request: None,
+            last_response: None,
         })
     }
 
@@ -283,6 +289,9 @@ impl OpenAICompatibleProvider {
 
     /// Parse OpenAI response into ChatResponse
     fn parse_response(&self, response: OpenAIChatResponse) -> ChatResponse {
+        // Store the native response for audit trail (before consuming response)
+        let native_payload = serde_json::to_value(&response).ok();
+
         let choice = response.choices.into_iter().next();
 
         let stop_reason = choice
@@ -341,6 +350,7 @@ impl OpenAICompatibleProvider {
             },
             provider: self.name.clone(),
             model: self.config.model.clone(),
+            native_payload,
         }
     }
 }
@@ -883,20 +893,20 @@ struct Usage {
     total_tokens: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIChatResponse {
     choices: Vec<OpenAIChatChoice>,
     usage: OpenAIUsage,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIChatChoice {
     message: OpenAIResponseMessage,
     #[serde(default)]
     finish_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIResponseMessage {
     #[serde(default)]
     content: String,
@@ -904,7 +914,7 @@ struct OpenAIResponseMessage {
     tool_calls: Option<Vec<OpenAIToolCall>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIToolCall {
     id: String,
     #[serde(rename = "type")]
@@ -912,13 +922,13 @@ struct OpenAIToolCall {
     function: OpenAIFunctionCall,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIFunctionCall {
     name: String,
     arguments: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,

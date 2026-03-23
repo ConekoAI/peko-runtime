@@ -511,6 +511,18 @@ impl UnifiedSession {
     /// Writes as Event Format (user.message) for consistency with the Pekobot
     /// session specification (DATA_MODEL.md §5.3).
     pub async fn add_user(&mut self, content: impl Into<String>) -> Result<()> {
+        self.add_user_with_native(content, None).await
+    }
+
+    /// Add a user message with native provider payload
+    ///
+    /// Stores the exact LLM provider format alongside the human-readable content,
+    /// eliminating conversion overhead and enabling accurate audit trails.
+    pub async fn add_user_with_native(
+        &mut self,
+        content: impl Into<String>,
+        native_payload: Option<serde_json::Value>,
+    ) -> Result<()> {
         let content_str = content.into();
         let msg_id = generate_message_id();
 
@@ -524,6 +536,7 @@ impl UnifiedSession {
             message_id: msg_id.clone(),
             content: content_str,
             source: MessageSource::User,
+            native_payload,
         });
 
         self.storage.append_event(&self.id, &event).await?;
@@ -544,6 +557,21 @@ impl UnifiedSession {
         &mut self,
         content: impl Into<String>,
         tool_calls: Option<Vec<ToolCall>>,
+        usage: Option<TokenUsage>,
+    ) -> Result<()> {
+        self.add_assistant_with_native(content, tool_calls, None, usage)
+            .await
+    }
+
+    /// Add an assistant message with native provider payload
+    ///
+    /// Stores the exact LLM provider response format alongside the human-readable content,
+    /// eliminating conversion overhead and enabling accurate audit trails.
+    pub async fn add_assistant_with_native(
+        &mut self,
+        content: impl Into<String>,
+        tool_calls: Option<Vec<ToolCall>>,
+        native_payload: Option<serde_json::Value>,
         usage: Option<TokenUsage>,
     ) -> Result<()> {
         let content_str = content.into();
@@ -587,6 +615,7 @@ impl UnifiedSession {
                 output_tokens: self.output_tokens as u32,
                 total_tokens: (self.input_tokens + self.output_tokens) as u32,
             },
+            native_payload,
         });
 
         self.storage.append_event(&self.id, &event).await?;
@@ -605,6 +634,21 @@ impl UnifiedSession {
         tool_calls: Vec<ContentBlock>,
         usage: Option<TokenUsage>,
     ) -> Result<()> {
+        self.add_assistant_with_tool_calls_and_native(content, tool_calls, None, usage)
+            .await
+    }
+
+    /// Add an assistant message with tool calls and native provider payload
+    ///
+    /// Stores the exact LLM provider response format alongside the human-readable content
+    /// and tool call annotations.
+    pub async fn add_assistant_with_tool_calls_and_native(
+        &mut self,
+        content: impl Into<String>,
+        tool_calls: Vec<ContentBlock>,
+        native_payload: Option<serde_json::Value>,
+        usage: Option<TokenUsage>,
+    ) -> Result<()> {
         let content_str = content.into();
         let mut final_content = content_str;
 
@@ -614,7 +658,7 @@ impl UnifiedSession {
         }
 
         // Add tool calls as text annotations
-        for block in tool_calls {
+        for block in &tool_calls {
             if let ContentBlock::ToolCall {
                 name, arguments, ..
             } = block
@@ -644,6 +688,7 @@ impl UnifiedSession {
                 output_tokens: self.output_tokens as u32,
                 total_tokens: (self.input_tokens + self.output_tokens) as u32,
             },
+            native_payload,
         });
 
         self.storage.append_event(&self.id, &event).await?;

@@ -83,10 +83,14 @@ pub struct UserMessageEvent {
     pub envelope: EventEnvelope,
     /// Message ID
     pub message_id: String,
-    /// Message content
+    /// Message content (human-readable, backward compatible)
     pub content: String,
     /// Source of the message
     pub source: MessageSource,
+    /// Native provider format - stores the exact payload sent to LLM provider
+    /// This preserves the original format for audit trail and eliminates conversion overhead
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub native_payload: Option<serde_json::Value>,
 }
 
 /// Token usage statistics
@@ -104,10 +108,14 @@ pub struct AssistantMessageEvent {
     pub envelope: EventEnvelope,
     /// Message ID
     pub message_id: String,
-    /// Response content
+    /// Response content (human-readable, backward compatible)
     pub content: String,
     /// Token usage for the entire turn
     pub usage: TokenUsage,
+    /// Native provider format - stores the exact payload received from LLM provider
+    /// This preserves the original format for audit trail and eliminates conversion overhead
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub native_payload: Option<serde_json::Value>,
 }
 
 /// thinking - Extended thinking content from reasoning models
@@ -503,6 +511,7 @@ mod tests {
             message_id: "msg_3xpwqr7n".to_string(),
             content: "Hello, world!".to_string(),
             source: MessageSource::User,
+            native_payload: None,
         });
 
         let json = serde_json::to_string(&event).unwrap();
@@ -573,6 +582,7 @@ mod tests {
             message_id: "msg_001".to_string(),
             content: "Hello".to_string(),
             source: MessageSource::User,
+            native_payload: None,
         });
         assert_eq!(user_msg.event_type(), "user.message");
 
@@ -591,6 +601,7 @@ mod tests {
                 output_tokens: 20,
                 total_tokens: 30,
             },
+            native_payload: None,
         });
         assert_eq!(assistant_msg.event_type(), "assistant.message");
         assert!(assistant_msg.is_assistant_message());
