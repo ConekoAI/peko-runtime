@@ -7,7 +7,7 @@
 //! This module only handles CLI argument parsing and output formatting.
 
 use crate::commands::GlobalPaths;
-use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo};
+use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMoveResult};
 use anyhow::Result;
 use clap::Subcommand;
 
@@ -58,6 +58,17 @@ pub enum TeamCommands {
     Remove {
         /// Team name
         name: String,
+        /// Skip confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Move/rename a team
+    Move {
+        /// Current team name
+        old_name: String,
+        /// New team name
+        new_name: String,
         /// Skip confirmation
         #[arg(short, long)]
         force: bool,
@@ -115,6 +126,32 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
 
             let result = service.delete_team(&name).await?;
             render_team_deleted(&result, json);
+            Ok(())
+        }
+
+        TeamCommands::Move { old_name, new_name, force } => {
+            // Get team info for confirmation
+            let team_info = match service.get_team(&old_name).await? {
+                Some(info) => info,
+                None => {
+                    anyhow::bail!("Team '{}' not found", old_name);
+                }
+            };
+
+            // Confirm move
+            if !force {
+                if !confirm_team_move(&old_name, &new_name, team_info.agent_count)? {
+                    if json {
+                        println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
+                    } else {
+                        println!("Cancelled.");
+                    }
+                    return Ok(());
+                }
+            }
+
+            let result = service.move_team(&old_name, &new_name).await?;
+            render_team_moved(&result, json);
             Ok(())
         }
     }
@@ -275,6 +312,21 @@ fn render_team_deleted(result: &TeamDeletionResult, json: bool) {
     }
 }
 
+fn render_team_moved(result: &TeamMoveResult, json: bool) {
+    if json {
+        println!(
+            "{{\"success\": true, \"old_name\": \"{}\", \"new_name\": \"{}\", \"agents_moved\": {}}}",
+            result.old_name, result.new_name, result.agents_moved
+        );
+    } else {
+        println!("✅ Moved team '{}' to '{}'", result.old_name, result.new_name);
+        if result.agents_moved > 0 {
+            println!("   Moved {} agent(s)", result.agents_moved);
+        }
+        println!("   New path: {}", result.new_path.display());
+    }
+}
+
 // ================================================================================
 // Helper Functions
 // ================================================================================
@@ -288,6 +340,23 @@ fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
         );
     }
     println!("   This action cannot be undone.");
+    print!("   Continue? [y/N] ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+
+    Ok(input.trim().eq_ignore_ascii_case("y"))
+}
+
+fn confirm_team_move(old_name: &str, new_name: &str, agent_count: usize) -> Result<bool> {
+    println!("⚠️  This will rename team '{}' to '{}'.", old_name, new_name);
+    if agent_count > 0 {
+        println!(
+            "   It contains {} agent(s) that will be moved.",
+            agent_count
+        );
+    }
     print!("   Continue? [y/N] ");
     std::io::Write::flush(&mut std::io::stdout())?;
 

@@ -5,7 +5,7 @@
 
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
-use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMetadata};
+use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMetadata, TeamMoveResult};
 use crate::types::agent::AgentConfig;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -187,6 +187,68 @@ impl TeamService {
         Ok(TeamDeletionResult {
             name: name.to_string(),
             agents_deleted: agent_count,
+        })
+    }
+
+    /// Move/rename a team
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Either team name is invalid
+    /// - The source team doesn't exist
+    /// - The target team already exists
+    /// - The team is the default team (cannot be renamed)
+    /// - The filesystem operation fails
+    pub async fn move_team(&self, old_name: &str, new_name: &str) -> Result<TeamMoveResult> {
+        // Validate team names
+        if let Err(e) = validate_team_name(old_name) {
+            return Err(map_validation_error(old_name, e));
+        }
+        if let Err(e) = validate_team_name(new_name) {
+            return Err(map_validation_error(new_name, e));
+        }
+
+        // Prevent renaming the default team
+        if old_name == "default" {
+            anyhow::bail!("Cannot rename the 'default' team");
+        }
+
+        let old_team_dir = self.resolver.team_dir(old_name);
+        let new_team_dir = self.resolver.team_dir(new_name);
+
+        // Check source exists
+        if !old_team_dir.exists() {
+            anyhow::bail!("Team '{}' not found", old_name);
+        }
+
+        // Check target doesn't exist
+        if new_team_dir.exists() {
+            anyhow::bail!("Team '{}' already exists", new_name);
+        }
+
+        // Count agents before move
+        let agents_moved = count_agents_in_team(&old_team_dir).await;
+
+        // Update metadata file if it exists
+        let metadata_path = old_team_dir.join("team.toml");
+        if metadata_path.exists() {
+            let content = tokio::fs::read_to_string(&metadata_path).await?;
+            if let Ok(mut metadata) = toml::from_str::<TeamMetadata>(&content) {
+                metadata.name = new_name.to_string();
+                let updated_content = toml::to_string_pretty(&metadata)?;
+                tokio::fs::write(&metadata_path, updated_content).await?;
+            }
+        }
+
+        // Rename the directory
+        tokio::fs::rename(&old_team_dir, &new_team_dir).await?;
+
+        Ok(TeamMoveResult {
+            old_name: old_name.to_string(),
+            new_name: new_name.to_string(),
+            old_path: old_team_dir,
+            new_path: new_team_dir,
+            agents_moved,
         })
     }
 

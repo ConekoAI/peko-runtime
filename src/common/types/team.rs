@@ -37,6 +37,16 @@ pub struct TeamDeletionResult {
     pub agents_deleted: usize,
 }
 
+/// Team move/rename result
+#[derive(Debug, Clone)]
+pub struct TeamMoveResult {
+    pub old_name: String,
+    pub new_name: String,
+    pub old_path: PathBuf,
+    pub new_path: PathBuf,
+    pub agents_moved: usize,
+}
+
 /// Team runtime information (for runtime/deployed teams)
 #[derive(Debug, Clone)]
 pub struct TeamRuntimeInfo {
