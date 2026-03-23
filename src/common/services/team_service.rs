@@ -221,8 +221,8 @@ impl TeamService {
             anyhow::bail!("Team '{}' not found", old_name);
         }
 
-        // Check target doesn't exist
-        if new_team_dir.exists() {
+        // Check target doesn't exist (default team always exists conceptually)
+        if new_name == "default" || new_team_dir.exists() {
             anyhow::bail!("Team '{}' already exists", new_name);
         }
 
