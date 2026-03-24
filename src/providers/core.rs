@@ -24,7 +24,7 @@ pub struct ProviderCore<A: ApiAdapter> {
     config: ProviderConfig,
 }
 
-impl<A: ApiAdapter> ProviderCore<A> {
+impl<A: ApiAdapter + Clone> ProviderCore<A> {
     /// Create a new provider core
     pub fn new(
         adapter: A,
@@ -46,9 +46,10 @@ impl<A: ApiAdapter> ProviderCore<A> {
         )?;
 
         // Wire retry configuration from ProviderConfig
-        if let Some(retry_policy) =
-            crate::providers::transport::RetryPolicy::from_config(config.max_retries, config.retry_delay_ms)
-        {
+        if let Some(retry_policy) = crate::providers::transport::RetryPolicy::from_config(
+            config.max_retries,
+            config.retry_delay_ms,
+        ) {
             client = client.with_retry_policy(retry_policy);
         }
 
@@ -250,7 +251,7 @@ impl<A: ApiAdapter> ProviderCore<A> {
 }
 
 #[async_trait]
-impl<A: ApiAdapter + 'static> super::Provider for ProviderCore<A> {
+impl<A: ApiAdapter + Clone + 'static> super::Provider for ProviderCore<A> {
     fn name(&self) -> &str {
         self.adapter.name()
     }
@@ -371,31 +372,23 @@ impl<A: ApiAdapter + 'static> super::Provider for ProviderCore<A> {
             .build_request(&msgs, Some(&tool_defs), &opts, true)?;
         let stream = self.client.post_stream(&path, &body).await?;
 
-        // Parse SSE and convert to StreamEvent
+        // Parse SSE and convert to StreamEvent using the adapter
+        let adapter = self.adapter.clone();
         let stream = crate::providers::transport::sse::SseParser::parse_stream(stream).filter_map(
-            |result| async move {
-                match result {
-                    Ok(event) => {
-                        // Parse the SSE data as a StreamEvent
-                        // For now, just pass through raw text deltas
-                        // This is a simplified implementation
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&event.data) {
-                            if let Some(content) = json
-                                .get("choices")
-                                .and_then(|c| c.get(0))
-                                .and_then(|c| c.get("delta"))
-                                .and_then(|d| d.get("content"))
-                                .and_then(|c| c.as_str())
-                            {
-                                return Some(Ok(super::StreamEvent::TextDelta {
-                                    content_index: 0,
-                                    delta: content.to_string(),
-                                }));
+            move |result| {
+                let adapter = adapter.clone();
+                async move {
+                    match result {
+                        Ok(event) => {
+                            // Use adapter's parse_sse_event for proper provider-specific parsing
+                            match adapter.parse_sse_event(&event.data) {
+                                Ok(Some(stream_event)) => Some(Ok(stream_event)),
+                                Ok(None) => None, // Skip events that return None
+                                Err(e) => Some(Err(e)),
                             }
                         }
-                        None
+                        Err(e) => Some(Err(e)),
                     }
-                    Err(e) => Some(Err(e)),
                 }
             },
         );

@@ -12,6 +12,8 @@ pub mod loop_v4;
 pub mod runner;
 // Note: SimpleSession merged into UnifiedSession in src/session/unified.rs
 pub mod state;
+pub mod stream_buffer;
+pub mod stream_orchestrator;
 pub mod task_manager;
 pub mod tool_stream;
 
@@ -24,6 +26,8 @@ pub use loop_v4::{AgenticLoopV4, AgenticResult as AgenticResultV4, ToolCall};
 pub use runner::AgentRunner;
 // SimpleSession now unified - use crate::session::UnifiedSession
 pub use state::{AgentState, StateMachine};
+pub use stream_buffer::{CoalesceConfig, StreamBuffer};
+pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};
 pub use task_manager::{TaskManager, TaskManagerConfig, TaskManagerStats};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,

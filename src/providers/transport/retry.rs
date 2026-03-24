@@ -72,40 +72,43 @@ impl RetryableError for anyhow::Error {
     fn is_retryable(&self) -> bool {
         // Check if error message contains retryable HTTP status codes
         let msg = self.to_string();
-        
+
         // Check for explicit status codes in error message
         // Format: "HTTP error 429: ..." or "429 Too Many Requests"
         for code in [429u16, 500, 502, 503, 504] {
-            if msg.contains(&format!(" {}", code)) || 
-               msg.contains(&format!("HTTP error {}", code)) ||
-               msg.contains(&format!("status {}", code)) {
+            if msg.contains(&format!(" {}", code))
+                || msg.contains(&format!("HTTP error {}", code))
+                || msg.contains(&format!("status {}", code))
+            {
                 return true;
             }
         }
-        
+
         // Check for timeout/network-related errors
-        if msg.contains("timeout") || 
-           msg.contains("connection") || 
-           msg.contains("reset") ||
-           msg.contains("refused") {
+        if msg.contains("timeout")
+            || msg.contains("connection")
+            || msg.contains("reset")
+            || msg.contains("refused")
+        {
             return true;
         }
-        
+
         false
     }
 
     fn http_status(&self) -> Option<u16> {
         let msg = self.to_string();
-        
+
         // Try to extract status code from common error patterns
         for code in [429u16, 500, 502, 503, 504, 408, 504] {
-            if msg.contains(&format!(" {}", code)) || 
-               msg.contains(&format!("HTTP error {}", code)) ||
-               msg.contains(&format!("status {}", code)) {
+            if msg.contains(&format!(" {}", code))
+                || msg.contains(&format!("HTTP error {}", code))
+                || msg.contains(&format!("status {}", code))
+            {
                 return Some(code);
             }
         }
-        
+
         None
     }
 }
@@ -130,13 +133,17 @@ impl RetryExecutor {
             match operation().await {
                 Ok(result) => {
                     if attempt > 0 {
-                        debug!("{} succeeded after {} attempt(s)", operation_name, attempt + 1);
+                        debug!(
+                            "{} succeeded after {} attempt(s)",
+                            operation_name,
+                            attempt + 1
+                        );
                     }
                     return Ok(result);
                 }
                 Err(e) => {
                     let should_retry = attempt < policy.max_retries && e.is_retryable();
-                    
+
                     if !should_retry {
                         if attempt > 0 {
                             debug!(
@@ -150,7 +157,8 @@ impl RetryExecutor {
                     }
 
                     let delay = policy.delay_for_attempt(attempt);
-                    let status_info = e.http_status()
+                    let status_info = e
+                        .http_status()
                         .map(|s| format!(" (HTTP {})", s))
                         .unwrap_or_default();
 

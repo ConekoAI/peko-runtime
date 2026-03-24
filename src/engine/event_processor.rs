@@ -179,6 +179,17 @@ impl EventProcessor {
                     _ => {}
                 }
             }
+            AgenticEvent::AssistantDelta {
+                text,
+                is_interstitial,
+                sequence,
+                ..
+            } => {
+                self.state.sequence = *sequence;
+                // AssistantDelta is processed similarly to AssistantText
+                // but typically comes from streaming mode
+                self.process_assistant_text(text, *is_interstitial, &mut actions);
+            }
             AgenticEvent::Usage { .. } => {
                 // Usage stats - channels can choose to display or ignore
             }
@@ -329,22 +340,22 @@ mod tests {
         let mut processor = EventProcessor::for_agent("testagent");
 
         // First: interstitial text (before tool calls)
-        let actions = processor.process(&make_assistant_text(
-            "Let me search for that...",
-            1,
-            true,
-        ));
+        let actions = processor.process(&make_assistant_text("Let me search for that...", 1, true));
         assert_eq!(actions.len(), 3);
         assert!(matches!(actions[0], ChannelAction::StartTurn(_)));
-        assert!(matches!(actions[1], ChannelAction::Print(ref t) if t == "Let me search for that..."));
+        assert!(
+            matches!(actions[1], ChannelAction::Print(ref t) if t == "Let me search for that...")
+        );
         assert!(matches!(actions[2], ChannelAction::Flush));
         assert!(processor.is_interstitial());
 
         // Then: final answer
+        // Transition from interstitial to final adds an empty newline first
         let actions = processor.process(&make_assistant_text("Found it!", 2, false));
         assert_eq!(actions.len(), 3);
-        assert!(matches!(actions[0], ChannelAction::Println(ref t) if t == "Found it!"));
-        assert!(matches!(actions[1], ChannelAction::EndTurn));
+        assert!(matches!(actions[0], ChannelAction::Println(ref t) if t.is_empty()));
+        assert!(matches!(actions[1], ChannelAction::Println(ref t) if t == "Found it!"));
+        assert!(matches!(actions[2], ChannelAction::EndTurn));
         assert!(!processor.is_interstitial());
     }
 

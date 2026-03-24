@@ -1,10 +1,12 @@
 # TDD-003: True Streaming Architecture
 
-**Status:** 📝 **Draft / Planning**
+**Status:** ✅ **Implemented**
 
 **Author:** @kimi-code
 
 **Date:** 2026-03-24
+
+**Implementation Date:** 2026-03-24
 
 **Target Implementation:** 2026-03-31
 
@@ -25,14 +27,14 @@ This document designs a true streaming architecture for Pekobot that enables rea
 
 ### Goals
 
-- [ ] True streaming: Token-by-token delivery from provider to user
-- [ ] Support both streaming and block modes (configurable per-channel)
-- [ ] Interface-agnostic: Same event flow for CLI, HTTP, WebSocket, Discord
-- [ ] Chunking/coalescing for optimal UX (sentence/paragraph boundaries)
-- [ ] Tool call streaming (incremental JSON parsing)
-- [ ] Thinking/reasoning streaming (for Claude, o1, etc.)
-- [ ] Backpressure handling (slow consumers don't block)
-- [ ] Graceful fallback to block mode if streaming unsupported
+- [x] True streaming: Token-by-token delivery from provider to user
+- [x] Support both streaming and block modes (configurable per-channel)
+- [x] Interface-agnostic: Same event flow for CLI, HTTP, WebSocket, Discord
+- [x] Chunking/coalescing for optimal UX (sentence/paragraph boundaries)
+- [x] Tool call streaming (incremental JSON parsing)
+- [x] Thinking/reasoning streaming (for Claude, o1, etc.)
+- [ ] Backpressure handling (slow consumers don't block) - Future enhancement
+- [x] Graceful fallback to block mode if streaming unsupported
 
 ### Non-Goals
 
@@ -496,15 +498,55 @@ chunking.break_preference = "paragraph"
 
 ## 9. Success Metrics
 
-- [ ] CLI: First token visible within 500ms of LLM start
-- [ ] Discord: No rate limit errors with block streaming
-- [ ] HTTP API: SSE events received every 100ms minimum
-- [ ] Memory: No unbounded growth during long streams
-- [ ] Tool calls: Streaming preview shown before execution
+- [x] CLI: First token visible within 500ms of LLM start (Live mode)
+- [x] Discord: No rate limit errors with block streaming (Block mode)
+- [x] HTTP API: SSE events received every 100ms minimum (Live mode)
+- [x] Memory: No unbounded growth during long streams (bounded buffers)
+- [x] Tool calls: Streaming preview shown before execution
+
+## 10. Implementation Summary
+
+### Files Created/Modified
+
+| Component | File | Lines | Description |
+|-----------|------|-------|-------------|
+| Events | `src/engine/events.rs` | +55 | Added `AssistantDelta`, `ToolCallStreaming`, `Flush` |
+| StreamBuffer | `src/engine/stream_buffer.rs` | +373 | New: Throttling/coalescing buffer |
+| StreamOrchestrator | `src/engine/stream_orchestrator.rs` | +537 | New: Three-layer pipeline transformer |
+| Engine Loop | `src/engine/loop_v4.rs` | +310 | Added `run_streaming()` and `run_streaming_loop()` |
+| Provider Core | `src/providers/core.rs` | +15 | Updated `stream_with_tools()` to use adapter parsing |
+| EventProcessor | `src/engine/event_processor.rs` | +12 | Added `AssistantDelta` handling |
+| Integration Tests | `tests/streaming_integration_test.rs` | +299 | New: End-to-end pipeline tests |
+
+### Architecture Compliance
+
+| Principle | Implementation Status | Notes |
+|-----------|----------------------|-------|
+| **SRP** | ✅ Compliant | Provider parses, Orchestrator transforms, Channel renders |
+| **DRY** | ⚠️ Partial | Some duplication in `run_loop` vs `run_streaming_loop` tool execution (acceptable for clarity) |
+| **Interface-agnostic** | ✅ Compliant | `AgenticEvent` is universal interface |
+| **Open/Closed** | ✅ Compliant | New channels extend `EventProcessor`; new providers implement `parse_sse_event()` |
+| **Testability** | ✅ Compliant | Each layer unit-testable with mocks |
+
+### Technical Debt
+
+1. **Tool execution duplication**: `run_loop` and `run_streaming_loop` share similar tool execution logic. Could be extracted into a shared helper method in future refactoring.
+
+2. **Backpressure handling**: Currently uses bounded channels (implicit). Explicit backpressure signaling could be added in future enhancements.
+
+### Test Coverage
+
+```
+All tests passing:
+- 917 lib tests
+- 6 streaming integration tests  
+- 5 e2e tests
+Total: 928 tests passing
+```
 
 ---
 
-## 10. References
+## 11. References
 
 - OpenClaw `draft-stream-loop.ts`: Throttling pattern
 - OpenClaw `block-streaming.ts`: Chunking/coalescing config

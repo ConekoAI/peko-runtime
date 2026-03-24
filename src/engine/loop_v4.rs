@@ -707,6 +707,398 @@ impl AgenticLoopV4 {
             model: "default".to_string(),
         })
     }
+
+    /// Run the agent with streaming support
+    ///
+    /// This method uses `stream_with_tools()` to get real-time token-by-token
+    /// delivery from the provider. Events are emitted as they arrive.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt` - The user prompt
+    /// * `on_event` - Callback for agentic events (called for each streaming event)
+    /// * `session` - Session for context storage
+    /// * `history` - Optional message history to resume from
+    /// * `streaming_config` - Configuration for the streaming orchestrator
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let result = agentic_loop
+    ///     .run_streaming(
+    ///         "What's the weather?",
+    ///         |event| println!("{:?}", event),
+    ///         session,
+    ///         None,
+    ///         OrchestratorConfig::live(),
+    ///     )
+    ///     .await?;
+    /// ```
+    pub async fn run_streaming(
+        &self,
+        prompt: &str,
+        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+        session: Arc<RwLock<UnifiedSession>>,
+        history: Option<Vec<ChatMessage>>,
+        streaming_config: crate::engine::OrchestratorConfig,
+    ) -> Result<AgenticResult> {
+        let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
+
+        info!(
+            "Starting v4 streaming agentic loop for agent: {} (run_id: {})",
+            self.agent.name(),
+            run_id
+        );
+
+        // Build messages - either from history or fresh start
+        let mut messages = if let Some(h) = history {
+            info!("Loaded {} messages from history", h.len());
+            // Check if history already has a system message at the start
+            let has_system = h
+                .first()
+                .map(|m| matches!(m.role, MessageRole::System))
+                .unwrap_or(false);
+            if has_system {
+                h
+            } else {
+                // Prepend system prompt to history
+                let mut msgs = vec![ChatMessage {
+                    role: MessageRole::System,
+                    content: vec![ContentBlock::Text {
+                        text: self.system_prompt.clone(),
+                    }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                }];
+                msgs.extend(h);
+                msgs
+            }
+        } else {
+            // Fresh start - add system prompt
+            let msgs = vec![ChatMessage {
+                role: MessageRole::System,
+                content: vec![ContentBlock::Text {
+                    text: self.system_prompt.clone(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+            }];
+
+            // Add system prompt to session
+            {
+                let mut s = session.write().await;
+                s.add_system(&self.system_prompt).await?;
+            }
+
+            msgs
+        };
+
+        // Add user message
+        messages.push(ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        // Add user message to session
+        {
+            let mut s = session.write().await;
+            s.add_user(prompt).await?;
+        }
+
+        // Run the streaming loop
+        self.run_streaming_loop(messages, session, on_event, run_id, streaming_config)
+            .await
+    }
+
+    /// Main streaming agent loop logic
+    async fn run_streaming_loop(
+        &self,
+        mut messages: Vec<ChatMessage>,
+        session: Arc<RwLock<UnifiedSession>>,
+        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+        run_id: String,
+        streaming_config: crate::engine::OrchestratorConfig,
+    ) -> Result<AgenticResult> {
+        use futures::StreamExt;
+
+        // Build tool definitions
+        let tool_defs = self.build_tool_definitions();
+
+        let mut iteration = 0;
+        let mut total_usage = crate::providers::TokenUsage::default();
+
+        loop {
+            iteration += 1;
+            info!("Streaming agent loop: iteration {}", iteration);
+
+            if iteration > self.max_iterations {
+                warn!("Max iterations ({}) reached", self.max_iterations);
+                on_event(AgenticEvent::Lifecycle {
+                    run_id: run_id.clone(),
+                    phase: LifecyclePhase::End,
+                    error: None,
+                });
+                return Ok(AgenticResult {
+                    success: true,
+                    final_answer: "Max iterations reached".to_string(),
+                    tool_calls: vec![],
+                    iterations: iteration,
+                    usage: total_usage,
+                });
+            }
+
+            // Emit running event
+            on_event(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::Running,
+                error: None,
+            });
+
+            // Chat options
+            let options = ChatOptions {
+                temperature: Some(0.7),
+                max_tokens: Some(4096),
+                api_key: None,
+                headers: std::collections::HashMap::new(),
+            };
+
+            // Check if provider supports streaming
+            if !self.provider.supports_native_tools() {
+                // Fall back to non-streaming mode
+                warn!("Provider doesn't support streaming, falling back to blocking mode");
+                return self.run_loop(messages, session, on_event, run_id).await;
+            }
+
+            // Create orchestrator for this iteration
+            let mut orchestrator =
+                crate::engine::StreamOrchestrator::new(&run_id, streaming_config.clone());
+
+            // Get streaming response
+            let mut stream = self
+                .provider
+                .stream_with_tools(&messages, &tool_defs, &options)
+                .await?;
+
+            // Process stream events
+            let mut accumulated_text = String::new();
+            let mut thinking_text = String::new();
+            let mut tool_calls: Vec<ContentBlock> = Vec::new();
+            let mut stop_reason = StopReason::Stop;
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(stream_event) => {
+                        // Process through orchestrator
+                        let agentic_events = orchestrator.process(stream_event.clone());
+                        for event in agentic_events {
+                            // Track text accumulation
+                            match &event {
+                                AgenticEvent::AssistantDelta { text, .. } => {
+                                    accumulated_text.push_str(text);
+                                }
+                                AgenticEvent::Thinking { text, is_delta, .. } => {
+                                    if *is_delta {
+                                        thinking_text.push_str(text);
+                                    } else {
+                                        thinking_text = text.clone();
+                                    }
+                                }
+                                _ => {}
+                            }
+                            // Emit event
+                            on_event(event);
+                        }
+
+                        // Track tool calls and stop reason from stream events
+                        match stream_event {
+                            crate::providers::StreamEvent::ToolCallEnd { tool_call, .. } => {
+                                tool_calls.push(tool_call);
+                            }
+                            crate::providers::StreamEvent::Done {
+                                stop_reason: reason,
+                            } => {
+                                stop_reason = reason;
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(e) => {
+                        on_event(AgenticEvent::Lifecycle {
+                            run_id: run_id.clone(),
+                            phase: LifecyclePhase::Error,
+                            error: Some(e.to_string()),
+                        });
+                        return Err(e);
+                    }
+                }
+            }
+
+            // Finalize orchestrator and emit remaining events
+            let final_events = orchestrator.finalize();
+            for event in final_events {
+                on_event(event);
+            }
+
+            // Handle tool calls
+            if !tool_calls.is_empty() {
+                info!("Processing {} tool calls from stream", tool_calls.len());
+
+                // Build assistant message with tool calls
+                let mut assistant_content: Vec<ContentBlock> = Vec::new();
+                if !accumulated_text.is_empty() {
+                    assistant_content.push(ContentBlock::Text {
+                        text: accumulated_text.clone(),
+                    });
+                }
+                for tc in &tool_calls {
+                    assistant_content.push(tc.clone());
+                }
+
+                // Add to messages
+                messages.push(ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: assistant_content,
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+
+                // Add to session
+                let tool_call_blocks: Vec<crate::session::events::ToolCallBlock> = tool_calls
+                    .iter()
+                    .filter_map(|tc| {
+                        if let ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } = tc
+                        {
+                            Some(crate::session::events::ToolCallBlock {
+                                id: id.clone(),
+                                name: name.clone(),
+                                arguments: arguments.clone(),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                {
+                    let mut s = session.write().await;
+                    s.add_assistant_with_blocks(
+                        &accumulated_text,
+                        Some(tool_call_blocks),
+                        None,
+                        None, // TODO: Track usage from streaming
+                    )
+                    .await?;
+                }
+
+                // Execute tools
+                for tool_call in &tool_calls {
+                    if let ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } = tool_call
+                    {
+                        info!("Executing tool: {} (id: {})", name, id);
+
+                        on_event(AgenticEvent::ToolStart {
+                            run_id: run_id.clone(),
+                            tool_id: id.clone(),
+                            name: name.clone(),
+                            params: arguments.clone(),
+                        });
+
+                        let start_time = std::time::Instant::now();
+                        let tool_result =
+                            if let Some(tool) = self.tools.iter().find(|t| t.name() == name) {
+                                match self
+                                    .task_manager
+                                    .execute(Arc::clone(tool), arguments.clone(), None)
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        info!("Tool '{}' executed successfully", name);
+                                        result.to_string()
+                                    }
+                                    Err(e) => {
+                                        info!("Tool '{}' failed: {}", name, e);
+                                        format!("Error: {e}")
+                                    }
+                                }
+                            } else {
+                                format!("Tool '{name}' not found")
+                            };
+
+                        let duration_ms = start_time.elapsed().as_millis() as u64;
+
+                        // Add to session
+                        {
+                            let mut s = session.write().await;
+                            s.add_tool_result(id, name, &tool_result).await?;
+                        }
+
+                        on_event(AgenticEvent::ToolEnd {
+                            run_id: run_id.clone(),
+                            tool_id: id.clone(),
+                            result: serde_json::json!(&tool_result),
+                            success: !tool_result.starts_with("Error:"),
+                            duration_ms,
+                        });
+
+                        // Add tool result to messages
+                        messages.push(ChatMessage {
+                            role: MessageRole::Tool,
+                            content: vec![ContentBlock::ToolResult {
+                                tool_call_id: id.clone(),
+                                name: name.clone(),
+                                content: vec![ContentBlock::Text {
+                                    text: tool_result.clone(),
+                                }],
+                                is_error: tool_result.starts_with("Error:"),
+                            }],
+                            tool_calls: None,
+                            tool_call_id: Some(id.clone()),
+                        });
+                    }
+                }
+
+                // Continue to next iteration
+                continue;
+            }
+
+            // No tool calls - this is the final answer
+            info!("Final answer received after {} iterations", iteration);
+
+            // Add final answer to session
+            {
+                let mut s = session.write().await;
+                s.add_assistant(&accumulated_text, None, None).await?;
+            }
+
+            // Emit final usage event
+            on_event(AgenticEvent::Usage {
+                run_id: run_id.clone(),
+                prompt_tokens: total_usage.input as u32,
+                completion_tokens: total_usage.output as u32,
+                total_tokens: total_usage.total as u32,
+            });
+
+            return Ok(AgenticResult {
+                success: true,
+                final_answer: accumulated_text,
+                tool_calls: vec![],
+                iterations: iteration,
+                usage: total_usage,
+            });
+        }
+    }
 }
 
 /// Build system prompt from agent and tools using `SystemPromptBuilder`
