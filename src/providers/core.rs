@@ -38,12 +38,19 @@ impl<A: ApiAdapter> ProviderCore<A> {
 
         let auth = adapter.auth_config(&api_key);
         let extra_headers = adapter.extra_headers();
-        let client = HttpClient::with_headers(
+        let mut client = HttpClient::with_headers(
             adapter.base_url(),
             auth,
             config.timeout_seconds,
             extra_headers,
         )?;
+
+        // Wire retry configuration from ProviderConfig
+        if let Some(retry_policy) =
+            crate::providers::transport::RetryPolicy::from_config(config.max_retries, config.retry_delay_ms)
+        {
+            client = client.with_retry_policy(retry_policy);
+        }
 
         let model_name = config
             .default_model_config()
