@@ -41,6 +41,12 @@ if (Test-Path $pekobotDir) {
     Remove-Item -Recurse -Force $pekobotDir
     Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
 }
+# Reset pekobot data (Windows)
+$DataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+if (Test-Path $DataDir) {
+    Remove-Item -Recurse -Force $DataDir
+    Write-Host "Reset data directory" -ForegroundColor Yellow
+}
 
 # Set API key
 pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
