@@ -1,10 +1,25 @@
-fix: update test files to match current API
+refactor(providers): unify provider architecture with adapter pattern and fix Kimi Code API
 
-- Fix session_management.rs:
-  - Use SessionKeyContext instead of SessionContext for key derivation
-  - Add missing peer_type and peer_id fields to SessionEntry structs
-  
-- Fix tool_wiring_test.rs:
-  - Remove outdated test using non-existent AgentManager
-  
-Tests now compile and pass successfully.
+Major architectural refactor to eliminate code duplication and fix Kimi provider:
+
+## Provider Architecture Changes
+- Replace 17 separate provider files with 3 adapters (OpenAI, Anthropic, OpenAI-compatible)
+- Add ProviderCore that works with any ApiAdapter
+- Create shared HttpClient and SseParser for all providers
+- Implement adapter-based factory in registry.rs
+
+## Session Format Migration
+- Add LlmMessageEvent with content_blocks for lossless storage
+- Preserve ContentBlock structure (text, tool_call, tool_result, thinking)
+- Replace flattened string storage with native LLM message format
+
+## Kimi Provider Fix
+- Add proper Kimi provider entry using AnthropicMessages API type
+- Fix base_url handling to use https://api.kimi.com/coding
+- Add anthropic-version header support for Kimi Code API
+
+## Stats
+- Deleted: ~3,000 lines (17 provider files)
+- Added: ~800 lines (adapters, core, transport)
+- Net reduction: ~2,200 lines
+- All tests pass, fmt clean

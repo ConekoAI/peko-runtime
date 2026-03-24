@@ -77,6 +77,10 @@ pub enum MessageSource {
 }
 
 /// user.message - A message sent by the user or hook trigger
+///
+/// DEPRECATED: Use `LlmMessageEvent` instead for new code.
+/// This type is kept for backward compatibility when reading old sessions.
+#[deprecated(since = "0.9.0", note = "Use LlmMessageEvent instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessageEvent {
     #[serde(flatten)]
@@ -98,6 +102,10 @@ pub struct TokenUsage {
 }
 
 /// assistant.message - Final complete text response from LLM
+///
+/// DEPRECATED: Use `LlmMessageEvent` instead for new code.
+/// This type is kept for backward compatibility when reading old sessions.
+#[deprecated(since = "0.9.0", note = "Use LlmMessageEvent instead")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessageEvent {
     #[serde(flatten)]

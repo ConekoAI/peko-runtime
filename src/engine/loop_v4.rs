@@ -169,10 +169,10 @@ impl AgenticLoopV4 {
             tool_call_id: None,
         });
 
-        // Add user message to session (using LLM-native format)
+        // Add user message to session
         {
             let mut s = session.write().await;
-            s.add_user_native(prompt).await?;
+            s.add_user(prompt).await?;
         }
 
         // Continue with the rest of the run logic
@@ -482,10 +482,10 @@ impl AgenticLoopV4 {
                     .collect();
                 {
                     let mut s = session.write().await;
-                    s.add_assistant_native(
+                    s.add_assistant_with_blocks(
                         &assistant_text,
                         Some(tool_call_blocks),
-                        None, // thinking
+                        None,
                         Some(response.usage.clone()),
                     )
                     .await?;
@@ -604,10 +604,10 @@ impl AgenticLoopV4 {
             let final_text = text_parts.join(" ");
             info!("Final answer received after {} iterations", iteration);
 
-            // Add final answer to session (using LLM-native format)
+            // Add final answer to session
             {
                 let mut s = session.write().await;
-                s.add_assistant_native(&final_text, None, None, Some(response.usage.clone()))
+                s.add_assistant(&final_text, None, Some(response.usage.clone()))
                     .await?;
             }
 

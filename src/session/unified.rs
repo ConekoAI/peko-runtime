@@ -484,236 +484,121 @@ impl UnifiedSession {
 
     /// Add a system message
     ///
-    /// Writes as Event Format (system.message) for consistency with the Pekobot
-    /// session specification.
+    /// Stores the message in LLM-native format (LlmMessageEvent with role="system")
+    /// for consistent session storage.
     pub async fn add_system(&mut self, content: impl Into<String>) -> Result<()> {
-        let content_str = content.into();
-        let msg_id = generate_message_id();
-
-        let event = SessionEvent::SystemMessage(SystemMessageEvent {
-            envelope: EventEnvelope {
-                id: generate_event_id(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            content: content_str,
-        });
-
-        self.storage.append_event(&self.id, &event).await?;
-        self.last_message_id = Some(msg_id);
-        self.message_count += 1;
-        Ok(())
+        // Use native format for unified storage
+        self.add_llm_message(
+            "system",
+            vec![ContentBlock::Text {
+                text: content.into(),
+            }],
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Add a user message
     ///
-    /// Writes as Event Format (user.message) for consistency with the Pekobot
-    /// session specification (DATA_MODEL.md §5.3).
+    /// Stores the message in LLM-native format (LlmMessageEvent) with full
+    /// content block fidelity for accurate session resumption.
     pub async fn add_user(&mut self, content: impl Into<String>) -> Result<()> {
-        let content_str = content.into();
-        let msg_id = generate_message_id();
-
-        let event = SessionEvent::UserMessage(UserMessageEvent {
-            envelope: EventEnvelope {
-                id: generate_event_id(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            message_id: msg_id.clone(),
-            content: content_str,
-            source: MessageSource::User,
-        });
-
-        self.storage.append_event(&self.id, &event).await?;
-        self.last_message_id = Some(msg_id);
-        self.message_count += 1;
-        Ok(())
+        // Use native format for unified storage
+        self.add_llm_message(
+            "user",
+            vec![ContentBlock::Text {
+                text: content.into(),
+            }],
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Add an assistant message with optional tool calls
     ///
-    /// Writes as Event Format (assistant.message) for consistency with the Pekobot
-    /// session specification (DATA_MODEL.md §5.3).
-    ///
-    /// Note: Tool calls are currently stored in the message content as they are
-    /// part of the assistant's response. Dedicated tool.call events may be added
-    /// in the future for more granular tracking.
+    /// Stores the message in LLM-native format (LlmMessageEvent) with full
+    /// content block fidelity, preserving tool calls for accurate session resumption.
     pub async fn add_assistant(
         &mut self,
         content: impl Into<String>,
         tool_calls: Option<Vec<ToolCall>>,
         usage: Option<TokenUsage>,
     ) -> Result<()> {
-        let content_str = content.into();
-
-        // Update token usage if provided
-        if let Some(u) = usage {
-            self.record_usage(u.input as usize, u.output as usize);
-        }
-
-        // For tool calls, we include them in the content for now
-        // The Event Format assistant.message has a simple text content field
-        // TODO: Add separate tool.call events for granular tool tracking
-        let final_content = if let Some(calls) = tool_calls {
-            let mut full_content = content_str;
-            for call in calls.iter() {
-                let tool_call_str = format!(
-                    "\n[ToolCall: {}({})]",
-                    call.name,
-                    serde_json::to_string(&call.parameters).unwrap_or_default()
-                );
-                full_content.push_str(&tool_call_str);
-            }
-            full_content
-        } else {
-            content_str
-        };
-
-        let msg_id = generate_message_id();
-
-        let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
-            envelope: EventEnvelope {
-                id: generate_event_id(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            message_id: msg_id.clone(),
-            content: final_content,
-            usage: EventTokenUsage {
-                input_tokens: self.input_tokens as u32,
-                output_tokens: self.output_tokens as u32,
-                total_tokens: (self.input_tokens + self.output_tokens) as u32,
-            },
+        // Convert ToolCall to ToolCallBlock
+        let tool_call_blocks: Option<Vec<ToolCallBlock>> = tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .map(|call| ToolCallBlock {
+                    id: format!("tc_{}", uuid::Uuid::new_v4().to_string().replace('-', "")),
+                    name: call.name,
+                    arguments: call.parameters,
+                })
+                .collect()
         });
 
-        self.storage.append_event(&self.id, &event).await?;
-        self.last_message_id = Some(msg_id);
-        self.message_count += 1;
-        Ok(())
+        // Use native format for unified storage
+        self.add_assistant_with_blocks(content, tool_call_blocks, None, usage)
+            .await
     }
 
     /// Add an assistant message with tool calls (with ContentBlock tool calls)
     ///
     /// Writes as Event Format (assistant.message) for consistency with the Pekobot
     /// session specification (DATA_MODEL.md §5.3).
-    pub async fn add_assistant_with_tool_calls(
-        &mut self,
-        content: impl Into<String>,
-        tool_calls: Vec<ContentBlock>,
-        usage: Option<TokenUsage>,
-    ) -> Result<()> {
-        let content_str = content.into();
-        let mut final_content = content_str;
-
-        // Update token usage if provided
-        if let Some(u) = usage {
-            self.record_usage(u.input as usize, u.output as usize);
-        }
-
-        // Add tool calls as text annotations
-        for block in tool_calls {
-            if let ContentBlock::ToolCall {
-                name, arguments, ..
-            } = block
-            {
-                let tool_call_str = format!(
-                    "\n[ToolCall: {}({})]",
-                    name,
-                    serde_json::to_string(&arguments).unwrap_or_default()
-                );
-                final_content.push_str(&tool_call_str);
-            }
-        }
-
-        let msg_id = generate_message_id();
-
-        let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
-            envelope: EventEnvelope {
-                id: generate_event_id(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            message_id: msg_id.clone(),
-            content: final_content,
-            usage: EventTokenUsage {
-                input_tokens: self.input_tokens as u32,
-                output_tokens: self.output_tokens as u32,
-                total_tokens: (self.input_tokens + self.output_tokens) as u32,
-            },
-        });
-
-        self.storage.append_event(&self.id, &event).await?;
-        self.last_message_id = Some(msg_id);
-        self.message_count += 1;
-        Ok(())
-    }
-
     /// Add a tool result
     ///
-    /// Writes as Event Format (tool.result) for consistency with the Pekobot
-    /// session specification (DATA_MODEL.md §5.3).
+    /// Stores the tool result in LLM-native format (LlmMessageEvent with role="tool")
+    /// for consistent session storage and accurate resumption.
     pub async fn add_tool_result(
         &mut self,
         tool_call_id: impl Into<String>,
-        _tool_name: impl Into<String>,
+        tool_name: impl Into<String>,
         result: impl Into<String>,
     ) -> Result<()> {
-        let tool_call_id_str = tool_call_id.into();
-        let result_str = result.into();
-
-        let event = SessionEvent::ToolResult(ToolResultEvent {
-            envelope: EventEnvelope {
-                id: generate_event_id(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            tool_call_id: tool_call_id_str,
-            output: Some(result_str),
-            error: None,
-            duration_ms: 0, // TODO: Track actual duration
-        });
-
-        self.storage.append_event(&self.id, &event).await?;
-        // Tool results don't update last_message_id or count
-        Ok(())
+        // Use native format for unified storage
+        self.add_tool_result_native(tool_call_id, tool_name, result, false)
+            .await
     }
 
     /// Add a thinking block (streaming reasoning)
     ///
-    /// Writes as Event Format (thinking) for consistency with the Pekobot
-    /// session specification (DATA_MODEL.md §5.3).
+    /// Stores the thinking content in LLM-native format (LlmMessageEvent with
+    /// thinking block) for consistent session storage.
     pub async fn add_thinking(
         &mut self,
         thinking: impl Into<String>,
-        _signature: Option<String>,
+        signature: Option<String>,
     ) -> Result<()> {
-        let content = thinking.into();
+        let thinking_block = crate::session::events::ThinkingBlock {
+            text: thinking.into(),
+            signature,
+        };
 
-        let event = SessionEvent::Thinking(ThinkingEvent {
-            envelope: EventEnvelope {
-                id: generate_event_id(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            content,
-        });
-
-        self.storage.append_event(&self.id, &event).await?;
-        // Thinking blocks don't count as messages for stats
-        Ok(())
+        // Store as system message with thinking block
+        // Note: In the future, we may want a dedicated role for thinking
+        self.add_llm_message(
+            "system",
+            vec![], // No text content, just thinking
+            None,
+            Some(thinking_block),
+            None,
+        )
+        .await
     }
 
     // ============================================================
-    // LLM-Native Message Operations (New Format)
+    // Core LLM-Native Implementation
     // ============================================================
 
     /// Add an LLM-native message with full content block fidelity
+    ///
+    /// This is the core implementation used by all other add_* methods.
+    /// It stores messages in the LLM-native format (LlmMessageEvent) which
+    /// preserves complete content blocks for accurate session resumption.
     ///
     /// This is the preferred method for storing messages in the new LLM-native format,
     /// which preserves complete content blocks (text, tool calls, thinking, images)
@@ -776,10 +661,10 @@ impl UnifiedSession {
         Ok(())
     }
 
-    /// Add a user message in LLM-native format
+    /// Add a user message (internal implementation)
     ///
     /// Convenience wrapper around `add_llm_message` for user messages.
-    pub async fn add_user_native(&mut self, text: impl Into<String>) -> Result<()> {
+    async fn add_user_native(&mut self, text: impl Into<String>) -> Result<()> {
         self.add_llm_message(
             "user",
             vec![ContentBlock::Text { text: text.into() }],
@@ -790,34 +675,31 @@ impl UnifiedSession {
         .await
     }
 
-    /// Add an assistant message in LLM-native format
+    /// Add an assistant message with content blocks
     ///
-    /// Convenience wrapper around `add_llm_message` for assistant messages.
-    pub async fn add_assistant_native(
+    /// Advanced method that allows passing tool calls as blocks.
+    /// For simple text-only messages, use `add_assistant` instead.
+    pub async fn add_assistant_with_blocks(
         &mut self,
         text: impl Into<String>,
         tool_calls: Option<Vec<ToolCallBlock>>,
-        thinking: Option<String>,
+        thinking: Option<crate::session::events::ThinkingBlock>,
         usage: Option<TokenUsage>,
     ) -> Result<()> {
-        let thinking_block = thinking.map(|t| crate::session::events::ThinkingBlock {
-            text: t,
-            signature: None,
-        });
         self.add_llm_message(
             "assistant",
             vec![ContentBlock::Text { text: text.into() }],
             tool_calls,
-            thinking_block,
+            thinking,
             usage,
         )
         .await
     }
 
-    /// Add a tool result in LLM-native format
+    /// Add a tool result (internal implementation)
     ///
     /// Stores tool results as content blocks for proper reconstruction.
-    pub async fn add_tool_result_native(
+    async fn add_tool_result_native(
         &mut self,
         tool_call_id: impl Into<String>,
         tool_name: impl Into<String>,
@@ -845,70 +727,23 @@ impl UnifiedSession {
 
     /// Load conversation history
     ///
-    /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
-    /// This ensures backward compatibility during the format transition.
-    pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
-        use crate::providers::MessageRole;
-        use crate::session::NormalizedEntry;
-
-        let entries = self.storage.load_normalized(&self.id).await?;
-        let mut messages = Vec::new();
-
-        for entry in entries {
-            match entry {
-                NormalizedEntry::UserMessage { content, .. } => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::User,
-                        content: vec![ContentBlock::Text { text: content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                NormalizedEntry::AssistantMessage { content, .. } => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: vec![ContentBlock::Text { text: content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                NormalizedEntry::SystemMessage { content, .. } => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: vec![ContentBlock::Text { text: content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                NormalizedEntry::ToolResult {
-                    content,
-                    tool_call_id,
-                    ..
-                } => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::Tool,
-                        content: vec![ContentBlock::Text { text: content }],
-                        tool_calls: None,
-                        tool_call_id: Some(tool_call_id),
-                    });
-                }
-                // Session headers and other entries don't contribute to chat history
-                _ => {}
-            }
-        }
-
-        Ok(messages)
-    }
-
-    /// Load conversation history in LLM-native format
-    ///
     /// Returns messages with full content block fidelity, preserving tool calls,
-    /// thinking blocks, and other structured content. This is the preferred
-    /// method for session resumption and provider switching.
+    /// thinking blocks, and other structured content. This method supports both
+    /// the new LLM-native format (LlmMessageEvent) and legacy formats for
+    /// backward compatibility.
     ///
     /// # Returns
     /// Vector of ChatMessage with complete ContentBlock information
-    pub async fn load_history_native(&self) -> Result<Vec<ChatMessage>> {
+    pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
+        // Delegate to native loader for unified handling
+        self.load_history_native().await
+    }
+
+    /// Load conversation history (internal implementation)
+    ///
+    /// Core implementation that handles all event formats and converts to
+    /// ChatMessage with full ContentBlock fidelity.
+    async fn load_history_native(&self) -> Result<Vec<ChatMessage>> {
         use crate::providers::MessageRole;
 
         let events = self.storage.load_events(&self.id).await?;

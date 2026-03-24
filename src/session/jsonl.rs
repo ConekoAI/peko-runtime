@@ -626,6 +626,48 @@ impl SessionStorage {
                 content: e.output.unwrap_or_default(),
                 is_error: e.error.is_some(),
             }),
+            LlmMessage(e) => {
+                // LLM-native message format with full content block fidelity
+                // Extract text content from content_blocks for normalized view
+                let text_content: String = e
+                    .content_blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        crate::types::message::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+
+                match e.role.as_str() {
+                    "user" => Some(NormalizedEntry::UserMessage {
+                        id: e.message_id,
+                        content: text_content,
+                        timestamp: e.envelope.ts,
+                        source: crate::session::events::MessageSource::User,
+                    }),
+                    "assistant" => Some(NormalizedEntry::AssistantMessage {
+                        id: e.message_id,
+                        content: text_content,
+                        timestamp: e.envelope.ts,
+                        input_tokens: e.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
+                        output_tokens: e.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
+                    }),
+                    "system" => Some(NormalizedEntry::SystemMessage {
+                        content: text_content,
+                        timestamp: e.envelope.ts,
+                    }),
+                    "tool" => Some(NormalizedEntry::ToolResult {
+                        tool_call_id: e.tool_call_id.unwrap_or_default(),
+                        tool_name: String::new(),
+                        content: text_content,
+                        is_error: false,
+                    }),
+                    _ => {
+                        debug!("Unknown role in LlmMessage event: {}", e.role);
+                        None
+                    }
+                }
+            }
             _ => {
                 // Other event types (thinking, tool.call, etc.) can be added as needed
                 debug!("Unnormalized event type: {}", event.event_type());
