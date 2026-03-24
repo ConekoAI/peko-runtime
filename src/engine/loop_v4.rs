@@ -482,10 +482,22 @@ impl AgenticLoopV4 {
                         }
                     })
                     .collect();
+
+                // Build content blocks: text + tool calls
+                let mut content_blocks: Vec<ContentBlock> = Vec::new();
+                if !assistant_text.is_empty() {
+                    content_blocks.push(ContentBlock::Text {
+                        text: assistant_text.clone(),
+                    });
+                }
+                for tool_call in &response.tool_calls {
+                    content_blocks.push(tool_call.clone());
+                }
+
                 {
                     let mut s = session.write().await;
                     s.add_assistant_with_blocks(
-                        &assistant_text,
+                        content_blocks,
                         Some(tool_call_blocks),
                         None,
                         Some(response.usage.clone()),
@@ -987,10 +999,21 @@ impl AgenticLoopV4 {
                     })
                     .collect();
 
+                // Build content blocks: text + tool calls
+                let mut content_blocks: Vec<ContentBlock> = Vec::new();
+                if !accumulated_text.is_empty() {
+                    content_blocks.push(ContentBlock::Text {
+                        text: accumulated_text.clone(),
+                    });
+                }
+                for tc in &tool_calls {
+                    content_blocks.push(tc.clone());
+                }
+
                 {
                     let mut s = session.write().await;
                     s.add_assistant_with_blocks(
-                        &accumulated_text,
+                        content_blocks,
                         Some(tool_call_blocks),
                         None,
                         None, // TODO: Track usage from streaming

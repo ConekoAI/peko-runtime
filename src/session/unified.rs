@@ -528,6 +528,8 @@ impl UnifiedSession {
         tool_calls: Option<Vec<ToolCall>>,
         usage: Option<TokenUsage>,
     ) -> Result<()> {
+        let content_str = content.into();
+
         // Convert ToolCall to ToolCallBlock
         let tool_call_blocks: Option<Vec<ToolCallBlock>> = tool_calls.map(|calls| {
             calls
@@ -540,8 +542,20 @@ impl UnifiedSession {
                 .collect()
         });
 
+        // Build content blocks: text + tool calls
+        let mut content_blocks = vec![ContentBlock::Text { text: content_str }];
+        if let Some(ref calls) = tool_call_blocks {
+            for call in calls {
+                content_blocks.push(ContentBlock::ToolCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                });
+            }
+        }
+
         // Use native format for unified storage
-        self.add_assistant_with_blocks(content, tool_call_blocks, None, usage)
+        self.add_assistant_with_blocks(content_blocks, tool_call_blocks, None, usage)
             .await
     }
 
@@ -681,19 +695,13 @@ impl UnifiedSession {
     /// For simple text-only messages, use `add_assistant` instead.
     pub async fn add_assistant_with_blocks(
         &mut self,
-        text: impl Into<String>,
+        content_blocks: Vec<ContentBlock>,
         tool_calls: Option<Vec<ToolCallBlock>>,
         thinking: Option<crate::session::events::ThinkingBlock>,
         usage: Option<TokenUsage>,
     ) -> Result<()> {
-        self.add_llm_message(
-            "assistant",
-            vec![ContentBlock::Text { text: text.into() }],
-            tool_calls,
-            thinking,
-            usage,
-        )
-        .await
+        self.add_llm_message("assistant", content_blocks, tool_calls, thinking, usage)
+            .await
     }
 
     /// Add a tool result (internal implementation)
