@@ -55,10 +55,16 @@ pub enum AgenticEvent {
         error: Option<String>,
     },
 
-    /// Assistant text delta or block
+    /// Assistant text delta or block (DEPRECATED: use AssistantText instead)
     ///
     /// In streaming mode, text arrives as deltas.
     /// In block mode, text arrives as complete blocks.
+    ///
+    /// # Deprecation Note
+    /// This variant is deprecated in favor of `AssistantText` which has clearer semantics.
+    /// The `is_delta` and `is_final` fields were confusing - they mixed presentation
+    /// concerns with content semantics.
+    #[deprecated(since = "0.1.0", note = "Use AssistantText instead")]
     Assistant {
         /// Run identifier
         run_id: RunId,
@@ -68,6 +74,37 @@ pub enum AgenticEvent {
         is_delta: bool,
         /// True if this is the final chunk
         is_final: bool,
+    },
+
+    /// Assistant text content with clear semantics
+    ///
+    /// Represents a block of text from the assistant. Unlike the deprecated
+    /// `Assistant` variant, this uses `is_interstitial` to clearly indicate
+    /// whether this text appears before tool calls (interstitial) or is the
+    /// final answer to the user.
+    ///
+    /// # Semantics
+    /// - `is_interstitial: true` - Text explaining tool calls (e.g., "Let me search...")
+    /// - `is_interstitial: false` - Final answer to the user's query
+    ///
+    /// # Example Flow
+    /// ```text
+    /// User: "What's the weather?"
+    /// → AssistantText { text: "I'll check the weather...", is_interstitial: true }
+    /// → ToolStart { name: "weather" }
+    /// → ToolEnd { ... }
+    /// → AssistantText { text: "It's sunny today.", is_interstitial: false }
+    /// ```
+    AssistantText {
+        /// Run identifier
+        run_id: RunId,
+        /// Text content (complete block)
+        text: String,
+        /// Block sequence number for ordering within a run
+        sequence: usize,
+        /// True if this text precedes tool calls (explanatory text)
+        /// False if this is the final answer
+        is_interstitial: bool,
     },
 
     /// Thinking/reasoning block
@@ -176,7 +213,9 @@ impl AgenticEvent {
     pub fn run_id(&self) -> &str {
         match self {
             AgenticEvent::Lifecycle { run_id, .. } => run_id,
+            #[allow(deprecated)]
             AgenticEvent::Assistant { run_id, .. } => run_id,
+            AgenticEvent::AssistantText { run_id, .. } => run_id,
             AgenticEvent::Thinking { run_id, .. } => run_id,
             AgenticEvent::ToolCallDelta { run_id, .. } => run_id,
             AgenticEvent::ToolStart { run_id, .. } => run_id,

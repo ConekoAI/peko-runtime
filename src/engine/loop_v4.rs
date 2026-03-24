@@ -208,6 +208,8 @@ impl AgenticLoopV4 {
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
     ) -> Result<AgenticResult> {
+        // Sequence counter for AssistantText events
+        let mut sequence_counter: usize = 0;
         // Build tool definitions
         let tool_defs = self.build_tool_definitions();
 
@@ -493,11 +495,12 @@ impl AgenticLoopV4 {
 
                 // Emit assistant text BEFORE tool calls so user sees what's happening
                 if !assistant_text.is_empty() {
-                    on_event(AgenticEvent::Assistant {
+                    sequence_counter += 1;
+                    on_event(AgenticEvent::AssistantText {
                         run_id: run_id.clone(),
                         text: assistant_text.clone(),
-                        is_delta: false,
-                        is_final: false, // Not final - tool calls coming
+                        sequence: sequence_counter,
+                        is_interstitial: true, // Text before tool calls
                     });
                 }
 
@@ -612,11 +615,12 @@ impl AgenticLoopV4 {
             }
 
             // Emit final assistant event
-            on_event(AgenticEvent::Assistant {
+            sequence_counter += 1;
+            on_event(AgenticEvent::AssistantText {
                 run_id: run_id.clone(),
                 text: final_text.clone(),
-                is_delta: false,
-                is_final: true,
+                sequence: sequence_counter,
+                is_interstitial: false, // This is the final answer
             });
 
             // Emit usage event

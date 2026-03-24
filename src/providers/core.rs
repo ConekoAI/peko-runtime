@@ -449,6 +449,7 @@ impl<A: ApiAdapter + 'static> super::Provider for ProviderCore<A> {
 
         let stream = self.client.post_stream(&path, &body).await?;
         let mut accumulated_text = String::new();
+        let mut sequence: usize = 0;
 
         use futures::StreamExt;
         let mut parser = crate::providers::transport::sse::SseParser::parse_stream(stream);
@@ -458,6 +459,11 @@ impl<A: ApiAdapter + 'static> super::Provider for ProviderCore<A> {
                 Ok(event) => match self.adapter.parse_sse_event(&event.data) {
                     Ok(Some(StreamEvent::TextDelta { delta, .. })) => {
                         accumulated_text.push_str(&delta);
+                        // For streaming deltas, we use the deprecated Assistant event
+                        // with is_delta=true. This is appropriate for true streaming
+                        // where text arrives incrementally. The new AssistantText
+                        // event is for complete blocks in the agentic loop.
+                        #[allow(deprecated)]
                         let _ = event_tx
                             .send(AgenticEvent::Assistant {
                                 run_id: run_id.clone(),
@@ -496,13 +502,14 @@ impl<A: ApiAdapter + 'static> super::Provider for ProviderCore<A> {
             }
         }
 
-        // Emit final assistant event
+        // Emit final assistant event using new event type
+        sequence += 1;
         let _ = event_tx
-            .send(AgenticEvent::Assistant {
+            .send(AgenticEvent::AssistantText {
                 run_id: run_id.clone(),
                 text: accumulated_text,
-                is_delta: false,
-                is_final: true,
+                sequence,
+                is_interstitial: false, // Final answer
             })
             .await;
 

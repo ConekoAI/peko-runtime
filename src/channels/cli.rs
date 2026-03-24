@@ -65,22 +65,75 @@ impl Channel for CliChannel {
 
 /// Process events and return final answer
 ///
-/// Unified event handling for streaming output.
+/// Unified event handling for streaming output using EventProcessor.
 /// All output uses the same format: {`agent_name}`: {content}
 pub async fn process_events(
     mut event_rx: tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>,
     agent_name: &str,
     session_ctx: Option<&crate::session::context::SessionContext>,
 ) -> Result<String> {
-    use crate::engine::{AgenticEvent, LifecyclePhase};
+    use crate::engine::{AgenticEvent, ChannelAction, EventProcessor, LifecyclePhase};
 
+    let mut processor = EventProcessor::for_agent(agent_name);
     let mut final_answer = String::new();
     let mut has_started_line = false;
-    let mut last_was_thinking = false;
 
     while let Some(event) = event_rx.recv().await {
-        match event {
-            AgenticEvent::Lifecycle { phase, .. } => match phase {
+        // Handle Usage event separately (needs async)
+        if let AgenticEvent::Usage {
+            prompt_tokens,
+            completion_tokens,
+            ..
+        } = &event
+        {
+            if let Some(ctx) = session_ctx {
+                if let Err(e) = ctx
+                    .record_usage(*prompt_tokens as usize, *completion_tokens as usize)
+                    .await
+                {
+                    warn!("Failed to record token usage: {}", e);
+                }
+            }
+        }
+
+        // Process event through EventProcessor
+        let actions = processor.process(&event);
+
+        for action in actions {
+            match action {
+                ChannelAction::StartTurn(name) => {
+                    if !has_started_line {
+                        print!("\n{name}: ");
+                        has_started_line = true;
+                    }
+                }
+                ChannelAction::Print(text) => {
+                    print!("{text}");
+                }
+                ChannelAction::Println(text) => {
+                    if !text.is_empty() {
+                        println!("{text}");
+                    } else {
+                        println!();
+                    }
+                    final_answer = text;
+                    has_started_line = false;
+                }
+                ChannelAction::Flush => {
+                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                }
+                ChannelAction::EndTurn => {
+                    has_started_line = false;
+                }
+                ChannelAction::Status(_) => {
+                    // CLI doesn't show status messages inline
+                }
+            }
+        }
+
+        // Handle lifecycle events
+        if let AgenticEvent::Lifecycle { phase, .. } = &event {
+            match phase {
                 LifecyclePhase::End => {
                     if has_started_line {
                         println!();
@@ -91,72 +144,7 @@ pub async fn process_events(
                     return Err(anyhow::anyhow!("Agent encountered an error"));
                 }
                 _ => {}
-            },
-            AgenticEvent::Thinking { text, .. } => {
-                // Thinking/reasoning before tool calls
-                if !text.is_empty() {
-                    if !has_started_line {
-                        // First thinking of this turn
-                        print!("\n{agent_name}: ");
-                        has_started_line = true;
-                    } else if last_was_thinking {
-                        // Continuing from previous thinking - add space
-                        print!(" ");
-                    }
-                    // Replace newlines with spaces for clean output
-                    let single_line = text.replace('\n', " ");
-                    print!("{single_line}");
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                    last_was_thinking = true;
-                }
             }
-            AgenticEvent::Assistant { text, is_final, .. } => {
-                last_was_thinking = false;
-                if !text.is_empty() {
-                    if is_final {
-                        // Final answer - ensure newline and finish
-                        if !has_started_line {
-                            print!("\n{agent_name}: ");
-                        }
-                        println!("{text}");
-                        final_answer = text;
-                        has_started_line = false;
-                    } else {
-                        // Streaming delta - continue inline
-                        if !has_started_line {
-                            print!("\n{agent_name}: ");
-                            has_started_line = true;
-                        }
-                        print!("{text}");
-                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                    }
-                }
-            }
-            AgenticEvent::ToolStart { name: _, .. } => {
-                // Tool execution starts - end current line so next thinking starts fresh
-                if has_started_line {
-                    println!();
-                    has_started_line = false;
-                }
-                last_was_thinking = false;
-            }
-            AgenticEvent::ToolEnd { .. } => {}
-            AgenticEvent::Usage {
-                prompt_tokens,
-                completion_tokens,
-                ..
-            } => {
-                // Record token usage to session context
-                if let Some(ctx) = session_ctx {
-                    if let Err(e) = ctx
-                        .record_usage(prompt_tokens as usize, completion_tokens as usize)
-                        .await
-                    {
-                        warn!("Failed to record token usage: {}", e);
-                    }
-                }
-            }
-            _ => {}
         }
     }
 

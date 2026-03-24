@@ -98,6 +98,19 @@ pub trait Channel: Send + Sync {
 
         while let Some(event) = event_rx.recv().await {
             match event {
+                // New event type with clear semantics
+                AgenticEvent::AssistantText {
+                    text,
+                    is_interstitial,
+                    ..
+                } => {
+                    // Only send final answers in default impl
+                    if !is_interstitial {
+                        self.send(&text).await?;
+                    }
+                }
+                // Deprecated: legacy event type (backward compatibility)
+                #[allow(deprecated)]
                 AgenticEvent::Assistant { text, is_final, .. } => {
                     if is_final {
                         self.send(&text).await?;

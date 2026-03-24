@@ -321,13 +321,13 @@ pub trait Provider: Send + Sync {
         // Do blocking completion
         match self.complete(_prompt).await {
             Ok(response) => {
-                // Emit assistant event
+                // Emit assistant event using new event type
                 let _ = event_tx
-                    .send(AgenticEvent::Assistant {
+                    .send(AgenticEvent::AssistantText {
                         run_id: run_id.clone(),
                         text: response,
-                        is_delta: false,
-                        is_final: true,
+                        sequence: 1,
+                        is_interstitial: false, // Final answer
                     })
                     .await;
 

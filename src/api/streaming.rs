@@ -123,6 +123,13 @@ pub fn engine_event_to_sse(
     _run_id: &str,
 ) -> Option<ChatSseEvent> {
     match event {
+        // New event type with clear semantics
+        crate::engine::AgenticEvent::AssistantText { text, .. } => {
+            // All AssistantText events are complete blocks, not deltas
+            Some(ChatSseEvent::Delta { text: text.clone() })
+        }
+        // Deprecated: legacy event type (backward compatibility)
+        #[allow(deprecated)]
         crate::engine::AgenticEvent::Assistant { text, is_delta, .. } => {
             if *is_delta {
                 Some(ChatSseEvent::Delta { text: text.clone() })
@@ -292,7 +299,25 @@ mod tests {
     }
 
     #[test]
-    fn test_engine_event_to_sse_assistant_delta() {
+    fn test_engine_event_to_sse_assistant_text() {
+        // Test new AssistantText event
+        let event = AgenticEvent::AssistantText {
+            run_id: "run_123".to_string(),
+            text: "Hello".to_string(),
+            sequence: 1,
+            is_interstitial: false,
+        };
+        let sse = engine_event_to_sse(&event, "run_123");
+        match sse {
+            Some(ChatSseEvent::Delta { text }) => assert_eq!(text, "Hello"),
+            _ => panic!("Expected Delta event"),
+        }
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_engine_event_to_sse_assistant_delta_legacy() {
+        // Test deprecated Assistant event (backward compatibility)
         let event = AgenticEvent::Assistant {
             run_id: "run_123".to_string(),
             text: "Hello".to_string(),

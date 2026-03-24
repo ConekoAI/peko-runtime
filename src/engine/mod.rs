@@ -4,6 +4,7 @@
 //! This is the heart of Pekobot's agent execution.
 
 pub mod chunker;
+pub mod event_processor;
 pub mod events;
 pub mod execution;
 pub mod input;
@@ -15,6 +16,7 @@ pub mod task_manager;
 pub mod tool_stream;
 
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
+pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
 pub use execution::{ExecutionMode, TaskExecutor, TaskId, TaskStatus, TaskSummary};
 pub use input::{A2AMessageType, AgentInput, HookType, InputContext};
