@@ -391,9 +391,6 @@ impl Provider for AnthropicProvider {
 
         let result: AnthropicResponse = response.json().await?;
 
-        // Store the native response for audit trail (before consuming result)
-        let native_payload = serde_json::to_value(&result).ok();
-
         // Parse content blocks
         let mut content_blocks = Vec::new();
         let mut tool_calls = Vec::new();
@@ -431,7 +428,6 @@ impl Provider for AnthropicProvider {
             },
             provider: self.name().to_string(),
             model: self.config.model.clone(),
-            native_payload,
         })
     }
 
@@ -716,14 +712,14 @@ struct AnthropicTool {
     input_schema: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicContentBlock>,
     stop_reason: Option<String>,
     usage: AnthropicUsage,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContentBlock {
     Text {
@@ -736,7 +732,7 @@ enum AnthropicContentBlock {
     },
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,

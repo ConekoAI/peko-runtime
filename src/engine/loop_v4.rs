@@ -160,27 +160,19 @@ impl AgenticLoopV4 {
         };
 
         // Add user message
-        let user_chat_message = ChatMessage {
+        messages.push(ChatMessage {
             role: MessageRole::User,
             content: vec![ContentBlock::Text {
                 text: prompt.to_string(),
             }],
             tool_calls: None,
             tool_call_id: None,
-        };
-        messages.push(user_chat_message.clone());
-
-        // Build native payload for user message (OpenAI format)
-        let user_native_payload = serde_json::json!({
-            "role": "user",
-            "content": prompt,
         });
 
-        // Add user message to session with native payload
+        // Add user message to session
         {
             let mut s = session.write().await;
-            s.add_user_with_native(prompt, Some(user_native_payload))
-                .await?;
+            s.add_user(prompt).await?;
         }
 
         // Continue with the rest of the run logic
@@ -467,7 +459,7 @@ impl AgenticLoopV4 {
                 };
                 messages.push(assistant_msg.clone());
 
-                // Add to session with original tool call IDs and native payload
+                // Add to session with original tool call IDs
                 let tool_call_blocks: Vec<ContentBlock> = response
                     .tool_calls
                     .iter()
@@ -490,10 +482,9 @@ impl AgenticLoopV4 {
                     .collect();
                 {
                     let mut s = session.write().await;
-                    s.add_assistant_with_tool_calls_and_native(
+                    s.add_assistant_with_tool_calls(
                         &assistant_text,
                         tool_call_blocks,
-                        response.native_payload.clone(),
                         Some(response.usage.clone()),
                     )
                     .await?;
@@ -612,16 +603,11 @@ impl AgenticLoopV4 {
             let final_text = text_parts.join(" ");
             info!("Final answer received after {} iterations", iteration);
 
-            // Add final answer to session with native payload
+            // Add final answer to session
             {
                 let mut s = session.write().await;
-                s.add_assistant_with_native(
-                    &final_text,
-                    None,
-                    response.native_payload.clone(),
-                    Some(response.usage.clone()),
-                )
-                .await?;
+                s.add_assistant(&final_text, None, Some(response.usage.clone()))
+                    .await?;
             }
 
             // Emit final assistant event
@@ -714,7 +700,6 @@ impl AgenticLoopV4 {
             usage: crate::providers::TokenUsage::default(),
             provider: self.provider.name().to_string(),
             model: "default".to_string(),
-            native_payload: None,
         })
     }
 }

@@ -491,7 +491,6 @@ mod tests {
             message_id: "msg_001".to_string(),
             content: "Hello".to_string(),
             source: crate::session::events::MessageSource::User,
-            native_payload: None,
         });
 
         let response: HistoryEventResponse = (&event).into();
@@ -542,7 +541,6 @@ mod tests {
                 output_tokens: 50,
                 total_tokens: 150,
             },
-            native_payload: None,
         });
 
         let response: HistoryEventResponse = (&event).into();
