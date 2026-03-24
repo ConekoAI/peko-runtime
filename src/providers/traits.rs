@@ -13,6 +13,27 @@ use serde_json::Value;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 
+/// Unique content block ID for streaming correlation
+pub type ContentBlockId = String;
+
+/// Block type for streaming events
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockType {
+    Text,
+    ToolCall,
+    Thinking,
+}
+
+/// Content delta for streaming
+#[derive(Debug, Clone)]
+pub enum ContentDelta {
+    Text(String),
+    ToolCall {
+        name: Option<String>,
+        arguments: Value,
+    },
+}
+
 /// Tool definition for native tool calling
 ///
 /// Providers translate this into their native tool schema format

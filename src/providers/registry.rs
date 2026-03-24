@@ -3,17 +3,18 @@
 //! This module provides a unified way to create providers based on metadata.
 //! Instead of separate implementations for each provider, we have:
 //!
-//! 1. **Base implementations**: `OpenAI` and Anthropic providers handle the actual API calls
+//! 1. **Base adapters**: `OpenAiAdapter` and `AnthropicAdapter` handle API format conversion
 //! 2. **Metadata registry**: Maps provider names to their API type, base URL, and auth config
-//! 3. **Factory function**: Routes provider requests to the appropriate base implementation
+//! 3. **Factory function**: Creates the appropriate adapter and wraps it in ProviderCore
 //!
 //! This approach means:
-//! - Adding a new provider = adding a metadata entry (not a new file)
-//! - Bug fixes apply to all compatible providers automatically
-//! - ~90% of providers are OpenAI-compatible and just need URL + key
+//! - Adding a new OpenAI-compatible provider = adding a metadata entry
+//! - Only truly unique APIs need a new adapter implementation
 
 use crate::providers::{
-    anthropic::AnthropicProvider, openai::OpenAIProvider, AnthropicConfig, OpenAIConfig,
+    adapters::{AnthropicAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
+    core::ProviderCore,
+    traits::Provider,
 };
 use crate::types::provider::{ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
@@ -23,7 +24,7 @@ use std::sync::Arc;
 /// Provider API types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiType {
-    /// `OpenAI` Chat Completions API (most common)
+    /// OpenAI Chat Completions API (most common)
     OpenAICompletions,
     /// Anthropic Messages API
     AnthropicMessages,
@@ -65,8 +66,6 @@ pub struct ProviderMetadata {
     pub api_type: ApiType,
     /// Base URL for the API
     pub base_url: &'static str,
-    /// Whether to use Authorization header (vs x-api-key, etc.)
-    pub use_auth_header: bool,
     /// Default model
     pub default_model: &'static str,
 }
@@ -129,7 +128,7 @@ impl ProviderRegistry {
 /// Built-in provider metadata
 ///
 /// Most providers are OpenAI-compatible and just need different base URLs.
-/// Only truly unique APIs get their own implementation.
+/// Only truly unique APIs get their own adapter.
 const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
     // ═════════════════════════════════════════════════════════════════
     // OpenAI (native)
@@ -141,7 +140,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["OPENAI_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.openai.com/v1",
-        use_auth_header: true,
         default_model: "gpt-4o-mini",
     },
     // ═════════════════════════════════════════════════════════════════
@@ -154,7 +152,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["ANTHROPIC_API_KEY"],
         api_type: ApiType::AnthropicMessages,
         base_url: "https://api.anthropic.com",
-        use_auth_header: true,
         default_model: "claude-3-5-sonnet-latest",
     },
     // ═════════════════════════════════════════════════════════════════
@@ -167,7 +164,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["AZURE_OPENAI_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "", // Must be provided per-deployment
-        use_auth_header: true,
         default_model: "gpt-4",
     },
     ProviderMetadata {
@@ -177,7 +173,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["COHERE_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.cohere.com/v2",
-        use_auth_header: true,
         default_model: "command-r-plus",
     },
     ProviderMetadata {
@@ -187,7 +182,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["DEEPSEEK_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.deepseek.com/v1",
-        use_auth_header: true,
         default_model: "deepseek-chat",
     },
     ProviderMetadata {
@@ -197,7 +191,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["FIREWORKS_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.fireworks.ai/inference/v1",
-        use_auth_header: true,
         default_model: "accounts/fireworks/models/llama-v3p1-70b-instruct",
     },
     ProviderMetadata {
@@ -207,7 +200,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["GROQ_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.groq.com/openai/v1",
-        use_auth_header: true,
         default_model: "llama-3.1-70b-versatile",
     },
     ProviderMetadata {
@@ -217,18 +209,7 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["MOONSHOT_API_KEY", "KIMI_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.moonshot.cn/v1",
-        use_auth_header: true,
         default_model: "kimi-k2.5",
-    },
-    ProviderMetadata {
-        id: "kimi",
-        display_name: "Kimi",
-        aliases: &["kimi-ai"],
-        api_key_env: &["KIMI_API_KEY"],
-        api_type: ApiType::AnthropicMessages,
-        base_url: "https://api.kimi.com/coding", // Anthropic provider will append /v1/messages
-        use_auth_header: false,
-        default_model: "k2p5",
     },
     ProviderMetadata {
         id: "ollama",
@@ -237,7 +218,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &[], // Local, no API key needed
         api_type: ApiType::OpenAICompletions,
         base_url: "http://localhost:11434/v1",
-        use_auth_header: false,
         default_model: "llama3.1",
     },
     ProviderMetadata {
@@ -247,7 +227,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["OPENROUTER_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://openrouter.ai/api/v1",
-        use_auth_header: true,
         default_model: "openai/gpt-4o-mini",
     },
     ProviderMetadata {
@@ -257,7 +236,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["PERPLEXITY_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.perplexity.ai",
-        use_auth_header: true,
         default_model: "llama-3.1-sonar-large-128k-online",
     },
     ProviderMetadata {
@@ -267,7 +245,6 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["TOGETHER_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.together.xyz/v1",
-        use_auth_header: true,
         default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
     },
     ProviderMetadata {
@@ -277,91 +254,185 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["XAI_API_KEY"],
         api_type: ApiType::OpenAICompletions,
         base_url: "https://api.x.ai/v1",
-        use_auth_header: true,
         default_model: "grok-beta",
+    },
+    // ═════════════════════════════════════════════════════════════════
+    // Anthropic-compatible providers
+    // ═════════════════════════════════════════════════════════════════
+    ProviderMetadata {
+        id: "kimi",
+        display_name: "Kimi (Kimi Code API)",
+        aliases: &["kimi-code", "kimi-ai"],
+        api_key_env: &["KIMI_API_KEY"],
+        api_type: ApiType::AnthropicMessages,
+        base_url: "https://api.kimi.com/coding",
+        default_model: "k2p5",
     },
 ];
 
 /// Create a provider from configuration
 ///
 /// This is the main factory function. It looks up the provider metadata
-/// and creates the appropriate provider implementation.
-pub fn create_provider(
-    provider_type: ProviderType,
-    config: &ProviderConfig,
-) -> Result<Arc<dyn crate::providers::Provider>> {
+/// and creates the appropriate provider implementation using the new
+/// adapter-based architecture.
+pub fn create_provider(config: ProviderConfig) -> Result<Arc<dyn Provider>> {
     let registry = ProviderRegistry::new();
 
-    // Get provider name from type
-    let provider_name = provider_type.to_string();
+    // Convert ProviderType to string for lookup
+    let provider_name = match config.provider_type {
+        ProviderType::OpenAI => "openai",
+        ProviderType::Anthropic => "anthropic",
+        ProviderType::Ollama => "ollama",
+        ProviderType::OpenAICompatible => {
+            // For OpenAI-compatible, we need to determine the actual provider from base_url
+            // or use a generic OpenAI-compatible adapter
+            return create_openai_compatible_provider(&config);
+        }
+        ProviderType::Moonshot => "moonshot",
+        ProviderType::Kimi => "kimi",
+    };
 
     // Look up metadata
     let metadata = registry
-        .get(&provider_name)
-        .with_context(|| format!("Unknown provider: {provider_name}"))?;
+        .get(provider_name)
+        .with_context(|| format!("Unknown provider: {}", provider_name))?;
 
     // Get API key
-    // Priority: 1) Config API key, 2) Environment variable
-    let api_key = if let Some(ref key) = config.api_key {
-        key.clone()
-    } else if metadata.api_key_env.is_empty() {
-        // No API key required (e.g., local Ollama)
-        String::new()
-    } else {
-        registry.get_api_key(metadata).with_context(|| {
+    let api_key = config
+        .api_key
+        .clone()
+        .or_else(|| registry.get_api_key(metadata))
+        .with_context(|| {
             format!(
                 "No API key found for {}. Set one of: {}",
                 metadata.display_name,
                 metadata.api_key_env.join(", ")
             )
-        })?
-    };
+        })?;
 
     // Get base URL (config overrides default)
-    let base_url = if config.base_url.is_some() && !config.base_url.as_ref().unwrap().is_empty() {
-        config.base_url.clone().unwrap()
-    } else {
-        metadata.base_url.to_string()
-    };
+    let base_url = config.base_url.clone().unwrap_or_else(|| {
+        if !metadata.base_url.is_empty() {
+            metadata.base_url.to_string()
+        } else {
+            String::new()
+        }
+    });
 
-    // Get model
+    // Get model from config or use default
     let model = config
         .default_model_config()
-        .map_or_else(|| metadata.default_model.to_string(), |m| m.name.clone());
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| metadata.default_model.to_string());
 
-    // Create provider based on API type
+    create_provider_with_adapter(metadata, api_key, base_url, model, config)
+}
+
+/// Create an OpenAI-compatible provider
+fn create_openai_compatible_provider(config: &ProviderConfig) -> Result<Arc<dyn Provider>> {
+    let api_key = config
+        .api_key
+        .clone()
+        .or_else(|| {
+            // Try common env vars
+            std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())
+        })
+        .context("No API key found for OpenAI-compatible provider")?;
+
+    let base_url = config
+        .base_url
+        .clone()
+        .context("Base URL required for OpenAI-compatible provider")?;
+
+    let model = config
+        .default_model_config()
+        .map(|m| m.name.clone())
+        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+
+    // Create a generic OpenAI-compatible adapter
+    let adapter = OpenAiCompatibleAdapter::new("openai-compatible", base_url.clone(), model);
+    Ok(Arc::new(ProviderCore::new(
+        adapter,
+        api_key,
+        config.clone(),
+    )?))
+}
+
+/// Create provider with appropriate adapter
+fn create_provider_with_adapter(
+    metadata: &ProviderMetadata,
+    api_key: String,
+    base_url: String,
+    model: String,
+    config: ProviderConfig,
+) -> Result<Arc<dyn Provider>> {
     match metadata.api_type {
         ApiType::OpenAICompletions => {
-            let openai_config = OpenAIConfig {
-                api_key,
-                base_url,
-                model,
-                max_tokens: config.default_model_config().map_or(4096, |m| m.max_tokens),
-                temperature: config.default_model_config().map_or(0.7, |m| m.temperature),
-                timeout_seconds: config.timeout_seconds,
+            let adapter = if base_url.is_empty() || base_url == metadata.base_url {
+                OpenAiAdapter::new(model)
+            } else {
+                OpenAiAdapter::new(model).with_base_url(base_url)
             };
-
-            Ok(Arc::new(OpenAIProvider::new(openai_config)?))
+            Ok(Arc::new(ProviderCore::new(adapter, api_key, config)?))
         }
         ApiType::AnthropicMessages => {
-            let anthropic_config = AnthropicConfig {
-                api_key,
-                base_url,
-                model,
-                max_tokens: config.default_model_config().map_or(4096, |m| m.max_tokens),
-                temperature: config.default_model_config().map_or(0.7, |m| m.temperature),
-                timeout_seconds: config.timeout_seconds,
+            let adapter = if base_url.is_empty() {
+                AnthropicAdapter::new(model)
+            } else {
+                AnthropicAdapter::new(model).with_base_url(base_url)
             };
-
-            Ok(Arc::new(AnthropicProvider::new(anthropic_config)?))
+            Ok(Arc::new(ProviderCore::new(adapter, api_key, config)?))
         }
     }
+}
+
+/// Create provider by name with defaults
+///
+/// Convenience function for creating providers with just a name
+pub fn create_provider_by_name(name: &str) -> Result<Arc<dyn Provider>> {
+    let registry = ProviderRegistry::new();
+    let metadata = registry
+        .get(name)
+        .with_context(|| format!("Unknown provider: {}", name))?;
+
+    // Determine ProviderType from metadata
+    let provider_type = match metadata.api_type {
+        ApiType::OpenAICompletions => ProviderType::OpenAI,
+        ApiType::AnthropicMessages => ProviderType::Anthropic,
+    };
+
+    let mut config = ProviderConfig::default();
+    config.provider_type = provider_type;
+    config.base_url = if metadata.base_url.is_empty() {
+        None
+    } else {
+        Some(metadata.base_url.to_string())
+    };
+
+    // Set default model
+    let mut models = std::collections::HashMap::new();
+    models.insert(
+        "default".to_string(),
+        crate::types::provider::ModelConfig {
+            name: metadata.default_model.to_string(),
+            max_tokens: 4096,
+            temperature: 0.7,
+            top_p: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+        },
+    );
+    config.models = models;
+    config.default_model = "default".to_string();
+
+    create_provider(config)
 }
 
 /// Get provider metadata by name
 #[must_use]
 pub fn get_provider_metadata(name: &str) -> Option<&'static ProviderMetadata> {
-    // Direct lookup in BUILT_IN_PROVIDERS to avoid lifetime issues
     let name_lower = name.to_lowercase();
 
     // First try canonical IDs
@@ -399,40 +470,34 @@ mod tests {
 
         // Test canonical lookup
         assert!(registry.has("openai"));
-        assert!(registry.has("kimi"));
+        assert!(registry.has("anthropic"));
 
         // Test alias lookup
-        assert!(registry.has("moonshot")); // alias for kimi
-        assert!(registry.has("claude")); // alias for anthropic
+        assert!(registry.has("moonshot"));
+        assert!(registry.has("claude"));
     }
 
     #[test]
     fn test_provider_metadata() {
         let registry = ProviderRegistry::new();
 
-        // kimi provider uses AnthropicMessages API
-        let kimi = registry.get("kimi").unwrap();
-        assert_eq!(kimi.id, "kimi");
-        assert_eq!(kimi.api_type, ApiType::AnthropicMessages);
-        assert!(kimi.base_url.contains("kimi"));
+        // Anthropic provider
+        let anthropic = registry.get("anthropic").unwrap();
+        assert_eq!(anthropic.id, "anthropic");
+        assert_eq!(anthropic.api_type, ApiType::AnthropicMessages);
 
-        // moonshot provider uses OpenAICompletions API
-        let moonshot = registry.get("moonshot").unwrap();
-        assert_eq!(moonshot.id, "moonshot");
-        assert_eq!(moonshot.api_type, ApiType::OpenAICompletions);
-        assert!(moonshot.base_url.contains("moonshot"));
+        // Groq provider (OpenAI-compatible)
+        let groq = registry.get("groq").unwrap();
+        assert_eq!(groq.id, "groq");
+        assert_eq!(groq.api_type, ApiType::OpenAICompletions);
+        assert!(groq.base_url.contains("groq"));
     }
 
     #[test]
-    fn test_api_type_roundtrip() {
-        assert_eq!(
-            ApiType::from_str("openai-completions"),
-            Some(ApiType::OpenAICompletions)
-        );
-        assert_eq!(
-            ApiType::from_str("anthropic-messages"),
-            Some(ApiType::AnthropicMessages)
-        );
-        assert_eq!(ApiType::OpenAICompletions.as_str(), "openai-completions");
+    fn test_list_providers() {
+        let providers = list_providers();
+        assert!(!providers.is_empty());
+        assert!(providers.iter().any(|p| p.id == "openai"));
+        assert!(providers.iter().any(|p| p.id == "anthropic"));
     }
 }

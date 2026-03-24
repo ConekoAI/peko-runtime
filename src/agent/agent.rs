@@ -961,7 +961,20 @@ impl Agent {
             _ => ProviderType::OpenAICompatible,
         };
 
-        match create_provider(provider_type, &config.provider) {
+        // Create provider config from the old config format
+        let provider_config = crate::types::provider::ProviderConfig {
+            provider_type,
+            api_key: config.provider.api_key.clone(),
+            api_key_env: config.provider.api_key_env.clone(),
+            base_url: config.provider.base_url.clone(),
+            default_model: config.provider.default_model.clone(),
+            models: config.provider.models.clone(),
+            timeout_seconds: config.provider.timeout_seconds,
+            max_retries: config.provider.max_retries,
+            retry_delay_ms: config.provider.retry_delay_ms,
+        };
+
+        match create_provider(provider_config) {
             Ok(provider) => Ok(Some(provider)),
             Err(e) => {
                 warn!("Failed to create provider: {}", e);

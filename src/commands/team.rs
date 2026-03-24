@@ -7,7 +7,9 @@
 //! This module only handles CLI argument parsing and output formatting.
 
 use crate::commands::GlobalPaths;
-use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMoveResult};
+use crate::common::types::team::{
+    TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMoveResult,
+};
 use anyhow::Result;
 use clap::Subcommand;
 
@@ -129,7 +131,11 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             Ok(())
         }
 
-        TeamCommands::Move { old_name, new_name, force } => {
+        TeamCommands::Move {
+            old_name,
+            new_name,
+            force,
+        } => {
             // Get team info for confirmation
             let team_info = match service.get_team(&old_name).await? {
                 Some(info) => info,
@@ -319,7 +325,10 @@ fn render_team_moved(result: &TeamMoveResult, json: bool) {
             result.old_name, result.new_name, result.agents_moved
         );
     } else {
-        println!("✅ Moved team '{}' to '{}'", result.old_name, result.new_name);
+        println!(
+            "✅ Moved team '{}' to '{}'",
+            result.old_name, result.new_name
+        );
         if result.agents_moved > 0 {
             println!("   Moved {} agent(s)", result.agents_moved);
         }
@@ -350,7 +359,10 @@ fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
 }
 
 fn confirm_team_move(old_name: &str, new_name: &str, agent_count: usize) -> Result<bool> {
-    println!("⚠️  This will rename team '{}' to '{}'.", old_name, new_name);
+    println!(
+        "⚠️  This will rename team '{}' to '{}'.",
+        old_name, new_name
+    );
     if agent_count > 0 {
         println!(
             "   It contains {} agent(s) that will be moved.",

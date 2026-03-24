@@ -20,12 +20,12 @@
 use crate::common::paths::PathResolver;
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
-use crate::session::events::{
-    generate_event_id, generate_message_id, AssistantMessageEvent, EventEnvelope, MessageEvent,
-    MessageSource, SessionEvent, SystemMessageEvent, ThinkingEvent, TokenUsage as EventTokenUsage,
-    ToolResultEvent, UserMessageEvent,
-};
 use crate::providers::TokenUsage;
+use crate::session::events::{
+    generate_event_id, generate_message_id, AssistantMessageEvent, EventEnvelope, LlmMessageEvent,
+    MessageEvent, MessageSource, SessionEvent, SystemMessageEvent, ThinkingEvent,
+    TokenUsage as EventTokenUsage, ToolCallBlock, ToolResultEvent, UserMessageEvent,
+};
 use crate::session::index::SessionEntry;
 use crate::session::jsonl::SessionStorage;
 use crate::session::types::Peer;
@@ -710,6 +710,136 @@ impl UnifiedSession {
     }
 
     // ============================================================
+    // LLM-Native Message Operations (New Format)
+    // ============================================================
+
+    /// Add an LLM-native message with full content block fidelity
+    ///
+    /// This is the preferred method for storing messages in the new LLM-native format,
+    /// which preserves complete content blocks (text, tool calls, thinking, images)
+    /// for accurate session resumption and audit trails.
+    ///
+    /// # Arguments
+    /// * `role` - Message role ("system", "user", "assistant", "tool")
+    /// * `content_blocks` - Content blocks in native format
+    /// * `tool_calls` - Optional tool calls (for assistant messages)
+    /// * `thinking` - Optional thinking content (for reasoning models)
+    /// * `usage` - Optional token usage statistics
+    pub async fn add_llm_message(
+        &mut self,
+        role: impl Into<String>,
+        content_blocks: Vec<ContentBlock>,
+        tool_calls: Option<Vec<ToolCallBlock>>,
+        thinking: Option<crate::session::events::ThinkingBlock>,
+        usage: Option<TokenUsage>,
+    ) -> Result<()> {
+        let role_str = role.into();
+        let msg_id = generate_message_id();
+
+        // Extract token usage before moving usage
+        let usage_clone = usage.as_ref().map(|u| EventTokenUsage {
+            input_tokens: u.input as u32,
+            output_tokens: u.output as u32,
+            total_tokens: u.total as u32,
+        });
+
+        // Update token usage if provided
+        if let Some(ref u) = usage {
+            self.record_usage(u.input as usize, u.output as usize);
+        }
+
+        // Get provider/model info
+        let provider = self.current_provider.clone().unwrap_or_default();
+        let model = self.current_model.clone().unwrap_or_default();
+
+        let event = SessionEvent::LlmMessage(LlmMessageEvent {
+            envelope: EventEnvelope {
+                id: generate_event_id(),
+                ts: Utc::now(),
+                session_id: Some(self.id.clone()),
+                seq: None,
+            },
+            message_id: msg_id.clone(),
+            role: role_str,
+            content_blocks,
+            tool_calls,
+            tool_call_id: None,
+            thinking,
+            provider,
+            model,
+            usage: usage_clone,
+        });
+
+        self.storage.append_event(&self.id, &event).await?;
+        self.last_message_id = Some(msg_id);
+        self.message_count += 1;
+        Ok(())
+    }
+
+    /// Add a user message in LLM-native format
+    ///
+    /// Convenience wrapper around `add_llm_message` for user messages.
+    pub async fn add_user_native(&mut self, text: impl Into<String>) -> Result<()> {
+        self.add_llm_message(
+            "user",
+            vec![ContentBlock::Text { text: text.into() }],
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Add an assistant message in LLM-native format
+    ///
+    /// Convenience wrapper around `add_llm_message` for assistant messages.
+    pub async fn add_assistant_native(
+        &mut self,
+        text: impl Into<String>,
+        tool_calls: Option<Vec<ToolCallBlock>>,
+        thinking: Option<String>,
+        usage: Option<TokenUsage>,
+    ) -> Result<()> {
+        let thinking_block = thinking.map(|t| crate::session::events::ThinkingBlock {
+            text: t,
+            signature: None,
+        });
+        self.add_llm_message(
+            "assistant",
+            vec![ContentBlock::Text { text: text.into() }],
+            tool_calls,
+            thinking_block,
+            usage,
+        )
+        .await
+    }
+
+    /// Add a tool result in LLM-native format
+    ///
+    /// Stores tool results as content blocks for proper reconstruction.
+    pub async fn add_tool_result_native(
+        &mut self,
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+        result: impl Into<String>,
+        is_error: bool,
+    ) -> Result<()> {
+        let tool_call_id_str = tool_call_id.into();
+        let tool_name_str = tool_name.into();
+        let result_str = result.into();
+
+        let content_blocks = vec![ContentBlock::ToolResult {
+            tool_call_id: tool_call_id_str.clone(),
+            name: tool_name_str,
+            content: vec![ContentBlock::Text { text: result_str }],
+            is_error,
+        }];
+
+        self.add_llm_message("tool", content_blocks, None, None, None)
+            .await
+    }
+
+    // ============================================================
     // History Operations
     // ============================================================
 
@@ -763,6 +893,70 @@ impl UnifiedSession {
                     });
                 }
                 // Session headers and other entries don't contribute to chat history
+                _ => {}
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// Load conversation history in LLM-native format
+    ///
+    /// Returns messages with full content block fidelity, preserving tool calls,
+    /// thinking blocks, and other structured content. This is the preferred
+    /// method for session resumption and provider switching.
+    ///
+    /// # Returns
+    /// Vector of ChatMessage with complete ContentBlock information
+    pub async fn load_history_native(&self) -> Result<Vec<ChatMessage>> {
+        use crate::providers::MessageRole;
+
+        let events = self.storage.load_events(&self.id).await?;
+        let mut messages = Vec::new();
+
+        for event in events {
+            match event {
+                SessionEvent::LlmMessage(e) => {
+                    let role = match e.role.as_str() {
+                        "system" => MessageRole::System,
+                        "user" => MessageRole::User,
+                        "assistant" => MessageRole::Assistant,
+                        "tool" => MessageRole::Tool,
+                        _ => MessageRole::User,
+                    };
+
+                    messages.push(ChatMessage {
+                        role,
+                        content: e.content_blocks,
+                        tool_calls: None,
+                        tool_call_id: e.tool_call_id,
+                    });
+                }
+                // Fall back to legacy formats
+                SessionEvent::UserMessage(e) => {
+                    messages.push(ChatMessage {
+                        role: MessageRole::User,
+                        content: vec![ContentBlock::Text { text: e.content }],
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                SessionEvent::AssistantMessage(e) => {
+                    messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: vec![ContentBlock::Text { text: e.content }],
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+                SessionEvent::SystemMessage(e) => {
+                    messages.push(ChatMessage {
+                        role: MessageRole::System,
+                        content: vec![ContentBlock::Text { text: e.content }],
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
                 _ => {}
             }
         }
@@ -999,7 +1193,10 @@ mod tests {
             .await
             .unwrap();
         session.add_user("Hello!").await.unwrap();
-        session.add_assistant("Hi there!", None, None).await.unwrap();
+        session
+            .add_assistant("Hi there!", None, None)
+            .await
+            .unwrap();
 
         assert_eq!(session.message_count, 3);
 

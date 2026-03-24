@@ -169,10 +169,10 @@ impl AgenticLoopV4 {
             tool_call_id: None,
         });
 
-        // Add user message to session
+        // Add user message to session (using LLM-native format)
         {
             let mut s = session.write().await;
-            s.add_user(prompt).await?;
+            s.add_user_native(prompt).await?;
         }
 
         // Continue with the rest of the run logic
@@ -459,8 +459,8 @@ impl AgenticLoopV4 {
                 };
                 messages.push(assistant_msg.clone());
 
-                // Add to session with original tool call IDs
-                let tool_call_blocks: Vec<ContentBlock> = response
+                // Add to session with original tool call IDs (using LLM-native format)
+                let tool_call_blocks: Vec<crate::session::events::ToolCallBlock> = response
                     .tool_calls
                     .iter()
                     .filter_map(|tc| {
@@ -470,7 +470,7 @@ impl AgenticLoopV4 {
                             arguments,
                         } = tc
                         {
-                            Some(ContentBlock::ToolCall {
+                            Some(crate::session::events::ToolCallBlock {
                                 id: id.clone(),
                                 name: name.clone(),
                                 arguments: arguments.clone(),
@@ -482,9 +482,10 @@ impl AgenticLoopV4 {
                     .collect();
                 {
                     let mut s = session.write().await;
-                    s.add_assistant_with_tool_calls(
+                    s.add_assistant_native(
                         &assistant_text,
-                        tool_call_blocks,
+                        Some(tool_call_blocks),
+                        None, // thinking
                         Some(response.usage.clone()),
                     )
                     .await?;
@@ -603,10 +604,10 @@ impl AgenticLoopV4 {
             let final_text = text_parts.join(" ");
             info!("Final answer received after {} iterations", iteration);
 
-            // Add final answer to session
+            // Add final answer to session (using LLM-native format)
             {
                 let mut s = session.write().await;
-                s.add_assistant(&final_text, None, Some(response.usage.clone()))
+                s.add_assistant_native(&final_text, None, None, Some(response.usage.clone()))
                     .await?;
             }
 

@@ -281,7 +281,7 @@ pub struct SystemEvent {
 }
 
 /// system.message - A system prompt message
-/// 
+///
 /// This is the new unified format for system messages, replacing the legacy
 /// format that used SessionEntry::Message with role="system".
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,6 +313,58 @@ pub struct MessageEvent {
     /// Token usage (for assistant messages)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub usage: Option<TokenUsage>,
+}
+
+/// LLM-native message event - Full fidelity storage
+///
+/// This event type stores messages with their complete content blocks
+/// (text, tool calls, thinking, images) in native format, enabling:
+/// - Accurate session resumption across providers
+/// - Complete audit trails
+/// - Exact replay for testing
+/// - Provider-switching without format loss
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmMessageEvent {
+    #[serde(flatten)]
+    pub envelope: EventEnvelope,
+    /// Message ID (UUID)
+    pub message_id: String,
+    /// Message role: system, user, assistant, tool
+    pub role: String,
+    /// Content blocks in native format
+    pub content_blocks: Vec<crate::types::message::ContentBlock>,
+    /// Tool calls (for assistant messages with tool_use blocks)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_calls: Option<Vec<ToolCallBlock>>,
+    /// Tool call ID (for tool messages)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_call_id: Option<String>,
+    /// Thinking/reasoning content (for reasoning models)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub thinking: Option<ThinkingBlock>,
+    /// Provider that generated this message
+    pub provider: String,
+    /// Model used
+    pub model: String,
+    /// Token usage for this turn
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub usage: Option<TokenUsage>,
+}
+
+/// Tool call block for LLM-native storage
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallBlock {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Thinking block for reasoning models
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingBlock {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub signature: Option<String>,
 }
 
 /// Session end reason
@@ -358,6 +410,9 @@ pub enum SessionEvent {
     /// Unified message format (LLM-native, preferred for new code)
     #[serde(rename = "message")]
     Message(MessageEvent),
+    /// LLM-native message with full content block fidelity
+    #[serde(rename = "llm.message")]
+    LlmMessage(LlmMessageEvent),
     #[serde(rename = "thinking")]
     Thinking(ThinkingEvent),
     #[serde(rename = "tool.call")]
@@ -389,6 +444,7 @@ impl SessionEvent {
             SessionEvent::AssistantMessage(e) => &e.envelope,
             SessionEvent::SystemMessage(e) => &e.envelope,
             SessionEvent::Message(e) => &e.envelope,
+            SessionEvent::LlmMessage(e) => &e.envelope,
             SessionEvent::Thinking(e) => &e.envelope,
             SessionEvent::ToolCall(e) => &e.envelope,
             SessionEvent::ToolResult(e) => &e.envelope,
@@ -410,6 +466,7 @@ impl SessionEvent {
             SessionEvent::AssistantMessage(_) => "assistant.message",
             SessionEvent::SystemMessage(_) => "system.message",
             SessionEvent::Message(_) => "message",
+            SessionEvent::LlmMessage(_) => "llm.message",
             SessionEvent::Thinking(_) => "thinking",
             SessionEvent::ToolCall(_) => "tool.call",
             SessionEvent::ToolResult(_) => "tool.result",
@@ -444,7 +501,15 @@ impl SessionEvent {
 
 /// Generate a new event ID (UUID-based)
 pub fn generate_event_id() -> String {
-    format!("evt_{}", uuid::Uuid::new_v4().to_string().replace('-', "").chars().take(8).collect::<String>())
+    format!(
+        "evt_{}",
+        uuid::Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(8)
+            .collect::<String>()
+    )
 }
 
 /// Generate a new message ID

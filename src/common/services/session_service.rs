@@ -551,6 +551,23 @@ impl SessionService {
                 content: e.content.clone(),
                 timestamp: e.envelope.ts.to_rfc3339(),
             },
+            SessionEvent::LlmMessage(e) => {
+                // Extract text content from content blocks
+                let content: String = e
+                    .content_blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        crate::types::message::ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                HistoryEvent::Message {
+                    role: e.role.clone(),
+                    content,
+                    timestamp: e.envelope.ts.to_rfc3339(),
+                }
+            }
             SessionEvent::SpawnRequest(_)
             | SessionEvent::SpawnResult(_)
             | SessionEvent::A2aSent(_)

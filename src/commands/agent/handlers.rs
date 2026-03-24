@@ -180,9 +180,7 @@ pub async fn handle_agent_remove(
     if json {
         println!(
             "{{\"success\": true, \"name\": \"{}\", \"team\": \"{}\", \"purged\": {}}}",
-            result.name,
-            result.team,
-            purge
+            result.name, result.team, purge
         );
     } else {
         if purge {

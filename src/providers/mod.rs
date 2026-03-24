@@ -1,42 +1,48 @@
 //! LLM Providers
 //!
-//! Provider architecture:
-//! - **Base implementations**: OpenAI-compatible and Anthropic handle actual API calls
-//! - **Registry**: Maps provider names to metadata (URL, auth, etc.)
-//! - **Factory**: Routes to appropriate base implementation
+//! Provider architecture with clean separation of concerns:
+//! - **Types** (`types`): Unified internal representation
+//! - **Transport** (`transport`): HTTP client and SSE parsing
+//! - **Adapters** (`adapters`): Provider-specific API format conversion
+//! - **Core** (`core`): Unified provider implementation
+//! - **Registry** (`registry`): Provider metadata and factory
 //!
-//! This means adding a new provider = adding a registry entry,
-//! not a new file. 90% of providers are OpenAI-compatible.
+//! Adding a new provider:
+//! 1. If OpenAI-compatible: Add entry to registry with base URL
+//! 2. If unique API: Implement `ApiAdapter` trait
 
-pub mod anthropic;
-pub mod openai;
-pub mod openai_compatible;
+pub mod adapters;
+pub mod core;
 pub mod registry;
-pub mod sse;
-pub mod traits;
+pub mod transport;
+pub mod types;
 
-pub mod moonshot;
-
-// Legacy provider (deprecated, will be removed)
-#[deprecated(
-    since = "0.9.0",
-    note = "Use AnthropicProvider or OpenAICompatibleProvider::moonshot() instead"
-)]
-pub mod kimi_code;
-
-pub use anthropic::{AnthropicConfig, AnthropicProvider};
-pub use openai::{OpenAIConfig, OpenAIProvider};
-pub use openai_compatible::{OpenAICompatibleConfig, OpenAICompatibleProvider};
+// Re-export commonly used types from new architecture
+pub use adapters::{AnthropicAdapter, ApiAdapter, OpenAiAdapter, OpenAiCompatibleAdapter};
+pub use core::ProviderCore;
 pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
-pub use sse::{parse_sse_line, SseEvent, SseParser};
-pub use traits::{
-    ChatMessage, ChatOptions, ChatResponse, MessageRole, Provider, StopReason, StreamEvent,
-    TokenUsage, ToolDefinition,
+pub use transport::{AuthConfig, HttpClient, SseParser};
+pub use types::{
+    BlockType, ChatOptions, ChatResponse, ContentBlock, ContentBlockId, ContentDelta, Message,
+    MessageRole, ProviderConfig, StopReason, StreamEvent, ThinkingBlock, TokenUsage, ToolCallBlock,
+    ToolDefinition,
 };
 
-// Backward compatibility: KimiProvider is now MoonshotProvider
-#[deprecated(
-    since = "0.9.0",
-    note = "Use MoonshotProvider or OpenAICompatibleProvider::moonshot() instead"
-)]
-pub type KimiProvider = OpenAICompatibleProvider;
+// Legacy trait imports for backward compatibility during migration
+pub use crate::providers::traits::{
+    ChatMessage, ChatOptions as LegacyChatOptions, ChatResponse as LegacyChatResponse,
+    MessageRole as LegacyMessageRole, Provider, StopReason as LegacyStopReason,
+    StreamEvent as LegacyStreamEvent, TokenUsage as LegacyTokenUsage,
+    ToolDefinition as LegacyToolDefinition,
+};
+
+// Keep legacy traits module for compatibility
+pub mod traits;
+
+// Re-export legacy providers that haven't been migrated yet
+// These will be removed once fully migrated to new architecture
+pub use crate::providers::traits::{
+    ChatMessage as ProviderChatMessage, ChatOptions as ProviderChatOptions,
+    ChatResponse as ProviderChatResponse, TokenUsage as ProviderTokenUsage,
+    ToolDefinition as ProviderToolDefinition,
+};

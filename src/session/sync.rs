@@ -318,9 +318,9 @@ mod tests {
         let user_event = SessionEvent::UserMessage(UserMessageEvent {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
-                session_id: "parent_sess".to_string(),
+                session_id: Some("parent_sess".to_string()),
                 ts: Utc::now(),
-                seq: 2,
+                seq: Some(2),
             },
             message_id: "msg_001".to_string(),
             content: "Hello".to_string(),

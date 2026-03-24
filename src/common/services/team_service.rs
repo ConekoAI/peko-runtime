@@ -5,7 +5,9 @@
 
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
-use crate::common::types::team::{TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMetadata, TeamMoveResult};
+use crate::common::types::team::{
+    TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMetadata, TeamMoveResult,
+};
 use crate::types::agent::AgentConfig;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
