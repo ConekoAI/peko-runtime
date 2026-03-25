@@ -137,6 +137,13 @@ impl AgenticLoopV4 {
                     tool_call_id: None,
                 }];
                 msgs.extend(h);
+
+                // Add system prompt to session
+                {
+                    let mut s = session.write().await;
+                    s.add_system(&self.system_prompt).await?;
+                }
+
                 msgs
             }
         } else {
@@ -793,6 +800,13 @@ impl AgenticLoopV4 {
                     tool_call_id: None,
                 }];
                 msgs.extend(h);
+
+                // Add system prompt to session
+                {
+                    let mut s = session.write().await;
+                    s.add_system(&self.system_prompt).await?;
+                }
+
                 msgs
             }
         } else {

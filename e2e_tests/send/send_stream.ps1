@@ -50,7 +50,15 @@ Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # send a message to the agent (creates first session)
 Write-Host "`nSending first message..." -ForegroundColor Cyan
-pekobot send $agentName "what's the project at D:\Workplace\pekobot\pekobot\ about? give me a brief overview." 2>&1
+pekobot send $agentName "Time-Based Motion Problem
+
+A runner decides to run a number of kilometers equal to the day of the month (today’s date). They run at a constant speed of 10 km/h.
+
+Questions:
+
+How many kilometers do they run today?
+How long (in hours and minutes) does it take them to finish the run?
+If they burn 60 kcal per kilometer, how many calories do they burn in total?" 2>&1
 
 # Get session id
 $jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
