@@ -5,8 +5,11 @@
 //!
 //! Per ADR-013, the CLI is fully non-interactive. Interactive chat has been
 //! moved to the TUI (pekobot-tui) and Web UI.
+//!
+//! Per ADR-015, this channel supports both blocking and streaming modes
+//! through the unified EventStream interface.
 
-use super::{Channel, StreamingConfig};
+use super::{Channel, ChannelOutput, EventStream, StreamingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use tracing::{info, warn};
@@ -14,12 +17,24 @@ use tracing::{info, warn};
 use crate::session::context::SessionContext;
 use crate::session::types::{ChannelType, Peer};
 
+/// CLI channel operating mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CliMode {
+    /// Collect output and return final result (default for scripts)
+    #[default]
+    Blocking,
+    /// Print tokens as they arrive (for interactive use)
+    Streaming,
+}
+
 /// Command line interface channel
 ///
 /// Used for non-interactive message sending via the `pekobot send` command.
+/// Supports both blocking (default) and streaming modes per ADR-015.
 pub struct CliChannel {
     name: String,
     streaming_config: StreamingConfig,
+    mode: CliMode,
 }
 
 impl CliChannel {
@@ -33,7 +48,19 @@ impl CliChannel {
         Self {
             name: name.into(),
             streaming_config,
+            mode: CliMode::Blocking,
         }
+    }
+
+    /// Set the operating mode (blocking or streaming)
+    pub fn with_mode(mut self, mode: CliMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Get the current mode
+    pub fn mode(&self) -> CliMode {
+        self.mode
     }
 
     /// Print error
@@ -60,6 +87,162 @@ impl Channel for CliChannel {
 
     fn streaming_config(&self) -> StreamingConfig {
         self.streaming_config.clone()
+    }
+
+    /// Process event stream according to CLI mode
+    ///
+    /// - Blocking mode: Collect all events and return final output
+    /// - Streaming mode: Print tokens as they arrive for real-time feedback
+    async fn process_stream(&self, event_stream: EventStream) -> Result<ChannelOutput> {
+        match self.mode {
+            CliMode::Blocking => {
+                // Use default implementation: collect events into output
+                self.process_stream_blocking(event_stream).await
+            }
+            CliMode::Streaming => {
+                // Stream tokens to stdout in real-time
+                self.process_stream_streaming(event_stream).await
+            }
+        }
+    }
+}
+
+impl CliChannel {
+    /// Blocking mode: Collect events into ChannelOutput
+    async fn process_stream_blocking(&self, event_stream: EventStream) -> Result<ChannelOutput> {
+        use crate::engine::{AgenticEvent, LifecyclePhase};
+
+        let mut output = ChannelOutput::new(&event_stream.session_id);
+        output.is_new_session = event_stream.is_new_session;
+        
+        let mut event_rx = event_stream.receiver;
+        let mut final_text = String::new();
+
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                AgenticEvent::AssistantText {
+                    text,
+                    is_interstitial: false,
+                    ..
+                } => {
+                    final_text.push_str(&text);
+                }
+                AgenticEvent::AssistantDelta { text, .. } => {
+                    final_text.push_str(&text);
+                }
+                AgenticEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    ..
+                } => {
+                    output.usage.input = prompt_tokens as u64;
+                    output.usage.output = completion_tokens as u64;
+                    output.usage.total = total_tokens as u64;
+                }
+                AgenticEvent::Lifecycle { phase, error, .. } => {
+                    match phase {
+                        LifecyclePhase::End => break,
+                        LifecyclePhase::Error => {
+                            output.success = false;
+                            output.error = error;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Format output with agent name prefix (consistent with current CLI)
+        output.final_text = format!("{}: {}", self.name, final_text);
+        Ok(output)
+    }
+
+    /// Streaming mode: Print tokens as they arrive
+    async fn process_stream_streaming(&self, event_stream: EventStream) -> Result<ChannelOutput> {
+        use crate::engine::{AgenticEvent, ChannelAction, EventProcessor, LifecyclePhase};
+
+        let mut output = ChannelOutput::new(&event_stream.session_id);
+        output.is_new_session = event_stream.is_new_session;
+        
+        let mut event_rx = event_stream.receiver;
+        let mut processor = EventProcessor::for_agent(&self.name);
+        let mut final_answer = String::new();
+        let mut has_started_line = false;
+
+        while let Some(event) = event_rx.recv().await {
+            // Process through EventProcessor for proper formatting
+            let actions = processor.process(&event);
+
+            for action in actions {
+                match action {
+                    ChannelAction::StartTurn(name) => {
+                        if !has_started_line {
+                            print!("\n{name}: ");
+                            has_started_line = true;
+                        }
+                    }
+                    ChannelAction::Print(text) => {
+                        print!("{text}");
+                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    }
+                    ChannelAction::Println(text) => {
+                        if !text.is_empty() {
+                            println!("{text}");
+                            final_answer = text;
+                        } else {
+                            println!();
+                        }
+                        has_started_line = false;
+                    }
+                    ChannelAction::Flush => {
+                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    }
+                    ChannelAction::EndTurn => {
+                        has_started_line = false;
+                    }
+                    ChannelAction::Status(_) => {
+                        // CLI doesn't show status messages inline
+                    }
+                }
+            }
+
+            // Collect usage info
+            if let AgenticEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                ..
+            } = &event
+            {
+                output.usage.input = *prompt_tokens as u64;
+                output.usage.output = *completion_tokens as u64;
+                output.usage.total = *total_tokens as u64;
+            }
+
+            // Handle lifecycle
+            if let AgenticEvent::Lifecycle { phase, error, .. } = &event {
+                match phase {
+                    LifecyclePhase::End => {
+                        if has_started_line {
+                            println!();
+                        }
+                        break;
+                    }
+                    LifecyclePhase::Error => {
+                        output.success = false;
+                        output.error = error.clone();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        output.final_text = final_answer;
+        Ok(output)
     }
 }
 

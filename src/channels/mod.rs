@@ -14,6 +14,57 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc::Receiver;
 
+/// Event stream returned by MessageService
+/// 
+/// This is the unified interface between service and presentation layers.
+/// Channels consume this stream to produce appropriate output.
+#[derive(Debug)]
+pub struct EventStream {
+    /// Receiver for agentic events
+    pub receiver: Receiver<crate::engine::AgenticEvent>,
+    /// Session ID for this execution
+    pub session_id: String,
+    /// Whether this is a new session
+    pub is_new_session: bool,
+}
+
+/// Output from channel processing
+/// 
+/// Contains the final result after processing all events.
+/// Used by blocking channels to return collected output.
+#[derive(Debug, Clone)]
+pub struct ChannelOutput {
+    /// Final text response
+    pub final_text: String,
+    /// Tool calls made during execution
+    pub tool_calls: Vec<crate::common::services::ToolCallInfo>,
+    /// Token usage statistics
+    pub usage: crate::providers::TokenUsage,
+    /// Session ID
+    pub session_id: String,
+    /// Whether this was a new session
+    pub is_new_session: bool,
+    /// Whether execution succeeded
+    pub success: bool,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
+impl ChannelOutput {
+    /// Create a new empty output
+    pub fn new(session_id: impl Into<String>) -> Self {
+        Self {
+            final_text: String::new(),
+            tool_calls: Vec::new(),
+            usage: crate::providers::TokenUsage::default(),
+            session_id: session_id.into(),
+            is_new_session: false,
+            success: true,
+            error: None,
+        }
+    }
+}
+
 /// Streaming configuration for channels
 ///
 /// Controls how streaming output is chunked and presented.
@@ -132,10 +183,70 @@ pub trait Channel: Send + Sync {
         }
         Ok(())
     }
+
+    /// Process an event stream and return collected output
+    ///
+    /// This is the unified interface for consuming agent execution events.
+    /// Channels implement this to handle presentation:
+    /// - CLI channels can stream to stdout or collect for blocking mode
+    /// - HTTP channels convert to SSE
+    /// - WebSocket channels convert to WS messages
+    ///
+    /// Default implementation collects events into ChannelOutput.
+    async fn process_stream(
+        &self,
+        event_stream: EventStream,
+    ) -> Result<ChannelOutput> {
+        use crate::engine::{AgenticEvent, LifecyclePhase};
+
+        let mut output = ChannelOutput::new(&event_stream.session_id);
+        output.is_new_session = event_stream.is_new_session;
+        
+        let mut event_rx = event_stream.receiver;
+
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                AgenticEvent::AssistantText {
+                    text,
+                    is_interstitial: false,
+                    ..
+                } => {
+                    output.final_text.push_str(&text);
+                }
+                AgenticEvent::AssistantDelta { text, .. } => {
+                    output.final_text.push_str(&text);
+                }
+                AgenticEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    ..
+                } => {
+                    output.usage.input = prompt_tokens as u64;
+                    output.usage.output = completion_tokens as u64;
+                    output.usage.total = total_tokens as u64;
+                }
+                AgenticEvent::Lifecycle { phase, error, .. } => {
+                    match phase {
+                        LifecyclePhase::End => break,
+                        LifecyclePhase::Error => {
+                            output.success = false;
+                            output.error = error;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(output)
+    }
 }
 
 // Re-exports for convenience
-pub use cli::CliChannel;
+pub use cli::{CliChannel, CliMode};
 pub use discord::{DiscordChannel, DiscordConfig};
 
 #[cfg(test)]
