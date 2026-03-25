@@ -108,6 +108,8 @@ impl SseParser {
                 }
             } else if let Some(data) = line.strip_prefix("data: ") {
                 current_data.push_str(data);
+            } else if let Some(data) = line.strip_prefix("data:") {
+                current_data.push_str(data);
             } else if line.starts_with(':') {
                 // Comment, ignore
                 debug!("SSE comment: {}", line);

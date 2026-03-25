@@ -12,6 +12,7 @@
 use super::{Channel, ChannelOutput, EventStream, StreamingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
+use std::io::Write;
 use tracing::{info, warn};
 
 use crate::session::context::SessionContext;
@@ -144,12 +145,13 @@ impl CliChannel {
                     ChannelAction::StartTurn(name) => {
                         if !has_started_line {
                             print!("\n{name}: ");
+                            std::io::stdout().flush().unwrap();
                             has_started_line = true;
                         }
                     }
                     ChannelAction::Print(text) => {
                         print!("{text}");
-                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                        std::io::stdout().flush().unwrap();
                     }
                     ChannelAction::Println(text) => {
                         if !text.is_empty() {
@@ -161,7 +163,7 @@ impl CliChannel {
                         has_started_line = false;
                     }
                     ChannelAction::Flush => {
-                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                        std::io::stdout().flush().unwrap();
                     }
                     ChannelAction::EndTurn => {
                         has_started_line = false;
@@ -250,23 +252,25 @@ pub async fn process_events(
                 ChannelAction::StartTurn(name) => {
                     if !has_started_line {
                         print!("\n{name}: ");
+                        std::io::stdout().flush().unwrap();
                         has_started_line = true;
                     }
                 }
                 ChannelAction::Print(text) => {
                     print!("{text}");
+                    std::io::stdout().flush().unwrap();
                 }
                 ChannelAction::Println(text) => {
                     if !text.is_empty() {
                         println!("{text}");
+                        final_answer = text;
                     } else {
                         println!();
                     }
-                    final_answer = text;
                     has_started_line = false;
                 }
                 ChannelAction::Flush => {
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    std::io::stdout().flush().unwrap();
                 }
                 ChannelAction::EndTurn => {
                     has_started_line = false;
@@ -366,16 +370,26 @@ pub async fn send_single_message_with_session(
     // The engine will use the same session through the Arc<RwLock<>>
     let base_session = session_ctx.hybrid.base.clone();
 
-    // Execute without LocalSet - the main.rs uses #[tokio::main] which provides a runtime
-    // execute_streaming_with_session uses spawn_local which requires LocalSet
-    // We need to create a LocalSet at the handle_agent_start level, not here
-    let event_rx = agent
-        .execute_streaming_with_session(message, base_session, history)
-        .await?;
-    let result = process_events(event_rx, &agent_name, Some(&session_ctx)).await;
-
+    // Execute with streaming - use channel to collect events
+    // Create channel for events
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(10000);
+    
+    // Execute directly - no LocalSet needed since execute_streaming_with_session
+    // doesn't use spawn_local anymore (it runs synchronously)
+    let on_event = move |event: crate::engine::AgenticEvent| {
+        let _ = event_tx.try_send(event);
+    };
+    
+    let result = agent
+        .execute_streaming_with_session(message, base_session, history, on_event)
+        .await;
+    
+    // Process events from the channel
+    let process_result = process_events(event_rx, &agent_name, Some(&session_ctx)).await;
+    
     // Note: The engine (AgenticLoopV4) already adds both user and assistant messages
     // to the session during execution, so we don't need to add them manually here.
 
-    result
+    // Return the process result (contains the collected output)
+    process_result
 }

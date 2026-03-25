@@ -186,6 +186,113 @@ impl AgenticLoopV4 {
         self.run_loop(messages, session, on_event, run_id).await
     }
 
+    /// Run the agent with streaming support, optionally resuming from an existing session.
+    ///
+    /// This is the streaming version of `run_with_resume` that uses `run_streaming_loop`
+    /// instead of `run_loop` for real-time token emission.
+    pub async fn run_streaming_with_resume(
+        &self,
+        prompt: &str,
+        on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
+        session: Arc<RwLock<UnifiedSession>>,
+        history: Option<Vec<ChatMessage>>,
+        streaming_config: crate::engine::OrchestratorConfig,
+    ) -> Result<AgenticResult> {
+        let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
+
+        let session_id = {
+            let s = session.read().await;
+            s.id.clone()
+        };
+        info!("Using session: {}", session_id);
+
+        // Emit start event
+        on_event(AgenticEvent::Lifecycle {
+            run_id: run_id.clone(),
+            phase: LifecyclePhase::Start,
+            error: None,
+        });
+
+        let session_id = {
+            let s = session.read().await;
+            s.id.clone()
+        };
+        info!(
+            "Starting v4 streaming agentic loop for agent: {} (session: {})",
+            self.agent.name(),
+            session_id
+        );
+
+        // Build messages - either from history or fresh start
+        let mut messages = if let Some(h) = history {
+            info!("Loaded {} messages from history", h.len());
+            // Check if history already has a system message at the start
+            let has_system = h
+                .first()
+                .map(|m| matches!(m.role, MessageRole::System))
+                .unwrap_or(false);
+            if has_system {
+                h
+            } else {
+                // Prepend system prompt to history
+                let mut msgs = vec![ChatMessage {
+                    role: MessageRole::System,
+                    content: vec![ContentBlock::Text {
+                        text: self.system_prompt.clone(),
+                    }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                }];
+                msgs.extend(h);
+
+                // Add system prompt to session
+                {
+                    let mut s = session.write().await;
+                    s.add_system(&self.system_prompt).await?;
+                }
+
+                msgs
+            }
+        } else {
+            // Fresh start - add system prompt
+            let msgs = vec![ChatMessage {
+                role: MessageRole::System,
+                content: vec![ContentBlock::Text {
+                    text: self.system_prompt.clone(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+            }];
+
+            // Add system prompt to session
+            {
+                let mut s = session.write().await;
+                s.add_system(&self.system_prompt).await?;
+            }
+
+            msgs
+        };
+
+        // Add user message
+        messages.push(ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        // Add user message to session
+        {
+            let mut s = session.write().await;
+            s.add_user(prompt).await?;
+        }
+
+        // Continue with the streaming run logic
+        self.run_streaming_loop(messages, session, on_event, run_id, streaming_config).await
+    }
+
     /// Original run method - creates new session via SessionManager
     pub async fn run(
         &self,
@@ -924,8 +1031,10 @@ impl AgenticLoopV4 {
             let mut thinking_text = String::new();
             let mut tool_calls: Vec<ContentBlock> = Vec::new();
             let mut stop_reason = StopReason::Stop;
+            let mut stream_event_count = 0;
 
             while let Some(result) = stream.next().await {
+                stream_event_count += 1;
                 match result {
                     Ok(stream_event) => {
                         // Process through orchestrator

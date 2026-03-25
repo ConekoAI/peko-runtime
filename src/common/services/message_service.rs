@@ -414,7 +414,7 @@ impl MessageService {
         );
 
         // Create channel for AgenticEvents (not ChatEvent)
-        let (tx, rx) = mpsc::channel::<crate::engine::AgenticEvent>(100);
+        let (tx, rx) = mpsc::channel::<crate::engine::AgenticEvent>(1000);
 
         // Clone what we need for the spawned task
         let agent_service = self.agent_service.clone();
@@ -423,8 +423,8 @@ impl MessageService {
         let timeout_secs = request.timeout_secs;
         let session_id_clone = session_id.clone();
 
-        // Spawn execution in background
-        tokio::spawn(async move {
+        // Spawn execution in background and keep the handle
+        let handle = tokio::spawn(async move {
             // Build execution request
             let exec_request = ExecutionRequest {
                 agent_name: agent_name.clone(),
@@ -470,6 +470,16 @@ impl MessageService {
                         .await;
                 }
             }
+        });
+
+        // Spawn a watcher task that waits for the main task to complete
+        // and sends an End event if one wasn't already sent
+        let (tx_end, mut rx_end) = mpsc::channel::<()>(1);
+        tokio::spawn(async move {
+            let _ = handle.await;
+            // Give a small grace period for any pending events to be processed
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let _ = tx_end.send(()).await;
         });
 
         let duration_ms = start.elapsed().as_millis() as u64;

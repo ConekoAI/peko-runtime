@@ -396,58 +396,29 @@ impl StatelessAgentService {
 
         let prompt = self.build_prompt(&request.message, &history)?;
 
-        // Create channel for events that will bridge from LocalSet to caller
-        let (tx, rx) = tokio::sync::mpsc::channel::<AgenticEvent>(1000);
+        // Create a channel with large buffer
+        let (tx, rx) = tokio::sync::mpsc::channel::<AgenticEvent>(10000);
 
-        // Spawn agent execution in a dedicated thread with LocalSet
-        // This handles spawn_local requirements while providing Send-safe receiver
-        std::thread::spawn(move || {
+        // Spawn blocking task that runs agent to completion
+        tokio::task::spawn_blocking(move || {
+            // Create a new runtime for this thread
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("Failed to create local runtime");
 
-            let local_set = tokio::task::LocalSet::new();
+            // Run the agent execution
+            rt.block_on(async {
+                let on_event = move |event: AgenticEvent| {
+                    // Try send - if channel is full or closed, skip
+                    let _ = tx.try_send(event);
+                };
 
-            rt.block_on(local_set.run_until(async {
-                match agent
-                    .execute_streaming_with_session(&prompt, session, Some(history))
-                    .await
-                {
-                    Ok(mut event_rx) => {
-                        // Forward events from LocalSet to Send-safe channel
-                        while let Some(event) = event_rx.recv().await {
-                            let is_end = matches!(
-                                event,
-                                AgenticEvent::Lifecycle {
-                                    phase: crate::engine::LifecyclePhase::End,
-                                    ..
-                                } | AgenticEvent::Lifecycle {
-                                    phase: crate::engine::LifecyclePhase::Error,
-                                    ..
-                                }
-                            );
-
-                            if tx.send(event).await.is_err() {
-                                break;
-                            }
-
-                            if is_end {
-                                break;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx
-                            .send(AgenticEvent::Lifecycle {
-                                run_id: format!("run_{}", chrono::Utc::now().timestamp_millis()),
-                                phase: crate::engine::LifecyclePhase::Error,
-                                error: Some(format!("Execution failed: {}", e)),
-                            })
-                            .await;
-                    }
-                }
-            }));
+                let _ = agent
+                    .execute_streaming_with_session(&prompt, session, Some(history), on_event)
+                    .await;
+            });
+            // tx is dropped here, signaling end of stream
         });
 
         Ok(rx)

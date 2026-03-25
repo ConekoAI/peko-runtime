@@ -489,19 +489,20 @@ impl Agent {
     ///
     /// The session must be provided by the caller (typically via SessionManager).
     /// This ensures session lifecycle is managed centrally.
-    pub async fn execute_streaming_with_session(
+    ///
+    /// This version takes a sender callback for event streaming, avoiding channel
+    /// lifetime issues. The callback is invoked synchronously for each event.
+    pub async fn execute_streaming_with_session<F>(
         &self,
         prompt: &str,
         session: std::sync::Arc<tokio::sync::RwLock<crate::session::UnifiedSession>>,
         history: Option<Vec<crate::providers::ChatMessage>>,
-    ) -> Result<tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>> {
-        // Use a large buffer to prevent event loss during bursts
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(10000);
-
-        // Spawn the execution in a task
-        let prompt = prompt.to_string();
-
-        // We need to get the provider and tools into the task
+        on_event: F,
+    ) -> Result<crate::engine::AgenticResultV4>
+    where
+        F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
+    {
+        // We need to get the provider and tools
         if let Some(provider) = &self.provider {
             let agent_arc = Arc::new(self.clone_for_loop(Arc::clone(provider)));
             // Load tools including MCP tools before spawning
@@ -511,32 +512,28 @@ impl Agent {
             };
 
             let provider_arc = Arc::clone(provider);
-            let event_tx_clone = event_tx.clone();
 
-            tokio::task::spawn_local(async move {
-                use crate::engine::loop_v4::AgenticLoopV4;
+            use crate::engine::loop_v4::AgenticLoopV4;
 
-                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc.clone(), tools);
+            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
 
-                let _result = loop_
-                    .run_with_resume(
-                        &prompt,
-                        move |event| {
-                            // Try to send event - log if dropped (buffer full means consumer is slow)
-                            if event_tx_clone.try_send(event).is_err() {
-                                warn!("Agent event dropped (channel full)");
-                            }
-                        },
-                        session,
-                        history,
-                    )
-                    .await;
-            });
+            // Use streaming config with Live delivery mode for real-time output
+            let streaming_config = crate::engine::OrchestratorConfig::live();
+
+            let result = loop_
+                .run_streaming_with_resume(
+                    prompt,
+                    on_event,
+                    session,
+                    history,
+                    streaming_config,
+                )
+                .await;
+
+            result
         } else {
-            return Err(anyhow::anyhow!("No provider configured"));
+            Err(anyhow::anyhow!("No provider configured"))
         }
-
-        Ok(event_rx)
     }
 
     /// Clone the agent for use in the agentic loop
