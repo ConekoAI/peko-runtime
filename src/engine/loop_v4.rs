@@ -494,12 +494,22 @@ impl AgenticLoopV4 {
                     content_blocks.push(tool_call.clone());
                 }
 
+                // Build thinking block if thinking content was captured
+                let thinking_block = if thinking_text.is_empty() {
+                    None
+                } else {
+                    Some(crate::session::events::ThinkingBlock {
+                        text: thinking_text.clone(),
+                        signature: None,
+                    })
+                };
+
                 {
                     let mut s = session.write().await;
                     s.add_assistant_with_blocks(
                         content_blocks,
                         Some(tool_call_blocks),
-                        None,
+                        thinking_block,
                         Some(response.usage.clone()),
                     )
                     .await?;
@@ -1010,12 +1020,22 @@ impl AgenticLoopV4 {
                     content_blocks.push(tc.clone());
                 }
 
+                // Build thinking block if thinking content was captured during streaming
+                let thinking_block = if thinking_text.is_empty() {
+                    None
+                } else {
+                    Some(crate::session::events::ThinkingBlock {
+                        text: thinking_text.clone(),
+                        signature: None,
+                    })
+                };
+
                 {
                     let mut s = session.write().await;
                     s.add_assistant_with_blocks(
                         content_blocks,
                         Some(tool_call_blocks),
-                        None,
+                        thinking_block,
                         None, // TODO: Track usage from streaming
                     )
                     .await?;

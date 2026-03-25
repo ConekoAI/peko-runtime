@@ -244,6 +244,11 @@ impl super::ApiAdapter for AnthropicAdapter {
                         arguments: input,
                     });
                 }
+                AnthropicResponseBlock::Thinking { thinking, signature } => {
+                    // Store thinking blocks but don't include in regular content
+                    // They will be handled separately via Thinking events
+                    content.push(ContentBlock::Thinking { text: thinking, signature });
+                }
             }
         }
 
@@ -276,6 +281,7 @@ impl super::ApiAdapter for AnthropicAdapter {
                     match block.block_type.as_str() {
                         "text" => Ok(Some(StreamEvent::TextStart { content_index: idx })),
                         "tool_use" => Ok(Some(StreamEvent::ToolCallStart { content_index: idx })),
+                        "thinking" => Ok(Some(StreamEvent::ThinkingStart { content_index: idx })),
                         _ => Ok(None),
                     }
                 } else {
@@ -299,6 +305,14 @@ impl super::ApiAdapter for AnthropicAdapter {
                                 return Ok(Some(StreamEvent::ToolCallDelta {
                                     content_index: idx,
                                     delta: partial,
+                                }));
+                            }
+                        }
+                        "thinking_delta" => {
+                            if let Some(thinking) = delta.thinking {
+                                return Ok(Some(StreamEvent::ThinkingDelta {
+                                    content_index: idx,
+                                    delta: thinking,
                                 }));
                             }
                         }
@@ -403,6 +417,12 @@ enum AnthropicResponseBlock {
         name: String,
         input: Value,
     },
+    /// Thinking block for reasoning models (Claude 3.7, Kimi K2.5, etc.)
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -436,6 +456,8 @@ struct AnthropicDelta {
     text: Option<String>,
     #[serde(rename = "partial_json")]
     partial_json: Option<String>,
+    /// Thinking content for reasoning models (Kimi K2.5, Claude 3.7, etc.)
+    thinking: Option<String>,
 }
 
 #[cfg(test)]
