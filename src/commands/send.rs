@@ -7,7 +7,7 @@
 //! performs a cold-start sequence: load config, load session, instantiate tools,
 //! run agentic loop, then exit and free resources.
 //!
-//! Per ADR-015, this command supports both blocking (default) and streaming modes.
+//! Per ADR-015, this command supports both streaming (default) and blocking modes.
 //!
 //! Examples:
 //!   pekobot send myagent "What is the weather?"
@@ -15,7 +15,7 @@
 //!   pekobot send myagent --team myteam "Hello"
 //!   pekobot send myagent "Hello" --session sess_xxx
 //!   pekobot send myagent --new "Start fresh"
-//!   pekobot send myagent "Hello" --stream           # Stream tokens as they arrive
+//!   pekobot send myagent "Hello" --no-stream        # Wait for full response before output
 //!   echo "Hello" | pekobot send myagent --stdin
 //!   pekobot send myagent --file prompt.txt
 
@@ -65,9 +65,9 @@ pub struct SendArgs {
     #[arg(long, conflicts_with = "file")]
     pub stdin: bool,
 
-    /// Stream tokens as they arrive (real-time output)
+    /// Disable streaming, wait for full response before output
     #[arg(long)]
-    pub stream: bool,
+    pub no_stream: bool,
 }
 
 /// Handle the send command
@@ -112,12 +112,12 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         .with_session_opt(args.session.clone())
         .with_new_session(args.new);
 
-    // Create CLI channel with appropriate mode
+    // Create CLI channel with appropriate mode (streaming is default)
     let channel = CliChannel::new(&args.agent)
-        .with_mode(if args.stream {
-            CliMode::Streaming
-        } else {
+        .with_mode(if args.no_stream {
             CliMode::Blocking
+        } else {
+            CliMode::Streaming
         });
 
     // Send message using unified API (returns EventStream)
@@ -127,11 +127,11 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     let output = channel.process_stream(event_stream).await?;
 
     // Output response (CLI presentation layer)
-    if !args.stream {
+    if args.no_stream {
         // In blocking mode, output the collected final text
         println!("{}", output.final_text);
     }
-    // In streaming mode, the channel already printed tokens as they arrived
+    // In streaming mode (default), the channel already printed tokens as they arrived
 
     Ok(())
 }
