@@ -186,9 +186,8 @@ impl EventProcessor {
                 ..
             } => {
                 self.state.sequence = *sequence;
-                // AssistantDelta is processed similarly to AssistantText
-                // but typically comes from streaming mode
-                self.process_assistant_text(text, *is_interstitial, &mut actions);
+                // AssistantDelta is for streaming mode - always use Print (no newline)
+                self.process_assistant_delta(text, *is_interstitial, &mut actions);
             }
             AgenticEvent::Usage { .. } => {
                 // Usage stats - channels can choose to display or ignore
@@ -199,6 +198,35 @@ impl EventProcessor {
         }
 
         actions
+    }
+
+    /// Process streaming delta event (AssistantDelta)
+    /// 
+    /// Unlike AssistantText, deltas are incremental and should be printed
+    /// without newlines to enable real-time streaming display.
+    fn process_assistant_delta(
+        &mut self,
+        text: &str,
+        is_interstitial: bool,
+        actions: &mut Vec<ChannelAction>,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+
+        // Start turn if needed
+        if !self.state.has_started_turn {
+            actions.push(ChannelAction::StartTurn(self.config.agent_name.clone()));
+            self.state.has_started_turn = true;
+        }
+
+        // Deltas are always printed inline (no newline) for streaming
+        actions.push(ChannelAction::Print(text.to_string()));
+        actions.push(ChannelAction::Flush);
+        
+        // Track interstitial state for when we transition to final
+        self.state.is_interstitial = is_interstitial;
+        self.state.last_was_interstitial = is_interstitial;
     }
 
     /// Process new-style AssistantText event

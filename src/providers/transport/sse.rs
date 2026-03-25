@@ -18,26 +18,80 @@ pub struct SseParser;
 
 impl SseParser {
     /// Parse a stream of bytes into SSE events
+    /// 
+    /// This uses a channel-based approach to handle stateful parsing across
+    /// chunk boundaries. It properly handles:
+    /// - Multiple events per chunk
+    /// - Partial events across chunk boundaries
     pub fn parse_stream<S>(
         stream: S,
     ) -> Pin<Box<dyn Stream<Item = anyhow::Result<SseEvent>> + Send>>
     where
         S: Stream<Item = anyhow::Result<Bytes>> + Send + 'static,
     {
-        Box::pin(stream.filter_map(|result| async move {
-            match result {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    let events = Self::parse_chunk(&text);
-                    // For simplicity, we yield events one at a time
-                    // In production, you might want a more sophisticated approach
-                    Some(Ok(events.into_iter().next()?))
-                }
-                Err(e) => Some(Err(e)),
-            }
-        }))
-    }
+        use tokio::sync::mpsc;
+        use tokio_stream::wrappers::ReceiverStream;
 
+        let (tx, rx) = mpsc::channel::<anyhow::Result<SseEvent>>(100);
+
+        // Spawn a task to process the stream
+        tokio::spawn(async move {
+            let mut buffer = String::new();
+            let mut stream = Box::pin(stream);
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        buffer.push_str(&text);
+
+                        // Extract and send all complete events
+                        while let Some(pos) = find_event_end(&buffer) {
+                            let event_text = buffer[..pos].trim().to_string();
+                            buffer.drain(..pos);
+                            
+                            let events = Self::parse_chunk(&event_text);
+                            for event in events {
+                                if tx.send(Ok(event)).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        return;
+                    }
+                }
+            }
+
+            // Send any remaining event at end of stream
+            if !buffer.trim().is_empty() {
+                let events = Self::parse_chunk(&buffer);
+                for event in events {
+                    let _ = tx.send(Ok(event)).await;
+                }
+            }
+        });
+
+        Box::pin(ReceiverStream::new(rx))
+    }
+}
+
+/// Find the end of the first complete SSE event in the buffer
+/// Returns the position after the event delimiter (double newline)
+fn find_event_end(buffer: &str) -> Option<usize> {
+    // Look for double newline (\n\n or \r\n\r\n)
+    if let Some(pos) = buffer.find("\n\n") {
+        return Some(pos + 2);
+    }
+    if let Some(pos) = buffer.find("\r\n\r\n") {
+        return Some(pos + 4);
+    }
+    None
+}
+
+impl SseParser {
     /// Parse a chunk of SSE data into events
     pub fn parse_chunk(chunk: &str) -> Vec<SseEvent> {
         let mut events = Vec::new();
