@@ -362,6 +362,122 @@ impl MessageService {
 
         Ok(rx)
     }
+
+    /// Send a message and return an EventStream (ADR-015 unified architecture)
+    ///
+    /// This is the unified interface that always returns a stream of events.
+    /// Channels consume this stream to produce appropriate output.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let event_stream = message_service.send_message_unified(request).await?;
+    /// let output = channel.process_stream(event_stream).await?;
+    /// ```
+    #[instrument(skip(self, request), fields(agent = %request.agent_name))]
+    pub async fn send_message_unified(
+        &self,
+        request: MessageRequest,
+    ) -> Result<crate::channels::EventStream> {
+        let start = Instant::now();
+
+        // Use SessionResolver for consistent session resolution
+        let team = request.team.as_deref();
+        let channel_type = ChannelType::Http;
+        let channel_id = "default";
+
+        let (session_ctx, is_new_session) = self
+            .session_resolver
+            .resolve_session(
+                &request.agent_name,
+                team,
+                channel_type,
+                channel_id,
+                request.session_id.clone(),
+                request.new_session,
+            )
+            .await?;
+
+        let session_id = {
+            let base = session_ctx.hybrid.base.read().await;
+            base.id.clone()
+        };
+
+        info!(
+            "Sending unified message to agent '{}' (session: {}, new: {})",
+            request.agent_name, session_id, is_new_session
+        );
+
+        // Create channel for AgenticEvents (not ChatEvent)
+        let (tx, rx) = mpsc::channel::<crate::engine::AgenticEvent>(100);
+
+        // Clone what we need for the spawned task
+        let agent_service = self.agent_service.clone();
+        let agent_name = request.agent_name.clone();
+        let message = request.message.clone();
+        let timeout_secs = request.timeout_secs;
+        let session_id_clone = session_id.clone();
+
+        // Spawn execution in background
+        tokio::spawn(async move {
+            // Build execution request
+            let exec_request = ExecutionRequest {
+                agent_name: agent_name.clone(),
+                session_id: session_id_clone.clone(),
+                message: message.clone(),
+                context: None,
+                timeout_secs,
+            };
+
+            // Use streaming execution to get real-time events
+            match agent_service.execute_streaming(exec_request).await {
+                Ok(mut event_rx) => {
+                    // Forward all events from the streaming execution
+                    while let Some(event) = event_rx.recv().await {
+                        let is_end = matches!(
+                            event,
+                            crate::engine::AgenticEvent::Lifecycle {
+                                phase: crate::engine::LifecyclePhase::End,
+                                ..
+                            } | crate::engine::AgenticEvent::Lifecycle {
+                                phase: crate::engine::LifecyclePhase::Error,
+                                ..
+                            }
+                        );
+                        
+                        if tx.send(event).await.is_err() {
+                            break;
+                        }
+                        
+                        if is_end {
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Streaming execution failed: {}", e);
+                    let _ = tx
+                        .send(crate::engine::AgenticEvent::Lifecycle {
+                            run_id: format!("run_{}", Uuid::new_v4()),
+                            phase: crate::engine::LifecyclePhase::Error,
+                            error: Some(format!("Execution failed: {}", e)),
+                        })
+                        .await;
+                }
+            }
+        });
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        info!(
+            "Unified message setup complete for '{}' in {}ms",
+            request.agent_name, duration_ms
+        );
+
+        Ok(crate::channels::EventStream {
+            receiver: rx,
+            session_id,
+            is_new_session,
+        })
+    }
 }
 
 /// Generate a unique session ID
