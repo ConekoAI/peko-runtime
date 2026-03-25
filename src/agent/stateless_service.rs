@@ -363,29 +363,29 @@ impl StatelessAgentService {
     }
 
     /// Execute streaming - returns event receiver
+    ///
+    /// This method encapsulates the LocalSet requirement internally.
+    /// Callers don't need to worry about spawn_local constraints.
     #[instrument(skip(self, request), fields(agent = %request.agent_name))]
     pub async fn execute_streaming(
         &self,
         request: ExecutionRequest,
     ) -> Result<tokio::sync::mpsc::Receiver<AgenticEvent>> {
-        // Load config
+        // Load config, history, agent, session - these are all Send-safe
         let config_entry = self
             .config_service
             .get(&request.agent_name, None)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
-        // Load history
         let history = self
             .load_session_history(&request.agent_name, &request.session_id)
             .await?;
 
-        // Cold-start agent
         let agent = Agent::new(config_entry.config.clone())
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
-        // Create session via SessionManager
         let mut session_manager = SessionManager::new()
             .with_registry(&request.agent_name)
             .await?;
@@ -394,13 +394,63 @@ impl StatelessAgentService {
             .get_or_create_base(&request.agent_name, &peer)
             .await?;
 
-        // Start streaming execution
         let prompt = self.build_prompt(&request.message, &history)?;
-        let event_rx = agent
-            .execute_streaming_with_session(&prompt, session, Some(history))
-            .await?;
 
-        Ok(event_rx)
+        // Create channel for events that will bridge from LocalSet to caller
+        let (tx, rx) = tokio::sync::mpsc::channel::<AgenticEvent>(1000);
+
+        // Spawn agent execution in a dedicated thread with LocalSet
+        // This handles spawn_local requirements while providing Send-safe receiver
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create local runtime");
+
+            let local_set = tokio::task::LocalSet::new();
+
+            rt.block_on(local_set.run_until(async {
+                match agent
+                    .execute_streaming_with_session(&prompt, session, Some(history))
+                    .await
+                {
+                    Ok(mut event_rx) => {
+                        // Forward events from LocalSet to Send-safe channel
+                        while let Some(event) = event_rx.recv().await {
+                            let is_end = matches!(
+                                event,
+                                AgenticEvent::Lifecycle {
+                                    phase: crate::engine::LifecyclePhase::End,
+                                    ..
+                                } | AgenticEvent::Lifecycle {
+                                    phase: crate::engine::LifecyclePhase::Error,
+                                    ..
+                                }
+                            );
+
+                            if tx.send(event).await.is_err() {
+                                break;
+                            }
+
+                            if is_end {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(AgenticEvent::Lifecycle {
+                                run_id: format!("run_{}", chrono::Utc::now().timestamp_millis()),
+                                phase: crate::engine::LifecyclePhase::Error,
+                                error: Some(format!("Execution failed: {}", e)),
+                            })
+                            .await;
+                    }
+                }
+            }));
+        });
+
+        Ok(rx)
     }
 
     /// Get current metrics

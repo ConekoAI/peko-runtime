@@ -109,54 +109,17 @@ impl Channel for CliChannel {
 
 impl CliChannel {
     /// Blocking mode: Collect events into ChannelOutput
+    ///
+    /// Uses the shared default implementation and adds CLI-specific formatting.
     async fn process_stream_blocking(&self, event_stream: EventStream) -> Result<ChannelOutput> {
-        use crate::engine::{AgenticEvent, LifecyclePhase};
-
-        let mut output = ChannelOutput::new(&event_stream.session_id);
-        output.is_new_session = event_stream.is_new_session;
+        // Get the base output from the shared default implementation
+        let mut output = crate::channels::default_process_stream(event_stream).await?;
         
-        let mut event_rx = event_stream.receiver;
-        let mut final_text = String::new();
-
-        while let Some(event) = event_rx.recv().await {
-            match event {
-                AgenticEvent::AssistantText {
-                    text,
-                    is_interstitial: false,
-                    ..
-                } => {
-                    final_text.push_str(&text);
-                }
-                AgenticEvent::AssistantDelta { text, .. } => {
-                    final_text.push_str(&text);
-                }
-                AgenticEvent::Usage {
-                    prompt_tokens,
-                    completion_tokens,
-                    total_tokens,
-                    ..
-                } => {
-                    output.usage.input = prompt_tokens as u64;
-                    output.usage.output = completion_tokens as u64;
-                    output.usage.total = total_tokens as u64;
-                }
-                AgenticEvent::Lifecycle { phase, error, .. } => {
-                    match phase {
-                        LifecyclePhase::End => break,
-                        LifecyclePhase::Error => {
-                            output.success = false;
-                            output.error = error;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
+        // Add CLI-specific formatting: agent name prefix
+        if !output.final_text.is_empty() {
+            output.final_text = format!("{}: {}", self.name, output.final_text);
         }
-
-        // Format output with agent name prefix (consistent with current CLI)
-        output.final_text = format!("{}: {}", self.name, final_text);
+        
         Ok(output)
     }
 

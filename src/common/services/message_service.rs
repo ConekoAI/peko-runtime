@@ -112,6 +112,10 @@ pub struct MessageResult {
 }
 
 /// Chat event for streaming responses
+/// 
+/// **DEPRECATED:** Use AgenticEvent from crate::engine instead.
+/// This type is kept for backward compatibility but will be removed in a future version.
+#[deprecated(since = "0.2.0", note = "Use AgenticEvent from crate::engine instead")]
 #[derive(Debug, Clone)]
 pub enum ChatEvent {
     /// Content delta (streaming text)
@@ -239,11 +243,13 @@ impl MessageService {
         }
     }
 
-    /// Send a message with streaming response
+    /// Send a message with streaming response (legacy API)
     ///
+    /// **DEPRECATED:** Use `send_message_unified` instead. 
     /// Returns a channel that receives events as they occur.
-    /// Uses SessionResolver for consistent session resolution.
+    #[deprecated(since = "0.2.0", note = "Use send_message_unified instead")]
     #[instrument(skip(self, request), fields(agent = %request.agent_name))]
+    #[allow(deprecated)]
     pub async fn send_message_streaming(
         &self,
         request: MessageRequest,

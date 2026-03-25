@@ -555,7 +555,7 @@ cron.json
         // Create bootstrap files in workspace using AgentBootstrap
         let bootstrap = AgentBootstrap::new(agent_name, workspace_dir.to_path_buf());
         // Run in blocking task since AgentBootstrap uses std::fs
-        tokio::task::block_in_place(|| bootstrap.run())?;
+        tokio::task::spawn_blocking(move || bootstrap.run()).await??;
 
         Ok(())
     }

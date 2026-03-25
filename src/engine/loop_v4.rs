@@ -1139,6 +1139,14 @@ impl AgenticLoopV4 {
                 s.add_assistant(&accumulated_text, None, None).await?;
             }
 
+            // Emit final AssistantText event for blocking mode consumption
+            on_event(AgenticEvent::AssistantText {
+                run_id: run_id.clone(),
+                text: accumulated_text.clone(),
+                is_interstitial: false,
+                sequence: 0,
+            });
+
             // Emit final usage event
             on_event(AgenticEvent::Usage {
                 run_id: run_id.clone(),

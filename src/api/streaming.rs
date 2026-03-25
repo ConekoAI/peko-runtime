@@ -11,6 +11,7 @@ use futures::StreamExt;
 use serde::Serialize;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 /// SSE event types for chat streaming
 #[derive(Debug, Clone, Serialize)]
@@ -170,6 +171,79 @@ pub fn engine_event_to_sse(
         }
         _ => None, // Skip lifecycle events, etc.
     }
+}
+
+/// Convert an EventStream to an SSE response stream
+///
+/// This adapter bridges the unified EventStream (ADR-015) to SSE format
+/// used by the HTTP API. It spawns a task to forward events.
+pub fn event_stream_to_sse(
+    event_stream: crate::channels::EventStream,
+) -> (SseStream, tokio::task::JoinHandle<()>) {
+    let (sse_stream, sender) = SseStream::new();
+
+    let handle = tokio::spawn(async move {
+        let mut event_rx = event_stream.receiver;
+        let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
+        let mut session_id = event_stream.session_id;
+        let mut turn_count = 0u32;
+        let mut usage = TokenUsage::default();
+
+        while let Some(event) = event_rx.recv().await {
+            // Convert and send SSE events
+            if let Some(sse_event) = engine_event_to_sse(&event, &run_id) {
+                if sender.send(sse_event).await.is_err() {
+                    break;
+                }
+            }
+
+            // Track metadata from lifecycle events
+            match &event {
+                crate::engine::AgenticEvent::Lifecycle {
+                    phase: crate::engine::LifecyclePhase::End,
+                    ..
+                } => {
+                    // Send completion event
+                    let _ = sender
+                        .send(ChatSseEvent::Done {
+                            message_id: format!("msg_{}", Uuid::new_v4().simple()),
+                            session_id: session_id.clone(),
+                            turn_count,
+                            usage: usage.clone(),
+                        })
+                        .await;
+                    break;
+                }
+                crate::engine::AgenticEvent::Lifecycle {
+                    phase: crate::engine::LifecyclePhase::Error,
+                    error,
+                    ..
+                } => {
+                    let _ = sender
+                        .send(ChatSseEvent::Error {
+                            code: "execution_error".to_string(),
+                            message: error.clone().unwrap_or_default(),
+                            tool_call_id: None,
+                        })
+                        .await;
+                    break;
+                }
+                crate::engine::AgenticEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    ..
+                } => {
+                    usage.input_tokens = *prompt_tokens as u64;
+                    usage.output_tokens = *completion_tokens as u64;
+                    usage.total_tokens = *total_tokens as u64;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    (sse_stream, handle)
 }
 
 #[cfg(test)]

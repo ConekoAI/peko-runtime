@@ -130,17 +130,11 @@ pub trait Channel: Send + Sync {
         StreamingConfig::default()
     }
 
-    /// Handle a streaming event receiver
+    /// Handle a streaming event receiver (legacy method)
     ///
-    /// This is where chunking and presentation happens.
-    /// The channel receives raw `AgenticEvents` and handles:
-    /// - Block chunking based on channel config
-    /// - Coalescing small blocks
-    /// - Human-like delays between blocks
-    /// - Platform-specific formatting
-    ///
-    /// Default implementation just forwards events without chunking.
-    /// Override for custom streaming behavior.
+    /// **DEPRECATED:** Use `process_stream` instead.
+    /// This method will be removed in a future version.
+    #[deprecated(since = "0.2.0", note = "Use process_stream instead")]
     async fn handle_stream(
         &mut self,
         mut event_rx: Receiver<crate::engine::AgenticEvent>,
@@ -197,52 +191,60 @@ pub trait Channel: Send + Sync {
         &self,
         event_stream: EventStream,
     ) -> Result<ChannelOutput> {
-        use crate::engine::{AgenticEvent, LifecyclePhase};
-
-        let mut output = ChannelOutput::new(&event_stream.session_id);
-        output.is_new_session = event_stream.is_new_session;
-        
-        let mut event_rx = event_stream.receiver;
-
-        while let Some(event) = event_rx.recv().await {
-            match event {
-                AgenticEvent::AssistantText {
-                    text,
-                    is_interstitial: false,
-                    ..
-                } => {
-                    output.final_text.push_str(&text);
-                }
-                AgenticEvent::AssistantDelta { text, .. } => {
-                    output.final_text.push_str(&text);
-                }
-                AgenticEvent::Usage {
-                    prompt_tokens,
-                    completion_tokens,
-                    total_tokens,
-                    ..
-                } => {
-                    output.usage.input = prompt_tokens as u64;
-                    output.usage.output = completion_tokens as u64;
-                    output.usage.total = total_tokens as u64;
-                }
-                AgenticEvent::Lifecycle { phase, error, .. } => {
-                    match phase {
-                        LifecyclePhase::End => break,
-                        LifecyclePhase::Error => {
-                            output.success = false;
-                            output.error = error;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        Ok(output)
+        default_process_stream(event_stream).await
     }
+}
+
+/// Default event stream processing (shared implementation)
+///
+/// This is a helper function that channels can use to get the default
+/// behavior without duplicating the implementation.
+pub async fn default_process_stream(event_stream: EventStream) -> Result<ChannelOutput> {
+    use crate::engine::{AgenticEvent, LifecyclePhase};
+
+    let mut output = ChannelOutput::new(&event_stream.session_id);
+    output.is_new_session = event_stream.is_new_session;
+    
+    let mut event_rx = event_stream.receiver;
+
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            AgenticEvent::AssistantText {
+                text,
+                is_interstitial: false,
+                ..
+            } => {
+                output.final_text.push_str(&text);
+            }
+            AgenticEvent::AssistantDelta { text, .. } => {
+                output.final_text.push_str(&text);
+            }
+            AgenticEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                ..
+            } => {
+                output.usage.input = prompt_tokens as u64;
+                output.usage.output = completion_tokens as u64;
+                output.usage.total = total_tokens as u64;
+            }
+            AgenticEvent::Lifecycle { phase, error, .. } => {
+                match phase {
+                    LifecyclePhase::End => break,
+                    LifecyclePhase::Error => {
+                        output.success = false;
+                        output.error = error;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(output)
 }
 
 // Re-exports for convenience

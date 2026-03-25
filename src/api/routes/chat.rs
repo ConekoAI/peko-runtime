@@ -9,12 +9,12 @@
 //! - Agent cold-starts on every request
 //! - Loads config from disk, executes, exits
 //!
-//! NOTE: This module now delegates to MessageService for unified handling
+//! NOTE: This module uses the unified EventStream interface (ADR-015)
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
-use crate::api::streaming::{ChatSseEvent, SseStream, TokenUsage};
-use crate::common::services::{ChatEvent, MessageRequest};
+use crate::api::streaming::{event_stream_to_sse, ChatSseEvent, SseStream, TokenUsage};
+use crate::common::services::MessageRequest;
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -22,7 +22,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Chat request body
@@ -96,20 +96,20 @@ async fn chat_handler(
         || accept_header.is_empty();
 
     if streaming {
-        // Return SSE stream using MessageService
-        let (sse_stream, sender) = SseStream::new();
-
-        // Build message request
+        // Use unified EventStream API with SSE adapter (ADR-015)
         let msg_request = MessageRequest::new(agent_name.clone(), request.message.clone())
             .with_session_opt(request.session_id.clone())
             .with_new_session(request.session_id.is_none());
 
-        // Spawn the chat processing
-        tokio::spawn(async move {
-            if let Err(e) = process_chat_stream(state, msg_request, sender).await {
-                error!("Chat stream error: {}", e);
-            }
-        });
+        // Get EventStream from unified API
+        let event_stream = state
+            .message_service()
+            .send_message_unified(msg_request)
+            .await
+            .map_err(|e| ApiError::internal(format!("Failed to start stream: {}", e), ""))?;
+
+        // Convert to SSE using adapter
+        let (sse_stream, _handle) = event_stream_to_sse(event_stream);
 
         Ok::<_, ApiError>(sse_stream.into_response())
     } else {
@@ -117,90 +117,6 @@ async fn chat_handler(
         let response = process_chat_blocking(state, agent_name, request).await?;
         Ok::<_, ApiError>(Json(response).into_response())
     }
-}
-
-/// Process chat with streaming output using MessageService
-async fn process_chat_stream(
-    state: AppState,
-    request: MessageRequest,
-    sender: tokio::sync::mpsc::Sender<ChatSseEvent>,
-) -> anyhow::Result<()> {
-    let agent_name = request.agent_name.clone();
-    let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
-    info!(
-        "Starting chat stream for agent: {} (run: {})",
-        agent_name, run_id
-    );
-
-    // Use MessageService for streaming
-    let mut event_rx = state
-        .message_service()
-        .send_message_streaming(request)
-        .await?;
-
-    // Forward events from service to SSE sender
-    while let Some(event) = event_rx.recv().await {
-        match event {
-            ChatEvent::Delta { text } => {
-                let _ = sender.send(ChatSseEvent::Delta { text }).await;
-            }
-            ChatEvent::ToolCall { id, name, args } => {
-                let _ = sender
-                    .send(ChatSseEvent::ToolCall {
-                        id,
-                        tool: name,
-                        args,
-                        async_: false,
-                    })
-                    .await;
-            }
-            ChatEvent::ToolResult {
-                tool_call_id,
-                output,
-                error,
-            } => {
-                let _ = sender
-                    .send(ChatSseEvent::ToolResult {
-                        tool_call_id,
-                        output,
-                        error,
-                    })
-                    .await;
-            }
-            ChatEvent::Done {
-                message_id,
-                session_id,
-                turn_count,
-                usage,
-            } => {
-                let _ = sender
-                    .send(ChatSseEvent::Done {
-                        message_id,
-                        session_id,
-                        turn_count,
-                        usage: TokenUsage {
-                            input_tokens: usage.input,
-                            output_tokens: usage.output,
-                            total_tokens: usage.total,
-                        },
-                    })
-                    .await;
-                break;
-            }
-            ChatEvent::Error { code, message } => {
-                let _ = sender
-                    .send(ChatSseEvent::Error {
-                        code,
-                        message,
-                        tool_call_id: None,
-                    })
-                    .await;
-                break;
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Process chat with blocking response using MessageService
