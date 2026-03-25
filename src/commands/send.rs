@@ -7,15 +7,19 @@
 //! performs a cold-start sequence: load config, load session, instantiate tools,
 //! run agentic loop, then exit and free resources.
 //!
+//! Per ADR-015, this command supports both blocking (default) and streaming modes.
+//!
 //! Examples:
 //!   pekobot send myagent "What is the weather?"
 //!   pekobot send myteam/myagent "Hello"
 //!   pekobot send myagent --team myteam "Hello"
 //!   pekobot send myagent "Hello" --session sess_xxx
 //!   pekobot send myagent --new "Start fresh"
+//!   pekobot send myagent "Hello" --stream           # Stream tokens as they arrive
 //!   echo "Hello" | pekobot send myagent --stdin
 //!   pekobot send myagent --file prompt.txt
 
+use crate::channels::{Channel, CliChannel, CliMode};
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::{AgentConfigService, AgentValidator, MessageRequest, MessageService};
@@ -60,6 +64,10 @@ pub struct SendArgs {
     /// Read message from stdin
     #[arg(long, conflicts_with = "file")]
     pub stdin: bool,
+
+    /// Stream tokens as they arrive (real-time output)
+    #[arg(long)]
+    pub stream: bool,
 }
 
 /// Handle the send command
@@ -104,11 +112,26 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         .with_session_opt(args.session.clone())
         .with_new_session(args.new);
 
-    // Send message and get response
-    let result = message_service.send_message(request).await?;
+    // Create CLI channel with appropriate mode
+    let channel = CliChannel::new(&args.agent)
+        .with_mode(if args.stream {
+            CliMode::Streaming
+        } else {
+            CliMode::Blocking
+        });
+
+    // Send message using unified API (returns EventStream)
+    let event_stream = message_service.send_message_unified(request).await?;
+
+    // Process events through channel (handles both blocking and streaming)
+    let output = channel.process_stream(event_stream).await?;
 
     // Output response (CLI presentation layer)
-    println!("{}: {}", args.agent, result.content);
+    if !args.stream {
+        // In blocking mode, output the collected final text
+        println!("{}", output.final_text);
+    }
+    // In streaming mode, the channel already printed tokens as they arrived
 
     Ok(())
 }
