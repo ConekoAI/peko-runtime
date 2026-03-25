@@ -157,9 +157,9 @@ Things like:
 - **fetch** — Fetch web pages and extract content
   - Use when: you need to access a specific known URL.
   - Don't use when: you need to search for information.
-- **process** — Execute system commands
-  - Use when: running build commands, git operations.
-  - Don't use when: a safer dedicated tool exists.
+- **shell** — Execute system shell commands
+  - Use when: running build commands, git operations, pipes, redirection.
+  - Don't use when: you don't need system command execution.
 
 ---
 *Add whatever helps you do your job. This is your cheat sheet.*

@@ -46,13 +46,13 @@ impl Agent {
     fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            InMemorySessionRegistry, ProcessTool, SessionStatusTool, SessionsSendTool, Tool,
+            InMemorySessionRegistry, SessionStatusTool, ShellTool, SessionsSendTool, Tool,
         };
 
         // Create core tools only (web tools now provided via MCP)
         let mut tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(FileSystemTool::new()),
-            Arc::new(ProcessTool::new()),
+            Arc::new(ShellTool::new()),
         ];
 
         // Add session introspection tools
@@ -101,14 +101,14 @@ impl Agent {
     async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            InMemorySessionRegistry, ProcessTool, SessionStatusTool, SessionsSendTool, Tool,
+            InMemorySessionRegistry, SessionStatusTool, ShellTool, SessionsSendTool, Tool,
             ToolFactory,
         };
 
         // Create core tools only (web tools now provided via MCP)
         let mut tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(FileSystemTool::new()),
-            Arc::new(ProcessTool::new()),
+            Arc::new(ShellTool::new()),
         ];
 
         // Add session introspection tools

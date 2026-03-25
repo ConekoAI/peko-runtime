@@ -53,11 +53,11 @@ pub struct AsyncTaskReceipt {
 
 /// Unified result type for all async operations
 ///
-/// This enum normalizes results from different async tools (process, agent_spawn, agent_invoke)
+/// This enum normalizes results from different async tools (shell, agent_spawn, agent_invoke)
 /// into a single format that can be handled uniformly by the delivery infrastructure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AsyncTaskResult {
-    /// Shell command result (from process tool)
+    /// Shell command result (from shell tool)
     Process {
         stdout: String,
         stderr: String,
@@ -208,7 +208,7 @@ impl AsyncTaskResult {
     #[must_use]
     pub fn summary(&self) -> String {
         match self {
-            Self::Process { exit_code, .. } => format!("process: exit_code={}", exit_code),
+            Self::Process { exit_code, .. } => format!("shell: exit_code={}", exit_code),
             Self::Subagent { output, error, .. } => {
                 if error.is_some() {
                     "subagent: failed".to_string()
@@ -642,7 +642,7 @@ impl Clone for Box<dyn ResultDelivery> {
 /// Queue-based delivery mechanism
 ///
 /// Delivers results via the AsyncResultQueueManager for later retrieval.
-/// Used by process tool and agent_spawn in queue mode.
+/// Used by shell tool and agent_spawn in queue mode.
 #[derive(Debug, Clone)]
 pub struct QueueDelivery {
     queue_manager: SharedAsyncResultQueueManager,
@@ -1449,7 +1449,7 @@ mod tests {
     // Tests for AsyncTaskResult (Phase 1 of unified infrastructure)
 
     #[test]
-    fn test_async_task_result_process() {
+    fn test_async_task_result_shell() {
         let result = AsyncTaskResult::Process {
             stdout: "Hello World".to_string(),
             stderr: "".to_string(),
@@ -1461,7 +1461,7 @@ mod tests {
         assert!(formatted.contains("Hello World"));
         assert!(formatted.contains("Exit Code:** 0"));
 
-        assert_eq!(result.summary(), "process: exit_code=0");
+        assert_eq!(result.summary(), "shell: exit_code=0");
     }
 
     #[test]
@@ -1546,7 +1546,7 @@ mod tests {
     fn test_async_task_entry_set_result() {
         let mut entry = AsyncTaskEntry::new(
             "task_123".to_string(),
-            "test_process".to_string(),
+            "test_shell".to_string(),
             serde_json::json!({"command": "echo"}),
             "session:abc".to_string(),
             AsyncToolConfig::default(),
@@ -1819,7 +1819,7 @@ mod tests {
         executor
             .execute(
                 task_id.clone(),
-                "process",
+                "shell",
                 serde_json::json!({"command": "echo hello"}),
                 "session:abc",
                 AsyncToolConfig {

@@ -15,7 +15,7 @@ pub mod custom;
 pub mod factory;
 pub mod filesystem;
 pub mod message_tool;
-pub mod process;
+pub mod shell;
 pub mod session_introspection;
 pub mod sessions_send;
 pub mod traits;
@@ -32,7 +32,7 @@ pub use cron_tool::CronTool;
 pub use factory::{McpDiscoveryResult, McpFactoryConfig, ToolFactory, ToolFactoryConfig};
 pub use filesystem::FileSystemTool;
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};
-pub use process::ProcessTool;
+pub use shell::ShellTool;
 pub use session_introspection::{
     InMemorySessionRegistry, SessionInfo, SessionRegistry as SessionIntrospectionRegistry,
     SessionStatusTool, SessionsHistoryTool, SessionsListTool,

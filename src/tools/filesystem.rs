@@ -1,9 +1,9 @@
-//! File system tool for file operations with sandbox enforcement
+//! File system tool for file operations
 //!
-//! Implements CAPABILITY_INTERFACE.md §3.1
-//! - All paths are sandboxed to instance workspace and shared workspace
-//! - Path traversal is rejected with SandboxViolation
-//! - Supports base64 encoding for binary files
+//! Implements ADR-014: All-or-nothing permission model
+//! - No sandboxing, no path restrictions
+//! - Full filesystem access when tool is enabled
+//! - Security boundary is tool enablement (enabled = full access)
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -12,7 +12,6 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-use crate::security::SecurityPolicy;
 use crate::tools::Tool;
 
 /// Filesystem operation types
@@ -61,48 +60,32 @@ pub struct FileSystemArgs {
     pub to: Option<String>,
 }
 
-/// Sandbox violation error
-#[derive(Debug, Clone)]
-pub struct SandboxViolation {
-    pub path: String,
-    pub reason: String,
-}
-
-impl std::fmt::Display for SandboxViolation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SandboxViolation: {} - {}", self.path, self.reason)
-    }
-}
-
-impl std::error::Error for SandboxViolation {}
-
-/// File system tool for reading and writing files with security sandboxing
+/// File system tool for reading and writing files
 pub struct FileSystemTool {
-    policy: SecurityPolicy,
+    /// Default workspace directory (for relative paths)
+    workspace_dir: Option<PathBuf>,
     /// Shared workspace path (for team agents)
     shared_workspace: Option<PathBuf>,
-    /// Image projects directory (read-only)
+    /// Image projects directory
     projects_dir: Option<PathBuf>,
 }
 
 impl FileSystemTool {
-    /// Create a new file system tool with default security policy
+    /// Create a new file system tool
     #[must_use]
     pub fn new() -> Self {
         Self {
-            policy: SecurityPolicy::default(),
+            workspace_dir: None,
             shared_workspace: None,
             projects_dir: None,
         }
     }
 
-    /// Create with custom security policy
-    pub fn with_policy(policy: SecurityPolicy) -> Self {
-        Self {
-            policy,
-            shared_workspace: None,
-            projects_dir: None,
-        }
+    /// Configure workspace directory (default for relative paths)
+    #[must_use]
+    pub fn with_workspace(mut self, path: impl Into<PathBuf>) -> Self {
+        self.workspace_dir = Some(path.into());
+        self
     }
 
     /// Configure shared workspace for team agents
@@ -112,214 +95,28 @@ impl FileSystemTool {
         self
     }
 
-    /// Configure projects directory (read-only)
+    /// Configure projects directory
     #[must_use]
     pub fn with_projects_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.projects_dir = Some(path.into());
         self
     }
 
-    /// Check if path is within allowed sandbox
-    fn is_path_allowed(&self, path: &Path) -> Result<(), SandboxViolation> {
-        // Get canonical path
-        let canonical = if path.exists() {
-            path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    /// Resolve a path - converts relative paths to absolute using workspace
+    fn resolve_path(&self, path: &str) -> PathBuf {
+        let path_buf = PathBuf::from(path);
+        if path_buf.is_absolute() {
+            path_buf
+        } else if let Some(ref workspace) = self.workspace_dir {
+            workspace.join(path)
         } else {
-            path.to_path_buf()
-        };
-
-        // Check workspace
-        let workspace = self
-            .policy
-            .workspace_dir
-            .canonicalize()
-            .unwrap_or_else(|_| self.policy.workspace_dir.clone());
-
-        if canonical.starts_with(&workspace) {
-            return Ok(());
+            path_buf
         }
-
-        // Check shared workspace (if configured)
-        if let Some(ref shared) = self.shared_workspace {
-            let shared_canonical = shared.canonicalize().unwrap_or_else(|_| shared.clone());
-            if canonical.starts_with(&shared_canonical) {
-                return Ok(());
-            }
-        }
-
-        // Check projects directory (read-only)
-        if let Some(ref projects) = self.projects_dir {
-            let projects_canonical = projects.canonicalize().unwrap_or_else(|_| projects.clone());
-            if canonical.starts_with(&projects_canonical) {
-                return Ok(());
-            }
-        }
-
-        // Path is outside all allowed areas
-        Err(SandboxViolation {
-            path: path.display().to_string(),
-            reason: "Path is outside allowed sandbox".to_string(),
-        })
-    }
-
-    /// Resolve and validate a path with symlink security checking
-    ///
-    /// Per CAPABILITY_INTERFACE.md §7.2:
-    /// - Symlink inside → Points inside: ✅ Allow
-    /// - Symlink inside → Points outside: ❌ SandboxViolation
-    /// - Symlink outside → Any target: ❌ SandboxViolation (cannot access symlink itself)
-    async fn resolve_path(&self, path: &str) -> Result<PathBuf, SandboxViolation> {
-        // Block path traversal attempts
-        if path.contains("..") {
-            return Err(SandboxViolation {
-                path: path.to_string(),
-                reason: "Path traversal not allowed".to_string(),
-            });
-        }
-
-        let resolved = if Path::new(path).is_absolute() {
-            PathBuf::from(path)
-        } else {
-            self.policy.workspace_dir.join(path)
-        };
-
-        // Check if the path itself is a symlink and validate it
-        self.validate_symlink_security(&resolved).await?;
-
-        // For non-existent paths, we need to check if the parent directory
-        // is within the sandbox (since we can't canonicalize the file itself)
-        let check_path = if resolved.exists() {
-            resolved.clone()
-        } else {
-            // For new files, check the parent directory
-            resolved
-                .parent()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| resolved.clone())
-        };
-
-        self.is_path_allowed(&check_path)?;
-        Ok(resolved)
-    }
-
-    /// Validate symlink security per CAPABILITY §7.2
-    async fn validate_symlink_security(&self, path: &Path) -> Result<(), SandboxViolation> {
-        // Get the symlink metadata without following the link
-        let metadata = match fs::symlink_metadata(path).await {
-            Ok(m) => m,
-            Err(_) => return Ok(()), // Not a symlink or doesn't exist - no issue
-        };
-
-        // If it's not a symlink, nothing to check
-        if !metadata.file_type().is_symlink() {
-            return Ok(());
-        }
-
-        // It's a symlink - apply security rules
-
-        // Rule 3: Symlink outside sandbox → Any target: ❌ Block
-        // First check if the symlink itself is within the sandbox
-        let workspace = &self.policy.workspace_dir;
-        let workspace_canonical = workspace
-            .canonicalize()
-            .unwrap_or_else(|_| workspace.clone());
-
-        // Get the directory containing the symlink
-        let symlink_dir = path.parent().ok_or_else(|| SandboxViolation {
-            path: path.display().to_string(),
-            reason: "Cannot determine parent directory of symlink".to_string(),
-        })?;
-
-        let symlink_dir_canonical = symlink_dir
-            .canonicalize()
-            .unwrap_or_else(|_| symlink_dir.to_path_buf());
-
-        // Check if symlink is within workspace
-        let symlink_in_workspace = symlink_dir_canonical.starts_with(&workspace_canonical);
-
-        if !symlink_in_workspace {
-            // Check shared workspace
-            let symlink_in_shared = if let Some(ref shared) = self.shared_workspace {
-                let shared_canonical = shared.canonicalize().unwrap_or_else(|_| shared.clone());
-                symlink_dir_canonical.starts_with(&shared_canonical)
-            } else {
-                false
-            };
-
-            // Check projects directory
-            let symlink_in_projects = if let Some(ref projects) = self.projects_dir {
-                let projects_canonical =
-                    projects.canonicalize().unwrap_or_else(|_| projects.clone());
-                symlink_dir_canonical.starts_with(&projects_canonical)
-            } else {
-                false
-            };
-
-            if !symlink_in_shared && !symlink_in_projects {
-                return Err(SandboxViolation {
-                    path: path.display().to_string(),
-                    reason: "Symlink is outside sandbox - cannot access symlink itself".to_string(),
-                });
-            }
-        }
-
-        // Rule 2: Symlink inside → Points outside: ❌ Block
-        // Read the symlink target
-        let target = fs::read_link(path).await.map_err(|e| SandboxViolation {
-            path: path.display().to_string(),
-            reason: format!("Cannot read symlink target: {}", e),
-        })?;
-
-        // Resolve target relative to symlink location if relative
-        let resolved_target = if target.is_absolute() {
-            target
-        } else {
-            symlink_dir.join(target)
-        };
-
-        // Canonicalize the target (follows symlinks in the path)
-        let target_canonical = resolved_target
-            .canonicalize()
-            .unwrap_or_else(|_| resolved_target.clone());
-
-        // Check if target is within allowed areas
-        let target_in_workspace = target_canonical.starts_with(&workspace_canonical);
-
-        let target_in_shared = if let Some(ref shared) = self.shared_workspace {
-            let shared_canonical = shared.canonicalize().unwrap_or_else(|_| shared.clone());
-            target_canonical.starts_with(&shared_canonical)
-        } else {
-            false
-        };
-
-        let target_in_projects = if let Some(ref projects) = self.projects_dir {
-            let projects_canonical = projects.canonicalize().unwrap_or_else(|_| projects.clone());
-            target_canonical.starts_with(&projects_canonical)
-        } else {
-            false
-        };
-
-        if !target_in_workspace && !target_in_shared && !target_in_projects {
-            return Err(SandboxViolation {
-                path: path.display().to_string(),
-                reason: format!(
-                    "Symlink points outside sandbox: target '{}' resolves to '{}'",
-                    resolved_target.display(),
-                    target_canonical.display()
-                ),
-            });
-        }
-
-        // Rule 1: Symlink inside → Points inside: ✅ Allow
-        Ok(())
     }
 
     /// Read a file
     async fn read_file(&self, path: &str, encoding: Option<&str>) -> Result<serde_json::Value> {
-        let resolved = self
-            .resolve_path(path)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self.resolve_path(path);
 
         let content = fs::read(&resolved)
             .await
@@ -363,10 +160,7 @@ impl FileSystemTool {
         encoding: Option<&str>,
         mode: Option<&str>,
     ) -> Result<serde_json::Value> {
-        let resolved = self
-            .resolve_path(path)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self.resolve_path(path);
 
         // Decode content if base64 encoded
         let decoded_content = if encoding == Some("base64") {
@@ -433,10 +227,7 @@ impl FileSystemTool {
         recursive: bool,
         include_hidden: bool,
     ) -> Result<serde_json::Value> {
-        let resolved = self
-            .resolve_path(path)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self.resolve_path(path);
 
         if !resolved.is_dir() {
             return Err(anyhow::anyhow!(
@@ -541,10 +332,7 @@ impl FileSystemTool {
 
     /// Check if a file exists
     async fn file_exists(&self, path: &str) -> Result<serde_json::Value> {
-        let resolved = self
-            .resolve_path(path)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self.resolve_path(path);
 
         let exists = fs::try_exists(&resolved).await.unwrap_or(false);
         let file_type = if exists {
@@ -572,10 +360,7 @@ impl FileSystemTool {
 
     /// Delete a file or directory
     async fn delete_file(&self, path: &str, recursive: bool) -> Result<serde_json::Value> {
-        let resolved = self
-            .resolve_path(path)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let resolved = self.resolve_path(path);
 
         let metadata = fs::metadata(&resolved).await;
 
@@ -617,14 +402,8 @@ impl FileSystemTool {
 
     /// Move/rename a file or directory
     async fn move_file(&self, from: &str, to: &str) -> Result<serde_json::Value> {
-        let from_resolved = self
-            .resolve_path(from)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
-        let to_resolved = self
-            .resolve_path(to)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let from_resolved = self.resolve_path(from);
+        let to_resolved = self.resolve_path(to);
 
         // Ensure source exists
         if !from_resolved.exists() {
@@ -680,70 +459,61 @@ impl Tool for FileSystemTool {
         r#"## Purpose
 File system operations: read, write, list, check existence, delete, and move files and directories.
 
-## When to Use
-- **read**: Inspecting source files, configuration files, logs, or any text content
-- **write**: Creating new files or completely rewriting existing files
-- **list**: Exploring directory structure, finding files by name pattern
-- **exists**: Checking if a file or directory exists before operations
-- **delete**: Removing files or directories (use with caution)
-- **move**: Renaming or moving files/directories
+## Security Note
+This tool has FULL FILESYSTEM ACCESS when enabled. It can:
+- Read any file the OS user can read
+- Write to any directory the OS user can write to
+- Delete any file or directory the OS user can delete
 
-## When NOT to Use
-- For code edits that preserve most of the file (use `apply_patch` instead)
-- For temporary files that should auto-cleanup (use `/tmp` via process)
+Disable this tool in agent config if you don't need filesystem access.
 
-## Input
-```json
-{
-  "operation": "read|write|list|exists|delete|move",
-  "path": "relative/or/absolute/path",
-  "content": "file content (required for write)",
-  "encoding": "utf8|base64 (optional, default utf8)",
-  "mode": "overwrite|append|create_new (for write)",
-  "recursive": false (for list and delete),
-  "include_hidden": false (for list),
-  "to": "destination/path (for move)"
-}
-```
+## Operations
 
-## Returns
-- **read**: File content, size, encoding, and path
-- **write**: Bytes written and path
-- **list**: Array of entries with name, type, size, modified time
-- **exists**: Boolean existence check with type if exists
-- **delete**: Success status
-- **move**: Source and destination paths
-
-## Examples
-Read a file:
+### read
+Read file contents. Returns content as UTF-8 text or base64 for binary files.
 ```json
 {"operation": "read", "path": "src/main.rs"}
-```
-
-Read binary file as base64:
-```json
 {"operation": "read", "path": "image.png", "encoding": "base64"}
 ```
 
-Write a file:
+### write
+Write content to a file. Creates parent directories if needed.
 ```json
-{"operation": "write", "path": "config.toml", "content": "[settings]\nkey = value"}
+{"operation": "write", "path": "config.toml", "content": "[settings]\\nkey = value"}
+{"operation": "write", "path": "data.bin", "content": "SGVsbG8=", "encoding": "base64"}
 ```
 
-List directory recursively:
+Modes:
+- `overwrite` (default): Replace existing file
+- `append`: Append to existing file (create if not exists)
+- `create_new`: Fail if file already exists
+
+### list
+List directory contents.
 ```json
-{"operation": "list", "path": "src", "recursive": true}
+{"operation": "list", "path": "src"}
+{"operation": "list", "path": "src", "recursive": true, "include_hidden": true}
 ```
 
-Move a file:
+### exists
+Check if a path exists.
+```json
+{"operation": "exists", "path": "README.md"}
+```
+
+### delete
+Delete a file or directory.
+```json
+{"operation": "delete", "path": "old_file.txt"}
+{"operation": "delete", "path": "old_dir", "recursive_delete": true}
+```
+
+### move
+Rename or move a file/directory.
 ```json
 {"operation": "move", "path": "old_name.txt", "to": "new_name.txt"}
-```
-
-## Security
-- All paths are validated against security sandbox
-- Path traversal (`..`) is blocked with SandboxViolation error
-- Files outside workspace, shared workspace, or projects dir are inaccessible"#
+{"operation": "move", "path": "file.txt", "to": "subdir/file.txt"}
+```"#
             .to_string()
     }
 
@@ -758,7 +528,7 @@ Move a file:
                 },
                 "path": {
                     "type": "string",
-                    "description": "The file or directory path"
+                    "description": "The file or directory path (relative to workspace or absolute)"
                 },
                 "content": {
                     "type": "string",
@@ -861,12 +631,7 @@ mod tests {
     #[tokio::test]
     async fn test_filesystem_write_and_read() {
         let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
         let test_file = "test.txt";
 
         // Write a file
@@ -897,12 +662,7 @@ mod tests {
     #[tokio::test]
     async fn test_filesystem_base64() {
         let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
 
         // Write binary content as base64
         let binary_content = "SGVsbG8sIFdvcmxkIQ=="; // "Hello, World!" in base64
@@ -932,12 +692,7 @@ mod tests {
     #[tokio::test]
     async fn test_filesystem_move() {
         let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
 
         // Create a file
         fs::write(temp_dir.path().join("old.txt"), "content")
@@ -960,35 +715,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_filesystem_sandbox_violation() {
-        let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: true,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
-
-        // Try path traversal
-        let params = json!({
-            "operation": "read",
-            "path": "../etc/passwd"
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("SandboxViolation"));
-    }
-
-    #[tokio::test]
     async fn test_filesystem_exists() {
         let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
 
         // Check non-existent file
         let exists_params = json!({
@@ -1021,12 +750,7 @@ mod tests {
     #[tokio::test]
     async fn test_filesystem_list_recursive() {
         let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
 
         // Create nested structure
         fs::create_dir_all(temp_dir.path().join("src/components"))
@@ -1056,281 +780,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_symlink_inside_to_inside_allowed() {
-        // Rule 1: Symlink inside → Points inside: ✅ Allow
-        let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
-
-        // Create a file and a symlink pointing to it (both inside workspace)
-        let target_path = temp_dir.path().join("target.txt");
-        fs::write(&target_path, "target content").await.unwrap();
-
-        let symlink_path = temp_dir.path().join("link.txt");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target_path, &symlink_path).unwrap();
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&target_path, &symlink_path).unwrap();
-
-        // Should be able to read through the symlink
-        let read_params = json!({
-            "operation": "read",
-            "path": "link.txt"
-        });
-
-        let result = tool.execute(read_params).await;
-        assert!(
-            result.is_ok(),
-            "Symlink inside→inside should be allowed: {:?}",
-            result
-        );
-        let response = result.unwrap();
-        assert_eq!(response["content"].as_str().unwrap(), "target content");
-    }
-
-    #[tokio::test]
-    async fn test_symlink_inside_to_outside_blocked() {
-        // Rule 2: Symlink inside → Points outside: ❌ SandboxViolation
-        let temp_dir = TempDir::new().unwrap();
-        let outside_dir = TempDir::new().unwrap();
-
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
-
-        // Create a file outside the workspace
-        let outside_file = outside_dir.path().join("secret.txt");
-        fs::write(&outside_file, "secret").await.unwrap();
-
-        // Create a symlink inside workspace pointing outside
-        let symlink_path = temp_dir.path().join("link_to_secret.txt");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside_file, &symlink_path).unwrap();
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&outside_file, &symlink_path).unwrap();
-
-        // Should be blocked
-        let read_params = json!({
-            "operation": "read",
-            "path": "link_to_secret.txt"
-        });
-
-        let result = tool.execute(read_params).await;
-        assert!(result.is_err(), "Symlink inside→outside should be blocked");
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("SandboxViolation"),
-            "Expected SandboxViolation, got: {}",
-            err
-        );
-        assert!(
-            err.contains("outside sandbox"),
-            "Error should mention outside sandbox: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_symlink_outside_blocked() {
-        // Rule 3: Symlink outside → Any target: ❌ Block
-        let temp_dir = TempDir::new().unwrap();
-        let outside_dir = TempDir::new().unwrap();
-
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
-
-        // Create a file inside workspace
-        let inside_file = temp_dir.path().join("inside.txt");
-        fs::write(&inside_file, "inside content").await.unwrap();
-
-        // Create a symlink outside workspace pointing inside
-        let symlink_outside = outside_dir.path().join("link_to_inside.txt");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&inside_file, &symlink_outside).unwrap();
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&inside_file, &symlink_outside).unwrap();
-
-        // Try to read the symlink using an absolute path (outside sandbox)
-        let read_params = json!({
-            "operation": "read",
-            "path": symlink_outside.to_str().unwrap()
-        });
-
-        let result = tool.execute(read_params).await;
-        // This should fail because the symlink itself is outside the sandbox
-        assert!(result.is_err(), "Symlink outside sandbox should be blocked");
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("SandboxViolation"),
-            "Expected SandboxViolation, got: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_path_traversal_variations_blocked() {
-        let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: true,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
-
-        // Various path traversal attempts
-        let traversals = vec![
-            "../etc/passwd",
-            "../../etc/shadow",
-            "../../../etc/hosts",
-            "foo/../../../etc/passwd",
-            "./../etc/passwd",
-            "a/b/c/../../../../etc/passwd",
-        ];
-
-        for path in &traversals {
-            let params = json!({
-                "operation": "read",
-                "path": path
-            });
-
-            let result = tool.execute(params).await;
-            assert!(
-                result.is_err(),
-                "Path traversal '{}' should be blocked",
-                path
-            );
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("SandboxViolation"),
-                "Expected SandboxViolation for '{}', got: {}",
-                path,
-                err
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_absolute_path_outside_workspace_blocked() {
-        let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: true,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
-
-        #[cfg(unix)]
-        let outside_paths = vec![
-            "/etc/passwd",
-            "/etc/shadow",
-            "/root/.ssh/id_rsa",
-            "/var/log/syslog",
-            "/tmp/sensitive.txt",
-        ];
-
-        #[cfg(windows)]
-        let outside_paths = vec![
-            "C:\\Windows\\System32\\config\\SAM",
-            "C:\\Users\\Administrator\\Desktop\\file.txt",
-            "D:\\secret.txt",
-        ];
-
-        for path in &outside_paths {
-            let params = json!({
-                "operation": "read",
-                "path": path
-            });
-
-            let result = tool.execute(params).await;
-            assert!(
-                result.is_err(),
-                "Absolute path '{}' outside workspace should be blocked",
-                path
-            );
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("SandboxViolation"),
-                "Expected SandboxViolation for '{}', got: {}",
-                path,
-                err
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_shared_workspace_access() {
-        let temp_dir = TempDir::new().unwrap();
-        let shared_dir = TempDir::new().unwrap();
-
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: true,
-            ..SecurityPolicy::default()
-        };
-
-        let tool = FileSystemTool::with_policy(policy).with_shared_workspace(shared_dir.path());
-
-        // Create a file in shared workspace
-        let shared_file = shared_dir.path().join("shared.txt");
-        fs::write(&shared_file, "shared content").await.unwrap();
-
-        // Should be able to read from shared workspace using absolute path
-        let read_params = json!({
-            "operation": "read",
-            "path": shared_file.to_str().unwrap()
-        });
-
-        let result = tool.execute(read_params).await;
-        assert!(
-            result.is_ok(),
-            "Should be able to read from shared workspace: {:?}",
-            result
-        );
-    }
-
-    #[tokio::test]
-    async fn test_projects_dir_readonly_access() {
-        let temp_dir = TempDir::new().unwrap();
-        let projects_dir = TempDir::new().unwrap();
-
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: true,
-            ..SecurityPolicy::default()
-        };
-
-        let tool = FileSystemTool::with_policy(policy).with_projects_dir(projects_dir.path());
-
-        // Create a file in projects dir
-        let project_file = projects_dir.path().join("project.md");
-        fs::write(&project_file, "# Project").await.unwrap();
-
-        // Should be able to read from projects dir
-        let read_params = json!({
-            "operation": "read",
-            "path": project_file.to_str().unwrap()
-        });
-
-        let result = tool.execute(read_params).await;
-        assert!(
-            result.is_ok(),
-            "Should be able to read from projects dir: {:?}",
-            result
-        );
-    }
-
-    #[tokio::test]
     async fn test_write_file_creates_directories() {
         let temp_dir = TempDir::new().unwrap();
 
@@ -1338,12 +787,7 @@ mod tests {
         let nested_dir = temp_dir.path().join("level1").join("level2").join("level3");
         fs::create_dir_all(&nested_dir).await.unwrap();
 
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
 
         // Write to a nested path
         let write_params = json!({
@@ -1365,12 +809,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_file() {
         let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
 
         // Create a file
         let file_path = temp_dir.path().join("to_delete.txt");
@@ -1391,12 +830,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_directory_recursive() {
         let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
 
         // Create a directory with files
         let dir_path = temp_dir.path().join("mydir");
@@ -1425,36 +859,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_exists_false() {
-        let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
-
-        let exists_params = json!({
-            "operation": "exists",
-            "path": "nonexistent_file.txt"
-        });
-
-        let result = tool.execute(exists_params).await;
-        assert!(result.is_ok());
-        let response = result.unwrap();
-        assert!(!response["exists"].as_bool().unwrap());
-        assert_eq!(response["type"], serde_json::Value::Null);
-    }
-
-    #[tokio::test]
     async fn test_binary_file_base64() {
         let temp_dir = TempDir::new().unwrap();
-        let policy = SecurityPolicy {
-            workspace_dir: temp_dir.path().to_path_buf(),
-            workspace_only: false,
-            ..SecurityPolicy::default()
-        };
-        let tool = FileSystemTool::with_policy(policy);
+        let tool = FileSystemTool::new().with_workspace(temp_dir.path());
 
         // Create a binary file
         let binary_content = vec![0u8, 1, 2, 3, 255, 254, 253];
@@ -1477,5 +884,27 @@ mod tests {
         let base64_content = response["content"].as_str().unwrap();
         let decoded = base64::decode(base64_content).unwrap();
         assert_eq!(decoded, binary_content);
+    }
+
+    #[tokio::test]
+    async fn test_absolute_path_access() {
+        // With ADR-014, absolute paths should work without sandbox restrictions
+        let temp_dir = TempDir::new().unwrap();
+        let tool = FileSystemTool::new(); // No workspace restriction
+
+        // Create file using absolute path
+        let file_path = temp_dir.path().join("absolute_test.txt");
+        fs::write(&file_path, "absolute path content").await.unwrap();
+
+        // Read using absolute path
+        let read_params = json!({
+            "operation": "read",
+            "path": file_path.to_str().unwrap()
+        });
+
+        let result = tool.execute(read_params).await;
+        assert!(result.is_ok(), "Should read with absolute path: {:?}", result);
+        let response = result.unwrap();
+        assert!(response["content"].as_str().unwrap().contains("absolute path content"));
     }
 }

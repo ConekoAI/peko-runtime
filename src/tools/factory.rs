@@ -25,10 +25,9 @@
 //!
 //! Note: Custom tools can also be disabled by name.
 
-use crate::security::SecurityPolicy;
 use crate::tools::traits::Tool;
 use crate::tools::{
-    ApplyPatchConfig, ApplyPatchTool, CronTool, FileSystemTool, ProcessTool, SessionStatusTool,
+    ApplyPatchConfig, ApplyPatchTool, CronTool, FileSystemTool, ShellTool, SessionStatusTool,
     SessionsHistoryTool, SessionsListTool,
 };
 use std::collections::HashSet;
@@ -63,13 +62,15 @@ impl Default for McpFactoryConfig {
 /// Configuration for tool factory
 #[derive(Debug, Clone)]
 pub struct ToolFactoryConfig {
-    /// Workspace directory (for filesystem security)
+    /// Workspace directory (default for relative paths)
     pub workspace_dir: PathBuf,
     /// Enable filesystem tool
     pub enable_filesystem: bool,
     /// Enable apply patch tool
     pub enable_apply_patch: bool,
-    /// Enable process tool
+    /// Enable shell tool (replaces process tool)
+    pub enable_shell: bool,
+    /// Enable process tool (deprecated, use enable_shell)
     pub enable_process: bool,
     /// Enable session introspection tools
     pub enable_session_tools: bool,
@@ -101,7 +102,8 @@ impl Default for ToolFactoryConfig {
             workspace_dir: PathBuf::from("."),
             enable_filesystem: true,
             enable_apply_patch: true,
-            enable_process: true,
+            enable_shell: true,
+            enable_process: true, // For backward compatibility
             enable_session_tools: true,
             enable_cron: true,
             cron_db_path: None,
@@ -118,16 +120,17 @@ impl Default for ToolFactoryConfig {
 }
 
 impl ToolFactoryConfig {
-    /// Create a minimal configuration (filesystem + process only)
+    /// Create a minimal configuration (filesystem + shell only)
     ///
-    /// Use this for restricted environments where only basic file and process
+    /// Use this for restricted environments where only basic file and shell
     /// operations are needed.
     pub fn minimal(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
             enable_filesystem: true,
             enable_apply_patch: false,
-            enable_process: true,
+            enable_shell: true,
+            enable_process: true, // Backward compat
             enable_session_tools: false,
             enable_cron: false,
             mcp: McpFactoryConfig::disabled(),
@@ -260,14 +263,11 @@ impl ToolFactory {
             .map(|s| s.to_lowercase())
             .collect();
 
-        // Filesystem tool with security policy
+        // Filesystem tool
         if config.enable_filesystem && !Self::is_disabled(&config.disabled_tools, "filesystem") {
-            let policy = SecurityPolicy {
-                workspace_dir: config.workspace_dir.clone(),
-                workspace_only: false,
-                ..Default::default()
-            };
-            tools.push(Arc::new(FileSystemTool::with_policy(policy)));
+            tools.push(Arc::new(
+                FileSystemTool::new().with_workspace(config.workspace_dir.clone()),
+            ));
         } else if config.enable_filesystem {
             disabled.push("filesystem".to_string());
         }
@@ -283,13 +283,16 @@ impl ToolFactory {
             disabled.push("apply_patch".to_string());
         }
 
-        // Process tool
-        if config.enable_process && !Self::is_disabled(&config.disabled_tools, "process") {
+        // Shell tool (accepts both enable_shell and enable_process for backward compat)
+        let shell_enabled = config.enable_shell || config.enable_process;
+        let shell_disabled = Self::is_disabled(&config.disabled_tools, "shell")
+            || Self::is_disabled(&config.disabled_tools, "process");
+        if shell_enabled && !shell_disabled {
             tools.push(Arc::new(
-                ProcessTool::new().with_workspace(config.workspace_dir.clone()),
+                ShellTool::new().with_workspace(config.workspace_dir.clone()),
             ));
-        } else if config.enable_process {
-            disabled.push("process".to_string());
+        } else if shell_enabled {
+            disabled.push("shell".to_string());
         }
 
         // Session introspection tools
@@ -898,7 +901,8 @@ impl ToolFactory {
     pub fn builtin_tool_names() -> Vec<&'static str> {
         vec![
             "filesystem",
-            "process",
+            "shell",
+            "process", // Deprecated, kept for backward compatibility
             "apply_patch",
             "agent_spawn",
             "agent_spawn_status",
@@ -934,28 +938,28 @@ mod tests {
     fn test_disabled_tools_filtering() {
         let config = ToolFactoryConfig {
             workspace_dir: PathBuf::from("."),
-            disabled_tools: vec!["process".to_string(), "cron".to_string()],
+            disabled_tools: vec!["shell".to_string(), "cron".to_string()],
             ..Default::default()
         };
 
         let result = ToolFactory::create_tools(&config);
 
-        // Check that process and cron are in disabled list
-        assert!(result.disabled.contains(&"process".to_string()));
+        // Check that shell and cron are in disabled list
+        assert!(result.disabled.contains(&"shell".to_string()));
         assert!(result.disabled.contains(&"cron".to_string()));
 
         // Check that disabled tools are not in tools list
         let tool_names: Vec<_> = result.tools.iter().map(|t| t.name()).collect();
-        assert!(!tool_names.contains(&"process"));
+        assert!(!tool_names.contains(&"shell"));
         assert!(!tool_names.contains(&"cron"));
     }
 
     #[test]
     fn test_is_disabled_case_insensitive() {
-        let disabled = vec!["Process".to_string(), "CRON".to_string()];
+        let disabled = vec!["Shell".to_string(), "CRON".to_string()];
 
-        assert!(ToolFactory::is_disabled(&disabled, "process"));
-        assert!(ToolFactory::is_disabled(&disabled, "PROCESS"));
+        assert!(ToolFactory::is_disabled(&disabled, "shell"));
+        assert!(ToolFactory::is_disabled(&disabled, "SHELL"));
         assert!(ToolFactory::is_disabled(&disabled, "cron"));
         assert!(!ToolFactory::is_disabled(&disabled, "filesystem"));
     }
@@ -963,14 +967,14 @@ mod tests {
     #[test]
     fn test_validate_disabled_tools() {
         let disabled = vec![
-            "process".to_string(),
+            "shell".to_string(),
             "invalid_tool".to_string(),
             "filesystem".to_string(),
         ];
 
         let invalid = ToolFactory::validate_disabled_tools(&disabled);
         assert!(invalid.contains(&"invalid_tool".to_string()));
-        assert!(!invalid.contains(&"process".to_string()));
+        assert!(!invalid.contains(&"shell".to_string()));
         assert!(!invalid.contains(&"filesystem".to_string()));
     }
 
@@ -978,7 +982,8 @@ mod tests {
     fn test_builtin_tool_names() {
         let names = ToolFactory::builtin_tool_names();
         assert!(names.contains(&"filesystem"));
-        assert!(names.contains(&"process"));
+        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"process")); // Kept for backward compat
         assert!(names.contains(&"cron"));
         assert!(names.contains(&"agent_spawn"));
     }
