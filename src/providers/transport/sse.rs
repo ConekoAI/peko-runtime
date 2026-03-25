@@ -72,8 +72,10 @@ impl SseParser {
                     let _ = tx.send(Ok(event)).await;
                 }
             }
+            // tx dropped here, closing the channel
         });
 
+        // Use ReceiverStream for reliable channel-to-stream conversion
         Box::pin(ReceiverStream::new(rx))
     }
 }

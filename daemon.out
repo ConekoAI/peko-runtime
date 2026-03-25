@@ -1,5 +1,0 @@
-🚀 Starting daemon in foreground (interval: 15s)...
-   Config dir: C:\Users\Megad\.pekobot
-   Data dir: C:\Users\Megad\AppData\Roaming\pekobot
-   API: http://127.0.0.1:11435
-[2m2026-03-18T04:51:37.421606Z[0m [33m WARN[0m [2mpekobot::daemon[0m[2m:[0m Session maintenance failed for test-agent-router: 系统找不到指定的文件。 (os error 2)

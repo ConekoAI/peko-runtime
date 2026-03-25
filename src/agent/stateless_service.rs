@@ -400,7 +400,7 @@ impl StatelessAgentService {
         let (tx, rx) = tokio::sync::mpsc::channel::<AgenticEvent>(10000);
 
         // Spawn blocking task that runs agent to completion
-        tokio::task::spawn_blocking(move || {
+        let handle = tokio::task::spawn_blocking(move || {
             // Create a new runtime for this thread
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -419,6 +419,12 @@ impl StatelessAgentService {
                     .await;
             });
             // tx is dropped here, signaling end of stream
+        });
+        
+        // Spawn a task to await the handle - this ensures the blocking task completes
+        // and the sender is dropped, signaling end of stream to the receiver
+        tokio::spawn(async move {
+            let _ = handle.await;
         });
 
         Ok(rx)

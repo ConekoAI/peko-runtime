@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use std::pin::Pin;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info};
 
 /// Unified provider core
@@ -372,28 +373,35 @@ impl<A: ApiAdapter + Clone + 'static> super::Provider for ProviderCore<A> {
             .build_request(&msgs, Some(&tool_defs), &opts, true)?;
         let stream = self.client.post_stream(&path, &body).await?;
 
-        // Parse SSE and convert to StreamEvent using the adapter
+        // Parse SSE and convert to StreamEvent using a channel-based approach
+        // (avoids async-stream buffering issues)
         let adapter = self.adapter.clone();
-        let stream = crate::providers::transport::sse::SseParser::parse_stream(stream).filter_map(
-            move |result| {
-                let adapter = adapter.clone();
-                async move {
-                    match result {
-                        Ok(event) => {
-                            // Use adapter's parse_sse_event for proper provider-specific parsing
-                            match adapter.parse_sse_event(&event.data) {
-                                Ok(Some(stream_event)) => Some(Ok(stream_event)),
-                                Ok(None) => None, // Skip events that return None
-                                Err(e) => Some(Err(e)),
-                            }
+        let (tx, rx) = mpsc::channel::<anyhow::Result<super::StreamEvent>>(100);
+
+        tokio::spawn(async move {
+            let mut sse_stream = crate::providers::transport::sse::SseParser::parse_stream(stream);
+            while let Some(result) = sse_stream.next().await {
+                let output = match result {
+                    Ok(event) => {
+                        match adapter.parse_sse_event(&event.data) {
+                            Ok(Some(stream_event)) => Some(Ok(stream_event)),
+                            Ok(None) => None,
+                            Err(e) => Some(Err(e)),
                         }
-                        Err(e) => Some(Err(e)),
+                    }
+                    Err(e) => Some(Err(e)),
+                };
+
+                if let Some(event) = output {
+                    if tx.send(event).await.is_err() {
+                        break;
                     }
                 }
-            },
-        );
+            }
+            // tx dropped here, closing the channel
+        });
 
-        Ok(Box::pin(stream))
+        Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
     async fn complete_stream(

@@ -1033,52 +1033,57 @@ impl AgenticLoopV4 {
             let mut stop_reason = StopReason::Stop;
             let mut stream_event_count = 0;
 
-            while let Some(result) = stream.next().await {
-                stream_event_count += 1;
-                match result {
-                    Ok(stream_event) => {
-                        // Process through orchestrator
-                        let agentic_events = orchestrator.process(stream_event.clone());
-                        for event in agentic_events {
-                            // Track text accumulation
-                            match &event {
-                                AgenticEvent::AssistantDelta { text, .. } => {
-                                    accumulated_text.push_str(text);
-                                }
-                                AgenticEvent::Thinking { text, is_delta, .. } => {
-                                    if *is_delta {
-                                        thinking_text.push_str(text);
-                                    } else {
-                                        thinking_text = text.clone();
+            loop {
+                match stream.next().await {
+                    Some(result) => {
+                        stream_event_count += 1;
+                        match result {
+                            Ok(stream_event) => {
+                                // Process through orchestrator
+                                let agentic_events = orchestrator.process(stream_event.clone());
+                                for event in agentic_events {
+                                    // Track text accumulation
+                                    match &event {
+                                        AgenticEvent::AssistantDelta { text, .. } => {
+                                            accumulated_text.push_str(text);
+                                        }
+                                        AgenticEvent::Thinking { text, is_delta, .. } => {
+                                            if *is_delta {
+                                                thinking_text.push_str(text);
+                                            } else {
+                                                thinking_text = text.clone();
+                                            }
+                                        }
+                                        _ => {}
                                     }
+                                    // Emit event
+                                    on_event(event);
                                 }
-                                _ => {}
-                            }
-                            // Emit event
-                            on_event(event);
-                        }
 
-                        // Track tool calls and stop reason from stream events
-                        match stream_event {
-                            crate::providers::StreamEvent::ToolCallEnd { tool_call, .. } => {
-                                tool_calls.push(tool_call);
+                                // Track tool calls and stop reason from stream events
+                                match stream_event {
+                                    crate::providers::StreamEvent::ToolCallEnd { tool_call, .. } => {
+                                        tool_calls.push(tool_call);
+                                    }
+                                    crate::providers::StreamEvent::Done {
+                                        stop_reason: reason,
+                                    } => {
+                                        stop_reason = reason;
+                                    }
+                                    _ => {}
+                                }
                             }
-                            crate::providers::StreamEvent::Done {
-                                stop_reason: reason,
-                            } => {
-                                stop_reason = reason;
+                            Err(e) => {
+                                on_event(AgenticEvent::Lifecycle {
+                                    run_id: run_id.clone(),
+                                    phase: LifecyclePhase::Error,
+                                    error: Some(e.to_string()),
+                                });
+                                return Err(e);
                             }
-                            _ => {}
                         }
                     }
-                    Err(e) => {
-                        on_event(AgenticEvent::Lifecycle {
-                            run_id: run_id.clone(),
-                            phase: LifecyclePhase::Error,
-                            error: Some(e.to_string()),
-                        });
-                        return Err(e);
-                    }
+                    None => break,
                 }
             }
 
