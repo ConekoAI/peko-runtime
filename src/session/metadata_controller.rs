@@ -379,15 +379,15 @@ impl MetadataController {
 
     /// Compute message count from JSONL (source of truth)
     pub async fn count_messages_from_jsonl(&self, session_id: &str) -> Result<usize> {
-        let entries = self
+        let events = self
             .storage
-            .load_session(session_id)
+            .load_events(session_id)
             .await
             .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
 
-        Ok(entries
+        Ok(events
             .iter()
-            .filter(|e| matches!(e, crate::session::jsonl::SessionEntry::Message { .. }))
+            .filter(|e| matches!(e, crate::session::events::SessionEvent::LlmMessage { .. }))
             .count())
     }
 

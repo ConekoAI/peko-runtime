@@ -13,6 +13,7 @@
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::session::index::{SessionEntry, SessionIndex};
+use crate::session::metadata_controller::MetadataController;
 use anyhow::Result;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
@@ -221,10 +222,12 @@ async fn ensure_sessions_dir(paths: &GlobalPaths, name: &str, team: &str) -> Res
 // ================================================================================
 
 /// List all sessions from centralized index
+/// Syncs message counts from JSONL (source of truth) before returning
 async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<SessionEntry>> {
-    let mut index = SessionIndex::open(sessions_dir);
-    let entries = index.list_all().await?;
-    Ok(entries)
+    let mut controller = MetadataController::new(sessions_dir);
+    // Sync from JSONL to ensure message counts are accurate
+    let metadata_list = controller.list_metadata(true).await?;
+    Ok(metadata_list.into_iter().map(|m| m.to_entry()).collect())
 }
 
 // ================================================================================
@@ -381,15 +384,16 @@ async fn show_session(
         ));
     };
 
-    // Load session entry from centralized index
-    let mut index = SessionIndex::open(&loc.sessions_dir);
-    let Some(entry) = index.get(session_id).await? else {
+    // Load session entry from centralized index with sync from JSONL
+    let mut controller = MetadataController::new(&loc.sessions_dir);
+    let Some(metadata) = controller.get_metadata(session_id, true).await? else {
         return Err(anyhow::anyhow!(
             "Session '{}' not found for agent '{}'",
             session_id,
             agent
         ));
     };
+    let entry = metadata.to_entry();
 
     // Load history if requested
     let history_events = if show_history {
