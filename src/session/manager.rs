@@ -292,6 +292,8 @@ pub struct SessionCreateOptions {
     pub title: Option<String>,
     pub trigger: String,
     pub cwd: Option<String>,
+    /// Specific session ID to use (if not provided, a UUID will be generated)
+    pub session_id: Option<String>,
 }
 
 impl SessionCreateOptions {
@@ -317,6 +319,11 @@ impl SessionCreateOptions {
 
     pub fn with_cwd(mut self, cwd: impl Into<String>) -> Self {
         self.cwd = Some(cwd.into());
+        self
+    }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
         self
     }
 }
@@ -714,7 +721,10 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Sessions directory not set"))?
             .clone();
 
-        let session_id = uuid::Uuid::new_v4().to_string();
+        // Use provided session ID or generate a new one
+        let session_id = options.session_id.clone().unwrap_or_else(|| {
+            uuid::Uuid::new_v4().to_string()
+        });
         let session_key = derive_base_session_key(agent, peer);
 
         // 1. Create JSONL file via UnifiedSession

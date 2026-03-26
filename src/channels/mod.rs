@@ -231,7 +231,12 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
             }
             AgenticEvent::Lifecycle { phase, error, .. } => {
                 match phase {
-                    LifecyclePhase::End => break,
+                    LifecyclePhase::End => {
+                        // Give a small grace period for any pending session writes to complete
+                        // The spawned task may still be writing to the session file
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        break;
+                    }
                     LifecyclePhase::Error => {
                         output.success = false;
                         output.error = error;

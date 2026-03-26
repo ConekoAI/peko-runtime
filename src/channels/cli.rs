@@ -194,6 +194,8 @@ impl CliChannel {
                         if has_started_line {
                             println!();
                         }
+                        // Give a small grace period for any pending session writes to complete
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                         break;
                     }
                     LifecyclePhase::Error => {

@@ -243,28 +243,31 @@ impl StatelessAgentService {
             .await?;
         debug!("Loaded {} messages from session history", history.len());
 
-        // 3. Get or create session via SessionManager
-        // Use for_cli() for proper team-aware path resolution
+        // 3. Open the specific session by ID
+        // This ensures we write to the correct session file
         let team = Some(config_entry.team.as_str());
         let mut session_manager =
             SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team);
-        let peer = Peer::User("default".to_string());
-        let session = session_manager
-            .get_or_create_base(&request.agent_name, &peer)
-            .await?;
-
-        // CRITICAL: Update the session ID to match the requested session
-        // This ensures we're writing to the correct session file
-        {
-            let mut base = session.write().await;
-            if base.id != request.session_id {
-                debug!("Session ID mismatch: base has '{}', request is for '{}'. Using request session ID.", 
-                       base.id, request.session_id);
-                // Note: The session file is keyed by ID, so we need to ensure
-                // we're writing to the right file. For now, we update the base id.
-                base.id = request.session_id.clone();
+        
+        // Try to open existing session, create if not exists
+        let session = match session_manager.open_session(&request.session_id).await? {
+            Some(handle) => {
+                debug!("Opened existing session '{}'", request.session_id);
+                handle.base().clone()
             }
-        }
+            None => {
+                debug!("Session '{}' not found, creating new", request.session_id);
+                let peer = Peer::User("default".to_string());
+                let options = crate::session::SessionCreateOptions::new()
+                    .with_trigger("api")
+                    .with_session_id(&request.session_id);
+                let handle = session_manager
+                    .create_session(&request.agent_name, &peer, options)
+                    .await?;
+                
+                handle.base().clone()
+            }
+        };
 
         // 4. Cold-start agent (spawn)
         let agent_start = Instant::now();
@@ -386,13 +389,29 @@ impl StatelessAgentService {
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
-        let mut session_manager = SessionManager::new()
-            .with_registry(&request.agent_name)
-            .await?;
-        let peer = Peer::User("default".to_string());
-        let session = session_manager
-            .get_or_create_base(&request.agent_name, &peer)
-            .await?;
+        // Open the specific session by ID (same logic as execute_inner)
+        let team = Some(config_entry.team.as_str());
+        let mut session_manager =
+            SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team);
+        
+        let session = match session_manager.open_session(&request.session_id).await? {
+            Some(handle) => {
+                debug!("Opened existing session '{}' for streaming", request.session_id);
+                handle.base().clone()
+            }
+            None => {
+                debug!("Session '{}' not found, creating new for streaming", request.session_id);
+                let peer = Peer::User("default".to_string());
+                let options = crate::session::SessionCreateOptions::new()
+                    .with_trigger("api")
+                    .with_session_id(&request.session_id);
+                let handle = session_manager
+                    .create_session(&request.agent_name, &peer, options)
+                    .await?;
+                
+                handle.base().clone()
+            }
+        };
 
         let prompt = self.build_prompt(&request.message, &history)?;
 

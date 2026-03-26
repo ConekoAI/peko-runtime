@@ -322,6 +322,7 @@ impl AgenticLoopV4 {
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
     ) -> Result<AgenticResult> {
+        eprintln!("DEBUG: run_loop started");
         // Sequence counter for AssistantText events
         let mut sequence_counter: usize = 0;
         // Build tool definitions
@@ -745,10 +746,21 @@ impl AgenticLoopV4 {
 
             // Add final answer to session
             {
+                eprintln!("DEBUG: About to add assistant message, text len={}", final_text.len());
                 let mut s = session.write().await;
-                s.add_assistant(&final_text, None, Some(response.usage.clone()))
-                    .await?;
+                eprintln!("DEBUG: Got session write lock, session_id={}", s.id);
+                match s.add_assistant(&final_text, None, Some(response.usage.clone())).await {
+                    Ok(_) => {
+                        eprintln!("DEBUG: Successfully added assistant message");
+                    }
+                    Err(e) => {
+                        eprintln!("DEBUG: Failed to add assistant message: {}", e);
+                        return Err(e);
+                    }
+                }
             }
+            
+            eprintln!("DEBUG: Returning AgenticResult with success=true");
 
             // Emit final assistant event
             sequence_counter += 1;
