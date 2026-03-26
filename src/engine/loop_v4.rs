@@ -1269,6 +1269,13 @@ impl AgenticLoopV4 {
                 total_tokens: total_usage.total as u32,
             });
 
+            // Emit end event to signal completion
+            on_event(AgenticEvent::Lifecycle {
+                run_id: run_id.clone(),
+                phase: LifecyclePhase::End,
+                error: None,
+            });
+
             return Ok(AgenticResult {
                 success: true,
                 final_answer: accumulated_text,

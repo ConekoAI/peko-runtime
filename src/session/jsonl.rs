@@ -252,8 +252,6 @@ impl SessionStorage {
     /// Append a Pekobot event to the session atomically
     pub async fn append_event(&self, session_id: &str, event: &SessionEvent) -> Result<()> {
         let path = self.session_path(session_id);
-
-        // Acquire lock for concurrent access protection
         let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
 
         let json = serde_json::to_string(event)?;
@@ -262,11 +260,6 @@ impl SessionStorage {
         // Atomic append
         self.atomic_append(&path, &line).await?;
 
-        debug!(
-            "Appended event to session {}: {}",
-            session_id,
-            event.event_type()
-        );
         Ok(())
     }
 

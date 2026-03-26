@@ -409,14 +409,32 @@ impl StatelessAgentService {
 
             // Run the agent execution
             rt.block_on(async {
+                // Clone sender for error handling
+                let tx_err = tx.clone();
                 let on_event = move |event: AgenticEvent| {
                     // Try send - if channel is full or closed, skip
                     let _ = tx.try_send(event);
                 };
 
-                let _ = agent
+                match agent
                     .execute_streaming_with_session(&prompt, session, Some(history), on_event)
-                    .await;
+                    .await
+                {
+                    Ok(result) => {
+                        if !result.success {
+                            tracing::error!("Agent execution failed: {:?}", result.final_answer);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Streaming execution error: {}", e);
+                        // Send error event to channel
+                        let _ = tx_err.try_send(crate::engine::AgenticEvent::Lifecycle {
+                            run_id: format!("run_{}", uuid::Uuid::new_v4()),
+                            phase: crate::engine::LifecyclePhase::Error,
+                            error: Some(format!("Execution failed: {}", e)),
+                        });
+                    }
+                }
             });
             // tx is dropped here, signaling end of stream
         });

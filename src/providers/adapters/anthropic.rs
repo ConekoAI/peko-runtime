@@ -291,8 +291,8 @@ impl super::ApiAdapter for AnthropicAdapter {
             Some("content_block_delta") => {
                 if let Some(delta) = event.delta {
                     let idx = event.index.unwrap_or(0) as usize;
-                    match delta.delta_type.as_str() {
-                        "text_delta" => {
+                    match delta.delta_type.as_deref() {
+                        Some("text_delta") => {
                             if let Some(text) = delta.text {
                                 return Ok(Some(StreamEvent::TextDelta {
                                     content_index: idx,
@@ -300,7 +300,7 @@ impl super::ApiAdapter for AnthropicAdapter {
                                 }));
                             }
                         }
-                        "input_json_delta" => {
+                        Some("input_json_delta") => {
                             if let Some(partial) = delta.partial_json {
                                 return Ok(Some(StreamEvent::ToolCallDelta {
                                     content_index: idx,
@@ -308,7 +308,7 @@ impl super::ApiAdapter for AnthropicAdapter {
                                 }));
                             }
                         }
-                        "thinking_delta" => {
+                        Some("thinking_delta") => {
                             if let Some(thinking) = delta.thinking {
                                 return Ok(Some(StreamEvent::ThinkingDelta {
                                     content_index: idx,
@@ -452,7 +452,7 @@ struct AnthropicContentBlockInfo {
 #[derive(Debug, Deserialize)]
 struct AnthropicDelta {
     #[serde(rename = "type")]
-    delta_type: String,
+    delta_type: Option<String>,  // Made optional - message_delta events don't have this
     text: Option<String>,
     #[serde(rename = "partial_json")]
     partial_json: Option<String>,
