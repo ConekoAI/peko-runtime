@@ -226,16 +226,19 @@ impl StreamOrchestrator {
         // Flush the buffer
         events.extend(self.buffer.flush());
 
-        // Flush chunker
-        let chunks = self.chunker.flush();
-        for chunk in chunks {
-            self.sequence += 1;
-            events.push(AgenticEvent::AssistantDelta {
-                run_id: self.run_id.clone(),
-                text: chunk,
-                sequence: self.sequence,
-                is_interstitial: self.has_tool_calls,
-            });
+        // Flush chunker - only in Live mode where events are emitted immediately
+        // In Block/FinalOnly modes, content has already been fed to buffers
+        if self.config.delivery_mode == DeliveryMode::Live {
+            let chunks = self.chunker.flush();
+            for chunk in chunks {
+                self.sequence += 1;
+                events.push(AgenticEvent::AssistantDelta {
+                    run_id: self.run_id.clone(),
+                    text: chunk,
+                    sequence: self.sequence,
+                    is_interstitial: self.has_tool_calls,
+                });
+            }
         }
 
         // If in FinalOnly mode, emit the accumulated text

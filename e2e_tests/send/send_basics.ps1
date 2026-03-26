@@ -111,7 +111,7 @@ Write-Host "TEST 3: Send with team/agent format" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending message using team/agent format..." -ForegroundColor Yellow
-$result = pekobot send "$teamName/$teamAgent" "What about Italy?" 2>&1
+$result = pekobot send "$teamName/$teamAgent" "What about Italy?" --no-stream 2>&1
 Write-Host "Response: $result"
 
 # Verify session count (should resume existing session)

@@ -54,7 +54,7 @@ pekobot send $agentName "A ball is thrown horizontally at 10 m/s from a height o
 Questions:
 
 How long does it take to hit the ground?
-How far horizontally does it travel?" --no-stream 2>&1
+How far horizontally does it travel?" 2>&1
 
 # Get session id
 $jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json

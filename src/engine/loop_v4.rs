@@ -322,7 +322,7 @@ impl AgenticLoopV4 {
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
     ) -> Result<AgenticResult> {
-        eprintln!("DEBUG: run_loop started");
+        // Main agent loop
         // Sequence counter for AssistantText events
         let mut sequence_counter: usize = 0;
         // Build tool definitions
@@ -746,21 +746,9 @@ impl AgenticLoopV4 {
 
             // Add final answer to session
             {
-                eprintln!("DEBUG: About to add assistant message, text len={}", final_text.len());
                 let mut s = session.write().await;
-                eprintln!("DEBUG: Got session write lock, session_id={}", s.id);
-                match s.add_assistant(&final_text, None, Some(response.usage.clone())).await {
-                    Ok(_) => {
-                        eprintln!("DEBUG: Successfully added assistant message");
-                    }
-                    Err(e) => {
-                        eprintln!("DEBUG: Failed to add assistant message: {}", e);
-                        return Err(e);
-                    }
-                }
+                s.add_assistant(&final_text, None, Some(response.usage.clone())).await?;
             }
-            
-            eprintln!("DEBUG: Returning AgenticResult with success=true");
 
             // Emit final assistant event
             sequence_counter += 1;
@@ -1265,13 +1253,9 @@ impl AgenticLoopV4 {
                 s.add_assistant(&accumulated_text, None, None).await?;
             }
 
-            // Emit final AssistantText event for blocking mode consumption
-            on_event(AgenticEvent::AssistantText {
-                run_id: run_id.clone(),
-                text: accumulated_text.clone(),
-                is_interstitial: false,
-                sequence: 0,
-            });
+            // Note: We don't emit AssistantText here because the content has already
+            // been streamed via AssistantDelta events. Emitting AssistantText would
+            // cause duplication for consumers that process both event types.
 
             // Emit final usage event
             on_event(AgenticEvent::Usage {
