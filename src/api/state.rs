@@ -6,7 +6,7 @@
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
-    AgentConfigService, AgentService, MessageService, SessionService, TeamManagementService,
+    AgentConfigService, AgentService, SessionService, TeamManagementService,
     TeamService,
 };
 use crate::hooks::{EventBroadcaster, HookRegistry};
@@ -75,8 +75,7 @@ pub struct AppState {
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
 
-    /// Message service (unified for CLI and API)
-    message_service: Arc<MessageService>,
+
 
     /// Session service (unified for CLI and API)
     session_service: Arc<SessionService>,
@@ -163,11 +162,6 @@ impl AppState {
         let lifecycle = Arc::new(LifecycleManager::new());
         let team_manager = Arc::new(TeamManager::new());
 
-        let message_service = Arc::new(MessageService::new(
-            agent_service.clone(),
-            path_resolver_clone.clone(),
-        ));
-
         let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
 
         // Create unified services
@@ -197,7 +191,6 @@ impl AppState {
             agent_service,
             agent_mgmt_service,
             lifecycle,
-            message_service,
             session_service,
             team_service,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
@@ -237,11 +230,6 @@ impl AppState {
         let lifecycle = Arc::new(LifecycleManager::new());
         let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
 
-        let message_service = Arc::new(MessageService::new(
-            agent_service.clone(),
-            path_resolver_clone.clone(),
-        ));
-
         let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
 
         // Create unified services
@@ -271,7 +259,6 @@ impl AppState {
             agent_service,
             agent_mgmt_service,
             lifecycle,
-            message_service,
             session_service,
             team_service,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
@@ -379,11 +366,6 @@ impl AppState {
     /// Get the lifecycle manager
     pub fn lifecycle(&self) -> &Arc<LifecycleManager> {
         &self.lifecycle
-    }
-
-    /// Get the message service
-    pub fn message_service(&self) -> &Arc<MessageService> {
-        &self.message_service
     }
 
     /// Get the session service

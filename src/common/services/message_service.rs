@@ -438,7 +438,7 @@ impl MessageService {
             match agent_service.execute_streaming(exec_request).await {
                 Ok(mut event_rx) => {
                     // Forward all events from the streaming execution
-                    while let Some(event) = event_rx.recv().await {
+                    while let Some(event) = event_rx.receiver.recv().await {
                         let is_end = matches!(
                             event,
                             crate::engine::AgenticEvent::Lifecycle {
@@ -488,8 +488,14 @@ impl MessageService {
             request.agent_name, duration_ms
         );
 
+        // Create a completion channel for the legacy API
+        // Since this is deprecated code, we use a dummy completion signal
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        let _ = completion_tx.send(Ok(()));
+
         Ok(crate::channels::EventStream {
             receiver: rx,
+            completion: completion_rx,
             session_id,
             is_new_session,
         })

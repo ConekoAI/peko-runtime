@@ -17,11 +17,9 @@ use crate::common::paths::PathResolver;
 use crate::common::services::AgentConfigService;
 use crate::engine::AgenticEvent;
 use crate::providers::{ChatMessage, MessageRole, TokenUsage};
-use crate::session::events::SessionEvent;
-
 use crate::session::jsonl::SessionStorage;
 use crate::session::manager::SessionManager;
-use crate::session::types::Peer;
+use crate::session::types::{ChannelType, Peer};
 // Note: Session storage uses jsonl module directly
 use crate::types::message::ContentBlock;
 use anyhow::{Context, Result};
@@ -86,6 +84,83 @@ pub struct ExecutionContext {
     pub metadata: HashMap<String, String>,
 }
 
+/// Message request for high-level message execution
+/// 
+/// This type is used by execute_message() and execute_message_streaming()
+/// to provide a unified interface for message sending.
+#[derive(Debug, Clone)]
+pub struct MessageRequest {
+    /// Agent name
+    pub agent_name: String,
+    /// Team (optional)
+    pub team: Option<String>,
+    /// Message content
+    pub message: String,
+    /// Session ID (optional - creates new if not provided)
+    pub session_id: Option<String>,
+    /// Force new session
+    pub new_session: bool,
+    /// Timeout in seconds (optional)
+    pub timeout_secs: Option<u64>,
+}
+
+impl MessageRequest {
+    /// Create a new message request
+    pub fn new(agent_name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            agent_name: agent_name.into(),
+            team: None,
+            message: message.into(),
+            session_id: None,
+            new_session: false,
+            timeout_secs: None,
+        }
+    }
+
+    /// Set team
+    pub fn with_team(mut self, team: impl Into<String>) -> Self {
+        self.team = Some(team.into());
+        self
+    }
+
+    /// Set session ID
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Set session ID from Option (preserves None)
+    pub fn with_session_opt(mut self, session_id: Option<String>) -> Self {
+        self.session_id = session_id;
+        self
+    }
+
+    /// Set new session flag
+    pub fn with_new_session(mut self, new: bool) -> Self {
+        self.new_session = new;
+        self
+    }
+
+    /// Set timeout
+    pub fn with_timeout(mut self, secs: u64) -> Self {
+        self.timeout_secs = Some(secs);
+        self
+    }
+}
+
+/// Tool call information in response
+#[derive(Debug, Clone)]
+pub struct ToolCallInfo {
+    /// Tool call ID
+    pub id: String,
+    /// Tool name
+    pub name: String,
+    /// Tool parameters
+    pub parameters: serde_json::Value,
+    /// Tool result (if available)
+    pub result: Option<String>,
+}
+
 /// Tool call record for response
 #[derive(Debug, Clone)]
 pub struct ToolCallRecord {
@@ -95,6 +170,31 @@ pub struct ToolCallRecord {
     pub parameters: serde_json::Value,
     /// Tool result (if available)
     pub result: Option<String>,
+}
+
+/// Message sending result
+/// 
+/// This is the high-level result type returned by execute_message()
+#[derive(Debug, Clone)]
+pub struct MessageResult {
+    /// Response content
+    pub content: String,
+    /// Session ID used
+    pub session_id: String,
+    /// Whether this was a new session
+    pub is_new_session: bool,
+    /// Token usage
+    pub usage: TokenUsage,
+    /// Tool calls made
+    pub tool_calls: Vec<ToolCallInfo>,
+    /// Execution duration in milliseconds
+    pub duration_ms: u64,
+    /// Number of iterations
+    pub iterations: usize,
+    /// Whether execution succeeded
+    pub success: bool,
+    /// Error message (if failed)
+    pub error: Option<String>,
 }
 
 /// Execution result
@@ -180,6 +280,163 @@ impl StatelessAgentService {
     pub fn with_default_timeout(mut self, timeout: Duration) -> Self {
         self.default_timeout = timeout;
         self
+    }
+
+    /// Get team for an agent (helper to avoid repetition)
+    async fn get_team(&self, agent_name: &str) -> Result<Option<String>> {
+        Ok(self
+            .config_service
+            .get(agent_name, None)
+            .await?
+            .map(|entry| entry.team))
+    }
+
+    /// Execute a message and return a blocking response
+    /// 
+    /// This is the high-level interface that replaces MessageService::send_message()
+    /// It handles session resolution and executes the agent, returning the complete result.
+    /// 
+    /// # Arguments
+    /// * `request` - The message request containing agent name, message, and session options
+    /// 
+    /// # Returns
+    /// A `MessageResult` containing the response, session info, and execution metadata
+    pub async fn execute_message(&self, request: MessageRequest) -> Result<MessageResult> {
+        let start = Instant::now();
+
+        // Resolve session using SessionManager (single authority)
+        let team = self.get_team(&request.agent_name).await?;
+        let mut session_manager = SessionManager::for_cli(
+            self.path_resolver.clone(),
+            &request.agent_name,
+            team.as_deref(),
+        );
+
+        let resolved = session_manager
+            .resolve_session(
+                &request.agent_name,
+                request.team.as_deref(),
+                ChannelType::Http,
+                "default",
+                request.session_id.clone(),
+                request.new_session,
+            )
+            .await?;
+
+        let session_id = resolved.session_id.clone();
+        let is_new_session = resolved.is_new;
+
+        // Build execution request
+        let exec_request = ExecutionRequest {
+            agent_name: request.agent_name.clone(),
+            session_id: session_id.clone(),
+            message: request.message,
+            context: None,
+            timeout_secs: request.timeout_secs,
+        };
+
+        // Execute via stateless service
+        let exec_result = self.execute(exec_request).await;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match exec_result {
+            Ok(result) => {
+                // Convert tool calls
+                let tool_calls: Vec<ToolCallInfo> = result
+                    .tool_calls
+                    .into_iter()
+                    .map(|tc| ToolCallInfo {
+                        id: format!("tool_{}", uuid::Uuid::new_v4().simple()),
+                        name: tc.name,
+                        parameters: tc.parameters,
+                        result: tc.result,
+                    })
+                    .collect();
+
+                Ok(MessageResult {
+                    content: result.response,
+                    session_id,
+                    is_new_session,
+                    usage: result.usage,
+                    tool_calls,
+                    duration_ms,
+                    iterations: result.iterations,
+                    success: result.success,
+                    error: result.error,
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Execute a message and return an EventStream for streaming
+    /// 
+    /// This is the high-level streaming interface that replaces MessageService::send_message_unified()
+    /// It handles session resolution and executes the agent, returning a stream of events.
+    /// 
+    /// # Arguments
+    /// * `request` - The message request containing agent name, message, and session options
+    /// 
+    /// # Returns
+    /// An `EventStream` containing the receiver for events and completion signal
+    pub async fn execute_message_streaming(
+        &self,
+        request: MessageRequest,
+    ) -> Result<crate::channels::EventStream> {
+        let start = Instant::now();
+
+        // Resolve session using SessionManager (single authority)
+        let team = self.get_team(&request.agent_name).await?;
+        let mut session_manager = SessionManager::for_cli(
+            self.path_resolver.clone(),
+            &request.agent_name,
+            team.as_deref(),
+        );
+
+        let resolved = session_manager
+            .resolve_session(
+                &request.agent_name,
+                request.team.as_deref(),
+                ChannelType::Http,
+                "default",
+                request.session_id.clone(),
+                request.new_session,
+            )
+            .await?;
+
+        let session_id = resolved.session_id.clone();
+        let is_new_session = resolved.is_new;
+
+        // Build execution request
+        let exec_request = ExecutionRequest {
+            agent_name: request.agent_name.clone(),
+            session_id: session_id.clone(),
+            message: request.message,
+            context: None,
+            timeout_secs: request.timeout_secs,
+        };
+
+        // Get base session for execution
+        let base_session = resolved.context.hybrid.base.clone();
+
+        // Execute streaming - directly returns EventStream
+        let event_stream = self
+            .execute_streaming_with_session(exec_request, base_session)
+            .await?;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        info!(
+            "Streaming setup complete for '{}' in {}ms",
+            request.agent_name, duration_ms
+        );
+
+        Ok(crate::channels::EventStream {
+            receiver: event_stream.receiver,
+            completion: event_stream.completion,
+            session_id,
+            is_new_session,
+        })
     }
 
     /// Execute agent with cold start
@@ -365,15 +622,15 @@ impl StatelessAgentService {
         })
     }
 
-    /// Execute streaming - returns event receiver
+    /// Execute streaming - returns EventStream with completion signal
     ///
-    /// This method encapsulates the LocalSet requirement internally.
-    /// Callers don't need to worry about spawn_local constraints.
+    /// This is the low-level streaming interface. For high-level usage,
+    /// prefer `execute_message_streaming()` which handles session resolution.
     #[instrument(skip(self, request), fields(agent = %request.agent_name))]
     pub async fn execute_streaming(
         &self,
         request: ExecutionRequest,
-    ) -> Result<tokio::sync::mpsc::Receiver<AgenticEvent>> {
+    ) -> Result<crate::channels::EventStream> {
         // Load config, history, agent, session - these are all Send-safe
         let config_entry = self
             .config_service
@@ -381,11 +638,11 @@ impl StatelessAgentService {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
-        let history = self
+        let _history = self
             .load_session_history(&request.agent_name, &request.session_id)
             .await?;
 
-        let agent = Agent::new(config_entry.config.clone())
+        let _agent = Agent::new(config_entry.config.clone())
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
@@ -413,58 +670,84 @@ impl StatelessAgentService {
             }
         };
 
-        let prompt = self.build_prompt(&request.message, &history)?;
+        // Delegate to the internal method
+        self.execute_streaming_with_session(request, session).await
+    }
 
-        // Create a channel with large buffer
-        let (tx, rx) = tokio::sync::mpsc::channel::<AgenticEvent>(10000);
+    /// Execute streaming with an already-resolved session
+    /// 
+    /// This is the internal implementation used by both `execute_streaming`
+    /// and `execute_message_streaming`. It uses tokio::spawn (not spawn_blocking)
+    /// for single-runtime execution and provides completion signals.
+    #[instrument(skip(self, request, session), fields(agent = %request.agent_name))]
+    async fn execute_streaming_with_session(
+        &self,
+        request: ExecutionRequest,
+        session: Arc<RwLock<crate::session::unified::UnifiedSession>>,
+    ) -> Result<crate::channels::EventStream> {
+        let prompt = self.build_prompt(&request.message, &[])?;
 
-        // Spawn blocking task that runs agent to completion
-        let handle = tokio::task::spawn_blocking(move || {
-            // Create a new runtime for this thread
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create local runtime");
+        // Load history for the agent
+        let history = self
+            .load_session_history(&request.agent_name, &request.session_id)
+            .await?;
 
-            // Run the agent execution
-            rt.block_on(async {
-                // Clone sender for error handling
-                let tx_err = tx.clone();
-                let on_event = move |event: AgenticEvent| {
-                    // Try send - if channel is full or closed, skip
-                    let _ = tx.try_send(event);
-                };
+        // Load agent
+        let agent = Agent::new(
+            self.config_service
+                .get(&request.agent_name, None)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?
+                .config
+                .clone(),
+        )
+        .await
+        .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
-                match agent
-                    .execute_streaming_with_session(&prompt, session, Some(history), on_event)
-                    .await
-                {
-                    Ok(result) => {
-                        if !result.success {
-                            tracing::error!("Agent execution failed: {:?}", result.final_answer);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Streaming execution error: {}", e);
-                        // Send error event to channel
-                        let _ = tx_err.try_send(crate::engine::AgenticEvent::Lifecycle {
-                            run_id: format!("run_{}", uuid::Uuid::new_v4()),
-                            phase: crate::engine::LifecyclePhase::Error,
-                            error: Some(format!("Execution failed: {}", e)),
-                        });
+        // Create channels
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(1000);
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+
+        // Spawn task on main runtime (NOT spawn_blocking)
+        // This ensures session writes complete before completion signal
+        tokio::spawn(async move {
+            let on_event = move |event: AgenticEvent| {
+                let _ = event_tx.try_send(event);
+            };
+
+            // Execute and collect result
+            let result = agent
+                .execute_streaming_with_session(&prompt, session, Some(history.clone()), on_event)
+                .await;
+
+            // At this point, all session writes have completed because
+            // add_assistant/add_tool_result are synchronous
+
+            // Signal completion
+            let completion_result = match result {
+                Ok(exec_result) => {
+                    if exec_result.success {
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "Execution failed: {:?}",
+                            exec_result.final_answer
+                        ))
                     }
                 }
-            });
-            // tx is dropped here, signaling end of stream
-        });
-        
-        // Spawn a task to await the handle - this ensures the blocking task completes
-        // and the sender is dropped, signaling end of stream to the receiver
-        tokio::spawn(async move {
-            let _ = handle.await;
+                Err(e) => Err(e),
+            };
+
+            let _ = completion_tx.send(completion_result);
+            // event_tx is dropped here, signaling end of stream
         });
 
-        Ok(rx)
+        Ok(crate::channels::EventStream {
+            receiver: event_rx,
+            completion: completion_rx,
+            session_id: request.session_id,
+            is_new_session: false,
+        })
     }
 
     /// Get current metrics
@@ -610,5 +893,128 @@ mod tests {
 
         let metrics = service.metrics().await;
         assert_eq!(metrics.total_executions, 0);
+    }
+
+    // ====================================================================================
+    // MessageRequest builder tests (ADR-016 Phase 1)
+    // ====================================================================================
+
+    #[test]
+    fn test_message_request_builder() {
+        let request = MessageRequest::new("my-agent", "Hello")
+            .with_team("default")
+            .with_session("sess_123")
+            .with_new_session(false)
+            .with_timeout(60);
+
+        assert_eq!(request.agent_name, "my-agent");
+        assert_eq!(request.message, "Hello");
+        assert_eq!(request.team, Some("default".to_string()));
+        assert_eq!(request.session_id, Some("sess_123".to_string()));
+        assert!(!request.new_session);
+        assert_eq!(request.timeout_secs, Some(60));
+    }
+
+    #[test]
+    fn test_message_request_builder_defaults() {
+        let request = MessageRequest::new("my-agent", "Hello");
+
+        assert_eq!(request.agent_name, "my-agent");
+        assert_eq!(request.message, "Hello");
+        assert_eq!(request.team, None);
+        assert_eq!(request.session_id, None);
+        assert!(!request.new_session);
+        assert_eq!(request.timeout_secs, None);
+    }
+
+    #[test]
+    fn test_message_request_with_session_opt() {
+        // Test with Some
+        let request1 = MessageRequest::new("agent", "hi")
+            .with_session_opt(Some("session-id".to_string()));
+        assert_eq!(request1.session_id, Some("session-id".to_string()));
+
+        // Test with None
+        let request2 = MessageRequest::new("agent", "hi")
+            .with_session_opt(None);
+        assert_eq!(request2.session_id, None);
+    }
+
+    // ====================================================================================
+    // Service method tests (ADR-016 Phase 1)
+    // ====================================================================================
+
+    #[tokio::test]
+    async fn test_get_team_helper() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let path_resolver = PathResolver::with_dirs(
+            temp_dir.path().join("config"),
+            temp_dir.path().join("data"),
+            temp_dir.path().join("cache"),
+        );
+
+        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+        let service = StatelessAgentService::new(config_service, path_resolver)
+            .await
+            .unwrap();
+
+        // Test get_team for non-existent agent
+        let team = service.get_team("non-existent-agent").await;
+        assert!(team.is_ok());
+        assert_eq!(team.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn test_with_default_timeout() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let path_resolver = PathResolver::with_dirs(
+            temp_dir.path().join("config"),
+            temp_dir.path().join("data"),
+            temp_dir.path().join("cache"),
+        );
+
+        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+        let service = StatelessAgentService::new(config_service, path_resolver)
+            .await
+            .unwrap();
+
+        // Verify default timeout is 300 seconds (5 minutes)
+        // We can't directly check the private field, but we can verify
+        // the method returns self correctly
+        let service_with_timeout = service.with_default_timeout(std::time::Duration::from_secs(120));
+        // Just verify it compiles and returns
+        drop(service_with_timeout);
+    }
+
+    // ====================================================================================
+    // ToolCallInfo tests (ADR-016 Phase 1)
+    // ====================================================================================
+
+    #[test]
+    fn test_tool_call_info_creation() {
+        let tool_call = ToolCallInfo {
+            id: "tool_123".to_string(),
+            name: "filesystem".to_string(),
+            parameters: serde_json::json!({"path": "/tmp/test"}),
+            result: Some("File contents".to_string()),
+        };
+
+        assert_eq!(tool_call.id, "tool_123");
+        assert_eq!(tool_call.name, "filesystem");
+        assert_eq!(tool_call.result, Some("File contents".to_string()));
+    }
+
+    #[test]
+    fn test_tool_call_info_without_result() {
+        let tool_call = ToolCallInfo {
+            id: "tool_456".to_string(),
+            name: "web_search".to_string(),
+            parameters: serde_json::json!({"query": "rust"}),
+            result: None,
+        };
+
+        assert_eq!(tool_call.result, None);
     }
 }

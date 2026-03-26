@@ -9,12 +9,12 @@ pub mod agent_creation_service;
 pub mod agent_service;
 pub mod agent_validator;
 pub mod auth_resolver;
-pub mod message_service;
-pub mod session_resolver;
+// ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub mod session_service;
 pub mod team_management_service;
 pub mod team_service;
 
+// ADR-016: MessageRequest, MessageResult, ToolCallInfo re-exported from agent::stateless_service
 pub use agent_config_builder::{build_config_with_auth, build_default_config, AgentConfigBuilder};
 pub use agent_config_service::{AgentConfigEntry, AgentConfigService};
 // AgentCreationService is deprecated - use AgentService::create_agent() instead
@@ -22,8 +22,7 @@ pub use agent_config_service::{AgentConfigEntry, AgentConfigService};
 pub use agent_service::AgentService;
 pub use agent_validator::AgentValidator;
 pub use auth_resolver::{AuthResolver, DirectAuthResolver, FilesystemAuthResolver};
-pub use message_service::{ChatEvent, MessageRequest, MessageResult, MessageService, ToolCallInfo};
-pub use session_resolver::{ResolutionStrategy, SessionResolver};
+// ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub use session_service::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,
     SessionInfo, SessionService,

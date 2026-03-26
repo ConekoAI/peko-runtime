@@ -176,18 +176,21 @@ pub fn engine_event_to_sse(
 /// Convert an EventStream to an SSE response stream
 ///
 /// This adapter bridges the unified EventStream (ADR-015) to SSE format
-/// used by the HTTP API. It spawns a task to forward events.
+/// used by the HTTP API. It spawns a task to forward events and properly
+/// awaits the completion signal to ensure session persistence.
 pub fn event_stream_to_sse(
     event_stream: crate::channels::EventStream,
-) -> (SseStream, tokio::task::JoinHandle<()>) {
+) -> (SseStream, tokio::task::JoinHandle<anyhow::Result<()>>) {
     let (sse_stream, sender) = SseStream::new();
 
     let handle = tokio::spawn(async move {
         let mut event_rx = event_stream.receiver;
+        let completion = event_stream.completion;
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
-        let mut session_id = event_stream.session_id;
+        let session_id = event_stream.session_id;
         let mut turn_count = 0u32;
         let mut usage = TokenUsage::default();
+        let mut end_received = false;
 
         while let Some(event) = event_rx.recv().await {
             // Convert and send SSE events
@@ -203,7 +206,8 @@ pub fn event_stream_to_sse(
                     phase: crate::engine::LifecyclePhase::End,
                     ..
                 } => {
-                    // Send completion event
+                    end_received = true;
+                    // Send completion event to client
                     let _ = sender
                         .send(ChatSseEvent::Done {
                             message_id: format!("msg_{}", Uuid::new_v4().simple()),
@@ -212,7 +216,7 @@ pub fn event_stream_to_sse(
                             usage: usage.clone(),
                         })
                         .await;
-                    break;
+                    // Don't break yet - wait for receiver to close
                 }
                 crate::engine::AgenticEvent::Lifecycle {
                     phase: crate::engine::LifecyclePhase::Error,
@@ -226,7 +230,7 @@ pub fn event_stream_to_sse(
                             tool_call_id: None,
                         })
                         .await;
-                    break;
+                    end_received = true;
                 }
                 crate::engine::AgenticEvent::Usage {
                     prompt_tokens,
@@ -240,6 +244,28 @@ pub fn event_stream_to_sse(
                 }
                 _ => {}
             }
+        }
+
+        // Receiver closed - CRITICAL: Wait for completion signal before returning
+        // This ensures session persistence is complete
+        if end_received {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                completion
+            ).await {
+                Ok(Ok(Ok(()))) => Ok(()),
+                Ok(Ok(Err(e))) => Err(e),
+                Ok(Err(_recv_error)) => {
+                    tracing::warn!("Completion sender dropped without signal");
+                    Ok(())
+                }
+                Err(_) => {
+                    tracing::error!("Completion timeout - session persistence may be incomplete");
+                    Err(anyhow::anyhow!("Completion timeout"))
+                }
+            }
+        } else {
+            Ok(())
         }
     });
 

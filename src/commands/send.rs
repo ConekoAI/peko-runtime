@@ -22,7 +22,8 @@
 use crate::channels::{Channel, CliChannel, CliMode};
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
-use crate::common::services::{AgentConfigService, AgentValidator, MessageRequest, MessageService};
+use crate::common::services::{AgentConfigService, AgentValidator};
+use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
 use anyhow::Result;
 use clap::Args;
 use std::sync::Arc;
@@ -84,7 +85,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         agent_name, team
     );
 
-    // Use MessageService for unified session handling (same as HTTP API)
+    // Use StatelessAgentService directly (ADR-016: bypass MessageService)
     let path_resolver = paths.resolver.clone();
     let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
 
@@ -98,13 +99,8 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     );
 
     let agent_service = Arc::new(
-        crate::agent::stateless_service::StatelessAgentService::new(
-            config_service,
-            path_resolver.clone(),
-        )
-        .await?,
+        StatelessAgentService::new(config_service, path_resolver.clone()).await?,
     );
-    let message_service = MessageService::new(agent_service, path_resolver);
 
     // Build message request (same logic as HTTP API)
     let request = MessageRequest::new(agent_name, message)
@@ -120,8 +116,8 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
             CliMode::Streaming
         });
 
-    // Send message using unified API (returns EventStream)
-    let event_stream = message_service.send_message_unified(request).await?;
+    // Send message using StatelessAgentService directly (ADR-016)
+    let event_stream = agent_service.execute_message_streaming(request).await?;
 
     // Process events through channel (handles both blocking and streaming)
     let output = channel.process_stream(event_stream).await?;

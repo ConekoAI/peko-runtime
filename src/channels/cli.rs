@@ -13,6 +13,7 @@ use super::{Channel, ChannelOutput, EventStream, StreamingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::io::Write;
+use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::session::context::SessionContext;
@@ -125,6 +126,8 @@ impl CliChannel {
     }
 
     /// Streaming mode: Print tokens as they arrive
+    /// 
+    /// ADR-016: Now uses completion signal instead of 500ms grace period
     async fn process_stream_streaming(&self, event_stream: EventStream) -> Result<ChannelOutput> {
         use crate::engine::{AgenticEvent, ChannelAction, EventProcessor, LifecyclePhase};
 
@@ -132,9 +135,11 @@ impl CliChannel {
         output.is_new_session = event_stream.is_new_session;
         
         let mut event_rx = event_stream.receiver;
+        let completion = event_stream.completion;
         let mut processor = EventProcessor::for_agent(&self.name);
         let mut final_answer = String::new();
         let mut has_started_line = false;
+        let mut end_received = false;
 
         while let Some(event) = event_rx.recv().await {
             // Process through EventProcessor for proper formatting
@@ -194,16 +199,37 @@ impl CliChannel {
                         if has_started_line {
                             println!();
                         }
-                        // Give a small grace period for any pending session writes to complete
-                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                        break;
+                        end_received = true;
+                        // Don't break yet - wait for receiver to close
                     }
                     LifecyclePhase::Error => {
                         output.success = false;
                         output.error = error.clone();
-                        break;
+                        end_received = true;
                     }
                     _ => {}
+                }
+            }
+        }
+
+        // Receiver closed - CRITICAL: Wait for completion signal before returning
+        // ADR-016: This ensures session persistence is complete (replaces 500ms sleep)
+        if end_received {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                completion
+            ).await {
+                Ok(Ok(Ok(()))) => {
+                    // Session persistence complete
+                }
+                Ok(Ok(Err(e))) => {
+                    warn!("Session persistence failed: {}", e);
+                }
+                Ok(Err(_)) => {
+                    warn!("Completion sender dropped without signal");
+                }
+                Err(_) => {
+                    warn!("Completion timeout - session persistence may be incomplete");
                 }
             }
         }
@@ -394,4 +420,207 @@ pub async fn send_single_message_with_session(
 
     // Return the process result (contains the collected output)
     process_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channels::{EventStream, ChannelOutput};
+    use crate::engine::{AgenticEvent, LifecyclePhase};
+    
+    /// Test that CliChannel creation works
+    #[test]
+    fn test_cli_channel_creation() {
+        let channel = CliChannel::new("test-agent");
+        assert_eq!(channel.name(), "test-agent");
+        assert_eq!(channel.mode(), CliMode::Blocking);
+    }
+    
+    /// Test CLI channel mode switching
+    #[test]
+    fn test_cli_channel_mode() {
+        let channel = CliChannel::new("test-agent")
+            .with_mode(CliMode::Streaming);
+        
+        assert_eq!(channel.mode(), CliMode::Streaming);
+    }
+    
+    /// Test blocking mode with completion signal (ADR-016)
+    /// 
+    /// Verifies that the channel properly awaits the completion signal
+    /// instead of using the 500ms grace period.
+    #[tokio::test]
+    async fn test_cli_channel_blocking_with_completion_signal() {
+        let channel = CliChannel::new("test-agent");
+        
+        // Create a mock EventStream with completion signal
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        
+        let event_stream = EventStream {
+            receiver: event_rx,
+            completion: completion_rx,
+            session_id: "test-session".to_string(),
+            is_new_session: true,
+        };
+        
+        // Spawn a task to send events and completion signal
+        tokio::spawn(async move {
+            // Send some text events
+            let _ = event_tx.send(AgenticEvent::AssistantText {
+                run_id: "run_1".to_string(),
+                text: "Hello".to_string(),
+                sequence: 1,
+                is_interstitial: false,
+            }).await;
+            
+            // Send End lifecycle event
+            let _ = event_tx.send(AgenticEvent::Lifecycle {
+                run_id: "run_1".to_string(),
+                phase: LifecyclePhase::End,
+                error: None,
+            }).await;
+            
+            // Drop the sender to close the channel
+            drop(event_tx);
+            
+            // Send completion signal after a short delay (simulating session write)
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = completion_tx.send(Ok(()));
+        });
+        
+        // Process the stream
+        let start = std::time::Instant::now();
+        let result = channel.process_stream(event_stream).await;
+        let elapsed = start.elapsed();
+        
+        // Should complete quickly (no 500ms grace period)
+        assert!(result.is_ok());
+        assert!(elapsed < Duration::from_millis(200), 
+            "Should complete in under 200ms without grace period, took {:?}", elapsed);
+        
+        let output = result.unwrap();
+        assert_eq!(output.session_id, "test-session");
+        assert!(output.is_new_session);
+        assert!(output.final_text.contains("Hello"));
+    }
+    
+    /// Test that completion signal error is handled gracefully
+    #[tokio::test]
+    async fn test_cli_channel_completion_error_handling() {
+        let channel = CliChannel::new("test-agent");
+        
+        // Create a mock EventStream
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        
+        let event_stream = EventStream {
+            receiver: event_rx,
+            completion: completion_rx,
+            session_id: "test-session".to_string(),
+            is_new_session: false,
+        };
+        
+        // Spawn a task that sends an error completion
+        tokio::spawn(async move {
+            let _ = event_tx.send(AgenticEvent::Lifecycle {
+                run_id: "run_1".to_string(),
+                phase: LifecyclePhase::End,
+                error: None,
+            }).await;
+            
+            drop(event_tx);
+            
+            // Send error completion
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = completion_tx.send(Err(anyhow::anyhow!("Session write failed")));
+        });
+        
+        // Should complete without panic even with completion error
+        let result = channel.process_stream(event_stream).await;
+        assert!(result.is_ok());
+    }
+    
+    /// Test streaming mode with completion signal
+    #[tokio::test]
+    async fn test_cli_channel_streaming_mode() {
+        let channel = CliChannel::new("test-agent")
+            .with_mode(CliMode::Streaming);
+        
+        assert_eq!(channel.mode(), CliMode::Streaming);
+        
+        // Create a mock EventStream
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        
+        let event_stream = EventStream {
+            receiver: event_rx,
+            completion: completion_rx,
+            session_id: "test-session".to_string(),
+            is_new_session: true,
+        };
+        
+        // Spawn a task to send events
+        tokio::spawn(async move {
+            let _ = event_tx.send(AgenticEvent::AssistantText {
+                run_id: "run_1".to_string(),
+                text: "Streaming".to_string(),
+                sequence: 1,
+                is_interstitial: false,
+            }).await;
+            
+            let _ = event_tx.send(AgenticEvent::Lifecycle {
+                run_id: "run_1".to_string(),
+                phase: LifecyclePhase::End,
+                error: None,
+            }).await;
+            
+            drop(event_tx);
+            let _ = completion_tx.send(Ok(()));
+        });
+        
+        // Process in streaming mode
+        let start = std::time::Instant::now();
+        let result = channel.process_stream(event_stream).await;
+        let elapsed = start.elapsed();
+        
+        // Should complete without 500ms grace period
+        assert!(result.is_ok());
+        assert!(elapsed < Duration::from_millis(200),
+            "Streaming mode should complete without grace period");
+    }
+    
+    /// Test error lifecycle handling
+    #[tokio::test]
+    async fn test_cli_channel_error_lifecycle() {
+        let channel = CliChannel::new("test-agent");
+        
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
+        let (completion_tx, completion_rx) = tokio::sync::oneshot::channel();
+        
+        let event_stream = EventStream {
+            receiver: event_rx,
+            completion: completion_rx,
+            session_id: "test-session".to_string(),
+            is_new_session: true,
+        };
+        
+        tokio::spawn(async move {
+            let _ = event_tx.send(AgenticEvent::Lifecycle {
+                run_id: "run_1".to_string(),
+                phase: LifecyclePhase::Error,
+                error: Some("Test error".to_string()),
+            }).await;
+            
+            drop(event_tx);
+            let _ = completion_tx.send(Ok(()));
+        });
+        
+        let result = channel.process_stream(event_stream).await;
+        assert!(result.is_ok());
+        
+        let output = result.unwrap();
+        assert!(!output.success);
+        assert_eq!(output.error, Some("Test error".to_string()));
+    }
 }

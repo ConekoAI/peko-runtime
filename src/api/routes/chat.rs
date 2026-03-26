@@ -14,7 +14,7 @@
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::streaming::{event_stream_to_sse, ChatSseEvent, SseStream, TokenUsage};
-use crate::common::services::MessageRequest;
+use crate::agent::stateless_service::MessageRequest;
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -96,15 +96,15 @@ async fn chat_handler(
         || accept_header.is_empty();
 
     if streaming {
-        // Use unified EventStream API with SSE adapter (ADR-015)
+        // Use unified EventStream API with SSE adapter (ADR-016)
         let msg_request = MessageRequest::new(agent_name.clone(), request.message.clone())
             .with_session_opt(request.session_id.clone())
             .with_new_session(request.session_id.is_none());
 
-        // Get EventStream from unified API
+        // Get EventStream directly from StatelessAgentService (bypassing MessageService)
         let event_stream = state
-            .message_service()
-            .send_message_unified(msg_request)
+            .agent_service()
+            .execute_message_streaming(msg_request)
             .await
             .map_err(|e| ApiError::internal(format!("Failed to start stream: {}", e), ""))?;
 
@@ -113,13 +113,13 @@ async fn chat_handler(
 
         Ok::<_, ApiError>(sse_stream.into_response())
     } else {
-        // Non-streaming response using MessageService
+        // Non-streaming response using StatelessAgentService directly
         let response = process_chat_blocking(state, agent_name, request).await?;
         Ok::<_, ApiError>(Json(response).into_response())
     }
 }
 
-/// Process chat with blocking response using MessageService
+/// Process chat with blocking response using StatelessAgentService directly
 async fn process_chat_blocking(
     state: AppState,
     agent_name: String,
@@ -132,10 +132,10 @@ async fn process_chat_blocking(
         .with_session_opt(request.session_id.clone())
         .with_new_session(request.session_id.is_none());
 
-    // Use MessageService
+    // Use StatelessAgentService directly (ADR-016)
     let result = state
-        .message_service()
-        .send_message(msg_request)
+        .agent_service()
+        .execute_message(msg_request)
         .await
         .map_err(|e| ApiError::internal(format!("Execution failed: {}", e), ""))?;
 
@@ -184,7 +184,7 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::services::message_service::generate_session_id;
+    use uuid::Uuid;
     use tokio::sync::mpsc;
 
     #[test]
@@ -211,12 +211,103 @@ mod tests {
 
     #[test]
     fn test_generate_session_id() {
-        let id1 = generate_session_id();
-        let id2 = generate_session_id();
+        // Use uuid crate directly for generating session IDs
+        let id1 = Uuid::new_v4().to_string();
+        let id2 = Uuid::new_v4().to_string();
         // Should be valid UUID format (36 characters with hyphens)
         assert_eq!(id1.len(), 36);
         assert_eq!(id2.len(), 36);
         // Should be unique
         assert_ne!(id1, id2);
+    }
+
+    /// Test MessageRequest builder from stateless_service (ADR-016)
+    #[test]
+    fn test_message_request_builder_for_api() {
+        let request = MessageRequest::new("my-agent", "Hello")
+            .with_team("default")
+            .with_session("sess_123")
+            .with_new_session(false)
+            .with_timeout(60);
+
+        assert_eq!(request.agent_name, "my-agent");
+        assert_eq!(request.message, "Hello");
+        assert_eq!(request.team, Some("default".to_string()));
+        assert_eq!(request.session_id, Some("sess_123".to_string()));
+        assert!(!request.new_session);
+        assert_eq!(request.timeout_secs, Some(60));
+    }
+
+    /// Test MessageRequest defaults for API
+    #[test]
+    fn test_message_request_defaults_for_api() {
+        let request = MessageRequest::new("my-agent", "Hello");
+
+        assert_eq!(request.agent_name, "my-agent");
+        assert_eq!(request.message, "Hello");
+        assert_eq!(request.team, None);
+        assert_eq!(request.session_id, None);
+        assert!(!request.new_session);
+        assert_eq!(request.timeout_secs, None);
+    }
+
+    /// Test that ChatRequest properly converts to MessageRequest
+    #[test]
+    fn test_chat_request_to_message_request() {
+        let chat_req = ChatRequest {
+            message: "Test message".to_string(),
+            session_id: Some("test-session".to_string()),
+            role: "user".to_string(),
+        };
+
+        // Simulate what the handler does
+        let msg_request = MessageRequest::new("test-agent", chat_req.message)
+            .with_session_opt(chat_req.session_id.clone())
+            .with_new_session(chat_req.session_id.is_none());
+
+        assert_eq!(msg_request.agent_name, "test-agent");
+        assert_eq!(msg_request.message, "Test message");
+        assert_eq!(msg_request.session_id, Some("test-session".to_string()));
+        assert!(!msg_request.new_session);
+    }
+
+    /// Test ChatResponse structure
+    #[test]
+    fn test_chat_response_structure() {
+        let response = ChatResponse {
+            message: AssistantMessage {
+                id: "msg_123".to_string(),
+                role: "assistant".to_string(),
+                content: "Hello!".to_string(),
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+            session_id: "sess_456".to_string(),
+            turn_count: 1,
+            usage: TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+            },
+            tool_calls: None,
+        };
+
+        assert_eq!(response.session_id, "sess_456");
+        assert_eq!(response.turn_count, 1);
+        assert_eq!(response.usage.total_tokens, 15);
+    }
+
+    /// Test ToolCallSummary structure
+    #[test]
+    fn test_tool_call_summary() {
+        let tool_call = ToolCallSummary {
+            id: "tc_123".to_string(),
+            tool: "filesystem".to_string(),
+            args: serde_json::json!({"path": "/tmp"}),
+            output: "File listing".to_string(),
+        };
+
+        assert_eq!(tool_call.id, "tc_123");
+        assert_eq!(tool_call.tool, "filesystem");
+        assert_eq!(tool_call.output, "File listing");
     }
 }

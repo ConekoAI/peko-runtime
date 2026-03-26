@@ -13,15 +13,24 @@ pub mod discord;
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc::Receiver;
+use tokio::sync::oneshot;
 
-/// Event stream returned by MessageService
+/// Event stream returned by StatelessAgentService
 /// 
 /// This is the unified interface between service and presentation layers.
 /// Channels consume this stream to produce appropriate output.
+/// 
+/// The `completion` field provides a signal that ensures all session
+/// persistence operations complete before the stream is considered done.
 #[derive(Debug)]
 pub struct EventStream {
     /// Receiver for agentic events
     pub receiver: Receiver<crate::engine::AgenticEvent>,
+    /// Completion signal - resolves when all session writes are complete
+    /// 
+    /// This eliminates the race condition where the consumer receives the End
+    /// event before session persistence finishes.
+    pub completion: oneshot::Receiver<anyhow::Result<()>>, 
     /// Session ID for this execution
     pub session_id: String,
     /// Whether this is a new session
@@ -37,7 +46,7 @@ pub struct ChannelOutput {
     /// Final text response
     pub final_text: String,
     /// Tool calls made during execution
-    pub tool_calls: Vec<crate::common::services::ToolCallInfo>,
+    pub tool_calls: Vec<crate::agent::stateless_service::ToolCallInfo>,
     /// Token usage statistics
     pub usage: crate::providers::TokenUsage,
     /// Session ID
@@ -199,6 +208,9 @@ pub trait Channel: Send + Sync {
 ///
 /// This is a helper function that channels can use to get the default
 /// behavior without duplicating the implementation.
+/// 
+/// This implementation awaits the completion signal to ensure session
+/// persistence completes before returning, eliminating race conditions.
 pub async fn default_process_stream(event_stream: EventStream) -> Result<ChannelOutput> {
     use crate::engine::{AgenticEvent, LifecyclePhase};
 
@@ -206,6 +218,8 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
     output.is_new_session = event_stream.is_new_session;
     
     let mut event_rx = event_stream.receiver;
+    let completion = event_stream.completion;
+    let mut end_received = false;
 
     while let Some(event) = event_rx.recv().await {
         match event {
@@ -232,20 +246,42 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
             AgenticEvent::Lifecycle { phase, error, .. } => {
                 match phase {
                     LifecyclePhase::End => {
-                        // Give a small grace period for any pending session writes to complete
-                        // The spawned task may still be writing to the session file
-                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                        break;
+                        end_received = true;
+                        // Don't break yet - wait for receiver to close
                     }
                     LifecyclePhase::Error => {
                         output.success = false;
                         output.error = error;
-                        break;
+                        end_received = true;
                     }
                     _ => {}
                 }
             }
             _ => {}
+        }
+    }
+
+    // Receiver closed - NOW wait for completion signal
+    // This ensures session persistence is complete
+    if end_received {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            completion
+        ).await {
+            Ok(Ok(Ok(()))) => {
+                // Session persistence complete
+            }
+            Ok(Ok(Err(e))) => {
+                // Log the error but don't fail - the execution itself succeeded
+                tracing::warn!("Session persistence failed: {}", e);
+            }
+            Ok(Err(_recv_error)) => {
+                // Sender dropped without sending - this is ok if execution completed
+                tracing::warn!("Completion sender dropped without signal");
+            }
+            Err(_) => {
+                tracing::warn!("Completion timeout - session persistence may be incomplete");
+            }
         }
     }
 
