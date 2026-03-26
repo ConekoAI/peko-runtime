@@ -298,25 +298,36 @@ fn test_full_pipeline_to_channel_actions() {
         actions.extend(processor.process(event));
     }
 
-    // Verify channel actions - non-interstitial text uses Println
+    // Verify channel actions for streaming/live mode
+    // In live mode, AssistantDelta events are produced which become Print + Flush
     assert!(
         actions
             .iter()
             .any(|a| matches!(a, ChannelAction::StartTurn(name) if name == "test-agent")),
-        "Should start turn"
+        "Should start turn: got {:?}",
+        actions
     );
 
-    // For non-interstitial (final) text, EventProcessor uses Println not Print
+    // Streaming mode uses Print (not Println) for real-time display
     assert!(
         actions
             .iter()
-            .any(|a| matches!(a, ChannelAction::Println(text) if text.contains("Hello"))),
-        "Should println content: got {:?}",
+            .any(|a| matches!(a, ChannelAction::Print(text) if text.contains("Hello"))),
+        "Should print content: got {:?}",
         actions
     );
 
+    // Should have Flush actions for streaming mode
+    assert!(
+        actions.iter().any(|a| matches!(a, ChannelAction::Flush)),
+        "Should flush output: got {:?}",
+        actions
+    );
+
+    // EndTurn comes from Lifecycle::End event
     assert!(
         actions.iter().any(|a| matches!(a, ChannelAction::EndTurn)),
-        "Should end turn"
+        "Should end turn: got {:?}",
+        actions
     );
 }
