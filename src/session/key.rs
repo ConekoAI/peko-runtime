@@ -513,11 +513,6 @@ mod tests {
         assert_eq!(parsed.peer_id, "helper");
     }
 
-    // Backward compatibility type alias
-    // DEPRECATED: Use SessionKeyContext instead
-    #[deprecated(since = "0.9.0", note = "Use SessionKeyContext instead")]
-    pub type SessionContext = SessionKeyContext;
-
     #[test]
     fn test_base_key_from_overlay() {
         let overlay = "agent:test:peer:user:alice:overlay:channel:discord:guild123";

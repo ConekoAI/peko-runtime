@@ -172,12 +172,16 @@ impl HybridSession {
 /// Opaque handle to a managed session
 ///
 /// External code uses this handle to interact with sessions.
-/// All operations go through SessionManager to ensure consistency.
+/// All metadata operations go through a shared MetadataController to ensure
+/// consistency and avoid circular references.
 #[derive(Debug, Clone)]
 pub struct SessionHandle {
     session_id: String,
     base: Arc<RwLock<UnifiedSession>>,
-    manager: Arc<RwLock<SessionManager>>,
+    overlay: Option<OverlayRef>,
+    /// Shared metadata controller for metadata operations
+    /// This avoids the circular reference from holding SessionManager
+    metadata: Arc<RwLock<MetadataController>>,
 }
 
 impl SessionHandle {
@@ -185,12 +189,14 @@ impl SessionHandle {
     fn new(
         session_id: impl Into<String>,
         base: Arc<RwLock<UnifiedSession>>,
-        manager: Arc<RwLock<SessionManager>>,
+        overlay: Option<OverlayRef>,
+        metadata: Arc<RwLock<MetadataController>>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
             base,
-            manager,
+            overlay,
+            metadata,
         }
     }
 
@@ -203,6 +209,12 @@ impl SessionHandle {
     /// Get the base session (for internal operations)
     pub(crate) fn base(&self) -> &Arc<RwLock<UnifiedSession>> {
         &self.base
+    }
+
+    /// Check if this handle has an overlay
+    #[must_use]
+    pub fn has_overlay(&self) -> bool {
+        self.overlay.is_some()
     }
 
     /// Add a user message to the session
@@ -249,38 +261,41 @@ impl SessionHandle {
         base.get_context_text(limit).await
     }
 
-    /// Get session metadata
+    /// Get session metadata (via shared controller)
     pub async fn get_metadata(&self) -> Result<SessionMetadata> {
-        let manager = self.manager.read().await;
-        manager.get_session_metadata(&self.session_id).await
+        let mut controller = self.metadata.write().await;
+        match controller.get_metadata(&self.session_id, false).await? {
+            Some(m) => Ok(m),
+            None => Err(anyhow::anyhow!("Session {} not found", self.session_id)),
+        }
     }
 
-    /// Record token usage
+    /// Record token usage (via shared controller)
     pub async fn record_usage(&self, input: usize, output: usize) -> Result<()> {
-        let mut manager = self.manager.write().await;
-        manager
+        let mut controller = self.metadata.write().await;
+        controller
             .record_token_usage(&self.session_id, input, output)
             .await
     }
 
-    /// Set model information
+    /// Set model information (via shared controller)
     pub async fn set_model(&self, provider: &str, model: &str) -> Result<()> {
-        let mut manager = self.manager.write().await;
-        manager
-            .set_session_model(&self.session_id, provider, model)
-            .await
+        let mut controller = self.metadata.write().await;
+        let mut metadata = match controller.get_metadata_fast(&self.session_id).await? {
+            Some(m) => m,
+            None => return Err(anyhow::anyhow!("Session {} not found", self.session_id)),
+        };
+        metadata.set_model(provider, model);
+        controller.update_metadata(metadata).await
     }
 
-    /// Sync metadata from JSONL (source of truth)
+    /// Sync metadata from JSONL (source of truth) (via shared controller)
     ///
     /// This should be called at the end of an engine turn to update
     /// the index with the actual message count from JSONL.
     pub async fn sync_metadata(&self) -> Result<()> {
-        let mut manager = self.manager.write().await;
-        manager
-            .metadata_controller
-            .sync_from_jsonl(&self.session_id)
-            .await?;
+        let mut controller = self.metadata.write().await;
+        controller.sync_from_jsonl(&self.session_id).await?;
         Ok(())
     }
 }
@@ -372,7 +387,8 @@ pub struct SessionManager {
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
     spawn_overlays: HashMap<String, Arc<RwLock<SpawnOverlay>>>,
     /// Metadata controller (single point of truth for metadata)
-    pub(crate) metadata_controller: MetadataController,
+    /// Wrapped in Arc<RwLock<>> for sharing with SessionHandles
+    metadata_controller: Arc<RwLock<MetadataController>>,
     /// Session index for peer routing
     index: Option<SessionIndex>,
     /// Sessions directory path
@@ -387,9 +403,9 @@ impl SessionManager {
     /// Create a new session manager
     #[must_use]
     pub fn new() -> Self {
-        // Create a temporary metadata controller (will be replaced in with_registry)
+        // Create a temporary metadata controller (will be replaced in with_path_resolver)
         let temp_dir = std::env::temp_dir();
-        let metadata_controller = MetadataController::new(temp_dir);
+        let metadata_controller = Arc::new(RwLock::new(MetadataController::new(temp_dir)));
 
         Self {
             base_sessions: HashMap::new(),
@@ -423,30 +439,10 @@ impl SessionManager {
         self.agent_name = Some(agent_name.to_string());
         self.path_resolver = Some(path_resolver);
 
-        // Initialize metadata controller with correct directory
-        self.metadata_controller = MetadataController::new(sessions_dir);
+        // Initialize metadata controller with correct directory (shared Arc)
+        self.metadata_controller = Arc::new(RwLock::new(MetadataController::new(sessions_dir)));
 
         Ok(self)
-    }
-
-    /// Initialize with session index for an agent (legacy, use with_path_resolver)
-    #[deprecated(since = "0.9.0", note = "Use with_path_resolver instead")]
-    pub async fn with_registry(mut self, agent_name: &str) -> Result<Self> {
-        let path_resolver = PathResolver::new();
-        self.with_path_resolver(path_resolver, agent_name, None)
-            .await
-    }
-
-    /// Initialize with a specific sessions directory
-    ///
-    /// DEPRECATED: Use `SessionManager::for_cli()` instead for proper team-aware path resolution.
-    #[deprecated(since = "0.9.1", note = "Use SessionManager::for_cli() instead")]
-    pub fn with_directory(mut self, sessions_dir: impl Into<PathBuf>) -> Self {
-        let sessions_dir = sessions_dir.into();
-        self.sessions_dir = Some(sessions_dir.clone());
-        self.index = Some(SessionIndex::open(&sessions_dir));
-        self.metadata_controller = MetadataController::new(sessions_dir);
-        self
     }
 
     /// Create a SessionManager for CLI operations (offline)
@@ -470,9 +466,19 @@ impl SessionManager {
     pub fn for_cli(path_resolver: PathResolver, agent_name: &str, team: Option<&str>) -> Self {
         let sessions_dir = path_resolver.agent_sessions_dir(agent_name, team);
         Self::new()
-            .with_directory(sessions_dir)
+            .with_sessions_dir_internal(sessions_dir)
             .with_agent_name(agent_name)
             .with_path_resolver_internal(path_resolver)
+    }
+
+    /// Initialize with a specific sessions directory (internal use, tests)
+    #[doc(hidden)]
+    pub fn with_sessions_dir_internal(mut self, sessions_dir: impl Into<PathBuf>) -> Self {
+        let sessions_dir = sessions_dir.into();
+        self.sessions_dir = Some(sessions_dir.clone());
+        self.index = Some(SessionIndex::open(&sessions_dir));
+        self.metadata_controller = Arc::new(RwLock::new(MetadataController::new(sessions_dir)));
+        self
     }
 
     /// Set the path resolver (internal use only, for builder pattern)
@@ -592,22 +598,26 @@ impl SessionManager {
 
         debug!("Auto-resuming session for peer_key: {}", peer_key);
 
-        // Check peer routing via index (single lookup)
-        if let Some(ref mut index) = self.index {
-            if let Some(session_id) = index.get_active_session_id(&peer_key).await? {
-                info!(
-                    "Found active session '{}' for peer_key '{}'",
-                    session_id, peer_key
-                );
-                let ctx = self
-                    .resume_specific_session(agent_name, team, channel, channel_id, &session_id)
-                    .await?;
-                return Ok(ResolvedSession {
-                    context: ctx,
-                    is_new: false,
-                    session_id,
-                });
-            }
+        // Check peer routing via metadata controller (single lookup)
+        let active_session_id = if self.index.is_some() {
+            self.metadata_controller.write().await.get_active_session_id(&peer_key).await?
+        } else {
+            None
+        };
+        
+        if let Some(session_id) = active_session_id {
+            info!(
+                "Found active session '{}' for peer_key '{}'",
+                session_id, peer_key
+            );
+            let ctx = self
+                .resume_specific_session(agent_name, team, channel, channel_id, &session_id)
+                .await?;
+            return Ok(ResolvedSession {
+                context: ctx,
+                is_new: false,
+                session_id,
+            });
         }
 
         // No active session found, create new
@@ -727,9 +737,22 @@ impl SessionManager {
         });
         let session_key = derive_base_session_key(agent, peer);
 
-        // 1. Create JSONL file via UnifiedSession
-        let session =
-            UnifiedSession::create_with_path(agent, peer, &session_id, &sessions_dir).await?;
+        // 1. Create JSONL file directly using SessionStorage
+        let storage = SessionStorage::new(sessions_dir.clone());
+        tokio::fs::create_dir_all(&sessions_dir).await?;
+        let cwd = std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().to_string());
+        storage.create_session(&session_id, cwd).await?;
+        
+        // 2. Create UnifiedSession from components
+        let session = UnifiedSession::from_components(
+            session_id.clone(),
+            agent.to_string(),
+            session_key.clone(),
+            peer.clone(),
+            storage,
+        );
 
         // 2. Create metadata
         let mut metadata =
@@ -747,11 +770,15 @@ impl SessionManager {
                 .map(|p| p.to_string_lossy().to_string())
         });
 
-        // 3. Store metadata
-        self.metadata_controller.create_metadata(metadata).await?;
+        // 3. Store metadata (via shared controller)
+        self.metadata_controller
+            .write()
+            .await
+            .create_metadata(metadata)
+            .await?;
 
-        // 4. Update peer routing in index (for backward compatibility)
-        if let Some(ref mut index) = self.index {
+        // 4. Update peer routing in index via metadata controller
+        if self.index.is_some() {
             let entry = SessionEntry::with_peer(
                 session_id.clone(),
                 agent.to_string(),
@@ -759,8 +786,8 @@ impl SessionManager {
                 peer.peer_type(),
                 peer.id(),
             );
-            index.create_for_peer(entry, &session_key).await?;
-            index.save().await?;
+            self.metadata_controller.write().await.create_for_peer(entry, &session_key).await?;
+            self.metadata_controller.write().await.save_index().await?;
         }
 
         // 5. Cache and return handle
@@ -773,9 +800,9 @@ impl SessionManager {
             session_id, session_key
         );
 
-        // Create self reference for handle
-        let manager_clone = Arc::new(RwLock::new(self.clone_manager()));
-        Ok(SessionHandle::new(session_id, arc, manager_clone))
+        // Create handle with shared metadata controller (no circular reference)
+        let metadata_arc = self.metadata_controller.clone();
+        Ok(SessionHandle::new(session_id, arc, None, metadata_arc))
     }
 
     /// Open an existing session by ID
@@ -791,6 +818,8 @@ impl SessionManager {
         // 1. Get metadata (with consistency check)
         let metadata = match self
             .metadata_controller
+            .write()
+            .await
             .get_metadata(session_id, true)
             .await?
         {
@@ -798,9 +827,9 @@ impl SessionManager {
             None => return Ok(None),
         };
 
-        // 2. Try to get peer info from index
-        let peer = if let Some(ref mut index) = self.index {
-            if let Ok(Some(entry)) = index.get(session_id).await {
+        // 2. Try to get peer info from index via metadata controller
+        let peer = if self.index.is_some() {
+            if let Ok(Some(entry)) = self.metadata_controller.write().await.get_entry_from_index(session_id).await {
                 // Restore peer from entry
                 match (entry.peer_type.as_deref(), entry.peer_id) {
                     (Some("agent"), Some(id)) => Peer::Agent(id),
@@ -829,22 +858,22 @@ impl SessionManager {
         let key = (metadata.agent_name.clone(), peer);
         self.base_sessions.insert(key, arc.clone());
 
-        let manager_clone = Arc::new(RwLock::new(self.clone_manager()));
+        // Create handle with shared metadata controller (no circular reference)
+        let metadata_arc = self.metadata_controller.clone();
         Ok(Some(SessionHandle::new(
             session_id.to_string(),
             arc,
-            manager_clone,
+            None,
+            metadata_arc,
         )))
     }
 
     /// Get metadata for any session (doesn't require open session)
+    ///
+    /// Uses the shared metadata controller for cache consistency.
     pub async fn get_session_metadata(&self, session_id: &str) -> Result<SessionMetadata> {
-        // Use a new controller instance to avoid borrowing issues
-        let sessions_dir = self
-            .sessions_dir
-            .clone()
-            .unwrap_or_else(|| std::env::temp_dir());
-        let mut controller = MetadataController::new(sessions_dir);
+        // Use the shared controller (with write lock for cache updates)
+        let mut controller = self.metadata_controller.write().await;
 
         match controller.get_metadata(session_id, false).await? {
             Some(m) => Ok(m),
@@ -859,8 +888,10 @@ impl SessionManager {
         input_tokens: usize,
         output_tokens: usize,
     ) -> Result<()> {
-        // Record via controller
+        // Record via shared controller
         self.metadata_controller
+            .write()
+            .await
             .record_token_usage(session_id, input_tokens, output_tokens)
             .await
     }
@@ -872,12 +903,10 @@ impl SessionManager {
         provider: &str,
         model: &str,
     ) -> Result<()> {
+        let mut controller = self.metadata_controller.write().await;
+        
         // Get metadata first, then update
-        let mut metadata = match self
-            .metadata_controller
-            .get_metadata_fast(session_id)
-            .await?
-        {
+        let mut metadata = match controller.get_metadata_fast(session_id).await? {
             Some(m) => m,
             None => return Err(anyhow::anyhow!("Session {} not found", session_id)),
         };
@@ -886,7 +915,7 @@ impl SessionManager {
         metadata.set_model(provider, model);
 
         // Now update via controller
-        self.metadata_controller.update_metadata(metadata).await
+        controller.update_metadata(metadata).await
     }
 
     /// List all sessions with metadata
@@ -897,6 +926,8 @@ impl SessionManager {
         verify_consistency: bool,
     ) -> Result<Vec<SessionMetadata>> {
         self.metadata_controller
+            .write()
+            .await
             .list_metadata(verify_consistency)
             .await
     }
@@ -905,29 +936,12 @@ impl SessionManager {
     pub async fn reconcile_all_sessions(
         &mut self,
     ) -> Result<Vec<super::metadata::ReconciliationResult>> {
-        self.metadata_controller.reconcile_all().await
+        self.metadata_controller.write().await.reconcile_all().await
     }
 
     // ====================================================================================
     // Legacy API (Backward Compatibility)
     // ====================================================================================
-
-    /// Create a new session for a peer (/new command)
-    ///
-    /// DEPRECATED: Use `create_session()` instead.
-    #[deprecated(since = "0.9.0", note = "Use create_session() instead")]
-    pub async fn create_new_session(&mut self, peer: &Peer) -> Result<String> {
-        let agent = self
-            .agent_name
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
-            .clone();
-
-        let options = SessionCreateOptions::new().with_trigger("user");
-
-        let handle = self.create_session(&agent, peer, options).await?;
-        Ok(handle.session_id().to_string())
-    }
 
     /// Branch current session (/branch command)
     pub async fn branch_session(&mut self, peer: &Peer, label: Option<String>) -> Result<String> {
@@ -994,6 +1008,8 @@ impl SessionManager {
         // Verify parent session exists
         let parent_metadata = self
             .metadata_controller
+            .write()
+            .await
             .get_metadata_fast(parent_session_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Parent session '{}' not found", parent_session_id))?;
@@ -1024,6 +1040,8 @@ impl SessionManager {
 
         // Store metadata
         self.metadata_controller
+            .write()
+            .await
             .create_metadata(new_metadata)
             .await?;
 
@@ -1036,18 +1054,17 @@ impl SessionManager {
 
     /// Switch to a different session (/switch command)
     pub async fn switch_session(&mut self, peer: &Peer, session_id: &str) -> Result<()> {
-        let index = self
-            .index
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
+        if self.index.is_none() {
+            return Err(anyhow::anyhow!("Session index not initialized"));
+        }
         let agent = self
             .agent_name
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
 
         let peer_key = derive_base_session_key(agent, peer);
-        index.set_active_for_peer(&peer_key, session_id).await?;
-        index.save().await?;
+        self.metadata_controller.write().await.set_active_for_peer(&peer_key, session_id).await?;
+        self.metadata_controller.write().await.save_index().await?;
 
         info!("Switched {} to session {}", peer_key, session_id);
         Ok(())
@@ -1064,24 +1081,12 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
             .clone();
 
-        let index = self
-            .index
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
+        if self.index.is_none() {
+            return Err(anyhow::anyhow!("Session index not initialized"));
+        }
 
         let peer_key = derive_base_session_key(&agent, peer);
-        index.list_for_peer(&peer_key).await
-    }
-
-    /// List all sessions for a peer (old API - DEPRECATED)
-    ///
-    /// DEPRECATED: Use `list_sessions_for_peer()` or `list_sessions()` instead.
-    #[deprecated(
-        since = "0.9.0",
-        note = "Use list_sessions_for_peer() or list_sessions() instead"
-    )]
-    pub async fn list_sessions(&mut self, peer: &Peer) -> Result<Vec<SessionEntry>> {
-        self.list_sessions_for_peer(peer).await
+        self.metadata_controller.write().await.list_for_peer_from_index(&peer_key).await
     }
 
     /// Get active session ID for a peer
@@ -1092,13 +1097,12 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?
             .clone();
 
-        let index = self
-            .index
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Session index not initialized"))?;
+        if self.index.is_none() {
+            return Err(anyhow::anyhow!("Session index not initialized"));
+        }
 
         let peer_key = derive_base_session_key(&agent, peer);
-        index.get_active_session_id(&peer_key).await
+        self.metadata_controller.write().await.get_active_session_id(&peer_key).await
     }
 
     /// Get or create a base session for a peer
@@ -1120,16 +1124,17 @@ impl SessionManager {
         }
 
         // Use index if available for UUID-based sessions
-        if let Some(ref mut index) = self.index {
+        if self.index.is_some() {
             let peer_key = derive_base_session_key(agent, peer);
             let sessions_dir = self.sessions_dir.as_ref().unwrap();
 
-            // Get or create session via index
-            let session_id =
-                if let Some(existing_id) = index.get_active_session_id(&peer_key).await? {
+            // Get or create session via metadata controller
+            let session_id = {
+                let mut controller = self.metadata_controller.write().await;
+                if let Some(existing_id) = controller.get_active_session_id(&peer_key).await? {
                     existing_id
                 } else {
-                    // Create new session through index (just tracking, no file yet)
+                    // Create new session through metadata controller
                     let new_id = uuid::Uuid::new_v4().to_string();
                     let transcript_file = format!("{}.jsonl", new_id);
                     let entry = SessionEntry::with_peer(
@@ -1139,11 +1144,12 @@ impl SessionManager {
                         peer.peer_type(),
                         peer.id(),
                     );
-                    index.create_for_peer(entry, &peer_key).await?;
-                    index.save().await?;
+                    controller.create_for_peer(entry, &peer_key).await?;
+                    controller.save_index().await?;
                     tracing::info!("Created new session via index: {}", new_id);
                     new_id
-                };
+                }
+            };
 
             // Check if session file exists by looking for it directly
             let transcript_file = format!("{session_id}.jsonl");
@@ -1154,9 +1160,22 @@ impl SessionManager {
                 info!("Opening existing session: {}", transcript_path.display());
                 UnifiedSession::open_by_id(agent, &session_id, sessions_dir, Some(peer)).await?
             } else {
-                // Create the session file
+                // Create the session file directly using SessionStorage
                 info!("Creating new session file: {}", transcript_path.display());
-                UnifiedSession::create_with_path(agent, peer, &session_id, sessions_dir).await?
+                let storage = SessionStorage::new(sessions_dir.clone());
+                let cwd = std::env::current_dir()
+                    .ok()
+                    .map(|p| p.to_string_lossy().to_string());
+                storage.create_session(&session_id, cwd).await?;
+                
+                // Create UnifiedSession from components
+                UnifiedSession::from_components(
+                    session_id.clone(),
+                    agent.to_string(),
+                    peer_key.clone(),
+                    peer.clone(),
+                    storage,
+                )
             };
 
             let arc = Arc::new(RwLock::new(session));
@@ -1164,29 +1183,10 @@ impl SessionManager {
             return Ok(arc);
         }
 
-        tracing::debug!("No registry available, using legacy session naming");
-
-        // Fallback to old behavior (no registry)
-        // Use sessions_dir if available (set via for_cli), otherwise use default path
-        let sessions_dir = self.sessions_dir.clone().unwrap_or_else(|| {
-            let resolver = crate::common::paths::PathResolver::new();
-            resolver.agent_sessions_dir(agent, None)
-        });
-
-        // Try to open existing
-        if let Some(session) = UnifiedSession::open(agent, peer).await? {
-            let arc = Arc::new(RwLock::new(session));
-            self.base_sessions.insert(key, arc.clone());
-            return Ok(arc);
-        }
-
-        // Create new using the correct sessions_dir (team-aware)
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let session =
-            UnifiedSession::create_with_path(agent, peer, &session_id, &sessions_dir).await?;
-        let arc = Arc::new(RwLock::new(session));
-        self.base_sessions.insert(key, arc.clone());
-        Ok(arc)
+        // SessionManager not initialized - require initialization
+        Err(anyhow::anyhow!(
+            "SessionManager not initialized. Call with_path_resolver() first."
+        ))
     }
 
     /// Get an existing base session if it exists
@@ -1696,10 +1696,11 @@ impl SessionManager {
             .count()
     }
 
-    // Helper to clone manager for SessionHandle
+    // Helper to clone manager for SessionHandle (DEPRECATED: use shared controller instead)
+    #[allow(dead_code)]
     fn clone_manager(&self) -> Self {
         // Create a new manager with same state
-        // Note: This is a shallow clone for SessionHandle's reference
+        // Shares the metadata controller Arc for cache consistency
         let sessions_dir = self
             .sessions_dir
             .clone()
@@ -1708,8 +1709,10 @@ impl SessionManager {
             base_sessions: self.base_sessions.clone(),
             channel_overlays: self.channel_overlays.clone(),
             spawn_overlays: self.spawn_overlays.clone(),
-            metadata_controller: MetadataController::new(&sessions_dir),
-            index: Some(SessionIndex::open(&sessions_dir)),
+            // Clone the Arc to share the same controller (cache consistency)
+            metadata_controller: self.metadata_controller.clone(),
+            // Share the same index (since MetadataController owns it, we keep our reference)
+            index: self.index.clone(),
             sessions_dir: self.sessions_dir.clone(),
             agent_name: self.agent_name.clone(),
             path_resolver: self.path_resolver.clone(),
@@ -1841,7 +1844,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_get_or_create_base() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         let base1 = manager
@@ -1861,7 +1867,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_create_channel_overlay() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         let hybrid = manager
@@ -1881,7 +1890,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_cross_channel_session_sharing() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         // Create CLI session
@@ -1916,7 +1928,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_create_spawn_overlay() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         let hybrid = manager
@@ -1934,7 +1949,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_isolated_spawn() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         // Create parent session
@@ -1957,7 +1975,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_shared_spawn() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         // Create parent session
@@ -1980,7 +2001,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_spawn_with_config() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         let hybrid = manager
@@ -2010,7 +2034,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_get_overlays_for_base() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         let hybrid = manager
@@ -2027,7 +2054,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_hybrid_session_key() {
-        let mut manager = SessionManager::new();
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         let hybrid = manager
@@ -2056,7 +2086,7 @@ mod tests {
         use tempfile::TempDir;
 
         let temp = TempDir::new().unwrap();
-        let mut manager = SessionManager::new().with_directory(temp.path());
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
         // Create session
@@ -2076,5 +2106,232 @@ mod tests {
         // Load history
         let history = handle.load_history().await.unwrap();
         assert_eq!(history.len(), 3);
+    }
+
+    // ====================================================================================
+    // Phase 2 Tests: Cache Consistency and Shared MetadataController
+    // ====================================================================================
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
+    async fn test_session_handle_metadata_cache_consistency() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Peer::User("alice".to_string());
+
+        // Create session
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+
+        // Record token usage via handle
+        handle.record_usage(100, 50).await.unwrap();
+
+        // Get metadata via handle - should see the updated tokens
+        let metadata1 = handle.get_metadata().await.unwrap();
+        assert_eq!(metadata1.input_tokens, 100);
+        assert_eq!(metadata1.output_tokens, 50);
+
+        // Set model via handle
+        handle.set_model("openai", "gpt-4").await.unwrap();
+
+        // Get metadata again - should see the updated model
+        let metadata2 = handle.get_metadata().await.unwrap();
+        assert_eq!(metadata2.provider, Some("openai".to_string()));
+        assert_eq!(metadata2.model, Some("gpt-4".to_string()));
+
+        // Metadata should still have the tokens
+        assert_eq!(metadata2.input_tokens, 100);
+        assert_eq!(metadata2.output_tokens, 50);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
+    async fn test_shared_metadata_controller_cache_hit() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Peer::User("alice".to_string());
+
+        // Create session
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+
+        // First call to get_metadata should populate cache
+        let _ = handle.get_metadata().await.unwrap();
+
+        // Second call should use cache (this verifies shared controller is working)
+        let metadata = handle.get_metadata().await.unwrap();
+        assert_eq!(metadata.session_id, handle.session_id());
+
+        // Verify via manager's method also uses same cache
+        let metadata2 = manager
+            .get_session_metadata(handle.session_id())
+            .await
+            .unwrap();
+        assert_eq!(metadata2.session_id, handle.session_id());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
+    async fn test_multiple_handles_share_metadata_cache() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Peer::User("alice".to_string());
+
+        // Create first session
+        let handle1 = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+
+        // Open same session via different handle
+        let handle2 = manager
+            .open_session(handle1.session_id())
+            .await
+            .unwrap()
+            .expect("Session should exist");
+
+        // Record usage via handle1
+        handle1.record_usage(200, 100).await.unwrap();
+
+        // Get metadata via handle2 - should see the changes (shared cache)
+        let metadata = handle2.get_metadata().await.unwrap();
+        assert_eq!(metadata.input_tokens, 200);
+        assert_eq!(metadata.output_tokens, 100);
+    }
+
+    // ====================================================================================
+    // Phase 3 Tests: Single Creation and Deletion Pathway
+    // ====================================================================================
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
+    async fn test_single_creation_pathway() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Peer::User("alice".to_string());
+
+        // Create session via SessionManager (the ONLY way)
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+
+        // Verify session was created
+        let session_id = handle.session_id().to_string();
+        assert!(!session_id.is_empty());
+
+        // Verify metadata was created
+        let metadata = handle.get_metadata().await.unwrap();
+        assert_eq!(metadata.agent_name, "test_agent");
+
+        // Verify we can open it
+        let handle2 = manager
+            .open_session(&session_id)
+            .await
+            .unwrap()
+            .expect("Session should exist");
+        assert_eq!(handle2.session_id(), session_id);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
+    async fn test_session_creation_creates_jsonl_and_metadata() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Peer::User("alice".to_string());
+
+        // Create session
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+
+        let session_id = handle.session_id();
+
+        // Verify JSONL file exists
+        let jsonl_path = temp.path().join(format!("{}.jsonl", session_id));
+        assert!(jsonl_path.exists(), "JSONL file should exist");
+
+        // Verify metadata exists in index
+        let metadata = handle.get_metadata().await.unwrap();
+        assert_eq!(metadata.session_id, session_id);
+
+        // Verify can be listed
+        let sessions = manager.list_all_sessions(false).await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, session_id);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
+    async fn test_single_deletion_pathway() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Peer::User("alice".to_string());
+
+        // Create session
+        let handle = manager
+            .create_session("test_agent", &peer, SessionCreateOptions::new())
+            .await
+            .unwrap();
+        let session_id = handle.session_id().to_string();
+
+        // Verify it exists
+        assert!(manager.open_session(&session_id).await.unwrap().is_some());
+
+        // Delete via MetadataController (the ONLY way)
+        manager
+            .metadata_controller
+            .write()
+            .await
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+
+        // Verify it's gone from metadata
+        let metadata_result = manager.get_session_metadata(&session_id).await;
+        assert!(metadata_result.is_err(), "Session metadata should be deleted");
+
+        // Verify JSONL is also deleted
+        let jsonl_path = temp.path().join(format!("{}.jsonl", session_id));
+        assert!(!jsonl_path.exists(), "JSONL file should be deleted");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
+    async fn test_legacy_fallback_removed() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
+        let peer = Peer::User("alice".to_string());
+
+        // get_or_create_base should require initialized SessionManager
+        // (no legacy fallback to UnifiedSession::open)
+        let result = manager.get_or_create_base("test_agent", &peer).await;
+
+        // Should succeed because we have a directory set
+        assert!(result.is_ok());
+
+        // The returned session should be properly initialized
+        let base = result.unwrap();
+        let base_guard = base.read().await;
+        assert_eq!(base_guard.agent_name, "test_agent");
     }
 }

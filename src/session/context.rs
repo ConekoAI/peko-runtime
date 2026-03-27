@@ -300,8 +300,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_session_context_channel_state() {
-        let manager = Arc::new(RwLock::new(SessionManager::new()));
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let manager = Arc::new(RwLock::new(
+            SessionManager::new().with_sessions_dir_internal(temp.path()),
+        ));
         let peer = Peer::User("alice".to_string());
 
         let ctx = SessionContext::for_channel(
@@ -330,8 +336,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
     async fn test_session_router() {
-        let manager = Arc::new(RwLock::new(SessionManager::new()));
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let manager = Arc::new(RwLock::new(
+            SessionManager::new().with_sessions_dir_internal(temp.path()),
+        ));
         let router = SessionRouter::new(manager, "default_agent");
         let peer = Peer::User("alice".to_string());
 

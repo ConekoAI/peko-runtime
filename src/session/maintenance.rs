@@ -8,7 +8,8 @@
 //! Only active in daemon mode.
 
 use crate::common::paths::PathResolver;
-use crate::session::index::{MaintenanceConfig, MaintenanceMode, SessionIndex};
+use crate::session::index::{MaintenanceConfig, MaintenanceMode};
+use crate::session::metadata_controller::MetadataController;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::interval;
@@ -106,16 +107,11 @@ impl MaintenanceScheduler {
                 continue;
             }
 
-            let mut index = SessionIndex::open(&sessions_dir);
+            // Use MetadataController instead of direct SessionIndex access
+            let mut controller = MetadataController::new(&sessions_dir);
 
-            // Ensure migrated
-            if let Err(e) = index.migrate_from_directory(&agent_name).await {
-                warn!("Failed to migrate index for {}: {}", agent_name, e);
-                continue;
-            }
-
-            // Run maintenance
-            match index.maintenance(&self.config).await {
+            // Run maintenance via controller
+            match controller.maintenance(&self.config).await {
                 Ok(report) => {
                     total_report.pruned += report.pruned;
                     total_report.capped += report.capped;
@@ -150,13 +146,11 @@ pub async fn maintain_agent(
     let resolver = PathResolver::new();
     let sessions_dir = resolver.agent_sessions_dir(agent_name, team);
 
-    let mut index = SessionIndex::open(&sessions_dir);
+    // Use MetadataController instead of direct SessionIndex access
+    let mut controller = MetadataController::new(&sessions_dir);
 
-    // Ensure migrated
-    index.migrate_from_directory(agent_name).await?;
-
-    // Run maintenance
-    index.maintenance(config).await
+    // Run maintenance via controller
+    controller.maintenance(config).await
 }
 
 /// Spawn maintenance scheduler as a background task

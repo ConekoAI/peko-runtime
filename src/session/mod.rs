@@ -24,10 +24,11 @@
 pub mod context;
 pub mod directory;
 pub mod events;
-pub mod index;
+mod index;
 pub mod jsonl;
 pub mod key;
 pub mod lock;
+pub mod lock_utils;
 pub mod manager;
 pub mod metadata;
 pub mod metadata_controller;
@@ -50,8 +51,7 @@ pub use events::{
     UserMessageEvent,
 };
 pub use index::{
-    migrate_to_v2, MaintenanceConfig, MaintenanceReport, MigrationReport, PeerIndex, PeerInfo,
-    SessionEntry, SessionIndex,
+    MaintenanceConfig, MaintenanceReport, PeerIndex, PeerInfo, SessionEntry,
 };
 pub use jsonl::{NormalizedEntry, SessionEntry as JsonlSessionEntry, SessionStorage};
 pub use key::{
@@ -59,6 +59,10 @@ pub use key::{
     parse_session_key, parse_session_key_v2, ChatType, ParsedSessionKeyV2, SessionScope,
 };
 pub use lock::FileLock;
+pub use lock_utils::{
+    try_read_lock, try_read_lock_default, try_write_lock, try_write_lock_default,
+    LockError, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
+};
 pub use metadata::{MetadataDiscrepancy, ReconciliationResult, SessionMetadata};
 pub use metadata_controller::{ConsistencyStatus, MetadataController};
 pub use unified::UnifiedSession;

@@ -130,6 +130,20 @@ impl SessionEntry {
         self.turn_count += 1;
         self.touch();
     }
+
+    /// Convert to SessionMetadata for backward compatibility
+    /// 
+    /// This is the preferred conversion method when passing to API boundaries.
+    pub fn to_metadata(&self) -> crate::session::metadata::SessionMetadata {
+        crate::session::metadata::SessionMetadata::from_entry(self.clone())
+    }
+
+    /// Convert to SessionInfo for service layer
+    /// 
+    /// This is the preferred conversion method when passing to SessionService.
+    pub fn to_info(&self) -> crate::common::services::session_service::SessionInfo {
+        crate::common::services::session_service::SessionInfo::from(self.clone())
+    }
 }
 
 /// Peer routing information
@@ -206,7 +220,7 @@ pub struct MaintenanceReport {
 }
 
 /// Unified session index manager
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SessionIndex {
     sessions_path: PathBuf,
     peers_path: PathBuf,
@@ -690,205 +704,6 @@ impl SessionIndex {
             total: total_sessions,
         })
     }
-}
-
-// =================================================================================
-// Legacy Migration (One-time, removes old format)
-// =================================================================================
-
-/// Migration report
-#[derive(Debug, Default)]
-pub struct MigrationReport {
-    pub sessions_migrated: usize,
-    pub peers_migrated: usize,
-    pub duplicates_removed: usize,
-    pub sidecars_removed: usize,
-}
-
-/// Migrate from old format to new two-file format
-pub async fn migrate_to_v2(sessions_dir: &Path) -> Result<MigrationReport> {
-    let mut report = MigrationReport::default();
-
-    // Check if already migrated
-    if sessions_dir.join("sessions.json").exists()
-        && sessions_dir.join("peers.json").exists()
-        && !sessions_dir.join("registry.json").exists()
-    {
-        info!("Session index already at v2");
-        return Ok(report);
-    }
-
-    info!("Migrating session index to v2 format...");
-
-    // 1. Load old registry.json if exists
-    let mut peer_mappings: HashMap<String, (String, Vec<String>)> = HashMap::new();
-
-    let registry_path = sessions_dir.join("registry.json");
-    if registry_path.exists() {
-        #[derive(Deserialize)]
-        struct OldRegistry {
-            peers: HashMap<String, OldPeerEntry>,
-        }
-
-        #[derive(Deserialize)]
-        struct OldPeerEntry {
-            active_session_id: String,
-            sessions: HashMap<String, OldSessionInfo>,
-        }
-
-        #[derive(Deserialize)]
-        struct OldSessionInfo {
-            session_id: String,
-            transcript_file: String,
-            created_at: u64,
-            updated_at: u64,
-            message_count: usize,
-            parent_id: Option<String>,
-        }
-
-        let content = fs::read_to_string(&registry_path).await?;
-        let old_registry: OldRegistry = serde_json::from_str(&content)?;
-
-        for (peer_key, peer_entry) in old_registry.peers {
-            let session_ids: Vec<String> = peer_entry.sessions.keys().cloned().collect();
-            peer_mappings.insert(peer_key, (peer_entry.active_session_id, session_ids));
-        }
-
-        report.peers_migrated = peer_mappings.len();
-    }
-
-    // 2. Load old sessions.json (may have duplicates)
-    let mut new_sessions: HashMap<String, SessionEntry> = HashMap::new();
-
-    let old_sessions_path = sessions_dir.join("sessions.json");
-    if old_sessions_path.exists() {
-        #[derive(Deserialize)]
-        struct OldIndexEntry {
-            session_id: String,
-            agent_name: String,
-            session_key: Option<String>,
-            created_at: u64,
-            updated_at: u64,
-            message_count: usize,
-            total_tokens: Option<usize>,
-            transcript_file: String,
-            title: Option<String>,
-            parent_session_id: Option<String>,
-            ended: bool,
-            trigger: Option<String>,
-            provider: Option<String>,
-            model: Option<String>,
-            channel: Option<String>,
-            recipient: Option<String>,
-            cwd: Option<String>,
-        }
-
-        let content = fs::read_to_string(&old_sessions_path).await?;
-        let old_entries: HashMap<String, OldIndexEntry> = serde_json::from_str(&content)?;
-
-        // Deduplicate by session_id (keep most recent)
-        let mut by_session: HashMap<String, Vec<OldIndexEntry>> = HashMap::new();
-        for (_, entry) in old_entries {
-            by_session
-                .entry(entry.session_id.clone())
-                .or_default()
-                .push(entry);
-        }
-
-        for (session_id, mut entries) in by_session {
-            if entries.len() > 1 {
-                report.duplicates_removed += entries.len() - 1;
-            }
-
-            // Keep most recent
-            entries.sort_by_key(|e| std::cmp::Reverse(e.updated_at));
-            let best = &entries[0];
-
-            let entry = SessionEntry {
-                session_id: session_id.clone(),
-                agent_name: best.agent_name.clone(),
-                created_at: best.created_at,
-                updated_at: best.updated_at,
-                message_count: best.message_count,
-                turn_count: 0, // Will be calculated from events
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: best.total_tokens.unwrap_or(0),
-                transcript_file: best.transcript_file.clone(),
-                title: best.title.clone(),
-                parent_session_id: best.parent_session_id.clone(),
-                ended: best.ended,
-                trigger: best.trigger.clone().unwrap_or_else(|| "user".to_string()),
-                provider: best.provider.clone(),
-                model: best.model.clone(),
-                channel: best.channel.clone(),
-                recipient: best.recipient.clone(),
-                cwd: best.cwd.clone(),
-                peer_type: None, // Migration: peer info not available in old format
-                peer_id: None,
-            };
-
-            new_sessions.insert(session_id, entry);
-        }
-
-        report.sessions_migrated = new_sessions.len();
-    }
-
-    // 3. Build new peers.json
-    let mut new_peers = PeerIndex::default();
-    for (peer_key, (active_id, session_ids)) in peer_mappings {
-        // Filter to only existing sessions
-        let valid_ids: Vec<String> = session_ids
-            .into_iter()
-            .filter(|id| new_sessions.contains_key(id))
-            .collect();
-
-        if !valid_ids.is_empty() {
-            let active = if valid_ids.contains(&active_id) {
-                active_id
-            } else {
-                valid_ids[0].clone()
-            };
-
-            new_peers.peers.insert(
-                peer_key,
-                PeerInfo {
-                    active_session_id: active,
-                    session_ids: valid_ids,
-                },
-            );
-        }
-    }
-
-    // 4. Write new files
-    let sessions_json = serde_json::to_string_pretty(&new_sessions)?;
-    fs::write(sessions_dir.join("sessions.json"), sessions_json).await?;
-
-    let peers_json = serde_json::to_string_pretty(&new_peers)?;
-    fs::write(sessions_dir.join("peers.json"), peers_json).await?;
-
-    // 5. Delete old files
-    fs::remove_file(&registry_path).await?;
-
-    // Remove old sidecar files
-    let mut entries = fs::read_dir(sessions_dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".index.json") {
-            fs::remove_file(entry.path()).await?;
-            report.sidecars_removed += 1;
-        }
-    }
-
-    info!(
-        "Migration complete: {} sessions, {} peers, {} duplicates removed, {} sidecars removed",
-        report.sessions_migrated,
-        report.peers_migrated,
-        report.duplicates_removed,
-        report.sidecars_removed
-    );
-
-    Ok(report)
 }
 
 #[cfg(test)]

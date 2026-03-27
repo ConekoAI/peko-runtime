@@ -144,11 +144,6 @@ impl SessionMetadata {
         }
     }
 
-    /// Create a builder for controlled mutation
-    pub fn into_builder(self) -> SessionMetadataBuilder {
-        SessionMetadataBuilder(self)
-    }
-
     /// Update timestamp to now
     fn touch(&mut self) {
         self.updated_at = SystemTime::now()
@@ -212,67 +207,6 @@ impl SessionMetadata {
     /// Set working directory
     pub fn set_cwd(&mut self, cwd: Option<impl Into<String>>) {
         self.cwd = cwd.map(Into::into);
-    }
-}
-
-/// Builder for controlled metadata mutation
-///
-/// Usage:
-/// ```rust,ignore
-/// let new_metadata = metadata
-///     .into_builder()
-///     .with_title("New Title")
-///     .with_message_count(10)
-///     .build();
-/// ```
-pub struct SessionMetadataBuilder(SessionMetadata);
-
-impl SessionMetadataBuilder {
-    pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.0.title = Some(title.into());
-        self.0.touch();
-        self
-    }
-
-    pub fn with_message_count(mut self, count: usize) -> Self {
-        self.0.message_count = count;
-        self.0.touch();
-        self
-    }
-
-    pub fn with_tokens(mut self, input: usize, output: usize) -> Self {
-        self.0.input_tokens = input;
-        self.0.output_tokens = output;
-        self.0.total_tokens = input + output;
-        self.0.touch();
-        self
-    }
-
-    pub fn with_model(mut self, provider: impl Into<String>, model: impl Into<String>) -> Self {
-        self.0.provider = Some(provider.into());
-        self.0.model = Some(model.into());
-        self.0.touch();
-        self
-    }
-
-    pub fn with_parent_session(mut self, parent_id: impl Into<String>) -> Self {
-        self.0.parent_session_id = Some(parent_id.into());
-        self
-    }
-
-    pub fn with_trigger(mut self, trigger: impl Into<String>) -> Self {
-        self.0.trigger = trigger.into();
-        self
-    }
-
-    pub fn ended(mut self, ended: bool) -> Self {
-        self.0.ended = ended;
-        self.0.touch();
-        self
-    }
-
-    pub fn build(self) -> SessionMetadata {
-        self.0
     }
 }
 
@@ -341,13 +275,12 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_builder() {
-        let meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl")
-            .into_builder()
-            .with_title("Test Title")
-            .with_message_count(10)
-            .with_tokens(100, 50)
-            .build();
+    fn test_metadata_mutation() {
+        // Use mutable methods instead of builder pattern
+        let mut meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
+        meta.set_title(Some("Test Title"));
+        meta.set_message_count(10);
+        meta.record_tokens(100, 50);
 
         assert_eq!(meta.title, Some("Test Title".to_string()));
         assert_eq!(meta.message_count, 10);

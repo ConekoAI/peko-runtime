@@ -12,7 +12,8 @@ use crate::common::paths::PathResolver;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
 use crate::observability::Observability;
 use crate::orchestration::events::SystemEvent;
-use crate::session::index::{MaintenanceConfig, SessionIndex};
+use crate::session::MaintenanceConfig;
+use crate::session::metadata_controller::MetadataController;
 use crate::types::agent::AgentConfig;
 use anyhow::Result;
 use chrono::Utc;
@@ -716,10 +717,10 @@ impl Daemon {
                     let agent_name = agent_entry.file_name().to_string_lossy().to_string();
                     let sessions_dir = agent_path;
 
-                    let mut index = SessionIndex::open(&sessions_dir);
+                    let mut controller = MetadataController::new(&sessions_dir);
                     let config = MaintenanceConfig::default();
 
-                    match index.maintenance(&config).await {
+                    match controller.maintenance(&config).await {
                         Ok(report) => {
                             total_pruned += report.pruned;
                         }

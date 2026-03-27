@@ -299,12 +299,14 @@ impl AgenticLoopV4 {
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
     ) -> Result<AgenticResult> {
+        use crate::common::paths::PathResolver;
         use crate::session::manager::SessionManager;
         use crate::session::types::Peer;
 
         // Create session via SessionManager
+        let path_resolver = PathResolver::new();
         let mut session_manager = SessionManager::new()
-            .with_registry(self.agent.name())
+            .with_path_resolver(path_resolver, self.agent.name(), None)
             .await?;
         let peer = Peer::User("default".to_string());
         let session = session_manager

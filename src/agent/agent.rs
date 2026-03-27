@@ -1,6 +1,7 @@
 //! Agent management module
 
 use crate::agent::subagent_executor::SubagentExecutor;
+use crate::common::paths::PathResolver;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::memory::sqlite::SqliteMemory;
 use crate::providers::Provider;
@@ -186,8 +187,11 @@ impl Agent {
         // Initialize provider if configured
         let provider = Self::init_provider(&config).await?;
 
-        // Initialize session manager with registry
-        let session_manager = SessionManager::new().with_registry(&config.name).await?;
+        // Initialize session manager with path resolver
+        let path_resolver = PathResolver::new();
+        let session_manager = SessionManager::new()
+            .with_path_resolver(path_resolver, &config.name, config.team.as_deref())
+            .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
         let session_router = SessionRouter::new(Arc::clone(&session_manager), config.name.clone());
 
@@ -697,8 +701,11 @@ impl Agent {
 
     /// Create a new session (/new command)
     pub async fn session_new(&self, peer: &Peer) -> Result<String> {
+        use crate::session::manager::SessionCreateOptions;
         let mut manager = self.session_manager.write().await;
-        let session_id = manager.create_new_session(peer).await?;
+        let options = SessionCreateOptions::new().with_trigger("user");
+        let handle = manager.create_session(&self.config.name, peer, options).await?;
+        let session_id = handle.session_id().to_string();
         info!("Created new session {} for peer {:?}", session_id, peer);
         Ok(session_id)
     }
@@ -722,7 +729,7 @@ impl Agent {
     /// List all sessions for a peer (/sessions command)
     pub async fn session_list(&self, peer: &Peer) -> Result<Vec<crate::session::SessionEntry>> {
         let mut manager = self.session_manager.write().await;
-        let sessions = manager.list_sessions(peer).await?;
+        let sessions = manager.list_sessions_for_peer(peer).await?;
         Ok(sessions)
     }
 

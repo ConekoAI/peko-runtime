@@ -1,21 +1,20 @@
 //! Unified session implementation
 //!
 //! This module provides a single, authoritative session implementation that
-//! replaces both `BaseSession` and `SimpleSession` to eliminate racing issues.
+//! manages conversation persistence via JSONL files.
 //!
 //! ## Design Principles
 //!
 //! 1. **Single Source of Truth**: One implementation manages all session data
 //! 2. **Atomic Updates**: All index updates happen together in one operation
-//! 3. **Clear Ownership**: No competing writers to the same index entry
+//! 3. **Clear Ownership**: SessionManager is the SOLE authority for session lifecycle
 //! 4. **Backward Compatible**: Works with existing session files
 //!
-//! ## Unified Design
+//! ## Important: SessionManager is the ONLY Way
 //!
-//! This single implementation replaces the previous competing `BaseSession` and
-//! `SimpleSession` types to eliminate racing issues. It provides:
-//! - Peer-aware design for multi-user/session scenarios
-//! - Clean API for simple use cases (defaults to Peer::User("default"))
+//! As of Phase 3 refactor, **all session creation and opening MUST go through
+//! `SessionManager`**. UnifiedSession is now an internal implementation detail.
+//! External code should use `SessionHandle` obtained from SessionManager.
 
 use crate::common::paths::PathResolver;
 use crate::engine::ToolCall;
@@ -35,26 +34,101 @@ use chrono::Utc;
 use std::path::PathBuf;
 use tokio::fs;
 
-/// Unified session - single source of truth for conversation persistence
+// ====================================================================================
+// Message Conversion Functions (Phase 4a: Extracted from UnifiedSession)
+// ====================================================================================
+
+use crate::providers::MessageRole;
+use crate::session::NormalizedEntry;
+
+/// Convert a SessionEvent to a ChatMessage
 ///
-/// Unified session implementation with atomic updates.
-/// Provides peer-aware session management with atomic index updates
-/// to prevent racing conditions.
+/// This function handles the conversion from internal event format to
+/// provider-agnostic ChatMessage format.
+pub(crate) fn event_to_chat_message(event: &SessionEvent) -> Option<ChatMessage> {
+    match event {
+        SessionEvent::LlmMessage(e) => {
+            let role = match e.role.as_str() {
+                "system" => MessageRole::System,
+                "user" => MessageRole::User,
+                "assistant" => MessageRole::Assistant,
+                "tool" => MessageRole::Tool,
+                _ => MessageRole::User,
+            };
+
+            Some(ChatMessage {
+                role,
+                content: e.content_blocks.clone(),
+                tool_calls: None,
+                tool_call_id: e.tool_call_id.clone(),
+            })
+        }
+        SessionEvent::UserMessage(e) => Some(ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text { text: e.content.clone() }],
+            tool_calls: None,
+            tool_call_id: None,
+        }),
+        SessionEvent::AssistantMessage(e) => Some(ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Text { text: e.content.clone() }],
+            tool_calls: None,
+            tool_call_id: None,
+        }),
+        SessionEvent::SystemMessage(e) => Some(ChatMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text { text: e.content.clone() }],
+            tool_calls: None,
+            tool_call_id: None,
+        }),
+        _ => None,
+    }
+}
+
+/// Convert a slice of NormalizedEntry to context text
 ///
-/// # Examples
+/// This function extracts text content from normalized entries for LLM context.
+pub(crate) fn entries_to_context_text(entries: &[NormalizedEntry]) -> String {
+    let mut context = String::new();
+
+    for entry in entries {
+        match entry {
+            NormalizedEntry::UserMessage { content, .. } => {
+                if !content.is_empty() {
+                    context.push_str(&format!("user: {content}\n\n"));
+                }
+            }
+            NormalizedEntry::AssistantMessage { content, .. } => {
+                if !content.is_empty() {
+                    context.push_str(&format!("assistant: {content}\n\n"));
+                }
+            }
+            NormalizedEntry::SystemMessage { content, .. } => {
+                if !content.is_empty() {
+                    context.push_str(&format!("system: {content}\n\n"));
+                }
+            }
+            NormalizedEntry::ToolResult {
+                content, tool_name, ..
+            } => {
+                context.push_str(&format!("tool: [{tool_name} result: {content}]\n\n"));
+            }
+            // Other entry types don't contribute to context text
+            _ => {}
+        }
+    }
+
+    context
+}
+
+/// Unified session - internal implementation for conversation persistence
 ///
-/// ```rust,ignore
-/// // Create a new session for a user
-/// let peer = Peer::User("alice".to_string());
-/// let session = UnifiedSession::create("my_agent", &peer, Some("default")).await?;
+/// **IMPORTANT**: This is an internal implementation detail. Do not use directly.
+/// All session operations should go through `SessionManager` which provides
+/// `SessionHandle` for external use.
 ///
-/// // Add messages
-/// session.add_user("Hello!").await?;
-/// session.add_assistant("Hi there!", None, None).await?;
-///
-/// // Load history
-/// let history = session.load_history().await?;
-/// ```
+/// UnifiedSession manages the JSONL file storage for conversation history.
+/// It is created and opened only by SessionManager.
 #[derive(Debug)]
 pub struct UnifiedSession {
     /// Session ID (UUID format)
@@ -97,147 +171,25 @@ impl UnifiedSession {
     /// * `base_dir` - **Ignored**, kept for backward compatibility
     /// * `agent_name` - The agent name
     /// * `team` - Optional team name (defaults to "default")
-    #[must_use]
-    #[deprecated(
-        since = "0.9.0",
-        note = "Use PathResolver::agent_sessions_dir() instead"
-    )]
-    pub fn storage_dir(
-        _base_dir: Option<&std::path::Path>,
-        agent_name: &str,
-        team: Option<&str>,
-    ) -> PathBuf {
-        // Delegate to PathResolver for consistent path resolution
-        let resolver = crate::common::paths::PathResolver::new();
-        resolver.agent_sessions_dir(agent_name, team)
-    }
-
     // ============================================================
     // Creation
     // ============================================================
 
-    /// Create a new unified session for an agent and peer
+    /// Create a UnifiedSession from components (used by SessionManager after JSONL creation)
     ///
-    /// # Arguments
-    /// * `agent_name` - The agent name
-    /// * `peer` - The peer this session belongs to
-    /// * `team` - Optional team name (defaults to "default")
-    ///
-    /// NOTE: This is crate-private. Only SessionManager should create sessions.
-    pub(crate) async fn create(agent_name: &str, peer: &Peer, team: Option<&str>) -> Result<Self> {
-        let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
-        let session_id = uuid::Uuid::new_v4().to_string();
-
-        Self::create_with_key(agent_name, peer, &session_id, &session_key, team).await
-    }
-
-    /// Create a new unified session with explicit PathResolver
-    ///
-    /// This is the PREFERRED method as it ensures consistent path resolution.
-    ///
-    /// # Arguments
-    /// * `resolver` - PathResolver for consistent path resolution
-    /// * `agent_name` - The agent name
-    /// * `peer` - The peer this session belongs to
-    /// * `team` - Optional team name
-    ///
-    /// NOTE: This is crate-private. Only SessionManager should create sessions.
-    pub(crate) async fn create_with_resolver(
-        resolver: &crate::common::paths::PathResolver,
-        agent_name: &str,
-        peer: &Peer,
-        team: Option<&str>,
-    ) -> Result<Self> {
-        let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let sessions_dir = resolver.agent_sessions_dir(agent_name, team);
-
-        Self::create_with_path(agent_name, peer, &session_id, sessions_dir).await
-    }
-
-    /// Create a new unified session with specific ID and key
-    ///
-    /// This is useful when you need deterministic session IDs or custom keys.
-    /// NOTE: This is crate-private. Only SessionManager should create sessions.
-    pub(crate) async fn create_with_key(
-        agent_name: &str,
-        peer: &Peer,
-        session_id: &str,
-        session_key: &str,
-        team: Option<&str>,
-    ) -> Result<Self> {
-        let storage_dir = Self::storage_dir(None, agent_name, team);
-        let storage = SessionStorage::new(storage_dir.clone());
-
-        // Ensure directory exists
-        fs::create_dir_all(&storage_dir).await.ok();
-
-        // Create session file
-        let cwd = std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().to_string());
-
-        storage
-            .create_session(session_id, cwd.clone())
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to create session file: {}/{}",
-                    storage_dir.display(),
-                    session_id
-                )
-            })?;
-
-        // Note: Index entry is created by SessionManager/MetadataController
-        // UnifiedSession only manages the JSONL file
-
-        Ok(Self {
-            id: session_id.to_string(),
-            agent_name: agent_name.to_string(),
-            session_key: session_key.to_string(),
-            peer: peer.clone(),
-            storage,
-            last_message_id: None,
-            message_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            current_provider: None,
-            current_model: None,
-        })
-    }
-
-    /// Create a new unified session from a specific directory (registry-based)
-    ///
-    /// This is used by SessionManager when it has already determined the sessions directory.
-    /// NOTE: This is crate-private. Only SessionManager should create sessions.
-    pub(crate) async fn create_with_path(
-        agent_name: &str,
-        peer: &Peer,
-        session_id: &str,
-        sessions_dir: impl AsRef<std::path::Path>,
-    ) -> Result<Self> {
-        let sessions_dir = sessions_dir.as_ref().to_path_buf();
-        let storage = SessionStorage::new(sessions_dir.clone());
-        let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
-
-        // Ensure directory exists
-        fs::create_dir_all(&sessions_dir).await?;
-
-        // Create session file
-        let cwd = std::env::current_dir()
-            .ok()
-            .map(|p| p.to_string_lossy().to_string());
-
-        storage.create_session(session_id, cwd.clone()).await?;
-
-        // Note: Index entry is created by SessionManager/MetadataController
-        // UnifiedSession only manages the JSONL file
-
-        Ok(Self {
-            id: session_id.to_string(),
-            agent_name: agent_name.to_string(),
+    /// This is a low-level constructor. Prefer using `open_by_id` for opening existing sessions.
+    pub(crate) fn from_components(
+        session_id: String,
+        agent_name: String,
+        session_key: String,
+        peer: Peer,
+        storage: SessionStorage,
+    ) -> Self {
+        Self {
+            id: session_id,
+            agent_name,
             session_key,
-            peer: peer.clone(),
+            peer,
             storage,
             last_message_id: None,
             message_count: 0,
@@ -245,31 +197,19 @@ impl UnifiedSession {
             output_tokens: 0,
             current_provider: None,
             current_model: None,
-        })
+        }
     }
 
     // ============================================================
     // Opening
     // ============================================================
 
-    /// Open an existing unified session by agent and peer
-    ///
-    /// Returns `Ok(None)` if no active session exists for this peer.
-    pub async fn open(agent_name: &str, peer: &Peer) -> Result<Option<Self>> {
-        let session_key = crate::session::key::derive_base_session_key(agent_name, peer);
-        Self::open_by_key(agent_name, &session_key).await
-    }
-
-    /// Open an existing unified session by key
-    /// Note: Session ID lookup should be done by SessionManager using MetadataController
-    pub async fn open_by_key(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
-        // This method requires SessionManager to look up the session ID from the index
-        // UnifiedSession no longer accesses the index directly
-        let _ = (agent_name, session_key);
-        Ok(None)
-    }
-
     /// Open an existing unified session by ID
+    ///
+    /// This is the ONLY way to open a UnifiedSession. It requires the session ID
+    /// which must be obtained from MetadataController via SessionManager.
+    ///
+    /// NOTE: All session opening must go through SessionManager::open_session().
     ///
     /// This bypasses the peer lookup and opens the session file directly.
     /// JSONL is the source of truth for message count and content.
@@ -308,52 +248,6 @@ impl UnifiedSession {
             entries,
         )
         .await
-    }
-
-    /// Open an existing session by key (returns None if not found)
-    /// Note: Use SessionManager for proper session lookup
-    pub async fn open_by_key_simple(agent_name: &str, session_key: &str) -> Result<Option<Self>> {
-        Self::open_by_key(agent_name, session_key).await
-    }
-
-    /// Open or create a session by key (for CLI persistence)
-    /// Note: SessionManager should be used for production code
-    pub async fn open_or_create_by_key(
-        agent_name: &str,
-        session_key: &str,
-        team: Option<&str>,
-    ) -> Result<Self> {
-        // Use PathResolver for consistent path resolution
-        let resolver = crate::common::paths::PathResolver::new();
-        let storage_dir = resolver.agent_sessions_dir(agent_name, team);
-
-        // Try to find existing session file
-        // Note: This is a simplified version - SessionManager does proper lookup
-        if let Ok(mut entries) = tokio::fs::read_dir(&storage_dir).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "jsonl") {
-                    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                        let peer = parse_peer_from_key(session_key)
-                            .unwrap_or(Peer::User("default".to_string()));
-                        return Self::open_by_id(agent_name, name, &storage_dir, Some(&peer)).await;
-                    }
-                }
-            }
-        }
-
-        // Create new with this key
-        let peer = parse_peer_from_key(session_key).unwrap_or(Peer::User("default".to_string()));
-        let session_id = uuid::Uuid::new_v4().to_string();
-        Self::create_with_path(agent_name, &peer, &session_id, storage_dir).await
-    }
-
-    /// Get or create a unified session
-    pub async fn get_or_create(agent_name: &str, peer: &Peer, team: Option<&str>) -> Result<Self> {
-        match Self::open(agent_name, peer).await? {
-            Some(session) => Ok(session),
-            None => Self::create(agent_name, peer, team).await,
-        }
     }
 
     // ============================================================
@@ -752,57 +646,11 @@ impl UnifiedSession {
     /// Core implementation that handles all event formats and converts to
     /// ChatMessage with full ContentBlock fidelity.
     async fn load_history_native(&self) -> Result<Vec<ChatMessage>> {
-        use crate::providers::MessageRole;
-
         let events = self.storage.load_events(&self.id).await?;
-        let mut messages = Vec::new();
-
-        for event in events {
-            match event {
-                SessionEvent::LlmMessage(e) => {
-                    let role = match e.role.as_str() {
-                        "system" => MessageRole::System,
-                        "user" => MessageRole::User,
-                        "assistant" => MessageRole::Assistant,
-                        "tool" => MessageRole::Tool,
-                        _ => MessageRole::User,
-                    };
-
-                    messages.push(ChatMessage {
-                        role,
-                        content: e.content_blocks,
-                        tool_calls: None,
-                        tool_call_id: e.tool_call_id,
-                    });
-                }
-                // Fall back to legacy formats
-                SessionEvent::UserMessage(e) => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::User,
-                        content: vec![ContentBlock::Text { text: e.content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                SessionEvent::AssistantMessage(e) => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: vec![ContentBlock::Text { text: e.content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                SessionEvent::SystemMessage(e) => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: vec![ContentBlock::Text { text: e.content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                _ => {}
-            }
-        }
+        let messages: Vec<ChatMessage> = events
+            .iter()
+            .filter_map(|event| event_to_chat_message(event))
+            .collect();
 
         Ok(messages)
     }
@@ -811,40 +659,12 @@ impl UnifiedSession {
     ///
     /// Uses normalized loading to support both Legacy V3 and Event Format sessions.
     pub async fn get_context_text(&self, _limit: usize) -> String {
-        use crate::session::NormalizedEntry;
-
         let entries = match self.storage.load_normalized(&self.id).await {
             Ok(e) => e,
             Err(_) => return format!("Session: {}", self.id),
         };
 
-        let mut context = String::new();
-
-        for entry in entries {
-            match entry {
-                NormalizedEntry::UserMessage { content, .. } => {
-                    if !content.is_empty() {
-                        context.push_str(&format!("user: {content}\n\n"));
-                    }
-                }
-                NormalizedEntry::AssistantMessage { content, .. } => {
-                    if !content.is_empty() {
-                        context.push_str(&format!("assistant: {content}\n\n"));
-                    }
-                }
-                NormalizedEntry::SystemMessage { content, .. } => {
-                    if !content.is_empty() {
-                        context.push_str(&format!("system: {content}\n\n"));
-                    }
-                }
-                NormalizedEntry::ToolResult {
-                    content, tool_name, ..
-                } => {
-                    context.push_str(&format!("tool: [{tool_name} result: {content}]\n\n"));
-                }
-                _ => {}
-            }
-        }
+        let context = entries_to_context_text(&entries);
 
         if context.is_empty() {
             format!("Session: {}", self.id)
@@ -997,120 +817,9 @@ mod tests {
         TempDir::new().unwrap()
     }
 
-    #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_unified_session_create() {
-        let peer = Peer::User("alice".to_string());
-        let session = UnifiedSession::create("test_agent", &peer, None).await;
-        assert!(session.is_ok());
-
-        let session = session.unwrap();
-        assert_eq!(session.agent_name, "test_agent");
-        assert_eq!(session.peer, peer);
-        assert!(session.session_key.contains("peer:user:alice"));
-        assert_eq!(session.message_count, 0);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_unified_session_agent_peer() {
-        let peer = Peer::Agent("helper".to_string());
-        let session = UnifiedSession::create("test_agent", &peer, None)
-            .await
-            .unwrap();
-
-        assert_eq!(session.peer, peer);
-        assert!(session.session_key.contains("peer:agent:helper"));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_unified_session_add_messages() {
-        let peer = Peer::User("alice".to_string());
-        let mut session = UnifiedSession::create("test_agent", &peer, None)
-            .await
-            .unwrap();
-
-        session
-            .add_system("You are a helpful assistant")
-            .await
-            .unwrap();
-        session.add_user("Hello!").await.unwrap();
-        session
-            .add_assistant("Hi there!", None, None)
-            .await
-            .unwrap();
-
-        assert_eq!(session.message_count, 3);
-
-        let history = session.load_history().await.unwrap();
-        assert_eq!(history.len(), 3);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_unified_session_token_usage() {
-        let peer = Peer::User("alice".to_string());
-        let mut session = UnifiedSession::create("test_agent", &peer, None)
-            .await
-            .unwrap();
-
-        session.record_usage(100, 50);
-        session.record_usage(50, 25);
-
-        let (input, output, total) = session.token_usage();
-        assert_eq!(input, 150);
-        assert_eq!(output, 75);
-        assert_eq!(total, 225);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_unified_session_persistence() {
-        let peer = Peer::User("alice".to_string());
-
-        // Create session
-        let mut session = UnifiedSession::create("test_agent", &peer, None)
-            .await
-            .unwrap();
-        let session_key = session.session_key.clone();
-
-        session.add_user("Hello!").await.unwrap();
-        session.add_assistant("Hi!", None, None).await.unwrap();
-
-        // Re-open by key
-        let reopened = UnifiedSession::open_by_key("test_agent", &session_key)
-            .await
-            .unwrap();
-
-        assert!(reopened.is_some());
-        let reopened = reopened.unwrap();
-        assert_eq!(reopened.session_key, session_key);
-        assert_eq!(reopened.message_count, 2);
-
-        let history = reopened.load_history().await.unwrap();
-        assert_eq!(history.len(), 2);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires filesystem access - run with --include-ignored for full test"]
-    async fn test_unified_session_get_or_create() {
-        let peer = Peer::User("alice".to_string());
-
-        // Create new
-        let session1 = UnifiedSession::get_or_create("test_agent", &peer, None)
-            .await
-            .unwrap();
-        let key1 = session1.session_key.clone();
-
-        // Get existing
-        let session2 = UnifiedSession::get_or_create("test_agent", &peer, None)
-            .await
-            .unwrap();
-        let key2 = session2.session_key;
-
-        assert_eq!(key1, key2);
-    }
+    // Note: Creation tests moved to SessionManager tests
+    // UnifiedSession::create* methods were removed in Phase 3
+    // All creation must go through SessionManager::create_session()
 
     #[test]
     fn test_derive_session_key() {
@@ -1142,5 +851,168 @@ mod tests {
     fn test_parse_peer_from_key_invalid() {
         let result = parse_peer_from_key("invalid_key");
         assert!(result.is_err());
+    }
+
+    // ====================================================================================
+    // Phase 4a: Message Conversion Function Tests
+    // ====================================================================================
+
+    #[test]
+    fn test_event_to_chat_message_llm_message() {
+        use crate::providers::MessageRole;
+        use crate::session::events::{EventEnvelope, LlmMessageEvent};
+        use chrono::Utc;
+
+        let event = SessionEvent::LlmMessage(LlmMessageEvent {
+            role: "assistant".to_string(),
+            content_blocks: vec![ContentBlock::Text {
+                text: "Hello!".to_string(),
+            }],
+            tool_call_id: None,
+            message_id: "msg-1".to_string(),
+            model: "gpt-4".to_string(),
+            provider: "openai".to_string(),
+            usage: None,
+            tool_calls: None,
+            thinking: None,
+            envelope: EventEnvelope {
+                id: "test-1".to_string(),
+                ts: Utc::now(),
+                session_id: None,
+                seq: None,
+            },
+        });
+
+        let msg = event_to_chat_message(&event).unwrap();
+        assert_eq!(msg.role, MessageRole::Assistant);
+        assert_eq!(msg.content.len(), 1);
+    }
+
+    #[test]
+    fn test_event_to_chat_message_user_message() {
+        use crate::providers::MessageRole;
+        use crate::session::events::{EventEnvelope, UserMessageEvent, MessageSource};
+        use chrono::Utc;
+
+        let event = SessionEvent::UserMessage(UserMessageEvent {
+            content: "Hi there".to_string(),
+            message_id: "msg-2".to_string(),
+            source: MessageSource::User,
+            envelope: EventEnvelope {
+                id: "test-2".to_string(),
+                ts: Utc::now(),
+                session_id: None,
+                seq: None,
+            },
+        });
+
+        let msg = event_to_chat_message(&event).unwrap();
+        assert_eq!(msg.role, MessageRole::User);
+        assert_eq!(msg.content.len(), 1);
+    }
+
+    #[test]
+    fn test_event_to_chat_message_system_message() {
+        use crate::providers::MessageRole;
+        use crate::session::events::{EventEnvelope, SystemMessageEvent};
+        use chrono::Utc;
+
+        let event = SessionEvent::SystemMessage(SystemMessageEvent {
+            content: "System prompt".to_string(),
+            envelope: EventEnvelope {
+                id: "test-3".to_string(),
+                ts: Utc::now(),
+                session_id: None,
+                seq: None,
+            },
+        });
+
+        let msg = event_to_chat_message(&event).unwrap();
+        assert_eq!(msg.role, MessageRole::System);
+    }
+
+    #[test]
+    fn test_event_to_chat_message_unhandled() {
+        use crate::session::events::{EventEnvelope, SessionCreatedEvent};
+        use chrono::Utc;
+
+        let event = SessionEvent::SessionCreated(SessionCreatedEvent {
+            instance_id: "instance-1".to_string(),
+            image_digest: "sha256:abc".to_string(),
+            parent_session_id: None,
+            trigger: crate::session::events::SessionTrigger::User,
+            envelope: EventEnvelope {
+                id: "test-4".to_string(),
+                ts: Utc::now(),
+                session_id: None,
+                seq: None,
+            },
+        });
+
+        // SessionCreated events should be ignored
+        assert!(event_to_chat_message(&event).is_none());
+    }
+
+    #[test]
+    fn test_entries_to_context_text() {
+        use crate::session::NormalizedEntry;
+        use chrono::Utc;
+
+        let entries = vec![
+            NormalizedEntry::UserMessage {
+                id: "1".to_string(),
+                content: "Hello".to_string(),
+                timestamp: Utc::now(),
+                source: crate::session::events::MessageSource::User,
+            },
+            NormalizedEntry::AssistantMessage {
+                id: "2".to_string(),
+                content: "Hi there".to_string(),
+                timestamp: Utc::now(),
+                input_tokens: 10,
+                output_tokens: 5,
+            },
+            NormalizedEntry::SystemMessage {
+                content: "System info".to_string(),
+                timestamp: Utc::now(),
+            },
+        ];
+
+        let context = entries_to_context_text(&entries);
+        assert!(context.contains("user: Hello"));
+        assert!(context.contains("assistant: Hi there"));
+        assert!(context.contains("system: System info"));
+    }
+
+    #[test]
+    fn test_entries_to_context_text_with_tool_result() {
+        use crate::session::NormalizedEntry;
+        use chrono::Utc;
+
+        let entries = vec![NormalizedEntry::ToolResult {
+            tool_call_id: "1".to_string(),
+            tool_name: "read_file".to_string(),
+            content: "File contents".to_string(),
+            is_error: false,
+        }];
+
+        let context = entries_to_context_text(&entries);
+        assert!(context.contains("tool: [read_file result: File contents]"));
+    }
+
+    #[test]
+    fn test_entries_to_context_text_empty_content_skipped() {
+        use crate::session::NormalizedEntry;
+        use chrono::Utc;
+
+        let entries = vec![NormalizedEntry::UserMessage {
+            id: "1".to_string(),
+            content: "".to_string(),
+            timestamp: Utc::now(),
+            source: crate::session::events::MessageSource::User,
+        }];
+
+        let context = entries_to_context_text(&entries);
+        assert!(context.is_empty());
     }
 }

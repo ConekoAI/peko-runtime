@@ -364,7 +364,13 @@ pub async fn send_single_message_with_session(
         manager_guard.remove_base_session(&agent_name, &peer);
 
         // Create a new session - this caches it in base_sessions
-        let new_session_id = manager_guard.create_new_session(&peer).await.ok();
+        use crate::session::manager::SessionCreateOptions;
+        let options = SessionCreateOptions::new().with_trigger("user");
+        let new_session_id = manager_guard
+            .create_session(&agent_name, &peer, options)
+            .await
+            .ok()
+            .map(|h| h.session_id().to_string());
         if let Some(ref sid) = new_session_id {
             info!("Created new session via registry: {}", sid);
         }

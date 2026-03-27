@@ -12,7 +12,7 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
-use crate::session::index::{SessionEntry, SessionIndex};
+use crate::session::SessionEntry;
 use crate::session::metadata_controller::MetadataController;
 use anyhow::Result;
 use clap::Subcommand;
@@ -774,10 +774,13 @@ async fn switch_session(
     let loc = ensure_sessions_dir(paths, agent, team).await?;
 
     // Verify session exists in centralized index
-    let mut index = SessionIndex::open(&loc.sessions_dir);
-    let entry = index.get(session_id).await?.ok_or_else(|| {
-        anyhow::anyhow!("Session '{}' not found for agent '{}'", session_id, agent)
-    })?;
+    let mut controller = MetadataController::new(&loc.sessions_dir);
+    let entry = controller
+        .get_entry_from_index(session_id)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!("Session '{}' not found for agent '{}'", session_id, agent)
+        })?;
 
     // Check if session is ended
     if entry.ended {

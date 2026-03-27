@@ -78,9 +78,8 @@ pub enum MessageSource {
 
 /// user.message - A message sent by the user or hook trigger
 ///
-/// DEPRECATED: Use `LlmMessageEvent` instead for new code.
-/// This type is kept for backward compatibility when reading old sessions.
-#[deprecated(since = "0.9.0", note = "Use LlmMessageEvent instead")]
+/// Note: For new code, consider using `LlmMessageEvent` which provides
+/// a more flexible format compatible with multiple LLM providers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessageEvent {
     #[serde(flatten)]
@@ -103,9 +102,8 @@ pub struct TokenUsage {
 
 /// assistant.message - Final complete text response from LLM
 ///
-/// DEPRECATED: Use `LlmMessageEvent` instead for new code.
-/// This type is kept for backward compatibility when reading old sessions.
-#[deprecated(since = "0.9.0", note = "Use LlmMessageEvent instead")]
+/// Note: For new code, consider using `LlmMessageEvent` which provides
+/// a more flexible format compatible with multiple LLM providers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssistantMessageEvent {
     #[serde(flatten)]
@@ -502,6 +500,104 @@ impl SessionEvent {
     pub fn assistant_content(&self) -> Option<&str> {
         match self {
             SessionEvent::AssistantMessage(e) => Some(&e.content),
+            _ => None,
+        }
+    }
+
+    // ====================================================================================
+    // Display/View Methods (Phase 1b: Consolidate History Event Types)
+    // ====================================================================================
+
+    /// Get display type for CLI/API (replaces HistoryEvent type discrimination)
+    /// 
+    /// Returns a stable string identifier for the event type, suitable for
+    /// display in CLI tools and API responses.
+    pub fn display_type(&self) -> &str {
+        match self {
+            SessionEvent::SessionCreated(_) => "session.created",
+            SessionEvent::UserMessage(_) => "user.message",
+            SessionEvent::AssistantMessage(_) => "assistant.message",
+            SessionEvent::SystemMessage(_) => "system.message",
+            SessionEvent::Message(e) => &e.role,
+            SessionEvent::LlmMessage(e) => &e.role,
+            SessionEvent::Thinking(_) => "thinking",
+            SessionEvent::ToolCall(_) => "tool.call",
+            SessionEvent::ToolResult(_) => "tool.result",
+            SessionEvent::SpawnRequest(_) => "spawn.request",
+            SessionEvent::SpawnResult(_) => "spawn.result",
+            SessionEvent::A2aSent(_) => "a2a.sent",
+            SessionEvent::A2aReceived(_) => "a2a.received",
+            SessionEvent::HookTrigger(_) => "hook.trigger",
+            SessionEvent::System(_) => "system",
+            SessionEvent::SessionEnded(_) => "session.ended",
+        }
+    }
+
+    /// Extract text content for display
+    /// 
+    /// Returns human-readable text content for display purposes.
+    /// Returns `None` for events that don't have meaningful text content.
+    pub fn display_content(&self) -> Option<String> {
+        match self {
+            SessionEvent::UserMessage(e) => Some(e.content.clone()),
+            SessionEvent::AssistantMessage(e) => Some(e.content.clone()),
+            SessionEvent::SystemMessage(e) => Some(e.content.clone()),
+            SessionEvent::Message(e) => Some(e.content.clone()),
+            SessionEvent::LlmMessage(e) => {
+                Some(e.content_blocks.iter()
+                    .filter_map(|b| match b {
+                        crate::types::message::ContentBlock::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""))
+            }
+            SessionEvent::ToolCall(e) => Some(format!("{}({})", e.tool, e.args)),
+            SessionEvent::ToolResult(e) => e.output.clone(),
+            SessionEvent::Thinking(e) => Some(e.content.clone()),
+            SessionEvent::System(e) => Some(format!("{}: {}", e.event, e.detail)),
+            _ => None,
+        }
+    }
+
+    /// Get timestamp for sorting/filtering
+    /// 
+    /// Returns the event's timestamp from its envelope.
+    pub fn timestamp(&self) -> DateTime<Utc> {
+        self.envelope().ts
+    }
+
+    /// Check if this event represents a message (user, assistant, or system)
+    /// 
+    /// Useful for filtering when displaying conversation history.
+    pub fn is_message(&self) -> bool {
+        matches!(self,
+            SessionEvent::UserMessage(_) |
+            SessionEvent::AssistantMessage(_) |
+            SessionEvent::SystemMessage(_) |
+            SessionEvent::Message(_) |
+            SessionEvent::LlmMessage(_)
+        )
+    }
+
+    /// Check if this event represents a tool interaction
+    pub fn is_tool_interaction(&self) -> bool {
+        matches!(self,
+            SessionEvent::ToolCall(_) | SessionEvent::ToolResult(_)
+        )
+    }
+
+    /// Get the role for message events
+    /// 
+    /// Returns the role (user, assistant, system, tool) for message events,
+    /// or None for non-message events.
+    pub fn message_role(&self) -> Option<&str> {
+        match self {
+            SessionEvent::UserMessage(_) => Some("user"),
+            SessionEvent::AssistantMessage(_) => Some("assistant"),
+            SessionEvent::SystemMessage(_) => Some("system"),
+            SessionEvent::Message(e) => Some(&e.role),
+            SessionEvent::LlmMessage(e) => Some(&e.role),
             _ => None,
         }
     }

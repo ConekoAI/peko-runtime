@@ -5,7 +5,8 @@
 
 use crate::common::paths::PathResolver;
 use crate::session::events::SessionEvent;
-use crate::session::index::{SessionEntry, SessionIndex};
+use crate::session::SessionEntry;
+use crate::session::metadata_controller::MetadataController;
 use crate::session::sync::SyncSessionStorage;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
@@ -156,9 +157,9 @@ impl SessionService {
             return Ok(vec![]);
         }
 
-        let mut index = SessionIndex::open(sessions_dir);
-        let entries = index
-            .list_all()
+        let mut controller = MetadataController::new(&sessions_dir);
+        let entries = controller
+            .list_all_from_index()
             .await
             .with_context(|| format!("Failed to list sessions for agent '{}'", agent_name))?;
 
@@ -191,9 +192,9 @@ impl SessionService {
             return Ok(None);
         }
 
-        let mut index = SessionIndex::open(sessions_dir);
-        let entry = index
-            .get(session_id)
+        let mut controller = MetadataController::new(&sessions_dir);
+        let entry = controller
+            .get_entry_from_index(session_id)
             .await
             .with_context(|| format!("Failed to get session '{}'", session_id))?;
 
@@ -328,10 +329,9 @@ impl SessionService {
             .await
             .with_context(|| format!("Failed to delete session '{}'", session_id))?;
 
-        // CRITICAL: Remove from SessionIndex so it doesn't appear in listings
-        let mut index = SessionIndex::open(&sessions_dir);
-        index.remove(session_id).await?;
-        index.save().await?;
+        // CRITICAL: Remove from index so it doesn't appear in listings
+        let mut controller = MetadataController::new(&sessions_dir);
+        controller.delete_metadata(session_id).await?;
 
         // Also remove from active preference if set
         let active_pref_path = sessions_dir.join(".active.json");
@@ -366,8 +366,8 @@ impl SessionService {
         tokio::fs::create_dir_all(&sessions_dir).await?;
 
         // Verify session exists
-        let mut index = SessionIndex::open(sessions_dir.clone());
-        if index.get(session_id).await?.is_none() {
+        let mut controller = MetadataController::new(&sessions_dir);
+        if controller.get_entry_from_index(session_id).await?.is_none() {
             anyhow::bail!(
                 "Session '{}' not found for agent '{}'",
                 session_id,
