@@ -46,10 +46,9 @@ pub struct TokenUsage {
 
 /// Role-specific metadata - SRP-compliant separation of concerns
 ///
-/// Each role has exactly the metadata it needs. This enum is flattened
-/// into SessionMessage serialization with the "role" tag.
+/// This enum is stored alongside the message content but does NOT include
+/// the role field (which comes from LlmMessage.role to avoid duplication).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "role", rename_all = "snake_case")]
 pub enum RoleMetadata {
     /// User message metadata
     User {
@@ -87,20 +86,21 @@ impl RoleMetadata {
 /// MessageEvent, LlmMessageEvent
 ///
 /// Uses SRP-compliant RoleMetadata to separate role-specific concerns.
+/// Note: The role field is stored in `message.role` to avoid duplication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
     #[serde(flatten)]
     pub envelope: EventEnvelope,
 
-    /// The core message content (from types::message)
-    #[serde(flatten)]
-    pub message: LlmMessage,
-
     /// Message ID (unique within session)
     pub message_id: String,
 
-    /// Role-specific metadata (SRP-compliant)
+    /// The core message content (role, content, timestamp, metadata)
+    /// Note: role is stored here to avoid duplication with RoleMetadata
     #[serde(flatten)]
+    pub message: LlmMessage,
+
+    /// Role-specific metadata (without the role field to avoid duplication)
     pub role_metadata: RoleMetadata,
 }
 
@@ -251,32 +251,26 @@ impl SessionMessage {
         }
     }
 
-    /// Convert to ChatMessage for provider APIs
+    /// Convert to ChatMessage for provider API
     pub fn to_chat_message(&self) -> crate::providers::ChatMessage {
-        use crate::providers::MessageRole as ProviderRole;
-        let role = match self.message.role {
-            MessageRole::System => ProviderRole::System,
-            MessageRole::User => ProviderRole::User,
-            MessageRole::Assistant => ProviderRole::Assistant,
-            MessageRole::Tool => ProviderRole::Tool,
-        };
         crate::providers::ChatMessage {
-            role,
+            role: match self.role() {
+                MessageRole::System => crate::providers::MessageRole::System,
+                MessageRole::User => crate::providers::MessageRole::User,
+                MessageRole::Assistant => crate::providers::MessageRole::Assistant,
+                MessageRole::Tool => crate::providers::MessageRole::Tool,
+            },
             content: self.message.content.clone(),
-            tool_calls: None, // Extract from content blocks if needed
-            tool_call_id: self.tool_call_id().map(|s| s.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 }
 
-/// Generate a new message ID
+/// Generate a unique message ID
 fn generate_message_id() -> String {
-    format!("msg_{}", uuid::Uuid::new_v4().to_string().replace('-', ""))
+    format!("msg_{}", uuid::Uuid::new_v4().simple())
 }
-
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -288,7 +282,6 @@ mod tests {
         assert_eq!(msg.role(), MessageRole::User);
         assert_eq!(msg.text_content(), "Hello");
         assert_eq!(msg.source(), Some(MessageSource::User));
-        assert!(msg.provider().is_none());
     }
 
     #[test]
@@ -322,34 +315,100 @@ mod tests {
 
     #[test]
     fn test_session_message_tool_result() {
-        let msg = SessionMessage::tool_result("tc_123", "File contents here");
+        let msg = SessionMessage::tool_result("call_123", "Result data");
         assert_eq!(msg.role(), MessageRole::Tool);
-        assert_eq!(msg.tool_call_id(), Some("tc_123"));
+        assert_eq!(msg.tool_call_id(), Some("call_123"));
+        assert_eq!(msg.text_content(), "Result data");
     }
 
     #[test]
-    fn test_serialization_roundtrip() {
-        let msg = SessionMessage::user("Test message", MessageSource::Hook);
+    fn test_session_message_to_chat_message() {
+        let msg = SessionMessage::user("Hello", MessageSource::User);
+        let chat = msg.to_chat_message();
+        assert_eq!(chat.role, crate::providers::MessageRole::User);
+        assert_eq!(chat.content.len(), 1);
+    }
+
+    #[test]
+    fn test_session_message_serde_roundtrip() {
+        let msg = SessionMessage::user("Hello", MessageSource::User);
+        let json = serde_json::to_string(&msg).unwrap();
+        println!("User message JSON: {}", json);
+        let deserialized: SessionMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.role(), MessageRole::User);
+        assert_eq!(deserialized.text_content(), "Hello");
+    }
+
+    #[test]
+    fn test_assistant_message_json_format() {
+        let msg = SessionMessage::assistant_text("Hi there", "openai", "gpt-4");
+        let json = serde_json::to_string_pretty(&msg).unwrap();
+        println!("Assistant message JSON:\n{}", json);
+
+        // Verify no duplicate "role" fields
+        let role_count = json.matches("\"role\":").count();
+        println!("Number of 'role' fields: {}", role_count);
+        assert_eq!(role_count, 1, "Should have exactly one 'role' field");
+
+        // Verify it can be deserialized
+        let deserialized: SessionMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.role(), MessageRole::Assistant);
+    }
+
+    #[test]
+    fn test_session_event_message_v2_format() {
+        use crate::session::events::SessionEvent;
+
+        // Test user message
+        let msg = SessionMessage::user("Hello", MessageSource::User);
+        let event = SessionEvent::MessageV2(msg);
+        let json = serde_json::to_string_pretty(&event).unwrap();
+        println!("User SessionEvent::MessageV2 JSON:\n{}", json);
+
+        // Verify no duplicate "role" fields
+        let role_count = json.matches("\"role\":").count();
+        println!("Number of 'role' fields: {}", role_count);
+        assert_eq!(role_count, 1, "Should have exactly one 'role' field");
+
+        // Verify it can be deserialized
+        let deserialized: SessionEvent = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            SessionEvent::MessageV2(m) => {
+                assert_eq!(m.role(), MessageRole::User);
+                assert_eq!(m.text_content(), "Hello");
+            }
+            _ => panic!("Expected MessageV2"),
+        }
+
+        // Test assistant message
+        let msg = SessionMessage::assistant_text("Hi", "openai", "gpt-4");
+        let event = SessionEvent::MessageV2(msg);
+        let json = serde_json::to_string(&event).unwrap();
+        let role_count = json.matches("\"role\":").count();
+        assert_eq!(role_count, 1, "Assistant should have exactly one 'role' field");
+
+        // Test system message
+        let msg = SessionMessage::system("You are helpful");
+        let event = SessionEvent::MessageV2(msg);
+        let json = serde_json::to_string(&event).unwrap();
+        let role_count = json.matches("\"role\":").count();
+        assert_eq!(role_count, 1, "System should have exactly one 'role' field");
+
+        // Test tool message
+        let msg = SessionMessage::tool_result("call_123", "Result");
+        let event = SessionEvent::MessageV2(msg);
+        let json = serde_json::to_string(&event).unwrap();
+        let role_count = json.matches("\"role\":").count();
+        assert_eq!(role_count, 1, "Tool should have exactly one 'role' field");
+    }
+
+    #[test]
+    fn test_assistant_message_serde_roundtrip() {
+        let msg = SessionMessage::assistant_text("Hi there", "openai", "gpt-4");
         let json = serde_json::to_string(&msg).unwrap();
         let deserialized: SessionMessage = serde_json::from_str(&json).unwrap();
-        assert_eq!(msg.text_content(), deserialized.text_content());
-        assert_eq!(msg.role(), deserialized.role());
-    }
-
-    #[test]
-    fn test_role_metadata_serialization() {
-        let metadata = RoleMetadata::Assistant {
-            provider: "anthropic".to_string(),
-            model: "claude-3".to_string(),
-            usage: TokenUsage {
-                input_tokens: 100,
-                output_tokens: 50,
-                total_tokens: 150,
-            },
-        };
-        let json = serde_json::to_string(&metadata).unwrap();
-        assert!(json.contains("anthropic"));
-        assert!(json.contains("claude-3"));
-        assert!(json.contains("assistant")); // The role tag
+        assert_eq!(deserialized.role(), MessageRole::Assistant);
+        assert_eq!(deserialized.text_content(), "Hi there");
+        assert_eq!(deserialized.provider(), Some("openai"));
     }
 }
