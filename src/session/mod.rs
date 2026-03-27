@@ -26,6 +26,7 @@ pub mod directory;
 pub mod events;
 mod index;
 pub mod jsonl;
+pub mod message;
 pub mod key;
 pub mod lock;
 pub mod lock_utils;
@@ -44,12 +45,12 @@ pub mod unified;
 pub use context::{SessionContext, SessionRouter};
 pub use events::{
     generate_event_id, generate_message_id, generate_tool_call_id, A2aMessageType,
-    A2aReceivedEvent, A2aSentEvent, AssistantMessageEvent, EventEnvelope, HookTriggerEvent,
-    HookType, MessageEvent, MessageSource, SessionCreatedEvent, SessionEndReason,
-    SessionEndedEvent, SessionEvent, SessionTrigger, SpawnRequestEvent, SpawnResultEvent,
-    SystemEvent, SystemMessageEvent, ThinkingEvent, TokenUsage, ToolCallEvent, ToolResultEvent,
-    UserMessageEvent,
+    A2aReceivedEvent, A2aSentEvent, EventEnvelope, HookTriggerEvent, HookType, MessageSource,
+    SessionCreatedEvent, SessionEndReason, SessionEndedEvent, SessionEvent, SessionTrigger,
+    SpawnRequestEvent, SpawnResultEvent, SystemEvent, ThinkingEvent, TokenUsage, ToolCallBlock,
+    ToolCallEvent, ToolResultEvent,
 };
+pub use message::{RoleMetadata, SessionMessage};
 pub use index::{
     MaintenanceConfig, MaintenanceReport, PeerIndex, PeerInfo, SessionEntry,
 };

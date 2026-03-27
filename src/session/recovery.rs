@@ -293,9 +293,7 @@ impl RecoveryState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::events::{
-        AssistantMessageEvent, EventEnvelope, SessionCreatedEvent, TokenUsage, UserMessageEvent,
-    };
+    use crate::session::events::{EventEnvelope, SessionCreatedEvent};
     use chrono::Utc;
     use tempfile::TempDir;
 

@@ -16,73 +16,39 @@
 //! `SessionManager`**. UnifiedSession is now an internal implementation detail.
 //! External code should use `SessionHandle` obtained from SessionManager.
 
-use crate::common::paths::PathResolver;
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
-use crate::providers::TokenUsage;
+use crate::providers::TokenUsage as ProviderTokenUsage;
 use crate::session::events::{
-    generate_event_id, generate_message_id, AssistantMessageEvent, EventEnvelope, LlmMessageEvent,
-    MessageEvent, MessageSource, SessionEvent, SystemMessageEvent, ThinkingEvent,
-    TokenUsage as EventTokenUsage, ToolCallBlock, ToolResultEvent, UserMessageEvent,
+    generate_event_id, generate_message_id, EventEnvelope, SessionEvent, ToolCallBlock,
 };
+use crate::session::message::SessionMessage;
 use crate::session::index::SessionEntry;
 use crate::session::jsonl::SessionStorage;
 use crate::session::types::Peer;
 use crate::types::ContentBlock;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
-use std::path::PathBuf;
-use tokio::fs;
-
 // ====================================================================================
 // Message Conversion Functions (Phase 4a: Extracted from UnifiedSession)
 // ====================================================================================
-
-use crate::providers::MessageRole;
 use crate::session::NormalizedEntry;
 
 /// Convert a SessionEvent to a ChatMessage
 ///
 /// This function handles the conversion from internal event format to
 /// provider-agnostic ChatMessage format.
+///
+/// Uses the unified `as_message()` method to support both the new MessageV2
+/// format and all legacy formats seamlessly.
 pub(crate) fn event_to_chat_message(event: &SessionEvent) -> Option<ChatMessage> {
-    match event {
-        SessionEvent::LlmMessage(e) => {
-            let role = match e.role.as_str() {
-                "system" => MessageRole::System,
-                "user" => MessageRole::User,
-                "assistant" => MessageRole::Assistant,
-                "tool" => MessageRole::Tool,
-                _ => MessageRole::User,
-            };
-
-            Some(ChatMessage {
-                role,
-                content: e.content_blocks.clone(),
-                tool_calls: None,
-                tool_call_id: e.tool_call_id.clone(),
-            })
-        }
-        SessionEvent::UserMessage(e) => Some(ChatMessage {
-            role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: e.content.clone() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }),
-        SessionEvent::AssistantMessage(e) => Some(ChatMessage {
-            role: MessageRole::Assistant,
-            content: vec![ContentBlock::Text { text: e.content.clone() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }),
-        SessionEvent::SystemMessage(e) => Some(ChatMessage {
-            role: MessageRole::System,
-            content: vec![ContentBlock::Text { text: e.content.clone() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }),
-        _ => None,
+    // Use unified conversion for all message types (handles MessageV2 and legacy)
+    if let Some(msg) = event.as_message() {
+        return Some(msg.to_chat_message());
     }
+
+    // Non-message events return None
+    None
 }
 
 /// Convert a slice of NormalizedEntry to context text
@@ -420,12 +386,12 @@ impl UnifiedSession {
         &mut self,
         content: impl Into<String>,
         tool_calls: Option<Vec<ToolCall>>,
-        usage: Option<TokenUsage>,
+        usage: Option<ProviderTokenUsage>,
     ) -> Result<()> {
         let content_str = content.into();
 
         // Convert ToolCall to ToolCallBlock
-        let tool_call_blocks: Option<Vec<ToolCallBlock>> = tool_calls.map(|calls| {
+        let tool_call_blocks: Option<Vec<crate::session::events::ToolCallBlock>> = tool_calls.map(|calls| {
             calls
                 .into_iter()
                 .map(|call| ToolCallBlock {
@@ -505,36 +471,28 @@ impl UnifiedSession {
     /// Add an LLM-native message with full content block fidelity
     ///
     /// This is the core implementation used by all other add_* methods.
-    /// It stores messages in the LLM-native format (LlmMessageEvent) which
-    /// preserves complete content blocks for accurate session resumption.
+    /// It stores messages in the new unified format (SessionEvent::MessageV2) which
+    /// uses SessionMessage with RoleMetadata for clean, SRP-compliant storage.
     ///
-    /// This is the preferred method for storing messages in the new LLM-native format,
-    /// which preserves complete content blocks (text, tool calls, thinking, images)
-    /// for accurate session resumption and audit trails.
+    /// This replaces the legacy LlmMessageEvent format with the new unified format
+    /// that supports all message types through a single, extensible structure.
     ///
     /// # Arguments
     /// * `role` - Message role ("system", "user", "assistant", "tool")
     /// * `content_blocks` - Content blocks in native format
-    /// * `tool_calls` - Optional tool calls (for assistant messages)
-    /// * `thinking` - Optional thinking content (for reasoning models)
+    /// * `_tool_calls` - Optional tool calls (for assistant messages) - stored as content blocks
+    /// * `_thinking` - Optional thinking content (for reasoning models) - stored as content blocks
     /// * `usage` - Optional token usage statistics
     pub async fn add_llm_message(
         &mut self,
         role: impl Into<String>,
         content_blocks: Vec<ContentBlock>,
-        tool_calls: Option<Vec<ToolCallBlock>>,
-        thinking: Option<crate::session::events::ThinkingBlock>,
-        usage: Option<TokenUsage>,
+        _tool_calls: Option<Vec<ToolCallBlock>>,
+        _thinking: Option<crate::session::events::ThinkingBlock>,
+        usage: Option<ProviderTokenUsage>,
     ) -> Result<()> {
         let role_str = role.into();
         let msg_id = generate_message_id();
-
-        // Extract token usage before moving usage
-        let usage_clone = usage.as_ref().map(|u| EventTokenUsage {
-            input_tokens: u.input as u32,
-            output_tokens: u.output as u32,
-            total_tokens: u.total as u32,
-        });
 
         // Update token usage if provided
         if let Some(ref u) = usage {
@@ -545,23 +503,101 @@ impl UnifiedSession {
         let provider = self.current_provider.clone().unwrap_or_default();
         let model = self.current_model.clone().unwrap_or_default();
 
-        let event = SessionEvent::LlmMessage(LlmMessageEvent {
-            envelope: EventEnvelope {
-                id: generate_event_id(),
-                ts: Utc::now(),
-                session_id: Some(self.id.clone()),
-                seq: None,
+        // Build content blocks: include text, tool calls, and thinking
+        let mut final_content_blocks = content_blocks;
+
+        // Add thinking block if present (stored as content block)
+        if let Some(thinking) = _thinking {
+            final_content_blocks.push(ContentBlock::Thinking {
+                text: thinking.text,
+                signature: thinking.signature,
+            });
+        }
+
+        // Create the appropriate SessionMessage based on role
+        let message = match role_str.as_str() {
+            "user" => SessionMessage {
+                envelope: EventEnvelope {
+                    id: generate_event_id(),
+                    ts: Utc::now(),
+                    session_id: Some(self.id.clone()),
+                    seq: None,
+                },
+                message: crate::types::message::LlmMessage {
+                    role: crate::types::message::MessageRole::User,
+                    content: final_content_blocks,
+                    timestamp: Utc::now(),
+                    metadata: std::collections::HashMap::new(),
+                },
+                message_id: msg_id.clone(),
+                role_metadata: crate::session::message::RoleMetadata::User {
+                    source: crate::session::events::MessageSource::User,
+                },
             },
-            message_id: msg_id.clone(),
-            role: role_str,
-            content_blocks,
-            tool_calls,
-            tool_call_id: None,
-            thinking,
-            provider,
-            model,
-            usage: usage_clone,
-        });
+            "assistant" => {
+                let token_usage = usage.as_ref().map(|u| crate::session::message::TokenUsage {
+                    input_tokens: u.input as u32,
+                    output_tokens: u.output as u32,
+                    total_tokens: (u.input + u.output) as u32,
+                }).unwrap_or(crate::session::message::TokenUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                });
+
+                SessionMessage::assistant_with_blocks(final_content_blocks, provider, model, token_usage)
+            }
+            "system" => SessionMessage::system(
+                final_content_blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            ),
+            "tool" => {
+                // For tool messages, extract tool_call_id and content from content blocks
+                let mut tool_call_id = String::new();
+                let mut content_parts = Vec::new();
+
+                for block in &final_content_blocks {
+                    match block {
+                        ContentBlock::ToolResult { tool_call_id: id, content, .. } => {
+                            tool_call_id = id.clone();
+                            // Extract text from nested content
+                            for c in content {
+                                if let ContentBlock::Text { text } = c {
+                                    content_parts.push(text.as_str());
+                                }
+                            }
+                        }
+                        ContentBlock::Text { text } => {
+                            content_parts.push(text.as_str());
+                        }
+                        _ => {}
+                    }
+                }
+
+                let content_text = content_parts.join("");
+                SessionMessage::tool_result(tool_call_id, content_text)
+            }
+            _ => {
+                // Default to user message for unknown roles
+                SessionMessage::user(
+                    final_content_blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                    crate::session::events::MessageSource::User,
+                )
+            }
+        };
+
+        let event = SessionEvent::MessageV2(message);
 
         self.storage.append_event(&self.id, &event).await?;
         self.last_message_id = Some(msg_id);
@@ -590,9 +626,9 @@ impl UnifiedSession {
     pub async fn add_assistant_with_blocks(
         &mut self,
         content_blocks: Vec<ContentBlock>,
-        tool_calls: Option<Vec<ToolCallBlock>>,
+        tool_calls: Option<Vec<crate::session::events::ToolCallBlock>>,
         thinking: Option<crate::session::events::ThinkingBlock>,
-        usage: Option<TokenUsage>,
+        usage: Option<ProviderTokenUsage>,
     ) -> Result<()> {
         self.add_llm_message("assistant", content_blocks, tool_calls, thinking, usage)
             .await
@@ -858,30 +894,11 @@ mod tests {
     // ====================================================================================
 
     #[test]
-    fn test_event_to_chat_message_llm_message() {
+    fn test_event_to_chat_message_assistant() {
         use crate::providers::MessageRole;
-        use crate::session::events::{EventEnvelope, LlmMessageEvent};
-        use chrono::Utc;
+        use crate::session::SessionMessage;
 
-        let event = SessionEvent::LlmMessage(LlmMessageEvent {
-            role: "assistant".to_string(),
-            content_blocks: vec![ContentBlock::Text {
-                text: "Hello!".to_string(),
-            }],
-            tool_call_id: None,
-            message_id: "msg-1".to_string(),
-            model: "gpt-4".to_string(),
-            provider: "openai".to_string(),
-            usage: None,
-            tool_calls: None,
-            thinking: None,
-            envelope: EventEnvelope {
-                id: "test-1".to_string(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-        });
+        let event = SessionEvent::MessageV2(SessionMessage::assistant_text("Hello!", "openai", "gpt-4"));
 
         let msg = event_to_chat_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::Assistant);
@@ -889,22 +906,11 @@ mod tests {
     }
 
     #[test]
-    fn test_event_to_chat_message_user_message() {
+    fn test_event_to_chat_message_user() {
         use crate::providers::MessageRole;
-        use crate::session::events::{EventEnvelope, UserMessageEvent, MessageSource};
-        use chrono::Utc;
+        use crate::session::SessionMessage;
 
-        let event = SessionEvent::UserMessage(UserMessageEvent {
-            content: "Hi there".to_string(),
-            message_id: "msg-2".to_string(),
-            source: MessageSource::User,
-            envelope: EventEnvelope {
-                id: "test-2".to_string(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-        });
+        let event = SessionEvent::MessageV2(SessionMessage::user("Hi there", crate::session::events::MessageSource::User));
 
         let msg = event_to_chat_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::User);
@@ -912,20 +918,11 @@ mod tests {
     }
 
     #[test]
-    fn test_event_to_chat_message_system_message() {
+    fn test_event_to_chat_message_system() {
         use crate::providers::MessageRole;
-        use crate::session::events::{EventEnvelope, SystemMessageEvent};
-        use chrono::Utc;
+        use crate::session::SessionMessage;
 
-        let event = SessionEvent::SystemMessage(SystemMessageEvent {
-            content: "System prompt".to_string(),
-            envelope: EventEnvelope {
-                id: "test-3".to_string(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-        });
+        let event = SessionEvent::MessageV2(SessionMessage::system("System prompt"));
 
         let msg = event_to_chat_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::System);

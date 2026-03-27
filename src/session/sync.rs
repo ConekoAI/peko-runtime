@@ -173,10 +173,7 @@ impl SyncSessionStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::events::{
-        AssistantMessageEvent, EventEnvelope, TokenUsage, UserMessageEvent,
-    };
-    use chrono::Utc;
+    use crate::session::SessionMessage;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -208,36 +205,19 @@ mod tests {
             .unwrap();
 
         // Append user message
-        let user_event = SessionEvent::UserMessage(UserMessageEvent {
-            envelope: EventEnvelope {
-                id: "evt_001".to_string(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            message_id: "msg_001".to_string(),
-            content: "Hello".to_string(),
-            source: crate::session::events::MessageSource::User,
-        });
+        let user_event = SessionEvent::MessageV2(SessionMessage::user(
+            "Hello",
+            crate::session::events::MessageSource::User,
+        ));
 
         storage.append_event("sess_123", &user_event).await.unwrap();
 
         // Append assistant message
-        let assistant_event = SessionEvent::AssistantMessage(AssistantMessageEvent {
-            envelope: EventEnvelope {
-                id: "evt_002".to_string(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            message_id: "msg_002".to_string(),
-            content: "Hi there!".to_string(),
-            usage: TokenUsage {
-                input_tokens: 5,
-                output_tokens: 10,
-                total_tokens: 15,
-            },
-        });
+        let assistant_event = SessionEvent::MessageV2(SessionMessage::assistant_text(
+            "Hi there!",
+            "openai",
+            "gpt-4",
+        ));
 
         storage
             .append_event("sess_123", &assistant_event)
@@ -315,17 +295,10 @@ mod tests {
             .await
             .unwrap();
 
-        let user_event = SessionEvent::UserMessage(UserMessageEvent {
-            envelope: EventEnvelope {
-                id: "evt_001".to_string(),
-                session_id: Some("parent_sess".to_string()),
-                ts: Utc::now(),
-                seq: Some(2),
-            },
-            message_id: "msg_001".to_string(),
-            content: "Hello".to_string(),
-            source: crate::session::events::MessageSource::User,
-        });
+        let user_event = SessionEvent::MessageV2(SessionMessage::user(
+            "Hello",
+            crate::session::events::MessageSource::User,
+        ));
         storage
             .append_event("parent_sess", &user_event)
             .await
@@ -343,6 +316,6 @@ mod tests {
 
         // Child should have copied events
         let child_events = storage.load_events("child_sess").await.unwrap();
-        assert_eq!(child_events.len(), 2); // session.created + user.message
+        assert_eq!(child_events.len(), 2); // session.created + message.v2
     }
 }

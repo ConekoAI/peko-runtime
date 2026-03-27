@@ -554,9 +554,47 @@ impl SessionStorage {
     }
 
     /// Convert Event Format to NormalizedEntry
+    ///
+    /// Uses the unified `as_message()` method for all message types, which handles
+    /// both the new SessionMessage format (MessageV2) and all legacy formats
+    /// (UserMessage, AssistantMessage, SystemMessage, Message, LlmMessage).
     fn normalize_event(event: SessionEvent) -> Option<NormalizedEntry> {
         use crate::session::events::SessionEvent::*;
+        use crate::types::message::MessageRole;
 
+        // Try unified message conversion first (handles all message formats)
+        if let Some(msg) = event.as_message() {
+            let text = msg.text_content();
+            let message_id = msg.message_id.clone();
+            let timestamp = msg.envelope.ts;
+            return match msg.role() {
+                MessageRole::User => Some(NormalizedEntry::UserMessage {
+                    id: message_id,
+                    content: text,
+                    timestamp,
+                    source: msg.source().unwrap_or(crate::session::events::MessageSource::User),
+                }),
+                MessageRole::Assistant => Some(NormalizedEntry::AssistantMessage {
+                    id: message_id,
+                    content: text,
+                    timestamp,
+                    input_tokens: msg.usage().map(|u| u.input_tokens).unwrap_or(0),
+                    output_tokens: msg.usage().map(|u| u.output_tokens).unwrap_or(0),
+                }),
+                MessageRole::System => Some(NormalizedEntry::SystemMessage {
+                    content: text,
+                    timestamp,
+                }),
+                MessageRole::Tool => Some(NormalizedEntry::ToolResult {
+                    tool_call_id: msg.tool_call_id().unwrap_or_default().to_string(),
+                    tool_name: String::new(),
+                    content: text,
+                    is_error: false,
+                }),
+            };
+        }
+
+        // Handle non-message events
         match event {
             SessionCreated(e) => Some(NormalizedEntry::Session {
                 id: e.envelope.session_id.unwrap_or_default(),
@@ -564,103 +602,12 @@ impl SessionStorage {
                 timestamp: e.envelope.ts,
                 cwd: None,
             }),
-            UserMessage(e) => Some(NormalizedEntry::UserMessage {
-                id: e.message_id,
-                content: e.content,
-                timestamp: e.envelope.ts,
-                source: e.source,
-            }),
-            AssistantMessage(e) => Some(NormalizedEntry::AssistantMessage {
-                id: e.message_id,
-                content: e.content,
-                timestamp: e.envelope.ts,
-                input_tokens: e.usage.input_tokens,
-                output_tokens: e.usage.output_tokens,
-            }),
-            SystemMessage(e) => Some(NormalizedEntry::SystemMessage {
-                content: e.content,
-                timestamp: e.envelope.ts,
-            }),
-            Message(e) => {
-                // Unified message format - convert based on role
-                match e.role.as_str() {
-                    "user" => Some(NormalizedEntry::UserMessage {
-                        id: e.envelope.id.clone(),
-                        content: e.content,
-                        timestamp: e.envelope.ts,
-                        source: crate::session::events::MessageSource::User,
-                    }),
-                    "assistant" => Some(NormalizedEntry::AssistantMessage {
-                        id: e.envelope.id.clone(),
-                        content: e.content,
-                        timestamp: e.envelope.ts,
-                        input_tokens: e.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
-                        output_tokens: e.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
-                    }),
-                    "system" => Some(NormalizedEntry::SystemMessage {
-                        content: e.content,
-                        timestamp: e.envelope.ts,
-                    }),
-                    "tool" => Some(NormalizedEntry::ToolResult {
-                        tool_call_id: e.tool_call_id.unwrap_or_default(),
-                        tool_name: String::new(),
-                        content: e.content,
-                        is_error: false,
-                    }),
-                    _ => {
-                        debug!("Unknown role in Message event: {}", e.role);
-                        None
-                    }
-                }
-            }
             ToolResult(e) => Some(NormalizedEntry::ToolResult {
                 tool_call_id: e.tool_call_id,
                 tool_name: String::new(), // Not available in Event Format
                 content: e.output.unwrap_or_default(),
                 is_error: e.error.is_some(),
             }),
-            LlmMessage(e) => {
-                // LLM-native message format with full content block fidelity
-                // Extract text content from content_blocks for normalized view
-                let text_content: String = e
-                    .content_blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        crate::types::message::ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-
-                match e.role.as_str() {
-                    "user" => Some(NormalizedEntry::UserMessage {
-                        id: e.message_id,
-                        content: text_content,
-                        timestamp: e.envelope.ts,
-                        source: crate::session::events::MessageSource::User,
-                    }),
-                    "assistant" => Some(NormalizedEntry::AssistantMessage {
-                        id: e.message_id,
-                        content: text_content,
-                        timestamp: e.envelope.ts,
-                        input_tokens: e.usage.as_ref().map(|u| u.input_tokens).unwrap_or(0),
-                        output_tokens: e.usage.as_ref().map(|u| u.output_tokens).unwrap_or(0),
-                    }),
-                    "system" => Some(NormalizedEntry::SystemMessage {
-                        content: text_content,
-                        timestamp: e.envelope.ts,
-                    }),
-                    "tool" => Some(NormalizedEntry::ToolResult {
-                        tool_call_id: e.tool_call_id.unwrap_or_default(),
-                        tool_name: String::new(),
-                        content: text_content,
-                        is_error: false,
-                    }),
-                    _ => {
-                        debug!("Unknown role in LlmMessage event: {}", e.role);
-                        None
-                    }
-                }
-            }
             _ => {
                 // Other event types (thinking, tool.call, etc.) can be added as needed
                 debug!("Unnormalized event type: {}", event.event_type());

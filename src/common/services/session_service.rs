@@ -510,16 +510,19 @@ impl SessionService {
             SessionEvent::SessionCreated(e) => HistoryEvent::Session {
                 timestamp: e.envelope.ts.to_rfc3339(),
             },
-            SessionEvent::UserMessage(e) => HistoryEvent::Message {
-                role: "user".to_string(),
-                content: e.content.clone(),
-                timestamp: e.envelope.ts.to_rfc3339(),
-            },
-            SessionEvent::AssistantMessage(e) => HistoryEvent::Message {
-                role: "assistant".to_string(),
-                content: e.content.clone(),
-                timestamp: e.envelope.ts.to_rfc3339(),
-            },
+            SessionEvent::MessageV2(msg) => {
+                // Use unified SessionMessage format
+                HistoryEvent::Message {
+                    role: match msg.role() {
+                        crate::types::message::MessageRole::User => "user",
+                        crate::types::message::MessageRole::Assistant => "assistant",
+                        crate::types::message::MessageRole::System => "system",
+                        crate::types::message::MessageRole::Tool => "tool",
+                    }.to_string(),
+                    content: msg.text_content(),
+                    timestamp: msg.envelope.ts.to_rfc3339(),
+                }
+            }
             SessionEvent::ToolCall(e) => HistoryEvent::ToolCall {
                 tool_name: e.tool.clone(),
                 args: e.args.clone(),
@@ -541,33 +544,6 @@ impl SessionService {
             SessionEvent::HookTrigger(e) => HistoryEvent::Custom {
                 custom_type: format!("hook:{:?}", e.hook_type),
             },
-            SessionEvent::SystemMessage(e) => HistoryEvent::Message {
-                role: "system".to_string(),
-                content: e.content.clone(),
-                timestamp: e.envelope.ts.to_rfc3339(),
-            },
-            SessionEvent::Message(e) => HistoryEvent::Message {
-                role: e.role.clone(),
-                content: e.content.clone(),
-                timestamp: e.envelope.ts.to_rfc3339(),
-            },
-            SessionEvent::LlmMessage(e) => {
-                // Extract text content from content blocks
-                let content: String = e
-                    .content_blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        crate::types::message::ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-                HistoryEvent::Message {
-                    role: e.role.clone(),
-                    content,
-                    timestamp: e.envelope.ts.to_rfc3339(),
-                }
-            }
             SessionEvent::SpawnRequest(_)
             | SessionEvent::SpawnResult(_)
             | SessionEvent::A2aSent(_)

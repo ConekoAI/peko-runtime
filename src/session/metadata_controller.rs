@@ -471,10 +471,7 @@ impl MetadataController {
             .await
             .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
 
-        Ok(events
-            .iter()
-            .filter(|e| matches!(e, crate::session::events::SessionEvent::LlmMessage { .. }))
-            .count())
+        Ok(events.iter().filter(|e| e.is_message()).count())
     }
 
     /// Sync metadata from JSONL (source of truth)

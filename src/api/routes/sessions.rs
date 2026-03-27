@@ -102,13 +102,14 @@ impl From<&SessionEvent> for HistoryEventResponse {
         };
 
         match event {
-            SessionEvent::UserMessage(e) => {
-                response.role = Some("user".to_string());
-                response.content = Some(e.content.clone());
-            }
-            SessionEvent::AssistantMessage(e) => {
-                response.role = Some("assistant".to_string());
-                response.content = Some(e.content.clone());
+            SessionEvent::MessageV2(msg) => {
+                response.role = Some(match msg.role() {
+                    crate::types::message::MessageRole::User => "user",
+                    crate::types::message::MessageRole::Assistant => "assistant",
+                    crate::types::message::MessageRole::System => "system",
+                    crate::types::message::MessageRole::Tool => "tool",
+                }.to_string());
+                response.content = Some(msg.text_content());
             }
             SessionEvent::Thinking(e) => {
                 response.content = Some(e.content.clone());
@@ -452,10 +453,7 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::events::{
-        AssistantMessageEvent, EventEnvelope, TokenUsage as EventTokenUsage, UserMessageEvent,
-    };
-    use chrono::Utc;
+    use crate::session::SessionMessage;
 
     #[test]
     fn test_session_response_from_session_info() {
@@ -480,29 +478,22 @@ mod tests {
     }
 
     #[test]
-    fn test_history_response_from_event() {
-        let event = SessionEvent::UserMessage(UserMessageEvent {
-            envelope: EventEnvelope {
-                id: "evt_001".to_string(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            message_id: "msg_001".to_string(),
-            content: "Hello".to_string(),
-            source: crate::session::events::MessageSource::User,
-        });
+    fn test_history_response_from_user_message() {
+        let event = SessionEvent::MessageV2(SessionMessage::user(
+            "Hello",
+            crate::session::events::MessageSource::User,
+        ));
 
         let response: HistoryEventResponse = (&event).into();
-        assert_eq!(response.id, "evt_001");
-        assert_eq!(response.event_type, "user.message");
+        assert_eq!(response.event_type, "message.v2");
         assert_eq!(response.role, Some("user".to_string()));
         assert_eq!(response.content, Some("Hello".to_string()));
     }
 
     #[test]
     fn test_history_response_from_tool_call() {
-        use crate::session::events::ToolCallEvent;
+        use crate::session::events::{EventEnvelope, ToolCallEvent};
+        use chrono::Utc;
         use serde_json::json;
 
         let event = SessionEvent::ToolCall(ToolCallEvent {
@@ -527,31 +518,22 @@ mod tests {
 
     #[test]
     fn test_history_response_from_assistant_message() {
-        let event = SessionEvent::AssistantMessage(AssistantMessageEvent {
-            envelope: EventEnvelope {
-                id: "evt_003".to_string(),
-                ts: Utc::now(),
-                session_id: None,
-                seq: None,
-            },
-            message_id: "msg_002".to_string(),
-            content: "The answer is 42.".to_string(),
-            usage: EventTokenUsage {
-                input_tokens: 100,
-                output_tokens: 50,
-                total_tokens: 150,
-            },
-        });
+        let event = SessionEvent::MessageV2(SessionMessage::assistant_text(
+            "The answer is 42.",
+            "openai",
+            "gpt-4",
+        ));
 
         let response: HistoryEventResponse = (&event).into();
-        assert_eq!(response.event_type, "assistant.message");
+        assert_eq!(response.event_type, "message.v2");
         assert_eq!(response.role, Some("assistant".to_string()));
         assert_eq!(response.content, Some("The answer is 42.".to_string()));
     }
 
     #[test]
     fn test_history_response_from_thinking() {
-        use crate::session::events::ThinkingEvent;
+        use crate::session::events::{EventEnvelope, ThinkingEvent};
+        use chrono::Utc;
 
         let event = SessionEvent::Thinking(ThinkingEvent {
             envelope: EventEnvelope {

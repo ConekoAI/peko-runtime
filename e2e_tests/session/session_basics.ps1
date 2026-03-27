@@ -54,7 +54,7 @@ pekobot session list $agentName 2>&1
 
 # send a follow-up message to the agent (resumes same session)
 Write-Host "`nSending follow-up message (same session)..." -ForegroundColor Cyan
-pekobot send $agentName "what about France" 2>&1
+pekobot send $agentName "what about France" --no-stream 2>&1
 
 # Get session list - should show 1 session with more messages
 Write-Host "`nSession list after follow-up:" -ForegroundColor Cyan
