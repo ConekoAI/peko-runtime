@@ -124,6 +124,15 @@ pub enum StreamEvent {
         /// Stop reason
         stop_reason: StopReason,
     },
+    /// Token usage information (typically sent at end of stream)
+    Usage {
+        /// Input tokens
+        input: u64,
+        /// Output tokens
+        output: u64,
+        /// Total tokens
+        total: u64,
+    },
     /// Error occurred
     Error {
         /// Error message

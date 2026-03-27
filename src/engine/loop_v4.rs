@@ -324,6 +324,15 @@ impl AgenticLoopV4 {
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
     ) -> Result<AgenticResult> {
+        // Set provider/model metadata on session (do this once at start)
+        {
+            let provider_name = self.provider.name();
+            let model_name = &self.agent.config.provider.default_model;
+            
+            let mut s = session.write().await;
+            s.set_model(provider_name, model_name);
+        }
+
         // Main agent loop
         // Sequence counter for AssistantText events
         let mut sequence_counter: usize = 0;
@@ -970,6 +979,15 @@ impl AgenticLoopV4 {
     ) -> Result<AgenticResult> {
         use futures::StreamExt;
 
+        // Set provider/model metadata on session (do this once at start)
+        {
+            let provider_name = self.provider.name();
+            let model_name = &self.agent.config.provider.default_model;
+            
+            let mut s = session.write().await;
+            s.set_model(provider_name, model_name);
+        }
+
         // Build tool definitions
         let tool_defs = self.build_tool_definitions();
 
@@ -978,6 +996,7 @@ impl AgenticLoopV4 {
 
         loop {
             iteration += 1;
+            let mut iteration_usage = crate::providers::TokenUsage::default();
             info!("Streaming agent loop: iteration {}", iteration);
 
             if iteration > self.max_iterations {
@@ -1072,6 +1091,12 @@ impl AgenticLoopV4 {
                                     } => {
                                         stop_reason = reason;
                                     }
+                                    // NEW: Handle usage events
+                                    crate::providers::StreamEvent::Usage { input, output, total } => {
+                                        iteration_usage.input += input;
+                                        iteration_usage.output += output;
+                                        iteration_usage.total += total;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -1094,6 +1119,11 @@ impl AgenticLoopV4 {
             for event in final_events {
                 on_event(event);
             }
+
+            // Accumulate this iteration's usage
+            total_usage.input += iteration_usage.input;
+            total_usage.output += iteration_usage.output;
+            total_usage.total += iteration_usage.total;
 
             // Handle tool calls
             if !tool_calls.is_empty() {
@@ -1166,7 +1196,7 @@ impl AgenticLoopV4 {
                         content_blocks,
                         Some(tool_call_blocks),
                         thinking_block,
-                        None, // TODO: Track usage from streaming
+                        Some(iteration_usage.clone()),
                     )
                     .await?;
                 }
@@ -1252,7 +1282,7 @@ impl AgenticLoopV4 {
             // Add final answer to session
             {
                 let mut s = session.write().await;
-                s.add_assistant(&accumulated_text, None, None).await?;
+                s.add_assistant(&accumulated_text, None, Some(iteration_usage.clone())).await?;
             }
 
             // Note: We don't emit AssistantText here because the content has already

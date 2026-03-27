@@ -8,6 +8,7 @@ use crate::providers::types::*;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 
 /// Anthropic API adapter
@@ -16,6 +17,8 @@ pub struct AnthropicAdapter {
     model: String,
     base_url: String,
     extra_headers: Vec<(String, String)>,
+    /// Accumulates input tokens from message_start for usage tracking
+    pending_input_tokens: Arc<Mutex<Option<u32>>>,
 }
 
 impl AnthropicAdapter {
@@ -25,6 +28,7 @@ impl AnthropicAdapter {
             model: model.into(),
             base_url: "https://api.anthropic.com".to_string(),
             extra_headers: vec![("anthropic-version".to_string(), "2023-06-01".to_string())],
+            pending_input_tokens: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -271,10 +275,16 @@ impl super::ApiAdapter for AnthropicAdapter {
             serde_json::from_str(data).context("Failed to parse Anthropic SSE event")?;
 
         match event.event_type.as_deref() {
-            Some("message_start") => Ok(Some(StreamEvent::Start {
-                provider: self.name().to_string(),
-                model: self.model.clone(),
-            })),
+            Some("message_start") => {
+                // Store input tokens for later combination with output tokens
+                if let Some(usage) = event.message.and_then(|m| m.usage) {
+                    *self.pending_input_tokens.lock().unwrap() = Some(usage.input_tokens);
+                }
+                Ok(Some(StreamEvent::Start {
+                    provider: self.name().to_string(),
+                    model: self.model.clone(),
+                }))
+            }
             Some("content_block_start") => {
                 if let Some(block) = event.content_block {
                     let idx = event.index.unwrap_or(0) as usize;
@@ -326,6 +336,16 @@ impl super::ApiAdapter for AnthropicAdapter {
                 Ok(None)
             }
             Some("message_delta") => {
+                // Check for usage output tokens first
+                if let Some(delta_usage) = event.usage {
+                    let input = self.pending_input_tokens.lock().unwrap().unwrap_or(0);
+                    let output = delta_usage.output_tokens;
+                    return Ok(Some(StreamEvent::Usage {
+                        input: input as u64,
+                        output: output as u64,
+                        total: (input + output) as u64,
+                    }));
+                }
                 if let Some(stop_reason) = event.stop_reason {
                     let reason = match stop_reason.as_str() {
                         "tool_use" => StopReason::ToolUse,
@@ -432,6 +452,16 @@ struct AnthropicUsage {
 }
 
 #[derive(Debug, Deserialize)]
+struct AnthropicMessageStartInfo {
+    usage: Option<AnthropicUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicDeltaUsage {
+    output_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
 struct AnthropicSseEvent {
     #[serde(rename = "type")]
     event_type: Option<String>,
@@ -441,6 +471,9 @@ struct AnthropicSseEvent {
     delta: Option<AnthropicDelta>,
     #[serde(rename = "stop_reason")]
     stop_reason: Option<String>,
+    // New fields for usage tracking:
+    message: Option<AnthropicMessageStartInfo>,
+    usage: Option<AnthropicDeltaUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -565,5 +598,38 @@ mod tests {
             ContentBlock::ToolCall { .. }
         ));
         assert!(matches!(parsed.stop_reason, StopReason::ToolUse));
+    }
+
+    #[test]
+    fn test_message_start_usage_extraction() {
+        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        // message_start event with usage info
+        let data = r#"{"type":"message_start","message":{"usage":{"input_tokens":25,"output_tokens":0}}}"#;
+
+        let event = adapter.parse_sse_event(data).unwrap();
+        // Should return Start event
+        assert!(matches!(event, Some(crate::providers::StreamEvent::Start { .. })));
+        // Input tokens should be stored
+        assert_eq!(*adapter.pending_input_tokens.lock().unwrap(), Some(25));
+    }
+
+    #[test]
+    fn test_message_delta_usage_extraction() {
+        let adapter = AnthropicAdapter::new("claude-3-sonnet");
+        // First set up the input tokens (as if message_start was processed)
+        *adapter.pending_input_tokens.lock().unwrap() = Some(25);
+
+        // message_delta event with output tokens
+        let data = r#"{"type":"message_delta","usage":{"output_tokens":12}}"#;
+
+        let event = adapter.parse_sse_event(data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::Usage { input, output, total }) => {
+                assert_eq!(input, 25);
+                assert_eq!(output, 12);
+                assert_eq!(total, 37);
+            }
+            _ => panic!("Expected Usage event, got {:?}", event),
+        }
     }
 }

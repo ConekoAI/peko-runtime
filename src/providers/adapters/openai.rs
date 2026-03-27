@@ -137,6 +137,11 @@ impl super::ApiAdapter for OpenAiAdapter {
             body["tool_choice"] = json!("auto");
         }
 
+        // Add stream_options to include usage in streaming responses
+        if stream {
+            body["stream_options"] = json!({"include_usage": true});
+        }
+
         debug!("OpenAI request: {}", serde_json::to_string_pretty(&body)?);
 
         Ok(("/chat/completions".to_string(), body))
@@ -213,6 +218,15 @@ impl super::ApiAdapter for OpenAiAdapter {
 
         let chunk: OpenAiStreamChunk =
             serde_json::from_str(data).context("Failed to parse OpenAI SSE chunk")?;
+
+        // Check for usage first (final chunk has usage but empty choices)
+        if let Some(usage) = chunk.usage {
+            return Ok(Some(StreamEvent::Usage {
+                input: usage.prompt_tokens as u64,
+                output: usage.completion_tokens as u64,
+                total: usage.total_tokens as u64,
+            }));
+        }
 
         let choice = match chunk.choices.into_iter().next() {
             Some(c) => c,
@@ -340,6 +354,8 @@ struct OpenAiUsage {
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamChunk {
     choices: Vec<OpenAiStreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>, // Final chunk has usage + empty choices
 }
 
 #[derive(Debug, Deserialize)]
@@ -446,5 +462,22 @@ mod tests {
                 delta: _,
             })
         ));
+    }
+
+    #[test]
+    fn test_parse_sse_with_usage() {
+        let adapter = OpenAiAdapter::new("gpt-4o-mini");
+        // Final chunk with usage and empty choices
+        let data = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+
+        let event = adapter.parse_sse_event(data).unwrap();
+        match event {
+            Some(crate::providers::StreamEvent::Usage { input, output, total }) => {
+                assert_eq!(input, 10);
+                assert_eq!(output, 5);
+                assert_eq!(total, 15);
+            }
+            _ => panic!("Expected Usage event, got {:?}", event),
+        }
     }
 }

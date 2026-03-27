@@ -209,6 +209,11 @@ impl StreamOrchestrator {
                 self.state = OrchestratorState::Done;
                 self.handle_done(stop_reason)
             }
+            StreamEvent::Usage { .. } => {
+                // Usage events are accumulated by the engine loop, not the orchestrator
+                // The orchestrator handles content transformation, not metadata
+                vec![]
+            }
             StreamEvent::Error { message } => {
                 vec![AgenticEvent::Lifecycle {
                     run_id: self.run_id.clone(),
@@ -567,5 +572,20 @@ mod tests {
             }
             _ => panic!("Expected AssistantDelta"),
         }
+    }
+
+    #[test]
+    fn test_usage_event_returns_empty_vec() {
+        let config = OrchestratorConfig::live();
+        let mut orchestrator = StreamOrchestrator::new("run_123", config);
+
+        // Usage event should return empty vec (handled by engine loop, not orchestrator)
+        let events = orchestrator.process(StreamEvent::Usage {
+            input: 10,
+            output: 5,
+            total: 15,
+        });
+
+        assert!(events.is_empty(), "Usage event should return empty vec");
     }
 }
