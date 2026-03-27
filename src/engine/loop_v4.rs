@@ -326,11 +326,11 @@ impl AgenticLoopV4 {
     ) -> Result<AgenticResult> {
         // Set provider/model metadata on session (do this once at start)
         {
-            let provider_name = self.provider.name();
+            let provider_name = self.agent.config.provider.provider_type.to_string();
             let model_name = &self.agent.config.provider.default_model;
             
             let mut s = session.write().await;
-            s.set_model(provider_name, model_name);
+            s.set_model(&provider_name, model_name);
         }
 
         // Main agent loop
@@ -981,11 +981,11 @@ impl AgenticLoopV4 {
 
         // Set provider/model metadata on session (do this once at start)
         {
-            let provider_name = self.provider.name();
+            let provider_name = self.agent.config.provider.provider_type.to_string();
             let model_name = &self.agent.config.provider.default_model;
             
             let mut s = session.write().await;
-            s.set_model(provider_name, model_name);
+            s.set_model(&provider_name, model_name);
         }
 
         // Build tool definitions
