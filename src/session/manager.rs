@@ -1,17 +1,45 @@
 //! Session manager for overlay lifecycle
 //!
-//! The `SessionManager` is responsible for:
+//! The `SessionManager` is responsible for SESSION LIFECYCLE only:
 //! - Managing base sessions (create, open, cache)
 //! - Creating and tracking overlays (channel, spawn)
 //! - Providing `HybridSession` views
 //! - Cross-channel session sharing
+//! - Session branching, switching, and deletion
+//!
+//! For SESSION OPERATIONS (messages, metadata updates), obtain a `SessionHandle`
+//! via `open_session()` and use its methods.
 //!
 //! # Architecture
 //!
-//! The SessionManager is the SINGLE POINT OF TRUTH for all session operations:
-//! - All session creation goes through SessionManager
-//! - All metadata updates go through MetadataController
-//! - All session listings are verified for consistency
+//! ```text
+//! SessionManager (lifecycle)
+//!        │
+//!        │ open_session()
+//!        ▼
+//! SessionHandle (operations)
+//!        │
+//!        ▼
+//! MetadataController (persistence)
+//! ```
+//!
+//! ## Responsibility Boundaries
+//!
+//! | Operation | Use This | Via |
+//! |-----------|----------|-----|
+//! | Create session | `SessionManager::create_session()` | Returns `SessionHandle` |
+//! | Open session | `SessionManager::open_session()` | Returns `Option<SessionHandle>` |
+//! | Branch session | `SessionManager::branch_session*()` | Internally uses handles |
+//! | Read metadata (lightweight) | `SessionManager::get_session_metadata()` | Direct controller access |
+//! | Record token usage | `SessionHandle::record_usage()` | Requires valid handle |
+//! | Set model | `SessionHandle::set_model()` | Requires valid handle |
+//! | Add messages | `SessionHandle::add_*()` | Requires valid handle |
+//!
+//! # Single Point of Truth
+//!
+//! The SessionManager is the SOLE authority for session lifecycle operations.
+//! The MetadataController is the SOLE authority for session metadata.
+//! All session listings are verified for consistency.
 
 use super::context::SessionContext;
 use super::index::{SessionEntry, SessionIndex};
@@ -298,6 +326,18 @@ impl SessionHandle {
         controller.sync_from_jsonl(&self.session_id).await?;
         Ok(())
     }
+
+    /// Check if the session exists and is accessible
+    ///
+    /// Returns true if the session can be found in the metadata store.
+    pub async fn exists(&self) -> bool {
+        self.metadata
+            .write()
+            .await
+            .get_metadata(&self.session_id, false)
+            .await
+            .is_ok()
+    }
 }
 
 /// Options for creating a new session
@@ -367,16 +407,20 @@ pub struct ResolvedSession {
 
 /// Session manager for overlay lifecycle
 ///
-/// Manages the lifecycle of base sessions and overlays, including:
+/// Manages the LIFECYCLE of base sessions and overlays:
 /// - Caching of base sessions
 /// - Creating and tracking overlays
 /// - Cross-channel session sharing
 /// - Session index for UUID-based file naming and switching
+/// - Session branching, switching, deletion
+///
+/// For SESSION OPERATIONS (messages, metadata updates), use `SessionHandle`
+/// obtained via `open_session()`.
 ///
 /// # Single Point of Truth
 ///
-/// The SessionManager is the SOLE authority for session operations.
-/// All session metadata goes through the MetadataController.
+/// The SessionManager is the SOLE authority for session LIFECYCLE operations.
+/// The MetadataController is the SOLE authority for session metadata.
 /// All session resolution goes through this manager.
 #[derive(Debug)]
 pub struct SessionManager {
@@ -868,7 +912,16 @@ impl SessionManager {
         )))
     }
 
-    /// Get metadata for any session (doesn't require open session)
+    /// Get metadata for any session (lightweight read-only lookup)
+    ///
+    /// This is a CONVENIENCE METHOD for read-only metadata access without
+    /// needing to open a session. Use this for:
+    /// - Existence checks
+    /// - Session listing/validation
+    /// - Read-only metadata display
+    ///
+    /// For operations on an active session, prefer `SessionHandle::get_metadata()`
+    /// via `open_session()` to ensure proper session lifecycle management.
     ///
     /// Uses the shared metadata controller for cache consistency.
     pub async fn get_session_metadata(&self, session_id: &str) -> Result<SessionMetadata> {
@@ -879,43 +932,6 @@ impl SessionManager {
             Some(m) => Ok(m),
             None => Err(anyhow::anyhow!("Session {} not found", session_id)),
         }
-    }
-
-    /// Record token usage for a session
-    pub async fn record_token_usage(
-        &mut self,
-        session_id: &str,
-        input_tokens: usize,
-        output_tokens: usize,
-    ) -> Result<()> {
-        // Record via shared controller
-        self.metadata_controller
-            .write()
-            .await
-            .record_token_usage(session_id, input_tokens, output_tokens)
-            .await
-    }
-
-    /// Set model information for a session
-    pub async fn set_session_model(
-        &mut self,
-        session_id: &str,
-        provider: &str,
-        model: &str,
-    ) -> Result<()> {
-        let mut controller = self.metadata_controller.write().await;
-        
-        // Get metadata first, then update
-        let mut metadata = match controller.get_metadata_fast(session_id).await? {
-            Some(m) => m,
-            None => return Err(anyhow::anyhow!("Session {} not found", session_id)),
-        };
-
-        // Update the metadata
-        metadata.set_model(provider, model);
-
-        // Now update via controller
-        controller.update_metadata(metadata).await
     }
 
     /// List all sessions with metadata
