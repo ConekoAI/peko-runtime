@@ -237,12 +237,13 @@ impl MetadataController {
         &mut self,
         session_id: &str,
         message_count: usize,
+        context_window: usize,
         input_tokens: usize,
         output_tokens: usize,
     ) -> Result<()> {
         debug!(
-            "Updating counts for {}: messages={}, tokens={}/{}",
-            session_id, message_count, input_tokens, output_tokens
+            "Updating counts for {}: messages={}, window={}, in={}, out={}",
+            session_id, message_count, context_window, input_tokens, output_tokens
         );
 
         // Load current entry
@@ -258,9 +259,9 @@ impl MetadataController {
 
         // Update fields directly on entry
         entry.message_count = message_count;
-        entry.input_tokens += input_tokens;
-        entry.output_tokens += output_tokens;
-        entry.total_tokens = entry.input_tokens + entry.output_tokens;
+        entry.context_window = context_window;
+        entry.total_input_tokens += input_tokens;
+        entry.total_output_tokens += output_tokens;
         entry.touch();
 
         // Save
@@ -268,15 +269,19 @@ impl MetadataController {
     }
 
     /// Record token usage for a session
+    /// 
+    /// `context_window` is the total_tokens from the current assistant message.
+    /// `input_tokens` and `output_tokens` are the incremental tokens for this turn.
     pub async fn record_token_usage(
         &mut self,
         session_id: &str,
+        context_window: usize,
         input_tokens: usize,
         output_tokens: usize,
     ) -> Result<()> {
         debug!(
-            "Recording token usage for {}: {}/{}",
-            session_id, input_tokens, output_tokens
+            "Recording token usage for {}: window={}, in={}, out={}",
+            session_id, context_window, input_tokens, output_tokens
         );
 
         let mut entry = match self.get_entry(session_id, false).await? {
@@ -289,7 +294,7 @@ impl MetadataController {
             }
         };
 
-        entry.record_tokens(input_tokens, output_tokens);
+        entry.record_tokens(context_window, input_tokens, output_tokens);
         self.update_entry(entry).await
     }
 
@@ -353,7 +358,7 @@ impl MetadataController {
 
     /// List all session entries internally
     ///
-    /// If `sync_from_jsonl` is true, message counts will be synced from
+    /// If `sync_from_jsonl` is true, message counts and token usage will be synced from
     /// the actual JSONL content (source of truth).
     async fn list_entries(&mut self, sync_from_jsonl: bool) -> Result<Vec<SessionEntry>> {
         let mut entries = self.index.list_all().await?;
@@ -361,6 +366,8 @@ impl MetadataController {
         if sync_from_jsonl {
             for entry in &mut entries {
                 let session_id = entry.session_id.clone();
+
+                // Sync message count
                 match self.count_messages_from_jsonl(&session_id).await {
                     Ok(actual_count) => {
                         if entry.message_count != actual_count {
@@ -373,6 +380,28 @@ impl MetadataController {
                     }
                     Err(e) => {
                         warn!("Failed to count messages for {}: {}", session_id, e);
+                    }
+                }
+
+                // Sync token usage
+                match self.get_token_metrics_from_jsonl(&session_id).await {
+                    Ok((context_window, total_input, total_output)) => {
+                        if entry.context_window != context_window
+                            || entry.total_input_tokens != total_input
+                            || entry.total_output_tokens != total_output
+                        {
+                            debug!(
+                                "Session {} token usage synced: window={}, in={}, out={} -> window={}, in={}, out={}",
+                                session_id, entry.context_window, entry.total_input_tokens, entry.total_output_tokens,
+                                context_window, total_input, total_output
+                            );
+                            entry.context_window = context_window;
+                            entry.total_input_tokens = total_input;
+                            entry.total_output_tokens = total_output;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to sum token usage for {}: {}", session_id, e);
                     }
                 }
             }
@@ -474,12 +503,44 @@ impl MetadataController {
         Ok(events.iter().filter(|e| e.is_message()).count())
     }
 
+    /// Get token usage metrics from JSONL (source of truth)
+    ///
+    /// Returns (context_window, total_input_tokens, total_output_tokens):
+    /// - context_window: total_tokens from the last assistant message
+    /// - total_input_tokens: sum of input_tokens from all assistant messages
+    /// - total_output_tokens: sum of output_tokens from all assistant messages
+    pub async fn get_token_metrics_from_jsonl(&self, session_id: &str) -> Result<(usize, usize, usize)> {
+        let events = self
+            .storage
+            .load_events(session_id)
+            .await
+            .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
+
+        let mut total_input = 0usize;
+        let mut total_output = 0usize;
+        let mut context_window = 0usize;
+
+        for event in &events {
+            if let crate::session::events::SessionEvent::MessageV2(msg) = event {
+                if let Some(usage) = msg.usage() {
+                    total_input += usage.input_tokens as usize;
+                    total_output += usage.output_tokens as usize;
+                    // Last seen total_tokens becomes the context window
+                    context_window = usage.total_tokens as usize;
+                }
+            }
+        }
+
+        Ok((context_window, total_input, total_output))
+    }
+
     /// Sync metadata from JSONL (source of truth)
     ///
     /// This is the PRIMARY method for ensuring metadata matches JSONL.
-    /// The JSONL file is the source of truth for message count.
+    /// The JSONL file is the source of truth for message count and token usage.
     pub async fn sync_from_jsonl(&mut self, session_id: &str) -> Result<usize> {
         let actual_count = self.count_messages_from_jsonl(session_id).await?;
+        let (context_window, total_input, total_output) = self.get_token_metrics_from_jsonl(session_id).await?;
 
         // Get current entry
         let mut entry = match self.get_entry_fast(session_id).await? {
@@ -493,12 +554,20 @@ impl MetadataController {
         };
 
         // Always update to match JSONL (JSONL is source of truth)
-        if entry.message_count != actual_count {
+        let needs_update = entry.message_count != actual_count
+            || entry.context_window != context_window
+            || entry.total_input_tokens != total_input
+            || entry.total_output_tokens != total_output;
+
+        if needs_update {
             debug!(
-                "Syncing session {} message count: {} -> {}",
-                session_id, entry.message_count, actual_count
+                "Syncing session {}: messages={}->{}, window={}->{}",
+                session_id, entry.message_count, actual_count, entry.context_window, context_window
             );
             entry.message_count = actual_count;
+            entry.context_window = context_window;
+            entry.total_input_tokens = total_input;
+            entry.total_output_tokens = total_output;
             entry.touch();
             self.update_entry(entry).await?;
         }
@@ -754,8 +823,9 @@ mod tests {
         let metadata = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         controller.create_metadata(metadata).await.unwrap();
 
+        // Update with (session_id, message_count, context_window, input_tokens, output_tokens)
         controller
-            .update_message_counts("sess_123", 10, 100, 50)
+            .update_message_counts("sess_123", 10, 1000, 100, 50)
             .await
             .unwrap();
 
@@ -765,9 +835,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(retrieved.message_count, 10);
-        assert_eq!(retrieved.input_tokens, 100);
-        assert_eq!(retrieved.output_tokens, 50);
-        assert_eq!(retrieved.total_tokens, 150);
+        assert_eq!(retrieved.context_window, 1000);
+        assert_eq!(retrieved.total_input_tokens, 100);
+        assert_eq!(retrieved.total_output_tokens, 50);
     }
 
     #[tokio::test]

@@ -35,9 +35,12 @@ pub struct SessionEntry {
     pub updated_at: u64,
     pub message_count: usize,
     pub turn_count: u32,
-    pub input_tokens: usize,
-    pub output_tokens: usize,
-    pub total_tokens: usize,
+    /// Current context window size (total_tokens from last assistant message)
+    pub context_window: usize,
+    /// Cumulative input tokens across all assistant messages
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all assistant messages
+    pub total_output_tokens: usize,
     pub transcript_file: String,
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
@@ -70,9 +73,9 @@ impl SessionEntry {
             updated_at: now,
             message_count: 0,
             turn_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
+            context_window: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
             transcript_file,
             title: None,
             parent_session_id: None,
@@ -112,10 +115,13 @@ impl SessionEntry {
     }
 
     /// Record token usage
-    pub fn record_tokens(&mut self, input: usize, output: usize) {
-        self.input_tokens += input;
-        self.output_tokens += output;
-        self.total_tokens = self.input_tokens + self.output_tokens;
+    /// 
+    /// `context_window` is the total_tokens from the current assistant message.
+    /// `input` and `output` are the incremental tokens for this turn.
+    pub fn record_tokens(&mut self, context_window: usize, input: usize, output: usize) {
+        self.context_window = context_window;
+        self.total_input_tokens += input;
+        self.total_output_tokens += output;
         self.touch();
     }
 

@@ -299,10 +299,13 @@ impl SessionHandle {
     }
 
     /// Record token usage (via shared controller)
-    pub async fn record_usage(&self, input: usize, output: usize) -> Result<()> {
+    /// 
+    /// `context_window` is the total_tokens from the current assistant message.
+    /// `input` and `output` are the incremental tokens for this turn.
+    pub async fn record_usage(&self, context_window: usize, input: usize, output: usize) -> Result<()> {
         let mut controller = self.metadata.write().await;
         controller
-            .record_token_usage(&self.session_id, input, output)
+            .record_token_usage(&self.session_id, context_window, input, output)
             .await
     }
 
@@ -1051,8 +1054,9 @@ impl SessionManager {
         });
         new_metadata.trigger = "branch".to_string();
         new_metadata.message_count = parent_metadata.message_count;
-        new_metadata.input_tokens = parent_metadata.input_tokens;
-        new_metadata.output_tokens = parent_metadata.output_tokens;
+        new_metadata.context_window = parent_metadata.context_window;
+        new_metadata.total_input_tokens = parent_metadata.total_input_tokens;
+        new_metadata.total_output_tokens = parent_metadata.total_output_tokens;
 
         // Store metadata
         self.metadata_controller
@@ -2143,13 +2147,14 @@ mod tests {
             .await
             .unwrap();
 
-        // Record token usage via handle
-        handle.record_usage(100, 50).await.unwrap();
+        // Record token usage via handle (context_window=1000, input=100, output=50)
+        handle.record_usage(1000, 100, 50).await.unwrap();
 
         // Get metadata via handle - should see the updated tokens
         let metadata1 = handle.get_metadata().await.unwrap();
-        assert_eq!(metadata1.input_tokens, 100);
-        assert_eq!(metadata1.output_tokens, 50);
+        assert_eq!(metadata1.context_window, 1000);
+        assert_eq!(metadata1.total_input_tokens, 100);
+        assert_eq!(metadata1.total_output_tokens, 50);
 
         // Set model via handle
         handle.set_model("openai", "gpt-4").await.unwrap();
@@ -2160,8 +2165,8 @@ mod tests {
         assert_eq!(metadata2.model, Some("gpt-4".to_string()));
 
         // Metadata should still have the tokens
-        assert_eq!(metadata2.input_tokens, 100);
-        assert_eq!(metadata2.output_tokens, 50);
+        assert_eq!(metadata2.total_input_tokens, 100);
+        assert_eq!(metadata2.total_output_tokens, 50);
     }
 
     #[tokio::test]
@@ -2216,13 +2221,14 @@ mod tests {
             .unwrap()
             .expect("Session should exist");
 
-        // Record usage via handle1
-        handle1.record_usage(200, 100).await.unwrap();
+        // Record usage via handle1 (context_window=2000, input=200, output=100)
+        handle1.record_usage(2000, 200, 100).await.unwrap();
 
         // Get metadata via handle2 - should see the changes (shared cache)
         let metadata = handle2.get_metadata().await.unwrap();
-        assert_eq!(metadata.input_tokens, 200);
-        assert_eq!(metadata.output_tokens, 100);
+        assert_eq!(metadata.context_window, 2000);
+        assert_eq!(metadata.total_input_tokens, 200);
+        assert_eq!(metadata.total_output_tokens, 100);
     }
 
     // ====================================================================================

@@ -22,7 +22,12 @@ pub struct SessionInfo {
     pub updated_at: u64,
     pub turn_count: u32,
     pub message_count: usize,
-    pub total_tokens: usize,
+    /// Current context window size (total_tokens from last assistant message)
+    pub context_window: usize,
+    /// Cumulative input tokens across all assistant messages
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all assistant messages
+    pub total_output_tokens: usize,
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
     pub ended: bool,
@@ -37,7 +42,9 @@ impl From<SessionEntry> for SessionInfo {
             updated_at: entry.updated_at,
             turn_count: entry.turn_count,
             message_count: entry.message_count,
-            total_tokens: entry.total_tokens,
+            context_window: entry.context_window,
+            total_input_tokens: entry.total_input_tokens,
+            total_output_tokens: entry.total_output_tokens,
             parent_session_id: entry.parent_session_id,
             title: entry.title,
             ended: entry.ended,

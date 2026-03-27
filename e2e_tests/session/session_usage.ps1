@@ -50,22 +50,25 @@ Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # send a message to the agent (creates first session)
 Write-Host "`nSending first message..." -ForegroundColor Cyan
-pekobot send $agentName "What's france's Capital?" 2>&1
+pekobot send $agentName "What color is an orange?" 2>&1
 
 # send a message to the agent with no-stream flag (creates second session)
 Write-Host "`nSending second message..." -ForegroundColor Cyan
 pekobot send $agentName "What's USA's Capital?" --new --no-stream 2>&1
 
+Write-Host "`nSending a follow-up message..." -ForegroundColor Cyan
+pekobot send $agentName "What about Canada?" --no-stream 2>&1
+
 # Get session id
 $jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
-$sessionId1 = $jsonOutput.sessions[0].session_id
-$sessionId2 = $jsonOutput.sessions[1].session_id
+$sessionId1 = $jsonOutput.sessions[1].session_id
+$sessionId2 = $jsonOutput.sessions[0].session_id
 
 # print the session jsonl's last few lines to verify different sessions
 Write-Host "`nSession 1 JSONL:" -ForegroundColor Cyan
-cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId1.jsonl" | Select-Object -Last 2
+cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId1.jsonl" | Select-Object -Last 1
 Write-Host "`nSession 2 JSONL:" -ForegroundColor Cyan
-cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId2.jsonl" | Select-Object -Last 2
+cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId2.jsonl" | Select-Object -Last 3
 
 # Verify usage tracking for both sessions
 Write-Host "`nVerifying usage tracking..." -ForegroundColor Cyan

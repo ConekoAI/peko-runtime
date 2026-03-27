@@ -111,10 +111,12 @@ pub struct UnifiedSession {
     last_message_id: Option<String>,
     /// Message count
     pub message_count: usize,
-    /// Input tokens
-    pub input_tokens: usize,
-    /// Output tokens
-    pub output_tokens: usize,
+    /// Current context window size (total_tokens from last assistant message)
+    pub context_window: usize,
+    /// Cumulative input tokens across all assistant messages
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all assistant messages
+    pub total_output_tokens: usize,
     /// Current provider
     pub current_provider: Option<String>,
     /// Current model
@@ -159,8 +161,9 @@ impl UnifiedSession {
             storage,
             last_message_id: None,
             message_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
+            context_window: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
             current_provider: None,
             current_model: None,
         }
@@ -254,8 +257,9 @@ impl UnifiedSession {
             storage,
             last_message_id,
             message_count,
-            input_tokens: entry.input_tokens,
-            output_tokens: entry.output_tokens,
+            context_window: entry.context_window,
+            total_input_tokens: entry.total_input_tokens,
+            total_output_tokens: entry.total_output_tokens,
             current_provider: entry.provider,
             current_model: entry.model,
         })
@@ -296,8 +300,9 @@ impl UnifiedSession {
             storage,
             last_message_id,
             message_count,
-            input_tokens: 0,
-            output_tokens: 0,
+            context_window: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
             current_provider: None,
             current_model: None,
         })
@@ -308,9 +313,13 @@ impl UnifiedSession {
     // ============================================================
 
     /// Record token usage (in-memory only, persists to index via MetadataController)
-    pub fn record_usage(&mut self, input: usize, output: usize) {
-        self.input_tokens += input;
-        self.output_tokens += output;
+    /// 
+    /// `context_window` is the total_tokens from the current assistant message.
+    /// `input` and `output` are the incremental tokens for this turn.
+    pub fn record_usage(&mut self, context_window: usize, input: usize, output: usize) {
+        self.context_window = context_window;
+        self.total_input_tokens += input;
+        self.total_output_tokens += output;
     }
 
     /// Set the current model (in-memory only, persists to index via MetadataController)
@@ -323,9 +332,9 @@ impl UnifiedSession {
     #[must_use]
     pub fn token_usage(&self) -> (usize, usize, usize) {
         (
-            self.input_tokens,
-            self.output_tokens,
-            self.input_tokens + self.output_tokens,
+            self.total_input_tokens,
+            self.total_output_tokens,
+            self.context_window,
         )
     }
 
@@ -496,7 +505,7 @@ impl UnifiedSession {
 
         // Update token usage if provided
         if let Some(ref u) = usage {
-            self.record_usage(u.input as usize, u.output as usize);
+            self.record_usage(u.total as usize, u.input as usize, u.output as usize);
         }
 
         // Get provider/model info

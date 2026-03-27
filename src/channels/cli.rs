@@ -259,12 +259,13 @@ pub async fn process_events(
         if let AgenticEvent::Usage {
             prompt_tokens,
             completion_tokens,
+            total_tokens,
             ..
         } = &event
         {
             if let Some(ctx) = session_ctx {
                 if let Err(e) = ctx
-                    .record_usage(*prompt_tokens as usize, *completion_tokens as usize)
+                    .record_usage(*total_tokens as usize, *prompt_tokens as usize, *completion_tokens as usize)
                     .await
                 {
                     warn!("Failed to record token usage: {}", e);

@@ -350,10 +350,12 @@ async fn list_sessions(
 
             println!("  {} {}", status_icon, session.session_id);
             println!("     Title: {}", title);
-            let tokens = session.total_tokens;
             println!(
-                "     Messages: {} | Tokens: {}",
-                session.message_count, tokens
+                "     Messages: {} | Window: {} | In: {} | Out: {}",
+                session.message_count,
+                session.context_window,
+                session.total_input_tokens,
+                session.total_output_tokens
             );
             println!("     Created: {} | Updated: {}", created, updated);
 
@@ -429,8 +431,13 @@ async fn show_session(
         if !entry.trigger.is_empty() {
             println!("   Trigger: {}", entry.trigger);
         }
-        let tokens = entry.total_tokens;
-        println!("   Messages: {} | Tokens: {}", entry.message_count, tokens);
+        println!(
+            "   Messages: {} | Window: {} | In: {} | Out: {}",
+            entry.message_count,
+            entry.context_window,
+            entry.total_input_tokens,
+            entry.total_output_tokens
+        );
         println!("   Created: {}", format_timestamp_ms(entry.created_at));
         println!("   Updated: {}", format_timestamp_ms(entry.updated_at));
 

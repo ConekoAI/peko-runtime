@@ -32,7 +32,12 @@ pub struct SessionResponse {
     pub updated_at: String,
     pub turn_count: u32,
     pub message_count: usize,
-    pub total_tokens: usize,
+    /// Current context window size (total_tokens from last assistant message)
+    pub context_window: usize,
+    /// Cumulative input tokens across all assistant messages
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all assistant messages
+    pub total_output_tokens: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,7 +53,9 @@ impl From<SessionInfo> for SessionResponse {
             updated_at: format_timestamp(info.updated_at),
             turn_count: info.turn_count,
             message_count: info.message_count,
-            total_tokens: info.total_tokens,
+            context_window: info.context_window,
+            total_input_tokens: info.total_input_tokens,
+            total_output_tokens: info.total_output_tokens,
             parent_session_id: info.parent_session_id,
             title: info.title,
         }

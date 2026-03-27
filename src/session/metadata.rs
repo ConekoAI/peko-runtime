@@ -21,9 +21,12 @@ pub struct SessionMetadata {
     pub updated_at: u64,
     pub message_count: usize,
     pub turn_count: u32,
-    pub input_tokens: usize,
-    pub output_tokens: usize,
-    pub total_tokens: usize,
+    /// Current context window size (total_tokens from last assistant message)
+    pub context_window: usize,
+    /// Cumulative input tokens across all assistant messages
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all assistant messages
+    pub total_output_tokens: usize,
     pub transcript_file: String,
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
@@ -59,9 +62,9 @@ impl SessionMetadata {
             updated_at: now,
             message_count: 0,
             turn_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
+            context_window: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
             transcript_file: transcript_file.into(),
             title: None,
             parent_session_id: None,
@@ -99,9 +102,9 @@ impl SessionMetadata {
             updated_at: entry.updated_at,
             message_count: entry.message_count,
             turn_count: entry.turn_count,
-            input_tokens: entry.input_tokens,
-            output_tokens: entry.output_tokens,
-            total_tokens: entry.total_tokens,
+            context_window: entry.context_window,
+            total_input_tokens: entry.total_input_tokens,
+            total_output_tokens: entry.total_output_tokens,
             transcript_file: entry.transcript_file,
             title: entry.title,
             parent_session_id: entry.parent_session_id,
@@ -126,9 +129,9 @@ impl SessionMetadata {
             updated_at: self.updated_at,
             message_count: self.message_count,
             turn_count: self.turn_count,
-            input_tokens: self.input_tokens,
-            output_tokens: self.output_tokens,
-            total_tokens: self.total_tokens,
+            context_window: self.context_window,
+            total_input_tokens: self.total_input_tokens,
+            total_output_tokens: self.total_output_tokens,
             transcript_file: self.transcript_file,
             title: self.title,
             parent_session_id: self.parent_session_id,
@@ -153,10 +156,13 @@ impl SessionMetadata {
     }
 
     /// Record token usage
-    pub fn record_tokens(&mut self, input: usize, output: usize) {
-        self.input_tokens += input;
-        self.output_tokens += output;
-        self.total_tokens = self.input_tokens + self.output_tokens;
+    /// 
+    /// `context_window` is the total_tokens from the current assistant message.
+    /// `input` and `output` are the incremental tokens for this turn.
+    pub fn record_tokens(&mut self, context_window: usize, input: usize, output: usize) {
+        self.context_window = context_window;
+        self.total_input_tokens += input;
+        self.total_output_tokens += output;
         self.touch();
     }
 
@@ -280,13 +286,14 @@ mod tests {
         let mut meta = SessionMetadata::new("sess_123", "test_agent", "sess_123.jsonl");
         meta.set_title(Some("Test Title"));
         meta.set_message_count(10);
-        meta.record_tokens(100, 50);
+        // record_tokens(context_window, input_tokens, output_tokens)
+        meta.record_tokens(1000, 100, 50);
 
         assert_eq!(meta.title, Some("Test Title".to_string()));
         assert_eq!(meta.message_count, 10);
-        assert_eq!(meta.input_tokens, 100);
-        assert_eq!(meta.output_tokens, 50);
-        assert_eq!(meta.total_tokens, 150);
+        assert_eq!(meta.context_window, 1000);
+        assert_eq!(meta.total_input_tokens, 100);
+        assert_eq!(meta.total_output_tokens, 50);
     }
 
     #[test]

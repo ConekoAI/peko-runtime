@@ -154,9 +154,12 @@ impl SessionContext {
     }
 
     /// Record token usage
-    pub async fn record_usage(&self, input_tokens: usize, output_tokens: usize) -> Result<()> {
+    /// 
+    /// `context_window` is the total_tokens from the current assistant message.
+    /// `input_tokens` and `output_tokens` are the incremental tokens for this turn.
+    pub async fn record_usage(&self, context_window: usize, input_tokens: usize, output_tokens: usize) -> Result<()> {
         let mut base = self.hybrid.base.write().await;
-        base.record_usage(input_tokens, output_tokens);
+        base.record_usage(context_window, input_tokens, output_tokens);
         Ok(())
     }
 
