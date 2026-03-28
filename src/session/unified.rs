@@ -125,21 +125,6 @@ pub struct UnifiedSession {
 
 impl UnifiedSession {
     // ============================================================
-    // Storage Directory
-    // ============================================================
-
-    /// Get the storage directory for an agent
-    ///
-    /// Uses team-based structure: `{data_dir}/sessions/{team}/{agent}/`
-    ///
-    /// DEPRECATED: Use `PathResolver::agent_sessions_dir()` instead.
-    /// This method is kept for backward compatibility.
-    ///
-    /// # Arguments
-    /// * `base_dir` - **Ignored**, kept for backward compatibility
-    /// * `agent_name` - The agent name
-    /// * `team` - Optional team name (defaults to "default")
-    // ============================================================
     // Creation
     // ============================================================
 
@@ -490,8 +475,6 @@ impl UnifiedSession {
                 envelope: EventEnvelope {
                     id: generate_event_id(),
                     ts: Utc::now(),
-                    session_id: Some(self.id.clone()),
-                    seq: None,
                 },
                 message: crate::types::message::LlmMessage {
                     role: crate::types::message::MessageRole::User,
@@ -911,8 +894,6 @@ mod tests {
             envelope: EventEnvelope {
                 id: "test-4".to_string(),
                 ts: Utc::now(),
-                session_id: None,
-                seq: None,
             },
         });
 

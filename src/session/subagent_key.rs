@@ -1,103 +1,37 @@
 //! Subagent Session Key Utilities
 //!
-//! Provides standardized key formats for subagent sessions,
-//! following `OpenClaw`'s pattern: `agent:{agent}:subagent:{uuid}`
+//! Provides standardized key formats for subagent sessions with parent tracking:
+//! Format: `agent:{agent}:peer:{type}:{id}:subagent:{uuid}`
 
 use uuid::Uuid;
 
-/// Generate a new subagent session key
+/// Generate a new subagent session key with parent reference
 ///
-/// Format: `agent:{agent_name}:subagent:{uuid}`
+/// Format: `{parent_session_key}:subagent:{uuid}`
+/// Example: `agent:myagent:peer:user:alice:subagent:550e8400-e29b-41d4-a716-446655440000`
 ///
-/// # Examples
-/// ```
-/// use pekobot::session::generate_subagent_key;
-///
-/// let key = generate_subagent_key("myagent");
-/// // agent:myagent:subagent:550e8400-e29b-41d4-a716-446655440000
-/// ```
+/// The parent_session_key should be a peer-based session key (agent:{agent}:peer:{type}:{id})
 #[must_use]
-pub fn generate_subagent_key(agent_name: &str) -> String {
-    format!("agent:{}:subagent:{}", agent_name, Uuid::new_v4())
+pub fn generate_subagent_key(parent_session_key: &str) -> String {
+    format!("{}:subagent:{}", parent_session_key, Uuid::new_v4())
 }
 
 /// Parse a subagent session key to extract components
 ///
-/// Returns (`agent_name`, `subagent_uuid`) if valid, None otherwise
-#[must_use]
-pub fn parse_subagent_key(key: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = key.split(':').collect();
-
-    // Expected format: agent:{agent_name}:subagent:{uuid}
-    if parts.len() == 4
-        && parts[0] == "agent"
-        && parts[2] == "subagent"
-        && !parts[1].is_empty()
-        && !parts[3].is_empty()
-    {
-        Some((parts[1].to_string(), parts[3].to_string()))
-    } else {
-        None
-    }
-}
-
-/// Check if a session key is a subagent key
-#[must_use]
-pub fn is_subagent_key(key: &str) -> bool {
-    key.contains(":subagent:")
-}
-
-/// Extract the agent name from a subagent key
-#[must_use]
-pub fn extract_agent_name(key: &str) -> Option<String> {
-    parse_subagent_key(key).map(|(agent, _)| agent)
-}
-
-/// Extract the subagent UUID from a key
-#[must_use]
-pub fn extract_subagent_uuid(key: &str) -> Option<String> {
-    parse_subagent_key(key).map(|(_, uuid)| uuid)
-}
-
-/// Get the parent session key from a subagent key
+/// Returns (`agent_name`, `parent_key`, `subagent_uuid`) if valid, None otherwise
 ///
-/// For OpenClaw-style subagent keys, we don't have the parent encoded.
-/// This function returns None to indicate the parent must be tracked separately.
-#[must_use]
-pub fn get_parent_key(_subagent_key: &str) -> Option<String> {
-    // OpenClaw-style keys don't encode parent information
-    // The parent must be tracked in the SubagentRegistry
-    None
-}
-
-/// Convert a peer-based session key to a display format
-#[must_use]
-pub fn format_display_key(key: &str) -> String {
-    if is_subagent_key(key) {
-        if let Some((agent, uuid)) = parse_subagent_key(key) {
-            format!("{agent}:subagent:{uuid:.8}...")
-        } else {
-            key.to_string()
-        }
-    } else {
-        key.to_string()
-    }
-}
-
-/// Build a subagent key with parent reference (hybrid format)
+/// # Examples
+/// ```
+/// use pekobot::session::parse_subagent_key;
 ///
-/// This is an alternative format that includes parent information:
-/// `agent:{agent}:peer:{type}:{id}:subagent:{uuid}`
+/// let key = "agent:myagent:peer:user:alice:subagent:uuid-here";
+/// let (agent, parent, uuid) = parse_subagent_key(key).unwrap();
+/// assert_eq!(agent, "myagent");
+/// assert_eq!(parent, "agent:myagent:peer:user:alice");
+/// assert_eq!(uuid, "uuid-here");
+/// ```
 #[must_use]
-pub fn generate_subagent_key_with_parent(_agent_name: &str, parent_session_key: &str) -> String {
-    format!("{}:subagent:{}", parent_session_key, Uuid::new_v4())
-}
-
-/// Parse a hybrid subagent key with parent info
-///
-/// Returns (`agent_name`, `parent_key`, `subagent_uuid`) if valid
-#[must_use]
-pub fn parse_hybrid_subagent_key(key: &str) -> Option<(String, String, String)> {
+pub fn parse_subagent_key(key: &str) -> Option<(String, String, String)> {
     // Check if it contains :subagent:
     if let Some(pos) = key.find(":subagent:") {
         let parent_key = &key[..pos];
@@ -109,6 +43,44 @@ pub fn parse_hybrid_subagent_key(key: &str) -> Option<(String, String, String)> 
         }
     }
     None
+}
+
+/// Check if a session key is a subagent key
+#[must_use]
+pub fn is_subagent_key(key: &str) -> bool {
+    key.contains(":subagent:")
+}
+
+/// Extract the agent name from a subagent key
+#[must_use]
+pub fn extract_agent_name(key: &str) -> Option<String> {
+    parse_subagent_key(key).map(|(agent, _, _)| agent)
+}
+
+/// Extract the subagent UUID from a key
+#[must_use]
+pub fn extract_subagent_uuid(key: &str) -> Option<String> {
+    parse_subagent_key(key).map(|(_, _, uuid)| uuid)
+}
+
+/// Extract the parent session key from a subagent key
+#[must_use]
+pub fn get_parent_key(subagent_key: &str) -> Option<String> {
+    parse_subagent_key(subagent_key).map(|(_, parent, _)| parent)
+}
+
+/// Convert a session key to a display format
+#[must_use]
+pub fn format_display_key(key: &str) -> String {
+    if is_subagent_key(key) {
+        if let Some((agent, _, uuid)) = parse_subagent_key(key) {
+            format!("{agent}:subagent:{uuid:.8}...")
+        } else {
+            key.to_string()
+        }
+    } else {
+        key.to_string()
+    }
 }
 
 /// Extract agent name from a peer-based key
@@ -135,37 +107,42 @@ mod tests {
 
     #[test]
     fn test_generate_subagent_key() {
-        let key = generate_subagent_key("myagent");
-        assert!(key.starts_with("agent:myagent:subagent:"));
-        assert_eq!(key.split(':').count(), 4);
+        let parent = "agent:myagent:peer:user:alice";
+        let key = generate_subagent_key(parent);
+
+        assert!(key.starts_with(parent));
+        assert!(key.contains(":subagent:"));
+        assert_eq!(key.split(':').count(), 7); // agent:myagent:peer:user:alice:subagent:uuid
     }
 
     #[test]
     fn test_parse_subagent_key() {
-        let key = "agent:myagent:subagent:550e8400-e29b-41d4-a716-446655440000";
+        let key = "agent:myagent:peer:user:alice:subagent:uuid-here";
         let parsed = parse_subagent_key(key);
-        assert!(parsed.is_some());
 
-        let (agent, uuid) = parsed.unwrap();
+        assert!(parsed.is_some());
+        let (agent, parent, uuid) = parsed.unwrap();
         assert_eq!(agent, "myagent");
-        assert_eq!(uuid, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(parent, "agent:myagent:peer:user:alice");
+        assert_eq!(uuid, "uuid-here");
     }
 
     #[test]
     fn test_parse_invalid_key() {
-        // Not a subagent key
+        // Not a subagent key (missing :subagent:)
         assert!(parse_subagent_key("agent:myagent:peer:user:alice").is_none());
 
         // Wrong format
         assert!(parse_subagent_key("some:random:key").is_none());
 
-        // Empty parts
-        assert!(parse_subagent_key("agent::subagent:").is_none());
+        // Empty parts after subagent
+        assert!(parse_subagent_key("agent:myagent:peer:user:alice:subagent:").is_none());
     }
 
     #[test]
     fn test_is_subagent_key() {
         assert!(is_subagent_key("agent:myagent:subagent:uuid"));
+        assert!(is_subagent_key("agent:myagent:peer:user:alice:subagent:uuid"));
         assert!(!is_subagent_key("agent:myagent:peer:user:alice"));
         assert!(!is_subagent_key("some:other:key"));
     }
@@ -173,31 +150,27 @@ mod tests {
     #[test]
     fn test_extract_agent_name() {
         assert_eq!(
-            extract_agent_name("agent:myagent:subagent:uuid"),
+            extract_agent_name("agent:myagent:peer:user:alice:subagent:uuid"),
             Some("myagent".to_string())
         );
         assert!(extract_agent_name("not:subagent:key").is_none());
     }
 
     #[test]
-    fn test_generate_with_parent() {
-        let parent = "agent:myagent:peer:user:alice";
-        let key = generate_subagent_key_with_parent("myagent", parent);
-
-        assert!(key.starts_with(parent));
-        assert!(key.contains(":subagent:"));
+    fn test_extract_subagent_uuid() {
+        assert_eq!(
+            extract_subagent_uuid("agent:myagent:peer:user:alice:subagent:uuid-here"),
+            Some("uuid-here".to_string())
+        );
     }
 
     #[test]
-    fn test_parse_hybrid_key() {
+    fn test_get_parent_key() {
         let key = "agent:myagent:peer:user:alice:subagent:uuid-here";
-        let parsed = parse_hybrid_subagent_key(key);
-
-        assert!(parsed.is_some());
-        let (agent, parent, uuid) = parsed.unwrap();
-        assert_eq!(agent, "myagent");
-        assert_eq!(parent, "agent:myagent:peer:user:alice");
-        assert_eq!(uuid, "uuid-here");
+        assert_eq!(
+            get_parent_key(key),
+            Some("agent:myagent:peer:user:alice".to_string())
+        );
     }
 
     #[test]
@@ -216,7 +189,7 @@ mod tests {
 
     #[test]
     fn test_format_display_key() {
-        let key = "agent:myagent:subagent:550e8400-e29b-41d4-a716-446655440000";
+        let key = "agent:myagent:peer:user:alice:subagent:550e8400-e29b-41d4-a716-446655440000";
         let display = format_display_key(key);
         assert!(display.contains("myagent"));
         assert!(display.contains("subagent"));

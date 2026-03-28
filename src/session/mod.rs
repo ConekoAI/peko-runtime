@@ -54,7 +54,7 @@ pub use message::{RoleMetadata, SessionMessage};
 pub use index::{
     MaintenanceConfig, MaintenanceReport, PeerIndex, PeerInfo, SessionEntry,
 };
-pub use jsonl::{NormalizedEntry, SessionEntry as JsonlSessionEntry, SessionStorage};
+pub use jsonl::{NormalizedEntry, SessionStorage};
 pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
     parse_session_key, parse_session_key_v2, ChatType, ParsedSessionKeyV2, SessionScope,
@@ -88,8 +88,7 @@ pub use sync::SyncSessionStorage;
 // Re-export subagent key utilities
 pub use subagent_key::{
     extract_agent_name, extract_subagent_uuid, format_display_key, generate_subagent_key,
-    generate_subagent_key_with_parent, get_key_depth, is_subagent_key, parse_hybrid_subagent_key,
-    parse_subagent_key,
+    get_key_depth, is_subagent_key, parse_subagent_key,
 };
 
 #[cfg(test)]

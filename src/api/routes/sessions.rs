@@ -509,8 +509,6 @@ mod tests {
             envelope: EventEnvelope {
                 id: "evt_002".to_string(),
                 ts: Utc::now(),
-                session_id: None,
-                seq: None,
             },
             tool_call_id: "tc_001".to_string(),
             tool: "web_search".to_string(),
@@ -548,8 +546,6 @@ mod tests {
             envelope: EventEnvelope {
                 id: "evt_004".to_string(),
                 ts: Utc::now(),
-                session_id: None,
-                seq: None,
             },
             content: "Let me think about this...".to_string(),
         });

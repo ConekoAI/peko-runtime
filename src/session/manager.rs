@@ -959,7 +959,7 @@ impl SessionManager {
     }
 
     // ====================================================================================
-    // Legacy API (Backward Compatibility)
+    // Session Branching and Switching
     // ====================================================================================
 
     /// Branch current session (/branch command)

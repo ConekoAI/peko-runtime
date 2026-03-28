@@ -4,14 +4,11 @@
 //! - Atomic writes: events written to `.tmp` then renamed
 //! - Automatic cleanup of partial `.tmp` files on load
 //! - Support for Pekobot event format (13 event types)
-//! - Backward compatibility with OpenClaw format
 
 use crate::session::events::SessionEvent;
 use crate::session::lock::FileLock;
-use crate::types::ContentBlock;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -20,94 +17,9 @@ use tracing::{debug, info, warn};
 /// Default lock timeout for session operations (10 seconds)
 pub const SESSION_LOCK_TIMEOUT_MS: u64 = 10_000;
 
-/// Legacy session entry type (OpenClaw compatible)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum SessionEntry {
-    #[serde(rename = "session")]
-    Session {
-        version: i32,
-        id: String,
-        timestamp: DateTime<Utc>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cwd: Option<String>,
-    },
-
-    #[serde(rename = "model_change")]
-    ModelChange {
-        id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        parent_id: Option<String>,
-        timestamp: DateTime<Utc>,
-        provider: String,
-        #[serde(rename = "modelId")]
-        model_id: String,
-    },
-
-    #[serde(rename = "message")]
-    Message {
-        id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        parent_id: Option<String>,
-        timestamp: DateTime<Utc>,
-        message: MessageContent,
-    },
-
-    #[serde(rename = "toolResult")]
-    ToolResult {
-        #[serde(rename = "toolCallId")]
-        tool_call_id: String,
-        #[serde(rename = "toolName")]
-        tool_name: String,
-        content: Vec<ContentBlock>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        is_error: Option<bool>,
-    },
-
-    /// Compaction entry - records a context compaction event
-    #[serde(rename = "compaction")]
-    Compaction {
-        id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        parent_id: Option<String>,
-        timestamp: DateTime<Utc>,
-        /// Summary text (structured format)
-        summary: String,
-        /// Number of messages compacted
-        messages_compacted: usize,
-        /// Tokens before compaction
-        tokens_before: usize,
-        /// Tokens after compaction
-        tokens_after: usize,
-        /// Compaction number (1st, 2nd, etc.)
-        compaction_number: usize,
-    },
-
-    #[serde(rename = "custom")]
-    Custom {
-        #[serde(rename = "customType")]
-        custom_type: String,
-        data: serde_json::Value,
-        id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        parent_id: Option<String>,
-        timestamp: DateTime<Utc>,
-    },
-}
-
-/// Message content structure (legacy)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageContent {
-    pub role: String,
-    pub content: Vec<ContentBlock>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<i64>,
-}
-
-/// Normalized session entry (format-agnostic)
+/// Normalized session entry for unified access
 ///
-/// Provides a unified view over both Legacy V3 and Event Format entries.
-/// This enables backward compatibility while transitioning to Event Format.
+/// Provides a simplified view over session events for common use cases.
 #[derive(Debug, Clone)]
 pub enum NormalizedEntry {
     /// Session header/metadata
@@ -136,12 +48,6 @@ pub enum NormalizedEntry {
     SystemMessage {
         content: String,
         timestamp: DateTime<Utc>,
-    },
-    /// Tool call (from legacy format)
-    ToolCall {
-        id: String,
-        name: String,
-        arguments: serde_json::Value,
     },
     /// Tool result
     ToolResult {
@@ -191,64 +97,6 @@ impl SessionStorage {
         &self.storage_dir
     }
 
-    /// Initialize a new session with atomic write
-    pub async fn create_session(&self, session_id: &str, cwd: Option<String>) -> Result<()> {
-        // Ensure directory exists
-        fs::create_dir_all(&self.storage_dir).await?;
-
-        let path = self.session_path(session_id);
-
-        // Create session entry
-        let session_entry = SessionEntry::Session {
-            version: 3,
-            id: session_id.to_string(),
-            timestamp: Utc::now(),
-            cwd,
-        };
-
-        let json = serde_json::to_string(&session_entry)?;
-        self.atomic_write(&path, json + "\n", false).await?;
-
-        info!("Created session: {}", session_id);
-        Ok(())
-    }
-
-    /// Append a message to the session atomically
-    pub async fn append_message(
-        &self,
-        session_id: &str,
-        parent_id: Option<String>,
-        role: &str,
-        content: Vec<ContentBlock>,
-    ) -> Result<String> {
-        let path = self.session_path(session_id);
-
-        // Acquire lock for concurrent access protection
-        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
-
-        let entry_id = format!("msg_{}", uuid::Uuid::new_v4().to_string().replace('-', ""));
-
-        let entry = SessionEntry::Message {
-            id: entry_id.clone(),
-            parent_id,
-            timestamp: Utc::now(),
-            message: MessageContent {
-                role: role.to_string(),
-                content,
-                timestamp: Some(Utc::now().timestamp_millis()),
-            },
-        };
-
-        let json = serde_json::to_string(&entry)?;
-        let line = json + "\n";
-
-        // Atomic append
-        self.atomic_append(&path, &line).await?;
-
-        debug!("Appended message to session {}: {}", session_id, entry_id);
-        Ok(entry_id)
-    }
-
     /// Append a Pekobot event to the session atomically
     pub async fn append_event(&self, session_id: &str, event: &SessionEvent) -> Result<()> {
         let path = self.session_path(session_id);
@@ -263,64 +111,77 @@ impl SessionStorage {
         Ok(())
     }
 
-    /// Append a tool result to the session atomically
-    pub async fn append_tool_result(
-        &self,
-        session_id: &str,
-        tool_call_id: &str,
-        tool_name: &str,
-        result: String,
-        is_error: bool,
-    ) -> Result<()> {
+    /// Initialize a new session file with a SessionCreated event
+    pub async fn create_session(&self, session_id: &str, cwd: Option<String>) -> Result<()> {
+        use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+
+        // Ensure directory exists
+        fs::create_dir_all(&self.storage_dir).await?;
+
         let path = self.session_path(session_id);
 
-        // Acquire lock for concurrent access protection
-        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
+        // Create session created event
+        let event = SessionEvent::SessionCreated(SessionCreatedEvent {
+            envelope: EventEnvelope {
+                id: format!("evt_{}", uuid::Uuid::new_v4().simple()),
+                ts: Utc::now(),
+            },
+            instance_id: session_id.to_string(),
+            image_digest: String::new(),
+            parent_session_id: None,
+            trigger: SessionTrigger::User,
+        });
 
-        let entry = SessionEntry::ToolResult {
-            tool_call_id: tool_call_id.to_string(),
-            tool_name: tool_name.to_string(),
-            content: vec![ContentBlock::Text { text: result }],
-            is_error: Some(is_error),
-        };
+        let json = serde_json::to_string(&event)?;
+        self.atomic_write(&path, json + "\n", false).await?;
 
-        let json = serde_json::to_string(&entry)?;
-        let line = json + "\n";
+        // Write cwd as a separate system event if provided
+        if let Some(cwd_path) = cwd {
+            use crate::session::events::SystemEvent;
+            let cwd_event = SessionEvent::System(SystemEvent {
+                envelope: EventEnvelope {
+                    id: format!("evt_{}", uuid::Uuid::new_v4().simple()),
+                    ts: Utc::now(),
+                },
+                event: "cwd".to_string(),
+                detail: serde_json::json!({ "path": cwd_path }),
+            });
+            let json = serde_json::to_string(&cwd_event)?;
+            self.atomic_append(&path, &(json + "\n")).await?;
+        }
 
-        // Atomic append
-        self.atomic_append(&path, &line).await?;
-
-        debug!("Appended tool result to session {}", session_id);
+        info!("Created session: {}", session_id);
         Ok(())
     }
 
-    /// Append model change entry atomically
+    /// Append a model change entry atomically
     pub async fn append_model_change(
         &self,
         session_id: &str,
-        parent_id: Option<String>,
+        _parent_id: Option<String>,
         provider: &str,
         model_id: &str,
     ) -> Result<String> {
-        let path = self.session_path(session_id);
+        use crate::session::events::{EventEnvelope, SystemEvent};
 
-        // Acquire lock for concurrent access protection
+        let path = self.session_path(session_id);
         let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
 
-        let entry_id = format!(
-            "model_{}",
-            uuid::Uuid::new_v4().to_string().replace('-', "")
-        );
+        let entry_id = format!("model_{}", uuid::Uuid::new_v4().simple());
 
-        let entry = SessionEntry::ModelChange {
-            id: entry_id.clone(),
-            parent_id,
-            timestamp: Utc::now(),
-            provider: provider.to_string(),
-            model_id: model_id.to_string(),
-        };
+        let event = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope {
+                id: entry_id.clone(),
+                ts: Utc::now(),
+            },
+            event: "model_change".to_string(),
+            detail: serde_json::json!({
+                "provider": provider,
+                "model_id": model_id,
+            }),
+        });
 
-        let json = serde_json::to_string(&entry)?;
+        let json = serde_json::to_string(&event)?;
         let line = json + "\n";
 
         // Atomic append
@@ -333,35 +194,36 @@ impl SessionStorage {
     pub async fn append_compaction(
         &self,
         session_id: &str,
-        parent_id: Option<String>,
+        _parent_id: Option<String>,
         summary: &str,
         messages_compacted: usize,
         tokens_before: usize,
         tokens_after: usize,
         compaction_number: usize,
     ) -> Result<String> {
-        let path = self.session_path(session_id);
+        use crate::session::events::{EventEnvelope, SystemEvent};
 
-        // Acquire lock for concurrent access protection
+        let path = self.session_path(session_id);
         let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
 
-        let entry_id = format!(
-            "compact_{}",
-            uuid::Uuid::new_v4().to_string().replace('-', "")
-        );
+        let entry_id = format!("compact_{}", uuid::Uuid::new_v4().simple());
 
-        let entry = SessionEntry::Compaction {
-            id: entry_id.clone(),
-            parent_id,
-            timestamp: Utc::now(),
-            summary: summary.to_string(),
-            messages_compacted,
-            tokens_before,
-            tokens_after,
-            compaction_number,
-        };
+        let event = SessionEvent::System(SystemEvent {
+            envelope: EventEnvelope {
+                id: entry_id.clone(),
+                ts: Utc::now(),
+            },
+            event: "compaction".to_string(),
+            detail: serde_json::json!({
+                "summary": summary,
+                "messages_compacted": messages_compacted,
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
+                "compaction_number": compaction_number,
+            }),
+        });
 
-        let json = serde_json::to_string(&entry)?;
+        let json = serde_json::to_string(&event)?;
         let line = json + "\n";
 
         // Atomic append
@@ -410,59 +272,6 @@ impl SessionStorage {
         self.atomic_write(path, line.to_string(), true).await
     }
 
-    /// Load all entries from a session (legacy format)
-    ///
-    /// Also cleans up any partial .tmp files that may exist from crashes.
-    pub async fn load_session(&self, session_id: &str) -> Result<Vec<SessionEntry>> {
-        let path = self.session_path(session_id);
-        // Clean up any partial tmp files from previous crashes
-        self.cleanup_temp_files(session_id).await?;
-
-        if !path.exists() {
-            tracing::debug!("Session file not found: {}", path.display());
-            return Ok(vec![]);
-        }
-
-        // Acquire lock to ensure consistent read
-        let _lock = FileLock::acquire(&path, SESSION_LOCK_TIMEOUT_MS).await?;
-
-        let content = fs::read_to_string(&path).await?;
-        let line_count = content.lines().count();
-        let byte_count = content.len();
-        tracing::debug!(
-            "Loaded session {}: {} bytes, {} lines from {}",
-            session_id,
-            byte_count,
-            line_count,
-            path.display()
-        );
-
-        let mut entries = vec![];
-        let mut parse_errors = 0;
-
-        for line in content.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<SessionEntry>(line) {
-                Ok(entry) => entries.push(entry),
-                Err(e) => {
-                    parse_errors += 1;
-                    debug!("Failed to parse session entry: {}", e);
-                }
-            }
-        }
-
-        tracing::debug!(
-            "Parsed session {}: {} entries ({} parse errors)",
-            session_id,
-            entries.len(),
-            parse_errors
-        );
-
-        Ok(entries)
-    }
-
     /// Load all Pekobot events from a session
     ///
     /// Also cleans up any partial .tmp files that may exist from crashes.
@@ -486,15 +295,13 @@ impl SessionStorage {
             if line.trim().is_empty() {
                 continue;
             }
-            // Try to parse as Pekobot event first
+            // Parse as Pekobot event
             match serde_json::from_str::<SessionEvent>(line) {
                 Ok(event) => {
                     events.push(event);
                 }
                 Err(e) => {
-                    debug!("Failed to parse as Pekobot event: {}", e);
-                    // Could be legacy format - skip for now
-                    // In a full implementation, we might convert legacy events
+                    debug!("Failed to parse session event: {}", e);
                 }
             }
         }
@@ -502,13 +309,9 @@ impl SessionStorage {
         Ok(events)
     }
 
-    /// Load session normalizing both Legacy V3 and Event Format entries
+    /// Load session normalizing Event Format entries
     ///
-    /// This method provides a unified view over session data regardless of format:
-    /// - Legacy V3 format (SessionEntry): {"type":"message",...}
-    /// - Event Format (SessionEvent): {"type":"user.message",...}
-    ///
-    /// This enables backward compatibility during the format transition.
+    /// This method provides a unified view over session data.
     pub async fn load_normalized(&self, session_id: &str) -> Result<Vec<NormalizedEntry>> {
         let path = self.session_path(session_id);
 
@@ -530,7 +333,7 @@ impl SessionStorage {
                 continue;
             }
 
-            // Try Event Format first (new standard)
+            // Parse Event Format
             if let Ok(event) = serde_json::from_str::<SessionEvent>(line) {
                 if let Some(entry) = Self::normalize_event(event) {
                     entries.push(entry);
@@ -538,31 +341,19 @@ impl SessionStorage {
                 continue;
             }
 
-            // Fall back to Legacy V3 format
-            if let Ok(legacy) = serde_json::from_str::<SessionEntry>(line) {
-                if let Some(entry) = Self::normalize_legacy(legacy) {
-                    entries.push(entry);
-                }
-                continue;
-            }
-
-            // Neither format parsed - log warning
-            warn!("Failed to parse session line as either format: {}", line);
+            // Unknown format - log warning
+            warn!("Failed to parse session line: {}", line);
         }
 
         Ok(entries)
     }
 
     /// Convert Event Format to NormalizedEntry
-    ///
-    /// Uses the unified `as_message()` method for all message types, which handles
-    /// both the new SessionMessage format (MessageV2) and all legacy formats
-    /// (UserMessage, AssistantMessage, SystemMessage, Message, LlmMessage).
     fn normalize_event(event: SessionEvent) -> Option<NormalizedEntry> {
         use crate::session::events::SessionEvent::*;
         use crate::types::message::MessageRole;
 
-        // Try unified message conversion first (handles all message formats)
+        // Try unified message conversion first
         if let Some(msg) = event.as_message() {
             let text = msg.text_content();
             let message_id = msg.message_id.clone();
@@ -597,122 +388,22 @@ impl SessionStorage {
         // Handle non-message events
         match event {
             SessionCreated(e) => Some(NormalizedEntry::Session {
-                id: e.envelope.session_id.unwrap_or_default(),
+                id: e.envelope.id,
                 version: 3,
                 timestamp: e.envelope.ts,
                 cwd: None,
             }),
             ToolResult(e) => Some(NormalizedEntry::ToolResult {
                 tool_call_id: e.tool_call_id,
-                tool_name: String::new(), // Not available in Event Format
+                tool_name: String::new(),
                 content: e.output.unwrap_or_default(),
                 is_error: e.error.is_some(),
             }),
             _ => {
-                // Other event types (thinking, tool.call, etc.) can be added as needed
+                // Other event types can be added as needed
                 debug!("Unnormalized event type: {}", event.event_type());
                 None
             }
-        }
-    }
-
-    /// Convert Legacy V3 format to NormalizedEntry
-    fn normalize_legacy(entry: SessionEntry) -> Option<NormalizedEntry> {
-        match entry {
-            SessionEntry::Session {
-                id,
-                version,
-                timestamp,
-                cwd,
-            } => Some(NormalizedEntry::Session {
-                id,
-                version,
-                timestamp,
-                cwd,
-            }),
-            SessionEntry::Message {
-                id,
-                timestamp,
-                message,
-                ..
-            } => {
-                let content = message
-                    .content
-                    .iter()
-                    .filter_map(|c| match c {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-
-                match message.role.as_str() {
-                    "user" => Some(NormalizedEntry::UserMessage {
-                        id,
-                        content,
-                        timestamp,
-                        source: crate::session::events::MessageSource::User,
-                    }),
-                    "assistant" => Some(NormalizedEntry::AssistantMessage {
-                        id,
-                        content,
-                        timestamp,
-                        input_tokens: 0,
-                        output_tokens: 0,
-                    }),
-                    "system" => Some(NormalizedEntry::SystemMessage { content, timestamp }),
-                    _ => None,
-                }
-            }
-            SessionEntry::ToolResult {
-                tool_call_id,
-                tool_name,
-                content,
-                is_error,
-            } => {
-                let result_text = content
-                    .iter()
-                    .filter_map(|c| match c {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<String>();
-                Some(NormalizedEntry::ToolResult {
-                    tool_call_id,
-                    tool_name,
-                    content: result_text,
-                    is_error: is_error.unwrap_or(false),
-                })
-            }
-            SessionEntry::Compaction {
-                timestamp,
-                summary,
-                messages_compacted,
-                tokens_before,
-                tokens_after,
-                compaction_number,
-                ..
-            } => Some(NormalizedEntry::Compaction {
-                summary,
-                messages_compacted,
-                tokens_before,
-                tokens_after,
-                compaction_number,
-                timestamp,
-            }),
-            SessionEntry::ModelChange {
-                timestamp,
-                provider,
-                model_id,
-                ..
-            } => Some(NormalizedEntry::ModelChange {
-                provider,
-                model_id,
-                timestamp,
-            }),
-            SessionEntry::Custom {
-                custom_type, data, ..
-            } => Some(NormalizedEntry::Custom { custom_type, data }),
         }
     }
 
@@ -809,74 +500,36 @@ impl SessionStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+    use chrono::Utc;
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_session_creation() {
+    async fn test_load_events() {
         let temp = TempDir::new().unwrap();
         let storage = SessionStorage::new(temp.path().to_path_buf());
 
-        storage
-            .create_session("test_session", Some("/home/test".to_string()))
-            .await
-            .unwrap();
+        // Create a session file with a SessionCreated event
+        let event = SessionEvent::SessionCreated(SessionCreatedEvent {
+            envelope: EventEnvelope {
+                id: "test-1".to_string(),
+                ts: Utc::now(),
+            },
+            instance_id: "instance-1".to_string(),
+            image_digest: "sha256:abc".to_string(),
+            parent_session_id: None,
+            trigger: SessionTrigger::User,
+        });
 
-        let sessions = storage.list_sessions().await.unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0], "test_session");
-    }
+        // Write event directly to file
+        let path = temp.path().join("test_session.jsonl");
+        let json = serde_json::to_string(&event).unwrap();
+        fs::write(&path, json + "\n").await.unwrap();
 
-    #[tokio::test]
-    async fn test_append_and_load() {
-        let temp = TempDir::new().unwrap();
-        let storage = SessionStorage::new(temp.path().to_path_buf());
-
-        storage.create_session("test", None).await.unwrap();
-
-        let msg_id = storage
-            .append_message(
-                "test",
-                None,
-                "user",
-                vec![ContentBlock::Text {
-                    text: "Hello".to_string(),
-                }],
-            )
-            .await
-            .unwrap();
-
-        assert!(!msg_id.is_empty());
-
-        let entries = storage.load_session("test").await.unwrap();
-        assert_eq!(entries.len(), 2); // session + message
-    }
-
-    #[tokio::test]
-    async fn test_atomic_append() {
-        let temp = TempDir::new().unwrap();
-        let storage = SessionStorage::new(temp.path().to_path_buf());
-
-        // Create session
-        storage.create_session("atomic_test", None).await.unwrap();
-
-        // Append multiple messages
-        for i in 0..10 {
-            storage
-                .append_message(
-                    "atomic_test",
-                    None,
-                    "user",
-                    vec![ContentBlock::Text {
-                        text: format!("Message {}", i),
-                    }],
-                )
-                .await
-                .unwrap();
-        }
-
-        // Verify all entries
-        let entries = storage.load_session("atomic_test").await.unwrap();
-        assert_eq!(entries.len(), 11); // session + 10 messages
+        // Load events
+        let events = storage.load_events("test_session").await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], SessionEvent::SessionCreated(_)));
     }
 
     #[tokio::test]
@@ -901,27 +554,28 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let storage = SessionStorage::new(temp.path().to_path_buf());
 
-        // Create and populate session
-        storage.create_session("source", None).await.unwrap();
-        storage
-            .append_message(
-                "source",
-                None,
-                "user",
-                vec![ContentBlock::Text {
-                    text: "Hello".to_string(),
-                }],
-            )
-            .await
-            .unwrap();
+        // Create source session file
+        let event = SessionEvent::SessionCreated(SessionCreatedEvent {
+            envelope: EventEnvelope {
+                id: "test-1".to_string(),
+                ts: Utc::now(),
+            },
+            instance_id: "instance-1".to_string(),
+            image_digest: "sha256:abc".to_string(),
+            parent_session_id: None,
+            trigger: SessionTrigger::User,
+        });
+        let path = temp.path().join("source.jsonl");
+        let json = serde_json::to_string(&event).unwrap();
+        fs::write(&path, json + "\n").await.unwrap();
 
         // Copy session
         storage.copy_session("source", "target").await.unwrap();
 
         // Verify copy
-        let source_entries = storage.load_session("source").await.unwrap();
-        let target_entries = storage.load_session("target").await.unwrap();
-        assert_eq!(source_entries.len(), target_entries.len());
+        let source_events = storage.load_events("source").await.unwrap();
+        let target_events = storage.load_events("target").await.unwrap();
+        assert_eq!(source_events.len(), target_events.len());
     }
 
     #[tokio::test]
@@ -929,7 +583,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let storage = SessionStorage::new(temp.path().to_path_buf());
 
-        storage.create_session("to_delete", None).await.unwrap();
+        // Create session file
+        let path = temp.path().join("to_delete.jsonl");
+        fs::write(&path, "{}").await.unwrap();
         assert!(storage.session_exists("to_delete").await);
 
         storage.delete_session("to_delete").await.unwrap();

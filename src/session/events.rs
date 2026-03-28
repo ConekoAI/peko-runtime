@@ -26,12 +26,6 @@ pub struct EventEnvelope {
     pub id: String,
     /// ISO 8601 timestamp
     pub ts: DateTime<Utc>,
-    /// Session ID (for backward compatibility, not used in new writes)
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub session_id: Option<String>,
-    /// Sequence number (deprecated, kept for backward compatibility)
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub seq: Option<u64>,
 }
 
 impl EventEnvelope {
@@ -40,8 +34,6 @@ impl EventEnvelope {
         Self {
             id: generate_event_id(),
             ts: Utc::now(),
-            session_id: None,
-            seq: None,
         }
     }
 }

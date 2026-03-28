@@ -54,8 +54,6 @@ impl SyncSessionStorage {
             envelope: EventEnvelope {
                 id: "evt_001".to_string(),
                 ts: Utc::now(),
-                session_id: None,
-                seq: None,
             },
             instance_id: instance_id.to_string(),
             image_digest: String::new(), // Will be set when instance starts
@@ -125,8 +123,6 @@ impl SyncSessionStorage {
                     self.get_next_seq(session_id).await.unwrap_or(1)
                 ),
                 ts: Utc::now(),
-                session_id: None,
-                seq: None,
             },
             reason: reason.clone(),
             turn_count,
