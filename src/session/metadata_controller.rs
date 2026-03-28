@@ -582,16 +582,15 @@ impl MetadataController {
         session_id: &str,
         metadata: &mut SessionMetadata,
     ) -> Result<ReconciliationResult> {
-        let entries = self
+        // Use new SessionEvent format for counting (supports both new and legacy formats)
+        let events = self
             .storage
-            .load_session(session_id)
+            .load_events(session_id)
             .await
             .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
 
-        let actual_count = entries
-            .iter()
-            .filter(|e| matches!(e, crate::session::jsonl::SessionEntry::Message { .. }))
-            .count();
+        // Count message events (message.v2 is the new format)
+        let actual_count = events.iter().filter(|e| e.is_message()).count();
 
         let old_count = metadata.message_count;
 
@@ -630,13 +629,10 @@ impl MetadataController {
             }
         };
 
-        // Count JSONL messages
+        // Count JSONL messages using new SessionEvent format
         let jsonl_count = if self.storage.session_exists(session_id).await {
-            let entries = self.storage.load_session(session_id).await?;
-            entries
-                .iter()
-                .filter(|e| matches!(e, crate::session::jsonl::SessionEntry::Message { .. }))
-                .count()
+            let events = self.storage.load_events(session_id).await?;
+            events.iter().filter(|e| e.is_message()).count()
         } else {
             0
         };

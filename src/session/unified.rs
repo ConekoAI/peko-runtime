@@ -198,9 +198,8 @@ impl UnifiedSession {
         let sessions_dir = sessions_dir.as_ref().to_path_buf();
         let storage = SessionStorage::new(sessions_dir.clone());
 
-        // Load session entries
-        let entries: Vec<crate::session::JsonlSessionEntry> =
-            storage.load_session(session_id).await?;
+        // Load normalized entries (supports both new SessionEvent and legacy SessionEntry formats)
+        let entries = storage.load_normalized(session_id).await?;
 
         // Use provided peer or default
         let peer = peer
@@ -223,49 +222,7 @@ impl UnifiedSession {
     // Helper Methods
     // ============================================================
 
-    /// Build a UnifiedSession from a SessionEntry
-    /// Note: Token counts and model info are loaded from JSONL or defaults
-    async fn from_entry(
-        entry: SessionEntry,
-        peer: Peer,
-        storage: SessionStorage,
-        entries: Vec<crate::session::JsonlSessionEntry>,
-        session_key: String,
-    ) -> Result<Self> {
-        let session_id = entry.session_id.clone();
-
-        // Count messages and find last ID (JSONL is source of truth)
-        let mut message_count = 0;
-        let mut last_message_id = None;
-
-        for e in entries.iter().rev() {
-            if let crate::session::JsonlSessionEntry::Message { id, .. } = e {
-                message_count += 1;
-                if last_message_id.is_none() {
-                    last_message_id = Some(id.clone());
-                }
-            }
-        }
-
-        // Note: Token counts and provider/model should be loaded from JSONL ModelChange entries
-        // or set by caller (MetadataController) after loading
-        Ok(Self {
-            id: session_id,
-            agent_name: entry.agent_name,
-            session_key,
-            peer,
-            storage,
-            last_message_id,
-            message_count,
-            context_window: entry.context_window,
-            total_input_tokens: entry.total_input_tokens,
-            total_output_tokens: entry.total_output_tokens,
-            current_provider: entry.provider,
-            current_model: entry.model,
-        })
-    }
-
-    /// Build a UnifiedSession from raw entries (for open_by_id)
+    /// Build a UnifiedSession from normalized entries (supports both new and legacy formats)
     /// JSONL is the source of truth for message count.
     async fn from_entries(
         session_id: String,
@@ -273,18 +230,22 @@ impl UnifiedSession {
         session_key: String,
         peer: Peer,
         storage: SessionStorage,
-        entries: Vec<crate::session::JsonlSessionEntry>,
+        entries: Vec<NormalizedEntry>,
     ) -> Result<Self> {
         // Count messages and find last ID (JSONL is source of truth)
         let mut message_count = 0;
         let mut last_message_id = None;
 
         for entry in entries.iter().rev() {
-            if let crate::session::JsonlSessionEntry::Message { id, .. } = entry {
-                message_count += 1;
-                if last_message_id.is_none() {
-                    last_message_id = Some(id.clone());
+            match entry {
+                NormalizedEntry::UserMessage { id, .. }
+                | NormalizedEntry::AssistantMessage { id, .. } => {
+                    message_count += 1;
+                    if last_message_id.is_none() {
+                        last_message_id = Some(id.clone());
+                    }
                 }
+                _ => {}
             }
         }
 

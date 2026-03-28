@@ -12,8 +12,9 @@
 
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
-use crate::session::SessionEntry;
+use crate::common::services::session_service::{HistoryEvent, HistoryQuery, SessionService};
 use crate::session::metadata_controller::MetadataController;
+use crate::session::SessionEntry;
 use anyhow::Result;
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
@@ -399,7 +400,7 @@ async fn show_session(
 
     // Load history if requested
     let history_events = if show_history {
-        load_session_history(&loc.sessions_dir, session_id)
+        load_session_history(paths, team, agent, session_id)
             .await
             .ok()
     } else {
@@ -492,83 +493,76 @@ enum HistoryDisplayEntry {
     },
 }
 
-/// Load session history from JSONL file using proper SessionEntry types
+/// Load session history using shared backend service
+///
+/// Uses SessionService for consistent parsing with API layer.
+/// Presentation layer converts service DTOs to CLI display format.
 async fn load_session_history(
-    sessions_dir: &PathBuf,
+    paths: &GlobalPaths,
+    team: &str,
+    agent: &str,
     session_id: &str,
 ) -> Result<Vec<HistoryDisplayEntry>> {
-    use crate::session::jsonl::SessionEntry;
-    use crate::types::ContentBlock;
+    let service = SessionService::new(paths.resolver().clone());
+    let result = service
+        .get_history(agent, Some(team), session_id, HistoryQuery::default())
+        .await?;
 
-    let path = sessions_dir.join(format!("{}.jsonl", session_id));
-    if !path.exists() {
-        return Ok(vec![]);
-    }
+    // Convert service DTOs to CLI display format (presentation layer)
+    let display_entries: Vec<HistoryDisplayEntry> = result
+        .events
+        .into_iter()
+        .filter_map(history_event_to_display)
+        .collect();
 
-    let content = tokio::fs::read_to_string(&path).await?;
-    let mut events = vec![];
+    Ok(display_entries)
+}
 
-    for line in content.lines() {
-        if line.trim().is_empty() {
-            continue;
+/// Convert service HistoryEvent to CLI display format
+///
+/// This is presentation layer logic - different channels (CLI, API, Web)
+/// can format the same backend data differently.
+fn history_event_to_display(event: HistoryEvent) -> Option<HistoryDisplayEntry> {
+    match event {
+        HistoryEvent::Session { timestamp } => Some(HistoryDisplayEntry::Session { timestamp }),
+        HistoryEvent::Message {
+            role,
+            content,
+            timestamp,
+        } => Some(HistoryDisplayEntry::Message {
+            role,
+            content,
+            timestamp,
+        }),
+        HistoryEvent::ToolResult {
+            tool_call_id,
+            output,
+            error,
+        } => Some(HistoryDisplayEntry::ToolResult {
+            tool_name: tool_call_id, // Use tool_call_id as identifier since name isn't in event
+            content: output.unwrap_or_else(|| error.unwrap_or_default()),
+        }),
+        HistoryEvent::ModelChange { provider, model_id } => {
+            Some(HistoryDisplayEntry::ModelChange { provider, model_id })
         }
-        if let Ok(entry) = serde_json::from_str::<SessionEntry>(line) {
-            let display_entry = match entry {
-                SessionEntry::Session { timestamp, .. } => HistoryDisplayEntry::Session {
-                    timestamp: timestamp.to_rfc3339(),
-                },
-                SessionEntry::Message {
-                    timestamp, message, ..
-                } => {
-                    // Extract text content from ContentBlock array
-                    let text: String = message
-                        .content
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            ContentBlock::Thinking { text, .. } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    HistoryDisplayEntry::Message {
-                        role: message.role,
-                        content: text,
-                        timestamp: timestamp.to_rfc3339(),
-                    }
-                }
-                SessionEntry::ToolResult {
-                    tool_name, content, ..
-                } => {
-                    let text: String = content
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-
-                    HistoryDisplayEntry::ToolResult {
-                        tool_name,
-                        content: text,
-                    }
-                }
-                SessionEntry::ModelChange {
-                    provider, model_id, ..
-                } => HistoryDisplayEntry::ModelChange { provider, model_id },
-                SessionEntry::Compaction { summary, .. } => {
-                    HistoryDisplayEntry::Compaction { summary }
-                }
-                SessionEntry::Custom { custom_type, .. } => {
-                    HistoryDisplayEntry::Custom { custom_type }
-                }
-            };
-            events.push(display_entry);
+        HistoryEvent::ToolCall { tool_name, args, .. } => {
+            // Display tool calls with their arguments
+            let content = format!("{}", args);
+            Some(HistoryDisplayEntry::ToolResult {
+                tool_name,
+                content,
+            })
+        }
+        HistoryEvent::Thinking { content } => Some(HistoryDisplayEntry::Message {
+            role: "thinking".to_string(),
+            content,
+            timestamp: String::new(), // Thinking events don't have timestamp in current format
+        }),
+        HistoryEvent::Compaction { summary } => Some(HistoryDisplayEntry::Compaction { summary }),
+        HistoryEvent::Custom { custom_type } => {
+            Some(HistoryDisplayEntry::Custom { custom_type })
         }
     }
-
-    Ok(events)
 }
 
 /// Print a history event
