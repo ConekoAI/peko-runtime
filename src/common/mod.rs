@@ -6,6 +6,7 @@
 pub mod identifiers;
 pub mod paths;
 pub mod services;
+pub mod time;
 pub mod types;
 
 // Re-export commonly used items
@@ -17,4 +18,5 @@ pub use paths::{
     default_cache_dir, default_config_dir, default_data_dir, resolve_team_agent,
     resolve_team_agent_with_override, PathResolver, DEFAULT_TEAM,
 };
+pub use time::{format_timestamp, format_timestamp_ms};
 pub use types::{AgentInfo, AgentSummary, TeamInfo, TeamMetadata};

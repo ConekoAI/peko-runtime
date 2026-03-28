@@ -13,6 +13,7 @@
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::session_service::{HistoryEvent, HistoryQuery, SessionService};
+use crate::common::time::{format_timestamp, format_timestamp_ms};
 use crate::session::metadata_controller::MetadataController;
 use crate::session::SessionEntry;
 use anyhow::Result;
@@ -849,26 +850,6 @@ async fn send_message(
 // Utilities
 // ================================================================================
 
-/// Format an ISO timestamp for display
-fn format_timestamp(ts: &str) -> String {
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
-        dt.format("%Y-%m-%d %H:%M").to_string()
-    } else {
-        ts.to_string()
-    }
-}
-
-/// Format a millisecond timestamp (unix epoch) for display
-fn format_timestamp_ms(ts_ms: u64) -> String {
-    let secs = (ts_ms / 1000) as i64;
-    let nanos = ((ts_ms % 1000) * 1_000_000) as u32;
-    if let Some(dt) = chrono::DateTime::from_timestamp(secs, nanos) {
-        dt.format("%Y-%m-%d %H:%M").to_string()
-    } else {
-        format!("{}", ts_ms)
-    }
-}
-
 /// Truncate a string to max length with ellipsis
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -881,15 +862,6 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_timestamp() {
-        assert_eq!(
-            format_timestamp("2026-03-17T10:30:00+00:00"),
-            "2026-03-17 10:30"
-        );
-        assert_eq!(format_timestamp("invalid"), "invalid");
-    }
 
     #[test]
     fn test_truncate() {

@@ -7,6 +7,7 @@
 //! This module only handles CLI argument parsing and output formatting.
 
 use crate::commands::GlobalPaths;
+use crate::common::time::format_timestamp;
 use crate::common::types::team::{
     TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMoveResult,
 };
@@ -378,24 +379,4 @@ fn confirm_team_move(old_name: &str, new_name: &str, agent_count: usize) -> Resu
     Ok(input.trim().eq_ignore_ascii_case("y"))
 }
 
-fn format_timestamp(ts: &str) -> String {
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
-        dt.format("%Y-%m-%d %H:%M").to_string()
-    } else {
-        ts.to_string()
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_timestamp() {
-        assert_eq!(
-            format_timestamp("2026-03-19T10:30:00+00:00"),
-            "2026-03-19 10:30"
-        );
-        assert_eq!(format_timestamp("invalid"), "invalid");
-    }
-}
