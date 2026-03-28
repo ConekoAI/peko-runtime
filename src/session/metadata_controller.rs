@@ -133,8 +133,11 @@ impl MetadataController {
             None => return Ok(None),
         };
 
-        // Sync message count from JSONL if requested
+        // Sync message count and token metrics from JSONL if requested
         if sync_from_jsonl {
+            let mut needs_update = false;
+
+            // Sync message count
             match self.count_messages_from_jsonl(session_id).await {
                 Ok(actual_count) => {
                     if entry.message_count != actual_count {
@@ -143,9 +146,7 @@ impl MetadataController {
                             session_id, entry.message_count, actual_count
                         );
                         entry.message_count = actual_count;
-                        // Update index with corrected count
-                        self.index.insert(entry.clone()).await?;
-                        self.index.save().await?;
+                        needs_update = true;
                     }
                 }
                 Err(e) => {
@@ -154,6 +155,19 @@ impl MetadataController {
                         session_id, e
                     );
                 }
+            }
+
+            // Sync token metrics
+            match self.sync_token_metrics_to_entry(session_id, &mut entry).await {
+                Ok(changed) if changed => needs_update = true,
+                Ok(_) => {}
+                Err(e) => warn!("Failed to sync token metrics from JSONL for {}: {}", session_id, e),
+            }
+
+            // Update index if any changes were made
+            if needs_update {
+                self.index.insert(entry.clone()).await?;
+                self.index.save().await?;
             }
         }
 
@@ -323,6 +337,42 @@ impl MetadataController {
         self.get_entry(session_id, false).await
     }
 
+    /// Sync token metrics from JSONL into entry (source of truth)
+    ///
+    /// Updates the entry's context_window, total_input_tokens, and total_output_tokens
+    /// based on the actual token usage data stored in the JSONL file.
+    ///
+    /// Returns `true` if the entry was modified, `false` otherwise.
+    async fn sync_token_metrics_to_entry(
+        &self,
+        session_id: &str,
+        entry: &mut SessionEntry,
+    ) -> Result<bool> {
+        let (context_window, total_input, total_output) =
+            self.get_token_metrics_from_jsonl(session_id).await?;
+
+        let changed = entry.context_window != context_window
+            || entry.total_input_tokens != total_input
+            || entry.total_output_tokens != total_output;
+
+        if changed {
+            debug!(
+                "Session {} token metrics synced: window={}, in={}, out={} -> window={}, in={}, out={}",
+                session_id,
+                entry.context_window,
+                entry.total_input_tokens,
+                entry.total_output_tokens,
+                context_window,
+                total_input,
+                total_output
+            );
+            entry.context_window = context_window;
+            entry.total_input_tokens = total_input;
+            entry.total_output_tokens = total_output;
+        }
+        Ok(changed)
+    }
+
     /// Delete session completely (metadata + JSONL file)
     ///
     /// This is the preferred way to delete a session. It ensures:
@@ -384,25 +434,8 @@ impl MetadataController {
                 }
 
                 // Sync token usage
-                match self.get_token_metrics_from_jsonl(&session_id).await {
-                    Ok((context_window, total_input, total_output)) => {
-                        if entry.context_window != context_window
-                            || entry.total_input_tokens != total_input
-                            || entry.total_output_tokens != total_output
-                        {
-                            debug!(
-                                "Session {} token usage synced: window={}, in={}, out={} -> window={}, in={}, out={}",
-                                session_id, entry.context_window, entry.total_input_tokens, entry.total_output_tokens,
-                                context_window, total_input, total_output
-                            );
-                            entry.context_window = context_window;
-                            entry.total_input_tokens = total_input;
-                            entry.total_output_tokens = total_output;
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to sum token usage for {}: {}", session_id, e);
-                    }
+                if let Err(e) = self.sync_token_metrics_to_entry(&session_id, entry).await {
+                    warn!("Failed to sync token metrics for {}: {}", session_id, e);
                 }
             }
         }
