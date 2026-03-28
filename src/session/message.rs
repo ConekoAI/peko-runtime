@@ -204,9 +204,17 @@ impl SessionMessage {
         self.message
             .content
             .iter()
-            .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
+            .flat_map(|b| match b {
+                ContentBlock::Text { text } => vec![text.as_str()],
+                ContentBlock::ToolResult { content, .. } => {
+                    content.iter()
+                        .filter_map(|c| match c {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect()
+                }
+                _ => vec![],
             })
             .collect()
     }
