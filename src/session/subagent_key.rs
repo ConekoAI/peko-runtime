@@ -37,6 +37,11 @@ pub fn parse_subagent_key(key: &str) -> Option<(String, String, String)> {
         let parent_key = &key[..pos];
         let subagent_part = &key[pos + 10..]; // After ":subagent:"
 
+        // Validate that the UUID part is not empty
+        if subagent_part.is_empty() {
+            return None;
+        }
+
         // Extract agent name from parent key
         if let Some(agent) = extract_agent_from_key(parent_key) {
             return Some((agent, parent_key.to_string(), subagent_part.to_string()));
