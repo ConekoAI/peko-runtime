@@ -34,8 +34,9 @@ pub use filesystem::FileSystemTool;
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};
 pub use shell::ShellTool;
 pub use session_introspection::{
-    InMemorySessionRegistry, SessionInfo, SessionRegistry as SessionIntrospectionRegistry,
-    SessionStatusTool, SessionsHistoryTool, SessionsListTool,
+    AgentSessionRegistry, InMemorySessionRegistry, SessionInfo,
+    SessionRegistry as SessionIntrospectionRegistry, SessionStatusTool, SessionsHistoryTool,
+    SessionsListTool,
 };
 pub use traits::{Tool, ToolError, ToolResult};
 

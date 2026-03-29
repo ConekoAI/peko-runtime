@@ -111,7 +111,7 @@ pub struct SessionsHistoryResult {
 /// Session status arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStatusArgs {
-    /// Session key or ID (defaults to current session)
+    /// Session ID (defaults to current session)
     #[serde(default)]
     pub session_key: Option<String>,
     /// Optional timezone for timestamp formatting (e.g., "`America/New_York`", "UTC")
@@ -125,19 +125,15 @@ pub struct SessionStatusArgs {
 pub struct UsageStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
-    pub total_tokens: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_cost_usd: Option<f64>,
+    pub context_window: usize,
 }
 
 /// Session status result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStatusResult {
-    pub session_key: String,
     pub session_id: String,
-    pub agent_id: String,
+    pub agent_name: String,
     pub model: String,
-    pub status: String,
     pub created_at: String,
     pub last_activity: String,
     /// Current timestamp in ISO 8601 format (UTC)
@@ -147,15 +143,20 @@ pub struct SessionStatusResult {
     pub message_count: usize,
     pub usage: UsageStats,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session: Option<String>,
 }
 
 /// Registry for accessing session data
+#[async_trait]
 pub trait SessionRegistry: Send + Sync {
     /// List available sessions
-    fn list_sessions(
+    async fn list_sessions(
         &self,
         kinds: Option<&[String]>,
         limit: usize,
@@ -163,7 +164,7 @@ pub trait SessionRegistry: Send + Sync {
     ) -> anyhow::Result<Vec<SessionInfo>>;
 
     /// Get session history
-    fn get_history(
+    async fn get_history(
         &self,
         session_key: &str,
         limit: usize,
@@ -171,7 +172,7 @@ pub trait SessionRegistry: Send + Sync {
     ) -> anyhow::Result<Vec<HistoryMessage>>;
 
     /// Get session status
-    fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult>;
+    async fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult>;
 
     /// Get current session key
     fn current_session_key(&self) -> String;
@@ -211,7 +212,8 @@ impl Tool for SessionsListTool {
         let kinds_ref = args.kinds.as_deref();
         let sessions = self
             .registry
-            .list_sessions(kinds_ref, args.limit, args.active_minutes)?;
+            .list_sessions(kinds_ref, args.limit, args.active_minutes)
+            .await?;
 
         let total = sessions.len();
 
@@ -257,9 +259,10 @@ impl Tool for SessionsHistoryTool {
             args.session_key, args.limit, args.include_tools
         );
 
-        let messages =
-            self.registry
-                .get_history(&args.session_key, args.limit, args.include_tools)?;
+        let messages = self
+            .registry
+            .get_history(&args.session_key, args.limit, args.include_tools)
+            .await?;
 
         let total_messages = messages.len();
 
@@ -299,25 +302,23 @@ impl Tool for SessionStatusTool {
         let args: SessionStatusArgs =
             serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
-        // Use provided session key or default to current
-        let session_key = args
+        // Use provided session key/ID or default to current
+        let session_id = args
             .session_key
             .clone()
             .unwrap_or_else(|| self.registry.current_session_key());
 
-        debug!("Getting status for session: {}", session_key);
+        debug!("Getting status for session: {}", session_id);
 
         // Try to get existing status, or create minimal one for time queries
-        let mut status = match self.registry.get_status(&session_key) {
+        let mut status = match self.registry.get_status(&session_id).await {
             Ok(s) => s,
             Err(_) => {
                 // Session not in registry - create minimal status for time query
                 SessionStatusResult {
-                    session_key: session_key.clone(),
-                    session_id: session_key.clone(),
-                    agent_id: "unknown".to_string(),
+                    session_id: session_id.clone(),
+                    agent_name: "unknown".to_string(),
                     model: "default".to_string(),
-                    status: "active".to_string(),
                     created_at: chrono::Utc::now().to_rfc3339(),
                     last_activity: chrono::Utc::now().to_rfc3339(),
                     timestamp_utc: String::new(),
@@ -326,9 +327,10 @@ impl Tool for SessionStatusTool {
                     usage: UsageStats {
                         prompt_tokens: 0,
                         completion_tokens: 0,
-                        total_tokens: 0,
-                        estimated_cost_usd: None,
+                        context_window: 0,
                     },
+                    peer_type: None,
+                    peer_id: None,
                     label: None,
                     parent_session: None,
                 }
@@ -360,6 +362,111 @@ impl Tool for SessionStatusTool {
         };
 
         Ok(serde_json::to_value(status)?)
+    }
+}
+
+/// Session registry backed by the real SessionManager.
+pub struct AgentSessionRegistry {
+    session_manager: std::sync::Arc<tokio::sync::RwLock<crate::session::SessionManager>>,
+    current_session_id: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
+}
+
+impl AgentSessionRegistry {
+    #[must_use]
+    pub fn new(
+        session_manager: std::sync::Arc<tokio::sync::RwLock<crate::session::SessionManager>>,
+        current_session_id: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
+    ) -> Self {
+        Self {
+            session_manager,
+            current_session_id,
+        }
+    }
+}
+
+#[async_trait]
+impl SessionRegistry for AgentSessionRegistry {
+    async fn list_sessions(
+        &self,
+        _kinds: Option<&[String]>,
+        _limit: usize,
+        _active_minutes: Option<i64>,
+    ) -> anyhow::Result<Vec<SessionInfo>> {
+        let mut manager = self.session_manager.write().await;
+        let metadatas = manager.list_all_sessions(false).await?;
+
+        let sessions = metadatas
+            .into_iter()
+            .map(|m| SessionInfo {
+                session_key: m.session_id.clone(),
+                session_id: m.session_id,
+                kind: m.trigger,
+                agent_id: Some(m.agent_name),
+                label: m.title,
+                created_at: chrono::DateTime::from_timestamp_millis(m.created_at as i64)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+                last_activity: chrono::DateTime::from_timestamp_millis(m.updated_at as i64)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_default(),
+                message_count: m.message_count,
+                is_active: true,
+            })
+            .collect();
+
+        Ok(sessions)
+    }
+
+    async fn get_history(
+        &self,
+        _session_key: &str,
+        _limit: usize,
+        _include_tools: bool,
+    ) -> anyhow::Result<Vec<HistoryMessage>> {
+        // TODO: implement history loading via SessionManager
+        debug!("AgentSessionRegistry::get_history not yet implemented");
+        Ok(vec![])
+    }
+
+    async fn get_status(&self, session_id: &str) -> anyhow::Result<SessionStatusResult> {
+        if session_id.is_empty() {
+            return Err(anyhow::anyhow!("No current session available"));
+        }
+
+        let manager = self.session_manager.read().await;
+        let metadata = manager.get_session_metadata(session_id).await?;
+
+        Ok(SessionStatusResult {
+            session_id: metadata.session_id,
+            agent_name: metadata.agent_name,
+            model: metadata.model.unwrap_or_default(),
+            created_at: chrono::DateTime::from_timestamp_millis(metadata.created_at as i64)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default(),
+            last_activity: chrono::DateTime::from_timestamp_millis(metadata.updated_at as i64)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default(),
+            timestamp_utc: String::new(),
+            timestamp: String::new(),
+            message_count: metadata.message_count,
+            usage: UsageStats {
+                prompt_tokens: metadata.total_input_tokens as u64,
+                completion_tokens: metadata.total_output_tokens as u64,
+                context_window: metadata.context_window,
+            },
+            peer_type: metadata.peer_type,
+            peer_id: metadata.peer_id,
+            label: metadata.title,
+            parent_session: metadata.parent_session_id,
+        })
+    }
+
+    fn current_session_key(&self) -> String {
+        self.current_session_id
+            .try_read()
+            .ok()
+            .and_then(|id| id.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -401,8 +508,9 @@ impl InMemorySessionRegistry {
     }
 }
 
+#[async_trait]
 impl SessionRegistry for InMemorySessionRegistry {
-    fn list_sessions(
+    async fn list_sessions(
         &self,
         _kinds: Option<&[String]>,
         _limit: usize,
@@ -415,7 +523,7 @@ impl SessionRegistry for InMemorySessionRegistry {
         Ok(sessions.values().cloned().collect())
     }
 
-    fn get_history(
+    async fn get_history(
         &self,
         session_key: &str,
         limit: usize,
@@ -429,7 +537,7 @@ impl SessionRegistry for InMemorySessionRegistry {
         Ok(history.into_iter().take(limit).collect())
     }
 
-    fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult> {
+    async fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult> {
         let statuses = self
             .statuses
             .lock()
@@ -482,11 +590,9 @@ mod tests {
         ];
 
         let status = SessionStatusResult {
-            session_key: "test-session".to_string(),
             session_id: "abc123".to_string(),
-            agent_id: "test-agent".to_string(),
+            agent_name: "test-agent".to_string(),
             model: "kimi-k2.5".to_string(),
-            status: "active".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             timestamp_utc: "2024-01-01T02:00:00Z".to_string(),
@@ -495,9 +601,10 @@ mod tests {
             usage: UsageStats {
                 prompt_tokens: 100,
                 completion_tokens: 50,
-                total_tokens: 150,
-                estimated_cost_usd: Some(0.0015),
+                context_window: 1500,
             },
+            peer_type: Some("user".to_string()),
+            peer_id: Some("alice".to_string()),
             label: Some("Test Session".to_string()),
             parent_session: Some("main".to_string()),
         };
@@ -555,9 +662,11 @@ mod tests {
             .unwrap();
 
         let status_result: SessionStatusResult = serde_json::from_value(result).unwrap();
-        assert_eq!(status_result.session_key, "test-session");
+        assert_eq!(status_result.session_id, "abc123");
         assert_eq!(status_result.model, "kimi-k2.5");
-        assert_eq!(status_result.usage.total_tokens, 150);
+        assert_eq!(status_result.usage.context_window, 1500);
+        assert_eq!(status_result.peer_type, Some("user".to_string()));
+        assert_eq!(status_result.peer_id, Some("alice".to_string()));
     }
 
     #[tokio::test]
@@ -566,11 +675,9 @@ mod tests {
 
         // Add current session
         let status = SessionStatusResult {
-            session_key: "current-session".to_string(),
             session_id: "current123".to_string(),
-            agent_id: "main".to_string(),
+            agent_name: "main".to_string(),
             model: "kimi-k2.5".to_string(),
-            status: "active".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             timestamp_utc: "2024-01-01T02:00:00Z".to_string(),
@@ -579,9 +686,10 @@ mod tests {
             usage: UsageStats {
                 prompt_tokens: 50,
                 completion_tokens: 25,
-                total_tokens: 75,
-                estimated_cost_usd: None,
+                context_window: 800,
             },
+            peer_type: None,
+            peer_id: None,
             label: None,
             parent_session: None,
         };
@@ -606,6 +714,6 @@ mod tests {
         let result = tool.execute(serde_json::json!({})).await.unwrap();
 
         let status_result: SessionStatusResult = serde_json::from_value(result).unwrap();
-        assert_eq!(status_result.session_key, "current-session");
+        assert_eq!(status_result.session_id, "current123");
     }
 }

@@ -37,6 +37,8 @@ pub struct Agent {
     subagent_executor: Arc<SubagentExecutor>,
     /// Dynamic session key provider for `agent_spawn` tool
     session_key_provider: Arc<DynamicSessionKeyProvider>,
+    /// Current session ID for session_status tool lookups
+    current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 impl Agent {
@@ -47,8 +49,9 @@ impl Agent {
     fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            InMemorySessionRegistry, SessionStatusTool, ShellTool, SessionsSendTool, Tool,
+            SessionStatusTool, ShellTool, SessionsSendTool, Tool,
         };
+        use crate::tools::session_introspection::AgentSessionRegistry;
 
         // Create core tools only (web tools now provided via MCP)
         let mut tools: Vec<Arc<dyn Tool>> = vec![
@@ -56,9 +59,11 @@ impl Agent {
             Arc::new(ShellTool::new()),
         ];
 
-        // Add session introspection tools
-        let session_registry =
-            InMemorySessionRegistry::new(format!("agent:{}:cli:default", self.config.name));
+        // Add session introspection tools backed by the real session manager
+        let session_registry = AgentSessionRegistry::new(
+            self.session_manager.clone(),
+            self.current_session_id.clone(),
+        );
         tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
 
         // Add agent spawn tool v2 with executor and session provider
@@ -100,9 +105,10 @@ impl Agent {
     async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            InMemorySessionRegistry, SessionStatusTool, ShellTool, SessionsSendTool, Tool,
+            SessionStatusTool, ShellTool, SessionsSendTool, Tool,
             ToolFactory,
         };
+        use crate::tools::session_introspection::AgentSessionRegistry;
 
         // Create core tools only (web tools now provided via MCP)
         let mut tools: Vec<Arc<dyn Tool>> = vec![
@@ -110,9 +116,11 @@ impl Agent {
             Arc::new(ShellTool::new()),
         ];
 
-        // Add session introspection tools
-        let session_registry =
-            InMemorySessionRegistry::new(format!("agent:{}:cli:default", self.config.name));
+        // Add session introspection tools backed by the real session manager
+        let session_registry = AgentSessionRegistry::new(
+            self.session_manager.clone(),
+            self.current_session_id.clone(),
+        );
         tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
 
         // Add agent spawn tool v2 with executor and session provider
@@ -225,6 +233,7 @@ impl Agent {
             session_router,
             subagent_executor,
             session_key_provider,
+            current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
         };
 
         info!(
@@ -504,6 +513,13 @@ impl Agent {
     where
         F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
     {
+        // Capture current session ID so session_status can look it up
+        {
+            let session_id = session.read().await.id.clone();
+            let mut current = self.current_session_id.write().await;
+            *current = Some(session_id);
+        }
+
         // We need to get the provider and tools
         if let Some(provider) = &self.provider {
             let agent_arc = Arc::new(self.clone_for_loop(Arc::clone(provider)));
@@ -567,6 +583,7 @@ impl Agent {
                 .with_agent_config(self.config.clone()),
             ),
             session_key_provider: Arc::clone(&self.session_key_provider),
+            current_session_id: Arc::clone(&self.current_session_id),
         }
     }
 
