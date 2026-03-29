@@ -85,11 +85,9 @@ impl Agent {
                 ),
         ));
 
-        // Filter based on agent config if specified
+        // Filter based on agent config whitelist
         if let Some(ref tool_config) = self.config.tools {
-            if !tool_config.enabled.is_empty() {
-                tools.retain(|tool| tool_config.enabled.contains(&tool.name().to_string()));
-            }
+            tools.retain(|tool| tool_config.is_tool_enabled(tool.name()));
         }
 
         tools
@@ -162,14 +160,14 @@ impl Agent {
             }
         }
 
-        tracing::info!("Total tools available: {}", tools.len());
+        tracing::info!("Total tools available before filtering: {}", tools.len());
 
-        // Filter based on agent config if specified
+        // Filter based on agent config whitelist
         if let Some(ref tool_config) = self.config.tools {
-            if !tool_config.enabled.is_empty() {
-                tools.retain(|tool| tool_config.enabled.contains(&tool.name().to_string()));
-            }
+            tools.retain(|tool| tool_config.is_tool_enabled(tool.name()));
         }
+        
+        tracing::info!("Total tools available after filtering: {}", tools.len());
 
         Ok(tools)
     }

@@ -56,7 +56,7 @@ impl Default for AgentConfig {
             capabilities: vec![],
             provider: super::provider::ProviderConfig::default(),
             memory: None,
-            tools: None,
+            tools: Some(ToolConfig::default()), // Default tool whitelist
             channels: None,
             auto_accept_trusted: false,
             approval_threshold: Some(100.0),
@@ -186,7 +186,8 @@ impl std::fmt::Display for AgentState {
 /// Tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
-    /// Enabled tools
+    /// Enabled built-in tools (whitelist)
+    /// If empty, all tools are available (backward compatibility)
     pub enabled: Vec<String>,
     /// HTTP tool settings
     pub http: Option<HttpToolConfig>,
@@ -194,6 +195,30 @@ pub struct ToolConfig {
     pub memory: Option<MemoryToolConfig>,
     /// Custom tool definitions
     pub custom: Option<HashMap<String, serde_json::Value>>,
+}
+
+impl ToolConfig {
+    /// Check if a tool is enabled according to the whitelist
+    /// 
+    /// - If whitelist has entries: only listed tools are allowed
+    /// - If whitelist is empty: NO tools allowed (secure by default)
+    pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
+        // Check if tool is in the whitelist (case-insensitive)
+        self.enabled.iter()
+            .any(|t| t.eq_ignore_ascii_case(tool_name))
+    }
+}
+
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self {
+            // Default whitelist: shell and session_status only
+            enabled: vec!["shell".to_string(), "session_status".to_string()],
+            http: None,
+            memory: None,
+            custom: None,
+        }
+    }
 }
 
 /// HTTP tool configuration
@@ -321,5 +346,85 @@ mod tests {
         let json = serde_json::to_string(&cap).unwrap();
         assert!(json.contains("test-cap"));
         assert!(json.contains("Test capability"));
+    }
+
+    #[test]
+    fn test_tool_config_default_whitelist() {
+        let config = ToolConfig::default();
+        
+        // Default whitelist should contain shell and session_status
+        assert!(config.enabled.contains(&"shell".to_string()));
+        assert!(config.enabled.contains(&"session_status".to_string()));
+        assert_eq!(config.enabled.len(), 2);
+    }
+
+    #[test]
+    fn test_tool_config_is_tool_enabled() {
+        let config = ToolConfig::default();
+        
+        // Should be enabled (in whitelist)
+        assert!(config.is_tool_enabled("shell"));
+        assert!(config.is_tool_enabled("session_status"));
+        assert!(config.is_tool_enabled("SHELL")); // case-insensitive
+        assert!(config.is_tool_enabled("Session_Status")); // case-insensitive
+        
+        // Should NOT be enabled (not in whitelist)
+        assert!(!config.is_tool_enabled("filesystem"));
+        assert!(!config.is_tool_enabled("apply_patch"));
+        assert!(!config.is_tool_enabled("cron"));
+    }
+
+    #[test]
+    fn test_tool_config_empty_whitelist_disallows_all() {
+        // Empty whitelist should disallow ALL tools (secure by default)
+        let config = ToolConfig {
+            enabled: vec![],
+            http: None,
+            memory: None,
+            custom: None,
+        };
+        
+        assert!(!config.is_tool_enabled("shell"));
+        assert!(!config.is_tool_enabled("filesystem"));
+        assert!(!config.is_tool_enabled("any_tool"));
+    }
+
+    #[test]
+    fn test_tool_config_custom_whitelist() {
+        // Custom whitelist
+        let config = ToolConfig {
+            enabled: vec!["filesystem".to_string(), "apply_patch".to_string()],
+            http: None,
+            memory: None,
+            custom: None,
+        };
+        
+        assert!(config.is_tool_enabled("filesystem"));
+        assert!(config.is_tool_enabled("apply_patch"));
+        assert!(!config.is_tool_enabled("shell"));
+    }
+
+    #[test]
+    fn test_agent_config_has_default_tools() {
+        let config = AgentConfig::default();
+        
+        // Should have default tool config with whitelist
+        assert!(config.tools.is_some());
+        let tools = config.tools.unwrap();
+        
+        assert!(tools.enabled.contains(&"shell".to_string()));
+        assert!(tools.enabled.contains(&"session_status".to_string()));
+    }
+
+    #[test]
+    fn test_tool_config_toml_serialization() {
+        // Test TOML format
+        let config = ToolConfig::default();
+        let toml = toml::to_string(&config).unwrap();
+        
+        // Should contain the enabled list
+        assert!(toml.contains("enabled"));
+        assert!(toml.contains("shell"));
+        assert!(toml.contains("session_status"));
     }
 }
