@@ -50,7 +50,7 @@ Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # send a message to the agent (creates first session)
 Write-Host "`nSending first message..." -ForegroundColor Cyan
-pekobot send $agentName "call date with your shell tool" 2>&1
+pekobot send $agentName "what time is it?" 2>&1
 
 # Get session id
 $jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
