@@ -50,7 +50,7 @@ Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # send a message to the agent
 Write-Host "`nSending first message..." -ForegroundColor Cyan
-pekobot send $agentName "hi" 2>&1
+pekobot send $agentName "hi, what OS are you running?" 2>&1
 # request the tool call
 Write-Host "`nSending tool call request..." -ForegroundColor Cyan
 pekobot send $agentName "call ls with shell and report results" 2>&1
