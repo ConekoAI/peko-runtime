@@ -30,7 +30,6 @@ pub struct SessionMetadata {
     pub transcript_file: String,
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
-    pub ended: bool,
     pub trigger: String,
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -68,7 +67,6 @@ impl SessionMetadata {
             transcript_file: transcript_file.into(),
             title: None,
             parent_session_id: None,
-            ended: false,
             trigger: "user".to_string(),
             provider: None,
             model: None,
@@ -108,7 +106,6 @@ impl SessionMetadata {
             transcript_file: entry.transcript_file,
             title: entry.title,
             parent_session_id: entry.parent_session_id,
-            ended: entry.ended,
             trigger: entry.trigger,
             provider: entry.provider,
             model: entry.model,
@@ -135,7 +132,6 @@ impl SessionMetadata {
             transcript_file: self.transcript_file,
             title: self.title,
             parent_session_id: self.parent_session_id,
-            ended: self.ended,
             trigger: self.trigger,
             provider: self.provider,
             model: self.model,
@@ -196,12 +192,6 @@ impl SessionMetadata {
     /// Set title
     pub fn set_title(&mut self, title: Option<impl Into<String>>) {
         self.title = title.map(Into::into);
-        self.touch();
-    }
-
-    /// Mark as ended
-    pub fn mark_ended(&mut self) {
-        self.ended = true;
         self.touch();
     }
 
@@ -277,7 +267,6 @@ mod tests {
         assert_eq!(meta.session_id, "sess_123");
         assert_eq!(meta.agent_name, "test_agent");
         assert_eq!(meta.message_count, 0);
-        assert!(!meta.ended);
     }
 
     #[test]

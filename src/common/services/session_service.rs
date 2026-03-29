@@ -30,7 +30,6 @@ pub struct SessionInfo {
     pub total_output_tokens: usize,
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
-    pub ended: bool,
 }
 
 impl From<SessionEntry> for SessionInfo {
@@ -47,7 +46,6 @@ impl From<SessionEntry> for SessionInfo {
             total_output_tokens: entry.total_output_tokens,
             parent_session_id: entry.parent_session_id,
             title: entry.title,
-            ended: entry.ended,
         }
     }
 }

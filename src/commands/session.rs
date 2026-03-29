@@ -296,17 +296,11 @@ async fn list_sessions(
             let created = format_timestamp_ms(session.created_at);
             let updated = format_timestamp_ms(session.updated_at);
 
-            // Status indicators
+            // Status indicator - only show star for active session
             let is_active = active_session_id.as_ref() == Some(&session.session_id);
-            let status_icon = if session.ended {
-                "🔴"
-            } else if is_active {
-                "⭐"
-            } else {
-                "🟢"
-            };
+            let status_icon = if is_active { "⭐ " } else { "   " };
 
-            println!("  {} {}", status_icon, session.session_id);
+            println!("{} {}", status_icon, session.session_id);
             println!("     Title: {}", title);
             println!(
                 "     Messages: {} | Window: {} | In: {} | Out: {}",
@@ -378,14 +372,7 @@ async fn show_session(
         if let Some(ref title) = entry.title {
             println!("   Title: {}", title);
         }
-        println!(
-            "   Status: {}",
-            if entry.ended {
-                "Ended 🔴"
-            } else {
-                "Active 🟢"
-            }
-        );
+
         if !entry.trigger.is_empty() {
             println!("   Trigger: {}", entry.trigger);
         }

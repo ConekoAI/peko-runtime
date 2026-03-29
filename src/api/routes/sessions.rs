@@ -476,7 +476,6 @@ mod tests {
             total_output_tokens: 500,
             parent_session_id: None,
             title: Some("Test Session".to_string()),
-            ended: false,
         };
         let response: SessionResponse = info.into();
 
@@ -572,7 +571,6 @@ mod tests {
             total_output_tokens: 0,
             parent_session_id: None,
             title: None,
-            ended: false,
         };
 
         let response: SessionResponse = info.into();
@@ -595,7 +593,6 @@ mod tests {
             total_output_tokens: 500,
             parent_session_id: Some("sess_parent".to_string()),
             title: Some("Branched Session".to_string()),
-            ended: false,
         };
 
         let response: SessionResponse = info.into();
