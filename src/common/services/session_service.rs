@@ -340,17 +340,9 @@ impl SessionService {
         let mut controller = MetadataController::new(&sessions_dir);
         controller.delete_metadata(session_id).await?;
 
-        // Also remove from active preference if set
-        let active_pref_path = sessions_dir.join(".active.json");
-        if active_pref_path.exists() {
-            if let Ok(content) = tokio::fs::read_to_string(&active_pref_path).await {
-                if let Ok(pref) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if pref.get("session_id").and_then(|v| v.as_str()) == Some(session_id) {
-                        let _ = tokio::fs::remove_file(&active_pref_path).await;
-                    }
-                }
-            }
-        }
+        // Note: If this was the active session for a peer, peers.json will still
+        // reference it. The next auto-resume will create a new session.
+        // SessionManager::switch_session() should be used to explicitly change active sessions.
 
         info!(
             "Deleted session '{}' for agent '{}'",
@@ -358,70 +350,6 @@ impl SessionService {
         );
 
         Ok(true)
-    }
-
-    /// Set active session preference
-    pub async fn set_active_session(
-        &self,
-        agent_name: &str,
-        team: Option<&str>,
-        session_id: &str,
-    ) -> Result<()> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
-
-        // Ensure directory exists
-        tokio::fs::create_dir_all(&sessions_dir).await?;
-
-        // Verify session exists
-        let mut controller = MetadataController::new(&sessions_dir);
-        if controller.get_entry_from_index(session_id).await?.is_none() {
-            anyhow::bail!(
-                "Session '{}' not found for agent '{}'",
-                session_id,
-                agent_name
-            );
-        }
-
-        // Save preference
-        let pref_path = sessions_dir.join(".active.json");
-        let pref = serde_json::json!({
-            "session_id": session_id,
-            "set_at": chrono::Utc::now().to_rfc3339(),
-            "set_by": "cli",
-        });
-
-        let temp_path = pref_path.with_extension("tmp");
-        tokio::fs::write(&temp_path, serde_json::to_string_pretty(&pref)?).await?;
-        tokio::fs::rename(&temp_path, &pref_path).await?;
-
-        info!(
-            "Set active session preference for '{}' to '{}'",
-            agent_name, session_id
-        );
-
-        Ok(())
-    }
-
-    /// Get active session preference
-    pub async fn get_active_session(
-        &self,
-        agent_name: &str,
-        team: Option<&str>,
-    ) -> Result<Option<String>> {
-        let sessions_dir = self.get_sessions_dir(agent_name, team).await?;
-        let pref_path = sessions_dir.join(".active.json");
-
-        if !pref_path.exists() {
-            return Ok(None);
-        }
-
-        let content = tokio::fs::read_to_string(&pref_path).await?;
-        let pref: serde_json::Value = serde_json::from_str(&content)?;
-
-        Ok(pref
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .map(String::from))
     }
 
     /// Get session details with history summary

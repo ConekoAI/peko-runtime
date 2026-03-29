@@ -6,19 +6,20 @@
 //! - Only commands needing runtime coordination (send, switch on running instances) use the API
 //!
 //! Session storage layout:
-//! - `{data_dir}/agents/{instance_id}/sessions/*.jsonl` - Session event logs
-//! - `{data_dir}/agents/{instance_id}/sessions/sessions.json` - Centralized session index
-//! - `{data_dir}/agents/{instance_id}/sessions/.active.json` - Preferred active session (CLI-managed)
+//! - `{data_dir}/sessions/{team}/{agent}/*.jsonl` - Session event logs
+//! - `{data_dir}/sessions/{team}/{agent}/sessions.json` - Centralized session index
+//! - `{data_dir}/sessions/{team}/{agent}/peers.json` - Peer routing (active session tracking)
 
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::session_service::{HistoryEvent, HistoryQuery, SessionService};
 use crate::common::time::{format_timestamp, format_timestamp_ms};
 use crate::session::metadata_controller::MetadataController;
+use crate::session::types::Peer;
 use crate::session::SessionEntry;
 use anyhow::Result;
 use clap::Subcommand;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::path::PathBuf;
 
 /// Session management subcommands
@@ -233,54 +234,6 @@ async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<SessionEn
 }
 
 // ================================================================================
-// Active Session Preference
-// ================================================================================
-
-/// Active session preference file structure
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct ActiveSessionPreference {
-    session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    set_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    set_by: Option<String>,
-}
-
-/// Path to the active session preference file
-fn active_session_path(sessions_dir: &PathBuf) -> PathBuf {
-    sessions_dir.join(".active.json")
-}
-
-/// Load preferred active session
-async fn load_active_preference(sessions_dir: &PathBuf) -> Result<Option<String>> {
-    let path = active_session_path(sessions_dir);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = tokio::fs::read_to_string(&path).await?;
-    let pref: ActiveSessionPreference = serde_json::from_str(&content)?;
-    Ok(Some(pref.session_id))
-}
-
-/// Save preferred active session
-async fn save_active_preference(sessions_dir: &PathBuf, session_id: &str) -> Result<()> {
-    let path = active_session_path(sessions_dir);
-    let pref = ActiveSessionPreference {
-        session_id: session_id.to_string(),
-        set_at: Some(chrono::Utc::now().to_rfc3339()),
-        set_by: Some("cli".to_string()),
-    };
-    let json = serde_json::to_string_pretty(&pref)?;
-
-    // Atomic write
-    let temp_path = path.with_extension("tmp");
-    tokio::fs::write(&temp_path, json).await?;
-    tokio::fs::rename(&temp_path, &path).await?;
-
-    Ok(())
-}
-
-// ================================================================================
 // Command Implementations
 // ================================================================================
 
@@ -308,16 +261,19 @@ async fn list_sessions(
     };
 
     let sessions = list_sessions_from_disk(&loc.sessions_dir).await?;
-    let active_pref = load_active_preference(&loc.sessions_dir)
-        .await
-        .ok()
-        .flatten();
+
+    // Get active session from peers.json via SessionManager
+    let mut manager =
+        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team));
+    let peer = Peer::User("default".to_string());
+    let active_session_id = manager.get_active_session_id(&peer).await.ok().flatten();
 
     if json {
         let output = serde_json::json!({
             "team": team,
             "agent": agent,
             "sessions": sessions,
+            "active_session": active_session_id,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if sessions.is_empty() {
@@ -330,8 +286,8 @@ async fn list_sessions(
             agent,
             sessions.len()
         );
-        if let Some(ref pref) = active_pref {
-            println!("   Preferred active: {}", pref);
+        if let Some(ref active) = active_session_id {
+            println!("   Active session: {}", active);
         }
         println!();
 
@@ -341,10 +297,10 @@ async fn list_sessions(
             let updated = format_timestamp_ms(session.updated_at);
 
             // Status indicators
-            let is_preferred = active_pref.as_ref() == Some(&session.session_id);
+            let is_active = active_session_id.as_ref() == Some(&session.session_id);
             let status_icon = if session.ended {
                 "🔴"
-            } else if is_preferred {
+            } else if is_active {
                 "⭐"
             } else {
                 "🟢"
@@ -741,13 +697,6 @@ async fn delete_session(
     // Delete via MetadataController (handles both file and metadata)
     let deleted = controller.delete_session(session_id).await?;
 
-    // Check if this was the preferred active session
-    if let Ok(Some(pref)) = load_active_preference(&loc.sessions_dir).await {
-        if pref == session_id {
-            let _ = tokio::fs::remove_file(active_session_path(&loc.sessions_dir)).await;
-        }
-    }
-
     if json {
         let deleted_items = if deleted {
             vec!["jsonl", "index"]
@@ -765,7 +714,7 @@ async fn delete_session(
     Ok(())
 }
 
-/// Switch active session (offline - updates preference file)
+/// Switch active session (offline - updates peers.json routing)
 async fn switch_session(
     paths: &GlobalPaths,
     team: &str,
@@ -775,24 +724,21 @@ async fn switch_session(
 ) -> anyhow::Result<()> {
     let loc = ensure_sessions_dir(paths, agent, team).await?;
 
-    // Verify session exists in centralized index
-    let mut controller = MetadataController::new(&loc.sessions_dir);
-    let entry = controller
-        .get_entry_from_index(session_id)
-        .await?
-        .ok_or_else(|| {
+    // Create SessionManager to update peer routing
+    let mut manager =
+        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team));
+
+    // Verify session exists
+    let _ = manager
+        .get_session_metadata(session_id)
+        .await
+        .map_err(|_| {
             anyhow::anyhow!("Session '{}' not found for agent '{}'", session_id, agent)
         })?;
 
-    // Check if session is ended
-    if entry.ended {
-        println!("⚠️  Warning: Session '{}' is ended.", session_id);
-        println!("   Switching to an ended session will start a new conversation");
-        println!("   with the same history available for reference.");
-    }
-
-    // Save preference
-    save_active_preference(&loc.sessions_dir, session_id).await?;
+    // Switch the active session for the default CLI peer
+    let peer = Peer::User("default".to_string());
+    manager.switch_session(&peer, session_id).await?;
 
     if json {
         println!(
@@ -801,11 +747,11 @@ async fn switch_session(
         );
     } else {
         println!(
-            "✅ Set preferred active session for '{}'/{} to '{}'",
+            "✅ Switched active session for '{}/{}' to '{}'",
             team, agent, session_id
         );
         println!();
-        println!("   This session will be activated when the agent starts.");
+        println!("   Future 'pekobot send' commands will use this session.");
     }
 
     Ok(())
