@@ -78,8 +78,9 @@ pub struct PromptConfig {
     /// Additional prompt sections to inject
     #[serde(default)]
     pub extra_sections: Vec<String>,
-    /// Bootstrap file configuration
-    pub bootstrap: Option<BootstrapFileConfig>,
+    /// System file configuration (formerly bootstrap)
+    #[serde(alias = "bootstrap")]  // Backward compatibility
+    pub system: Option<SystemFileConfig>,
 }
 
 /// Prompt mode - controls which sections are included
@@ -107,15 +108,18 @@ impl PromptMode {
     }
 }
 
-/// Bootstrap file configuration
+/// System file configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BootstrapFileConfig {
+pub struct SystemFileConfig {
     /// Maximum characters per file
     #[serde(default = "default_max_chars")]
     pub max_chars_per_file: usize,
-    /// Custom bootstrap files to load
+    /// Custom system files to load
     pub files: Option<Vec<String>>,
 }
+
+/// Deprecated: Use SystemFileConfig instead
+pub type BootstrapFileConfig = SystemFileConfig;
 
 fn default_max_chars() -> usize {
     20_000

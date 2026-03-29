@@ -116,10 +116,10 @@ impl SystemPromptBuilder {
         self
     }
 
-    /// Set custom bootstrap files to inject (all treated as optional)
+    /// Set custom system files to inject (all treated as optional)
     /// 
-    /// If `files` is None or empty, uses the default bootstrap file list.
-    pub fn with_bootstrap_files(mut self, files: Option<Vec<String>>) -> Self {
+    /// If `files` is None or empty, uses the default system file list.
+    pub fn with_system_files(mut self, files: Option<Vec<String>>) -> Self {
         self.bootstrap_config = BootstrapConfig::with_files(files, self.workspace.clone());
         self
     }

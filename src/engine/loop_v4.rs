@@ -1369,15 +1369,15 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
         .config
         .prompt
         .as_ref()
-        .and_then(|p| p.bootstrap.as_ref())
-        .and_then(|b| b.files.clone());
+        .and_then(|p| p.system.as_ref())
+        .and_then(|s| s.files.clone());
 
     SystemPromptBuilder::new(agent.name())
         .with_mode(PromptMode::Full)
         .with_workspace(&workspace_dir)
         .with_tools(tools.to_vec())
         .with_skills(skills)
-        .with_bootstrap_files(bootstrap_files)
+        .with_system_files(bootstrap_files)
         .build()
 }
 
