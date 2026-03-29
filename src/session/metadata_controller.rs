@@ -379,17 +379,45 @@ impl MetadataController {
     /// - Metadata is removed from the index
     /// - JSONL file is deleted
     /// - Cache is updated
+    /// - Peer routing is cleaned up (if this session is the active one for its peer)
     ///
     /// Returns Ok(true) if session existed and was deleted, Ok(false) if not found.
     pub async fn delete_session(&mut self, session_id: &str) -> Result<bool> {
         debug!("Deleting session {} (metadata + file)", session_id);
 
-        // Check if session exists
-        let exists = self.index.get(session_id).await?.is_some();
+        // Check if session exists and capture metadata before deletion
+        // Use get_entry (not get_entry_fast) to ensure we load from index if not cached
+        let entry = self.get_entry(session_id, false).await?;
+        let exists = entry.is_some();
+
         if !exists {
             // Still try to delete the file if it exists (cleanup)
             self.storage.delete_session(session_id).await.ok();
             return Ok(false);
+        }
+
+        // DERIVE peer key from session metadata using centralized method
+        // and clear peer routing if this session is still the active one.
+        // This prevents "Session not found" errors when sending without --new flag.
+        if let Some(e) = entry {
+            use crate::session::key::derive_base_session_key;
+            use crate::session::types::Peer;
+
+            let peer = match e.peer_type.as_deref() {
+                Some("user") => e.peer_id.as_ref().map(|id| Peer::User(id.clone())),
+                Some("agent") => e.peer_id.as_ref().map(|id| Peer::Agent(id.clone())),
+                _ => None,
+            };
+
+            if let Some(p) = peer {
+                let peer_key = derive_base_session_key(&e.agent_name, &p);
+
+                if self.index.get_active_session_id(&peer_key).await?.as_deref() == Some(session_id) {
+                    self.index.clear_active_for_peer(&peer_key).await?;
+                    self.index.save().await?;
+                    info!("Cleared peer routing for {} after session deletion", peer_key);
+                }
+            }
         }
 
         // Delete JSONL file first (idempotent - can retry if needed)
