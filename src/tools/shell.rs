@@ -25,9 +25,22 @@ const SHELL: &str = "/bin/sh";
 const SHELL_ARG: &str = "-c";
 
 #[cfg(windows)]
-const SHELL: &str = "cmd";
+const SHELL: &str = "powershell";
 #[cfg(windows)]
-const SHELL_ARG: &str = "/c";
+const SHELL_ARG: &str = "-Command";
+
+/// Platform-specific shell name for display
+#[cfg(unix)]
+const SHELL_DISPLAY: &str = "/bin/sh";
+#[cfg(windows)]
+const SHELL_DISPLAY: &str = "PowerShell";
+
+/// Platform name for display
+const OS_DISPLAY: &str = if cfg!(windows) {
+    "Windows"
+} else {
+    "Unix/Linux/macOS"
+};
 
 fn default_timeout() -> u64 {
     120000 // 120 seconds default
@@ -321,8 +334,31 @@ impl Tool for ShellTool {
     }
 
     fn llm_description(&self) -> String {
-        r#"## Purpose
+        let (simple_cmd, pipe_cmd, redirect_cmd, env_cmd, async_cmd) = if cfg!(windows) {
+            (
+                r#"{"command": "Get-ChildItem"}"#,
+                r#"{"command": "Get-Content file.txt | Select-String error | Select-Object -First 20"}"#,
+                r#"{"command": "Write-Output 'hello' | Set-Content greeting.txt"}"#,
+                r#"{"command": "Write-Output $env:USERPROFILE"}"#,
+                r#"{"command": ".\\long-build-script.ps1", "async": true, "timeout_ms": 300000}"#,
+            )
+        } else {
+            (
+                r#"{"command": "ls -la"}"#,
+                r#"{"command": "cat file.txt | grep error | head -20"}"#,
+                r#"{"command": "echo 'hello' > greeting.txt"}"#,
+                r#"{"command": "echo $HOME"}"#,
+                r#"{"command": "./long-build-script.sh", "async": true, "timeout_ms": 300000}"#,
+            )
+        };
+
+        format!(
+            r#"## Purpose
 Execute system shell commands. Full shell access including pipes, redirection, and environment variables.
+
+## Platform Information
+- **OS**: {os}
+- **Shell**: {shell}
 
 ## Security Note
 This tool has FULL SYSTEM ACCESS when enabled. It can:
@@ -335,45 +371,48 @@ Disable this tool in agent config if you don't need shell access.
 
 ## API
 ```json
-{
-    "command": "ls -la | grep foo > output.txt",
+{{
+    "command": "your command here",
     "timeout_ms": 30000,
     "async": false,
     "cwd": "./subdir"
-}
+}}
 ```
 
 ## Examples
 
 Simple command:
 ```json
-{"command": "ls -la"}
+{simple_cmd}
 ```
 
 With pipes:
 ```json
-{"command": "cat file.txt | grep error | head -20"}
+{pipe_cmd}
 ```
 
 With redirection:
 ```json
-{"command": "echo 'hello' > greeting.txt"}
+{redirect_cmd}
 ```
 
 Environment variables:
 ```json
-{"command": "echo $HOME"}
+{env_cmd}
 ```
 
 Async execution:
 ```json
-{
-    "command": "./long-build-script.sh",
-    "async": true,
-    "timeout_ms": 300000
-}
-```"#
-            .to_string()
+{async_cmd}
+```"#,
+            os = OS_DISPLAY,
+            shell = SHELL_DISPLAY,
+            simple_cmd = simple_cmd,
+            pipe_cmd = pipe_cmd,
+            redirect_cmd = redirect_cmd,
+            env_cmd = env_cmd,
+            async_cmd = async_cmd
+        )
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -566,7 +605,7 @@ mod tests {
         let tool = ShellTool::new();
 
         let params = json!({
-            "command": if cfg!(windows) { "more" } else { "cat" },
+            "command": if cfg!(windows) { "Read-Host" } else { "cat" },
             "stdin": "hello from stdin"
         });
 
