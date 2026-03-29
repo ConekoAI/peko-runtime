@@ -118,7 +118,8 @@ impl SystemPromptBuilder {
 
     /// Set custom system files to inject (all treated as optional)
     /// 
-    /// If `files` is None or empty, uses the default system file list.
+    /// If `files` is None, no files will be loaded (empty system prompt).
+    /// Use `BootstrapConfig::with_default_files()` explicitly if you want defaults.
     pub fn with_system_files(mut self, files: Option<Vec<String>>) -> Self {
         self.bootstrap_config = BootstrapConfig::with_files(files, self.workspace.clone());
         self

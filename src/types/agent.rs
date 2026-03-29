@@ -70,14 +70,6 @@ impl Default for AgentConfig {
 /// Prompt configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptConfig {
-    /// Prompt mode: full, minimal, none
-    #[serde(default)]
-    pub mode: PromptMode,
-    /// Custom system prompt override (replaces default)
-    pub custom_prompt: Option<String>,
-    /// Additional prompt sections to inject
-    #[serde(default)]
-    pub extra_sections: Vec<String>,
     /// System file configuration (formerly bootstrap)
     #[serde(alias = "bootstrap")]  // Backward compatibility
     pub system: Option<SystemFileConfig>,

@@ -39,17 +39,14 @@ impl BootstrapConfig {
 
     /// Create config with a custom list of files (all treated as optional)
     /// 
-    /// If `files` is empty or None, falls back to default files.
+    /// If `files` is None, returns an empty file list.
+    /// Use `with_default_files()` explicitly if you want the default file list.
     pub fn with_files(files: Option<Vec<String>>, workspace_dir: PathBuf) -> Self {
-        let files = match files {
-            Some(f) if !f.is_empty() => f.into_iter()
-                .map(|name| BootstrapFile::optional(&name))
-                .collect(),
-            _ => {
-                // Fall back to defaults
-                return Self::with_default_files_with_workspace(workspace_dir);
-            }
-        };
+        let files = files
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| BootstrapFile::optional(&name))
+            .collect();
 
         Self {
             workspace_dir,
@@ -272,34 +269,28 @@ mod tests {
     }
 
     #[test]
-    fn test_bootstrap_config_with_files_empty_uses_defaults() {
+    fn test_bootstrap_config_with_files_empty_uses_empty() {
         let tmp = TempDir::new().unwrap();
 
-        // Create default files
-        std::fs::write(tmp.path().join("AGENTS.md"), "# Agents").unwrap();
-
-        // Test with empty list falls back to defaults
+        // Test with empty list uses empty file list (no fallback)
         let config = BootstrapConfig::with_files(Some(vec![]), tmp.path().to_path_buf());
 
-        // Should use default files
-        assert_eq!(config.files.len(), 6); // Default file list
+        // Should use empty file list
+        assert_eq!(config.files.len(), 0);
 
         let injected = inject_bootstrap_files(&config);
-        assert!(injected.sections.iter().any(|s| s.name == "AGENTS"));
+        assert_eq!(injected.sections.len(), 0);
     }
 
     #[test]
-    fn test_bootstrap_config_with_files_none_uses_defaults() {
+    fn test_bootstrap_config_with_files_none_uses_empty() {
         let tmp = TempDir::new().unwrap();
 
-        // Create default files
-        std::fs::write(tmp.path().join("AGENTS.md"), "# Agents").unwrap();
-
-        // Test with None falls back to defaults
+        // Test with None uses empty file list (no fallback)
         let config = BootstrapConfig::with_files(None, tmp.path().to_path_buf());
 
-        // Should use default files
-        assert_eq!(config.files.len(), 6); // Default file list
+        // Should use empty file list
+        assert_eq!(config.files.len(), 0);
     }
 
     #[test]
