@@ -61,7 +61,7 @@ $sessionId = $jsonOutput.sessions[0].session_id
 
 # print the session jsonl
 Write-Host "`nSession JSONL:" -ForegroundColor Cyan
-cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl" | Select-Object -Last 2
+cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl" | Select-Object -Last 3
 
 # Cleanup
 Write-Host "`n========================================" -ForegroundColor Cyan
