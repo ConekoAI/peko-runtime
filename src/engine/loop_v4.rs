@@ -1364,11 +1364,20 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
     // Load skills from the skills directory
     let skills = load_agent_skills(agent.name());
 
+    // Extract custom bootstrap files from agent config if specified
+    let bootstrap_files = agent
+        .config
+        .prompt
+        .as_ref()
+        .and_then(|p| p.bootstrap.as_ref())
+        .and_then(|b| b.files.clone());
+
     SystemPromptBuilder::new(agent.name())
         .with_mode(PromptMode::Full)
         .with_workspace(&workspace_dir)
         .with_tools(tools.to_vec())
         .with_skills(skills)
+        .with_bootstrap_files(bootstrap_files)
         .build()
 }
 

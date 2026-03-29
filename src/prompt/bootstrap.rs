@@ -15,6 +15,13 @@ pub struct BootstrapConfig {
 
 impl Default for BootstrapConfig {
     fn default() -> Self {
+        Self::with_default_files()
+    }
+}
+
+impl BootstrapConfig {
+    /// Create config with default bootstrap files
+    pub fn with_default_files() -> Self {
         Self {
             workspace_dir: PathBuf::from("."),
             max_chars_per_file: 20_000, // Match OpenClaw default
@@ -26,6 +33,43 @@ impl Default for BootstrapConfig {
                 BootstrapFile::optional("USER.md"),     // User info
                 BootstrapFile::optional("MEMORY.md"),   // Long-term memory
                                                         // Note: HEARTBEAT.md is NOT injected - it's read proactively on heartbeat polls
+            ],
+        }
+    }
+
+    /// Create config with a custom list of files (all treated as optional)
+    /// 
+    /// If `files` is empty or None, falls back to default files.
+    pub fn with_files(files: Option<Vec<String>>, workspace_dir: PathBuf) -> Self {
+        let files = match files {
+            Some(f) if !f.is_empty() => f.into_iter()
+                .map(|name| BootstrapFile::optional(&name))
+                .collect(),
+            _ => {
+                // Fall back to defaults
+                return Self::with_default_files_with_workspace(workspace_dir);
+            }
+        };
+
+        Self {
+            workspace_dir,
+            max_chars_per_file: 20_000,
+            files,
+        }
+    }
+
+    /// Create config with default files and specified workspace
+    fn with_default_files_with_workspace(workspace_dir: PathBuf) -> Self {
+        Self {
+            workspace_dir,
+            max_chars_per_file: 20_000,
+            files: vec![
+                BootstrapFile::required("AGENTS.md"),
+                BootstrapFile::optional("SOUL.md"),
+                BootstrapFile::optional("TOOLS.md"),
+                BootstrapFile::optional("IDENTITY.md"),
+                BootstrapFile::optional("USER.md"),
+                BootstrapFile::optional("MEMORY.md"),
             ],
         }
     }
@@ -111,8 +155,8 @@ pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
                 });
             }
             Err(_) => {
-                // Optional file missing - skip silently
-                debug!("Optional bootstrap file not found: {}", file_def.name);
+                // Optional file missing - log warning
+                warn!("Bootstrap file not found: {}", file_def.name);
             }
         }
     }
@@ -198,5 +242,78 @@ mod tests {
         assert_eq!(injected.sections.len(), 1);
         assert!(injected.sections[0].truncated);
         assert!(injected.sections[0].content.ends_with("..."));
+    }
+
+    #[test]
+    fn test_bootstrap_config_with_custom_files() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create custom files
+        std::fs::write(tmp.path().join("CUSTOM.md"), "# Custom").unwrap();
+        std::fs::write(tmp.path().join("ANOTHER.md"), "# Another").unwrap();
+
+        // Test with custom file list
+        let config = BootstrapConfig::with_files(
+            Some(vec!["CUSTOM.md".to_string(), "ANOTHER.md".to_string()]),
+            tmp.path().to_path_buf(),
+        );
+
+        assert_eq!(config.files.len(), 2);
+        assert_eq!(config.files[0].name, "CUSTOM.md");
+        assert_eq!(config.files[1].name, "ANOTHER.md");
+        // All custom files should be optional
+        assert!(!config.files[0].required);
+        assert!(!config.files[1].required);
+
+        let injected = inject_bootstrap_files(&config);
+        assert_eq!(injected.sections.len(), 2);
+        assert!(injected.sections.iter().any(|s| s.name == "CUSTOM"));
+        assert!(injected.sections.iter().any(|s| s.name == "ANOTHER"));
+    }
+
+    #[test]
+    fn test_bootstrap_config_with_files_empty_uses_defaults() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create default files
+        std::fs::write(tmp.path().join("AGENTS.md"), "# Agents").unwrap();
+
+        // Test with empty list falls back to defaults
+        let config = BootstrapConfig::with_files(Some(vec![]), tmp.path().to_path_buf());
+
+        // Should use default files
+        assert_eq!(config.files.len(), 6); // Default file list
+
+        let injected = inject_bootstrap_files(&config);
+        assert!(injected.sections.iter().any(|s| s.name == "AGENTS"));
+    }
+
+    #[test]
+    fn test_bootstrap_config_with_files_none_uses_defaults() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create default files
+        std::fs::write(tmp.path().join("AGENTS.md"), "# Agents").unwrap();
+
+        // Test with None falls back to defaults
+        let config = BootstrapConfig::with_files(None, tmp.path().to_path_buf());
+
+        // Should use default files
+        assert_eq!(config.files.len(), 6); // Default file list
+    }
+
+    #[test]
+    fn test_bootstrap_custom_files_missing_logs_warning() {
+        let tmp = TempDir::new().unwrap();
+
+        // Don't create any files - all missing
+        let config = BootstrapConfig::with_files(
+            Some(vec!["MISSING1.md".to_string(), "MISSING2.md".to_string()]),
+            tmp.path().to_path_buf(),
+        );
+
+        let injected = inject_bootstrap_files(&config);
+        // All files missing, so no sections injected
+        assert_eq!(injected.sections.len(), 0);
     }
 }

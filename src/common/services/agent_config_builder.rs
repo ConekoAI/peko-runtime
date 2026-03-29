@@ -12,7 +12,7 @@
 
 use crate::common::paths::PathResolver;
 use crate::common::services::auth_resolver::AuthResolver;
-use crate::types::agent::AgentConfig;
+use crate::types::agent::{AgentConfig, BootstrapFileConfig, PromptConfig, PromptMode};
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use std::collections::HashMap;
 
@@ -207,6 +207,23 @@ pub fn build_default_config(
             max_retries: 3,
             retry_delay_ms: 1000,
         },
+        // Include default prompt configuration with bootstrap files
+        prompt: Some(PromptConfig {
+            mode: PromptMode::Full,
+            custom_prompt: None,
+            extra_sections: vec![],
+            bootstrap: Some(BootstrapFileConfig {
+                max_chars_per_file: 20_000,
+                files: Some(vec![
+                    "AGENTS.md".to_string(),
+                    "SOUL.md".to_string(),
+                    "TOOLS.md".to_string(),
+                    "IDENTITY.md".to_string(),
+                    "USER.md".to_string(),
+                    "MEMORY.md".to_string(),
+                ]),
+            }),
+        }),
         // Use defaults for the rest
         ..Default::default()
     }
