@@ -133,7 +133,6 @@ pub struct UsageStats {
 pub struct SessionStatusResult {
     pub session_id: String,
     pub agent_name: String,
-    pub model: String,
     pub created_at: String,
     pub last_activity: String,
     /// Current timestamp in ISO 8601 format (UTC)
@@ -318,7 +317,6 @@ impl Tool for SessionStatusTool {
                 SessionStatusResult {
                     session_id: session_id.clone(),
                     agent_name: "unknown".to_string(),
-                    model: "default".to_string(),
                     created_at: chrono::Utc::now().to_rfc3339(),
                     last_activity: chrono::Utc::now().to_rfc3339(),
                     timestamp_utc: String::new(),
@@ -439,7 +437,6 @@ impl SessionRegistry for AgentSessionRegistry {
         Ok(SessionStatusResult {
             session_id: metadata.session_id,
             agent_name: metadata.agent_name,
-            model: metadata.model.unwrap_or_default(),
             created_at: chrono::DateTime::from_timestamp_millis(metadata.created_at as i64)
                 .map(|dt| dt.to_rfc3339())
                 .unwrap_or_default(),
@@ -592,7 +589,6 @@ mod tests {
         let status = SessionStatusResult {
             session_id: "abc123".to_string(),
             agent_name: "test-agent".to_string(),
-            model: "kimi-k2.5".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             timestamp_utc: "2024-01-01T02:00:00Z".to_string(),
@@ -663,7 +659,6 @@ mod tests {
 
         let status_result: SessionStatusResult = serde_json::from_value(result).unwrap();
         assert_eq!(status_result.session_id, "abc123");
-        assert_eq!(status_result.model, "kimi-k2.5");
         assert_eq!(status_result.usage.context_window, 1500);
         assert_eq!(status_result.peer_type, Some("user".to_string()));
         assert_eq!(status_result.peer_id, Some("alice".to_string()));
@@ -677,7 +672,6 @@ mod tests {
         let status = SessionStatusResult {
             session_id: "current123".to_string(),
             agent_name: "main".to_string(),
-            model: "kimi-k2.5".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             last_activity: "2024-01-01T01:00:00Z".to_string(),
             timestamp_utc: "2024-01-01T02:00:00Z".to_string(),

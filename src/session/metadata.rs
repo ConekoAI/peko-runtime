@@ -31,11 +31,6 @@ pub struct SessionMetadata {
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
     pub trigger: String,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub channel: Option<String>,
-    pub recipient: Option<String>,
-    pub cwd: Option<String>,
     /// Peer type ("user" or "agent")
     pub peer_type: Option<String>,
     /// Peer ID
@@ -68,11 +63,6 @@ impl SessionMetadata {
             title: None,
             parent_session_id: None,
             trigger: "user".to_string(),
-            provider: None,
-            model: None,
-            channel: None,
-            recipient: None,
-            cwd: None,
             peer_type: None,
             peer_id: None,
         }
@@ -107,11 +97,6 @@ impl SessionMetadata {
             title: entry.title,
             parent_session_id: entry.parent_session_id,
             trigger: entry.trigger,
-            provider: entry.provider,
-            model: entry.model,
-            channel: entry.channel,
-            recipient: entry.recipient,
-            cwd: entry.cwd,
             peer_type: entry.peer_type,
             peer_id: entry.peer_id,
         }
@@ -133,11 +118,6 @@ impl SessionMetadata {
             title: self.title,
             parent_session_id: self.parent_session_id,
             trigger: self.trigger,
-            provider: self.provider,
-            model: self.model,
-            channel: self.channel,
-            recipient: self.recipient,
-            cwd: self.cwd,
             peer_type: self.peer_type,
             peer_id: self.peer_id,
         }
@@ -182,13 +162,6 @@ impl SessionMetadata {
         self.touch();
     }
 
-    /// Set model information
-    pub fn set_model(&mut self, provider: impl Into<String>, model: impl Into<String>) {
-        self.provider = Some(provider.into());
-        self.model = Some(model.into());
-        self.touch();
-    }
-
     /// Set title
     pub fn set_title(&mut self, title: Option<impl Into<String>>) {
         self.title = title.map(Into::into);
@@ -198,11 +171,6 @@ impl SessionMetadata {
     /// Set trigger
     pub fn set_trigger(&mut self, trigger: impl Into<String>) {
         self.trigger = trigger.into();
-    }
-
-    /// Set working directory
-    pub fn set_cwd(&mut self, cwd: Option<impl Into<String>>) {
-        self.cwd = cwd.map(Into::into);
     }
 }
 

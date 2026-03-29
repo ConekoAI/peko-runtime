@@ -32,7 +32,6 @@
 //! | Branch session | `SessionManager::branch_session*()` | Internally uses handles |
 //! | Read metadata (lightweight) | `SessionManager::get_session_metadata()` | Direct controller access |
 //! | Record token usage | `SessionHandle::record_usage()` | Requires valid handle |
-//! | Set model | `SessionHandle::set_model()` | Requires valid handle |
 //! | Add messages | `SessionHandle::add_*()` | Requires valid handle |
 //!
 //! # Single Point of Truth
@@ -309,17 +308,6 @@ impl SessionHandle {
             .await
     }
 
-    /// Set model information (via shared controller)
-    pub async fn set_model(&self, provider: &str, model: &str) -> Result<()> {
-        let mut controller = self.metadata.write().await;
-        let mut metadata = match controller.get_metadata_fast(&self.session_id).await? {
-            Some(m) => m,
-            None => return Err(anyhow::anyhow!("Session {} not found", self.session_id)),
-        };
-        metadata.set_model(provider, model);
-        controller.update_metadata(metadata).await
-    }
-
     /// Sync metadata from JSONL (source of truth) (via shared controller)
     ///
     /// This should be called at the end of an engine turn to update
@@ -349,7 +337,6 @@ pub struct SessionCreateOptions {
     pub parent_session_id: Option<String>,
     pub title: Option<String>,
     pub trigger: String,
-    pub cwd: Option<String>,
     /// Specific session ID to use (if not provided, a UUID will be generated)
     pub session_id: Option<String>,
 }
@@ -372,11 +359,6 @@ impl SessionCreateOptions {
 
     pub fn with_trigger(mut self, trigger: impl Into<String>) -> Self {
         self.trigger = trigger.into();
-        self
-    }
-
-    pub fn with_cwd(mut self, cwd: impl Into<String>) -> Self {
-        self.cwd = Some(cwd.into());
         self
     }
 
@@ -811,11 +793,6 @@ impl SessionManager {
             metadata.title = Some(title);
         }
         metadata.trigger = options.trigger;
-        metadata.cwd = options.cwd.or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-        });
 
         // 3. Store metadata (via shared controller)
         self.metadata_controller
@@ -2151,22 +2128,10 @@ mod tests {
         handle.record_usage(1000, 100, 50).await.unwrap();
 
         // Get metadata via handle - should see the updated tokens
-        let metadata1 = handle.get_metadata().await.unwrap();
-        assert_eq!(metadata1.context_window, 1000);
-        assert_eq!(metadata1.total_input_tokens, 100);
-        assert_eq!(metadata1.total_output_tokens, 50);
-
-        // Set model via handle
-        handle.set_model("openai", "gpt-4").await.unwrap();
-
-        // Get metadata again - should see the updated model
-        let metadata2 = handle.get_metadata().await.unwrap();
-        assert_eq!(metadata2.provider, Some("openai".to_string()));
-        assert_eq!(metadata2.model, Some("gpt-4".to_string()));
-
-        // Metadata should still have the tokens
-        assert_eq!(metadata2.total_input_tokens, 100);
-        assert_eq!(metadata2.total_output_tokens, 50);
+        let metadata = handle.get_metadata().await.unwrap();
+        assert_eq!(metadata.context_window, 1000);
+        assert_eq!(metadata.total_input_tokens, 100);
+        assert_eq!(metadata.total_output_tokens, 50);
     }
 
     #[tokio::test]

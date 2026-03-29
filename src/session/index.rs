@@ -45,11 +45,6 @@ pub struct SessionEntry {
     pub title: Option<String>,
     pub parent_session_id: Option<String>,
     pub trigger: String,
-    pub provider: Option<String>,
-    pub model: Option<String>,
-    pub channel: Option<String>,
-    pub recipient: Option<String>,
-    pub cwd: Option<String>,
     /// Peer type ("user" or "agent") - for session identity restoration
     pub peer_type: Option<String>,
     /// Peer ID - for session identity restoration
@@ -79,11 +74,6 @@ impl SessionEntry {
             title: None,
             parent_session_id: None,
             trigger: "user".to_string(),
-            provider: None,
-            model: None,
-            channel: None,
-            recipient: None,
-            cwd: None,
             peer_type: None,
             peer_id: None,
         }
