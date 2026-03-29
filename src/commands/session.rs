@@ -39,8 +39,8 @@ use std::path::PathBuf;
 ///   # Create a branch of a session (offline)
 ///   pekobot session branch myagent sess_xxx --label "experiment"
 ///
-///   # Delete a session (offline)
-///   pekobot session delete myagent sess_xxx
+///   # Remove a session (offline)
+///   pekobot session remove myagent sess_xxx
 ///
 ///   # Switch active session (offline, updates preference)
 ///   pekobot session switch myagent sess_xxx
@@ -87,8 +87,8 @@ pub enum SessionCommands {
         label: Option<String>,
     },
 
-    /// Delete a session (offline - removes session files)
-    Delete {
+    /// Remove a session (offline - removes session files)
+    Remove {
         /// Agent name or team/agent format
         agent: String,
         /// Session ID to delete
@@ -159,7 +159,7 @@ pub async fn handle_session(
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
             branch_session(paths, team, agent_name, &session_id, label, json).await
         }
-        SessionCommands::Delete {
+        SessionCommands::Remove {
             agent,
             session_id,
             team,

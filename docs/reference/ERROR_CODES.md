@@ -197,13 +197,13 @@ pekobot team delete <team-id> --force
 ```bash
 # Option 1: Stop the instance first
 pekobot stop <instance-id>
-pekobot session delete <session-id>
+pekobot session remove <session-id>
 
 # Option 2: Switch to a different session
 pekobot chat <instance-id> "Hello" --session <other-session-id>
 
 # Option 3: Force delete
-pekobot session delete <session-id> --force
+pekobot session remove <session-id> --force
 ```
 
 ---

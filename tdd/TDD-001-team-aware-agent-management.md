@@ -214,7 +214,7 @@ pekobot session list <agent> --team <team>
 
 pekobot session show <team>/<agent> <session_id> [--history]
 pekobot session branch <team>/<agent> <session_id> [--label <label>]
-pekobot session delete <team>/<agent> <session_id> [--force]
+pekobot session remove <team>/<agent> <session_id> [--force]
 pekobot session switch <team>/<agent> <session_id>
 ```
 

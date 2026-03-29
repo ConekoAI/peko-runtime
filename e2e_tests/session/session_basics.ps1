@@ -88,12 +88,21 @@ pekobot session list $agentName 2>&1
 # Delete the original session
 if ($sessionId) {
     Write-Host "`nDeleting original session..." -ForegroundColor Cyan
-    $output = pekobot session delete $agentName $sessionId --force 2>&1
+    $output = pekobot session remove $agentName $sessionId --force 2>&1
     Write-Host $output
 }
 
-# Final session list - should show 2 sessions
+# session list - should show 2 sessions
 Write-Host "`nFinal session list (should show 2 sessions):" -ForegroundColor Cyan
+pekobot session list $agentName 2>&1
+
+
+# send a message to the agent with --new flag to start a new session
+Write-Host "`nSending message without --new flag..." -ForegroundColor Cyan
+pekobot send $agentName "hi" 2>&1
+
+# list sessions for the agent - should show 3 sessions
+Write-Host "`nSession list (should show 3 sessions):" -ForegroundColor Cyan
 pekobot session list $agentName 2>&1
 
 # Cleanup
