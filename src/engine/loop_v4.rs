@@ -521,13 +521,18 @@ impl AgenticLoopV4 {
 
             let response = if self.provider.supports_native_tools() {
                 // Use native tool calling
+                info!("Calling chat_with_tools with {} messages and {} tool definitions", messages.len(), tool_defs.len());
                 self.provider
                     .chat_with_tools(&messages, &tool_defs, &options)
                     .await?
             } else {
                 // Fallback to legacy text-based approach
+                info!("Using fallback chat (provider doesn't support native tools)");
                 self.fallback_chat_with_tools(&messages, "").await?
             };
+            
+            info!("Received response: stop_reason={:?}, content_blocks={}, tool_calls={}", 
+                  response.stop_reason, response.content.len(), response.tool_calls.len());
 
             // Accumulate usage
             total_usage.input += response.usage.input;
@@ -797,14 +802,17 @@ impl AgenticLoopV4 {
 
     /// Build tool definitions from tool registry
     fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools
+        let defs: Vec<ToolDefinition> = self.tools
             .iter()
             .map(|tool| ToolDefinition {
                 name: tool.name().to_string(),
                 description: tool.llm_description(),
                 parameters: tool.parameters(),
             })
-            .collect()
+            .collect();
+        
+        info!("Building {} tool definitions: {:?}", defs.len(), defs.iter().map(|d| &d.name).collect::<Vec<_>>());
+        defs
     }
 
     /// Get the task manager
@@ -1042,10 +1050,13 @@ impl AgenticLoopV4 {
                 crate::engine::StreamOrchestrator::new(&run_id, streaming_config.clone());
 
             // Get streaming response
+            info!("Calling stream_with_tools with {} messages and {} tool definitions", messages.len(), tool_defs.len());
             let mut stream = self
                 .provider
                 .stream_with_tools(&messages, &tool_defs, &options)
                 .await?;
+            
+            info!("Stream started, processing events...");
 
             // Process stream events
             let mut accumulated_text = String::new();
@@ -1060,6 +1071,7 @@ impl AgenticLoopV4 {
                         stream_event_count += 1;
                         match result {
                             Ok(stream_event) => {
+                                debug!("Received stream event #{}: {:?}", stream_event_count, stream_event);
                                 // Process through orchestrator
                                 let agentic_events = orchestrator.process(stream_event.clone());
                                 for event in agentic_events {
@@ -1119,6 +1131,9 @@ impl AgenticLoopV4 {
             for event in final_events {
                 on_event(event);
             }
+            
+            info!("Stream complete: {} events, text_len={}, tool_calls={}, stop_reason={:?}", 
+                  stream_event_count, accumulated_text.len(), tool_calls.len(), stop_reason);
 
             // Accumulate this iteration's usage
             total_usage.input += iteration_usage.input;
@@ -1318,6 +1333,8 @@ impl AgenticLoopV4 {
 /// Build system prompt from agent and tools using `SystemPromptBuilder`
 /// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.) and skills
 fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
+    info!("Building system prompt with {} tools: {:?}", tools.len(), tools.iter().map(|t| t.name()).collect::<Vec<_>>());
+    
     // Use configured workspace if specified, otherwise use default with team
     let workspace_dir = agent
         .config

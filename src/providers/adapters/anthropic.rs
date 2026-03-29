@@ -2,7 +2,7 @@
 //!
 //! Handles conversion between unified types and Anthropic Messages API format.
 
-use super::extract_text_content;
+use super::{extract_text_content, ToolCallAccumulator};
 use crate::providers::transport::AuthConfig;
 use crate::providers::types::*;
 use anyhow::{Context, Result};
@@ -19,6 +19,8 @@ pub struct AnthropicAdapter {
     extra_headers: Vec<(String, String)>,
     /// Accumulates input tokens from message_start for usage tracking
     pending_input_tokens: Arc<Mutex<Option<u32>>>,
+    /// Accumulates tool call parts during streaming
+    tool_call_accumulator: ToolCallAccumulator,
 }
 
 impl AnthropicAdapter {
@@ -29,6 +31,7 @@ impl AnthropicAdapter {
             base_url: "https://api.anthropic.com".to_string(),
             extra_headers: vec![("anthropic-version".to_string(), "2023-06-01".to_string())],
             pending_input_tokens: Arc::new(Mutex::new(None)),
+            tool_call_accumulator: ToolCallAccumulator::new(),
         }
     }
 
@@ -271,11 +274,14 @@ impl super::ApiAdapter for AnthropicAdapter {
     }
 
     fn parse_sse_event(&self, data: &str) -> Result<Option<StreamEvent>> {
+        debug!("Parsing Anthropic SSE event: {}", data);
         let event: AnthropicSseEvent =
             serde_json::from_str(data).context("Failed to parse Anthropic SSE event")?;
 
         match event.event_type.as_deref() {
             Some("message_start") => {
+                // Clear accumulator at start of new stream
+                self.tool_call_accumulator.reset();
                 // Store input tokens for later combination with output tokens
                 if let Some(usage) = event.message.and_then(|m| m.usage) {
                     *self.pending_input_tokens.lock().unwrap() = Some(usage.input_tokens);
@@ -290,7 +296,24 @@ impl super::ApiAdapter for AnthropicAdapter {
                     let idx = event.index.unwrap_or(0) as usize;
                     match block.block_type.as_str() {
                         "text" => Ok(Some(StreamEvent::TextStart { content_index: idx })),
-                        "tool_use" => Ok(Some(StreamEvent::ToolCallStart { content_index: idx })),
+                        "tool_use" => {
+                            // Tool use start - store id and name via accumulator
+                            if let (Some(id), Some(name)) = (block.id, block.name) {
+                                // Only store input if it's non-empty and not just {}
+                                let input_str = block.input.and_then(|v| {
+                                    let s = v.to_string();
+                                    if s.is_empty() || s == "{}" {
+                                        None
+                                    } else {
+                                        Some(s)
+                                    }
+                                });
+                                let _ = self.tool_call_accumulator.accumulate(
+                                    idx, Some(id), Some(name), input_str
+                                );
+                            }
+                            Ok(Some(StreamEvent::ToolCallStart { content_index: idx }))
+                        }
                         "thinking" => Ok(Some(StreamEvent::ThinkingStart { content_index: idx })),
                         _ => Ok(None),
                     }
@@ -312,9 +335,19 @@ impl super::ApiAdapter for AnthropicAdapter {
                         }
                         Some("input_json_delta") => {
                             if let Some(partial) = delta.partial_json {
+                                // Accumulate arguments and check if complete
+                                let partial_clone = partial.clone();
+                                if let Some(complete_tool) = self.tool_call_accumulator.accumulate(
+                                    idx, None, None, Some(partial)
+                                ) {
+                                    return Ok(Some(StreamEvent::ToolCallEnd {
+                                        content_index: idx,
+                                        tool_call: complete_tool,
+                                    }));
+                                }
                                 return Ok(Some(StreamEvent::ToolCallDelta {
                                     content_index: idx,
-                                    delta: partial,
+                                    delta: partial_clone,
                                 }));
                             }
                         }
@@ -332,7 +365,14 @@ impl super::ApiAdapter for AnthropicAdapter {
                 Ok(None)
             }
             Some("content_block_stop") => {
-                // Content block end - would need to track accumulated content
+                // Content block end - finalize any pending tool calls for this index
+                let idx = event.index.unwrap_or(0) as usize;
+                if let Some(tool_call) = self.tool_call_accumulator.finalize(idx) {
+                    return Ok(Some(StreamEvent::ToolCallEnd {
+                        content_index: idx,
+                        tool_call,
+                    }));
+                }
                 Ok(None)
             }
             Some("message_delta") => {
@@ -359,9 +399,13 @@ impl super::ApiAdapter for AnthropicAdapter {
                     Ok(None)
                 }
             }
-            Some("message_stop") => Ok(Some(StreamEvent::Done {
-                stop_reason: StopReason::Stop,
-            })),
+            Some("message_stop") => {
+                // Clear accumulator at end of stream
+                self.tool_call_accumulator.reset();
+                Ok(Some(StreamEvent::Done {
+                    stop_reason: StopReason::Stop,
+                }))
+            }
             _ => Ok(None),
         }
     }
@@ -480,6 +524,12 @@ struct AnthropicSseEvent {
 struct AnthropicContentBlockInfo {
     #[serde(rename = "type")]
     block_type: String,
+    /// Tool call ID (for tool_use blocks)
+    id: Option<String>,
+    /// Tool name (for tool_use blocks)
+    name: Option<String>,
+    /// Tool input (for tool_use blocks)
+    input: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]

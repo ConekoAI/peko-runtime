@@ -147,20 +147,9 @@ impl SystemPromptBuilder {
             }
 
             lines.push("### Tool Use Guidelines".to_string());
-            lines.push("- Think step by step. When you need to use a tool, output JSON with content blocks.".to_string());
-            lines.push("- For thinking/reasoning, use: `thinking` content block".to_string());
-            lines.push(
-                "- For tool calls, use: `tool_call` content block with id, name, and arguments"
-                    .to_string(),
-            );
-            lines.push(
-                "- You can call multiple tools in parallel by including multiple tool_call blocks."
-                    .to_string(),
-            );
-            lines.push(
-                "- When you have the final answer, provide it naturally in a text block."
-                    .to_string(),
-            );
+            lines.push("- Think step by step. Use available tools when needed to accomplish tasks.".to_string());
+            lines.push("- Multiple tools can be called in parallel if they are independent.".to_string());
+            lines.push("- When you have the final answer, provide it directly without tool calls.".to_string());
         }
         lines.push(String::new());
 

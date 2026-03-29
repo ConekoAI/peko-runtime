@@ -9,6 +9,8 @@ use crate::providers::transport::AuthConfig;
 use crate::providers::types::*;
 use anyhow::Result;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 pub mod anthropic;
 pub mod compat;
@@ -17,6 +19,134 @@ pub mod openai;
 pub use anthropic::AnthropicAdapter;
 pub use compat::OpenAiCompatibleAdapter;
 pub use openai::OpenAiAdapter;
+
+/// Accumulates partial tool call data during streaming across multiple SSE events.
+///
+/// This component handles the stateful accumulation of tool call parts (id, name, arguments)
+/// that arrive in separate chunks from streaming LLM responses. It provides a clean
+/// separation between event parsing (adapter responsibility) and state accumulation.
+#[derive(Debug, Clone)]
+pub struct ToolCallAccumulator {
+    /// Maps content index to partial tool call data
+    buffer: Arc<Mutex<HashMap<usize, PartialToolCall>>>,
+}
+
+/// Internal state for a tool call being accumulated
+#[derive(Debug, Default)]
+struct PartialToolCall {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+impl ToolCallAccumulator {
+    /// Create a new empty accumulator
+    pub fn new() -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Reset the accumulator, clearing all pending tool calls.
+    /// Call this at the start of a new stream.
+    pub fn reset(&self) {
+        if let Ok(mut buffer) = self.buffer.lock() {
+            buffer.clear();
+        }
+    }
+
+    /// Accumulate a partial tool call part and return the complete tool call if finished.
+    ///
+    /// # Arguments
+    /// * `index` - The content index (position) of this tool call
+    /// * `id` - Tool call ID (usually provided in first chunk)
+    /// * `name` - Tool name (usually provided in first chunk)
+    /// * `arguments` - Partial JSON arguments (accumulated across chunks)
+    ///
+    /// # Returns
+    /// * `Some(ContentBlock::ToolCall)` when all parts are received and JSON is valid
+    /// * `None` if still accumulating or on error
+    pub fn accumulate(
+        &self,
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments: Option<String>,
+    ) -> Option<ContentBlock> {
+        if let Ok(mut buffer) = self.buffer.lock() {
+            let entry = buffer.entry(index).or_default();
+
+            if let Some(id) = id {
+                entry.id = Some(id);
+            }
+            if let Some(name) = name {
+                entry.name = Some(name);
+            }
+            if let Some(args) = arguments {
+                entry.arguments.push_str(&args);
+            }
+
+            // Check if we have a complete tool call
+            if let (Some(id), Some(name)) = (&entry.id, &entry.name) {
+                // Try to parse arguments as valid JSON
+                if let Ok(arguments) = serde_json::from_str(&entry.arguments) {
+                    // Remove from buffer and return complete tool call
+                    let complete = ContentBlock::ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments,
+                    };
+                    buffer.remove(&index);
+                    return Some(complete);
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if a tool call at the given index is new (not yet in buffer).
+    pub fn is_new_call(&self, index: usize, id: &str) -> bool {
+        if let Ok(buffer) = self.buffer.lock() {
+            !buffer.contains_key(&index)
+                || buffer
+                    .get(&index)
+                    .and_then(|p| p.id.as_deref())
+                    != Some(id)
+        } else {
+            false
+        }
+    }
+
+    /// Finalize any pending tool call at the given index.
+    /// Call this when receiving a "stop" or "end" event for a content block.
+    ///
+    /// # Returns
+    /// * `Some(ContentBlock::ToolCall)` if a pending tool call exists (even with empty/invalid args)
+    /// * `None` if no pending tool call at this index
+    pub fn finalize(&self, index: usize) -> Option<ContentBlock> {
+        if let Ok(mut buffer) = self.buffer.lock() {
+            if let Some(entry) = buffer.remove(&index) {
+                if let (Some(id), Some(name)) = (entry.id, entry.name) {
+                    // Parse arguments, fallback to empty object if invalid
+                    let arguments = serde_json::from_str(&entry.arguments)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    return Some(ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    });
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Default for ToolCallAccumulator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// API format adapter trait
 ///

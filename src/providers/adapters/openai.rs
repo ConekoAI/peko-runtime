@@ -2,7 +2,7 @@
 //!
 //! Handles conversion between unified types and OpenAI Chat Completions API format.
 
-use super::{extract_text_content, role_to_string};
+use super::{extract_text_content, role_to_string, ToolCallAccumulator};
 use crate::providers::transport::AuthConfig;
 use crate::providers::types::*;
 use anyhow::{Context, Result};
@@ -15,6 +15,8 @@ use tracing::debug;
 pub struct OpenAiAdapter {
     model: String,
     base_url: String,
+    /// Accumulates tool call parts during streaming
+    tool_call_accumulator: ToolCallAccumulator,
 }
 
 impl OpenAiAdapter {
@@ -23,6 +25,7 @@ impl OpenAiAdapter {
         Self {
             model: model.into(),
             base_url: "https://api.openai.com/v1".to_string(),
+            tool_call_accumulator: ToolCallAccumulator::new(),
         }
     }
 
@@ -211,6 +214,8 @@ impl super::ApiAdapter for OpenAiAdapter {
 
     fn parse_sse_event(&self, data: &str) -> Result<Option<StreamEvent>> {
         if data.trim() == "[DONE]" {
+            // Clear accumulator when stream ends
+            self.tool_call_accumulator.reset();
             return Ok(Some(StreamEvent::Done {
                 stop_reason: StopReason::Stop,
             }));
@@ -245,19 +250,41 @@ impl super::ApiAdapter for OpenAiAdapter {
             }
         }
 
-        // Handle tool calls
+        // Handle tool calls - use shared accumulator
         if let Some(tool_calls) = delta.tool_calls {
             for tc in tool_calls {
                 let idx = tc.index as usize;
-                if let Some(id) = tc.id {
-                    // Start of tool call
+                let id = tc.id.clone();
+                let name = tc.function.as_ref().and_then(|f| f.name.clone());
+                let arguments = tc.function.as_ref().and_then(|f| f.arguments.clone());
+                
+                // Check if this is a new tool call
+                let is_new_call = id.as_ref()
+                    .map(|id_str| self.tool_call_accumulator.is_new_call(idx, id_str))
+                    .unwrap_or(false);
+                
+                // If this is the start of a new tool call, emit ToolCallStart first
+                if is_new_call {
+                    let _ = self.tool_call_accumulator.accumulate(idx, id.clone(), name.clone(), arguments.clone());
                     return Ok(Some(StreamEvent::ToolCallStart { content_index: idx }));
                 }
-                if let Some(func) = tc.function {
-                    let delta = func.arguments.unwrap_or_default();
+                
+                // Accumulate parts and check for completion
+                let complete = self.tool_call_accumulator.accumulate(idx, id, name, arguments.clone());
+                
+                // If we have a complete tool call, emit ToolCallEnd
+                if let Some(complete_tool) = complete {
+                    return Ok(Some(StreamEvent::ToolCallEnd {
+                        content_index: idx,
+                        tool_call: complete_tool,
+                    }));
+                }
+                
+                // Still accumulating, emit delta for progress tracking
+                if let Some(args) = arguments {
                     return Ok(Some(StreamEvent::ToolCallDelta {
                         content_index: idx,
-                        delta,
+                        delta: args,
                     }));
                 }
             }
@@ -271,6 +298,12 @@ impl super::ApiAdapter for OpenAiAdapter {
                 "stop" => StopReason::Stop,
                 _ => StopReason::Stop,
             };
+            
+            // If finish reason is tool_calls, clear the accumulator
+            if reason == "tool_calls" {
+                self.tool_call_accumulator.reset();
+            }
+            
             return Ok(Some(StreamEvent::Done { stop_reason }));
         }
 
