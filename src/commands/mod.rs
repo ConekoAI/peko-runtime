@@ -79,6 +79,10 @@ pub struct Cli {
     #[arg(long, global = true, env = "PEKOBOT_DEBUG")]
     pub debug: bool,
 
+    /// User identifier for session isolation
+    #[arg(short = 'U', long, global = true)]
+    pub user: Option<String>,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -177,6 +181,7 @@ pub struct GlobalPaths {
     pub cache_dir: PathBuf,
     resolver: crate::common::paths::PathResolver,
     services: crate::common::services::ServiceRegistry,
+    user: String,
 }
 
 impl GlobalPaths {
@@ -214,12 +219,15 @@ impl GlobalPaths {
 
         let services = crate::common::services::ServiceRegistry::new(resolver.clone());
 
+        let user = cli.user.clone().unwrap_or_else(|| "default".to_string());
+
         Self {
             config_dir,
             data_dir,
             cache_dir,
             resolver,
             services,
+            user,
         }
     }
 
@@ -303,6 +311,12 @@ impl GlobalPaths {
     #[must_use]
     pub fn agent_workspace_with_team(&self, agent: &str, team: &str) -> PathBuf {
         self.resolver.agent_workspace_with_team(agent, team)
+    }
+
+    /// Get the user identifier for session isolation
+    #[must_use]
+    pub fn user(&self) -> &str {
+        &self.user
     }
 }
 

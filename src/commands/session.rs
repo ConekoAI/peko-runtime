@@ -35,8 +35,8 @@ async fn get_active_session_for_cli(
     team: &str,
 ) -> anyhow::Result<Option<String>> {
     let mut manager =
-        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team));
-    let peer = Peer::User(CLI_DEFAULT_PEER_ID.to_string());
+        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team), paths.user());
+    let peer = Peer::User(paths.user().to_string());
     manager.get_active_session_id(&peer).await
 }
 
@@ -165,7 +165,7 @@ pub async fn handle_session(
             all: _,
         } => {
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
-            list_sessions(paths, team, agent_name, json).await
+            list_sessions(paths, team, agent_name, paths.user(), json).await
         }
         SessionCommands::Show {
             agent,
@@ -229,7 +229,7 @@ pub async fn handle_session(
                     }
                 }
             };
-            branch_session(paths, team, agent_name, &resolved_session_id, label, json).await
+            branch_session(paths, team, agent_name, &resolved_session_id, label, paths.user(), json).await
         }
         SessionCommands::Remove {
             agent,
@@ -246,7 +246,7 @@ pub async fn handle_session(
             team,
         } => {
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
-            switch_session(paths, team, agent_name, &session_id, json).await
+            switch_session(paths, team, agent_name, &session_id, paths.user(), json).await
         }
         SessionCommands::Send {
             instance_id,
@@ -314,6 +314,7 @@ async fn list_sessions(
     paths: &GlobalPaths,
     team: &str,
     agent: &str,
+    user: &str,
     json: bool,
 ) -> anyhow::Result<()> {
     let Some(loc) = locate_agent(paths, agent, team) else {
@@ -336,8 +337,8 @@ async fn list_sessions(
 
     // Get active session from peers.json via SessionManager
     let mut manager =
-        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team));
-    let peer = Peer::User(CLI_DEFAULT_PEER_ID.to_string());
+        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team), user);
+    let peer = Peer::User(user.to_string());
     let active_session_id = manager.get_active_session_id(&peer).await.ok().flatten();
 
     if json {
@@ -648,11 +649,12 @@ async fn branch_session(
     agent: &str,
     session_id: &str,
     label: Option<String>,
+    user: &str,
     json: bool,
 ) -> anyhow::Result<()> {
     // Use SessionManager for the branch operation
     let mut manager =
-        crate::session::SessionManager::for_cli(_paths.resolver.clone(), agent, Some(team));
+        crate::session::SessionManager::for_cli(_paths.resolver.clone(), agent, Some(team), user);
 
     // Verify parent session exists
     let _parent_metadata = manager
@@ -779,13 +781,14 @@ async fn switch_session(
     team: &str,
     agent: &str,
     session_id: &str,
+    user: &str,
     json: bool,
 ) -> anyhow::Result<()> {
-    let loc = ensure_sessions_dir(paths, agent, team).await?;
+    let _loc = ensure_sessions_dir(paths, agent, team).await?;
 
     // Create SessionManager to update peer routing
     let mut manager =
-        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team));
+        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team), user);
 
     // Verify session exists
     let _ = manager
@@ -795,8 +798,8 @@ async fn switch_session(
             anyhow::anyhow!("Session '{}' not found for agent '{}'", session_id, agent)
         })?;
 
-    // Switch the active session for the default CLI peer
-    let peer = Peer::User(CLI_DEFAULT_PEER_ID.to_string());
+    // Switch the active session for the specified user peer
+    let peer = Peer::User(user.to_string());
     manager.switch_session(&peer, session_id).await?;
 
     if json {

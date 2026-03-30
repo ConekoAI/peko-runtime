@@ -426,6 +426,8 @@ pub struct SessionManager {
     agent_name: Option<String>,
     /// Path resolver for consistent path resolution
     path_resolver: Option<PathResolver>,
+    /// User identifier for CLI session isolation
+    user: String,
 }
 
 impl SessionManager {
@@ -445,6 +447,7 @@ impl SessionManager {
             sessions_dir: None,
             agent_name: None,
             path_resolver: None,
+            user: "default".to_string(),
         }
     }
 
@@ -483,21 +486,29 @@ impl SessionManager {
     /// * `path_resolver` - The path resolver for consistent path resolution
     /// * `agent_name` - The agent name
     /// * `team` - Optional team name (defaults to "default")
+    /// * `user` - User identifier for session isolation (defaults to "default")
     ///
     /// # Example
     /// ```rust,ignore
     /// let manager = SessionManager::for_cli(
     ///     path_resolver,
     ///     "myagent",
-    ///     Some("myteam")
+    ///     Some("myteam"),
+    ///     "alice"
     /// );
     /// ```
-    pub fn for_cli(path_resolver: PathResolver, agent_name: &str, team: Option<&str>) -> Self {
+    pub fn for_cli(
+        path_resolver: PathResolver,
+        agent_name: &str,
+        team: Option<&str>,
+        user: &str,
+    ) -> Self {
         let sessions_dir = path_resolver.agent_sessions_dir(agent_name, team);
         Self::new()
             .with_sessions_dir_internal(sessions_dir)
             .with_agent_name(agent_name)
             .with_path_resolver_internal(path_resolver)
+            .with_user(user)
     }
 
     /// Initialize with a specific sessions directory (internal use, tests)
@@ -521,6 +532,19 @@ impl SessionManager {
     pub fn with_agent_name(mut self, agent_name: &str) -> Self {
         self.agent_name = Some(agent_name.to_string());
         self
+    }
+
+    /// Set the user identifier for CLI session isolation
+    #[must_use]
+    pub fn with_user(mut self, user: &str) -> Self {
+        self.user = user.to_string();
+        self
+    }
+
+    /// Get the user identifier
+    #[must_use]
+    pub fn user(&self) -> &str {
+        &self.user
     }
 
     /// Get the path resolver if available
@@ -620,7 +644,7 @@ impl SessionManager {
         channel: ChannelType,
         channel_id: &str,
     ) -> Result<ResolvedSession> {
-        let peer = Peer::User(channel_id.to_string());
+        let peer = Peer::User(self.user.clone());
 
         // Derive peer key ONCE and use it consistently
         let peer_key = derive_base_session_key(agent_name, &peer);
@@ -677,7 +701,7 @@ impl SessionManager {
     ) -> Result<(SessionContext, String)> {
         info!("Creating fresh session for agent '{}'", agent_name);
 
-        let peer = Peer::User(channel_id.to_string());
+        let peer = Peer::User(self.user.clone());
 
         // Clear any existing base session for this peer to ensure fresh start
         self.remove_base_session(agent_name, &peer);
@@ -688,6 +712,7 @@ impl SessionManager {
         let session_id = handle.session_id().to_string();
 
         // Create channel overlay on the new base session
+        // Note: channel_id is used for overlay identification, peer is used for session isolation
         let base = handle.base().clone();
         let hybrid = self
             .create_channel_overlay_on_base(base, &peer, channel, channel_id)
@@ -716,7 +741,7 @@ impl SessionManager {
             session_id, agent_name
         );
 
-        let peer = Peer::User(channel_id.to_string());
+        let peer = Peer::User(self.user.clone());
 
         // Open the SPECIFIC session by ID
         let handle = self
@@ -728,6 +753,7 @@ impl SessionManager {
         let base = handle.base().clone();
 
         // Create channel overlay on the opened base session
+        // Note: channel_id is used for overlay identification, peer is used for session isolation
         let hybrid = self
             .create_channel_overlay_on_base(base, &peer, channel, channel_id)
             .await?;
@@ -1713,6 +1739,7 @@ impl SessionManager {
             sessions_dir: self.sessions_dir.clone(),
             agent_name: self.agent_name.clone(),
             path_resolver: self.path_resolver.clone(),
+            user: self.user.clone(),
         }
     }
 }

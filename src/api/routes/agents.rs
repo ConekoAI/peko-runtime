@@ -341,6 +341,7 @@ async fn execute_agent(
                 metadata: std::collections::HashMap::new(),
             }),
         timeout_secs: request.timeout_secs,
+        user: "default".to_string(),
     };
 
     // Execute

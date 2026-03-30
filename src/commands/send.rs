@@ -105,6 +105,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
     // Build message request (same logic as HTTP API)
     let request = MessageRequest::new(agent_name, message)
         .with_team(team)
+        .with_user(paths.user())
         .with_session_opt(args.session.clone())
         .with_new_session(args.new);
 

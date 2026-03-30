@@ -44,6 +44,8 @@ pub struct ExecutionRequest {
     pub context: Option<ExecutionContext>,
     /// Optional timeout override (defaults to service default)
     pub timeout_secs: Option<u64>,
+    /// User identifier for session isolation (defaults to "default")
+    pub user: String,
 }
 
 impl ExecutionRequest {
@@ -59,6 +61,7 @@ impl ExecutionRequest {
             message: message.into(),
             context: None,
             timeout_secs: None,
+            user: "default".to_string(),
         }
     }
 
@@ -102,6 +105,8 @@ pub struct MessageRequest {
     pub new_session: bool,
     /// Timeout in seconds (optional)
     pub timeout_secs: Option<u64>,
+    /// User identifier for session isolation (defaults to "default")
+    pub user: String,
 }
 
 impl MessageRequest {
@@ -114,7 +119,14 @@ impl MessageRequest {
             session_id: None,
             new_session: false,
             timeout_secs: None,
+            user: "default".to_string(),
         }
+    }
+
+    /// Set user for session isolation
+    pub fn with_user(mut self, user: impl Into<String>) -> Self {
+        self.user = user.into();
+        self
     }
 
     /// Set team
@@ -310,6 +322,7 @@ impl StatelessAgentService {
             self.path_resolver.clone(),
             &request.agent_name,
             team.as_deref(),
+            &request.user,
         );
 
         let resolved = session_manager
@@ -333,6 +346,7 @@ impl StatelessAgentService {
             message: request.message,
             context: None,
             timeout_secs: request.timeout_secs,
+            user: request.user.clone(),
         };
 
         // Execute via stateless service
@@ -392,6 +406,7 @@ impl StatelessAgentService {
             self.path_resolver.clone(),
             &request.agent_name,
             team.as_deref(),
+            &request.user,
         );
 
         let resolved = session_manager
@@ -415,6 +430,7 @@ impl StatelessAgentService {
             message: request.message,
             context: None,
             timeout_secs: request.timeout_secs,
+            user: request.user.clone(),
         };
 
         // Get base session for execution
@@ -504,7 +520,7 @@ impl StatelessAgentService {
         // This ensures we write to the correct session file
         let team = Some(config_entry.team.as_str());
         let mut session_manager =
-            SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team);
+            SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team, &request.user);
         
         // Try to open existing session, create if not exists
         let session = match session_manager.open_session(&request.session_id).await? {
@@ -514,7 +530,7 @@ impl StatelessAgentService {
             }
             None => {
                 debug!("Session '{}' not found, creating new", request.session_id);
-                let peer = Peer::User("default".to_string());
+                let peer = Peer::User(request.user.clone());
                 let options = crate::session::SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(&request.session_id);
@@ -649,7 +665,7 @@ impl StatelessAgentService {
         // Open the specific session by ID (same logic as execute_inner)
         let team = Some(config_entry.team.as_str());
         let mut session_manager =
-            SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team);
+            SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team, &request.user);
         
         let session = match session_manager.open_session(&request.session_id).await? {
             Some(handle) => {
@@ -658,7 +674,7 @@ impl StatelessAgentService {
             }
             None => {
                 debug!("Session '{}' not found, creating new for streaming", request.session_id);
-                let peer = Peer::User("default".to_string());
+                let peer = Peer::User(request.user.clone());
                 let options = crate::session::SessionCreateOptions::new()
                     .with_trigger("api")
                     .with_session_id(&request.session_id);
