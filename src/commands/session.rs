@@ -52,12 +52,12 @@ async fn get_active_session_for_cli(
 ///
 ///   # Show active session details with history (offline)
 ///   pekobot session show myagent --history
-///   pekobot session show myagent sess_xxx --history
-///   pekobot session show myteam/myagent sess_xxx --history
+///   pekobot session show myagent --session-id sess_xxx --history
+///   pekobot session show myteam/myagent --session-id sess_xxx --history
 ///
 ///   # Create a branch from the active session (offline)
 ///   pekobot session branch myagent --label "experiment"
-///   pekobot session branch myagent sess_xxx --label "experiment"
+///   pekobot session branch myagent --session-id sess_xxx --label "experiment"
 ///
 ///   # Remove a session (offline)
 ///   pekobot session remove myagent sess_xxx
@@ -81,11 +81,12 @@ pub enum SessionCommands {
 
     /// Show session details and history (offline)
     ///
-    /// If no session_id is provided, shows the active session for the agent.
+    /// If no --session-id is provided, shows the active session for the agent.
     Show {
         /// Agent name or team/agent format
         agent: String,
         /// Session ID (optional, defaults to active session)
+        #[arg(short, long)]
         session_id: Option<String>,
         /// Team to look in (overrides team/ prefix if both provided)
         #[arg(short, long)]
@@ -97,11 +98,12 @@ pub enum SessionCommands {
 
     /// Branch a session (offline - copies session files)
     ///
-    /// If no session_id is provided, branches from the active session.
+    /// If no --session-id is provided, branches from the active session.
     Branch {
         /// Agent name or team/agent format
         agent: String,
         /// Session ID to branch from (optional, defaults to active session)
+        #[arg(short, long)]
         session_id: Option<String>,
         /// Team to look in (overrides team/ prefix if both provided)
         #[arg(short, long)]

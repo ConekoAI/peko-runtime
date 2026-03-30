@@ -80,8 +80,8 @@ $parentMessageCount = $jsonOutput.sessions[0].message_count
 Write-Host "Parent session: $parentSessionId (messages: $parentMessageCount)" -ForegroundColor Green
 
 # Branch from explicit session_id
-Write-Host "`nBranching from explicit session_id..." -ForegroundColor Cyan
-$branchOutput = pekobot session branch $agentName $parentSessionId 2>&1
+Write-Host "`nBranching from explicit --session-id..." -ForegroundColor Cyan
+$branchOutput = pekobot session branch $agentName --session-id $parentSessionId 2>&1
 Write-Output $branchOutput
 
 # Extract branched session ID from output
@@ -145,7 +145,7 @@ Write-Host "TEST 4: Branch with --label" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Branching with label 'mars-research'..." -ForegroundColor Cyan
-$branchOutput = pekobot session branch $agentName $parentSessionId --label "mars-research" 2>&1
+$branchOutput = pekobot session branch $agentName --session-id $parentSessionId --label "mars-research" 2>&1
 Write-Output $branchOutput
 
 $branchOutputStr = $branchOutput | Out-String

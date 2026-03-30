@@ -57,7 +57,7 @@ $jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
 $sessionId = $jsonOutput.sessions[0].session_id
 
 Write-Host "`nHistory for the session ($sessionId):" -ForegroundColor Cyan
-pekobot session show $agentName $sessionId --history 2>&1
+pekobot session show $agentName --session-id $sessionId --history 2>&1
 
 # print the session jsonl
 Write-Host "`nSession JSONL:" -ForegroundColor Cyan

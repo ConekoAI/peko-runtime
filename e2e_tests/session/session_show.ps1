@@ -76,8 +76,8 @@ $sessionId1 = $jsonOutput.sessions[0].session_id
 Write-Host "Created session: $sessionId1" -ForegroundColor Green
 
 # Show session explicitly
-Write-Host "`nShowing session explicitly (with session_id)..." -ForegroundColor Cyan
-$output = pekobot session show $agentName $sessionId1 2>&1
+Write-Host "`nShowing session explicitly (with --session-id)..." -ForegroundColor Cyan
+$output = pekobot session show $agentName --session-id $sessionId1 2>&1
 Write-Output $output
 
 # Verify output contains expected fields
@@ -127,9 +127,9 @@ if ($outputStr -match "Message History" -or $outputStr -match "User" -or $output
     exit 1
 }
 
-# Also test explicit session_id with --history
+# Also test explicit --session-id with --history
 Write-Host "`nShowing specific session with history..." -ForegroundColor Cyan
-$output = pekobot session show $agentName $sessionId1 --history 2>&1
+$output = pekobot session show $agentName --session-id $sessionId1 --history 2>&1
 $outputStr = $output | Out-String
 if ($outputStr -match "Message History") {
     Write-Host "✅ Explicit session_id with --history works" -ForegroundColor Green
@@ -156,10 +156,10 @@ Write-Host "Session 2: $sessionId2" -ForegroundColor Gray
 
 # Verify we can show each session explicitly
 Write-Host "`nShowing session 1 explicitly..." -ForegroundColor Cyan
-$output1 = pekobot session show $agentName $sessionId1 2>&1 | Out-String
+$output1 = pekobot session show $agentName --session-id $sessionId1 2>&1 | Out-String
 
 Write-Host "Showing session 2 explicitly..." -ForegroundColor Cyan
-$output2 = pekobot session show $agentName $sessionId2 2>&1 | Out-String
+$output2 = pekobot session show $agentName --session-id $sessionId2 2>&1 | Out-String
 
 # Verify outputs contain correct session IDs
 if ($output1 -match $sessionId1 -and $output2 -match $sessionId2) {
@@ -223,7 +223,7 @@ if ($jsonOutput.session.session_id -eq $sessionId2) {
 }
 
 Write-Host "Testing JSON output for explicit session..." -ForegroundColor Cyan
-$jsonOutput = pekobot session show $agentName $sessionId1 --json 2>&1 | ConvertFrom-Json
+$jsonOutput = pekobot session show $agentName --session-id $sessionId1 --json 2>&1 | ConvertFrom-Json
 
 if ($jsonOutput.session.session_id -eq $sessionId1) {
     Write-Host "✅ JSON output contains correct explicit session" -ForegroundColor Green

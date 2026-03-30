@@ -73,11 +73,11 @@ $jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
 $sessionId = $jsonOutput.sessions[0].session_id
 
 Write-Host "`nHistory for first session ($sessionId):" -ForegroundColor Cyan
-pekobot session show $agentName $sessionId --history 2>&1
+pekobot session show $agentName --session-id $sessionId --history 2>&1
 
 # Branch the first session
 Write-Host "`nBranching first session..." -ForegroundColor Cyan
-$output = pekobot session branch $agentName $sessionId --label "test branch" 2>&1
+$output = pekobot session branch $agentName --session-id $sessionId --label "test branch" 2>&1
 Write-Output $output
 
 # List sessions - should show 3 sessions
