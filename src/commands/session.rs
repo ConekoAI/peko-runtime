@@ -22,6 +22,24 @@ use clap::Subcommand;
 use serde::Serialize;
 use std::path::PathBuf;
 
+/// Default peer ID for CLI operations
+const CLI_DEFAULT_PEER_ID: &str = "default";
+
+/// Get the active session ID for an agent using CLI default peer
+///
+/// This helper centralizes the logic for resolving the active session
+/// when no specific session ID is provided by the user.
+async fn get_active_session_for_cli(
+    paths: &GlobalPaths,
+    agent: &str,
+    team: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut manager =
+        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team));
+    let peer = Peer::User(CLI_DEFAULT_PEER_ID.to_string());
+    manager.get_active_session_id(&peer).await
+}
+
 /// Session management subcommands
 ///
 /// Sessions store the conversation history with an agent.
@@ -32,11 +50,13 @@ use std::path::PathBuf;
 ///   pekobot session list myagent
 ///   pekobot session list myteam/myagent
 ///
-///   # Show session details with history (offline)
+///   # Show active session details with history (offline)
+///   pekobot session show myagent --history
 ///   pekobot session show myagent sess_xxx --history
 ///   pekobot session show myteam/myagent sess_xxx --history
 ///
-///   # Create a branch of a session (offline)
+///   # Create a branch from the active session (offline)
+///   pekobot session branch myagent --label "experiment"
 ///   pekobot session branch myagent sess_xxx --label "experiment"
 ///
 ///   # Remove a session (offline)
@@ -60,11 +80,13 @@ pub enum SessionCommands {
     },
 
     /// Show session details and history (offline)
+    ///
+    /// If no session_id is provided, shows the active session for the agent.
     Show {
         /// Agent name or team/agent format
         agent: String,
-        /// Session ID
-        session_id: String,
+        /// Session ID (optional, defaults to active session)
+        session_id: Option<String>,
         /// Team to look in (overrides team/ prefix if both provided)
         #[arg(short, long)]
         team: Option<String>,
@@ -74,11 +96,13 @@ pub enum SessionCommands {
     },
 
     /// Branch a session (offline - copies session files)
+    ///
+    /// If no session_id is provided, branches from the active session.
     Branch {
         /// Agent name or team/agent format
         agent: String,
-        /// Session ID to branch from
-        session_id: String,
+        /// Session ID to branch from (optional, defaults to active session)
+        session_id: Option<String>,
         /// Team to look in (overrides team/ prefix if both provided)
         #[arg(short, long)]
         team: Option<String>,
@@ -148,7 +172,30 @@ pub async fn handle_session(
             history,
         } => {
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
-            show_session(paths, team, agent_name, &session_id, history, json).await
+            // Resolve active session if not specified
+            let resolved_session_id = match session_id {
+                Some(id) => id,
+                None => {
+                    match get_active_session_for_cli(paths, agent_name, team).await? {
+                        Some(id) => {
+                            if !json {
+                                println!("📋 Using active session: {}", id);
+                            }
+                            id
+                        }
+                        None => {
+                            return Err(anyhow::anyhow!(
+                                "No active session for agent '{}'. \
+                                 Run 'pekobot session list {}' to see available sessions, \
+                                 or specify a session ID explicitly.",
+                                agent_name,
+                                agent
+                            ));
+                        }
+                    }
+                }
+            };
+            show_session(paths, team, agent_name, &resolved_session_id, history, json).await
         }
         SessionCommands::Branch {
             agent,
@@ -157,7 +204,30 @@ pub async fn handle_session(
             label,
         } => {
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
-            branch_session(paths, team, agent_name, &session_id, label, json).await
+            // Resolve active session if not specified
+            let resolved_session_id = match session_id {
+                Some(id) => id,
+                None => {
+                    match get_active_session_for_cli(paths, agent_name, team).await? {
+                        Some(id) => {
+                            if !json {
+                                println!("🌿 Branching from active session: {}", id);
+                            }
+                            id
+                        }
+                        None => {
+                            return Err(anyhow::anyhow!(
+                                "No active session for agent '{}'. \
+                                 Run 'pekobot session list {}' to see available sessions, \
+                                 or specify a session ID explicitly.",
+                                agent_name,
+                                agent
+                            ));
+                        }
+                    }
+                }
+            };
+            branch_session(paths, team, agent_name, &resolved_session_id, label, json).await
         }
         SessionCommands::Remove {
             agent,
@@ -265,7 +335,7 @@ async fn list_sessions(
     // Get active session from peers.json via SessionManager
     let mut manager =
         crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team));
-    let peer = Peer::User("default".to_string());
+    let peer = Peer::User(CLI_DEFAULT_PEER_ID.to_string());
     let active_session_id = manager.get_active_session_id(&peer).await.ok().flatten();
 
     if json {
@@ -724,7 +794,7 @@ async fn switch_session(
         })?;
 
     // Switch the active session for the default CLI peer
-    let peer = Peer::User("default".to_string());
+    let peer = Peer::User(CLI_DEFAULT_PEER_ID.to_string());
     manager.switch_session(&peer, session_id).await?;
 
     if json {

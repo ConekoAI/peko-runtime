@@ -30,13 +30,6 @@ if (Test-Path $pekobotDir) {
     Remove-Item -Recurse -Force $pekobotDir
     Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
 }
-# Reset pekobot data (Windows)
-$DataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
-if (Test-Path $DataDir) {
-    Remove-Item -Recurse -Force $DataDir
-    Write-Host "Reset data directory" -ForegroundColor Yellow
-}
-
 
 # Set kimi api key
 pekobot auth set kimi $env:KIMI_API_KEY 2>&1 | Out-Null
@@ -47,25 +40,46 @@ $agentName = "testagent"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
+# list agents
+Write-Host "`nAgent list:" -ForegroundColor Cyan
+pekobot agent list 2>&1
 
-# send a message to the agent
+# send a message to the agent (creates first session)
 Write-Host "`nSending first message..." -ForegroundColor Cyan
-pekobot send $agentName "hi, what OS are you running?" 2>&1
-# request the tool call
-Write-Host "`nSending tool call request..." -ForegroundColor Cyan
-pekobot send $agentName "call ls with shell and report results" 2>&1
+pekobot send $agentName "what's USA's capital" 2>&1
 
-# request the tool call
-Write-Host "`nSending tool call request..." -ForegroundColor Cyan
-pekobot send $agentName "try if you can use git" 2>&1
+# send a new message to the agent (start a new session)
+Write-Host "`nSending new message (new session)..." -ForegroundColor Cyan
+pekobot send $agentName "how many legs does a spider have?"--new 2>&1
 
-# Get session id
+# Get session list - should show 1 session with more messages
+Write-Host "`nSession list (should show 2 sessions):" -ForegroundColor Cyan
+pekobot session list $agentName 2>&1
+
+# Get session ids
 $jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
-$sessionId = $jsonOutput.sessions[0].session_id
+$sessionId1 = $jsonOutput.sessions[1].session_id
+$sessionId2 = $jsonOutput.sessions[0].session_id
 
-# print the session jsonl
-Write-Host "`nSession JSONL:" -ForegroundColor Cyan
-cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl" | Select-Object -Last 3
+# switch to first session and send a follow-up message (resumes first session)
+Write-Host "`nSwitching to first session and sending follow-up message..." -ForegroundColor Cyan
+pekobot session switch $agentName $sessionId1 2>&1
+pekobot send $agentName "what about France" 2>&1
+
+# Get session list - should show 2 sessions with updated timestamps
+Write-Host "`nSession list after switching and sending message:" -ForegroundColor Cyan
+pekobot session list $agentName 2>&1
+
+
+# switch to second session and send a follow-up message (resumes second session)
+Write-Host "`nSwitching to second session and sending follow-up message..." -ForegroundColor Cyan
+pekobot session switch $agentName $sessionId2 2>&1
+pekobot send $agentName "what about a crab?" 2>&1
+
+# Get session list - should show 2 sessions with updated timestamps
+Write-Host "`nSession list after switching and sending message:" -ForegroundColor Cyan
+pekobot session list $agentName 2>&1
+
 
 # Cleanup
 Write-Host "`n========================================" -ForegroundColor Cyan
