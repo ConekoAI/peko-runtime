@@ -1,0 +1,47 @@
+{
+  "name": "string_utils",
+  "description": "String manipulation utilities",
+  "llm_description": "Use when you need to manipulate or analyze text strings. Examples: 'Convert to uppercase', 'Count words', 'Reverse text'",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "description": "Operation to perform: uppercase, lowercase, reverse, wordcount, contains",
+        "enum": ["uppercase", "lowercase", "reverse", "wordcount", "contains"]
+      },
+      "text": {
+        "type": "string",
+        "description": "Input text to process"
+      },
+      "substring": {
+        "type": "string",
+        "description": "Substring to search for (only for 'contains' operation)"
+      }
+    },
+    "required": ["operation", "text"]
+  },
+  "reserved_parameters": {
+    "session_id": {
+      "source": {
+        "runtime": {
+          "field": "session_id"
+        }
+      },
+      "description": "Current session ID for audit logging"
+    },
+    "agent_id": {
+      "source": {
+        "runtime": {
+          "field": "agent_id"
+        }
+      },
+      "description": "ID of the calling agent"
+    }
+  },
+  "protocol": {
+    "version": "2.0",
+    "transport": "stdio",
+    "supports_streaming": false
+  }
+}
