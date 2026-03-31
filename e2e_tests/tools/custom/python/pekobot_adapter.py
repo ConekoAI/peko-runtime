@@ -117,12 +117,23 @@ class Tool:
             args = params.get("args", {})
             context_data = params.get("context", {})
             
+            # DEBUG: Log what we received
+            print(f"DEBUG: args={args}", file=sys.stderr)
+            print(f"DEBUG: context_data={context_data}", file=sys.stderr)
+            print(f"DEBUG: reserved={self.reserved}", file=sys.stderr)
+            
             # Merge reserved params into args
             merged_args = dict(args)
             
-            # Inject reserved parameters from context
+            # Inject reserved parameters from args (injected by Pekobot Rust side)
+            # The Rust UniversalToolAdapter injects reserved params into the 'args' object
+            # based on the manifest's reserved_parameters configuration
             for reserved in self.reserved:
-                if reserved in context_data:
+                # Check in args first (new behavior - reserved params merged into args)
+                if reserved in args:
+                    merged_args[reserved] = args[reserved]
+                # Fall back to context for backward compatibility
+                elif reserved in context_data:
                     merged_args[reserved] = context_data[reserved]
             
             # Call handler

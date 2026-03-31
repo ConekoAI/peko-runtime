@@ -64,6 +64,10 @@ impl ToolExecutionContext {
     /// 
     /// Creates a ToolContext with identity fields set for reserved parameter injection.
     pub fn to_tool_context(&self) -> ToolContext {
+        tracing::debug!(
+            "ToolExecutionContext::to_tool_context - agent_id={}, session_id={}, workspace={}",
+            self.agent_id, self.session_id, self.workspace
+        );
         // Create abort signal for this tool execution
         let abort_signal = crate::tools::AbortSignal::new();
         
@@ -128,6 +132,10 @@ impl ToolExecutor {
 
         // Create ToolContext with identity for reserved param injection
         let tool_context = context.to_tool_context();
+        tracing::info!(
+            "ToolExecutor - Created ToolContext: agent_id={:?}, session_id={:?}, workspace={:?}",
+            tool_context.agent_id, tool_context.session_id, tool_context.workspace
+        );
 
         // Execute with panic isolation
         let result = self

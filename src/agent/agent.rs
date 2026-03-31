@@ -168,6 +168,55 @@ impl Agent {
             }
         }
 
+        // Load Universal Tools from workspace tools directory
+        tracing::info!(
+            "Checking for Universal Tools - workspace: {:?}",
+            self.config.workspace
+        );
+        if let Some(ref workspace) = self.config.workspace {
+            let tools_dir = workspace.join("tools");
+            tracing::info!(
+                "Tools directory path: {} (exists: {})",
+                tools_dir.display(),
+                tools_dir.exists()
+            );
+            if tools_dir.exists() {
+                tracing::info!(
+                    "Loading Universal Tools from '{}' for agent '{}'...",
+                    tools_dir.display(),
+                    self.config.name
+                );
+                use crate::tools::universal::load_universal_tools;
+                match load_universal_tools(&tools_dir).await {
+                    Ok(universal_tools) => {
+                        if universal_tools.is_empty() {
+                            tracing::info!("No Universal Tools found in {}", tools_dir.display());
+                        } else {
+                            tracing::info!(
+                                "✅ Agent loaded {} Universal Tools: {:?}",
+                                universal_tools.len(),
+                                universal_tools.iter().map(|t| t.name()).collect::<Vec<_>>()
+                            );
+                            // Convert UniversalToolAdapter to Arc<dyn Tool>
+                            for tool in universal_tools {
+                                tools.push(Arc::new(tool));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("❌ Failed to load Universal Tools for agent: {}", e);
+                        // Continue without Universal Tools
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "No tools directory found at {} for agent '{}'",
+                    tools_dir.display(),
+                    self.config.name
+                );
+            }
+        }
+
         tracing::info!("Total tools available before filtering: {}", tools.len());
 
         // Filter based on agent config whitelist

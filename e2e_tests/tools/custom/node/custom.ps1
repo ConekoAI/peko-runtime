@@ -97,8 +97,8 @@ Write-Host "Copied string and identity tools to agent's tools directory" -Foregr
 $agentConfigPath = "$agentDir/config.toml"
 $agentConfig = Get-Content $agentConfigPath -Raw
 
-# Replace the tools.enabled array to include our custom tools
-$agentConfig = $agentConfig -replace '\[tools\]\s*enabled = \[[^\]]*\]', "[tools]`nenabled = [`"shell`", `"session_status`", `"string_tool`", `"identity_tool`"]"
+# Replace the tools.enabled array to include our custom tools (handle multi-line format)
+$agentConfig = $agentConfig -replace '(?s)\[tools\]\s*enabled = \[.*?\]', "[tools]`nenabled = [`"shell`", `"session_status`", `"string_tool`", `"identity_tool`"]"
 
 $agentConfig | Out-File -FilePath $agentConfigPath -Encoding utf8
 Write-Host "Updated agent config with string_utils and echo_identity tools enabled" -ForegroundColor Green

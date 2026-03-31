@@ -1,5 +1,5 @@
 {
-  "name": "echo_identity",
+  "name": "identity_tool",
   "description": "Echo back the injected identity parameters to verify context injection",
   "llm_description": "Use this tool to verify that identity parameters (agent_id, session_id) are being injected. The tool will return the injected values.",
   "parameters": {

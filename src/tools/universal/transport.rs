@@ -21,15 +21,40 @@ pub struct Transport {
 
 impl Transport {
     /// Spawn a tool and create transport
+    /// 
+    /// Automatically detects script files (.py, .js) and uses appropriate interpreter
     pub async fn spawn(executable: impl AsRef<std::path::Path>) -> Result<Self> {
         let executable = executable.as_ref();
+        let extension = executable.extension().and_then(|e| e.to_str()).unwrap_or("");
+        
+        // Determine command and arguments based on file extension
+        let (cmd, args): (String, Vec<String>) = match extension {
+            "py" => {
+                // Python script - use python/python3
+                let python_cmd = if cfg!(windows) { "python" } else { "python3" };
+                (python_cmd.to_string(), vec![executable.to_string_lossy().to_string()])
+            }
+            "js" => {
+                // Node.js script - use node
+                ("node".to_string(), vec![executable.to_string_lossy().to_string()])
+            }
+            _ => {
+                // Binary executable - run directly
+                (executable.to_string_lossy().to_string(), vec![])
+            }
+        };
 
-        let mut child = Command::new(executable)
+        let mut command = Command::new(&cmd);
+        if !args.is_empty() {
+            command.args(&args);
+        }
+        
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("Failed to spawn tool: {:?}", executable))?;
+            .with_context(|| format!("Failed to spawn tool: {:?} (cmd: {}, args: {:?})", executable, cmd, args))?;
 
         let stdin = child
             .stdin

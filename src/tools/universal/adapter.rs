@@ -72,6 +72,10 @@ impl UniversalToolAdapter {
 
         // Merge with injection
         let merged = merge_with_injection(&self.manifest, params, &context)?;
+        tracing::info!(
+            "UniversalToolAdapter - merged params: {}",
+            serde_json::to_string(&merged).unwrap_or_default()
+        );
 
         // Spawn transport
         let mut transport: Transport = Transport::spawn(&self.executable).await?;
@@ -91,8 +95,35 @@ impl UniversalToolAdapter {
         // Parse result
         match response.result {
             ResponseResult::Result(value) => {
-                let result: ExecuteResult = serde_json::from_value(value)?;
-                Ok(result)
+                // Try to parse as ExecuteResult first (standard format)
+                match serde_json::from_value::<ExecuteResult>(value.clone()) {
+                    Ok(result) => {
+                        // If success but no data, the tool might be returning the result directly
+                        // in the same structure (e.g., {"success": true, "field": value})
+                        if result.success && result.data.is_none() {
+                            tracing::debug!("ExecuteResult has no data, treating original as data payload");
+                            Ok(ExecuteResult {
+                                success: true,
+                                data: Some(value),
+                                error: None,
+                                metadata: result.metadata,
+                            })
+                        } else {
+                            Ok(result)
+                        }
+                    }
+                    Err(_) => {
+                        // If that fails, treat the entire value as the data payload
+                        // This handles tools that return their result directly
+                        tracing::debug!("Response not in ExecuteResult format, treating as raw data");
+                        Ok(ExecuteResult {
+                            success: true,
+                            data: Some(value),
+                            error: None,
+                            metadata: None,
+                        })
+                    }
+                }
             }
             ResponseResult::Error(err) => {
                 Err(anyhow::anyhow!("Tool error ({}): {}", err.code, err.message))
@@ -120,7 +151,7 @@ impl Tool for UniversalToolAdapter {
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        // Default context for simple execution
+        // Default context for simple execution (no reserved param injection)
         let context = ExecutionContext {
             session_id: "unknown".to_string(),
             agent_id: "unknown".to_string(),
@@ -147,14 +178,22 @@ impl Tool for UniversalToolAdapter {
         params: serde_json::Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
-        // Build execution context from ToolContext
+        // Build execution context from ToolContext - use identity fields for reserved param injection
+        tracing::info!(
+            "UniversalToolAdapter::execute_with_context - ToolContext: agent_id={:?}, session_id={:?}, workspace={:?}",
+            ctx.agent_id, ctx.session_id, ctx.workspace
+        );
         let exec_context = ExecutionContext {
-            session_id: ctx.run_id.clone(), // Using run_id as session for now
-            agent_id: "agent".to_string(), // Could be passed through ToolContext
-            peer_id: None,
-            workspace: ".".to_string(),
+            session_id: ctx.session_id.clone().unwrap_or_else(|| ctx.run_id.clone()),
+            agent_id: ctx.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            peer_id: ctx.peer_id.clone(),
+            workspace: ctx.workspace.clone().unwrap_or_else(|| ".".to_string()),
             run_id: Some(ctx.run_id.clone()),
         };
+        tracing::debug!(
+            "UniversalToolAdapter - ExecutionContext: agent_id={}, session_id={}",
+            exec_context.agent_id, exec_context.session_id
+        );
 
         let result = self.execute_with_injection(params, exec_context).await?;
 
