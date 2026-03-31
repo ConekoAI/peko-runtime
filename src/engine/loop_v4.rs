@@ -7,7 +7,7 @@
 //! - Streaming support with incremental tool call construction
 
 use crate::agent::Agent;
-use crate::engine::{AgenticEvent, LifecyclePhase, TaskManager};
+use crate::engine::{AgenticEvent, LifecyclePhase, ToolExecutor, ToolExecutionContext};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
 use crate::session::UnifiedSession;
@@ -50,8 +50,8 @@ pub struct AgenticLoopV4 {
     tools: Vec<Arc<dyn Tool>>,
     max_iterations: usize,
     system_prompt: String,
-    /// Task manager for tool execution
-    task_manager: Arc<TaskManager>,
+    /// Tool executor with context injection
+    tool_executor: Arc<ToolExecutor>,
 }
 
 impl AgenticLoopV4 {
@@ -69,7 +69,7 @@ impl AgenticLoopV4 {
             tools,
             max_iterations: 10,
             system_prompt,
-            task_manager: Arc::new(TaskManager::new()),
+            tool_executor: Arc::new(ToolExecutor::new()),
         }
     }
 
@@ -324,6 +324,12 @@ impl AgenticLoopV4 {
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
     ) -> Result<AgenticResult> {
+        // Get session_id once at start
+        let session_id = {
+            let s = session.read().await;
+            s.id.clone()
+        };
+
         // Set provider/model metadata on session (do this once at start)
         {
             let provider_name = self.agent.config.provider.provider_type.to_string();
@@ -677,17 +683,30 @@ impl AgenticLoopV4 {
                             params: arguments.clone(),
                         });
 
-                        // Find and execute tool using the task manager
+                        // Find and execute tool with context injection
                         let start_time = std::time::Instant::now();
                         let tool_result =
                             if let Some(tool) = self.tools.iter().find(|t| t.name() == name) {
-                                // Execute tool synchronously with default timeout
+                                // Build execution context with identity info
+                                let workspace = self.agent.config.workspace
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| ".".to_string());
+                                let exec_ctx = ToolExecutionContext {
+                                    run_id: run_id.clone(),
+                                    agent_id: self.agent.name().to_string(),
+                                    session_id: session_id.clone(),
+                                    peer_id: None,
+                                    workspace,
+                                };
+                                
+                                // Execute tool with context
                                 match self
-                                    .task_manager
-                                    .execute(
+                                    .tool_executor
+                                    .execute_with_context(
                                         Arc::clone(tool),
                                         arguments.clone(),
-                                        None, // Use default timeout
+                                        &exec_ctx,
                                     )
                                     .await
                                 {
@@ -815,10 +834,10 @@ impl AgenticLoopV4 {
         defs
     }
 
-    /// Get the task manager
+    /// Get the tool executor
     #[must_use]
-    pub fn task_manager(&self) -> &Arc<TaskManager> {
-        &self.task_manager
+    pub fn tool_executor(&self) -> &Arc<ToolExecutor> {
+        &self.tool_executor
     }
 
     /// Fallback for providers without native tool support
@@ -986,6 +1005,12 @@ impl AgenticLoopV4 {
         streaming_config: crate::engine::OrchestratorConfig,
     ) -> Result<AgenticResult> {
         use futures::StreamExt;
+
+        // Get session_id once at start
+        let session_id = {
+            let s = session.read().await;
+            s.id.clone()
+        };
 
         // Set provider/model metadata on session (do this once at start)
         {
@@ -1236,9 +1261,22 @@ impl AgenticLoopV4 {
                         let start_time = std::time::Instant::now();
                         let tool_result =
                             if let Some(tool) = self.tools.iter().find(|t| t.name() == name) {
+                                // Build execution context with identity info
+                                let workspace = self.agent.config.workspace
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| ".".to_string());
+                                let exec_ctx = ToolExecutionContext {
+                                    run_id: run_id.clone(),
+                                    agent_id: self.agent.name().to_string(),
+                                    session_id: session_id.clone(),
+                                    peer_id: None,
+                                    workspace,
+                                };
+                                
                                 match self
-                                    .task_manager
-                                    .execute(Arc::clone(tool), arguments.clone(), None)
+                                    .tool_executor
+                                    .execute_with_context(Arc::clone(tool), arguments.clone(), &exec_ctx)
                                     .await
                                 {
                                     Ok(result) => {

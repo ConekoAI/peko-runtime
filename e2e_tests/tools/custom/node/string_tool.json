@@ -1,5 +1,5 @@
 {
-  "name": "string_utils",
+  "name": "string_tool",
   "description": "String manipulation utilities",
   "llm_description": "Use when you need to manipulate or analyze text strings. Examples: 'Convert to uppercase', 'Count words', 'Reverse text'",
   "parameters": {

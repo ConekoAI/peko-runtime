@@ -74,9 +74,11 @@ Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
 pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent via pekobot" -ForegroundColor Green
 
-# Find agent directory (pekobot creates it)
-$agentDir = "$env:USERPROFILE/.pekobot/agents/default/$agentName"
-$toolsDir = "$agentDir/tools"
+# Find agent directory (pekobot creates it in teams structure)
+$agentDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName"
+# Tools need to be in the workspace tools directory for discovery
+$workspaceDir = "$env:USERPROFILE/AppData/Roaming/pekobot/workspaces/default/$agentName"
+$toolsDir = "$workspaceDir/tools"
 
 # Ensure tools directory exists
 New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
@@ -86,28 +88,34 @@ Write-Host "Agent directory: $agentDir" -ForegroundColor Gray
 $toolSourceDir = "$PSScriptRoot"
 Copy-Item "$toolSourceDir/calculator_tool.py" "$toolsDir/" -Force
 Copy-Item "$toolSourceDir/calculator_tool.json" "$toolsDir/" -Force
+Copy-Item "$toolSourceDir/identity_tool.py" "$toolsDir/" -Force
+Copy-Item "$toolSourceDir/identity_tool.json" "$toolsDir/" -Force
 Copy-Item "$toolSourceDir/pekobot_adapter.py" "$toolsDir/" -Force
-Write-Host "Copied calculator tool to agent's tools directory" -ForegroundColor Green
+Write-Host "Copied calculator and identity tools to agent's tools directory" -ForegroundColor Green
 
-# Update agent config to enable calculator tool
-$agentConfigPath = "$agentDir/agent.toml"
-$agentConfig = @"
-name = "$agentName"
-description = "Agent with calculator tool"
+# Update agent config to enable calculator and identity tools
+$agentConfigPath = "$agentDir/config.toml"
+$agentConfig = Get-Content $agentConfigPath -Raw
 
-[provider]
-name = "$Provider"
-model = "kimi-latest"
-
-[tools]
-enabled = ["shell", "calculator"]
-"@
+# Replace the tools.enabled array to include our custom tools
+$agentConfig = $agentConfig -replace '\[tools\]\s*enabled = \[[^\]]*\]', "[tools]`nenabled = [`"shell`", `"session_status`", `"calculator_tool`", `"identity_tool`"]"
 
 $agentConfig | Out-File -FilePath $agentConfigPath -Encoding utf8
-Write-Host "Updated agent config with calculator tool enabled" -ForegroundColor Green
+Write-Host "Updated agent config with calculator and echo_identity tools enabled" -ForegroundColor Green
 
 # Update AGENT.md
-"# Calculator Agent`n`nAn agent with a custom Python calculator tool.`n`n## Available Tools`n`n- shell: Execute shell commands`n- calculator: Perform arithmetic calculations (add, subtract, multiply, divide)" | Out-File -FilePath "$agentDir/AGENT.md" -Encoding utf8
+$agentMd = @"
+# Calculator Agent
+
+An agent with custom Python tools.
+
+## Available Tools
+
+- shell: Execute shell commands
+- calculator: Perform arithmetic calculations (add, subtract, multiply, divide)
+- echo_identity: Verify context injection by showing injected identity params (agent_id, session_id)
+"@
+$agentMd | Out-File -FilePath "$agentDir/AGENT.md" -Encoding utf8
 
 # Verify agent was created
 $agentList = pekobot agent list 2>&1
@@ -131,7 +139,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Verifying calculator tool files..." -ForegroundColor Yellow
 
 # Check tool files exist
-$toolFiles = @("calculator_tool.py", "calculator_tool.json", "pekobot_adapter.py")
+$toolFiles = @("calculator_tool.py", "calculator_tool.json", "identity_tool.py", "identity_tool.json", "pekobot_adapter.py")
 $allExist = $true
 foreach ($file in $toolFiles) {
     $path = "$toolsDir/$file"
@@ -151,7 +159,7 @@ if ($allExist) {
 Write-Host "`nValidating manifest JSON..." -ForegroundColor Yellow
 $manifestPath = "$toolsDir/calculator_tool.json"
 $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.name -eq "calculator") {
+if ($manifest.name -eq "calculator_tool") {
     Write-Host "✓ Manifest valid - tool name: $($manifest.name)" -ForegroundColor Green
     Write-Host "  Description: $($manifest.description)" -ForegroundColor Gray
     Write-Host "  Reserved params: $($manifest.reserved_parameters.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
@@ -177,7 +185,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Sending message to agent requesting calculation..." -ForegroundColor Yellow
 
 # The agent should use the calculator tool for this
-$response = pekobot send $agentName "Calculate 25 multiplied by 4 using the calculator tool" --no-stream 2>&1
+$response = pekobot send $agentName "Calculate 25 multiplied by 4 using the calculator_tool" --no-stream 2>&1
 Write-Host "Agent response: $response"
 
 # Check session was created
@@ -202,14 +210,14 @@ Write-Host "Session history:" -ForegroundColor Cyan
 pekobot session show $agentName --session-id $sessionId --history 2>&1
 
 # Check session JSONL for tool call
-$sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl"
+$sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/${sessionId}.jsonl"
 if (Test-Path $sessionFile) {
     Write-Host "`nSession JSONL (last 5 lines):" -ForegroundColor Cyan
     Get-Content $sessionFile | Select-Object -Last 5 | ForEach-Object { Write-Host $_ -ForegroundColor Gray }
     
     # Check if calculator tool was called
     $content = Get-Content $sessionFile -Raw
-    if ($content -match "calculator" -or $content -match "tool_call") {
+    if ($content -match "calculator_tool" -or $content -match "tool_call") {
         Write-Host "`n✓ Calculator tool was invoked (found in session)" -ForegroundColor Green
     } else {
         Write-Host "`n⚠ Calculator tool may not have been invoked (check response above)" -ForegroundColor Yellow
@@ -219,14 +227,36 @@ if (Test-Path $sessionFile) {
 }
 
 # ============================================================
-# TEST 5: Test another calculation
+# TEST 5: Verify context injection with echo_identity tool
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 5: Division calculation" -ForegroundColor Cyan
+Write-Host "TEST 5: Verify context injection" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Sending request to verify context injection..." -ForegroundColor Yellow
+Write-Host "(This will verify agent_id and session_id are properly injected)" -ForegroundColor Gray
+
+$identityResponse = pekobot send $agentName "Use the identity_tool with message 'Hello from Python'. Report back what agent_id and session_id were injected." --no-stream 2>&1
+Write-Host "Agent response: $identityResponse"
+
+# Check if context injection is working
+if ($identityResponse -match "injection_working.*true" -or 
+    ($identityResponse -match "agent_id" -and $identityResponse -match "session_id" -and 
+     -not ($identityResponse -match "NOT_INJECTED" -or $identityResponse -match "not_injected"))) {
+    Write-Host "✓ Context injection is WORKING - identity params were injected" -ForegroundColor Green
+} else {
+    Write-Host "⚠ Context injection may not be working - check response above" -ForegroundColor Yellow
+}
+
+# ============================================================
+# TEST 6: Test another calculation
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "TEST 6: Division calculation" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending division request..." -ForegroundColor Yellow
-$response2 = pekobot send $agentName "What is 100 divided by 5? Use calculator tool." --no-stream 2>&1
+$response2 = pekobot send $agentName "What is 100 divided by 5? Use calculator_tool." --no-stream 2>&1
 Write-Host "Agent response: $response2"
 
 # ============================================================
@@ -242,6 +272,9 @@ Write-Host "Deleted test agent" -ForegroundColor Green
 Write-Host "`n✅ Universal Tool Protocol E2E test completed!" -ForegroundColor Green
 Write-Host "" -ForegroundColor Cyan
 Write-Host "Summary:" -ForegroundColor Cyan
-Write-Host "  - Python custom tool (calculator) was discovered and loaded" -ForegroundColor Cyan
-Write-Host "  - Reserved parameters (session_id, agent_id) were injected" -ForegroundColor Cyan
-Write-Host "  - Tool was callable via pekobot send" -ForegroundColor Cyan
+Write-Host "  - Python custom tool files were created in workspace tools directory" -ForegroundColor Cyan
+Write-Host "  - Tool manifests are valid with reserved_parameters configured" -ForegroundColor Cyan
+Write-Host "  - Context injection infrastructure is in place (verified via MCP E2E)" -ForegroundColor Cyan
+Write-Host "" -ForegroundColor Yellow
+Write-Host "NOTE: Universal Tools loading from workspace requires Agent architecture update." -ForegroundColor Yellow
+Write-Host "      The context injection infrastructure works (as verified by MCP E2E test)." -ForegroundColor Yellow

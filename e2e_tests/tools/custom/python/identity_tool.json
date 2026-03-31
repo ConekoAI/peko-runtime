@@ -1,0 +1,53 @@
+{
+  "name": "echo_identity",
+  "description": "Echo back the injected identity parameters to verify context injection",
+  "llm_description": "Use this tool to verify that identity parameters (agent_id, session_id) are being injected. The tool will return the injected values.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "Optional message to echo back"
+      }
+    }
+  },
+  "reserved_parameters": {
+    "session_id": {
+      "source": {
+        "runtime": {
+          "field": "session_id"
+        }
+      },
+      "description": "Current session ID injected by Pekobot"
+    },
+    "agent_id": {
+      "source": {
+        "runtime": {
+          "field": "agent_id"
+        }
+      },
+      "description": "Calling agent ID injected by Pekobot"
+    },
+    "run_id": {
+      "source": {
+        "runtime": {
+          "field": "run_id"
+        }
+      },
+      "description": "Current run ID injected by Pekobot"
+    },
+    "workspace": {
+      "source": {
+        "runtime": {
+          "field": "workspace"
+        }
+      },
+      "description": "Workspace path injected by Pekobot"
+    }
+  },
+  "protocol": {
+    "version": "2.0",
+    "transport": "stdio",
+    "supports_streaming": false
+  }
+}

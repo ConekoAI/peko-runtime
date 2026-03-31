@@ -1,5 +1,5 @@
 {
-  "name": "calculator",
+  "name": "calculator_tool",
   "description": "Perform basic arithmetic calculations",
   "llm_description": "Use when you need to perform mathematical calculations. Examples: 'Calculate 2 + 2', 'What is 10 * 5?', 'Divide 100 by 4'",
   "parameters": {
