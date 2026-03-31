@@ -97,8 +97,19 @@ impl Manifest {
     }
 
     /// Get the parameter schema exposed to LLM (no reserved params)
-    pub fn exposed_parameters(&self) -> &Value {
-        &self.parameters
+    ///
+    /// This filters out reserved parameters so they are not visible to the LLM,
+    /// preventing confusion and security issues.
+    pub fn exposed_parameters(&self) -> Value {
+        use crate::tools::shared::filter_reserved_params;
+        use std::collections::HashSet;
+        
+        let reserved: HashSet<String> = self.reserved_param_names()
+            .into_iter()
+            .cloned()
+            .collect();
+        
+        filter_reserved_params(&self.parameters, &reserved)
     }
 
     /// Get reserved parameter names
@@ -130,45 +141,36 @@ impl Manifest {
     /// 1. All required exposed parameters are present
     /// 2. No reserved parameters are present (they should be injected)
     pub fn validate_params(&self, params: &Value) -> anyhow::Result<()> {
-        let obj = params
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("Parameters must be an object"))?;
-
-        // Check no reserved params in input
-        if let Some(ref reserved) = self.reserved_parameters {
-            for key in obj.keys() {
-                if reserved.contains_key(key) {
-                    return Err(anyhow::anyhow!(
-                        "Parameter '{}' is reserved and should not be provided",
-                        key
-                    ));
-                }
-            }
-        }
-
-        // Check required params
-        if let Some(required) = self.parameters.get("required").and_then(|r| r.as_array()) {
-            for req in required {
-                if let Some(req_str) = req.as_str() {
-                    if !obj.contains_key(req_str) {
-                        return Err(anyhow::anyhow!("Missing required parameter: {}", req_str));
-                    }
-                }
-            }
-        }
-
+        use crate::tools::shared::validation;
+        use std::collections::HashSet;
+        
+        let reserved: HashSet<String> = self.reserved_param_names()
+            .into_iter()
+            .cloned()
+            .collect();
+        
+        // Use shared validation for reserved params check
+        validation::validate_no_reserved_in_user_params(params, &reserved)?;
+        
+        // Get exposed schema (without reserved params) for required check
+        let exposed = self.exposed_parameters();
+        validation::validate_required_params(params, &exposed)?;
+        
         Ok(())
     }
 }
 
 /// Create a merged parameter set with injection
 /// 
-/// Takes user-provided params and injects reserved params from context
+/// Takes user-provided params and injects reserved params from context.
+/// Uses the shared ContextResolver for consistent field resolution.
 pub fn merge_with_injection(
     manifest: &Manifest,
     user_params: Value,
     context: &super::protocol::ExecutionContext,
 ) -> anyhow::Result<Value> {
+    use crate::tools::shared::context_resolver::{ContextResolver, ExecutionContextAdapter};
+    
     let mut merged = user_params;
 
     // Ensure params is an object
@@ -178,18 +180,15 @@ pub fn merge_with_injection(
 
     let obj = merged.as_object_mut().unwrap();
 
-    // Inject reserved parameters
+    // Inject reserved parameters using shared context resolver
     if let Some(ref reserved) = manifest.reserved_parameters {
+        let adapter = ExecutionContextAdapter::new(context.clone());
+        
         for (name, spec) in reserved {
             let value = match &spec.source {
-                ParamSource::Runtime { field } => match field.as_str() {
-                    "session_id" => Value::String(context.session_id.clone()),
-                    "agent_id" => Value::String(context.agent_id.clone()),
-                    "peer_id" => context.peer_id.clone().map(Value::String).unwrap_or(Value::Null),
-                    "workspace" => Value::String(context.workspace.clone()),
-                    "run_id" => context.run_id.clone().map(Value::String).unwrap_or(Value::Null),
-                    _ => Value::Null,
-                },
+                ParamSource::Runtime { field } => {
+                    ContextResolver::resolve_field(&adapter, field)
+                }
                 ParamSource::Env { var } => {
                     std::env::var(var).map(Value::String).unwrap_or(Value::Null)
                 }

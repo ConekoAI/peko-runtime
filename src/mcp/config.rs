@@ -61,32 +61,17 @@ impl ReservedParamConfig {
     }
 
     /// Get the parameter value based on the source and context
+    ///
+    /// Uses the shared ContextResolver for consistent field resolution
+    /// across Universal Tools and MCP.
     pub fn resolve(&self, ctx: Option<&crate::tools::ToolContext>) -> Value {
+        use crate::tools::shared::context_resolver::{ContextResolver, ToolContextAdapter};
+        
         match self.source.as_str() {
             "runtime" => {
                 if let (Some(ctx), Some(field)) = (ctx, &self.field) {
-                    match field.as_str() {
-                        "agent_id" => ctx
-                            .agent_id
-                            .as_ref()
-                            .map_or(Value::Null, |v| Value::String(v.clone())),
-                        "session_id" => ctx
-                            .session_id
-                            .as_ref()
-                            .map_or(Value::Null, |v| Value::String(v.clone())),
-                        "peer_id" => ctx
-                            .peer_id
-                            .as_ref()
-                            .map_or(Value::Null, |v| Value::String(v.clone())),
-                        "workspace" => ctx
-                            .workspace
-                            .as_ref()
-                            .map_or(Value::Null, |v| Value::String(v.clone())),
-                        "run_id" => Value::String(ctx.run_id.clone()),
-                        "tool_id" => Value::String(ctx.tool_id.clone()),
-                        "tool_name" => Value::String(ctx.tool_name.clone()),
-                        _ => Value::Null,
-                    }
+                    let adapter = ToolContextAdapter::new(ctx);
+                    ContextResolver::resolve_field(&adapter, field)
                 } else {
                     Value::Null
                 }

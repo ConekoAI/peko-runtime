@@ -119,34 +119,14 @@ impl InjectableMcpToolProxy {
     ///
     /// This creates a modified schema that hides the reserved parameters from the LLM,
     /// while still validating them internally.
+    ///
+    /// Uses the shared schema filter for consistency with Universal Tools.
     fn filter_schema(schema: &Value, reserved: &HashMap<String, ReservedParamConfig>) -> Value {
-        if reserved.is_empty() {
-            return schema.clone();
-        }
-
-        let mut filtered = schema.clone();
-
-        // Remove reserved params from properties
-        if let Some(properties) = filtered.get_mut("properties") {
-            if let Some(props_obj) = properties.as_object_mut() {
-                for key in reserved.keys() {
-                    props_obj.remove(key);
-                }
-            }
-        }
-
-        // Remove reserved params from required array
-        if let Some(required) = filtered.get_mut("required") {
-            if let Some(req_array) = required.as_array_mut() {
-                let reserved_set: std::collections::HashSet<_> = reserved.keys().collect();
-                req_array.retain(|v| {
-                    v.as_str()
-                        .map_or(true, |s| !reserved_set.contains(&s.to_string()))
-                });
-            }
-        }
-
-        filtered
+        use crate::tools::shared::filter_reserved_params;
+        use std::collections::HashSet;
+        
+        let reserved_set: HashSet<String> = reserved.keys().cloned().collect();
+        filter_reserved_params(schema, &reserved_set)
     }
 
     /// Inject reserved parameters into the arguments

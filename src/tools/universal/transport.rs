@@ -11,12 +11,17 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration};
 
+/// Default timeout for graceful process shutdown (seconds)
+const DEFAULT_KILL_TIMEOUT_SECS: u64 = 5;
+
 /// Transport handle for communicating with a tool process
 pub struct Transport {
     stdin: tokio::process::ChildStdin,
     stdout_reader: BufReader<tokio::process::ChildStdout>,
     stderr_reader: Option<BufReader<tokio::process::ChildStderr>>,
-    _child: Child, // Keep child alive
+    child: Child,
+    /// Timeout for graceful shutdown before force kill
+    kill_timeout: Duration,
 }
 
 impl Transport {
@@ -70,8 +75,81 @@ impl Transport {
             stdin,
             stdout_reader: BufReader::new(stdout),
             stderr_reader: stderr.map(BufReader::new),
-            _child: child,
+            child,
+            kill_timeout: Duration::from_secs(DEFAULT_KILL_TIMEOUT_SECS),
         })
+    }
+
+    /// Set the kill timeout for graceful shutdown
+    pub fn with_kill_timeout(mut self, secs: u64) -> Self {
+        self.kill_timeout = Duration::from_secs(secs);
+        self
+    }
+
+    /// Gracefully shut down the transport and kill the process if needed
+    ///
+    /// First attempts graceful shutdown, then force kills after timeout.
+    pub async fn shutdown(mut self) -> Result<()> {
+        // Take ownership of child before dropping stdin
+        let mut child = self.child;
+        
+        // Try graceful shutdown first by closing stdin
+        drop(self.stdin);
+
+        // Wait for process to exit with timeout
+        match timeout(self.kill_timeout, child.wait()).await {
+            Ok(Ok(status)) => {
+                tracing::debug!("Tool process exited gracefully with status: {:?}", status);
+                Ok(())
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Error waiting for tool process: {}", e);
+                // Try to kill anyway
+                Self::force_kill_child(&mut child).await
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Tool process did not exit within {:?}, force killing",
+                    self.kill_timeout
+                );
+                Self::force_kill_child(&mut child).await
+            }
+        }
+    }
+
+    /// Force kill the process
+    async fn force_kill(&mut self) -> Result<()> {
+        Self::force_kill_child(&mut self.child).await
+    }
+
+    /// Force kill a child process (static version for use during shutdown)
+    async fn force_kill_child(child: &mut Child) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ChildExt;
+            // Send SIGTERM first for graceful termination
+            if let Some(id) = child.id() {
+                unsafe {
+                    libc::kill(id as i32, libc::SIGTERM);
+                }
+            }
+            // Give it a moment to terminate gracefully
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Force kill
+        match child.kill().await {
+            Ok(()) => {
+                tracing::debug!("Tool process force killed");
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
+                // Process already exited
+                tracing::debug!("Tool process already exited");
+                Ok(())
+            }
+            Err(e) => Err(anyhow::anyhow!("Failed to kill tool process: {}", e)),
+        }
     }
 
     /// Send a request and wait for response

@@ -27,6 +27,12 @@ pub mod traits;
 /// It supports reserved parameter injection and works with any language.
 pub mod universal;
 
+/// Shared utilities for tool implementations
+///
+/// Provides common functionality used by both Universal Tools and MCP tools
+/// to avoid code duplication and ensure consistent behavior.
+pub mod shared;
+
 pub use sessions_send::{SendMode, SessionsSendTool};
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};

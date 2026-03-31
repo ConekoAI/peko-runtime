@@ -72,12 +72,12 @@ impl UniversalToolAdapter {
 
         // Merge with injection
         let merged = merge_with_injection(&self.manifest, params, &context)?;
-        tracing::info!(
+        tracing::debug!(
             "UniversalToolAdapter - merged params: {}",
             serde_json::to_string(&merged).unwrap_or_default()
         );
 
-        // Spawn transport
+        // Spawn transport and ensure cleanup
         let mut transport: Transport = Transport::spawn(&self.executable).await?;
 
         // Build execute request
@@ -89,6 +89,23 @@ impl UniversalToolAdapter {
 
         let request = Request::new("tool/execute", serde_json::to_value(exec_params)?);
 
+        // Send request and get response
+        let result = self.execute_with_transport(&mut transport, request).await;
+
+        // Ensure transport is shut down cleanly (with timeout for zombie prevention)
+        if let Err(e) = transport.shutdown().await {
+            tracing::warn!("Transport shutdown error (non-fatal): {}", e);
+        }
+
+        result
+    }
+
+    /// Execute request with transport (separated for cleanup handling)
+    async fn execute_with_transport(
+        &self,
+        transport: &mut Transport,
+        request: Request,
+    ) -> Result<ExecuteResult> {
         // Send request and get response
         let response = transport.request(&request, 30).await?;
 
