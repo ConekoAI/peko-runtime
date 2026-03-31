@@ -157,13 +157,24 @@ impl McpManager {
         };
 
         // Auto-start servers (outside of config lock)
+        info!("Auto-starting {} MCP servers...", servers_to_start.len());
         for name in servers_to_start {
+            info!("Starting MCP server '{}'...", name);
             if let Err(e) = self.start_server(&name).await {
                 warn!("Failed to auto-start server '{}': {}", name, e);
+            } else {
+                info!("MCP server '{}' started successfully", name);
             }
         }
 
-        info!("MCP manager initialized");
+        // Log final status
+        let final_servers = self.servers.read().await;
+        for (name, handle) in final_servers.iter() {
+            info!("MCP server '{}' status: running={}, healthy={}, tools={}", 
+                name, handle.state.running, handle.state.healthy, handle.state.tools.len());
+        }
+
+        info!("MCP manager initialized with {} servers", final_servers.len());
         Ok(())
     }
 
@@ -339,11 +350,13 @@ impl McpManager {
     /// Get all tools as Pekobot Tool trait objects
     ///
     /// This allows MCP tools to be used seamlessly with Pekobot's agent system.
-    /// The tools are wrapped in `McpToolProxy` which implements the Tool trait.
+    /// The tools are wrapped in `McpToolProxy` or `InjectableMcpToolProxy` (if the
+    /// server has reserved_parameters configured) which implement the Tool trait.
     ///
     /// # Returns
     /// A vector of Arc<dyn Tool> containing all MCP tools from running servers
     pub async fn get_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
+        use crate::mcp::injectable_proxy::InjectableMcpToolProxy;
         use crate::mcp::tool_proxy::McpToolProxy;
 
         let servers = self.servers.read().await;
@@ -352,10 +365,27 @@ impl McpManager {
 
         for (server_name, handle) in servers.iter() {
             if handle.state.running && handle.state.healthy {
+                // Check if this server has reserved parameters configured
+                let has_reserved = !handle.config.reserved_parameters.is_empty();
+
                 for tool in &handle.state.tools {
-                    let proxy =
-                        McpToolProxy::new(server_name.clone(), tool.clone(), manager_arc.clone());
-                    tools.push(Arc::new(proxy));
+                    let proxy: Arc<dyn crate::tools::Tool> = if has_reserved {
+                        // Use InjectableMcpToolProxy to inject reserved params
+                        Arc::new(InjectableMcpToolProxy::new(
+                            server_name.clone(),
+                            tool.clone(),
+                            manager_arc.clone(),
+                            handle.config.reserved_parameters.clone(),
+                        ))
+                    } else {
+                        // Use standard McpToolProxy (no injection needed)
+                        Arc::new(McpToolProxy::new(
+                            server_name.clone(),
+                            tool.clone(),
+                            manager_arc.clone(),
+                        ))
+                    };
+                    tools.push(proxy);
                 }
             }
         }

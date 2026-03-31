@@ -729,9 +729,21 @@ impl ToolFactory {
         }
 
         let manager = Arc::new(RwLock::new(McpManager::new(config)));
+        
+        // Initialize the manager (this starts auto-start servers)
+        tracing::info!("Initializing MCP manager from {:?}...", config_path);
         manager.write().await.init().await?;
+        tracing::info!("MCP manager initialized successfully");
+        
+        // List all tools from running servers
+        let manager_guard = manager.read().await;
+        let all_tools = manager_guard.list_all_tools().await;
+        tracing::info!("Found {} tools from MCP servers: {:?}", all_tools.len(), 
+            all_tools.iter().map(|(s, t)| format!("{}.{}", s, t.name)).collect::<Vec<_>>());
+        drop(manager_guard);
 
         let tools = create_tool_proxies(manager).await;
+        tracing::info!("Created {} MCP tool proxies", tools.len());
         Ok(tools)
     }
 

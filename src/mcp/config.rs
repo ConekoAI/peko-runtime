@@ -4,8 +4,106 @@
 //! from TOML configuration files.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Configuration for a single reserved parameter
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReservedParamConfig {
+    /// Source type: "runtime", "env", or "static"
+    pub source: String,
+    /// Field name (for runtime) or variable name (for env) or value (for static)
+    pub field: Option<String>,
+    /// Environment variable name (alternative to field for env source)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub var: Option<String>,
+    /// Static value (for static source)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Optional description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl ReservedParamConfig {
+    /// Create a runtime parameter from a context field
+    pub fn runtime(field: impl Into<String>) -> Self {
+        Self {
+            source: "runtime".to_string(),
+            field: Some(field.into()),
+            var: None,
+            value: None,
+            description: None,
+        }
+    }
+
+    /// Create a parameter from an environment variable
+    pub fn env(var: impl Into<String>) -> Self {
+        Self {
+            source: "env".to_string(),
+            field: None,
+            var: Some(var.into()),
+            value: None,
+            description: None,
+        }
+    }
+
+    /// Create a static parameter with a hardcoded value
+    pub fn static_value(val: impl Into<String>) -> Self {
+        Self {
+            source: "static".to_string(),
+            field: None,
+            var: None,
+            value: Some(val.into()),
+            description: None,
+        }
+    }
+
+    /// Get the parameter value based on the source and context
+    pub fn resolve(&self, ctx: Option<&crate::tools::ToolContext>) -> Value {
+        match self.source.as_str() {
+            "runtime" => {
+                if let (Some(ctx), Some(field)) = (ctx, &self.field) {
+                    match field.as_str() {
+                        "agent_id" => ctx
+                            .agent_id
+                            .as_ref()
+                            .map_or(Value::Null, |v| Value::String(v.clone())),
+                        "session_id" => ctx
+                            .session_id
+                            .as_ref()
+                            .map_or(Value::Null, |v| Value::String(v.clone())),
+                        "peer_id" => ctx
+                            .peer_id
+                            .as_ref()
+                            .map_or(Value::Null, |v| Value::String(v.clone())),
+                        "workspace" => ctx
+                            .workspace
+                            .as_ref()
+                            .map_or(Value::Null, |v| Value::String(v.clone())),
+                        "run_id" => Value::String(ctx.run_id.clone()),
+                        "tool_id" => Value::String(ctx.tool_id.clone()),
+                        "tool_name" => Value::String(ctx.tool_name.clone()),
+                        _ => Value::Null,
+                    }
+                } else {
+                    Value::Null
+                }
+            }
+            "env" => self
+                .var
+                .as_ref()
+                .and_then(|v| std::env::var(v).ok())
+                .map_or(Value::Null, Value::String),
+            "static" => self
+                .value
+                .as_ref()
+                .map_or(Value::Null, |v| Value::String(v.clone())),
+            _ => Value::Null,
+        }
+    }
+}
 
 /// Transport type for MCP connections
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +172,11 @@ pub struct McpServerConfig {
     /// Timeout for tool calls in seconds
     #[serde(default = "default_tool_timeout_secs")]
     pub tool_timeout_secs: u64,
+
+    /// Reserved parameters to inject into tool calls
+    /// These are hidden from the LLM but injected by the runtime
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub reserved_parameters: HashMap<String, ReservedParamConfig>,
 }
 
 fn default_auto_start() -> bool {
@@ -108,6 +211,7 @@ impl McpServerConfig {
             max_restarts: 0,
             init_timeout_secs: default_init_timeout_secs(),
             tool_timeout_secs: default_tool_timeout_secs(),
+            reserved_parameters: HashMap::new(),
         }
     }
 
@@ -126,6 +230,7 @@ impl McpServerConfig {
             max_restarts: 0,
             init_timeout_secs: default_init_timeout_secs(),
             tool_timeout_secs: default_tool_timeout_secs(),
+            reserved_parameters: HashMap::new(),
         }
     }
 
@@ -146,6 +251,16 @@ impl McpServerConfig {
     #[must_use]
     pub fn with_auto_start(mut self, auto_start: bool) -> Self {
         self.auto_start = auto_start;
+        self
+    }
+
+    /// Set reserved parameters for injection
+    #[must_use]
+    pub fn with_reserved_parameters(
+        mut self,
+        params: HashMap<String, ReservedParamConfig>,
+    ) -> Self {
+        self.reserved_parameters = params;
         self
     }
 
@@ -313,6 +428,7 @@ impl McpConfig {
                 max_restarts: 0,
                 init_timeout_secs: default_init_timeout_secs(),
                 tool_timeout_secs: default_tool_timeout_secs(),
+                reserved_parameters: HashMap::new(),
             });
         }
 
@@ -487,5 +603,57 @@ health_check_interval_secs = 60
         config.add_server(McpServerConfig::stdio("same", "cmd2", vec![]));
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_reserved_param_config() {
+        let runtime_param = ReservedParamConfig::runtime("agent_id");
+        assert_eq!(runtime_param.source, "runtime");
+        assert_eq!(runtime_param.field, Some("agent_id".to_string()));
+
+        let env_param = ReservedParamConfig::env("API_KEY");
+        assert_eq!(env_param.source, "env");
+        assert_eq!(env_param.var, Some("API_KEY".to_string()));
+
+        let static_param = ReservedParamConfig::static_value("production");
+        assert_eq!(static_param.source, "static");
+        assert_eq!(static_param.value, Some("production".to_string()));
+    }
+
+    #[test]
+    fn test_config_with_reserved_params_from_toml() {
+        let toml = r#"
+[[server]]
+name = "memory"
+transport = "stdio"
+command = "mcp-memory"
+
+[server.reserved_parameters]
+agent_id = { source = "runtime", field = "agent_id" }
+session_id = { source = "runtime", field = "session_id" }
+api_key = { source = "env", var = "API_KEY" }
+environment = { source = "static", value = "production" }
+"#;
+
+        let config = McpConfig::from_toml(toml).unwrap();
+        assert_eq!(config.servers.len(), 1);
+
+        let memory = config.get_server("memory").unwrap();
+        assert_eq!(memory.reserved_parameters.len(), 4);
+
+        // Check runtime param
+        let agent_id = memory.reserved_parameters.get("agent_id").unwrap();
+        assert_eq!(agent_id.source, "runtime");
+        assert_eq!(agent_id.field, Some("agent_id".to_string()));
+
+        // Check env param
+        let api_key = memory.reserved_parameters.get("api_key").unwrap();
+        assert_eq!(api_key.source, "env");
+        assert_eq!(api_key.var, Some("API_KEY".to_string()));
+
+        // Check static param
+        let env = memory.reserved_parameters.get("environment").unwrap();
+        assert_eq!(env.source, "static");
+        assert_eq!(env.value, Some("production".to_string()));
     }
 }

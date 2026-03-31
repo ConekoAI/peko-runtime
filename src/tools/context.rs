@@ -55,6 +55,7 @@ use std::time::Duration;
 /// - Ability to check if execution should be aborted
 /// - Ability to emit progress updates (with throttling)
 /// - Optional timeout handling
+/// - Agent/session identity for reserved parameter injection
 #[derive(Clone)]
 pub struct ToolContext {
     /// Run identifier for this execution
@@ -73,6 +74,14 @@ pub struct ToolContext {
     last_progress_update: Arc<tokio::sync::Mutex<Option<Instant>>>,
     /// Optional timeout for this tool execution
     pub timeout: Option<Duration>,
+    /// Agent identifier (for reserved parameter injection)
+    pub agent_id: Option<String>,
+    /// Session identifier (for reserved parameter injection)
+    pub session_id: Option<String>,
+    /// Peer identifier for distributed contexts
+    pub peer_id: Option<String>,
+    /// Workspace path
+    pub workspace: Option<String>,
 }
 
 impl ToolContext {
@@ -92,6 +101,10 @@ impl ToolContext {
             progress_throttle_ms: 500, // Default 500ms between progress updates
             last_progress_update: Arc::new(tokio::sync::Mutex::new(None)),
             timeout: None,
+            agent_id: None,
+            session_id: None,
+            peer_id: None,
+            workspace: None,
         }
     }
 
@@ -112,6 +125,10 @@ impl ToolContext {
             progress_throttle_ms: 500,
             last_progress_update: Arc::new(tokio::sync::Mutex::new(None)),
             timeout: None,
+            agent_id: None,
+            session_id: None,
+            peer_id: None,
+            workspace: None,
         }
     }
 
@@ -126,6 +143,48 @@ impl ToolContext {
     #[must_use]
     pub fn with_timeout(mut self, duration: Duration) -> Self {
         self.timeout = Some(duration);
+        self
+    }
+
+    /// Set agent ID for reserved parameter injection
+    #[must_use]
+    pub fn with_agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.agent_id = Some(agent_id.into());
+        self
+    }
+
+    /// Set session ID for reserved parameter injection
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Set peer ID for distributed contexts
+    #[must_use]
+    pub fn with_peer_id(mut self, peer_id: impl Into<String>) -> Self {
+        self.peer_id = Some(peer_id.into());
+        self
+    }
+
+    /// Set workspace path
+    #[must_use]
+    pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
+    }
+
+    /// Set all identity fields at once for reserved parameter injection
+    #[must_use]
+    pub fn with_identity(
+        mut self,
+        agent_id: impl Into<String>,
+        session_id: impl Into<String>,
+        workspace: impl Into<String>,
+    ) -> Self {
+        self.agent_id = Some(agent_id.into());
+        self.session_id = Some(session_id.into());
+        self.workspace = Some(workspace.into());
         self
     }
 
