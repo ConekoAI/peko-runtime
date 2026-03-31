@@ -1,0 +1,51 @@
+{
+  "name": "query_database",
+  "description": "Query the knowledge base for documents",
+  "llm_description": "Use when you need to search the project knowledge base. Examples: 'Find docs about authentication', 'Search for API examples'. Don't use for real-time data.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search query string"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum results to return",
+        "default": 10
+      }
+    },
+    "required": ["query"]
+  },
+  "reserved_parameters": {
+    "session_id": {
+      "source": {
+        "runtime": {
+          "field": "session_id"
+        }
+      },
+      "description": "Current session ID for audit logging"
+    },
+    "agent_id": {
+      "source": {
+        "runtime": {
+          "field": "agent_id"
+        }
+      },
+      "description": "ID of the calling agent"
+    },
+    "workspace": {
+      "source": {
+        "runtime": {
+          "field": "workspace"
+        }
+      },
+      "description": "Workspace directory path"
+    }
+  },
+  "protocol": {
+    "version": "2.0",
+    "transport": "stdio",
+    "supports_streaming": false
+  }
+}

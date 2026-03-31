@@ -20,6 +20,9 @@ pub mod session_introspection;
 pub mod sessions_send;
 pub mod traits;
 
+/// Universal Tool Protocol - Backend-agnostic tool integration
+pub mod universal;
+
 pub use sessions_send::{SendMode, SessionsSendTool};
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
