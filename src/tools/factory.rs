@@ -483,13 +483,13 @@ impl ToolFactory {
         Ok(result)
     }
 
-    /// Load custom tools with discovery metadata
+    /// Load custom tools with discovery metadata (using Universal Tool Protocol)
     async fn load_custom_tools_with_discovery(
         tools_dir: &PathBuf,
         disabled_tools: &[String],
         existing_names: &std::collections::HashSet<String>,
     ) -> anyhow::Result<(Vec<Arc<dyn crate::tools::Tool>>, CustomToolsDiscoveryResult)> {
-        use crate::tools::custom::create_custom_tools;
+        use crate::tools::universal::load_universal_tools;
 
         if !tools_dir.exists() {
             tracing::debug!("Custom tools directory does not exist: {:?}", tools_dir);
@@ -503,15 +503,15 @@ impl ToolFactory {
             ));
         }
 
-        // Load all custom tools
-        let custom_tools = create_custom_tools(tools_dir).await?;
-        let discovered_count = custom_tools.len();
+        // Load all universal tools
+        let universal_tools = load_universal_tools(tools_dir).await?;
+        let discovered_count = universal_tools.len();
 
         // Filter tools
         let mut loaded_tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
         let failed_tools: Vec<(String, String)> = Vec::new();
 
-        for tool in custom_tools {
+        for tool in universal_tools {
             let name = tool.name().to_lowercase();
 
             // Check if disabled

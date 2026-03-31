@@ -1,7 +1,9 @@
 //! Tool Management Commands
 
 use crate::commands::GlobalPaths;
+use crate::tools::traits::Tool;
 use clap::Subcommand;
+use std::path::PathBuf;
 
 /// Tool management subcommands
 ///
@@ -71,6 +73,132 @@ pub enum ToolCommands {
         /// Tool name
         name: String,
     },
+
+    /// Test a universal tool directly
+    ///
+    /// This command tests a tool without running a full agent.
+    /// Useful for debugging and validating tool configuration.
+    ///
+    /// Examples:
+    ///   # Test with a manifest file
+    ///   pekobot tool test ./my_tool.json
+    ///
+    ///   # Test with executable only (auto-detects manifest)
+    ///   pekobot tool test ./my_tool.py
+    ///
+    ///   # Test with custom arguments
+    ///   pekobot tool test ./my_tool.json --arg '{"query": "test"}'
+    Test {
+        /// Path to tool manifest or executable
+        path: PathBuf,
+
+        /// JSON arguments to pass to the tool
+        #[arg(short, long)]
+        args: Option<String>,
+
+        /// Show raw protocol output
+        #[arg(short, long)]
+        raw: bool,
+
+        /// Timeout in seconds
+        #[arg(short, long, default_value = "30")]
+        timeout: u64,
+    },
+}
+
+/// Handle test tool command
+async fn handle_test_tool(
+    path: PathBuf,
+    args: Option<String>,
+    raw: bool,
+    timeout_secs: u64,
+) -> anyhow::Result<()> {
+    use crate::tools::universal::{Manifest, adapter::UniversalToolAdapter};
+    use serde_json::json;
+
+    println!("🔧 Testing tool: {}", path.display());
+
+    // Determine manifest and executable paths
+    let (manifest_path, executable_path) = if path.extension().map_or(false, |e| e == "json") {
+        // Path is a manifest
+        let exe_path = if path.with_extension("").exists() {
+            path.with_extension("")
+        } else if path.with_extension("py").exists() {
+            path.with_extension("py")
+        } else {
+            anyhow::bail!("Could not find executable for manifest: {}", path.display());
+        };
+        (path.clone(), exe_path)
+    } else {
+        // Path is an executable, look for manifest
+        let manifest = path.with_extension("json");
+        (manifest, path.clone())
+    };
+
+    // Load manifest if it exists
+    let manifest = if manifest_path.exists() {
+        println!("  📄 Manifest: {}", manifest_path.display());
+        Some(Manifest::from_file(&manifest_path).await?)
+    } else {
+        println!("  ⚠️  No manifest found, using defaults");
+        None
+    };
+
+    println!("  ⚙️  Executable: {}", executable_path.display());
+
+    if !executable_path.exists() {
+        anyhow::bail!("Executable not found: {}", executable_path.display());
+    }
+
+    // Create adapter
+    let adapter = if let Some(m) = manifest {
+        UniversalToolAdapter::from_manifest_embedded(m, &executable_path)
+    } else {
+        anyhow::bail!("Manifest is required for testing universal tools");
+    };
+
+    // Build test arguments
+    let test_args = if let Some(args_str) = args {
+        serde_json::from_str(&args_str)?
+    } else {
+        // Use default values from schema
+        json!({})
+    };
+
+    println!("\n📤 Sending test request...");
+    if raw {
+        println!("  Args: {}", serde_json::to_string_pretty(&test_args)?);
+    }
+
+    // Execute with injection
+    let start = std::time::Instant::now();
+    let result = adapter.execute(test_args).await;
+    let elapsed = start.elapsed();
+
+    println!("\n📥 Response (took {:?}):", elapsed);
+    
+    match result {
+        Ok(output) => {
+            if raw {
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else {
+                println!("✅ Tool executed successfully");
+                if let Some(data) = output.get("data") {
+                    println!("\n📊 Result:");
+                    println!("{}", serde_json::to_string_pretty(data)?);
+                }
+                if let Some(metadata) = output.get("metadata") {
+                    println!("\n📋 Metadata:");
+                    println!("{}", serde_json::to_string_pretty(metadata)?);
+                }
+            }
+            Ok(())
+        }
+        Err(e) => {
+            println!("❌ Tool execution failed: {}", e);
+            Err(e)
+        }
+    }
 }
 
 /// Handle tool commands
@@ -122,6 +250,14 @@ pub async fn handle_tool(
         ToolCommands::Info { name } => {
             println!("📋 Tool Information: {name}");
             Ok(())
+        }
+        ToolCommands::Test {
+            path,
+            args,
+            raw,
+            timeout,
+        } => {
+            handle_test_tool(path, args, raw, timeout).await
         }
     }
 }

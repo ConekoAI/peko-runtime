@@ -5,13 +5,14 @@
 //! - mcp-web: web_search, fetch, http
 //! - mcp-browser: browser automation  
 //! - mcp-memory: persistent memory storage
+//!
+//! Custom tools use the Universal Tool Protocol (see `universal` module).
 
 pub mod agent_management;
 pub mod agent_spawn;
 pub mod apply_patch;
 pub mod context;
 pub mod cron_tool;
-pub mod custom;
 pub mod factory;
 pub mod filesystem;
 pub mod message_tool;
@@ -21,6 +22,9 @@ pub mod sessions_send;
 pub mod traits;
 
 /// Universal Tool Protocol - Backend-agnostic tool integration
+/// 
+/// This module implements the custom tool system using JSON-RPC 2.0 over stdio.
+/// It supports reserved parameter injection and works with any language.
 pub mod universal;
 
 pub use sessions_send::{SendMode, SessionsSendTool};
