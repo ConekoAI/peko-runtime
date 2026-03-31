@@ -164,18 +164,57 @@ async fn test_discover_universal_tools() {
     let temp = TempDir::new().unwrap();
     let dir = temp.path();
     
-    // Create manifest
+    // Create tool subdirectory
+    let tool_dir = dir.join("test_tool");
+    tokio::fs::create_dir(&tool_dir).await.unwrap();
+    
+    // Create manifest in subdirectory
     let manifest = json!({
         "name": "test_tool",
         "description": "Test",
         "parameters": {"type": "object"}
     });
-    tokio::fs::write(dir.join("test_tool.json"), manifest.to_string())
+    tokio::fs::write(tool_dir.join("manifest.json"), manifest.to_string())
         .await
         .unwrap();
     
-    // Create executable
-    create_mock_python_tool(dir, "test_tool").await;
+    // Create executable in subdirectory
+    let script_path = tool_dir.join("test_tool.py");
+    let script = r#"#!/usr/bin/env python3
+import sys
+import json
+
+for line in sys.stdin:
+    req = json.loads(line)
+    req_id = req.get("id")
+    method = req.get("method")
+    
+    if method == "tool/describe":
+        resp = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "name": "test_tool",
+                "description": "A test tool",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }
+    elif method == "tool/execute":
+        resp = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"success": True, "data": {}}
+        }
+    else:
+        resp = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": "Method not found"}
+        }
+    
+    print(json.dumps(resp), flush=True)
+"#;
+    tokio::fs::write(&script_path, script).await.unwrap();
     
     let tools = discovery::discover_universal_tools(dir).await.unwrap();
     

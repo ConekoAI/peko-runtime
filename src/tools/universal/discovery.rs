@@ -211,19 +211,20 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    async fn create_executable(dir: &Path, name: &str, content: &str) -> PathBuf {
-        let path = dir.join(name);
-        tokio::fs::write(&path, content).await.unwrap();
+    async fn create_tool_dir(base_dir: &Path, tool_name: &str, manifest: &str, executable_content: &str) -> PathBuf {
+        // Create subdirectory for tool
+        let tool_dir = base_dir.join(tool_name);
+        tokio::fs::create_dir(&tool_dir).await.unwrap();
         
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = tokio::fs::metadata(&path).await.unwrap().permissions();
-            perms.set_mode(0o755);
-            tokio::fs::set_permissions(&path, perms).await.unwrap();
-        }
+        // Write manifest.json
+        tokio::fs::write(tool_dir.join("manifest.json"), manifest).await.unwrap();
         
-        path
+        // Write executable
+        let exe_name = format!("{}.py", tool_name);
+        let exe_path = tool_dir.join(&exe_name);
+        tokio::fs::write(&exe_path, executable_content).await.unwrap();
+        
+        exe_path
     }
 
     #[tokio::test]
@@ -231,16 +232,13 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let dir = temp.path();
 
-        // Create executable
-        create_executable(dir, "my_tool", "#!/bin/sh\necho hello").await;
-
-        // Create manifest
+        // Create tool in subdirectory
         let manifest = r#"{
             "name": "my_tool",
             "description": "A test tool",
             "parameters": {"type": "object"}
         }"#;
-        tokio::fs::write(dir.join("my_tool.json"), manifest).await.unwrap();
+        create_tool_dir(dir, "my_tool", manifest, "#!/usr/bin/env python3\nprint('hello')").await;
 
         let tools = discover_universal_tools(dir).await.unwrap();
         assert_eq!(tools.len(), 1);
@@ -249,24 +247,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_discover_python_extension() {
+    async fn test_discover_multiple_tools() {
         let temp = TempDir::new().unwrap();
         let dir = temp.path();
 
-        // Create Python script
-        create_executable(dir, "query_tool.py", "#!/usr/bin/env python3\nprint('hi')").await;
-
-        // Create manifest (without extension)
-        let manifest = r#"{
+        // Create first tool
+        let manifest1 = r#"{
             "name": "query_tool",
             "description": "Query tool",
             "parameters": {"type": "object"}
         }"#;
-        tokio::fs::write(dir.join("query_tool.json"), manifest).await.unwrap();
+        create_tool_dir(dir, "query_tool", manifest1, "#!/usr/bin/env python3\nprint('query')").await;
+
+        // Create second tool
+        let manifest2 = r#"{
+            "name": "calc_tool",
+            "description": "Calculator tool",
+            "parameters": {"type": "object"}
+        }"#;
+        create_tool_dir(dir, "calc_tool", manifest2, "#!/usr/bin/env python3\nprint('calc')").await;
 
         let tools = discover_universal_tools(dir).await.unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "query_tool");
+        assert_eq!(tools.len(), 2);
+        
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"query_tool"));
+        assert!(names.contains(&"calc_tool"));
     }
 
     #[tokio::test]
@@ -280,5 +286,38 @@ mod tests {
     async fn test_discover_nonexistent_dir() {
         let tools = discover_universal_tools("/nonexistent/path/12345").await.unwrap();
         assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_discover_skips_hidden_dirs() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+
+        // Create hidden directory
+        let hidden_dir = dir.join(".hidden_tool");
+        tokio::fs::create_dir(&hidden_dir).await.unwrap();
+        let manifest = r#"{
+            "name": "hidden_tool",
+            "description": "Hidden tool",
+            "parameters": {"type": "object"}
+        }"#;
+        tokio::fs::write(hidden_dir.join("manifest.json"), manifest).await.unwrap();
+
+        let tools = discover_universal_tools(dir).await.unwrap();
+        assert!(tools.is_empty()); // Hidden dirs should be skipped
+    }
+
+    #[tokio::test]
+    async fn test_discover_skips_dirs_without_manifest() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path();
+
+        // Create directory without manifest
+        let tool_dir = dir.join("incomplete_tool");
+        tokio::fs::create_dir(&tool_dir).await.unwrap();
+        tokio::fs::write(tool_dir.join("tool.py"), "#!/usr/bin/env python3").await.unwrap();
+
+        let tools = discover_universal_tools(dir).await.unwrap();
+        assert!(tools.is_empty()); // Dirs without manifest should be skipped
     }
 }
