@@ -168,52 +168,49 @@ impl Agent {
             }
         }
 
-        // Load Universal Tools from workspace tools directory
+        // Load Universal Tools from system-wide tools directory
+        let tools_dir = crate::tools::universal::discovery::default_tools_dir();
         tracing::info!(
-            "Checking for Universal Tools - workspace: {:?}",
-            self.config.workspace
+            "Checking for Universal Tools in system directory: {}",
+            tools_dir.display()
         );
-        if let Some(ref workspace) = self.config.workspace {
-            let tools_dir = workspace.join("tools");
+        if tools_dir.exists() {
             tracing::info!(
-                "Tools directory path: {} (exists: {})",
+                "Loading Universal Tools from '{}' for agent '{}'...",
                 tools_dir.display(),
-                tools_dir.exists()
+                self.config.name
             );
-            if tools_dir.exists() {
-                tracing::info!(
-                    "Loading Universal Tools from '{}' for agent '{}'...",
-                    tools_dir.display(),
-                    self.config.name
-                );
-                use crate::tools::universal::load_universal_tools;
-                match load_universal_tools(&tools_dir).await {
-                    Ok(universal_tools) => {
-                        if universal_tools.is_empty() {
-                            tracing::info!("No Universal Tools found in {}", tools_dir.display());
-                        } else {
-                            tracing::info!(
-                                "✅ Agent loaded {} Universal Tools: {:?}",
-                                universal_tools.len(),
-                                universal_tools.iter().map(|t| t.name()).collect::<Vec<_>>()
-                            );
-                            // Convert UniversalToolAdapter to Arc<dyn Tool>
-                            for tool in universal_tools {
-                                tools.push(Arc::new(tool));
-                            }
+            use crate::tools::universal::load_universal_tools;
+            match load_universal_tools(&tools_dir).await {
+                Ok(universal_tools) => {
+                    if universal_tools.is_empty() {
+                        tracing::info!("No Universal Tools found in {}", tools_dir.display());
+                    } else {
+                        tracing::info!(
+                            "✅ Discovered {} Universal Tools: {:?}",
+                            universal_tools.len(),
+                            universal_tools.iter().map(|t| t.name()).collect::<Vec<_>>()
+                        );
+                        // Convert UniversalToolAdapter to Arc<dyn Tool>
+                        // They will be filtered by tools.enabled config below
+                        for tool in universal_tools {
+                            tools.push(Arc::new(tool));
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!("❌ Failed to load Universal Tools for agent: {}", e);
-                        // Continue without Universal Tools
-                    }
                 }
-            } else {
-                tracing::debug!(
-                    "No tools directory found at {} for agent '{}'",
-                    tools_dir.display(),
-                    self.config.name
-                );
+                Err(e) => {
+                    tracing::warn!("❌ Failed to load Universal Tools: {}", e);
+                    // Continue without Universal Tools
+                }
+            }
+        } else {
+            tracing::debug!(
+                "System tools directory not found at {} - creating it",
+                tools_dir.display()
+            );
+            // Create the directory for future use
+            if let Err(e) = tokio::fs::create_dir_all(&tools_dir).await {
+                tracing::debug!("Failed to create tools directory: {}", e);
             }
         }
 

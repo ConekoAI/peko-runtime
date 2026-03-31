@@ -2,6 +2,9 @@
 //!
 //! SRP: This module ONLY handles discovering universal tools from directories.
 //! No protocol logic, no execution.
+//!
+//! Universal Tools are installed system-wide in `{data_dir}/tools/` and are
+//! enabled per-agent via the `tools.enabled` configuration.
 
 use super::adapter::UniversalToolAdapter;
 use crate::tools::traits::Tool;
@@ -9,6 +12,16 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{debug, trace, warn};
+
+/// Get the default system-wide Universal Tools directory
+///
+/// This is `{data_dir}/tools` where `data_dir` is the Pekobot data directory
+/// (e.g., `~/.local/share/pekobot/tools` on Linux,
+///  `~/Library/Application Support/pekobot/tools` on macOS,
+///  `%APPDATA%/pekobot/tools` on Windows)
+pub fn default_tools_dir() -> PathBuf {
+    crate::common::paths::default_data_dir().join("tools")
+}
 
 /// Discovered tool info
 #[derive(Debug, Clone)]
@@ -20,16 +33,14 @@ pub struct DiscoveredTool {
 
 /// Discover universal tools in a directory
 ///
-/// Looks for:
-/// - `*.json` manifest files with corresponding executables
-/// - Executables without manifests (will use defaults)
+/// Tools are organized in subdirectories, one per tool:
+/// `{tools_dir}/calculator_tool/manifest.json`
+/// `{tools_dir}/calculator_tool/calculator_tool.py`
 pub async fn discover_universal_tools(
     dir: impl AsRef<Path>,
 ) -> Result<Vec<DiscoveredTool>> {
     let dir = dir.as_ref();
     let mut tools = Vec::new();
-    let mut found_executables: HashMap<String, PathBuf> = HashMap::new();
-    let mut found_manifests: HashMap<String, PathBuf> = HashMap::new();
 
     if !dir.exists() {
         trace!("Tools directory does not exist: {:?}", dir);
@@ -43,69 +54,81 @@ pub async fn discover_universal_tools(
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
-        // Skip hidden files
-        if name_str.starts_with('.') {
+        // Skip hidden files and non-directories
+        if name_str.starts_with('.') || !path.is_dir() {
             continue;
         }
 
-        if path.is_file() {
-            if name_str.ends_with(".json") {
-                // Manifest file
-                let base_name = name_str.trim_end_matches(".json").to_string();
-                trace!("Found manifest: {} -> {}", base_name, name_str);
-                found_manifests.insert(base_name, path.clone());
-            } else if is_executable(&path).await {
-                // Executable file
-                let base_name = name_str.to_string();
-                trace!("Found executable: {}", base_name);
-                found_executables.insert(base_name, path.clone());
+        // Look for manifest.json in the tool directory
+        let manifest_path = path.join("manifest.json");
+        if !manifest_path.exists() {
+            trace!("No manifest.json found in {}", path.display());
+            continue;
+        }
+
+        // Try to read manifest to get the actual tool name
+        let manifest_content = match tokio::fs::read_to_string(&manifest_path).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to read manifest {}: {}", manifest_path.display(), e);
+                continue;
             }
-        }
-    }
+        };
 
-    // Match manifests to executables
-    for (name, manifest_path) in &found_manifests {
-        // Look for executable with same base name
-        let executable = found_executables
-            .get(name)
-            .or_else(|| {
-                // Try with common extensions
-                found_executables.get(&format!("{}.py", name))
-                    .or_else(|| found_executables.get(&format!("{}.js", name)))
-                    .or_else(|| found_executables.get(&format!("{}.sh", name)))
-            })
-            .cloned();
-
-        if let Some(exec) = executable {
-            debug!("Matched tool '{}' with manifest", name);
-            tools.push(DiscoveredTool {
-                name: name.clone(),
-                executable: exec,
-                manifest: Some(manifest_path.clone()),
-            });
-        } else {
-            trace!("Manifest '{}' has no matching executable", name);
-        }
-    }
-
-    // Add executables without manifests
-    for (name, exec) in found_executables {
-        if !found_manifests.contains_key(&name) {
-            // Check if this is an extension variant (e.g., foo.py for foo.json)
-            let base = name
-                .trim_end_matches(".py")
-                .trim_end_matches(".js")
-                .trim_end_matches(".sh");
-            
-            if !found_manifests.contains_key(base) {
-                debug!("Found standalone executable: {}", name);
-                tools.push(DiscoveredTool {
-                    name: name.clone(),
-                    executable: exec,
-                    manifest: None,
-                });
+        let manifest: super::Manifest = match serde_json::from_str(&manifest_content) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!("Failed to parse manifest {}: {}", manifest_path.display(), e);
+                continue;
             }
-        }
+        };
+
+        let tool_name = manifest.name;
+
+        // Look for executable - try various naming patterns
+        let executable = 
+            // Try {tool_name}.py
+            if path.join(format!("{}.py", tool_name)).exists() {
+                path.join(format!("{}.py", tool_name))
+            } else if path.join(format!("{}.js", tool_name)).exists() {
+                path.join(format!("{}.js", tool_name))
+            } else if path.join(format!("{}.sh", tool_name)).exists() {
+                path.join(format!("{}.sh", tool_name))
+            } else if path.join(tool_name.clone()).exists() {
+                // Try exact name (binary)
+                path.join(tool_name.clone())
+            } else {
+                // Look for any executable file
+                let mut found = None;
+                let mut tool_entries = match tokio::fs::read_dir(&path).await {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                while let Some(tool_entry) = tool_entries.next_entry().await.ok().flatten() {
+                    let tool_path = tool_entry.path();
+                    if tool_path.is_file() && is_executable(&tool_path).await {
+                        // Skip manifest.json
+                        if tool_path.file_name() != Some(std::ffi::OsStr::new("manifest.json")) {
+                            found = Some(tool_path);
+                            break;
+                        }
+                    }
+                }
+                match found {
+                    Some(p) => p,
+                    None => {
+                        trace!("No executable found for tool '{}' in {}", tool_name, path.display());
+                        continue;
+                    }
+                }
+            };
+
+        debug!("Discovered tool '{}' at {}", tool_name, path.display());
+        tools.push(DiscoveredTool {
+            name: tool_name,
+            executable,
+            manifest: Some(manifest_path),
+        });
     }
 
     Ok(tools)

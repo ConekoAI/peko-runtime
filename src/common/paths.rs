@@ -184,6 +184,13 @@ impl PathResolver {
         self.config_dir.join("mcp.toml")
     }
 
+    /// Get the Universal Tools directory
+    ///
+    /// Path: `{data_dir}/tools`
+    pub fn universal_tools_dir(&self) -> PathBuf {
+        self.data_dir.join("tools")
+    }
+
     // ====================================================================================
     // Data Directory Paths (sessions, workspaces, runtime data)
     // ====================================================================================
