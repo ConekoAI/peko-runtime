@@ -2,154 +2,49 @@
 //!
 //! SRP: This module ONLY handles message transport over stdio.
 //! No protocol parsing, no execution logic.
+//!
+//! This implementation now uses the shared ProcessTransport to avoid
+//! duplication with MCP transport.
 
 use super::protocol::{Request, Response};
-use anyhow::{Context, Result};
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use anyhow::Result;
 use tokio::time::{timeout, Duration};
 
-/// Default timeout for graceful process shutdown (seconds)
-const DEFAULT_KILL_TIMEOUT_SECS: u64 = 5;
+/// Default timeout for tool requests
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Transport handle for communicating with a tool process
+///
+/// This is a thin wrapper around the shared ProcessTransport that
+/// adds protocol-specific request/response handling.
 pub struct Transport {
-    stdin: tokio::process::ChildStdin,
-    stdout_reader: BufReader<tokio::process::ChildStdout>,
-    stderr_reader: Option<BufReader<tokio::process::ChildStderr>>,
-    child: Child,
-    /// Timeout for graceful shutdown before force kill
-    kill_timeout: Duration,
+    inner: crate::tools::shared::ProcessTransport,
+    request_timeout: Duration,
 }
 
 impl Transport {
     /// Spawn a tool and create transport
     /// 
-    /// Automatically detects script files (.py, .js) and uses appropriate interpreter
+    /// Automatically detects script files (.py, .js) and uses appropriate interpreter.
+    /// Uses the shared ProcessTransport for unified process management.
     pub async fn spawn(executable: impl AsRef<std::path::Path>) -> Result<Self> {
-        let executable = executable.as_ref();
-        let extension = executable.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let inner = crate::tools::shared::ProcessTransport::spawn_default(executable).await?;
         
-        // Determine command and arguments based on file extension
-        let (cmd, args): (String, Vec<String>) = match extension {
-            "py" => {
-                // Python script - use python/python3
-                let python_cmd = if cfg!(windows) { "python" } else { "python3" };
-                (python_cmd.to_string(), vec![executable.to_string_lossy().to_string()])
-            }
-            "js" => {
-                // Node.js script - use node
-                ("node".to_string(), vec![executable.to_string_lossy().to_string()])
-            }
-            _ => {
-                // Binary executable - run directly
-                (executable.to_string_lossy().to_string(), vec![])
-            }
-        };
-
-        let mut command = Command::new(&cmd);
-        if !args.is_empty() {
-            command.args(&args);
-        }
-        
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("Failed to spawn tool: {:?} (cmd: {}, args: {:?})", executable, cmd, args))?;
-
-        let stdin = child
-            .stdin
-            .take()
-            .context("Failed to open stdin")?;
-        let stdout = child
-            .stdout
-            .take()
-            .context("Failed to open stdout")?;
-        let stderr = child.stderr.take();
-
         Ok(Self {
-            stdin,
-            stdout_reader: BufReader::new(stdout),
-            stderr_reader: stderr.map(BufReader::new),
-            child,
-            kill_timeout: Duration::from_secs(DEFAULT_KILL_TIMEOUT_SECS),
+            inner,
+            request_timeout: Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS),
         })
     }
 
-    /// Set the kill timeout for graceful shutdown
-    pub fn with_kill_timeout(mut self, secs: u64) -> Self {
-        self.kill_timeout = Duration::from_secs(secs);
+    /// Set the request timeout
+    pub fn with_timeout(mut self, secs: u64) -> Self {
+        self.request_timeout = Duration::from_secs(secs);
         self
     }
 
     /// Gracefully shut down the transport and kill the process if needed
-    ///
-    /// First attempts graceful shutdown, then force kills after timeout.
-    pub async fn shutdown(mut self) -> Result<()> {
-        // Take ownership of child before dropping stdin
-        let mut child = self.child;
-        
-        // Try graceful shutdown first by closing stdin
-        drop(self.stdin);
-
-        // Wait for process to exit with timeout
-        match timeout(self.kill_timeout, child.wait()).await {
-            Ok(Ok(status)) => {
-                tracing::debug!("Tool process exited gracefully with status: {:?}", status);
-                Ok(())
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("Error waiting for tool process: {}", e);
-                // Try to kill anyway
-                Self::force_kill_child(&mut child).await
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "Tool process did not exit within {:?}, force killing",
-                    self.kill_timeout
-                );
-                Self::force_kill_child(&mut child).await
-            }
-        }
-    }
-
-    /// Force kill the process
-    async fn force_kill(&mut self) -> Result<()> {
-        Self::force_kill_child(&mut self.child).await
-    }
-
-    /// Force kill a child process (static version for use during shutdown)
-    async fn force_kill_child(child: &mut Child) -> Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ChildExt;
-            // Send SIGTERM first for graceful termination
-            if let Some(id) = child.id() {
-                unsafe {
-                    libc::kill(id as i32, libc::SIGTERM);
-                }
-            }
-            // Give it a moment to terminate gracefully
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
-        // Force kill
-        match child.kill().await {
-            Ok(()) => {
-                tracing::debug!("Tool process force killed");
-                Ok(())
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
-                // Process already exited
-                tracing::debug!("Tool process already exited");
-                Ok(())
-            }
-            Err(e) => Err(anyhow::anyhow!("Failed to kill tool process: {}", e)),
-        }
+    pub async fn shutdown(self) -> Result<()> {
+        self.inner.shutdown().await
     }
 
     /// Send a request and wait for response
@@ -157,19 +52,19 @@ impl Transport {
         let req_json = serde_json::to_string(req)?;
 
         // Send request
-        self.send_line(&req_json).await?;
+        self.inner.send_line(&req_json).await?;
 
         // Read response with timeout
         let response_json = timeout(
             Duration::from_secs(timeout_secs),
-            self.read_line(),
+            self.inner.read_line(),
         )
         .await
-        .context("Tool request timed out")??;
+        .map_err(|_| anyhow::anyhow!("Tool request timed out"))??;
 
         // Parse response
         let response: Response = serde_json::from_str(&response_json)
-            .with_context(|| format!("Invalid JSON response: {}", response_json))?;
+            .map_err(|e| anyhow::anyhow!("Invalid JSON response: {} (error: {})", response_json, e))?;
 
         // Verify id matches
         if response.id != req.id {
@@ -186,70 +81,7 @@ impl Transport {
     /// Send a notification (fire and forget)
     pub async fn notify(&mut self, req: &Request) -> Result<()> {
         let req_json = serde_json::to_string(req)?;
-        self.send_line(&req_json).await
-    }
-
-    /// Send a line (with newline)
-    async fn send_line(&mut self, line: &str) -> Result<()> {
-        self.stdin
-            .write_all(line.as_bytes())
-            .await
-            .context("Failed to write to tool stdin")?;
-        self.stdin
-            .write_all(b"\n")
-            .await
-            .context("Failed to write newline")?;
-        self.stdin.flush().await.context("Failed to flush stdin")?;
-        Ok(())
-    }
-
-    /// Read a line from stdout
-    async fn read_line(&mut self) -> Result<String> {
-        let mut line = String::new();
-        self.stdout_reader
-            .read_line(&mut line)
-            .await
-            .context("Failed to read from tool stdout")?;
-
-        if line.is_empty() {
-            return Err(anyhow::anyhow!("Tool closed stdout (EOF)"));
-        }
-
-        // Trim trailing newline
-        if line.ends_with('\n') {
-            line.pop();
-            if line.ends_with('\r') {
-                line.pop();
-            }
-        }
-
-        Ok(line)
-    }
-
-    /// Start stderr reader (optional)
-    pub fn start_stderr_reader(&mut self) -> mpsc::Receiver<String> {
-        let (tx, rx) = mpsc::channel(100);
-
-        if let Some(mut reader) = self.stderr_reader.take() {
-            tokio::spawn(async move {
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    match reader.read_line(&mut line).await {
-                        Ok(0) => break, // EOF
-                        Ok(_) => {
-                            let trimmed = line.trim().to_string();
-                            if tx.send(trimmed).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
-        }
-
-        rx
+        self.inner.send_line(&req_json).await
     }
 }
 

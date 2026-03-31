@@ -84,13 +84,21 @@ $toolsDir = "$workspaceDir/tools"
 New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
 Write-Host "Agent directory: $agentDir" -ForegroundColor Gray
 
+# Install pekobot-tool SDK if needed
+Write-Host "Installing pekobot-tool SDK..." -ForegroundColor Yellow
+$sdkPath = "$PSScriptRoot/../../../../tools/python/pekobot_tool"
+Push-Location $sdkPath
+& $pythonCmd -m pip install -e . --quiet 2>&1 | Out-Null
+Pop-Location
+Write-Host "Installed pekobot-tool SDK" -ForegroundColor Green
+
 # Copy Python tool files to agent's tools directory
 $toolSourceDir = "$PSScriptRoot"
 Copy-Item "$toolSourceDir/calculator_tool.py" "$toolsDir/" -Force
 Copy-Item "$toolSourceDir/calculator_tool.json" "$toolsDir/" -Force
 Copy-Item "$toolSourceDir/identity_tool.py" "$toolsDir/" -Force
 Copy-Item "$toolSourceDir/identity_tool.json" "$toolsDir/" -Force
-Copy-Item "$toolSourceDir/pekobot_adapter.py" "$toolsDir/" -Force
+# Note: pekobot_adapter.py no longer needed with SDK
 Write-Host "Copied calculator and identity tools to agent's tools directory" -ForegroundColor Green
 
 # Update agent config to enable calculator and identity tools
