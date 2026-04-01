@@ -476,6 +476,91 @@ impl McpConfig {
             Self::from_toml(&content)
         }
     }
+
+    // =========================================================================
+    // Config Path Resolution Helpers
+    // =========================================================================
+
+    /// Get the default MCP config path (TOML format)
+    ///
+    /// Returns `~/.pekobot/mcp.toml` (or platform equivalent)
+    pub fn default_config_path() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".pekobot")
+            .join("mcp.toml")
+    }
+
+    /// Get the default MCP config path (JSON format)
+    ///
+    /// Returns `~/.pekobot/mcp.json` (or platform equivalent)
+    pub fn default_json_config_path() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".pekobot")
+            .join("mcp.json")
+    }
+
+    /// Find the MCP config file, checking multiple locations
+    ///
+    /// Resolution order:
+    /// 1. Provided path (if Some)
+    /// 2. Default TOML path (if exists)
+    /// 3. Default JSON path (if exists)
+    /// 4. Default TOML path (for creation)
+    ///
+    /// Returns the path and detected format
+    pub fn resolve_config_path(provided: Option<&PathBuf>) -> (PathBuf, ConfigFormat) {
+        if let Some(path) = provided {
+            let format = if path.extension().map(|e| e == "json").unwrap_or(false) {
+                ConfigFormat::Json
+            } else {
+                ConfigFormat::Toml
+            };
+            return (path.clone(), format);
+        }
+
+        let toml_path = Self::default_config_path();
+        let json_path = Self::default_json_config_path();
+
+        if toml_path.exists() {
+            (toml_path, ConfigFormat::Toml)
+        } else if json_path.exists() {
+            (json_path, ConfigFormat::Json)
+        } else {
+            (toml_path, ConfigFormat::Toml) // Default for creation
+        }
+    }
+
+    /// Load config with automatic path resolution
+    ///
+    /// This is a convenience method that handles:
+    /// - Finding the config file (TOML or JSON)
+    /// - Loading and parsing the content
+    /// - Returning a default config if no file exists
+    pub async fn load_with_auto_detect(provided_path: Option<&PathBuf>) -> anyhow::Result<Self> {
+        let (path, format) = Self::resolve_config_path(provided_path);
+
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        let content = tokio::fs::read_to_string(&path).await?;
+        
+        match format {
+            ConfigFormat::Json => Self::from_json(&content),
+            ConfigFormat::Toml => Self::from_toml(&content),
+        }
+    }
+}
+
+/// Config file format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFormat {
+    /// TOML format (default)
+    Toml,
+    /// JSON format (Claude Desktop compatible)
+    Json,
 }
 
 #[cfg(test)]

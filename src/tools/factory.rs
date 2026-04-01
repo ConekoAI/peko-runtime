@@ -35,6 +35,79 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Helper for building tool registries with disabled tool tracking
+///
+/// This eliminates the repetitive pattern of checking if a tool is disabled
+/// and adding it to either the tools list or the disabled list.
+struct ToolRegistryBuilder {
+    tools: Vec<Arc<dyn Tool>>,
+    disabled: Vec<String>,
+    disabled_set: HashSet<String>,
+}
+
+impl ToolRegistryBuilder {
+    fn new(disabled_tools: &[String]) -> Self {
+        let disabled_set: HashSet<String> = disabled_tools
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+        
+        Self {
+            tools: Vec::new(),
+            disabled: Vec::new(),
+            disabled_set,
+        }
+    }
+
+    /// Check if a tool name is disabled (case-insensitive)
+    fn is_disabled(&self, name: &str) -> bool {
+        self.disabled_set.contains(&name.to_lowercase())
+    }
+
+    /// Register a tool if it's not disabled
+    ///
+    /// # Arguments
+    /// * `name` - The tool name to check against disabled list
+    /// * `enabled` - Whether this tool category is enabled in config
+    /// * `factory` - Closure that creates the tool
+    fn register<F>(&mut self, name: &str, enabled: bool, factory: F)
+    where
+        F: FnOnce() -> Arc<dyn Tool>,
+    {
+        if !enabled {
+            return;
+        }
+        
+        if self.is_disabled(name) {
+            self.disabled.push(name.to_string());
+        } else {
+            self.tools.push(factory());
+        }
+    }
+
+    /// Register multiple tools with the same enabled condition
+    fn register_all<F>(&mut self, enabled: bool, factory: F)
+    where
+        F: FnOnce() -> Vec<(String, Arc<dyn Tool>)>,
+    {
+        if !enabled {
+            return;
+        }
+        
+        for (name, tool) in factory() {
+            if self.is_disabled(&name) {
+                self.disabled.push(name);
+            } else {
+                self.tools.push(tool);
+            }
+        }
+    }
+
+    fn build(self) -> (Vec<Arc<dyn Tool>>, Vec<String>) {
+        (self.tools, self.disabled)
+    }
+}
+
 /// MCP configuration for tool factory
 #[derive(Debug, Clone)]
 pub struct McpFactoryConfig {
@@ -242,7 +315,7 @@ impl std::fmt::Debug for ToolCreationResult {
 }
 
 impl ToolFactory {
-    /// Check if a tool is disabled
+    /// Check if a tool is disabled (case-insensitive)
     fn is_disabled(disabled_tools: &[String], tool_name: &str) -> bool {
         disabled_tools
             .iter()
@@ -255,78 +328,56 @@ impl ToolFactory {
     /// from the returned list and won't be shown to the LLM.
     #[must_use]
     pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult {
-        let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
-        let mut disabled = Vec::new();
-        let _disabled_set: HashSet<String> = config
-            .disabled_tools
-            .iter()
-            .map(|s| s.to_lowercase())
-            .collect();
+        let mut registry = ToolRegistryBuilder::new(&config.disabled_tools);
 
         // Filesystem tool
-        if config.enable_filesystem && !Self::is_disabled(&config.disabled_tools, "filesystem") {
-            tools.push(Arc::new(
-                FileSystemTool::new().with_workspace(config.workspace_dir.clone()),
-            ));
-        } else if config.enable_filesystem {
-            disabled.push("filesystem".to_string());
-        }
+        registry.register("filesystem", config.enable_filesystem, || {
+            Arc::new(FileSystemTool::new().with_workspace(config.workspace_dir.clone()))
+        });
 
         // Apply patch tool
-        if config.enable_apply_patch && !Self::is_disabled(&config.disabled_tools, "apply_patch") {
+        registry.register("apply_patch", config.enable_apply_patch, || {
             let patch_config = config.apply_patch_config.clone().unwrap_or_default();
-            tools.push(Arc::new(ApplyPatchTool::new(
-                patch_config,
-                config.workspace_dir.clone(),
-            )));
-        } else if config.enable_apply_patch {
-            disabled.push("apply_patch".to_string());
-        }
+            Arc::new(ApplyPatchTool::new(patch_config, config.workspace_dir.clone()))
+        });
 
         // Shell tool (accepts both enable_shell and enable_process for backward compat)
         let shell_enabled = config.enable_shell || config.enable_process;
-        let shell_disabled = Self::is_disabled(&config.disabled_tools, "shell")
-            || Self::is_disabled(&config.disabled_tools, "process");
-        if shell_enabled && !shell_disabled {
-            tools.push(Arc::new(
-                ShellTool::new().with_workspace(config.workspace_dir.clone()),
-            ));
-        } else if shell_enabled {
-            disabled.push("shell".to_string());
+        // Treat "process" as alias for "shell" in disabled list
+        let shell_disabled = registry.is_disabled("shell") || registry.is_disabled("process");
+        if shell_enabled {
+            if shell_disabled {
+                registry.disabled.push("shell".to_string());
+            } else {
+                registry.tools.push(Arc::new(
+                    ShellTool::new().with_workspace(config.workspace_dir.clone()),
+                ));
+            }
         }
 
-        // Session introspection tools
+        // Session introspection tools (grouped)
         if config.enable_session_tools {
-            // Sessions list
-            if !Self::is_disabled(&config.disabled_tools, "sessions_list") {
-                tools.push(Arc::new(SessionsListTool::new(Box::new(
+            registry.register("sessions_list", true, || {
+                Arc::new(SessionsListTool::new(Box::new(
                     crate::tools::InMemorySessionRegistry::new("main".to_string()),
-                ))));
-            } else {
-                disabled.push("sessions_list".to_string());
-            }
+                )))
+            });
 
-            // Sessions history
-            if !Self::is_disabled(&config.disabled_tools, "sessions_history") {
-                tools.push(Arc::new(SessionsHistoryTool::new(Box::new(
+            registry.register("sessions_history", true, || {
+                Arc::new(SessionsHistoryTool::new(Box::new(
                     crate::tools::InMemorySessionRegistry::new("main".to_string()),
-                ))));
-            } else {
-                disabled.push("sessions_history".to_string());
-            }
+                )))
+            });
 
-            // Session status
-            if !Self::is_disabled(&config.disabled_tools, "session_status") {
-                tools.push(Arc::new(SessionStatusTool::new(Box::new(
+            registry.register("session_status", true, || {
+                Arc::new(SessionStatusTool::new(Box::new(
                     crate::tools::InMemorySessionRegistry::new("main".to_string()),
-                ))));
-            } else {
-                disabled.push("session_status".to_string());
-            }
+                )))
+            });
         }
 
         // Cron tool for scheduled jobs
-        if config.enable_cron && !Self::is_disabled(&config.disabled_tools, "cron") {
+        registry.register("cron", config.enable_cron, || {
             let db_path = config
                 .cron_db_path
                 .clone()
@@ -335,11 +386,10 @@ impl ToolFactory {
                 .instance_id
                 .clone()
                 .unwrap_or_else(|| "default".to_string());
-            let cron_tool = CronTool::new(db_path, instance_id);
-            tools.push(Arc::new(cron_tool));
-        } else if config.enable_cron {
-            disabled.push("cron".to_string());
-        }
+            Arc::new(CronTool::new(db_path, instance_id))
+        });
+
+        let (tools, disabled) = registry.build();
 
         ToolCreationResult {
             tools,
@@ -550,26 +600,10 @@ impl ToolFactory {
         disabled_tools: &[String],
         existing_names: &std::collections::HashSet<String>,
     ) -> anyhow::Result<(Vec<Arc<dyn crate::tools::Tool>>, McpDiscoveryResult)> {
-        use crate::mcp::{create_tool_proxies, McpConfig, McpManager};
+        use crate::mcp::{create_tool_proxies, ConfigFormat, McpConfig, McpManager};
 
-        let config_path = mcp_config.config_path.clone().unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".pekobot")
-                .join("mcp.toml")
-        });
-
-        // Also check for mcp.json if mcp.toml doesn't exist
-        let (config_path, format) = if config_path.exists() {
-            (config_path, "toml")
-        } else {
-            let json_path = config_path.with_extension("json");
-            if json_path.exists() {
-                (json_path, "json")
-            } else {
-                (config_path, "toml") // Default to TOML path for error reporting
-            }
-        };
+        // Use centralized config path resolution
+        let (config_path, format) = McpConfig::resolve_config_path(mcp_config.config_path.as_ref());
 
         // Check if config exists
         if !config_path.exists() {
@@ -587,15 +621,14 @@ impl ToolFactory {
 
         // Load MCP configuration
         tracing::debug!(
-            "Loading MCP config from {:?} (format: {})",
+            "Loading MCP config from {:?} (format: {:?})",
             config_path,
             format
         );
         let content = tokio::fs::read_to_string(&config_path).await?;
-        let config: McpConfig = if format == "json" {
-            McpConfig::from_json(&content)?
-        } else {
-            toml::from_str(&content)?
+        let config: McpConfig = match format {
+            ConfigFormat::Json => McpConfig::from_json(&content)?,
+            ConfigFormat::Toml => toml::from_str(&content)?,
         };
 
         if config.servers.is_empty() {
@@ -687,26 +720,10 @@ impl ToolFactory {
     pub async fn load_mcp_tools(
         mcp_config: &McpFactoryConfig,
     ) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
-        use crate::mcp::{create_tool_proxies, McpConfig, McpManager};
+        use crate::mcp::{create_tool_proxies, ConfigFormat, McpConfig, McpManager};
 
-        let config_path = mcp_config.config_path.clone().unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".pekobot")
-                .join("mcp.toml")
-        });
-
-        // Also check for mcp.json if mcp.toml doesn't exist
-        let config_path = if config_path.exists() {
-            config_path
-        } else {
-            let json_path = config_path.with_extension("json");
-            if json_path.exists() {
-                json_path
-            } else {
-                config_path
-            }
-        };
+        // Use centralized config path resolution
+        let (config_path, format) = McpConfig::resolve_config_path(mcp_config.config_path.as_ref());
 
         if !config_path.exists() {
             tracing::debug!("MCP config not found at {:?}", config_path);
@@ -714,14 +731,9 @@ impl ToolFactory {
         }
 
         let content = tokio::fs::read_to_string(&config_path).await?;
-        let is_json = config_path
-            .extension()
-            .map(|e| e == "json")
-            .unwrap_or(false);
-        let config: McpConfig = if is_json {
-            McpConfig::from_json(&content)?
-        } else {
-            toml::from_str(&content)?
+        let config: McpConfig = match format {
+            ConfigFormat::Json => McpConfig::from_json(&content)?,
+            ConfigFormat::Toml => toml::from_str(&content)?,
         };
 
         if config.servers.is_empty() {

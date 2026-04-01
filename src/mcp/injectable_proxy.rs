@@ -22,7 +22,8 @@ use crate::mcp::{
     tool_proxy::McpToolProxy,
     types::Tool as McpTool,
 };
-use crate::tools::{Tool, ToolContext, ToolError};
+use crate::tools::{Tool, ToolContext};
+use crate::tools::shared::proxy_utils::execute_with_context_handling;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -161,6 +162,21 @@ impl InjectableMcpToolProxy {
 
         Ok(params)
     }
+
+    /// Execute with parameter injection
+    async fn do_execute(&self, params: Value, ctx: Option<&ToolContext>) -> anyhow::Result<Value> {
+        // Inject reserved parameters from context
+        let merged = self.inject_params(params, ctx)?;
+
+        trace!(
+            "Executing {} with {} reserved params injected",
+            self.name(),
+            self.reserved_params.len()
+        );
+
+        // Delegate to inner proxy
+        self.inner.execute(merged).await
+    }
 }
 
 #[async_trait]
@@ -192,8 +208,7 @@ impl Tool for InjectableMcpToolProxy {
             );
         }
 
-        let merged = self.inject_params(params, None)?;
-        self.inner.execute(merged).await
+        self.do_execute(params, None).await
     }
 
     async fn execute_with_context(
@@ -201,68 +216,21 @@ impl Tool for InjectableMcpToolProxy {
         params: Value,
         ctx: &ToolContext,
     ) -> anyhow::Result<Value> {
-        use std::time::Instant;
-
-        // Check abort before starting
-        if ctx.is_aborted() {
-            return Err(ToolError::Aborted.into());
-        }
-
-        // Inject reserved parameters from context
-        let merged = self.inject_params(params, Some(ctx))?;
-
-        trace!(
-            "Executing {} with {} reserved params injected",
-            self.name(),
-            self.reserved_params.len()
-        );
-
-        // Check timeout before starting
-        let start_time = Instant::now();
-        ctx.check_timeout(start_time)?;
-
-        // Report start status
-        ctx.report_status(format!(
-            "Starting {} (via {})",
-            self.name(),
-            self.server_name()
-        ))
-        .await;
-
-        // Execute using the inner proxy's basic execute method
-        // We've already handled context checks and param injection
-        let result = self.inner.execute(merged).await;
-
-        // Check abort after completion
-        if ctx.is_aborted() {
-            return Err(ToolError::Aborted.into());
-        }
-
-        // Check timeout after completion
-        ctx.check_timeout(start_time)?;
-
-        // Report completion status
-        match &result {
-            Ok(_) => {
-                ctx.report_status(format!(
-                    "Completed {} (via {})",
-                    self.name(),
-                    self.server_name()
-                ))
-                .await;
-            }
-            Err(e) => {
-                ctx.report_status(format!(
-                    "Failed {} (via {}): {}",
-                    self.name(),
-                    self.server_name(),
-                    e
-                ))
-                .await;
-            }
-        }
-
-        result
+        // Use the shared context handling utility to eliminate duplication
+        // We pass a closure that captures self and calls our do_execute method
+        let tool_name = self.name().to_string();
+        let server_name = self.server_name().to_string();
+        
+        execute_with_context_handling(
+            ctx,
+            &tool_name,
+            Some(&server_name),
+            || async move {
+                // Inject reserved parameters and execute
+                self.do_execute(params, Some(ctx)).await
+            },
+        )
+        .await
     }
 
     fn supports_progress(&self) -> bool {

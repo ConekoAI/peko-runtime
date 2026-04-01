@@ -61,7 +61,7 @@
 
 // Public exports
 pub use client::{ClientError, McpClient};
-pub use config::{McpConfig, McpServerConfig, ReservedParamConfig, TransportType};
+pub use config::{ConfigFormat, McpConfig, McpServerConfig, ReservedParamConfig, TransportType};
 pub use discovery::{
     discover_servers, ensure_default_config, is_server_installed, list_available_servers,
     mcp_config_path, mcp_install_dir, should_use_mcp_tools, DiscoveredServer, McpServerStatus,
