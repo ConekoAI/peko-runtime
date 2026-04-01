@@ -1,5 +1,11 @@
 //! Apply patch tool with hunks-based matching and atomic rollback
 //!
+//! ⚠️ DEPRECATED: This tool is deprecated in favor of StrReplaceFile.
+//! StrReplaceFile provides simpler, more predictable string-based replacements
+//! without the complexity of hunks-based matching.
+//!
+//! This tool will be removed in a future major version.
+//!
 //! Implements CAPABILITY_INTERFACE.md §3.3
 //! - Hunks-based matching with context_before
 //! - Atomic operations with rollback on failure

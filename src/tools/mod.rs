@@ -15,11 +15,16 @@ pub mod context;
 pub mod cron_tool;
 pub mod factory;
 pub mod filesystem;
+pub mod glob;
+pub mod grep;
 pub mod message_tool;
-pub mod shell;
+pub mod read_file;
 pub mod session_introspection;
 pub mod sessions_send;
+pub mod shell;
+pub mod str_replace_file;
 pub mod traits;
+pub mod write_file;
 
 /// Universal Tool Protocol - Backend-agnostic tool integration
 /// 
@@ -44,14 +49,19 @@ pub use context::{
 pub use cron_tool::CronTool;
 pub use factory::{McpDiscoveryResult, McpFactoryConfig, ToolFactory, ToolFactoryConfig};
 pub use filesystem::FileSystemTool;
+pub use glob::GlobTool;
+pub use grep::GrepTool;
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};
+pub use read_file::ReadFileTool;
 pub use shell::ShellTool;
 pub use session_introspection::{
     AgentSessionRegistry, InMemorySessionRegistry, SessionInfo,
     SessionRegistry as SessionIntrospectionRegistry, SessionStatusTool, SessionsHistoryTool,
     SessionsListTool,
 };
+pub use str_replace_file::StrReplaceFileTool;
 pub use traits::{Tool, ToolError, ToolResult};
+pub use write_file::WriteFileTool;
 
 // Async tool framework re-exports
 pub use crate::agent::async_tool_framework::{

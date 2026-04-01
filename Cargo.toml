@@ -78,6 +78,7 @@ which = "6.0"
 
 # Pattern matching for document parsing
 regex = "1.10"
+glob = "0.3"
 
 # Portable agent dependencies
 tar = "0.4"

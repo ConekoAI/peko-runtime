@@ -1,5 +1,15 @@
 //! File system tool for file operations
 //!
+//! ⚠️ DEPRECATED: This monolithic tool is deprecated in favor of granular tools:
+//! - ReadFile: Read file contents with line ranges
+//! - WriteFile: Write or append to files
+//! - Glob: List files matching patterns
+//! - Grep: Search file contents
+//! - StrReplaceFile: Targeted string replacements
+//!
+//! The granular tools provide better access control and clearer intent.
+//! This tool will be removed in a future major version.
+//!
 //! Implements ADR-014: All-or-nothing permission model
 //! - No sandboxing, no path restrictions
 //! - Full filesystem access when tool is enabled
@@ -604,13 +614,12 @@ Rename or move a file/directory.
 
 // Base64 encoding/decoding helper
 mod base64 {
+    use base64::Engine;
     pub fn encode(input: &[u8]) -> String {
-        use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(input)
     }
 
     pub fn decode(input: &str) -> Result<Vec<u8>, base64::DecodeError> {
-        use base64::Engine;
         base64::engine::general_purpose::STANDARD.decode(input)
     }
 }
