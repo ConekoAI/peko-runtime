@@ -1,0 +1,150 @@
+#!/usr/bin/env pwsh
+# WriteFile Tool E2E Test
+#
+# Tests the WriteFile tool for creating and writing files.
+
+param(
+    [string]$Provider = "kimi"
+)
+
+$ErrorActionPreference = "Stop"
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "WriteFile Tool E2E Test" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+# Check prerequisites
+if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
+    Write-Error "KIMI_API_KEY environment variable not set"
+    exit 1
+}
+
+# Build pekobot
+Write-Host "Building pekobot..." -ForegroundColor Cyan
+pushd "$PSScriptRoot/../../.."
+$env:RUSTFLAGS = "-A warnings"
+cargo build --quiet
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Build failed"
+    exit 1
+}
+popd
+
+# Reset pekobot config data
+$pekobotDir = "$env:USERPROFILE/.pekobot"
+if (Test-Path $pekobotDir) {
+    Remove-Item -Recurse -Force $pekobotDir
+    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
+}
+$DataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+if (Test-Path $DataDir) {
+    Remove-Item -Recurse -Force $DataDir
+    Write-Host "Reset data directory" -ForegroundColor Yellow
+}
+
+# Set API key
+pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+Write-Host "Set API key for $Provider" -ForegroundColor Green
+
+# Create agent with coding template (enables granular tools)
+$agentName = "writefile_test"
+pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
+Write-Host "Created agent: $agentName" -ForegroundColor Green
+
+# Enable granular tools in agent config
+pekobot agent config set $agentName tools.enabled '["shell", "session_status", "ReadFile", "WriteFile", "Glob", "Grep", "StrReplaceFile"]' 2>&1 | Out-Null
+Write-Host "Enabled granular filesystem tools" -ForegroundColor Green
+
+# Get workspace directory
+$workspaceDir = "$env:USERPROFILE/AppData/Roaming/pekobot/workspaces/default/$agentName"
+
+# ============================================================
+# TEST 1: Create a new file with WriteFile
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "TEST 1: Create a new file" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Sending request to create a file..." -ForegroundColor Yellow
+$result = pekobot send $agentName "Use WriteFile to create a file called 'hello.txt' in your workspace with the content 'Hello from WriteFile tool!'" --no-stream 2>&1
+Write-Host "Response: $result"
+
+$testFile = "$workspaceDir/hello.txt"
+if (Test-Path $testFile) {
+    $content = Get-Content $testFile -Raw
+    if ($content -match "Hello from WriteFile") {
+        Write-Host "✓ File created with correct content" -ForegroundColor Green
+    } else {
+        Write-Warning "⚠ File created but content doesn't match"
+    }
+} else {
+    Write-Warning "⚠ File not found after write"
+}
+
+# ============================================================
+# TEST 2: Overwrite existing file
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "TEST 2: Overwrite existing file" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Sending request to overwrite the file..." -ForegroundColor Yellow
+$result = pekobot send $agentName "Overwrite 'hello.txt' with 'Updated content!' using WriteFile" --no-stream 2>&1
+Write-Host "Response: $result"
+
+Start-Sleep -Milliseconds 500
+if (Test-Path $testFile) {
+    $content = Get-Content $testFile -Raw
+    if ($content -match "Updated content") {
+        Write-Host "✓ File overwritten successfully" -ForegroundColor Green
+    } else {
+        Write-Warning "⚠ File content doesn't match expected"
+    }
+} else {
+    Write-Warning "⚠ File not found after overwrite"
+}
+
+# ============================================================
+# TEST 3: Create nested directory file
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "TEST 3: Create file in nested directory" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Sending request to create nested file..." -ForegroundColor Yellow
+$result = pekobot send $agentName "Use WriteFile to create 'subdir/nested.txt' with content 'nested file content' in your workspace. Create the directory if needed." --no-stream 2>&1
+Write-Host "Response: $result"
+
+$nestedFile = "$workspaceDir/subdir/nested.txt"
+Start-Sleep -Milliseconds 500
+if (Test-Path $nestedFile) {
+    $content = Get-Content $nestedFile -Raw
+    if ($content -match "nested file content") {
+        Write-Host "✓ Nested file created successfully" -ForegroundColor Green
+    } else {
+        Write-Warning "⚠ Nested file content doesn't match"
+    }
+} else {
+    Write-Warning "⚠ Nested file not found"
+}
+
+# ============================================================
+# Cleanup
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+# Clean up test files
+if (Test-Path "$workspaceDir/hello.txt") {
+    Remove-Item "$workspaceDir/hello.txt" -Force
+}
+if (Test-Path "$workspaceDir/subdir") {
+    Remove-Item "$workspaceDir/subdir" -Recurse -Force
+}
+Write-Host "Removed test files" -ForegroundColor Green
+
+pekobot agent delete $agentName --force 2>&1 | Out-Null
+Write-Host "Deleted test agent" -ForegroundColor Green
+
+Write-Host "`n✅ WriteFile e2e tests completed!" -ForegroundColor Green
