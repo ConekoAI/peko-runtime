@@ -36,7 +36,7 @@ if (Test-Path $pekobotDir) {
     Remove-Item -Recurse -Force $pekobotDir
     Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
 }
-$DataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
+$DataDir = "$env:APPDATA/pekobot"
 if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
@@ -56,7 +56,7 @@ pekobot agent config set $agentName tools.enabled '["shell", "session_status", "
 Write-Host "Enabled granular filesystem tools" -ForegroundColor Green
 
 # Get workspace directory
-$workspaceDir = "$env:USERPROFILE/AppData/Roaming/pekobot/workspaces/default/$agentName"
+$workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
 
 # Create test file
 Write-Host "Creating test file..." -ForegroundColor Cyan
