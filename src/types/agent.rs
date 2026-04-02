@@ -68,7 +68,8 @@ impl Default for AgentConfig {
 }
 
 /// Prompt configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PromptConfig {
     /// System file configuration (formerly bootstrap)
     #[serde(alias = "bootstrap")]  // Backward compatibility
@@ -101,7 +102,8 @@ impl PromptMode {
 }
 
 /// System file configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SystemFileConfig {
     /// Maximum characters per file
     #[serde(default = "default_max_chars")]
@@ -185,6 +187,7 @@ impl std::fmt::Display for AgentState {
 
 /// Tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ToolConfig {
     /// Enabled built-in tools (whitelist)
     /// If empty, all tools are available (backward compatibility)
@@ -223,6 +226,7 @@ impl Default for ToolConfig {
 
 /// HTTP tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HttpToolConfig {
     /// Allowed domains (empty = all allowed)
     pub allowed_domains: Vec<String>,
@@ -250,6 +254,7 @@ impl Default for HttpToolConfig {
 
 /// Memory tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MemoryToolConfig {
     /// Maximum entries to return per query
     pub max_results: usize,
@@ -268,6 +273,7 @@ impl Default for MemoryToolConfig {
 
 /// Channel configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ChannelConfig {
     /// CLI channel enabled
     pub cli: bool,
@@ -285,7 +291,8 @@ impl Default for ChannelConfig {
 }
 
 /// HTTP channel configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HttpChannelConfig {
     /// Bind address
     pub bind: String,

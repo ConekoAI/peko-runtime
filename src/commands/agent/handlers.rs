@@ -4,7 +4,9 @@
 //! This module only handles CLI-specific concerns like output formatting and
 //! user interaction.
 
+use crate::commands::agent::AgentConfigCommands;
 use crate::commands::GlobalPaths;
+use crate::common::config_path;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::types::agent::{
     AgentCreateRequest, AgentDeleteOptions, AgentExportOptions, AgentImportOptions,
@@ -351,6 +353,92 @@ pub async fn handle_agent_init(
         println!();
         println!("🚀 Run the agent:");
         println!("   pekobot send {}/{} \"Hello\"", "default", result.name);
+    }
+
+    Ok(())
+}
+
+/// Dispatch agent config subcommands
+pub async fn handle_agent_config(
+    cmd: AgentConfigCommands,
+    paths: &GlobalPaths,
+    json: bool,
+) -> anyhow::Result<()> {
+    match cmd {
+        AgentConfigCommands::Get { name, key, team } => {
+            handle_agent_config_get(paths, name, team, key, json).await
+        }
+        AgentConfigCommands::Set { name, key, value, team } => {
+            handle_agent_config_set(paths, name, team, key, value, json).await
+        }
+    }
+}
+
+async fn handle_agent_config_get(
+    paths: &GlobalPaths,
+    name: String,
+    team: Option<String>,
+    key: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let service = paths.services().agent();
+    let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
+
+    let agent = service
+        .get_agent(agent_name, Some(team))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found in team '{}'", agent_name, team))?;
+
+    let value = config_path::get_config_value(&agent.config, &key)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "agent": agent_name,
+                "team": team,
+                "key": key,
+                "value": value
+            })
+        );
+    } else {
+        println!("{}", config_path::format_value(&value)?);
+    }
+
+    Ok(())
+}
+
+async fn handle_agent_config_set(
+    paths: &GlobalPaths,
+    name: String,
+    team: Option<String>,
+    key: String,
+    value: String,
+    json: bool,
+) -> anyhow::Result<()> {
+    let config_service = paths.services().agent_config();
+    let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
+
+    let mut entry = config_service
+        .get(agent_name, Some(team))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found in team '{}'", agent_name, team))?;
+
+    config_path::set_config_value(&mut entry.config, &key, &value)?;
+    config_service.save(agent_name, team, &entry.config).await?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "success": true,
+                "agent": agent_name,
+                "team": team,
+                "key": key
+            })
+        );
+    } else {
+        println!("✅ Set '{}' for agent '{}/{}'", key, team, agent_name);
     }
 
     Ok(())

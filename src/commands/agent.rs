@@ -166,6 +166,39 @@ pub enum AgentCommands {
         #[arg(short, long)]
         force: bool,
     },
+
+    /// Manage agent configuration
+    #[command(subcommand)]
+    Config(AgentConfigCommands),
+}
+
+/// Agent configuration subcommands
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+pub enum AgentConfigCommands {
+    /// Get a configuration value by dot-notation path
+    Get {
+        /// Agent name or team/agent format
+        name: String,
+        /// Configuration key path (e.g., "tools.enabled")
+        key: String,
+        /// Team to look in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
+    },
+
+    /// Set a configuration value by dot-notation path
+    Set {
+        /// Agent name or team/agent format
+        name: String,
+        /// Configuration key path (e.g., "tools.enabled")
+        key: String,
+        /// Value to set (JSON for arrays/objects, plain text for strings)
+        value: String,
+        /// Team to look in (overrides team/ prefix if both provided)
+        #[arg(short, long)]
+        team: Option<String>,
+    },
 }
 
 /// Handle agent commands
@@ -229,5 +262,6 @@ pub async fn handle_agent(
             model,
             force,
         } => handlers::handle_agent_init(paths, path, name, provider, model, force, json).await,
+        AgentCommands::Config(cmd) => handlers::handle_agent_config(cmd, paths, json).await,
     }
 }

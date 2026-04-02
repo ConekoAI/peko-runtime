@@ -11,14 +11,41 @@
 //! - In-memory LRU cache for frequently accessed configs
 //! - All operations are async and team-aware
 //! - Used by both CLI commands and HTTP API routes
+//!
+//! ## API Key Resolution
+//!
+//! When an agent config doesn't have a hardcoded API key, the service resolves
+//! it dynamically at runtime using this priority:
+//! 1. credentials.json (set via `pekobot auth set <provider>`)
+//! 2. Environment variable (e.g., KIMI_API_KEY)
+//!
+//! This allows agent configs to be shared without embedding sensitive credentials.
 
 use crate::common::paths::PathResolver;
 use crate::types::agent::AgentConfig;
+use crate::types::provider::ProviderType;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+/// Credentials store structure (mirrors src/commands/auth.rs)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Credential {
+    provider: String,
+    profile: String,
+    api_key: String,
+    #[allow(dead_code)]
+    created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CredentialsStore {
+    #[allow(dead_code)]
+    version: u32,
+    credentials: HashMap<String, Credential>, // key: "provider:profile"
+}
 
 /// Agent configuration entry with metadata
 #[derive(Debug, Clone)]
@@ -43,6 +70,28 @@ pub struct AgentConfigService {
     cache: RwLock<HashMap<String, AgentConfigEntry>>,
 }
 
+impl std::fmt::Debug for AgentConfigService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfigService")
+            .field("path_resolver", &self.path_resolver)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Clone for AgentConfigService {
+    /// Creates a new instance with an empty cache.
+    ///
+    /// Note: Unlike typical `Clone` semantics, this does NOT copy the in-memory cache.
+    /// Each clone maintains its own independent cache. This is intentional since each
+    /// clone is typically used in a different context (CLI vs API).
+    fn clone(&self) -> Self {
+        Self {
+            path_resolver: self.path_resolver.clone(),
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
 impl AgentConfigService {
     /// Create a new agent configuration service
     pub fn new(path_resolver: PathResolver) -> Self {
@@ -55,6 +104,90 @@ impl AgentConfigService {
     /// Get the canonical config path for an agent
     fn config_path(&self, agent_name: &str, team: Option<&str>) -> PathBuf {
         self.path_resolver.agent_config(agent_name, team)
+    }
+
+    /// Get the credentials file path
+    fn credentials_path(&self) -> PathBuf {
+        self.path_resolver.config_dir().join("credentials.json")
+    }
+
+    /// Load credentials from the credentials.json file
+    fn load_credentials(&self) -> Result<CredentialsStore> {
+        let path = self.credentials_path();
+
+        if !path.exists() {
+            return Ok(CredentialsStore {
+                version: 1,
+                credentials: HashMap::new(),
+            });
+        }
+
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read credentials file: {}", path.display()))?;
+        let store: CredentialsStore = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse credentials file: {}", path.display()))?;
+        Ok(store)
+    }
+
+    /// Resolve API key for a provider using credentials.json first, then env var
+    fn resolve_api_key(&self, provider_type: ProviderType) -> Option<String> {
+        // Map ProviderType to provider name used in credentials.json
+        let provider_name = match provider_type {
+            ProviderType::OpenAI => "openai",
+            ProviderType::Anthropic => "anthropic",
+            ProviderType::Moonshot => "moonshot",
+            ProviderType::Kimi => "kimi",
+            ProviderType::Ollama => return None, // Ollama doesn't need API key
+            ProviderType::OpenAICompatible => {
+                // For OpenAI-compatible, we can't resolve from credentials
+                // Fall through to env var check
+                ""
+            }
+        };
+
+        // Try credentials.json first
+        if !provider_name.is_empty() {
+            if let Ok(credentials) = self.load_credentials() {
+                let key = format!("{}:default", provider_name);
+                if let Some(cred) = credentials.credentials.get(&key) {
+                    debug!("Resolved API key for {} from credentials.json", provider_name);
+                    return Some(cred.api_key.clone());
+                }
+            }
+        }
+
+        // Fall back to environment variable
+        let env_var = match provider_type {
+            ProviderType::OpenAI => "OPENAI_API_KEY",
+            ProviderType::Anthropic => "ANTHROPIC_API_KEY",
+            ProviderType::Moonshot => "MOONSHOT_API_KEY",
+            ProviderType::Kimi => "KIMI_API_KEY",
+            ProviderType::Ollama => return None,
+            ProviderType::OpenAICompatible => "OPENAI_API_KEY",
+        };
+
+        if let Ok(key) = std::env::var(env_var) {
+            if !key.trim().is_empty() {
+                debug!("Resolved API key for {} from env var {}", provider_name, env_var);
+                return Some(key);
+            }
+        }
+
+        warn!("No API key found for provider {:?}", provider_type);
+        None
+    }
+
+    /// Resolve API key for the agent config if not already set
+    fn resolve_config_api_key(&self, config: &mut AgentConfig) {
+        // Only resolve if api_key is not already set (allows override in config.toml)
+        if config.provider.api_key.is_some() {
+            debug!("API key already set in config, skipping resolution");
+            return;
+        }
+
+        if let Some(api_key) = self.resolve_api_key(config.provider.provider_type) {
+            config.provider.api_key = Some(api_key);
+        }
     }
 
     /// Load agent configuration from TOML file
@@ -97,7 +230,10 @@ impl AgentConfigService {
         }
 
         // Load from disk
-        let config = Self::load_config_from_file(&config_path).await?;
+        let mut config = Self::load_config_from_file(&config_path).await?;
+
+        // Resolve API key if not set in config (credentials.json -> env var)
+        self.resolve_config_api_key(&mut config);
 
         let entry = AgentConfigEntry {
             name: agent_name.to_string(),

@@ -3,6 +3,7 @@
 //! This module provides shared functionality used by both CLI and API components,
 //! ensuring consistency in path resolution, configuration handling, etc.
 
+pub mod config_path;
 pub mod identifiers;
 pub mod paths;
 pub mod services;

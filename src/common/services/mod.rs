@@ -43,6 +43,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct ServiceRegistry {
     agent: AgentService,
+    agent_config: AgentConfigService,
     team: TeamService,
     team_management: Option<TeamManagementService>,
 }
@@ -54,6 +55,7 @@ impl ServiceRegistry {
     pub fn new(resolver: PathResolver) -> Self {
         Self {
             agent: AgentService::new(resolver.clone()),
+            agent_config: AgentConfigService::new(resolver.clone()),
             team: TeamService::new(resolver),
             team_management: None,
         }
@@ -72,6 +74,7 @@ impl ServiceRegistry {
 
         Self {
             agent: AgentService::new(resolver.clone()),
+            agent_config: AgentConfigService::new(resolver.clone()),
             team: config_service,
             team_management: Some(team_management),
         }
@@ -80,6 +83,11 @@ impl ServiceRegistry {
     /// Get the agent service
     pub fn agent(&self) -> &AgentService {
         &self.agent
+    }
+
+    /// Get the agent configuration service
+    pub fn agent_config(&self) -> &AgentConfigService {
+        &self.agent_config
     }
 
     /// Get the team service (filesystem operations)

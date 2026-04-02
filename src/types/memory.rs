@@ -99,6 +99,7 @@ pub struct MemoryQuery {
 
 /// Memory configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MemoryConfig {
     /// Enable semantic search (requires embedding model)
     pub enable_semantic_search: bool,
