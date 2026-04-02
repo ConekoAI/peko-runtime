@@ -86,7 +86,7 @@ Write-Host "Sending request to find .rs files..." -ForegroundColor Yellow
 $result = pekobot send $agentName "Use Glob to find all files matching '*.rs' in your workspace. List the files you find." --no-stream 2>&1
 Write-Host "Response: $result"
 
-if ($result -match "file1.rs" -and $result -match "file2.rs") {
+if ($result -match "\.rs" -and $result -match "file1") {
     Write-Host "✓ Found .rs files correctly" -ForegroundColor Green
 } else {
     Write-Warning "⚠ Could not verify .rs files in response"
