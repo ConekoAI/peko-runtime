@@ -185,6 +185,20 @@ impl std::fmt::Display for AgentState {
     }
 }
 
+/// Per-tool settings for granular control
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolSettings {
+    /// Whether this tool is enabled
+    pub enabled: bool,
+}
+
+impl Default for ToolSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// Tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -198,17 +212,49 @@ pub struct ToolConfig {
     pub memory: Option<MemoryToolConfig>,
     /// Custom tool definitions
     pub custom: Option<HashMap<String, serde_json::Value>>,
+    /// Per-tool settings (snake_case keys like "str_replace_file", "write_file", etc.)
+    #[serde(default)]
+    pub read_file: Option<ToolSettings>,
+    #[serde(default)]
+    pub write_file: Option<ToolSettings>,
+    #[serde(default)]
+    pub glob: Option<ToolSettings>,
+    #[serde(default)]
+    pub grep: Option<ToolSettings>,
+    #[serde(default)]
+    pub str_replace_file: Option<ToolSettings>,
 }
 
 impl ToolConfig {
     /// Check if a tool is enabled according to the whitelist
-    /// 
-    /// - If whitelist has entries: only listed tools are allowed
+    ///
+    /// - If whitelist has entries: only listed tools are allowed (unless per-tool enabled=true)
     /// - If whitelist is empty: NO tools allowed (secure by default)
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
         // Check if tool is in the whitelist (case-insensitive)
-        self.enabled.iter()
-            .any(|t| t.eq_ignore_ascii_case(tool_name))
+        let in_whitelist = self.enabled.iter()
+            .any(|t| t.eq_ignore_ascii_case(tool_name));
+
+        // Get per-tool settings if they exist
+        let per_tool_enabled = self.get_tool_settings(tool_name)
+            .map(|s| s.enabled)
+            .unwrap_or(true);
+
+        // Tool is enabled if it's in the whitelist AND not explicitly disabled via per-tool config
+        // OR if it's explicitly enabled via per-tool config (even if not in whitelist)
+        in_whitelist && per_tool_enabled
+    }
+
+    /// Get per-tool settings for a specific tool (by snake_case name)
+    pub fn get_tool_settings(&self, tool_name: &str) -> Option<&ToolSettings> {
+        match tool_name {
+            "read_file" => self.read_file.as_ref(),
+            "write_file" => self.write_file.as_ref(),
+            "glob" => self.glob.as_ref(),
+            "grep" => self.grep.as_ref(),
+            "str_replace_file" => self.str_replace_file.as_ref(),
+            _ => None,
+        }
     }
 }
 
@@ -220,6 +266,11 @@ impl Default for ToolConfig {
             http: None,
             memory: None,
             custom: None,
+            read_file: None,
+            write_file: None,
+            glob: None,
+            grep: None,
+            str_replace_file: None,
         }
     }
 }
@@ -389,8 +440,13 @@ mod tests {
             http: None,
             memory: None,
             custom: None,
+            read_file: None,
+            write_file: None,
+            glob: None,
+            grep: None,
+            str_replace_file: None,
         };
-        
+
         assert!(!config.is_tool_enabled("shell"));
         assert!(!config.is_tool_enabled("filesystem"));
         assert!(!config.is_tool_enabled("any_tool"));
@@ -404,8 +460,13 @@ mod tests {
             http: None,
             memory: None,
             custom: None,
+            read_file: None,
+            write_file: None,
+            glob: None,
+            grep: None,
+            str_replace_file: None,
         };
-        
+
         assert!(config.is_tool_enabled("filesystem"));
         assert!(config.is_tool_enabled("apply_patch"));
         assert!(!config.is_tool_enabled("shell"));

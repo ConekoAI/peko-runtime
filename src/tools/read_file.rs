@@ -156,7 +156,7 @@ fn base64_encode(input: &[u8]) -> String {
 #[async_trait]
 impl Tool for ReadFileTool {
     fn name(&self) -> &'static str {
-        "ReadFile"
+        "read_file"
     }
 
     fn description(&self) -> &'static str {

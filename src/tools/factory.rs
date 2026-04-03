@@ -375,23 +375,23 @@ impl ToolFactory {
         });
 
         // Granular filesystem tools (new)
-        registry.register("ReadFile", config.enable_granular_fs, || {
+        registry.register("read_file", config.enable_granular_fs, || {
             Arc::new(ReadFileTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
-        registry.register("WriteFile", config.enable_granular_fs && config.enable_granular_write, || {
+        registry.register("write_file", config.enable_granular_fs && config.enable_granular_write, || {
             Arc::new(WriteFileTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
-        registry.register("Glob", config.enable_granular_fs, || {
+        registry.register("glob", config.enable_granular_fs, || {
             Arc::new(GlobTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
-        registry.register("Grep", config.enable_granular_fs, || {
+        registry.register("grep", config.enable_granular_fs, || {
             Arc::new(GrepTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
-        registry.register("StrReplaceFile", config.enable_granular_fs && config.enable_granular_write, || {
+        registry.register("str_replace_file", config.enable_granular_fs && config.enable_granular_write, || {
             Arc::new(StrReplaceFileTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
@@ -983,11 +983,11 @@ impl ToolFactory {
             "apply_patch",
             "process", // Deprecated alias for "shell"
             // Granular filesystem tools (recommended)
-            "ReadFile",
-            "WriteFile",
-            "Glob",
-            "Grep",
-            "StrReplaceFile",
+            "read_file",
+            "write_file",
+            "glob",
+            "grep",
+            "str_replace_file",
             // Other tools
             "shell",
             "agent_spawn",
@@ -1074,10 +1074,10 @@ mod tests {
         assert!(names.contains(&"cron"));
         assert!(names.contains(&"agent_spawn"));
         // New granular tools
-        assert!(names.contains(&"ReadFile"));
-        assert!(names.contains(&"WriteFile"));
-        assert!(names.contains(&"Glob"));
-        assert!(names.contains(&"Grep"));
-        assert!(names.contains(&"StrReplaceFile"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"glob"));
+        assert!(names.contains(&"grep"));
+        assert!(names.contains(&"str_replace_file"));
     }
 }

@@ -159,7 +159,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, base64::DecodeError> {
 #[async_trait]
 impl Tool for WriteFileTool {
     fn name(&self) -> &'static str {
-        "WriteFile"
+        "write_file"
     }
 
     fn description(&self) -> &'static str {

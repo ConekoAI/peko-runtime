@@ -278,7 +278,7 @@ impl Default for StrReplaceFileTool {
 #[async_trait]
 impl Tool for StrReplaceFileTool {
     fn name(&self) -> &'static str {
-        "StrReplaceFile"
+        "str_replace_file"
     }
 
     fn description(&self) -> &'static str {

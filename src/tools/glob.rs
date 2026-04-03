@@ -282,7 +282,7 @@ impl Default for GlobTool {
 #[async_trait]
 impl Tool for GlobTool {
     fn name(&self) -> &'static str {
-        "Glob"
+        "glob"
     }
 
     fn description(&self) -> &'static str {

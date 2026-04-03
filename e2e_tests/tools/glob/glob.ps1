@@ -51,24 +51,8 @@ $agentName = "glob_test"
 pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
-# Enable granular tools in agent config by directly editing TOML
-$configPath = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName/config.toml"
-Start-Sleep -Milliseconds 500
-$config = Get-Content $configPath -Raw
-$pattern = '(enabled = \[)[\s\S]*?(\],?)'
-$replacement = @"
-enabled = [
-    "shell",
-    "session_status",
-    "ReadFile",
-    "WriteFile",
-    "Glob",
-    "Grep",
-    "StrReplaceFile",
-]
-"@
-$newConfig = $config -replace $pattern, $replacement
-Set-Content -Path $configPath -Value $newConfig -NoNewline -Encoding UTF8
+# Enable granular tools via agent config set
+pekobot agent config set $agentName tools.enabled '["shell","session_status","read_file","write_file","glob","grep","str_replace_file"]' 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools" -ForegroundColor Green
 
 # Get workspace directory
@@ -99,7 +83,7 @@ Write-Host "TEST 1: Glob *.rs pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .rs files..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your Glob tool (NOT shell) to find all files matching '*.rs' in your workspace. Report exactly what the Glob tool returns." --no-stream 2>&1
+$result = pekobot send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. Report exactly what the glob tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "\.rs" -and $result -match "file1") {
@@ -116,7 +100,7 @@ Write-Host "TEST 2: Glob **/*.rs recursive pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find all .rs files recursively..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your Glob tool (NOT shell) with pattern='**/*.rs' for recursive search in your workspace. Report exactly what the Glob tool returns." --no-stream 2>&1
+$result = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs' for recursive search in your workspace. Report exactly what the glob tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "main.rs") {
@@ -133,7 +117,7 @@ Write-Host "TEST 3: Glob *.py pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .py files..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your Glob tool (NOT shell) with pattern='*.py' to find Python files in your workspace." --no-stream 2>&1
+$result = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='*.py' to find Python files in your workspace." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "script.py") {

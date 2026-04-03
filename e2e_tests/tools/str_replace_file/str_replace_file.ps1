@@ -51,24 +51,8 @@ $agentName = "strreplace_test"
 pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
-# Enable granular tools in agent config by directly editing TOML
-$configPath = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName/config.toml"
-Start-Sleep -Milliseconds 500
-$config = Get-Content $configPath -Raw
-$pattern = '(enabled = \[)[\s\S]*?(\],?)'
-$replacement = @"
-enabled = [
-    "shell",
-    "session_status",
-    "ReadFile",
-    "WriteFile",
-    "Glob",
-    "Grep",
-    "StrReplaceFile",
-]
-"@
-$newConfig = $config -replace $pattern, $replacement
-Set-Content -Path $configPath -Value $newConfig -NoNewline -Encoding UTF8
+# Enable granular tools via agent config set
+pekobot agent config set $agentName tools.enabled '["shell","session_status","read_file","write_file","glob","grep","str_replace_file"]' 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools" -ForegroundColor Green
 
 # Get workspace directory
@@ -94,7 +78,7 @@ Write-Host "TEST 1: Simple string replacement" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to replace 'Original Name' with 'New Name'..." -ForegroundColor Yellow
-$result = pekobot send $agentName 'Use your StrReplaceFile tool (NOT shell) to modify config.txt. Set old_string=`name = "Original Name"` and new_string=`name = "New Name"`. The old string must match exactly.' --no-stream 2>&1
+$result = pekobot send $agentName 'Use your str_replace_file tool (NOT shell) to modify config.txt. Set old_string=`name = "Original Name"` and new_string=`name = "New Name"`. The old string must match exactly.' --no-stream 2>&1
 Write-Host "Response: $result"
 
 Start-Sleep -Milliseconds 500
@@ -113,7 +97,7 @@ Write-Host "TEST 2: Multiple replacements" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to make multiple replacements..." -ForegroundColor Yellow
-$result = pekobot send $agentName 'Use your StrReplaceFile tool (NOT shell) to modify config.txt. Make TWO replacements: 1) old_string=`version = "1.0.0"`, new_string=`version = "2.0.0"` 2) old_string=`debug = true`, new_string=`debug = false`.' --no-stream 2>&1
+$result = pekobot send $agentName 'Use your str_replace_file tool (NOT shell) to modify config.txt. Make TWO replacements: 1) old_string=`version = "1.0.0"`, new_string=`version = "2.0.0"` 2) old_string=`debug = true`, new_string=`debug = false`.' --no-stream 2>&1
 Write-Host "Response: $result"
 
 Start-Sleep -Milliseconds 500
@@ -132,7 +116,7 @@ Write-Host "TEST 3: Verify unchanged when string not found" -ForegroundColor Cya
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request with non-existent string..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your StrReplaceFile tool (NOT shell) to modify config.txt. Try to replace old_string='NONEXISTENT_STRING' with new_string='something'. This should fail since the string doesn't exist." --no-stream 2>&1
+$result = pekobot send $agentName "Use your str_replace_file tool (NOT shell) to modify config.txt. Try to replace old_string='NONEXISTENT_STRING' with new_string='something'. This should fail since the string doesn't exist." --no-stream 2>&1
 Write-Host "Response: $result"
 
 Start-Sleep -Milliseconds 500
