@@ -51,8 +51,24 @@ $agentName = "writefile_test"
 pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
-# Enable granular tools in agent config
-pekobot agent config set $agentName tools.enabled '["shell", "session_status", "ReadFile", "WriteFile", "Glob", "Grep", "StrReplaceFile"]' 2>&1 | Out-Null
+# Enable granular tools in agent config by directly editing TOML
+$configPath = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName/config.toml"
+Start-Sleep -Milliseconds 500
+$config = Get-Content $configPath -Raw
+$pattern = '(enabled = \[)[\s\S]*?(\],?)'
+$replacement = @"
+enabled = [
+    "shell",
+    "session_status",
+    "ReadFile",
+    "WriteFile",
+    "Glob",
+    "Grep",
+    "StrReplaceFile",
+]
+"@
+$newConfig = $config -replace $pattern, $replacement
+Set-Content -Path $configPath -Value $newConfig -NoNewline -Encoding UTF8
 Write-Host "Enabled granular filesystem tools" -ForegroundColor Green
 
 # Get workspace directory
@@ -66,7 +82,7 @@ Write-Host "TEST 1: Create a new file" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to create a file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use WriteFile to create a file called 'hello.txt' in your workspace with the content 'Hello from WriteFile tool!'" --no-stream 2>&1
+$result = pekobot send $agentName "Use your WriteFile tool (NOT shell) to create a file called 'hello.txt' in your workspace with the content 'Hello from WriteFile tool!'. Use mode='create'." --no-stream 2>&1
 Write-Host "Response: $result"
 
 $testFile = "$workspaceDir/hello.txt"
@@ -89,7 +105,7 @@ Write-Host "TEST 2: Overwrite existing file" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to overwrite the file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Overwrite 'hello.txt' with 'Updated content!' using WriteFile" --no-stream 2>&1
+$result = pekobot send $agentName "Use your WriteFile tool (NOT shell) to overwrite 'hello.txt' with the content 'Updated content!' using mode='overwrite'." --no-stream 2>&1
 Write-Host "Response: $result"
 
 Start-Sleep -Milliseconds 500
@@ -112,7 +128,7 @@ Write-Host "TEST 3: Create file in nested directory" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to create nested file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use WriteFile to create 'subdir/nested.txt' with content 'nested file content' in your workspace. Create the directory if needed." --no-stream 2>&1
+$result = pekobot send $agentName "Use your WriteFile tool (NOT shell) to create 'subdir/nested.txt' with content 'nested file content' in your workspace. Create any needed directories with mode='create'." --no-stream 2>&1
 Write-Host "Response: $result"
 
 $nestedFile = "$workspaceDir/subdir/nested.txt"

@@ -105,15 +105,36 @@ impl Agent {
     async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            SessionStatusTool, ShellTool, SessionsSendTool, Tool,
-            ToolFactory,
+            GlobTool, GrepTool, ReadFileTool, SessionStatusTool, ShellTool,
+            SessionsSendTool, StrReplaceFileTool, Tool, ToolFactory, WriteFileTool,
         };
         use crate::tools::session_introspection::AgentSessionRegistry;
 
-        // Create core tools only (web tools now provided via MCP)
+        // Create core tools (granular filesystem tools are now preferred over FileSystemTool)
+        // Initialize granular tools with workspace if configured
         let mut tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(FileSystemTool::new()),
             Arc::new(ShellTool::new()),
+            // Granular filesystem tools - initialized with workspace if available
+            Arc::new(
+                ReadFileTool::new()
+                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
+            ),
+            Arc::new(
+                WriteFileTool::new()
+                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
+            ),
+            Arc::new(
+                GlobTool::new()
+                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
+            ),
+            Arc::new(
+                GrepTool::new()
+                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
+            ),
+            Arc::new(
+                StrReplaceFileTool::new()
+                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
+            ),
         ];
 
         // Add session introspection tools backed by the real session manager

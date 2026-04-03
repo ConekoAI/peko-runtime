@@ -51,8 +51,24 @@ $agentName = "grep_test"
 pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
-# Enable granular tools in agent config
-pekobot agent config set $agentName tools.enabled '["shell", "session_status", "ReadFile", "WriteFile", "Glob", "Grep", "StrReplaceFile"]' 2>&1 | Out-Null
+# Enable granular tools in agent config by directly editing TOML
+$configPath = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName/config.toml"
+Start-Sleep -Milliseconds 500
+$config = Get-Content $configPath -Raw
+$pattern = '(enabled = \[)[\s\S]*?(\],?)'
+$replacement = @"
+enabled = [
+    "shell",
+    "session_status",
+    "ReadFile",
+    "WriteFile",
+    "Glob",
+    "Grep",
+    "StrReplaceFile",
+]
+"@
+$newConfig = $config -replace $pattern, $replacement
+Set-Content -Path $configPath -Value $newConfig -NoNewline -Encoding UTF8
 Write-Host "Enabled granular filesystem tools" -ForegroundColor Green
 
 # Get workspace directory
@@ -93,7 +109,7 @@ Write-Host "TEST 1: Search for 'fn' pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for 'fn'..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use Grep to search for 'fn ' (function definition) in '*.rs' files in your workspace. Report what functions you find." --no-stream 2>&1
+$result = pekobot send $agentName "Use your Grep tool (NOT shell) with pattern='fn ' and glob='*.rs' to search for Rust function definitions in your workspace. Report exactly what the Grep tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "main" -or $result -match "helper") {
@@ -110,7 +126,7 @@ Write-Host "TEST 2: Search for TODO|FIXME pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for TODO..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use Grep to search for 'TODO|FIXME' in your workspace (case-insensitive). Tell me what you found." --no-stream 2>&1
+$result = pekobot send $agentName "Use your Grep tool (NOT shell) with pattern='TODO|FIXME' and case_insensitive=true to search in your workspace. Report exactly what the Grep tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "TODO" -or $result -match "FIXME") {
@@ -127,7 +143,7 @@ Write-Host "TEST 3: Search with regex pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search with regex..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use Grep to search for 'def ' in '*.py' files (Python function definitions). Report the matches." --no-stream 2>&1
+$result = pekobot send $agentName "Use your Grep tool (NOT shell) with pattern='def ' and glob='*.py' to search for Python function definitions. Report exactly what the Grep tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "calculate" -or $result -match "helper") {
