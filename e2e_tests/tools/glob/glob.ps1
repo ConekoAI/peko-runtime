@@ -76,10 +76,28 @@ Source file
 Write-Host "Created test files: file1.rs, file2.rs, script.py, src/main.rs" -ForegroundColor Green
 
 # ============================================================
-# TEST 1: Glob *.rs files
+# TEST 1: Glob *.py files
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 1: Glob *.rs pattern" -ForegroundColor Cyan
+Write-Host "TEST 1: Glob *.py pattern" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Sending request to find .py files..." -ForegroundColor Yellow
+Start-Sleep -Seconds 2
+$result = pekobot send $agentName "Use your glob tool with pattern='*.py'. Report the raw JSON output from the tool." --no-stream 2>&1
+Write-Host "Response: $result"
+
+if ($result -match "script.py") {
+    Write-Host "✓ Found .py files correctly" -ForegroundColor Green
+} else {
+    Write-Warning "⚠ Could not verify .py files in response"
+}
+
+# ============================================================
+# TEST 2: Glob *.rs files
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "TEST 2: Glob *.rs pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .rs files..." -ForegroundColor Yellow
@@ -92,38 +110,25 @@ if ($result -match "\.rs" -and $result -match "file1") {
     Write-Warning "⚠ Could not verify .rs files in response"
 }
 
+# Use read_file to reset context between glob calls
+$null = pekobot send $agentName "Use your read_file tool (NOT shell) to read the file 'file1.rs'. Report the content." --no-stream 2>&1
+
 # ============================================================
-# TEST 2: Glob **/*.rs recursive
+# TEST 3: Glob **/*.rs (recursive) - needs fresh context
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 2: Glob **/*.rs recursive pattern" -ForegroundColor Cyan
+Write-Host "TEST 3: Glob **/*.rs recursive pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find all .rs files recursively..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs' for recursive search in your workspace. Report exactly what the glob tool returns." --no-stream 2>&1
+Start-Sleep -Seconds 2
+$result = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. Report exactly what the glob tool returns." --no-stream 2>&1
 Write-Host "Response: $result"
 
 if ($result -match "main.rs") {
     Write-Host "✓ Found recursive .rs files correctly" -ForegroundColor Green
 } else {
     Write-Warning "⚠ Could not verify recursive search in response"
-}
-
-# ============================================================
-# TEST 3: Glob *.py files
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 3: Glob *.py pattern" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "Sending request to find .py files..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='*.py' to find Python files in your workspace." --no-stream 2>&1
-Write-Host "Response: $result"
-
-if ($result -match "script.py") {
-    Write-Host "✓ Found .py files correctly" -ForegroundColor Green
-} else {
-    Write-Warning "⚠ Could not verify .py files in response"
 }
 
 # ============================================================

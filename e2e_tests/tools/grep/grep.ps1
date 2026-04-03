@@ -86,10 +86,27 @@ FIXME: Handle errors properly
 Write-Host "Created test files: main.rs, script.py, notes.txt" -ForegroundColor Green
 
 # ============================================================
-# TEST 1: Search for function definitions
+# TEST 1: Search with regex pattern (run FIRST to avoid context issues)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 1: Search for 'fn' pattern" -ForegroundColor Cyan
+Write-Host "TEST 1: Search with regex pattern" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Sending request to search for 'calculate'..." -ForegroundColor Yellow
+$result = pekobot send $agentName "Use your grep tool with pattern='calculate' to search for the word 'calculate' in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
+Write-Host "Response: $result"
+
+if ($result -match "calculate") {
+    Write-Host "✓ Found Python function definitions" -ForegroundColor Green
+} else {
+    Write-Warning "⚠ Could not verify Python functions in response"
+}
+
+# ============================================================
+# TEST 2: Search for function definitions
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "TEST 2: Search for 'fn' pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for 'fn'..." -ForegroundColor Yellow
@@ -103,10 +120,10 @@ if ($result -match "main" -or $result -match "helper") {
 }
 
 # ============================================================
-# TEST 2: Search for TODO/FIXME
+# TEST 3: Search for TODO/FIXME
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 2: Search for TODO|FIXME pattern" -ForegroundColor Cyan
+Write-Host "TEST 3: Search for TODO|FIXME pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for TODO..." -ForegroundColor Yellow
@@ -117,23 +134,6 @@ if ($result -match "TODO" -or $result -match "FIXME") {
     Write-Host "✓ Found TODO/FIXME comments" -ForegroundColor Green
 } else {
     Write-Warning "⚠ Could not verify TODO/FIXME in response"
-}
-
-# ============================================================
-# TEST 3: Search with regex pattern
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 3: Search with regex pattern" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "Sending request to search with regex..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your grep tool (NOT shell) with pattern='def ' and glob='*.py' to search for Python function definitions. Report exactly what the grep tool returns." --no-stream 2>&1
-Write-Host "Response: $result"
-
-if ($result -match "calculate" -or $result -match "helper") {
-    Write-Host "✓ Found Python function definitions" -ForegroundColor Green
-} else {
-    Write-Warning "⚠ Could not verify Python functions in response"
 }
 
 # ============================================================
