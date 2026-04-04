@@ -17,10 +17,15 @@ pub mod stateless_manager;
 pub use stateless_manager::{StatelessAgentManager, StatelessManagerEvent};
 
 // State management for stateless architecture
+// NOTE: config_registry is deprecated - use AgentConfigService from common::services
+#[allow(deprecated)]
 pub mod config_registry;
 pub mod stateless_service;
 
-pub use config_registry::{AgentConfigEntry, ConfigRegistry};
+// Deprecated: use AgentConfigEntry from crate::common::services::config_authority
+#[deprecated(since = "0.11.0", note = "Use AgentConfigEntry from crate::common::services::config_authority instead")]
+pub use config_registry::AgentConfigEntry;
+pub use config_registry::ConfigRegistry;
 pub use stateless_service::{
     ExecutionContext, ExecutionRequest, ExecutionResult, StatelessAgentService,
 };

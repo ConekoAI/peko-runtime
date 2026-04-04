@@ -3,25 +3,21 @@
 //! This module provides business logic services that can be used by both
 //! CLI commands and API routes, ensuring consistent behavior across interfaces.
 
-pub mod agent_config_builder;
 pub mod agent_config_service;
-pub mod agent_creation_service;
 pub mod agent_service;
 pub mod agent_validator;
-pub mod auth_resolver;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub mod session_service;
 pub mod team_management_service;
 pub mod team_service;
 
-// ADR-016: MessageRequest, MessageResult, ToolCallInfo re-exported from agent::stateless_service
-pub use agent_config_builder::{build_config_with_auth, build_default_config, AgentConfigBuilder};
-pub use agent_config_service::{AgentConfigEntry, AgentConfigService};
-// AgentCreationService is deprecated - use AgentService::create_agent() instead
-// pub use agent_creation_service::...;
+// ConfigAuthority - the new central config system
+pub mod config_authority;
+pub use config_authority::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl, ConfigSource};
+
+pub use agent_config_service::AgentConfigService;
 pub use agent_service::AgentService;
 pub use agent_validator::AgentValidator;
-pub use auth_resolver::{AuthResolver, DirectAuthResolver, FilesystemAuthResolver};
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
 pub use session_service::{
     BranchResult, HistoryEvent, HistoryQuery, HistoryResult, HistorySummary, SessionDetails,
@@ -30,8 +26,8 @@ pub use session_service::{
 pub use team_management_service::TeamManagementService;
 pub use team_service::TeamService;
 
-// Re-export config source type from config_registry for backward compatibility
-pub use crate::agent::config_registry::ConfigSource;
+// Note: ConfigSource is now exported from config_authority module above
+// For backward compatibility, config_registry::ConfigSource is re-exported via agent::mod.rs
 
 use crate::common::paths::PathResolver;
 use std::sync::Arc;

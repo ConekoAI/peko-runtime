@@ -8,11 +8,12 @@ use crate::common::identifiers::{
     parse_agent_identifier_with_override, validate_agent_name, ValidationError,
 };
 use crate::common::paths::PathResolver;
-use crate::common::services::agent_config_builder::build_default_config;
 use crate::common::services::TeamService;
 use crate::common::types::agent::*;
-use crate::types::agent::AgentConfig;
+use crate::types::agent::{AgentConfig, PromptConfig, SystemFileConfig};
+use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Service for managing agents on the filesystem
@@ -20,6 +21,112 @@ use std::path::{Path, PathBuf};
 pub struct AgentService {
     resolver: PathResolver,
     team_service: TeamService,
+}
+
+// Helper functions for building default agent config (previously in deprecated agent_config_builder)
+
+fn parse_provider_type(provider: &str) -> ProviderType {
+    match provider.to_lowercase().as_str() {
+        "openai" => ProviderType::OpenAI,
+        "anthropic" => ProviderType::Anthropic,
+        "ollama" => ProviderType::Ollama,
+        "moonshot" => ProviderType::Moonshot,
+        "kimi" => ProviderType::Kimi,
+        "kimi_code" | "kimi-code" => ProviderType::Kimi,
+        _ => ProviderType::OpenAI,
+    }
+}
+
+fn default_model_name(provider_type: ProviderType) -> String {
+    match provider_type {
+        ProviderType::OpenAI => "gpt-4o-mini".to_string(),
+        ProviderType::Anthropic => "claude-3-sonnet".to_string(),
+        ProviderType::Ollama => "llama3.2".to_string(),
+        ProviderType::OpenAICompatible => "default".to_string(),
+        ProviderType::Moonshot => "kimi-k2.5".to_string(),
+        ProviderType::Kimi => "k2p5".to_string(),
+    }
+}
+
+fn api_key_env_var(provider_type: ProviderType) -> Option<String> {
+    match provider_type {
+        ProviderType::OpenAI => Some("OPENAI_API_KEY".to_string()),
+        ProviderType::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
+        ProviderType::Moonshot => Some("MOONSHOT_API_KEY".to_string()),
+        ProviderType::Kimi => Some("KIMI_API_KEY".to_string()),
+        _ => None,
+    }
+}
+
+fn base_url(provider_type: ProviderType) -> Option<String> {
+    match provider_type {
+        ProviderType::Ollama => Some("http://localhost:11434".to_string()),
+        ProviderType::Moonshot => Some("https://api.moonshot.cn/v1".to_string()),
+        ProviderType::Kimi => Some("https://api.kimi.com/coding".to_string()),
+        _ => None,
+    }
+}
+
+fn build_default_agent_config(
+    name: &str,
+    provider: &str,
+    model: Option<String>,
+) -> AgentConfig {
+    let provider_type = parse_provider_type(provider);
+    let default_model = model.unwrap_or_else(|| "default".to_string());
+
+    let mut models = HashMap::new();
+    models.insert(
+        "default".to_string(),
+        ModelConfig {
+            name: default_model_name(provider_type),
+            max_tokens: 4096,
+            temperature: 0.7,
+            top_p: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+        },
+    );
+
+    // Try to get API key from environment
+    let api_key_env = api_key_env_var(provider_type);
+    let api_key = api_key_env.as_ref().and_then(|env| std::env::var(env).ok());
+
+    AgentConfig {
+        version: "1.0".to_string(),
+        name: name.to_string(),
+        description: Some(format!("Pekobot agent: {name}")),
+        team: None,
+        tenant: None,
+        capabilities: vec![],
+        provider: ProviderConfig {
+            provider_type,
+            api_key,
+            api_key_env,
+            base_url: base_url(provider_type),
+            default_model,
+            models,
+            timeout_seconds: 60,
+            max_retries: 3,
+            retry_delay_ms: 1000,
+        },
+        // Include system file configuration for prompt building
+        prompt: Some(PromptConfig {
+            system: Some(SystemFileConfig {
+                max_chars_per_file: 20_000,
+                files: Some(vec![
+                    "AGENTS.md".to_string(),
+                    "SOUL.md".to_string(),
+                    "TOOLS.md".to_string(),
+                    "IDENTITY.md".to_string(),
+                    "USER.md".to_string(),
+                    "MEMORY.md".to_string(),
+                ]),
+            }),
+        }),
+        // Use defaults for the rest
+        ..Default::default()
+    }
 }
 
 impl AgentService {
@@ -184,7 +291,7 @@ impl AgentService {
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
         // Build config with workspace set
-        let mut config = build_default_config(agent_name, &request.provider, request.model, None);
+        let mut config = build_default_agent_config(agent_name, &request.provider, request.model);
         config.workspace = Some(workspace_dir.clone());
         let toml = toml::to_string_pretty(&config)?;
 
@@ -389,7 +496,7 @@ impl AgentService {
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
         // Create config with workspace set
-        let mut config = build_default_config(&agent_name, &request.provider, request.model, None);
+        let mut config = build_default_agent_config(&agent_name, &request.provider, request.model);
         config.workspace = Some(workspace_dir.clone());
         let config_content = toml::to_string_pretty(&config)?;
         tokio::fs::write(&config_path, config_content).await?;

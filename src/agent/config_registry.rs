@@ -1,9 +1,20 @@
+#![deprecated(since = "0.11.0", note = "Use AgentConfigService or ConfigAuthority from crate::common::services instead. This module will be removed after migration.")]
+
 //! Configuration Registry - Read-only agent configuration store
 //!
-//! This module provides the ConfigRegistry which replaces the InstanceStore
+//! # Deprecation Notice
+//!
+//! This module is **deprecated**. Use `AgentConfigService` or `ConfigAuthority`
+//! from `crate::common::services` instead.
+//!
+//! This module will be removed after migration to the unified config system.
+//!
+//! ## Historical Context
+//!
+//! This module previously provided the ConfigRegistry which replaced the InstanceStore
 //! in the stateless cold-start architecture. Instead of tracking running
-//! agent instances, it maintains a registry of agent configurations that
-//! can be used to cold-start agents on demand.
+//! agent instances, it maintained a registry of agent configurations that
+//! could be used to cold-start agents on demand.
 //!
 //! ## Architecture
 //!
@@ -11,6 +22,9 @@
 //! - In-memory cache for fast lookups
 //! - Content-addressable by agent name
 //! - Immutable once registered (versioned updates)
+//!
+//! **Note:** The new canonical location for agent configs is TOML files at
+//! `~/.pekobot/teams/{team}/agents/{agent}/config.toml`
 
 use crate::image::manifest::ImageManifest;
 use crate::image::registry::ImageRegistry;
