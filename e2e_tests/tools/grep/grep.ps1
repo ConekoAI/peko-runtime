@@ -52,7 +52,7 @@ pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable granular tools via agent config set
-pekobot agent config set $agentName tools.enabled '["shell","session_status","read_file","write_file","glob","grep","str_replace_file"]' 2>&1 | Out-Null
+pekobot agent config set $agentName tools.enabled '[\"shell\",\"session_status\",\"read_file\",\"write_file\",\"glob\",\"grep\",\"str_replace_file\"]' 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools" -ForegroundColor Green
 
 # Get workspace directory
