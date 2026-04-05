@@ -115,12 +115,7 @@ fn build_default_agent_config(
             system: Some(SystemFileConfig {
                 max_chars_per_file: 20_000,
                 files: Some(vec![
-                    "AGENTS.md".to_string(),
-                    "SOUL.md".to_string(),
-                    "TOOLS.md".to_string(),
-                    "IDENTITY.md".to_string(),
-                    "USER.md".to_string(),
-                    "MEMORY.md".to_string(),
+                    "SYSTEM.md".to_string(),
                 ]),
             }),
         }),

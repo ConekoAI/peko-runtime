@@ -303,7 +303,7 @@ You are {{agent_name}}.
 Be safe.
 
 {{runtime}}"#;
-        std::fs::write(tmp.path().join("AGENTS.md"), template).unwrap();
+        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("test-agent")
             .with_workspace(tmp.path())
@@ -341,7 +341,7 @@ Be safe.
 
         let tmp = TempDir::new().unwrap();
         let template = "{{skills}}";
-        std::fs::write(tmp.path().join("AGENTS.md"), template).unwrap();
+        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let skills = vec![
             Skill {
@@ -373,7 +373,7 @@ Be safe.
 Workspace: {{workspace}}
 Channel: {{channel}}
 Level: {{thinking_level}}"#;
-        std::fs::write(tmp.path().join("AGENTS.md"), template).unwrap();
+        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("my-agent")
             .with_workspace(tmp.path())
@@ -393,7 +393,7 @@ Level: {{thinking_level}}"#;
     fn test_conditional_sections() {
         let tmp = TempDir::new().unwrap();
         let template = "{{sandbox}}\n{{model_aliases}}\n{{self_update}}";
-        std::fs::write(tmp.path().join("AGENTS.md"), template).unwrap();
+        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         // With all conditions enabled
         let builder = SystemPromptBuilder::new("test-agent")
@@ -415,7 +415,7 @@ Level: {{thinking_level}}"#;
     fn test_conditional_sections_disabled() {
         let tmp = TempDir::new().unwrap();
         let template = "{{sandbox}}\n{{model_aliases}}";
-        std::fs::write(tmp.path().join("AGENTS.md"), template).unwrap();
+        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         // With all conditions disabled
         let builder = SystemPromptBuilder::new("test-agent")
@@ -439,7 +439,7 @@ You are {{agent_name}}.
 {{tools}}
 
 {{runtime}}"#;
-        std::fs::write(tmp.path().join("AGENTS.md"), template).unwrap();
+        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("test-agent")
             .with_workspace(tmp.path())

@@ -24,15 +24,9 @@ impl BootstrapConfig {
     pub fn with_default_files() -> Self {
         Self {
             workspace_dir: PathBuf::from("."),
-            max_chars_per_file: 20_000, // Match OpenClaw default
+            max_chars_per_file: 20_000,
             files: vec![
-                BootstrapFile::required("AGENTS.md"),   // Operating instructions
-                BootstrapFile::optional("SOUL.md"),     // Persona/tone
-                BootstrapFile::optional("TOOLS.md"),    // Tool guidance
-                BootstrapFile::optional("IDENTITY.md"), // Agent identity
-                BootstrapFile::optional("USER.md"),     // User info
-                BootstrapFile::optional("MEMORY.md"),   // Long-term memory
-                                                        // Note: HEARTBEAT.md is NOT injected - it's read proactively on heartbeat polls
+                BootstrapFile::required("SYSTEM.md"), // Essential system instructions
             ],
         }
     }
@@ -61,12 +55,7 @@ impl BootstrapConfig {
             workspace_dir,
             max_chars_per_file: 20_000,
             files: vec![
-                BootstrapFile::required("AGENTS.md"),
-                BootstrapFile::optional("SOUL.md"),
-                BootstrapFile::optional("TOOLS.md"),
-                BootstrapFile::optional("IDENTITY.md"),
-                BootstrapFile::optional("USER.md"),
-                BootstrapFile::optional("MEMORY.md"),
+                BootstrapFile::required("SYSTEM.md"),
             ],
         }
     }
@@ -181,7 +170,7 @@ mod tests {
     fn test_bootstrap_config_default() {
         let config = BootstrapConfig::default();
         assert_eq!(config.max_chars_per_file, 20_000);
-        assert_eq!(config.files.len(), 6); // AGENTS, SOUL, TOOLS, IDENTITY, USER, MEMORY (HEARTBEAT.md is read proactively, not injected)
+        assert_eq!(config.files.len(), 1); // Only SYSTEM.md
     }
 
     #[test]
