@@ -12,6 +12,10 @@ use crate::commands::GlobalPaths;
 use crate::tools::traits::Tool;
 use clap::Subcommand;
 use std::path::PathBuf;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 /// Tool management subcommands
 ///
@@ -49,10 +53,13 @@ pub enum ToolCommands {
     /// Install a Universal Tool from local file or directory
     ///
     /// Installs the tool system-wide so it can be used by any agent.
-    /// The tool must have a manifest file (.json) alongside the executable.
+    /// 
+    /// If a JSON manifest file is provided, it will be used directly.
+    /// If no manifest is found, the tool will be run with `tool/describe`
+    /// to automatically generate the manifest (requires Python/Node runtime).
     ///
     /// Examples:
-    ///   # Install from Python file (looks for my_tool.json)
+    ///   # Install from Python file (auto-generates manifest if .json not found)
     ///   pekobot tool install ./my_tool.py
     ///
     ///   # Install from directory containing tool files
@@ -114,6 +121,118 @@ fn tools_dir() -> PathBuf {
     crate::tools::universal::discovery::default_tools_dir()
 }
 
+/// Generate manifest by running tool/describe on the executable
+///
+/// This allows installing SDK-based tools without a separate JSON manifest.
+/// The tool is spawned, sent a tool/describe request, and the response
+/// is used to generate the manifest.
+async fn generate_manifest_from_tool(executable: &PathBuf) -> anyhow::Result<crate::tools::universal::Manifest> {
+    use serde_json::Value;
+    
+    println!("  🔍 No JSON manifest found, generating from tool/describe...");
+    
+    // Determine how to run the executable based on extension
+    let (cmd, args): (&str, Vec<&str>) = if executable.extension().map(|e| e == "py").unwrap_or(false) {
+        ("python", vec![executable.to_str().unwrap()])
+    } else if executable.extension().map(|e| e == "js").unwrap_or(false) {
+        ("node", vec![executable.to_str().unwrap()])
+    } else {
+        // Assume it's a binary
+        (executable.to_str().unwrap(), vec![])
+    };
+    
+    // Spawn the tool process
+    let mut child = Command::new(cmd)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("Failed to spawn tool: {}. Is {} installed?", e, cmd))?;
+    
+    // Send tool/describe request
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        "method": "tool/describe"
+    });
+    
+    let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdin"))?;
+    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("Failed to open stdout"))?;
+    
+    // Write request
+    let mut stdin = stdin;
+    stdin.write_all(format!("{}\n", request.to_string()).as_bytes()).await?;
+    stdin.flush().await?;
+    drop(stdin); // Close stdin
+    
+    // Read response with timeout
+    let reader = BufReader::new(stdout);
+    let mut lines = reader.lines();
+    
+    let line = timeout(Duration::from_secs(10), lines.next_line())
+        .await
+        .map_err(|_| anyhow::anyhow!("Timeout waiting for tool/describe response"))?
+        .map_err(|e| anyhow::anyhow!("Failed to read response: {}", e))?
+        .ok_or_else(|| anyhow::anyhow!("No response from tool"))?;
+    
+    // Kill the process
+    let _ = child.kill().await;
+    
+    // Parse response
+    let response: Value = serde_json::from_str(&line)
+        .map_err(|e| anyhow::anyhow!("Invalid JSON response: {}", e))?;
+    
+    let result = response.get("result")
+        .ok_or_else(|| anyhow::anyhow!("Response missing 'result' field: {}", line))?;
+    
+    // Convert the describe result to a Manifest
+    let name = result.get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("Response missing 'name' field"))?
+        .to_string();
+    
+    let description = result.get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    
+    let parameters = result.get("parameters")
+        .cloned()
+        .unwrap_or(serde_json::json!({"type": "object"}));
+    
+    // Handle reserved_parameters from the describe response
+    let reserved_parameters = result.get("reserved_parameters")
+        .and_then(|v| {
+            // Convert from SDK format to manifest format
+            let mut reserved = std::collections::HashMap::new();
+            if let Some(obj) = v.as_object() {
+                for (key, _) in obj {
+                    reserved.insert(key.clone(), crate::tools::universal::ReservedParam {
+                        source: crate::tools::universal::ParamSource::Runtime { 
+                            field: key.clone() 
+                        },
+                        description: None,
+                    });
+                }
+            }
+            Some(reserved)
+        });
+    
+    let manifest = crate::tools::universal::Manifest {
+        name,
+        description,
+        llm_description: result.get("llm_description").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        parameters,
+        reserved_parameters,
+        protocol: crate::tools::universal::ProtocolConfig::default(),
+        extra: std::collections::HashMap::new(),
+    };
+    
+    println!("  ✅ Generated manifest for '{}'", manifest.name);
+    Ok(manifest)
+}
+
 /// Handle list command
 async fn handle_list(long: bool) -> anyhow::Result<()> {
     use crate::tools::universal::discover_universal_tools;
@@ -171,7 +290,9 @@ async fn handle_install(path: PathBuf, force: bool) -> anyhow::Result<()> {
 
     // Determine what we're installing
     let path_clone = path.clone(); // For later use when copying additional files
-    let (manifest_path, executable_path, tool_name) = if path.is_dir() {
+    
+    // First, find the executable and manifest (if exists)
+    let (manifest_opt, executable_path) = if path.is_dir() {
         // Installing from directory - find manifest and executable
         let mut manifest = None;
         let mut executable = None;
@@ -188,25 +309,15 @@ async fn handle_install(path: PathBuf, force: bool) -> anyhow::Result<()> {
             }
         }
 
-        let manifest_path = manifest.ok_or_else(|| {
-            anyhow::anyhow!("No manifest (.json) found in directory: {}", path.display())
-        })?;
         let executable_path = executable.ok_or_else(|| {
             anyhow::anyhow!("No executable (.py or .js) found in directory: {}", path.display())
         })?;
 
-        let manifest_content = tokio::fs::read_to_string(&manifest_path).await?;
-        let manifest: Manifest = serde_json::from_str(&manifest_content)?;
-        let tool_name = manifest.name.clone();
-
-        (manifest_path, executable_path, tool_name)
+        (manifest, executable_path)
     } else if path.extension().map_or(false, |e| e == "json") {
-        // Path is a manifest
-        let manifest_content = tokio::fs::read_to_string(&path).await?;
-        let manifest: Manifest = serde_json::from_str(&manifest_content)?;
-        let tool_name = manifest.name.clone();
-
-        // Look for executable with same base name
+        // Path is a manifest - look for executable with same base name
+        let manifest = Some(path.clone());
+        
         let exe_path = if path.with_extension("").exists() {
             path.with_extension("")
         } else if path.with_extension("py").exists() {
@@ -217,20 +328,32 @@ async fn handle_install(path: PathBuf, force: bool) -> anyhow::Result<()> {
             anyhow::bail!("Could not find executable for manifest: {}", path.display());
         };
 
-        (path, exe_path, tool_name)
+        (manifest, exe_path)
     } else {
-        // Path is an executable
+        // Path is an executable - look for manifest with same name
         let manifest_path = path.with_extension("json");
-        if !manifest_path.exists() {
-            anyhow::bail!("Manifest not found: {}.json", path.display());
-        }
+        let manifest = if manifest_path.exists() {
+            Some(manifest_path)
+        } else {
+            None
+        };
 
+        (manifest, path.clone())
+    };
+
+    // Get manifest - either from file or generate from tool
+    let (manifest, manifest_source_path): (Manifest, Option<PathBuf>) = if let Some(manifest_path) = manifest_opt {
+        // Use existing JSON manifest
         let manifest_content = tokio::fs::read_to_string(&manifest_path).await?;
         let manifest: Manifest = serde_json::from_str(&manifest_content)?;
-        let tool_name = manifest.name.clone();
-
-        (manifest_path, path, tool_name)
+        (manifest, Some(manifest_path))
+    } else {
+        // Generate manifest from tool/describe
+        let manifest = generate_manifest_from_tool(&executable_path).await?;
+        (manifest, None)
     };
+    
+    let tool_name = manifest.name.clone();
 
     // Check if already exists
     let dest_dir = tools_dir.join(&tool_name);
@@ -249,11 +372,13 @@ async fn handle_install(path: PathBuf, force: bool) -> anyhow::Result<()> {
     // Create tool directory
     tokio::fs::create_dir(&dest_dir).await?;
 
-    // Copy files
+    // Write or copy manifest
     let dest_manifest = dest_dir.join("manifest.json");
+    let manifest_content = serde_json::to_string_pretty(&manifest)?;
+    tokio::fs::write(&dest_manifest, manifest_content).await?;
+    
+    // Copy executable
     let dest_executable = dest_dir.join(executable_path.file_name().unwrap());
-
-    tokio::fs::copy(&manifest_path, &dest_manifest).await?;
     tokio::fs::copy(&executable_path, &dest_executable).await?;
 
     // Copy any additional files from source directory
@@ -264,7 +389,11 @@ async fn handle_install(path: PathBuf, force: bool) -> anyhow::Result<()> {
             let file_name = src_path.file_name().unwrap();
 
             // Skip already copied files
-            if src_path == manifest_path || src_path == executable_path {
+            if src_path == executable_path {
+                continue;
+            }
+            // Skip the source manifest if we generated one (we already wrote our own)
+            if manifest_source_path.as_ref().map(|p| src_path == *p).unwrap_or(false) {
                 continue;
             }
 
