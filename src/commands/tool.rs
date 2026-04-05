@@ -404,12 +404,71 @@ async fn handle_install(path: PathBuf, force: bool) -> anyhow::Result<()> {
         }
     }
 
+    // Copy additional files and directories recursively
+    if path_clone.is_dir() {
+        copy_dir_recursive(&path_clone, &dest_dir, &executable_path, manifest_source_path.as_ref()).await?;
+    }
+
     println!("  ✅ Installed '{}' to {}", tool_name, dest_dir.display());
     println!();
     println!("Enable it in your agent's config.toml:");
     println!("  [tools]");
     println!("  enabled = [\"shell\", \"filesystem\", \"{}\"]", tool_name);
 
+    Ok(())
+}
+
+/// Recursively copy directory contents, skipping specific files
+///
+/// # Arguments
+/// * `src` - Source directory
+/// * `dst` - Destination directory
+/// * `skip_file` - File to skip (the main executable)
+/// * `skip_manifest` - Optional manifest file to skip (if auto-generated)
+async fn copy_dir_recursive(
+    src: &PathBuf,
+    dst: &PathBuf,
+    skip_file: &PathBuf,
+    skip_manifest: Option<&PathBuf>,
+) -> anyhow::Result<()> {
+    let mut entries = tokio::fs::read_dir(src).await?;
+    
+    while let Some(entry) = entries.next_entry().await? {
+        let src_path = entry.path();
+        let file_name = entry.file_name();
+        
+        // Skip the main executable (already copied)
+        if src_path == *skip_file {
+            continue;
+        }
+        
+        // Skip the source manifest if we generated one
+        if skip_manifest.map(|p| src_path == *p).unwrap_or(false) {
+            continue;
+        }
+        
+        // Skip hidden files/directories (starting with .)
+        if file_name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        
+        let dest_path = dst.join(&file_name);
+        
+        if src_path.is_dir() {
+            // Create subdirectory and recurse
+            tokio::fs::create_dir_all(&dest_path).await?;
+            
+            // Recursive copy for subdirectory
+            // We pass None for skip_file and skip_manifest in subdirectories
+            // since those are only at the root level
+            Box::pin(copy_dir_recursive(&src_path, &dest_path, skip_file, skip_manifest)).await?;
+        } else if src_path.is_file() {
+            // Copy file
+            tokio::fs::copy(&src_path, &dest_path).await?;
+        }
+        // Skip symlinks and other special files
+    }
+    
     Ok(())
 }
 

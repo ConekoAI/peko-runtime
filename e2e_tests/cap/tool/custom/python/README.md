@@ -98,10 +98,47 @@ if __name__ == "__main__":
 
 ## Important Notes
 
-1. **JSON manifest is required** - Pekobot uses it for tool discovery even when using the SDK
+1. **JSON manifest is optional** - Pekobot can auto-generate it from the tool's `tool/describe` response
 2. **Names must match** - The `name` in the JSON must match the `name` in the `@tool` decorator
 3. **pekobot_adapter.py is NOT needed** - The SDK handles protocol communication internally
-4. **Use CLI commands** - `cap universal install`, `cap enable`, etc. (no manual file copying needed)
+4. **Multi-file tools supported** - Subdirectories are copied recursively during install
+5. **Use CLI commands** - `cap universal install`, `cap enable`, etc. (no manual file copying needed)
+
+## Multi-File Tools
+
+Tools can span multiple files and directories:
+
+```
+my_tool/
+├── main.py           # Main executable
+├── utils/
+│   ├── __init__.py
+│   ├── math.py      # Helper module
+│   └── strings.py   # Helper module
+└── config/
+    └── settings.json
+```
+
+All files and subdirectories are copied recursively:
+
+```bash
+pekobot cap universal install ./my_tool --force
+```
+
+## Auto-Generated Manifest
+
+If no JSON manifest is found, Pekobot runs `tool/describe` to generate one:
+
+```bash
+# Install without JSON manifest
+pekobot cap universal install ./my_tool.py --force
+
+# Output:
+#   🔍 No JSON manifest found, generating from tool/describe...
+#   ✅ Generated manifest for 'my_tool'
+```
+
+The generated manifest is cached in `~/.pekobot/tools/{tool_name}/manifest.json`.
 
 ## SDK Installation
 
