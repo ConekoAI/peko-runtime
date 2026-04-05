@@ -86,7 +86,7 @@ Write-Host "Agent directory: $agentDir" -ForegroundColor Gray
 
 # Install pekobot-tool SDK if needed
 Write-Host "Installing pekobot-tool SDK..." -ForegroundColor Yellow
-$sdkPath = "$PSScriptRoot/../../../../tools/python/pekobot_tool"
+$sdkPath = "$PSScriptRoot/../../../../../tools/python/pekobot_tool"
 Push-Location $sdkPath
 & $pythonCmd -m pip install -e . --quiet 2>&1 | Out-Null
 Pop-Location

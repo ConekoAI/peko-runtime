@@ -36,23 +36,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Helper for building tool registries with disabled tool tracking
+/// Helper for filtering disabled tools and building the final tool list
 ///
 /// This eliminates the repetitive pattern of checking if a tool is disabled
 /// and adding it to either the tools list or the disabled list.
-struct ToolRegistryBuilder {
+///
+/// Note: This is unrelated to the `tool_registry` module which handles
+/// downloading and installing tools from remote registries.
+struct DisabledToolFilter {
     tools: Vec<Arc<dyn Tool>>,
     disabled: Vec<String>,
     disabled_set: HashSet<String>,
 }
 
-impl ToolRegistryBuilder {
+impl DisabledToolFilter {
     fn new(disabled_tools: &[String]) -> Self {
         let disabled_set: HashSet<String> = disabled_tools
             .iter()
             .map(|s| s.to_lowercase())
             .collect();
-        
+
         Self {
             tools: Vec::new(),
             disabled: Vec::new(),
@@ -78,7 +81,7 @@ impl ToolRegistryBuilder {
         if !enabled {
             return;
         }
-        
+
         if self.is_disabled(name) {
             self.disabled.push(name.to_string());
         } else {
@@ -94,7 +97,7 @@ impl ToolRegistryBuilder {
         if !enabled {
             return;
         }
-        
+
         for (name, tool) in factory() {
             if self.is_disabled(&name) {
                 self.disabled.push(name);
@@ -361,7 +364,7 @@ impl ToolFactory {
     /// from the returned list and won't be shown to the LLM.
     #[must_use]
     pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult {
-        let mut registry = ToolRegistryBuilder::new(&config.disabled_tools);
+        let mut registry = DisabledToolFilter::new(&config.disabled_tools);
 
         // Filesystem tool
         registry.register("filesystem", config.enable_filesystem, || {

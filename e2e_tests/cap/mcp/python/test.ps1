@@ -221,7 +221,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 4: Test MCP tool execution" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Note: pekobot tool test for MCP tools may not be directly available
+# Note: Direct MCP tool testing via 'pekobot cap mcp test' requires server initialization
 # We'll test via sending a message to the agent instead
 Write-Host "Skipping direct tool test (MCP tools require server initialization)" -ForegroundColor Yellow
 Write-Host "Will test via agent send instead" -ForegroundColor Yellow

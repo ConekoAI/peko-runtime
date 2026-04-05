@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub mod bus;
+pub mod capability;
 pub mod config;
 pub mod shared;
 

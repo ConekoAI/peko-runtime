@@ -8,6 +8,11 @@
 //! - List tools from servers
 //! - Test server connections
 //! - Call tools directly
+//!
+//! # Deprecation
+//!
+//! This module is deprecated. Use `pekobot tools mcp` instead.
+//! The commands here are re-exported from `tool_management::commands::ToolsCommands::Mcp`.
 
 use crate::mcp::{
     discover_servers, ensure_default_config, is_server_installed, list_available_servers,

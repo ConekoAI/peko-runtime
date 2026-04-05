@@ -97,6 +97,9 @@ pub mod providers;
 /// Tool registry and management
 pub mod tool_registry;
 
+/// Unified capability framework (tools, MCP, skills)
+pub mod cap;
+
 /// MCP (Model Context Protocol) support
 pub mod mcp;
 

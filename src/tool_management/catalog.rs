@@ -1,0 +1,236 @@
+//! Tool Catalog Implementation
+//!
+//! Aggregates all tool sources into a unified catalog:
+//! - MCP servers from `mcp.toml`
+//! - Universal Tools from `{data_dir}/tools/`
+//! - Downloaded tools from `ToolRegistry` (Pekohub)
+
+use crate::common::paths::PathResolver;
+use crate::mcp::config::{McpConfig, McpServerConfig};
+use crate::tool_management::{
+    InstalledToolInfo, ToolSearchResult, ToolType,
+};
+use crate::tool_registry::{
+    InstalledTool as RegistryInstalledTool, RemoteRegistryClient,
+    RemoteRegistryConfig, ToolRegistry, ToolRegistryConfig,
+};
+use crate::tools::universal::discovery::{self, DiscoveredTool};
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{debug, warn};
+
+use crate::tool_management::ToolCatalog;
+
+/// Unified tool catalog implementation
+pub struct ToolCatalogImpl {
+    path_resolver: PathResolver,
+    mcp_config_path: PathBuf,
+    tools_dir: PathBuf,
+    local_registry: ToolRegistry,
+    remote_client: Option<RemoteRegistryClient>,
+    /// Cache of tools by name for quick lookup
+    tools_cache: RwLock<HashMap<String, InstalledToolInfo>>,
+}
+
+impl ToolCatalogImpl {
+    /// Create a new catalog with the given path resolver
+    pub fn new(path_resolver: PathResolver) -> Self {
+        let mcp_config_path = path_resolver.mcp_config();
+        let tools_dir = path_resolver.tools_dir();
+
+        // Initialize local registry
+        let registry_config = ToolRegistryConfig::default();
+        let local_registry = ToolRegistry::new(registry_config).unwrap_or_else(|_| {
+            // Fallback: create in-memory registry if disk fails
+            ToolRegistry::new(ToolRegistryConfig {
+                cache_dir: std::env::temp_dir().join("pekobot-tools"),
+                ..Default::default()
+            })
+            .expect("Failed to create tool registry")
+        });
+
+        // Initialize remote client (optional, may fail if network unavailable)
+        let remote_client = RemoteRegistryClient::new(
+            RemoteRegistryConfig::default(),
+            path_resolver.cache_dir().join("tool-registry"),
+        )
+        .ok();
+
+        Self {
+            path_resolver,
+            mcp_config_path,
+            tools_dir,
+            local_registry,
+            remote_client,
+            tools_cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Refresh the tool cache by aggregating all sources
+    async fn refresh_cache(&self) -> anyhow::Result<()> {
+        let mut cache = HashMap::new();
+
+        // 1. MCP servers from mcp.toml
+        let mcp_tools = self.load_mcp_tools().await?;
+        for tool in mcp_tools {
+            cache.insert(tool.name.clone(), tool);
+        }
+
+        // 2. Universal Tools from tools_dir
+        let universal_tools = self.load_universal_tools().await?;
+        for tool in universal_tools {
+            cache.insert(tool.name.clone(), tool);
+        }
+
+        // 3. Downloaded tools from local registry
+        let downloaded_tools = self.load_downloaded_tools();
+        for tool in downloaded_tools {
+            cache.insert(tool.name.clone(), tool);
+        }
+
+        let mut write_guard = self.tools_cache.write().await;
+        *write_guard = cache;
+
+        Ok(())
+    }
+
+    /// Load MCP servers from configuration
+    async fn load_mcp_tools(&self) -> anyhow::Result<Vec<InstalledToolInfo>> {
+        let config = McpConfig::load_with_auto_detect(Some(&self.mcp_config_path)).await?;
+
+        Ok(config
+            .servers
+            .into_iter()
+            .map(InstalledToolInfo::mcp)
+            .collect())
+    }
+
+    /// Load Universal Tools from tools directory
+    async fn load_universal_tools(&self) -> anyhow::Result<Vec<InstalledToolInfo>> {
+        let discovered = discovery::discover_universal_tools(&self.tools_dir).await?;
+
+        let mut tools = Vec::new();
+        for discovered_tool in discovered {
+            let info = self.discovered_to_info(discovered_tool).await;
+            match info {
+                Ok(t) => tools.push(t),
+                Err(e) => warn!("Failed to load universal tool: {}", e),
+            }
+        }
+
+        Ok(tools)
+    }
+
+    /// Convert DiscoveredTool to InstalledToolInfo
+    async fn discovered_to_info(&self, discovered: DiscoveredTool) -> anyhow::Result<InstalledToolInfo> {
+        let manifest_path = discovered.manifest.clone();
+        let description = if let Some(ref path) = discovered.manifest {
+            let content = tokio::fs::read_to_string(path).await?;
+            let manifest: crate::tools::universal::Manifest = serde_json::from_str(&content)?;
+            manifest.description
+        } else {
+            String::new()
+        };
+
+        Ok(InstalledToolInfo::universal(
+            discovered.name,
+            discovered.executable,
+            manifest_path,
+        ))
+    }
+
+    /// Load downloaded tools from local registry
+    fn load_downloaded_tools(&self) -> Vec<InstalledToolInfo> {
+        self.local_registry
+            .list_installed()
+            .into_iter()
+            .map(|t| {
+                let manifest = &t.manifest;
+                InstalledToolInfo::downloaded(
+                    &manifest.tool.name,
+                    &manifest.tool.version,
+                    &manifest.tool.description,
+                    t.install_path.clone(),
+                    Some(t.install_path.join("tool.toml")),
+                )
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ToolCatalog for ToolCatalogImpl {
+    async fn list_installed(&self) -> Vec<InstalledToolInfo> {
+        // Check cache first
+        {
+            let cache = self.tools_cache.read().await;
+            if !cache.is_empty() {
+                return cache.values().cloned().collect();
+            }
+        }
+
+        // Refresh cache if empty
+        if let Err(e) = self.refresh_cache().await {
+            tracing::warn!("Failed to refresh tool cache: {}", e);
+        }
+
+        let cache = self.tools_cache.read().await;
+        cache.values().cloned().collect()
+    }
+
+    async fn get_tool(&self, name: &str) -> Option<InstalledToolInfo> {
+        let tools = self.list_installed().await;
+        tools.into_iter().find(|t| t.name == name)
+    }
+
+    async fn search_registry(&self, query: &str) -> anyhow::Result<Vec<ToolSearchResult>> {
+        match &self.remote_client {
+            Some(client) => {
+                let entries = client.search_tools(query).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| ToolSearchResult {
+                        name: e.name,
+                        version: e.version,
+                        description: e.description,
+                        author: Some(e.author),
+                        categories: e.categories,
+                        downloads: e.downloads,
+                        rating: e.rating,
+                    })
+                    .collect())
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    async fn list_available(&self) -> anyhow::Result<Vec<ToolSearchResult>> {
+        match &self.remote_client {
+            Some(client) => {
+                let entries = client.list_tools(None).await?;
+                Ok(entries
+                    .into_iter()
+                    .map(|e| ToolSearchResult {
+                        name: e.name,
+                        version: e.version,
+                        description: e.description,
+                        author: Some(e.author),
+                        categories: e.categories,
+                        downloads: e.downloads,
+                        rating: e.rating,
+                    })
+                    .collect())
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+}
+
+impl From<McpServerConfig> for InstalledToolInfo {
+    fn from(config: McpServerConfig) -> Self {
+        InstalledToolInfo::mcp(config)
+    }
+}

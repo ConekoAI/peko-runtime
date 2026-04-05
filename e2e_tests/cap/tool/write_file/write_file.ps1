@@ -51,9 +51,13 @@ $agentName = "writefile_test"
 pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
-# Enable granular tools via agent config set
-pekobot agent config set $agentName tools.enabled '[\"shell\",\"session_status\",\"read_file\",\"write_file\",\"glob\",\"grep\",\"str_replace_file\"]' 2>&1 | Out-Null
-Write-Host "Enabled granular filesystem tools" -ForegroundColor Green
+# Enable granular tools via cap framework
+pekobot cap enable default/$agentName read_file 2>&1 | Out-Null
+pekobot cap enable default/$agentName write_file 2>&1 | Out-Null
+pekobot cap enable default/$agentName glob 2>&1 | Out-Null
+pekobot cap enable default/$agentName grep 2>&1 | Out-Null
+pekobot cap enable default/$agentName str_replace_file 2>&1 | Out-Null
+Write-Host "Enabled granular filesystem tools via cap framework" -ForegroundColor Green
 
 # Get workspace directory
 $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"

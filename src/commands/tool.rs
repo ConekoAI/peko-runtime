@@ -2,6 +2,11 @@
 //!
 //! Universal Tools are installed system-wide in `{data_dir}/tools/`
 //! and are enabled per-agent via `tools.enabled` in agent config.
+//!
+//! # Deprecation
+//!
+//! This module is deprecated. Use `pekobot tools universal` instead.
+//! The commands here are re-exported from `tool_management::commands::ToolsCommands::Universal`.
 
 use crate::commands::GlobalPaths;
 use crate::tools::traits::Tool;
