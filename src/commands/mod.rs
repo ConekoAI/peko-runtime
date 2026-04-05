@@ -115,11 +115,6 @@ pub enum Commands {
     #[command(subcommand)]
     Cap(crate::cap::commands::CapCommands),
 
-    /// Tool management commands (Pekohub integration)
-    #[command(subcommand)]
-    #[deprecated(since = "0.12.0", note = "Use `cap universal` instead")]
-    Tool(tool::ToolCommands),
-
     /// Session management commands
     #[command(subcommand)]
     Session(session::SessionCommands),
@@ -143,11 +138,6 @@ pub enum Commands {
     /// Gateway plugin management
     #[command(subcommand)]
     Gateway(gateway::GatewayCommands),
-
-    /// MCP (Model Context Protocol) server management
-    #[command(subcommand)]
-    #[deprecated(since = "0.12.0", note = "Use `cap mcp` instead")]
-    Mcp(mcp::McpCommands),
 
     /// Orchestration layer management (event routing, webhooks, file watching)
     #[command(subcommand)]

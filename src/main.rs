@@ -53,22 +53,12 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json).await,
         Commands::Cap(cmd) => cap::commands::handle_cap_command(cmd, paths, json).await,
-        #[allow(deprecated)]
-        Commands::Tool(cmd) => {
-            eprintln!("Warning: 'pekobot tool' is deprecated, use 'pekobot cap universal' instead");
-            tool::handle_tool(cmd, paths, json).await
-        }
         Commands::Session(cmd) => session::handle_session(cmd, paths, json).await,
         Commands::Config(cmd) => config::handle_config(cmd, paths, json).await,
         Commands::System(cmd) => system::handle_system(cmd, paths, json).await,
         Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, json).await,
         Commands::Cron(cmd) => cron::handle_cron(cmd, paths, json).await,
         Commands::Gateway(cmd) => gateway::handle_gateway(cmd, paths, json).await,
-        #[allow(deprecated)]
-        Commands::Mcp(cmd) => {
-            eprintln!("Warning: 'pekobot mcp' is deprecated, use 'pekobot cap mcp' instead");
-            mcp::handle(cmd, paths.mcp_config()).await
-        }
         Commands::Orchestration(cmd) => {
             // Load configuration for orchestration commands
             let config_path = paths.config_dir.join("config.toml");
