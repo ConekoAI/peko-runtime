@@ -504,17 +504,10 @@ impl StatelessAgentService {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
-        debug!(
-            "Loaded config for '{}' in {:?}",
-            request.agent_name,
-            start.elapsed()
-        );
-
         // 2. Load session history
         let history = self
             .load_session_history(&request.agent_name, &request.session_id)
             .await?;
-        debug!("Loaded {} messages from session history", history.len());
 
         // 3. Open the specific session by ID
         // This ensures we write to the correct session file
@@ -543,16 +536,9 @@ impl StatelessAgentService {
         };
 
         // 4. Cold-start agent (spawn)
-        let agent_start = Instant::now();
         let agent = Agent::new(config_entry.config.clone())
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
-        let cold_start_ms = agent_start.elapsed().as_millis() as u64;
-
-        debug!(
-            "Cold-started agent '{}' in {}ms",
-            request.agent_name, cold_start_ms
-        );
 
         // 5. Execute agent with session and history
         // Use the new execute_with_session method that properly handles session resumption

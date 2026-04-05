@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::{debug, info};
 
 /// Anthropic API adapter
 #[derive(Debug, Clone)]

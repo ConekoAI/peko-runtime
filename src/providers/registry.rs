@@ -266,7 +266,7 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         api_key_env: &["KIMI_API_KEY"],
         api_type: ApiType::AnthropicMessages,
         base_url: "https://api.kimi.com/coding",
-        default_model: "k2p5",
+        default_model: "kimi-for-coding",
     },
 ];
 

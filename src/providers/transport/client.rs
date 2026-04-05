@@ -35,6 +35,10 @@ impl HttpClient {
     ) -> anyhow::Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
+            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(60))
+            .http1_only() // Force HTTP/1.1 to avoid HTTP/2 issues with some providers
             .build()?;
 
         let base_url = base_url.into();
@@ -59,6 +63,10 @@ impl HttpClient {
     ) -> anyhow::Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
+            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(60))
+            .http1_only()
             .build()?;
 
         let base_url = base_url.into();
@@ -86,7 +94,7 @@ impl HttpClient {
         } else {
             format!("{}{}", self.base_url, path)
         };
-
+        
         let mut request = self.inner.request(method, &url);
 
         // Add authentication
