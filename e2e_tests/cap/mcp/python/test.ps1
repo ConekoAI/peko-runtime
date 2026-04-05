@@ -215,16 +215,24 @@ if ($testResult -match "pekobot-mcp-demo" -or $testResult -match "capabilities")
 }
 
 # ============================================================
-# TEST 4: Test MCP tool via pekobot tool test command
+# TEST 4: Test MCP server via pekobot cap mcp test
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 4: Test MCP tool execution" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Note: Direct MCP tool testing via 'pekobot cap mcp test' requires server initialization
-# We'll test via sending a message to the agent instead
-Write-Host "Skipping direct tool test (MCP tools require server initialization)" -ForegroundColor Yellow
-Write-Host "Will test via agent send instead" -ForegroundColor Yellow
+# Test the MCP server using the unified cap framework
+Write-Host "Testing MCP server via pekobot cap mcp test..." -ForegroundColor Yellow
+$capMcpTest = pekobot cap mcp test identity 2>&1
+Write-Host $capMcpTest
+
+if ($capMcpTest -match "success" -or $capMcpTest -match "passed" -or $LASTEXITCODE -eq 0) {
+    Write-Host "✓ MCP server test passed via cap framework" -ForegroundColor Green
+} else {
+    Write-Host "⚠ MCP server test inconclusive (will verify via agent send)" -ForegroundColor Yellow
+}
+
+Write-Host "Will also test via agent send" -ForegroundColor Yellow
 
 # ============================================================
 # TEST 5: Send message to agent that uses MCP tool

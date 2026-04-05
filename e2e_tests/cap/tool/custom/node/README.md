@@ -76,7 +76,7 @@ cd e2e_tests/tools/custom/node
 1. **Setup**: Build pekobot, reset config, set API key
 2. **Create Agent**: Create agent with custom tool in `tools/` directory
 3. **Verify Files**: Check all tool files are present and manifest is valid
-4. **Manual Test**: Use `pekobot tool test` to verify tool works directly
+4. **Manual Test**: Use `pekobot cap universal test` to verify tool works directly
 5. **Agent Tool Call**: Use `pekobot send` to trigger string operations
 6. **Verification**: Check session history shows tool was called
 7. **Cleanup**: Delete test agent

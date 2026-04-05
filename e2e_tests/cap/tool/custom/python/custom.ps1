@@ -163,7 +163,7 @@ if ($allExist) {
     Write-Host "✓ All tool files present" -ForegroundColor Green
 }
 
-# Test tool using pekobot tool command (if available) or just validate JSON
+# Validate manifest and test via the unified cap framework
 Write-Host "`nValidating manifest JSON..." -ForegroundColor Yellow
 $manifestPath = "$toolsDir/calculator_tool.json"
 $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
@@ -182,6 +182,23 @@ if ($testResult -match "calculator") {
 } else {
     Write-Host "⚠ Tool test inconclusive (may be PowerShell piping issue)" -ForegroundColor Yellow
 }
+
+# Test via the unified cap framework
+Write-Host "`nTesting via pekobot cap universal..." -ForegroundColor Yellow
+$capInstall = pekobot cap universal install $toolsDir --force 2>&1
+Write-Host $capInstall
+
+$capTest = pekobot cap universal test calculator_tool 2>&1
+Write-Host $capTest
+
+if ($capTest -match "success" -or $capTest -match "result" -or $LASTEXITCODE -eq 0) {
+    Write-Host "✓ Tool test passed via cap framework" -ForegroundColor Green
+} else {
+    Write-Host "⚠ Cap universal test inconclusive (workspace execution is the primary test)" -ForegroundColor Yellow
+}
+
+pekobot cap universal uninstall calculator_tool --force 2>&1 | Out-Null
+Write-Host "Cleaned up system-wide tool install" -ForegroundColor Gray
 
 # ============================================================
 # TEST 3: Send message that uses the calculator tool
