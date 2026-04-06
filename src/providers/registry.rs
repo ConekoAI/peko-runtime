@@ -268,6 +268,15 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
         base_url: "https://api.kimi.com/coding",
         default_model: "kimi-for-coding",
     },
+    ProviderMetadata {
+        id: "minimax",
+        display_name: "MiniMax",
+        aliases: &["minimax-ai"],
+        api_key_env: &["MINIMAX_API_KEY"],
+        api_type: ApiType::AnthropicMessages,
+        base_url: "https://api.minimaxi.com/anthropic",
+        default_model: "MiniMax-M2.7",
+    },
 ];
 
 /// Create a provider from configuration
@@ -290,6 +299,7 @@ pub fn create_provider(config: ProviderConfig) -> Result<Arc<dyn Provider>> {
         }
         ProviderType::Moonshot => "moonshot",
         ProviderType::Kimi => "kimi",
+        ProviderType::Minimax => "minimax",
     };
 
     // Look up metadata

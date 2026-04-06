@@ -162,6 +162,7 @@ impl ApiKeyResolver {
             ProviderType::Anthropic => "anthropic",
             ProviderType::Moonshot => "moonshot",
             ProviderType::Kimi => "kimi",
+            ProviderType::Minimax => "minimax",
             ProviderType::Ollama => return None, // Ollama doesn't need API key
             ProviderType::OpenAICompatible => {
                 // For OpenAI-compatible, we can't resolve from credentials
@@ -190,6 +191,7 @@ impl ApiKeyResolver {
             ProviderType::Anthropic => "ANTHROPIC_API_KEY",
             ProviderType::Moonshot => "MOONSHOT_API_KEY",
             ProviderType::Kimi => "KIMI_API_KEY",
+            ProviderType::Minimax => "MINIMAX_API_KEY",
             ProviderType::Ollama => return None,
             ProviderType::OpenAICompatible => "OPENAI_API_KEY",
         };

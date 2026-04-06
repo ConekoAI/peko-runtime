@@ -1014,6 +1014,7 @@ impl Agent {
             ProviderType::Anthropic => "anthropic",
             ProviderType::Moonshot => "moonshot",
             ProviderType::Kimi => "kimi",
+            ProviderType::Minimax => "minimax",
             ProviderType::Ollama => "ollama",
             ProviderType::OpenAICompatible => {
                 // Use base_url to determine provider
@@ -1022,6 +1023,8 @@ impl Agent {
                         "moonshot"
                     } else if url.contains("kimi.com") {
                         "kimi"
+                    } else if url.contains("minimaxi") {
+                        "minimax"
                     } else if url.contains("groq") {
                         "groq"
                     } else if url.contains("together") {
@@ -1043,6 +1046,7 @@ impl Agent {
             "anthropic" => ProviderType::Anthropic,
             "moonshot" => ProviderType::Moonshot,
             "kimi" => ProviderType::Kimi,
+            "minimax" => ProviderType::Minimax,
             "ollama" => ProviderType::Ollama,
             _ => ProviderType::OpenAICompatible,
         };

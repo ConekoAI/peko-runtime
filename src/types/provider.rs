@@ -71,6 +71,8 @@ pub enum ProviderType {
     Moonshot,
     /// Kimi (Kimi Code API)
     Kimi,
+    /// MiniMax (Anthropic-compatible API)
+    Minimax,
 }
 
 impl std::fmt::Display for ProviderType {
@@ -82,6 +84,7 @@ impl std::fmt::Display for ProviderType {
             ProviderType::OpenAICompatible => write!(f, "openai_compatible"),
             ProviderType::Moonshot => write!(f, "moonshot"),
             ProviderType::Kimi => write!(f, "kimi"),
+            ProviderType::Minimax => write!(f, "minimax"),
         }
     }
 }

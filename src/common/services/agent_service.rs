@@ -33,6 +33,7 @@ fn parse_provider_type(provider: &str) -> ProviderType {
         "moonshot" => ProviderType::Moonshot,
         "kimi" => ProviderType::Kimi,
         "kimi_code" | "kimi-code" => ProviderType::Kimi,
+        "minimax" => ProviderType::Minimax,
         _ => ProviderType::OpenAI,
     }
 }
@@ -45,6 +46,7 @@ fn default_model_name(provider_type: ProviderType) -> String {
         ProviderType::OpenAICompatible => "default".to_string(),
         ProviderType::Moonshot => "kimi-k2.5".to_string(),
         ProviderType::Kimi => "k2p5".to_string(),
+        ProviderType::Minimax => "MiniMax-M2.7".to_string(),
     }
 }
 
@@ -54,6 +56,7 @@ fn api_key_env_var(provider_type: ProviderType) -> Option<String> {
         ProviderType::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
         ProviderType::Moonshot => Some("MOONSHOT_API_KEY".to_string()),
         ProviderType::Kimi => Some("KIMI_API_KEY".to_string()),
+        ProviderType::Minimax => Some("MINIMAX_API_KEY".to_string()),
         _ => None,
     }
 }
@@ -63,6 +66,7 @@ fn base_url(provider_type: ProviderType) -> Option<String> {
         ProviderType::Ollama => Some("http://localhost:11434".to_string()),
         ProviderType::Moonshot => Some("https://api.moonshot.cn/v1".to_string()),
         ProviderType::Kimi => Some("https://api.kimi.com/coding".to_string()),
+        ProviderType::Minimax => Some("https://api.minimaxi.com/anthropic".to_string()),
         _ => None,
     }
 }
