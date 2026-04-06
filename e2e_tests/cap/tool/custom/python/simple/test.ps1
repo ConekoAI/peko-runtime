@@ -74,20 +74,20 @@ Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
 pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent" -ForegroundColor Green
 
-# Update AGENT.md to document the tool
-$agentDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName"
-$agentMd = @"
-# Calculator Agent
+# # Update AGENT.md to document the tool
+# $agentDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName"
+# $agentMd = @"
+# # Calculator Agent
 
-An agent that can perform arithmetic calculations.
+# An agent that can perform arithmetic calculations.
 
-## Available Tools
+# ## Available Tools
 
-- shell: Execute shell commands
-- calculator_simple: Perform arithmetic calculations (add, subtract, multiply, divide)
-"@
-$agentMd | Out-File -FilePath "$agentDir/AGENT.md" -Encoding utf8
-Write-Host "Updated AGENT.md" -ForegroundColor Green
+# - shell: Execute shell commands
+# - calculator_simple: Perform arithmetic calculations (add, subtract, multiply, divide)
+# "@
+# $agentMd | Out-File -FilePath "$agentDir/AGENT.md" -Encoding utf8
+# Write-Host "Updated AGENT.md" -ForegroundColor Green
 
 # ============================================================
 # STEP 2: Install tool system-wide
@@ -135,7 +135,9 @@ Write-Host "STEP 4: Test tool via agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending calculation request to agent..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Calculate 25 multiplied by 4 using calculator_simple" --no-stream 2>&1
+Measure-Command {
+    $response = pekobot send $agentName "Calculate 25 multiplied by 4 using calculator_simple" --no-stream 2>&1
+}
 Write-Host "Agent response: $response"
 
 # Check session
