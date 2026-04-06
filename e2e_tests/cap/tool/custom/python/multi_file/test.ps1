@@ -105,20 +105,20 @@ Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
 pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent" -ForegroundColor Green
 
-# Update AGENT.md
-$agentDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName"
-$agentMd = @"
-# Multi-File Test Agent
+# # Update AGENT.md
+# $agentDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName"
+# $agentMd = @"
+# # Multi-File Test Agent
 
-An agent for testing multi-file tools with subdirectories.
+# An agent for testing multi-file tools with subdirectories.
 
-## Available Tools
+# ## Available Tools
 
-- shell: Execute shell commands
-- multi_file_calc: Calculator tool with multi-file structure (imports from utils/)
-"@
-$agentMd | Out-File -FilePath "$agentDir/AGENT.md" -Encoding utf8
-Write-Host "Updated AGENT.md" -ForegroundColor Green
+# - shell: Execute shell commands
+# - multi_file_calc: Calculator tool with multi-file structure (imports from utils/)
+# "@
+# $agentMd | Out-File -FilePath "$agentDir/AGENT.md" -Encoding utf8
+# Write-Host "Updated AGENT.md" -ForegroundColor Green
 
 # ============================================================
 # STEP 3: Install multi-file tool system-wide
@@ -207,7 +207,9 @@ Write-Host "STEP 6: Test tool via agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending calculation request to agent..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Use multi_file_calc to calculate 15 multiplied by 6" --no-stream 2>&1
+Measure-Command {
+    $response = pekobot send $agentName "Use multi_file_calc to calculate 15 multiplied by 6" --no-stream 2>&1
+}
 Write-Host "Agent response: $response"
 
 # Verify response contains expected result
