@@ -5,7 +5,7 @@
 # and can import from helper modules in subdirectories.
 
 param(
-    [string]$Provider = "kimi"
+    [string]$Provider = "minimax"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,8 +15,8 @@ Write-Host "Multi-File Tool E2E Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Check prerequisites
-if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
-    Write-Error "KIMI_API_KEY environment variable not set"
+if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
+    Write-Error "MINIMAX_API_KEY environment variable not set"
     exit 1
 }
 
@@ -54,7 +54,7 @@ if (Test-Path $dataDir) {
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
