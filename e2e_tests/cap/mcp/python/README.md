@@ -5,74 +5,92 @@ This E2E test demonstrates how Pekobot's MCP integration supports **reserved par
 ## Overview
 
 The test verifies:
-1. **MCP Server Configuration** - How to configure reserved parameters in `mcp.toml`
-2. **Parameter Injection** - Runtime values are injected into tool calls
-3. **Schema Filtering** - Reserved params are hidden from the LLM (not in tool schema)
-4. **Agent Isolation** - MCP tools can use injected identity for secure multi-tenancy
+1. **MCP Server Management via CLI** - Add servers with reserved parameters using `pekobot cap mcp add`
+2. **Tool Enablement via CLI** - Enable MCP tools for agents using `pekobot cap enable`
+3. **Reserved Parameter Injection** - Runtime values are injected into tool calls
+4. **Schema Filtering** - Reserved params are hidden from the LLM (not in tool schema)
+5. **Agent Isolation** - MCP tools can use injected identity for secure multi-tenancy
+
+## Quick Start
+
+```powershell
+# Set your API key
+$env:MINIMAX_API_KEY = "your-api-key"
+
+# Run the E2E test
+.\e2e_tests\cap\mcp\python\test.ps1
+```
+
+## Improved CLI Workflow
+
+This test demonstrates the improved MCP CLI workflow:
+
+### 1. Add MCP Server with Reserved Parameters
+
+```bash
+pekobot cap mcp add identity \
+    --transport stdio \
+    --command python \
+    --args ./mcp_server.py \
+    --reserved "agent_id=runtime:agent_id" \
+    --reserved "session_id=runtime:session_id"
+```
+
+Reserved parameter formats:
+- `name=runtime:field` - Injects from ToolContext (e.g., `agent_id=runtime:agent_id`)
+- `name=env:VAR_NAME` - Injects from environment variable (e.g., `api_key=env:API_KEY`)
+- `name=static:value` - Injects static value (e.g., `env=static:production`)
+
+### 2. Create Agent
+
+```bash
+pekobot agent create myagent --provider minimax
+```
+
+### 3. Enable MCP Tools for Agent
+
+```bash
+# Enable specific MCP tools
+pekobot cap enable default/myagent echo_identity
+pekobot cap enable default/myagent store_memory
+pekobot cap enable default/myagent retrieve_memory
+```
+
+### 4. Verify and Test
+
+```bash
+# Check MCP server status
+pekobot cap mcp list
+pekobot cap mcp show identity
+
+# Check agent capabilities
+pekobot cap status default/myagent
+
+# Test MCP server connection
+pekobot cap mcp test identity
+
+# Use the agent
+pekobot send myagent "Use the echo_identity tool with message 'Hello'"
+```
+
+### 5. Cleanup
+
+```bash
+# Remove MCP server
+pekobot cap mcp remove identity --force
+
+# Delete agent
+pekobot agent delete myagent --force
+```
 
 ## Files
 
-- `test.ps1` - Main E2E test script
-- `mcp_server.py` - Python MCP server demonstrating reserved params
-- `mcp-config.toml` - MCP configuration with reserved_parameters
-- `README.md` - This file
-
-## Prerequisites
-
-- PowerShell 7+
-- Python 3.8+
-- `KIMI_API_KEY` environment variable set
-- Pekobot built and available in PATH
-
-## Running the Test
-
-```powershell
-# Run the E2E test
-.\e2e_tests\mcp\python\test.ps1
-
-# Or with a specific provider
-.\e2e_tests\mcp\python\test.ps1 -Provider "kimi"
-```
-
-## Current Status
-
-✅ **Working:**
-- MCP server configuration with reserved_parameters
-- MCP tool discovery and loading
-- Agent tool execution via `pekobot send`
-- Schema filtering (reserved params hidden from LLM)
-
-⚠️ **Partially Working:**
-- Reserved parameter injection (configuration is correct, but agent doesn't pass ToolContext with identity)
-
-The test shows MCP tools execute successfully, but `agent_id` and `session_id` show as "not_injected" because the agent currently calls `tool.execute()` instead of `tool.execute_with_context()` with a properly configured ToolContext.
-
-## What the Test Does
-
-### 1. Setup MCP Configuration
-Copies `mcp-config.toml` to `~/.pekobot/mcp.toml` with reserved parameters configured:
-
-```toml
-[server.reserved_parameters]
-agent_id = { source = "runtime", field = "agent_id" }
-session_id = { source = "runtime", field = "session_id" }
-```
-
-### 2. Create Test Agent
-Creates an agent with MCP tools enabled and documents the available MCP tools.
-
-### 3. Test MCP Tools
-Sends messages to the agent that trigger MCP tool calls:
-
-- **`echo_identity`** - Returns the injected `agent_id` and `session_id`
-- **`store_memory`** - Stores values with agent-isolated keys
-- **`retrieve_memory`** - Retrieves values from agent-isolated storage
-
-### 4. Verify Reserved Parameter Injection
-Checks that:
-- MCP tools receive injected parameters from runtime context
-- The LLM does not see `agent_id`/`session_id` in the tool schema
-- Agent isolation works (different agents can't access each other's data)
+| File | Purpose |
+|------|---------|
+| `test.ps1` | Main E2E test script using CLI commands |
+| `mcp_server.py` | Python MCP server demonstrating reserved params |
+| `mcp-config.toml` | Example MCP configuration (legacy - now configured via CLI) |
+| `README.md` | This file |
 
 ## MCP Server Implementation
 
@@ -93,13 +111,23 @@ The test uses a custom Python MCP server (`mcp_server.py`) that:
 
 ## How Reserved Parameter Injection Works
 
-### Configuration (mcp.toml)
+### Configuration (via CLI)
+```bash
+pekobot cap mcp add identity \
+    --transport stdio \
+    --command python \
+    --args ./mcp_server.py \
+    --reserved "agent_id=runtime:agent_id" \
+    --reserved "session_id=runtime:session_id"
+```
+
+This creates the following configuration in `~/.pekobot/mcp.toml`:
 ```toml
 [[server]]
 name = "identity"
 transport = "stdio"
 command = "python"
-args = ["mcp_server.py"]
+args = ["./mcp_server.py"]
 
 [server.reserved_parameters]
 agent_id = { source = "runtime", field = "agent_id" }
@@ -150,33 +178,43 @@ Note: `agent_id` and `session_id` are **NOT** in the schema!
 The test should output something like:
 
 ```
-✓ MCP config has reserved_parameters configured
-✓ Agent created and visible in list
-✓ MCP server responds to initialization
-✓ Session created
+✓ MCP server 'identity' added successfully
+✓ Agent created
+✓ MCP tools enabled for agent
+✓ Agent response mentions identity/injection
 ✓ MCP echo_identity tool was invoked (found in session)
-✓ Memory storage and retrieval appears to work
+✓ Memory storage and retrieval works correctly
 ✅ MCP Reserved Parameter Injection E2E test completed!
 ```
+
+## Comparison: Old vs New Workflow
+
+| Task | Old Workflow | New Workflow |
+|------|--------------|--------------|
+| Add MCP server | Copy config file manually | `pekobot cap mcp add` |
+| Configure reserved params | Edit TOML file | `--reserved` flag |
+| Enable tools for agent | Edit agent config.toml | `pekobot cap enable` |
+| Check status | N/A | `pekobot cap status` |
+| Remove server | Delete config file | `pekobot cap mcp remove` |
 
 ## Troubleshooting
 
 ### MCP Server Not Starting
 - Check Python is installed: `python --version`
 - Check the mcp_server.py path is correct
+- Try manually: `python mcp_server.py`
 
 ### Reserved Params Not Injected
-- Verify mcp.toml has `[server.reserved_parameters]` section
+- Verify `pekobot cap mcp show <server>` shows reserved_parameters
 - Check that agent_id and session_id are configured with `source = "runtime"`
 - Verify the MCP tool schema includes optional agent_id/session_id params
 
-### Agent Doesn't Use MCP Tools
-- The agent needs to be explicitly told to use MCP tools
-- Update AGENT.md to document available MCP tools
-- Use explicit prompts like "Use the echo_identity tool"
+### Agent Doesn't See MCP Tools
+- Use `pekobot cap status default/myagent` to check enabled tools
+- Ensure MCP server is running: `pekobot cap mcp test <server>`
+- Check that tool names match exactly (case-sensitive)
 
 ## See Also
 
-- [MCP Reserved Parameters Guide](../../../docs/mcp_reserved_params_guide.md)
-- [MCP Reserved Parameters Proposal](../../../docs/mcp_reserved_params_proposal.md)
-- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+- [Universal Tool E2E Test](../tool/custom/python/) - Compare with Universal Tool workflow
+- [MCP Documentation](../../../../docs/)

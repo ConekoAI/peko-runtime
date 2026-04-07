@@ -18,9 +18,43 @@ use crate::mcp::{
     discover_servers, ensure_default_config, is_server_installed, list_available_servers,
     mcp_config_path, mcp_install_dir, McpConfig, McpServerConfig, TransportType,
 };
+use anyhow::Context;
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Reserved parameter source prefixes
+const RESERVED_RUNTIME_PREFIX: &str = "runtime:";
+const RESERVED_ENV_PREFIX: &str = "env:";
+const RESERVED_STATIC_PREFIX: &str = "static:";
+
+/// Parse a reserved parameter from CLI format.
+///
+/// Format: `name=source:value` where source is `runtime:`, `env:`, or `static:`.
+/// Defaults to `runtime:` if no prefix is specified.
+///
+/// # Errors
+/// Returns an error if the format is invalid.
+fn parse_reserved_param(input: &str) -> anyhow::Result<(String, crate::mcp::ReservedParamConfig)> {
+    let (param_name, param_value): (&str, &str) = input
+        .split_once('=')
+        .context("Invalid reserved parameter format, expected name=source:value")?;
+
+    let config: crate::mcp::ReservedParamConfig = if param_value.starts_with(RESERVED_RUNTIME_PREFIX) {
+        let field = &param_value[RESERVED_RUNTIME_PREFIX.len()..];
+        crate::mcp::ReservedParamConfig::runtime(field)
+    } else if param_value.starts_with(RESERVED_ENV_PREFIX) {
+        let var = &param_value[RESERVED_ENV_PREFIX.len()..];
+        crate::mcp::ReservedParamConfig::env(var)
+    } else if param_value.starts_with(RESERVED_STATIC_PREFIX) {
+        let value = &param_value[RESERVED_STATIC_PREFIX.len()..];
+        crate::mcp::ReservedParamConfig::static_value(value)
+    } else {
+        crate::mcp::ReservedParamConfig::runtime(param_value)
+    };
+
+    Ok((param_name.to_string(), config))
+}
 
 /// MCP management commands
 #[derive(Subcommand)]
@@ -91,6 +125,11 @@ pub enum McpCommands {
         /// Don't auto-start the server
         #[arg(long)]
         no_auto_start: bool,
+
+        /// Reserved parameters to inject (format: name=source:field or name=env:VAR or name=static:value)
+        /// Examples: agent_id=runtime:agent_id, api_key=env:API_KEY, env=static:production
+        #[arg(long)]
+        reserved: Vec<String>,
     },
 
     /// Remove an MCP server
@@ -311,6 +350,7 @@ impl McpCommandHandler {
         env: Vec<String>,
         cwd: Option<PathBuf>,
         no_auto_start: bool,
+        reserved: Vec<String>,
     ) -> anyhow::Result<()> {
         let mut config = self.load_config()?;
 
@@ -330,6 +370,13 @@ impl McpCommandHandler {
             }
         }
 
+        // Parse reserved parameters
+        let mut reserved_params: HashMap<String, crate::mcp::ReservedParamConfig> = HashMap::new();
+        for reserved_param in &reserved {
+            let (name, config) = parse_reserved_param(reserved_param)?;
+            reserved_params.insert(name, config);
+        }
+
         let server_config = match transport {
             TransportTypeArg::Stdio => {
                 let command = command
@@ -338,11 +385,14 @@ impl McpCommandHandler {
                     .with_env(env_map)
                     .with_cwd(cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_default()))
                     .with_auto_start(!no_auto_start)
+                    .with_reserved_parameters(reserved_params)
             }
             TransportTypeArg::Sse => {
                 let endpoint = endpoint
                     .ok_or_else(|| anyhow::anyhow!("Endpoint is required for SSE transport"))?;
-                McpServerConfig::sse(name.clone(), endpoint).with_auto_start(!no_auto_start)
+                McpServerConfig::sse(name.clone(), endpoint)
+                    .with_auto_start(!no_auto_start)
+                    .with_reserved_parameters(reserved_params)
             }
         };
 
@@ -350,6 +400,9 @@ impl McpCommandHandler {
         self.save_config(&config)?;
 
         println!("Added MCP server '{name}'");
+        if !reserved.is_empty() {
+            println!("  Reserved parameters configured: {} parameter(s)", reserved.len());
+        }
         if !no_auto_start {
             println!("Use 'pekobot mcp start {name}' to start the server");
         }
@@ -820,6 +873,7 @@ pub async fn handle(command: McpCommands, config_path: PathBuf) -> anyhow::Resul
             env,
             cwd,
             no_auto_start,
+            reserved,
         } => handler.add(
             name,
             transport,
@@ -829,6 +883,7 @@ pub async fn handle(command: McpCommands, config_path: PathBuf) -> anyhow::Resul
             env,
             cwd,
             no_auto_start,
+            reserved,
         ),
         McpCommands::Remove { name, force } => handler.remove(&name, force),
         McpCommands::Start { name } => {
