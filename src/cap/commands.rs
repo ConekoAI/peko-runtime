@@ -16,6 +16,48 @@ use clap::Subcommand;
 use serde::Serialize;
 use std::path::PathBuf;
 
+/// Skill management subcommands
+#[derive(Subcommand)]
+#[command(disable_version_flag = true)]
+pub enum SkillCommands {
+    /// List installed skills
+    List {
+        /// Show all details
+        #[arg(short, long)]
+        long: bool,
+    },
+
+    /// Install a skill from a directory
+    Install {
+        /// Path to skill directory (must contain SKILL.md)
+        path: PathBuf,
+        /// Force reinstall if already exists
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Uninstall a skill
+    Uninstall {
+        /// Skill name
+        name: String,
+        /// Skip confirmation
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Show skill information
+    Info {
+        /// Skill name
+        name: String,
+    },
+
+    /// Read skill content (full SKILL.md)
+    Read {
+        /// Skill name
+        name: String,
+    },
+}
+
 /// Unified capability command
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
@@ -127,6 +169,10 @@ pub enum CapCommands {
     /// Universal Capability management (delegates to existing pekobot tool)
     #[command(subcommand)]
     Universal(tool::ToolCommands),
+
+    /// Skill management (documentation-based capabilities)
+    #[command(subcommand)]
+    Skill(SkillCommands),
 }
 
 /// Handle unified capability command
@@ -149,6 +195,7 @@ pub async fn handle_cap_command(
         CapCommands::Restart { name } => handle_restart(&name, paths).await,
         CapCommands::Mcp(mcp_cmd) => mcp::handle(mcp_cmd, paths.mcp_config()).await,
         CapCommands::Universal(universal_cmd) => tool::handle_tool(universal_cmd, paths, json).await,
+        CapCommands::Skill(skill_cmd) => handle_skill_command(skill_cmd, paths).await,
     }
 }
 
@@ -177,6 +224,7 @@ async fn handle_list(
         Some("universal") => caps.iter().filter(|c| c.cap_type == CapabilityType::Universal).cloned().collect(),
         Some("downloaded") => caps.iter().filter(|c| c.cap_type == CapabilityType::Downloaded).cloned().collect(),
         Some("builtin") | Some("built-in") => caps.iter().filter(|c| c.cap_type == CapabilityType::BuiltIn).cloned().collect(),
+        Some("skill") => caps.iter().filter(|c| c.cap_type == CapabilityType::Skill).cloned().collect(),
         _ => caps,
     };
 
@@ -199,7 +247,7 @@ async fn handle_list(
     println!("Capabilities ({}):", filtered.len());
     println!();
 
-    for cap_type in &[CapabilityType::BuiltIn, CapabilityType::Mcp, CapabilityType::Universal, CapabilityType::Downloaded] {
+    for cap_type in &[CapabilityType::BuiltIn, CapabilityType::Mcp, CapabilityType::Universal, CapabilityType::Downloaded, CapabilityType::Skill] {
         if let Some(caps) = by_type.get(cap_type) {
             println!("[{}]", cap_type);
             for cap in caps {
@@ -343,9 +391,22 @@ async fn handle_enable(target: &str, capability: &str, paths: &GlobalPaths) -> a
         // Ensure tools config exists
         let tools = config.tools.get_or_insert_with(Default::default);
 
-        // Add to enabled whitelist if not already present
-        if !tools.enabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
-            tools.enabled.push(capability.to_string());
+        // Check if this is a skill by looking it up in the capability catalog
+        let manager = CapabilityManager::with_defaults(paths.resolver().clone());
+        let is_skill = manager.get(capability).await
+            .map(|c| c.cap_type == CapabilityType::Skill)
+            .unwrap_or(false);
+
+        if is_skill {
+            // Add to skills whitelist if not already present
+            if !tools.skills.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+                tools.skills.push(capability.to_string());
+            }
+        } else {
+            // Add to enabled whitelist if not already present
+            if !tools.enabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+                tools.enabled.push(capability.to_string());
+            }
         }
 
         // Save
@@ -379,8 +440,19 @@ async fn handle_disable(target: &str, capability: &str, paths: &GlobalPaths) -> 
         // Ensure tools config exists
         let tools = config.tools.get_or_insert_with(Default::default);
 
-        // Remove from enabled whitelist
-        tools.enabled.retain(|e| !e.eq_ignore_ascii_case(capability));
+        // Check if this is a skill by looking it up in the capability catalog
+        let manager = CapabilityManager::with_defaults(paths.resolver().clone());
+        let is_skill = manager.get(capability).await
+            .map(|c| c.cap_type == CapabilityType::Skill)
+            .unwrap_or(false);
+
+        if is_skill {
+            // Remove from skills whitelist
+            tools.skills.retain(|e| !e.eq_ignore_ascii_case(capability));
+        } else {
+            // Remove from enabled whitelist
+            tools.enabled.retain(|e| !e.eq_ignore_ascii_case(capability));
+        }
 
         // Save
         let updated = toml::to_string_pretty(&config)?;
@@ -420,19 +492,26 @@ async fn handle_status(target: Option<&str>, paths: &GlobalPaths, json: bool) ->
                 struct AgentCapStatus<'a> {
                     agent: &'a str,
                     team: &'a str,
-                    enabled: Vec<String>,
+                    enabled_tools: Vec<String>,
+                    enabled_skills: Vec<String>,
                     capabilities: Vec<CapabilityInfo>,
                 }
                 let status = AgentCapStatus {
                     agent: &agent_name,
                     team: &team,
-                    enabled: config.tools.as_ref().map(|t| t.enabled.clone()).unwrap_or_default(),
+                    enabled_tools: config.tools.as_ref().map(|t| t.enabled.clone()).unwrap_or_default(),
+                    enabled_skills: config.tools.as_ref().map(|t| t.skills.clone()).unwrap_or_default(),
                     capabilities: caps,
                 };
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {
                 println!("Agent: {}/{}", team, agent_name);
-                println!("Enabled capabilities: {:?}", config.tools.as_ref().map(|t| &t.enabled).unwrap_or(&vec![]));
+                println!("Enabled tools: {:?}", config.tools.as_ref().map(|t| &t.enabled).unwrap_or(&vec![]));
+                let empty_skills: Vec<String> = Vec::new();
+                let skills = config.tools.as_ref().map(|t| &t.skills).unwrap_or(&empty_skills);
+                if !skills.is_empty() {
+                    println!("Enabled skills: {:?}", skills);
+                }
             }
         } else {
             // Team-level status
@@ -509,4 +588,198 @@ async fn handle_restart(name: &str, paths: &GlobalPaths) -> anyhow::Result<()> {
     manager.restart(name).await?;
     println!("Restarted '{}'", name);
     Ok(())
+}
+/// Handle skill subcommands
+async fn handle_skill_command(command: SkillCommands, paths: &GlobalPaths) -> anyhow::Result<()> {
+    let skills_dir = paths.resolver().skills_dir();
+    
+    match command {
+        SkillCommands::List { long } => {
+            let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
+            let count = registry.load_all()?;
+            
+            if count == 0 {
+                println!("No skills installed.");
+                println!("Use 'pekobot cap skill install <path>' to add skills.");
+                return Ok(());
+            }
+            
+            let skills = registry.list();
+            
+            if long {
+                println!("{:<20} {:<30} {}", "NAME", "DESCRIPTION", "TAGS");
+                println!("{}", "-".repeat(80));
+                for skill in skills {
+                    let tags = if skill.tags.is_empty() {
+                        "-".to_string()
+                    } else {
+                        skill.tags.join(", ")
+                    };
+                    println!("{:<20} {:<30} {}", 
+                        skill.name, 
+                        truncate(&skill.description, 30),
+                        tags
+                    );
+                }
+            } else {
+                for skill in skills {
+                    println!("{}", skill.name);
+                }
+            }
+            
+            println!("\nTotal: {} skill(s)", count);
+            Ok(())
+        }
+        
+        SkillCommands::Install { path, force } => {
+            if !path.exists() {
+                anyhow::bail!("Path does not exist: {}", path.display());
+            }
+            
+            // Check for SKILL.md
+            let skill_md = path.join("SKILL.md");
+            if !skill_md.exists() {
+                anyhow::bail!("No SKILL.md found in {}", path.display());
+            }
+            
+            // Parse to get the name
+            let content = std::fs::read_to_string(&skill_md)?;
+            let (frontmatter, _) = parse_skill_frontmatter(&content)?;
+            let meta: serde_yaml::Value = serde_yaml::from_str(&frontmatter)?;
+            let name = meta.get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("SKILL.md missing 'name' field"))?
+                .to_string();
+            
+            // Create skills directory if needed
+            std::fs::create_dir_all(&skills_dir)?;
+            
+            let target_dir = skills_dir.join(&name);
+            
+            if target_dir.exists() {
+                if !force {
+                    println!("Skill '{}' already installed.", name);
+                    println!("Use --force to reinstall.");
+                    return Ok(());
+                }
+                // Remove existing
+                std::fs::remove_dir_all(&target_dir)?;
+            }
+            
+            // Copy skill directory
+            copy_dir_all(&path, &target_dir)?;
+            
+            println!("✓ Installed skill '{}' to {}", name, target_dir.display());
+            Ok(())
+        }
+        
+        SkillCommands::Uninstall { name, force } => {
+            let target_dir = skills_dir.join(&name);
+            
+            if !target_dir.exists() {
+                anyhow::bail!("Skill '{}' not found", name);
+            }
+            
+            if !force {
+                println!("This will remove skill '{}' from {}", name, target_dir.display());
+                println!("Use --force to skip this confirmation.");
+                return Ok(());
+            }
+            
+            std::fs::remove_dir_all(&target_dir)?;
+            println!("✓ Uninstalled skill '{}'", name);
+            Ok(())
+        }
+        
+        SkillCommands::Info { name } => {
+            let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
+            registry.load_all()?;
+            
+            let skill = registry.get(&name)
+                .ok_or_else(|| anyhow::anyhow!("Skill '{}' not found", name))?;
+            
+            println!("Name: {}", skill.name);
+            println!("Description: {}", skill.description);
+            if !skill.tags.is_empty() {
+                println!("Tags: {}", skill.tags.join(", "));
+            }
+            if let Some(author) = &skill.author {
+                println!("Author: {}", author);
+            }
+            println!("Path: {}", skill.file_path.display());
+            println!("\nUse 'pekobot cap skill read {}' to view the full skill content.", name);
+            
+            Ok(())
+        }
+        
+        SkillCommands::Read { name } => {
+            let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
+            registry.load_all()?;
+            
+            let skill = registry.get(&name)
+                .ok_or_else(|| anyhow::anyhow!("Skill '{}' not found", name))?;
+            
+            let content = crate::skills::read_skill_content(skill)?;
+            println!("{}", content);
+            
+            Ok(())
+        }
+    }
+}
+
+/// Parse YAML frontmatter from skill content
+fn parse_skill_frontmatter(content: &str) -> anyhow::Result<(String, String)> {
+    let mut lines = content.lines().peekable();
+    
+    match lines.next() {
+        Some("---") => {}
+        _ => anyhow::bail!("SKILL.md must start with --- frontmatter delimiter"),
+    }
+    
+    let mut frontmatter_lines = Vec::new();
+    let mut found_end = false;
+    
+    for line in lines.by_ref() {
+        if line == "---" {
+            found_end = true;
+            break;
+        }
+        frontmatter_lines.push(line);
+    }
+    
+    if !found_end {
+        anyhow::bail!("Frontmatter must end with ---");
+    }
+    
+    let body = lines.collect::<Vec<_>>().join("\n");
+    Ok((frontmatter_lines.join("\n"), body))
+}
+
+/// Copy directory recursively
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        
+        if file_type.is_dir() {
+            copy_dir_all(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    
+    Ok(())
+}
+
+/// Truncate string to max length with ellipsis
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len.saturating_sub(3)])
+    }
 }

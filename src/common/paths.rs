@@ -191,6 +191,13 @@ impl PathResolver {
         self.data_dir.join("tools")
     }
 
+    /// Get the Skills directory
+    ///
+    /// Path: `{data_dir}/skills`
+    pub fn skills_dir(&self) -> PathBuf {
+        self.data_dir.join("skills")
+    }
+
     // ====================================================================================
     // Data Directory Paths (sessions, workspaces, runtime data)
     // ====================================================================================

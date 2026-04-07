@@ -1399,8 +1399,16 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
         })
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // Load skills from the skills directory
-    let skills = load_agent_skills(agent.name());
+    // Load enabled skills from the skills directory using PathResolver for consistency
+    let path_resolver = crate::common::paths::PathResolver::new();
+    let enabled_skills = agent
+        .config
+        .tools
+        .as_ref()
+        .map(|t| &t.skills)
+        .unwrap_or(&vec![])
+        .clone();
+    let skills = load_agent_skills(agent.name(), &enabled_skills, &path_resolver);
 
     // Extract custom bootstrap files from agent config if specified
     let bootstrap_files = agent
@@ -1419,13 +1427,13 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
         .build()
 }
 
-/// Load skills for an agent from the skills directory
-fn load_agent_skills(agent_name: &str) -> Vec<crate::skills::Skill> {
-    // Try agent-specific skills first, then global skills
-    let skills_dir = dirs::home_dir()
-        .map(|h| h.join(".pekobot").join("skills"))
-        .or_else(|| dirs::data_dir().map(|d| d.join("pekobot").join("skills")))
-        .unwrap_or_else(|| PathBuf::from("./skills"));
+/// Load enabled skills for an agent from the skills directory
+fn load_agent_skills(agent_name: &str, enabled_skills: &[String], path_resolver: &crate::common::paths::PathResolver) -> Vec<crate::skills::Skill> {
+    // Use PathResolver for consistent path resolution
+    let skills_dir = path_resolver.skills_dir();
+
+    tracing::debug!("Loading skills from: {:?}", skills_dir);
+    tracing::debug!("Enabled skills for agent {}: {:?}", agent_name, enabled_skills);
 
     let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
 
@@ -1434,7 +1442,22 @@ fn load_agent_skills(agent_name: &str) -> Vec<crate::skills::Skill> {
         return Vec::new();
     }
 
-    registry.list().into_iter().cloned().collect()
+    tracing::debug!("Loaded {} skills from registry", registry.count());
+
+    // Only return enabled skills
+    let skills: Vec<_> = registry
+        .list()
+        .into_iter()
+        .filter(|s| {
+            let is_enabled = enabled_skills.iter().any(|e| e.eq_ignore_ascii_case(&s.name));
+            tracing::debug!("Skill '{}' enabled: {}", s.name, is_enabled);
+            is_enabled
+        })
+        .cloned()
+        .collect();
+
+    tracing::info!("Returning {} enabled skills for agent {}", skills.len(), agent_name);
+    skills
 }
 
 /// Convert chat messages to prompt string (fallback)

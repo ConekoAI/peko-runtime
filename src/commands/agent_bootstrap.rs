@@ -52,6 +52,8 @@ You are {{{{agent_name}}}}, an AI assistant running in the Pekobot agent runtime
 
 Help the user accomplish their tasks efficiently and safely.
 
+{{{{skills}}}}
+
 {{{{tools}}}}
 
 ## Guidelines

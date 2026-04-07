@@ -22,6 +22,8 @@ pub enum CapabilityType {
     Universal,
     /// Downloaded from Pekohub registry
     Downloaded,
+    /// Skills (documentation-based capabilities)
+    Skill,
 }
 
 impl std::fmt::Display for CapabilityType {
@@ -31,6 +33,7 @@ impl std::fmt::Display for CapabilityType {
             CapabilityType::Mcp => write!(f, "mcp"),
             CapabilityType::Universal => write!(f, "universal"),
             CapabilityType::Downloaded => write!(f, "downloaded"),
+            CapabilityType::Skill => write!(f, "skill"),
         }
     }
 }
@@ -47,6 +50,19 @@ pub enum CapabilityStatus {
     Error(String),
     /// Status is unknown
     Unknown,
+}
+
+/// Skill-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillConfig {
+    /// Skill directory path
+    pub skill_dir: PathBuf,
+    /// Path to SKILL.md file
+    pub skill_md_path: PathBuf,
+    /// Tags for categorization
+    pub tags: Vec<String>,
+    /// Author information
+    pub author: Option<String>,
 }
 
 /// Installed capability information (unified view across all capability types)
@@ -69,6 +85,9 @@ pub struct CapabilityInfo {
     /// MCP-specific server configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_config: Option<McpServerConfig>,
+    /// Skill-specific configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skill_config: Option<SkillConfig>,
 }
 
 impl CapabilityInfo {
@@ -83,6 +102,7 @@ impl CapabilityInfo {
             manifest_path: None,
             is_active: true,
             server_config: None,
+            skill_config: None,
         }
     }
 
@@ -105,6 +125,7 @@ impl CapabilityInfo {
             manifest_path: None,
             is_active: config.auto_start,
             server_config: Some(config),
+            skill_config: None,
         }
     }
 
@@ -123,6 +144,7 @@ impl CapabilityInfo {
             manifest_path,
             is_active: true,
             server_config: None,
+            skill_config: None,
         }
     }
 
@@ -143,6 +165,34 @@ impl CapabilityInfo {
             manifest_path,
             is_active: true,
             server_config: None,
+            skill_config: None,
+        }
+    }
+
+    /// Create info for a skill capability
+    pub fn skill(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        skill_dir: PathBuf,
+        skill_md_path: PathBuf,
+        tags: Vec<String>,
+        author: Option<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            cap_type: CapabilityType::Skill,
+            version: String::new(),
+            description: description.into(),
+            install_path: skill_dir.clone(),
+            manifest_path: Some(skill_md_path.clone()),
+            is_active: true,
+            server_config: None,
+            skill_config: Some(SkillConfig {
+                skill_dir,
+                skill_md_path,
+                tags,
+                author,
+            }),
         }
     }
 }

@@ -206,6 +206,8 @@ pub struct ToolConfig {
     /// Enabled built-in tools (whitelist)
     /// If empty, all tools are available (backward compatibility)
     pub enabled: Vec<String>,
+    /// Enabled skills for this agent (whitelist)
+    pub skills: Vec<String>,
     /// HTTP tool settings
     pub http: Option<HttpToolConfig>,
     /// Memory tool settings
@@ -263,6 +265,7 @@ impl Default for ToolConfig {
         Self {
             // Default whitelist: shell and session_status only
             enabled: vec!["shell".to_string(), "session_status".to_string()],
+            skills: Vec::new(),
             http: None,
             memory: None,
             custom: None,
