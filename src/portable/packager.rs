@@ -20,6 +20,10 @@ pub struct ExportOptions {
     pub passphrase: Option<String>,
     /// Include memory database
     pub include_memory: bool,
+    /// Include session history (can be large)
+    pub include_sessions: bool,
+    /// Include workspace files (SYSTEM.md, AGENTS.md, etc.)
+    pub include_workspace: bool,
     /// Rotate keys on import (create new DID)
     pub rotate_keys: bool,
     /// Description for the package
@@ -34,6 +38,8 @@ impl Default for ExportOptions {
             encrypt: false,
             passphrase: None,
             include_memory: true,
+            include_sessions: false,     // Off by default (can be large)
+            include_workspace: true,     // On by default (essential files)
             rotate_keys: false,
             description: None,
             output_path: None,
@@ -51,6 +57,10 @@ pub struct Packager {
     memory_path: Option<std::path::PathBuf>,
     /// Skills directory
     skills_dir: Option<std::path::PathBuf>,
+    /// Workspace directory (SYSTEM.md, etc.)
+    workspace_dir: Option<std::path::PathBuf>,
+    /// Sessions directory (conversation history)
+    sessions_dir: Option<std::path::PathBuf>,
 }
 
 impl Packager {
@@ -66,12 +76,26 @@ impl Packager {
             identity,
             memory_path,
             skills_dir: None,
+            workspace_dir: None,
+            sessions_dir: None,
         }
     }
 
     /// Set skills directory
     pub fn with_skills_dir(mut self, dir: impl AsRef<Path>) -> Self {
         self.skills_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set workspace directory
+    pub fn with_workspace_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.workspace_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    /// Set sessions directory
+    pub fn with_sessions_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.sessions_dir = Some(dir.as_ref().to_path_buf());
         self
     }
 
@@ -109,17 +133,27 @@ impl Packager {
         // 4. Export skills
         self.export_skills(&mut files, &mut manifest).await?;
 
-        // 5. Build capabilities and tools lists
+        // 5. Export workspace (if included)
+        if options.include_workspace {
+            self.export_workspace(&mut files, &mut manifest).await?;
+        }
+
+        // 6. Export sessions (if included)
+        if options.include_sessions {
+            self.export_sessions(&mut files, &mut manifest).await?;
+        }
+
+        // 7. Build capabilities and tools lists
         self.build_capabilities(&mut manifest);
 
-        // 6. Sign manifest
+        // 8. Sign manifest
         self.sign_manifest(&mut manifest)?;
 
-        // 7. Add manifest to files
+        // 9. Add manifest to files
         let manifest_toml = manifest.to_toml()?;
         files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
 
-        // 8. Create archive
+        // 10. Create archive
         let output_path = self.create_archive(&files, &options).await?;
 
         Ok(output_path)
@@ -216,6 +250,7 @@ impl Packager {
     }
 
     /// Export skills
+    /// Copies entire skill directories (not just .toml files)
     async fn export_skills(
         &self,
         files: &mut HashMap<String, Vec<u8>>,
@@ -227,15 +262,98 @@ impl Packager {
 
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
-                    if path.extension().is_some_and(|e| e == "toml") {
-                        let content = tokio::fs::read(&path).await?;
-                        let file_name = path.file_name().unwrap().to_string_lossy();
-                        let package_path = format!("config/skills/{file_name}");
-
-                        files.insert(package_path.clone(), content);
-                        manifest.add_file(&package_path, &files[&package_path]);
+                    // Skills are directories containing SKILL.md
+                    if path.is_dir() {
+                        let skill_name = path.file_name().unwrap().to_string_lossy();
+                        self.export_skill_dir(&path, &format!("skills/{}", skill_name), files, manifest).await?;
                     }
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recursively export a skill directory
+    async fn export_skill_dir(
+        &self,
+        src_dir: &std::path::Path,
+        package_prefix: &str,
+        files: &mut HashMap<String, Vec<u8>>,
+        manifest: &mut AgentManifest,
+    ) -> anyhow::Result<()> {
+        let mut entries = tokio::fs::read_dir(src_dir).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let src_path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let package_path = format!("{}/{}", package_prefix, file_name);
+
+            if src_path.is_dir() {
+                // Recurse into subdirectories
+                Box::pin(self.export_skill_dir(&src_path, &package_path, files, manifest)).await?;
+            } else {
+                // Read and add file
+                let content = tokio::fs::read(&src_path).await?;
+                files.insert(package_path.clone(), content);
+                manifest.add_file(&package_path, &files[&package_path]);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Export workspace files (SYSTEM.md, AGENTS.md, etc.)
+    async fn export_workspace(
+        &self,
+        files: &mut HashMap<String, Vec<u8>>,
+        manifest: &mut AgentManifest,
+    ) -> anyhow::Result<()> {
+        if let Some(workspace_dir) = &self.workspace_dir {
+            if workspace_dir.exists() {
+                self.export_dir_recursive(workspace_dir, "workspace", files, manifest).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Export session history
+    async fn export_sessions(
+        &self,
+        files: &mut HashMap<String, Vec<u8>>,
+        manifest: &mut AgentManifest,
+    ) -> anyhow::Result<()> {
+        if let Some(sessions_dir) = &self.sessions_dir {
+            if sessions_dir.exists() {
+                self.export_dir_recursive(sessions_dir, "sessions", files, manifest).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Generic recursive directory export helper
+    async fn export_dir_recursive(
+        &self,
+        src_dir: &std::path::Path,
+        package_prefix: &str,
+        files: &mut HashMap<String, Vec<u8>>,
+        manifest: &mut AgentManifest,
+    ) -> anyhow::Result<()> {
+        let mut entries = tokio::fs::read_dir(src_dir).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let src_path = entry.path();
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let package_path = format!("{}/{}", package_prefix, file_name);
+
+            if src_path.is_dir() {
+                // Recurse into subdirectories
+                Box::pin(self.export_dir_recursive(&src_path, &package_path, files, manifest)).await?;
+            } else {
+                // Read and add file
+                let content = tokio::fs::read(&src_path).await?;
+                files.insert(package_path.clone(), content);
+                manifest.add_file(&package_path, &files[&package_path]);
             }
         }
 
@@ -384,6 +502,8 @@ mod tests {
         let opts = ExportOptions::default();
         assert!(!opts.encrypt);
         assert!(opts.include_memory);
+        assert!(!opts.include_sessions);   // Default: false (large)
+        assert!(opts.include_workspace);   // Default: true (essential)
         assert!(!opts.rotate_keys);
     }
 }

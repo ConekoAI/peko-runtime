@@ -2,7 +2,7 @@
 //!
 //! Provides export/import functionality for agents as `.agent` packages.
 //! Similar to Docker containers, agents can be packaged with their
-//! identity, memory, configuration, and skills.
+//! identity, memory, configuration, skills, workspace, and sessions.
 //!
 //! ## Package Format
 //!
@@ -12,7 +12,9 @@
 //! - `identity/keys.enc` - Encrypted private keys (AES-256-GCM)
 //! - `config/agent.toml` - Agent configuration
 //! - `config/prompts.toml` - System prompts
-//! - `config/skills/*.toml` - Bundled skills
+//! - `skills/{name}/SKILL.md` - Bundled skills (full directories)
+//! - `workspace/` - Workspace files (SYSTEM.md, AGENTS.md, etc.)
+//! - `sessions/` - Session history (optional, can be large)
 //! - `memory/memory.db` - `SQLite` memory database
 //!
 //! ## Example

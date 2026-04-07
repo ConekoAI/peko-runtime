@@ -25,6 +25,10 @@ pub struct ImportOptions {
     pub rotate_keys: bool,
     /// Import memory database
     pub import_memory: bool,
+    /// Import session history
+    pub import_sessions: bool,
+    /// Import workspace files
+    pub import_workspace: bool,
     /// Skip validation (not recommended)
     pub skip_validation: bool,
     /// Force import even if DID exists
@@ -38,6 +42,8 @@ impl Default for ImportOptions {
             passphrase: None,
             rotate_keys: false,
             import_memory: true,
+            import_sessions: true,     // Default: import if present
+            import_workspace: true,    // Default: import if present
             skip_validation: false,
             force: false,
         }
@@ -55,6 +61,10 @@ pub struct ImportResult {
     pub keys_rotated: bool,
     /// Path to imported memory database
     pub memory_path: Option<std::path::PathBuf>,
+    /// Path to imported workspace
+    pub workspace_path: Option<std::path::PathBuf>,
+    /// Path to imported sessions
+    pub sessions_path: Option<std::path::PathBuf>,
     /// Path to agent config
     pub config_path: std::path::PathBuf,
     /// Validation result
@@ -158,14 +168,48 @@ impl Unpackager {
         // Import skills
         self.import_skills(&files).await?;
 
+        // Import workspace (if present in package)
+        if options.import_workspace {
+            self.import_workspace(&files, &name).await?;
+        }
+
+        // Import sessions (if present in package)
+        if options.import_sessions {
+            self.import_sessions(&files, &name).await?;
+        }
+
         // Save config
         let config_path = self.save_config(&config, &name).await?;
+
+        // Compute workspace and sessions paths for result
+        let team = "default";
+        let workspace_path = if options.import_workspace {
+            Some(
+                dirs::data_dir()
+                    .map(|d| d.join("pekobot").join("workspaces").join(team).join(&name))
+                    .unwrap_or_else(|| self.base_dir.join("workspaces").join(&name))
+            )
+        } else {
+            None
+        };
+        
+        let sessions_path = if options.import_sessions {
+            Some(
+                dirs::data_dir()
+                    .map(|d| d.join("pekobot").join("sessions").join(team).join(&name))
+                    .unwrap_or_else(|| self.base_dir.join("sessions").join(&name))
+            )
+        } else {
+            None
+        };
 
         Ok(ImportResult {
             name,
             did: identity.did,
             keys_rotated: options.rotate_keys,
             memory_path,
+            workspace_path,
+            sessions_path,
             config_path,
             validation,
         })
@@ -317,9 +361,64 @@ impl Unpackager {
         tokio::fs::create_dir_all(&skills_dir).await?;
 
         for (path, content) in files {
-            if path.starts_with("config/skills/") {
-                let file_name = path.strip_prefix("config/skills/").unwrap_or(path);
+            // Handle new path structure: skills/{name}/SKILL.md
+            if path.starts_with("skills/") {
+                let file_name = path.strip_prefix("skills/").unwrap_or(path);
                 let dest_path = skills_dir.join(file_name);
+
+                if let Some(parent) = dest_path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+
+                tokio::fs::write(dest_path, content).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Import workspace files
+    async fn import_workspace(&self, files: &HashMap<String, Vec<u8>>, agent_name: &str) -> anyhow::Result<()> {
+        // Determine team (default to "default" if not specified)
+        let team = "default"; // Could be extracted from config
+        
+        let workspace_dir = dirs::data_dir()
+            .map(|d| d.join("pekobot").join("workspaces").join(team).join(agent_name))
+            .unwrap_or_else(|| self.base_dir.join("workspaces").join(agent_name));
+            
+        tokio::fs::create_dir_all(&workspace_dir).await?;
+
+        for (path, content) in files {
+            if path.starts_with("workspace/") {
+                let file_name = path.strip_prefix("workspace/").unwrap_or(path);
+                let dest_path = workspace_dir.join(file_name);
+
+                if let Some(parent) = dest_path.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+
+                tokio::fs::write(dest_path, content).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Import session history
+    async fn import_sessions(&self, files: &HashMap<String, Vec<u8>>, agent_name: &str) -> anyhow::Result<()> {
+        // Determine team (default to "default")
+        let team = "default";
+        
+        let sessions_dir = dirs::data_dir()
+            .map(|d| d.join("pekobot").join("sessions").join(team).join(agent_name))
+            .unwrap_or_else(|| self.base_dir.join("sessions").join(agent_name));
+            
+        tokio::fs::create_dir_all(&sessions_dir).await?;
+
+        for (path, content) in files {
+            if path.starts_with("sessions/") {
+                let file_name = path.strip_prefix("sessions/").unwrap_or(path);
+                let dest_path = sessions_dir.join(file_name);
 
                 if let Some(parent) = dest_path.parent() {
                     tokio::fs::create_dir_all(parent).await?;
