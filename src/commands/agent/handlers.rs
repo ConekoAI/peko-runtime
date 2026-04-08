@@ -241,27 +241,11 @@ pub async fn handle_agent_export(
     name: String,
     team: Option<String>,
     output: Option<String>,
-    encrypt: bool,
-    passphrase: Option<String>,
 ) -> anyhow::Result<()> {
     let service = paths.services().agent();
 
-    // Prompt for passphrase if encryption is enabled but no passphrase provided
-    let final_passphrase = if encrypt && passphrase.is_none() {
-        use std::io::{self, Write};
-        print!("Enter passphrase for encryption: ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        Some(input.trim().to_string())
-    } else {
-        passphrase
-    };
-
     let opts = AgentExportOptions {
         output_path: output.map(|p| p.into()),
-        encrypt,
-        passphrase: final_passphrase,
     };
 
     let result = service.export_agent(&name, team.as_deref(), opts).await?;
@@ -273,10 +257,6 @@ pub async fn handle_agent_export(
         result.output_path.display()
     );
 
-    if result.encrypted {
-        println!("🔐 Encrypted");
-    }
-
     Ok(())
 }
 
@@ -286,14 +266,12 @@ pub async fn handle_agent_import(
     file_path: String,
     name: Option<String>,
     team: Option<String>,
-    passphrase: Option<String>,
 ) -> anyhow::Result<()> {
     let service = paths.services().agent();
 
     let opts = AgentImportOptions {
         name,
         team,
-        passphrase,
     };
 
     let result = service.import_agent(file_path.as_ref(), opts).await?;

@@ -586,13 +586,8 @@ impl AgentService {
             .context("Failed to parse agent config")?;
 
         // Generate a new identity for the agent export
-        // (In the future, this could load an existing identity if agents have DIDs)
         let identity = Identity::new(agent_name, crate::identity::did::DIDScope::Local).await
             .context("Failed to create identity for export")?;
-
-        // Store the identity temporarily for export
-        let key_storage = KeyStorage::new()?;
-        key_storage.store_identity(&identity).await?;
 
         // Set up export paths
         let skills_dir = self.resolver.skills_dir();
@@ -603,9 +598,9 @@ impl AgentService {
 
         // Build portable export options
         let export_opts = PortableExportOptions {
-            encrypt: opts.encrypt,
-            passphrase: opts.passphrase.clone(),
-            include_memory: false, // Core memory is deprecated
+            encrypt: false,
+            passphrase: None,
+            include_memory: false,
             include_sessions: true,
             include_workspace: true,
             include_mcp: true,
@@ -630,7 +625,7 @@ impl AgentService {
             name: agent_name.to_string(),
             team: team.to_string(),
             output_path: result_path,
-            encrypted: opts.encrypt,
+            encrypted: false,
         })
     }
 
@@ -654,13 +649,13 @@ impl AgentService {
         // Build portable import options
         let import_opts = PortableImportOptions {
             new_name: opts.name.clone(),
-            passphrase: opts.passphrase.clone(),
+            passphrase: None,
             rotate_keys: true, // Always rotate keys on import for security
-            import_memory: false, // Core memory is deprecated
+            import_memory: false,
             import_sessions: true,
             import_workspace: true,
             import_mcp: true,
-            install_tools_from_registry: false, // Don't auto-install tools
+            install_tools_from_registry: false,
             skip_validation: false,
             force: false,
         };
@@ -669,13 +664,9 @@ impl AgentService {
         let result = portable::import_agent(file_path, import_opts).await
             .context("Failed to import agent package")?;
 
-        // Get the final agent name (could be from import or from the package)
-        let final_name = result.name;
-        let final_team = team.to_string();
-
         Ok(AgentImportResult {
-            name: final_name,
-            team: final_team,
+            name: result.name,
+            team: team.to_string(),
             config_path: result.config_path,
         })
     }

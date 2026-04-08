@@ -128,12 +128,6 @@ pub enum AgentCommands {
         /// Output path
         #[arg(short, long)]
         output: Option<String>,
-        /// Encrypt with passphrase
-        #[arg(long)]
-        encrypt: bool,
-        /// Passphrase for encryption (will prompt if --encrypt is used without this)
-        #[arg(long)]
-        passphrase: Option<String>,
     },
 
     /// Import agent from .agent package
@@ -147,9 +141,6 @@ pub enum AgentCommands {
         /// Target team for imported agent
         #[arg(short, long)]
         team: Option<String>,
-        /// Passphrase for decryption (if package is encrypted)
-        #[arg(long)]
-        passphrase: Option<String>,
     },
 
     /// Inspect .agent package without importing
@@ -258,11 +249,9 @@ pub async fn handle_agent(
             name,
             team,
             output,
-            encrypt,
-            passphrase,
-        } => handlers::handle_agent_export(paths, name, team, output, encrypt, passphrase).await,
-        AgentCommands::Import { file, name, team, passphrase } => {
-            handlers::handle_agent_import(paths, file, name, team, passphrase).await
+        } => handlers::handle_agent_export(paths, name, team, output).await,
+        AgentCommands::Import { file, name, team } => {
+            handlers::handle_agent_import(paths, file, name, team).await
         }
         AgentCommands::Inspect { file } => handlers::handle_agent_inspect(file, json).await,
         AgentCommands::Init {
