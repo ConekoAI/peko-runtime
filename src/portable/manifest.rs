@@ -5,6 +5,61 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// MCP server entry in manifest
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpManifestEntry {
+    /// Server name
+    pub name: String,
+    /// Transport type
+    pub transport: String,
+    /// Command to execute (for stdio)
+    pub command: Option<String>,
+    /// Arguments
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Environment variables
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+    /// Whether binary is bundled
+    #[serde(default)]
+    pub bundled: bool,
+    /// Bundled binary path within package (if bundled)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle_path: Option<String>,
+}
+
+/// Tool registry reference for Universal Tools
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRegistryRef {
+    /// Tool name
+    pub name: String,
+    /// Required version (semver range)
+    pub version: String,
+    /// Registry URL or "default" for official registry
+    #[serde(default = "default_registry")]
+    pub source: String,
+}
+
+fn default_registry() -> String {
+    "default".to_string()
+}
+
+/// MCP configuration section in manifest
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpManifestConfig {
+    /// List of MCP servers
+    #[serde(default, rename = "server")]
+    pub servers: Vec<McpManifestEntry>,
+}
+
+/// Tool registry configuration section
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRegistryConfig {
+    /// Tools to fetch from registry on import
+    #[serde(default)]
+    pub required: Vec<ToolRegistryRef>,
+}
+
 /// Agent manifest - defines metadata for a portable agent package
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentManifest {
@@ -12,12 +67,18 @@ pub struct AgentManifest {
     pub agent: AgentMetadata,
     /// Identity configuration
     pub identity: IdentityConfig,
-    /// Memory configuration
+    /// Memory configuration (deprecated, kept for backward compatibility)
     pub memory: MemoryConfig,
     /// Capabilities exported with this agent
     pub capabilities: CapabilitiesConfig,
-    /// Tools required by this agent
+    /// Tools required by this agent (built-in/universal tool names)
     pub tools: ToolsConfig,
+    /// MCP servers configuration
+    #[serde(default)]
+    pub mcp: McpManifestConfig,
+    /// Tool registry references for Universal Tools
+    #[serde(default)]
+    pub tool_registry: ToolRegistryConfig,
     /// Packaging metadata
     pub packaging: PackagingMetadata,
     /// Digital signatures
@@ -117,6 +178,18 @@ pub struct Signatures {
     pub algorithm: String,
 }
 
+impl Default for McpManifestConfig {
+    fn default() -> Self {
+        Self { servers: Vec::new() }
+    }
+}
+
+impl Default for ToolRegistryConfig {
+    fn default() -> Self {
+        Self { required: Vec::new() }
+    }
+}
+
 impl AgentManifest {
     /// Create a new manifest with default values
     pub fn new(
@@ -133,7 +206,7 @@ impl AgentManifest {
                 version: version.into(),
                 description: None,
                 created_at: now,
-                export_format: "1.0".to_string(),
+                export_format: "1.1".to_string(), // Updated for MCP/tool_registry support
                 did: did.into(),
                 pekobot_version: crate::VERSION.to_string(),
             },
@@ -144,7 +217,7 @@ impl AgentManifest {
                 kdf_params: None,
             },
             memory: MemoryConfig {
-                memory_type: "sqlite".to_string(),
+                memory_type: "deprecated".to_string(), // Core memory removed
                 encrypted: false,
                 size_bytes: 0,
                 entry_count: None,
@@ -158,6 +231,8 @@ impl AgentManifest {
                 versions: None,
                 optional: None,
             },
+            mcp: McpManifestConfig::default(),
+            tool_registry: ToolRegistryConfig::default(),
             packaging: PackagingMetadata {
                 files: Vec::new(),
                 checksums: HashMap::new(),
@@ -169,6 +244,16 @@ impl AgentManifest {
                 algorithm: "ed25519".to_string(),
             },
         }
+    }
+
+    /// Add an MCP server entry to the manifest
+    pub fn add_mcp_server(&mut self, entry: McpManifestEntry) {
+        self.mcp.servers.push(entry);
+    }
+
+    /// Add a tool registry reference
+    pub fn add_tool_registry_ref(&mut self, tool_ref: ToolRegistryRef) {
+        self.tool_registry.required.push(tool_ref);
     }
 
     /// Serialize to TOML string

@@ -4,15 +4,35 @@
 #![allow(dead_code)]
 
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
+use crate::mcp::config::{McpConfig, McpServerConfig, TransportType};
 use crate::portable::{
     crypto::{decrypt_with_passphrase, deserialize_encrypted},
-    manifest::AgentManifest,
+    manifest::{AgentManifest, McpManifestEntry},
     validation::{validate_package, ValidationResult},
 };
 use crate::types::agent::AgentConfig;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
+
+/// Parse transport type from string
+fn parse_transport(transport: &str) -> TransportType {
+    match transport {
+        "sse" => TransportType::Sse,
+        _ => TransportType::Stdio,
+    }
+}
+
+/// MCP installation result
+#[derive(Debug, Clone)]
+pub struct McpInstallResult {
+    /// Server name
+    pub name: String,
+    /// Binary path (if bundled)
+    pub binary_path: Option<std::path::PathBuf>,
+    /// Whether it was installed from bundle
+    pub from_bundle: bool,
+}
 
 /// Import options
 #[derive(Debug, Clone)]
@@ -23,12 +43,16 @@ pub struct ImportOptions {
     pub passphrase: Option<String>,
     /// Rotate keys (generate new DID)
     pub rotate_keys: bool,
-    /// Import memory database
+    /// Import memory database (deprecated)
     pub import_memory: bool,
     /// Import session history
     pub import_sessions: bool,
     /// Import workspace files
     pub import_workspace: bool,
+    /// Import MCP servers (extract bundled binaries)
+    pub import_mcp: bool,
+    /// Install tools from registry references
+    pub install_tools_from_registry: bool,
     /// Skip validation (not recommended)
     pub skip_validation: bool,
     /// Force import even if DID exists
@@ -41,9 +65,11 @@ impl Default for ImportOptions {
             new_name: None,
             passphrase: None,
             rotate_keys: false,
-            import_memory: true,
+            import_memory: true,       // Deprecated but kept for compat
             import_sessions: true,     // Default: import if present
             import_workspace: true,    // Default: import if present
+            import_mcp: true,          // Import MCP servers by default
+            install_tools_from_registry: false, // Off by default (requires network)
             skip_validation: false,
             force: false,
         }
@@ -59,7 +85,7 @@ pub struct ImportResult {
     pub did: String,
     /// Whether keys were rotated
     pub keys_rotated: bool,
-    /// Path to imported memory database
+    /// Path to imported memory database (deprecated)
     pub memory_path: Option<std::path::PathBuf>,
     /// Path to imported workspace
     pub workspace_path: Option<std::path::PathBuf>,
@@ -67,6 +93,10 @@ pub struct ImportResult {
     pub sessions_path: Option<std::path::PathBuf>,
     /// Path to agent config
     pub config_path: std::path::PathBuf,
+    /// MCP servers installed
+    pub mcp_servers: Vec<McpInstallResult>,
+    /// Tools installed from registry
+    pub tools_installed: Vec<String>,
     /// Validation result
     pub validation: ValidationResult,
 }
@@ -178,6 +208,20 @@ impl Unpackager {
             self.import_sessions(&files, &name).await?;
         }
 
+        // Import MCP servers (if enabled and present)
+        let mcp_servers = if options.import_mcp {
+            self.import_mcp_servers(&files, &manifest).await?
+        } else {
+            Vec::new()
+        };
+
+        // Install tools from registry (if enabled)
+        let tools_installed = if options.install_tools_from_registry {
+            self.install_tools_from_registry(&manifest).await?
+        } else {
+            Vec::new()
+        };
+
         // Save config
         let config_path = self.save_config(&config, &name).await?;
 
@@ -211,6 +255,8 @@ impl Unpackager {
             workspace_path,
             sessions_path,
             config_path,
+            mcp_servers,
+            tools_installed,
             validation,
         })
     }
@@ -467,6 +513,186 @@ impl Unpackager {
 
         data_dir.join(format!("{hash:x}.db"))
     }
+
+    /// Import MCP servers from package
+    async fn import_mcp_servers(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        manifest: &AgentManifest,
+    ) -> anyhow::Result<Vec<McpInstallResult>> {
+        if manifest.mcp.servers.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mcp_tools_dir = self.base_dir.join("tools").join("mcp");
+        tokio::fs::create_dir_all(&mcp_tools_dir).await?;
+
+        // Load existing MCP config once
+        let mcp_config_path = self.base_dir.join("mcp.toml");
+        let mut mcp_config = Self::load_mcp_config(&mcp_config_path).await?;
+
+        let mut results = Vec::new();
+        for server_entry in &manifest.mcp.servers {
+            let result = self.import_single_mcp_server(
+                server_entry,
+                files,
+                &mcp_tools_dir,
+                &mut mcp_config,
+            ).await?;
+            results.push(result);
+        }
+
+        // Save config once after all servers processed
+        let config_toml = mcp_config.to_toml()?;
+        tokio::fs::write(&mcp_config_path, config_toml).await?;
+
+        Ok(results)
+    }
+
+    /// Load MCP config from file or create default
+    async fn load_mcp_config(path: &std::path::PathBuf) -> anyhow::Result<McpConfig> {
+        if path.exists() {
+            McpConfig::from_file(path).await.or_else(|e| {
+                tracing::warn!("Failed to load existing MCP config: {}. Creating new.", e);
+                Ok(McpConfig::default())
+            })
+        } else {
+            Ok(McpConfig::default())
+        }
+    }
+
+    /// Import a single MCP server
+    async fn import_single_mcp_server(
+        &self,
+        entry: &McpManifestEntry,
+        files: &HashMap<String, Vec<u8>>,
+        mcp_tools_dir: &std::path::Path,
+        mcp_config: &mut McpConfig,
+    ) -> anyhow::Result<McpInstallResult> {
+        let server_dir = mcp_tools_dir.join(&entry.name);
+        
+        // Extract binary if bundled
+        let (binary_path, from_bundle) = if entry.bundled {
+            self.extract_mcp_binary(entry, files, &server_dir).await?
+        } else {
+            (None, false)
+        };
+
+        // Create and add server config
+        let server_config = self.create_mcp_server_config(entry, &server_dir, &binary_path, from_bundle);
+        mcp_config.remove_server(&entry.name);
+        mcp_config.add_server(server_config);
+
+        Ok(McpInstallResult {
+            name: entry.name.clone(),
+            binary_path,
+            from_bundle,
+        })
+    }
+
+    /// Extract MCP binary from package
+    async fn extract_mcp_binary(
+        &self,
+        entry: &McpManifestEntry,
+        files: &HashMap<String, Vec<u8>>,
+        server_dir: &std::path::Path,
+    ) -> anyhow::Result<(Option<std::path::PathBuf>, bool)> {
+        let Some(ref bundle_path) = entry.bundle_path else {
+            return Ok((None, false));
+        };
+        
+        let Some(binary_data) = files.get(bundle_path) else {
+            tracing::warn!("Bundled MCP server '{}' missing binary data at {}", entry.name, bundle_path);
+            return Ok((None, false));
+        };
+
+        tokio::fs::create_dir_all(server_dir).await?;
+        
+        let bin_path = server_dir.join("bin");
+        tokio::fs::write(&bin_path, binary_data).await?;
+        
+        #[cfg(unix)]
+        Self::set_executable_permissions(&bin_path).await?;
+        
+        tracing::info!("Extracted bundled MCP server '{}' to {:?}", entry.name, bin_path);
+        
+        Ok((Some(bin_path), true))
+    }
+
+    /// Set executable permissions on Unix systems
+    #[cfg(unix)]
+    async fn set_executable_permissions(path: &std::path::Path) -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = tokio::fs::metadata(path).await?.permissions();
+        perms.set_mode(0o755);
+        tokio::fs::set_permissions(path, perms).await?;
+        Ok(())
+    }
+
+    /// Create MCP server configuration
+    fn create_mcp_server_config(
+        &self,
+        entry: &McpManifestEntry,
+        server_dir: &std::path::Path,
+        binary_path: &Option<std::path::PathBuf>,
+        from_bundle: bool,
+    ) -> McpServerConfig {
+        let command = if from_bundle {
+            binary_path.as_ref().map(|p| p.to_string_lossy().to_string())
+        } else {
+            entry.command.clone()
+        };
+
+        McpServerConfig {
+            name: entry.name.clone(),
+            transport: parse_transport(&entry.transport),
+            command,
+            args: entry.args.clone(),
+            env: entry.env.clone(),
+            cwd: if from_bundle { Some(server_dir.to_path_buf()) } else { None },
+            endpoint: None,
+            auto_start: true,
+            health_check_interval_secs: 30,
+            max_restarts: 0,
+            init_timeout_secs: 30,
+            tool_timeout_secs: 60,
+            reserved_parameters: HashMap::new(),
+            bundle: from_bundle,
+            bundled_path: binary_path.clone(),
+        }
+    }
+
+    /// Install tools from registry references
+    async fn install_tools_from_registry(
+        &self,
+        manifest: &AgentManifest,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut installed = Vec::new();
+
+        if manifest.tool_registry.required.is_empty() {
+            return Ok(installed);
+        }
+
+        // TODO: Implement tool registry client installation
+        // For now, just log the tools that would be installed
+        for tool_ref in &manifest.tool_registry.required {
+            tracing::info!(
+                "Tool registry install: {} @ {} from {}",
+                tool_ref.name,
+                tool_ref.version,
+                tool_ref.source
+            );
+            installed.push(tool_ref.name.clone());
+        }
+
+        tracing::warn!(
+            "Tool registry installation not yet implemented. \
+             {} tools referenced in manifest.",
+            installed.len()
+        );
+
+        Ok(installed)
+    }
 }
 
 /// Convenience function to import an agent
@@ -499,6 +725,8 @@ mod tests {
         {
             assert!(opts.import_memory); // Deprecated but still true for backward compat
         }
+        assert!(opts.import_mcp);
+        assert!(!opts.install_tools_from_registry);
         assert!(!opts.skip_validation);
         assert!(!opts.force);
     }

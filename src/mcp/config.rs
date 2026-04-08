@@ -162,6 +162,16 @@ pub struct McpServerConfig {
     /// These are hidden from the LLM but injected by the runtime
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub reserved_parameters: HashMap<String, ReservedParamConfig>,
+
+    /// Whether to bundle this MCP server binary in portable packages
+    /// When true, the binary at `command` path will be bundled during export
+    /// and extracted to `.pekobot/tools/mcp/{name}/` on import
+    #[serde(default)]
+    pub bundle: bool,
+
+    /// Bundled binary path (set during import, relative to tools directory)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundled_path: Option<PathBuf>,
 }
 
 fn default_auto_start() -> bool {
@@ -197,6 +207,8 @@ impl McpServerConfig {
             init_timeout_secs: default_init_timeout_secs(),
             tool_timeout_secs: default_tool_timeout_secs(),
             reserved_parameters: HashMap::new(),
+            bundle: false,
+            bundled_path: None,
         }
     }
 
@@ -216,6 +228,8 @@ impl McpServerConfig {
             init_timeout_secs: default_init_timeout_secs(),
             tool_timeout_secs: default_tool_timeout_secs(),
             reserved_parameters: HashMap::new(),
+            bundle: false,
+            bundled_path: None,
         }
     }
 
@@ -247,6 +261,47 @@ impl McpServerConfig {
     ) -> Self {
         self.reserved_parameters = params;
         self
+    }
+
+    /// Set bundle option
+    #[must_use]
+    pub fn with_bundle(mut self, bundle: bool) -> Self {
+        self.bundle = bundle;
+        self
+    }
+
+    /// Check if this server can be bundled (stdio transport with a command)
+    #[must_use]
+    pub fn is_bundleable(&self) -> bool {
+        self.bundle && self.transport == TransportType::Stdio && self.command.is_some()
+    }
+
+    /// Get the binary path for bundling (resolves relative paths)
+    pub fn bundle_binary_path(&self) -> Option<PathBuf> {
+        if !self.is_bundleable() {
+            return None;
+        }
+
+        let command = self.command.as_ref()?;
+
+        // If it's an absolute path, use it directly
+        let path = PathBuf::from(command);
+        if path.is_absolute() {
+            return Some(path);
+        }
+
+        // Try to resolve via PATH
+        if let Ok(paths) = std::env::var("PATH") {
+            for dir in std::env::split_paths(&paths) {
+                let full_path = dir.join(&path);
+                if full_path.exists() {
+                    return Some(full_path);
+                }
+            }
+        }
+
+        // Return the original command path (may be relative to cwd)
+        self.cwd.as_ref().map(|cwd| cwd.join(&path)).or(Some(path))
     }
 
     /// Validate the configuration
@@ -414,6 +469,8 @@ impl McpConfig {
                 init_timeout_secs: default_init_timeout_secs(),
                 tool_timeout_secs: default_tool_timeout_secs(),
                 reserved_parameters: HashMap::new(),
+                bundle: false,
+                bundled_path: None,
             });
         }
 

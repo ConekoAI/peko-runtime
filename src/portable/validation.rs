@@ -130,28 +130,28 @@ pub fn validate_package(
 ) -> ValidationResult {
     let mut result = ValidationResult::success();
 
-    // Validate format version
-    if manifest.agent.export_format != "1.0" {
-        // Check if it's a compatible older version
+    // Validate format version (accepts 1.0 and 1.x)
+    if manifest.agent.export_format != "1.0" && manifest.agent.export_format != "1.1" {
+        // Check if it's a compatible older/newer version
         let version_parts: Vec<&str> = manifest.agent.export_format.split('.').collect();
         let major_version = version_parts.first().and_then(|v| v.parse::<u32>().ok());
 
         match major_version {
             Some(major) if major < 1 => {
                 result.add_warning(ValidationWarning::OlderFormatVersion {
-                    current: "1.0".to_string(),
+                    current: "1.1".to_string(),
                     package: manifest.agent.export_format.clone(),
                 });
             }
             Some(major) if major > 1 => {
                 result.add_error(ValidationError::UnsupportedFormatVersion {
-                    expected: "1.0".to_string(),
+                    expected: "1.1".to_string(),
                     actual: manifest.agent.export_format.clone(),
                 });
             }
             _ => {
                 result.add_error(ValidationError::UnsupportedFormatVersion {
-                    expected: "1.0".to_string(),
+                    expected: "1.1".to_string(),
                     actual: manifest.agent.export_format.clone(),
                 });
             }
