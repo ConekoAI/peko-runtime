@@ -108,21 +108,29 @@ if (Test-Path $exportPath) {
 }
 
 # ============================================================
-# TEST 2: Agent export with encryption
+# TEST 2: Agent export with workspace
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 2: Agent export with encryption" -ForegroundColor Cyan
+Write-Host "TEST 2: Agent export with workspace" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$encryptedPath = "$testDir/encrypted_export.agent"
-Write-Host "Exporting agent with encryption to: $encryptedPath" -ForegroundColor Yellow
-$result = pekobot agent export --name "$sourceTeam/$exportAgent" --output $encryptedPath --encrypt 2>&1
+$workspaceExportPath = "$testDir/workspace_export.agent"
+Write-Host "Exporting agent with workspace to: $workspaceExportPath" -ForegroundColor Yellow
+$result = pekobot agent export --name "$sourceTeam/$workspaceAgent" --output $workspaceExportPath 2>&1
 Write-Host "Output: $result"
 
-if ($result -match "Exported" -or $result -match "encrypt" -or $result -match "Encrypted") {
-    Write-Host "✓ Encrypted export command executed" -ForegroundColor Green
+if ($result -match "Exported") {
+    Write-Host "✓ Workspace export command executed" -ForegroundColor Green
 } else {
-    Write-Warning "Encrypted export may have issues: $result"
+    Write-Warning "Workspace export may have issues: $result"
+}
+
+# Verify file was created
+if (Test-Path $workspaceExportPath) {
+    $fileSize = (Get-Item $workspaceExportPath).Length
+    Write-Host "✓ Workspace export file created: $fileSize bytes" -ForegroundColor Green
+} else {
+    Write-Warning "Workspace export file not created"
 }
 
 # ============================================================
@@ -164,44 +172,46 @@ try {
 }
 
 # ============================================================
-# TEST 5: Agent import with default name
+# TEST 5: Agent import with custom name and team
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 5: Agent import with default name" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-
-# Create a dummy .agent file for import test
-$dummyPackage = "$testDir/dummy.agent"
-# Create a minimal tar.gz file as placeholder for .agent package
-# In real scenario, this would be a valid exported agent
-tar -czf $dummyPackage -C $testDir --files-from $null 2>&1 | Out-Null
-
-Write-Host "Importing agent package: $dummyPackage" -ForegroundColor Yellow
-$result = pekobot agent import --file $dummyPackage 2>&1
-Write-Host "Output: $result"
-
-if ($result -match "Imported" -or $result -match "import" -or $LASTEXITCODE -eq 0) {
-    Write-Host "✓ Agent import command executed" -ForegroundColor Green
-} else {
-    Write-Warning "Agent import may have issues: $result"
-}
-
-# ============================================================
-# TEST 6: Agent import with custom name
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 6: Agent import with custom name" -ForegroundColor Cyan
+Write-Host "TEST 5: Agent import with custom name and team" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $importName = "importedagent"
-Write-Host "Importing agent with custom name: $importName" -ForegroundColor Yellow
-$result = pekobot agent import --file $dummyPackage --name $importName 2>&1
+Write-Host "Importing agent with custom name '$importName' to team '$targetTeam'" -ForegroundColor Yellow
+$result = pekobot agent import --file $exportPath --name $importName --team $targetTeam 2>&1
 Write-Host "Output: $result"
 
-if ($result -match $importName -or $result -match "Imported") {
-    Write-Host "✓ Custom name import executed" -ForegroundColor Green
+if ($result -match "Imported" -and $result -match $importName) {
+    Write-Host "✓ Custom name import executed successfully" -ForegroundColor Green
 } else {
     Write-Warning "Custom name import may have issues: $result"
+}
+
+# Verify imported agent exists
+$importedExists = pekobot agent show "$targetTeam/$importName" 2>&1
+if ($importedExists -match "Agent: $importName") {
+    Write-Host "✓ Imported agent verified" -ForegroundColor Green
+} else {
+    Write-Warning "Could not verify imported agent"
+}
+
+# ============================================================
+# TEST 6: Agent package inspection
+# ============================================================
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "TEST 6: Agent package inspection" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "Inspecting package: $exportPath" -ForegroundColor Yellow
+$result = pekobot agent inspect $exportPath 2>&1
+Write-Host "Output: $result"
+
+if ($result -match "testagent" -or $result -match "DID:" -or $LASTEXITCODE -eq 0) {
+    Write-Host "✓ Package inspection executed" -ForegroundColor Green
+} else {
+    Write-Warning "Package inspection may have issues: $result"
 }
 
 # ============================================================
@@ -225,27 +235,10 @@ try {
 }
 
 # ============================================================
-# TEST 8: Agent package inspection
+# TEST 8: Inspect non-existent file (error case)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 8: Agent package inspection" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "Inspecting package: $dummyPackage" -ForegroundColor Yellow
-$result = pekobot agent inspect $dummyPackage 2>&1
-Write-Host "Output: $result"
-
-if ($result -match "Inspecting" -or $result -match "Package format" -or $LASTEXITCODE -eq 0) {
-    Write-Host "✓ Package inspection executed" -ForegroundColor Green
-} else {
-    Write-Warning "Package inspection may have issues: $result"
-}
-
-# ============================================================
-# TEST 9: Inspect non-existent file (error case)
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 9: Inspect non-existent file (error case)" -ForegroundColor Cyan
+Write-Host "TEST 8: Inspect non-existent file (error case)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Attempting to inspect non-existent file..." -ForegroundColor Yellow
@@ -262,10 +255,10 @@ try {
 }
 
 # ============================================================
-# TEST 10: Export agent with workspace content
+# TEST 9: Export agent with workspace content
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 10: Export agent with workspace content" -ForegroundColor Cyan
+Write-Host "TEST 9: Export agent with workspace content" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $workspaceExportPath = "$testDir/workspace_export.agent"
@@ -280,10 +273,10 @@ if ($result -match "Exported" -or $LASTEXITCODE -eq 0) {
 }
 
 # ============================================================
-# TEST 11: Verify exported agent identity preserved
+# TEST 10: Verify exported agent identity preserved
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 11: Verify DID structure in export" -ForegroundColor Cyan
+Write-Host "TEST 10: Verify DID structure in export" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Get the agent's DID before export
@@ -299,10 +292,10 @@ if ($originalDid -match "did:pekobot:" -or $originalDid -match "did:key:") {
 }
 
 # ============================================================
-# TEST 12: Export with special characters in name
+# TEST 11: Export with special characters in name
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 12: Export with special characters handling" -ForegroundColor Cyan
+Write-Host "TEST 11: Export with special characters handling" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $specialAgent = "test-agent_123"
@@ -330,6 +323,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 pekobot agent remove $exportAgent --team $sourceTeam --force 2>&1 | Out-Null
 pekobot agent remove $workspaceAgent --team $sourceTeam --force 2>&1 | Out-Null
 pekobot agent remove $specialAgent --team $sourceTeam --force 2>&1 | Out-Null
+pekobot agent remove $importName --team $targetTeam --force 2>&1 | Out-Null
 pekobot team remove $sourceTeam --force 2>&1 | Out-Null
 pekobot team remove $targetTeam --force 2>&1 | Out-Null
 Write-Host "Removed test agents and teams" -ForegroundColor Green

@@ -44,12 +44,16 @@
 pub mod crypto;
 pub mod manifest;
 pub mod packager;
+pub mod team_packager;
+pub mod team_unpackager;
 pub mod unpackager;
 pub mod validation;
 
 pub use crypto::{decrypt_with_passphrase, encrypt_with_passphrase, EncryptedData};
 pub use manifest::AgentManifest;
 pub use packager::{export_agent, ExportOptions, Packager};
+pub use team_packager::{export_team, TeamExportOptions, TeamPackager, TeamManifest};
+pub use team_unpackager::{import_team, import_team_with_base_dir, inspect_team, TeamImportOptions, TeamImportResult, TeamUnpackager};
 pub use unpackager::{import_agent, inspect_agent, ImportOptions, ImportResult, Unpackager};
 pub use validation::{validate_package, ValidationResult};
 

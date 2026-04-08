@@ -6,8 +6,10 @@
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::types::team::{
-    TeamCreationResult, TeamDeletionResult, TeamInfo, TeamMetadata, TeamMoveResult,
+    TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo, TeamMetadata, TeamMoveResult,
 };
+use crate::identity::Identity;
+use crate::portable::{self, TeamExportOptions, TeamImportOptions};
 use crate::types::agent::AgentConfig;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -262,6 +264,120 @@ impl TeamService {
     /// Get the path resolver
     pub fn resolver(&self) -> &PathResolver {
         &self.resolver
+    }
+
+    /// Export a team to a .team package
+    pub async fn export_team(
+        &self,
+        name: &str,
+        output: Option<String>,
+        skip_sessions: bool,
+        skip_workspace: bool,
+        skip_mcp: bool,
+    ) -> Result<TeamExportResult> {
+        // Validate team exists
+        let team_info = self.get_team(name).await?;
+        if team_info.is_none() {
+            anyhow::bail!("Team '{}' not found", name);
+        }
+
+        // Get all agents in the team
+        let agents = self.get_team_agents(name).await?;
+        if agents.is_empty() {
+            anyhow::bail!("Team '{}' has no agents to export", name);
+        }
+
+        // Prepare agents for export
+        let mut agent_exports: Vec<(String, AgentConfig, Identity)> = Vec::new();
+        for (agent_name, config) in &agents {
+            // Generate a new identity for export
+            let identity = Identity::new(agent_name, crate::identity::did::DIDScope::Local).await
+                .with_context(|| format!("Failed to create identity for agent: {}", agent_name))?;
+            
+            agent_exports.push((agent_name.clone(), config.clone(), identity));
+        }
+
+        // Get team metadata for description
+        let team_dir = self.resolver.team_dir(name);
+        let description = load_team_metadata(&team_dir).await.ok()
+            .and_then(|m| m.description);
+
+        // Export options
+        let export_opts = TeamExportOptions {
+            output_path: output,
+            include_sessions: !skip_sessions,
+            include_workspace: !skip_workspace,
+            include_mcp: !skip_mcp,
+            description: description.or_else(|| Some(format!("Exported team: {}", name))),
+        };
+
+        // Get base directory for workspace/sessions paths
+        let base_dir = self.resolver.data_dir();
+
+        // Export the team
+        let output_path = portable::export_team(
+            name,
+            None,
+            &base_dir,
+            agent_exports,
+            export_opts,
+        ).await.with_context(|| format!("Failed to export team '{}'", name))?;
+
+        Ok(TeamExportResult {
+            name: name.to_string(),
+            output_path,
+            agent_count: agents.len(),
+        })
+    }
+
+    /// Import a team from a .team package
+    pub async fn import_team(
+        &self,
+        file_path: &str,
+        new_name: Option<String>,
+        force: bool,
+        rotate_keys: bool,
+    ) -> Result<TeamImportResult> {
+        let path = std::path::PathBuf::from(file_path);
+        
+        if !path.exists() {
+            anyhow::bail!("File not found: {}", file_path);
+        }
+
+        // Create the team if it doesn't exist
+        let team_name = new_name.as_deref().unwrap_or("imported");
+        
+        if !self.team_exists(team_name) {
+            self.create_team(team_name, Some(&format!("Imported team from {}", file_path))).await?;
+        } else if !force {
+            anyhow::bail!("Team '{}' already exists. Use --force to overwrite.", team_name);
+        }
+
+        // Import options
+        // Note: force is always true here because TeamService already handled the existence check
+        let import_opts = TeamImportOptions {
+            new_name: new_name.clone(),
+            import_sessions: true,
+            import_workspace: true,
+            import_mcp: true,
+            rotate_keys,
+            force: true,
+        };
+
+        // Get config directory for base path (must match PathResolver's config_dir)
+        let config_dir = self.resolver.config_dir();
+        let result_team_dir = self.resolver.team_dir(team_name);
+
+        // Import the team with correct base directory
+        let result = portable::import_team_with_base_dir(&path, &config_dir, import_opts)
+            .await
+            .with_context(|| format!("Failed to import team from '{}'", file_path))?;
+
+        Ok(TeamImportResult {
+            name: result.name,
+            path: result_team_dir,
+            agents_imported: result.agent_count,
+        })
     }
 }
 

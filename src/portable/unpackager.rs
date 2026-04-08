@@ -154,11 +154,21 @@ impl Unpackager {
         Ok((manifest, validation))
     }
 
-    /// Import the package
+    /// Import the package from a file
     pub async fn import(&self, options: ImportOptions) -> anyhow::Result<ImportResult> {
         // Extract package
         let files = self.extract_package().await?;
+        
+        // Process the import with extracted files
+        self.import_from_files(files, options).await
+    }
 
+    /// Import from pre-extracted files (used by team unpackager)
+    pub(crate) async fn import_from_files(
+        &self,
+        files: HashMap<String, Vec<u8>>,
+        options: ImportOptions,
+    ) -> anyhow::Result<ImportResult> {
         // Parse manifest
         let manifest = self.parse_manifest(&files)?;
 

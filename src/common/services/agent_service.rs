@@ -10,7 +10,7 @@ use crate::common::identifiers::{
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
 use crate::common::types::agent::*;
-use crate::identity::{Identity, KeyStorage};
+use crate::identity::Identity;
 use crate::portable::{self, ExportOptions as PortableExportOptions, ImportOptions as PortableImportOptions};
 use crate::types::agent::{AgentConfig, PromptConfig, SystemFileConfig};
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
@@ -596,6 +596,13 @@ impl AgentService {
         let mcp_config_path = self.resolver.mcp_config();
         let tools_dir = self.resolver.tools_dir();
 
+        // Only include MCP config if the file exists
+        let mcp_config_path = if mcp_config_path.exists() {
+            Some(mcp_config_path)
+        } else {
+            None
+        };
+
         // Build portable export options
         let export_opts = PortableExportOptions {
             encrypt: false,
@@ -608,7 +615,7 @@ impl AgentService {
             rotate_keys: false,
             description: Some(format!("Exported agent {} from team {}", agent_name, team)),
             output_path: Some(output_path.to_string_lossy().to_string()),
-            mcp_config_path: Some(mcp_config_path),
+            mcp_config_path,
             tools_dir: Some(tools_dir),
         };
 
@@ -660,8 +667,13 @@ impl AgentService {
             force: false,
         };
 
+        // Create unpackager with correct base directory for the team
+        let team_dir = self.resolver.team_dir(team);
+        let unpackager = portable::Unpackager::new(file_path)
+            .with_base_dir(&team_dir);
+        
         // Import the package
-        let result = portable::import_agent(file_path, import_opts).await
+        let result = unpackager.import(import_opts).await
             .context("Failed to import agent package")?;
 
         Ok(AgentImportResult {

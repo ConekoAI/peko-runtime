@@ -76,6 +76,39 @@ pub enum TeamCommands {
         #[arg(short, long)]
         force: bool,
     },
+
+    /// Export a team to a .team package
+    Export {
+        /// Team name to export
+        name: String,
+        /// Output file path
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Include session history (can be large)
+        #[arg(long)]
+        include_sessions: bool,
+        /// Exclude workspace files
+        #[arg(long)]
+        exclude_workspace: bool,
+        /// Exclude MCP servers
+        #[arg(long)]
+        exclude_mcp: bool,
+    },
+
+    /// Import a team from a .team package
+    Import {
+        /// Path to .team package file
+        file: String,
+        /// New team name (optional, uses package name if not specified)
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Skip confirmation if team exists
+        #[arg(short, long)]
+        force: bool,
+        /// Don't rotate keys on import
+        #[arg(long)]
+        no_rotate_keys: bool,
+    },
 }
 
 /// Handle team commands
@@ -159,6 +192,29 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
 
             let result = service.move_team(&old_name, &new_name).await?;
             render_team_moved(&result, json);
+            Ok(())
+        }
+
+        TeamCommands::Export {
+            name,
+            output,
+            include_sessions,
+            exclude_workspace,
+            exclude_mcp,
+        } => {
+            let result = service.export_team(&name, output, !include_sessions, exclude_workspace, exclude_mcp).await?;
+            render_team_exported(&result, json);
+            Ok(())
+        }
+
+        TeamCommands::Import {
+            file,
+            name,
+            force,
+            no_rotate_keys,
+        } => {
+            let result = service.import_team(&file, name, force, !no_rotate_keys).await?;
+            render_team_imported(&result, json);
             Ok(())
         }
     }
@@ -340,6 +396,36 @@ fn render_team_moved(result: &TeamMoveResult, json: bool) {
 // ================================================================================
 // Helper Functions
 // ================================================================================
+
+fn render_team_exported(result: &crate::common::types::team::TeamExportResult, json: bool) {
+    if json {
+        println!(
+            "{{\"success\": true, \"name\": \"{}\", \"output_path\": \"{}\", \"agent_count\": {}}}",
+            result.name,
+            result.output_path.display(),
+            result.agent_count
+        );
+    } else {
+        println!("📦 Exported team '{}'", result.name);
+        println!("   Agents: {}", result.agent_count);
+        println!("   Output: {}", result.output_path.display());
+    }
+}
+
+fn render_team_imported(result: &crate::common::types::team::TeamImportResult, json: bool) {
+    if json {
+        println!(
+            "{{\"success\": true, \"name\": \"{}\", \"path\": \"{}\", \"agents_imported\": {}}}",
+            result.name,
+            result.path.display(),
+            result.agents_imported
+        );
+    } else {
+        println!("📥 Imported team '{}'", result.name);
+        println!("   Agents: {}", result.agents_imported);
+        println!("   Path: {}", result.path.display());
+    }
+}
 
 fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
     println!("⚠️  This will permanently delete team '{}'.", name);

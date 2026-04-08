@@ -133,3 +133,19 @@ pub struct TeamScaleResult {
     pub added_instance_ids: Vec<String>,
     pub removed_instance_ids: Vec<String>,
 }
+
+/// Team export result
+#[derive(Debug, Clone)]
+pub struct TeamExportResult {
+    pub name: String,
+    pub output_path: PathBuf,
+    pub agent_count: usize,
+}
+
+/// Team import result
+#[derive(Debug, Clone)]
+pub struct TeamImportResult {
+    pub name: String,
+    pub path: PathBuf,
+    pub agents_imported: usize,
+}

@@ -87,64 +87,53 @@ if (-not (Test-Path $workspaceDir2)) {
 Write-Host "Added workspace content to agents" -ForegroundColor Green
 
 # ============================================================
-# TEST 1: Check if team export command exists
+# TEST 1: Team export functionality
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 1: Team export command availability" -ForegroundColor Cyan
+Write-Host "TEST 1: Team export" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "Checking if team export command exists..." -ForegroundColor Yellow
-$result = pekobot team --help 2>&1
-Write-Host "Available team subcommands checked"
+$teamExportPath = "$testDir/team_export.team"
+Write-Host "Exporting team to: $teamExportPath" -ForegroundColor Yellow
+$exportResult = pekobot team export $testTeam --output $teamExportPath 2>&1
+Write-Host "Output: $exportResult"
 
-if ($result -match "export") {
-    Write-Host "✓ Team export command is available" -ForegroundColor Green
+if ($exportResult -match "Exported") {
+    Write-Host "✓ Team exported successfully" -ForegroundColor Green
     
-    # Test basic team export
-    $teamExportPath = "$testDir/team_export.team"
-    Write-Host "Exporting team to: $teamExportPath" -ForegroundColor Yellow
-    $exportResult = pekobot team export $testTeam --output $teamExportPath 2>&1
-    Write-Host "Output: $exportResult"
-    
-    if ($exportResult -match "Exported" -or $exportResult -match "export") {
-        Write-Host "✓ Team export command executed" -ForegroundColor Green
-    } else {
-        Write-Warning "Team export may not be fully implemented: $exportResult"
+    # Verify file exists
+    if (Test-Path $teamExportPath) {
+        $fileSize = (Get-Item $teamExportPath).Length
+        Write-Host "✓ Export file created: $fileSize bytes" -ForegroundColor Green
     }
 } else {
-    Write-Host "ℹ Team export command not yet implemented (expected)" -ForegroundColor Yellow
-    Write-Host "  This feature would export all agents in a team as a single package" -ForegroundColor Gray
+    Write-Error "Team export failed: $exportResult"
 }
 
 # ============================================================
-# TEST 2: Check if team import command exists
+# TEST 2: Team import functionality
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 2: Team import command availability" -ForegroundColor Cyan
+Write-Host "TEST 2: Team import" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-Write-Host "Checking if team import command exists..." -ForegroundColor Yellow
+$importedTeamName = "importedteam"
+Write-Host "Importing team package as: $importedTeamName" -ForegroundColor Yellow
+$importResult = pekobot team import $teamExportPath --name $importedTeamName 2>&1
+Write-Host "Output: $importResult"
 
-if ($result -match "import") {
-    Write-Host "✓ Team import command is available" -ForegroundColor Green
+if ($importResult -match "Imported") {
+    Write-Host "✓ Team imported successfully" -ForegroundColor Green
     
-    # Create a dummy .team file for import test
-    $dummyTeamPackage = "$testDir/dummy.team"
-    # Create a minimal file as placeholder
-    "dummy" | Out-File -FilePath $dummyTeamPackage
-    
-    Write-Host "Importing team package: $dummyTeamPackage" -ForegroundColor Yellow
-    $importResult = pekobot team import $dummyTeamPackage --name "importedteam" 2>&1
-    Write-Host "Output: $importResult"
-    
-    if ($importResult -match "Imported" -or $importResult -match "import") {
-        Write-Host "✓ Team import command executed" -ForegroundColor Green
+    # Verify imported team exists with agents
+    $importedTeamInfo = pekobot team show $importedTeamName --json 2>&1 | ConvertFrom-Json
+    if ($importedTeamInfo.agents.Count -eq 3) {
+        Write-Host "✓ All 3 agents imported correctly" -ForegroundColor Green
     } else {
-        Write-Warning "Team import may not be fully implemented: $importResult"
+        Write-Warning "Agent count mismatch: expected 3, found $($importedTeamInfo.agents.Count)"
     }
 } else {
-    Write-Host "ℹ Team import command not yet implemented (expected)" -ForegroundColor Yellow
-    Write-Host "  This feature would import all agents from a team package" -ForegroundColor Gray
+    Write-Error "Team import failed: $importResult"
 }
 
 # ============================================================
@@ -294,35 +283,20 @@ Write-Host "  - signatures/ - Package signatures" -ForegroundColor Gray
 Write-Host "✓ Team package structure documented" -ForegroundColor Green
 
 # ============================================================
-# TEST 10: Agent import to specific team
+# TEST 10: Team re-import with force
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 10: Agent import to specific team" -ForegroundColor Cyan
+Write-Host "TEST 10: Team re-import with force" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Create a dummy .agent file
-$importTestPackage = "$testDir/import_test.agent"
-tar -czf $importTestPackage -C $testDir --files-from $null 2>&1 | Out-Null
+Write-Host "Re-importing team to same name with --force" -ForegroundColor Yellow
+$reimportResult = pekobot team import $teamExportPath --name $importedTeamName --force 2>&1
+Write-Host "Output: $reimportResult"
 
-$importTeam = "importteam"
-pekobot team create $importTeam 2>&1 | Out-Null
-
-Write-Host "Importing agent to specific team: $importTeam" -ForegroundColor Yellow
-# This tests if import supports --team flag
-$result = pekobot agent import --file $importTestPackage --name "importedagent" 2>&1
-Write-Host "Output: $result"
-
-if ($result -match "Imported" -or $result -match "import") {
-    Write-Host "✓ Agent import executed" -ForegroundColor Green
-    # Check if agent exists in expected team
-    $importedAgent = pekobot agent show "importedagent" --team $importTeam 2>&1
-    if ($importedAgent -match "not found") {
-        Write-Host "ℹ Agent may have been imported to default team (current behavior)" -ForegroundColor Yellow
-    } else {
-        Write-Host "✓ Agent imported to correct team" -ForegroundColor Green
-    }
+if ($reimportResult -match "Imported") {
+    Write-Host "✓ Team re-import with force executed successfully" -ForegroundColor Green
 } else {
-    Write-Warning "Agent import may have issues: $result"
+    Write-Warning "Team re-import may have issues: $reimportResult"
 }
 
 # ============================================================
@@ -337,7 +311,7 @@ foreach ($agent in $agents) {
     pekobot agent remove $agent --team $testTeam --force 2>&1 | Out-Null
 }
 pekobot team remove $testTeam --force 2>&1 | Out-Null
-pekobot team remove $importTeam --force 2>&1 | Out-Null
+pekobot team remove $importedTeamName --force 2>&1 | Out-Null
 Write-Host "Removed test agents and teams" -ForegroundColor Green
 
 # Remove test directory
@@ -347,5 +321,3 @@ if (Test-Path $testDir) {
 }
 
 Write-Host "`n✅ All team image tests completed!" -ForegroundColor Green
-Write-Host "`nNote: Full team export/import is a planned feature." -ForegroundColor Cyan
-Write-Host "Current workaround: Export/import individual agents." -ForegroundColor Cyan

@@ -2,13 +2,11 @@
 //!
 //! Exports agents to `.agent` files (tar.gz archives with manifest)
 
-use crate::identity::{Identity, KeyStorage};
+use crate::identity::Identity;
 use crate::mcp::config::{McpConfig, TransportType};
-use crate::portable::{
-    crypto::{encrypt_with_passphrase, serialize_encrypted},
-    manifest::{AgentManifest, McpManifestEntry, ToolRegistryRef},
-};
+use crate::portable::manifest::{AgentManifest, McpManifestEntry, ToolRegistryRef};
 use crate::types::agent::AgentConfig;
+use anyhow::Context;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -122,6 +120,20 @@ impl Packager {
 
     /// Export the agent to a .agent package
     pub async fn export(&self, options: ExportOptions) -> anyhow::Result<std::path::PathBuf> {
+        // Collect all files for the package
+        let (files, _manifest) = self.collect_files(options.clone()).await?;
+
+        // Create archive
+        let output_path = self.create_archive(&files, &options)
+            .await
+            .context("Failed to create archive")?;
+
+        Ok(output_path)
+    }
+
+    /// Collect all files for the package without creating archive
+    /// Returns the files map and the manifest (for team packaging)
+    pub async fn collect_files(&self, options: ExportOptions) -> anyhow::Result<(HashMap<String, Vec<u8>>, AgentManifest)> {
         let mut manifest = AgentManifest::new(
             &self.config.name,
             "1.0.0", // Package version
@@ -140,10 +152,12 @@ impl Packager {
 
         // 1. Export identity
         self.export_identity(&mut files, &mut manifest, &options)
-            .await?;
+            .await
+            .context("Failed to export identity")?;
 
         // 2. Export configuration
-        self.export_config(&mut files, &mut manifest)?;
+        self.export_config(&mut files, &mut manifest)
+            .context("Failed to export config")?;
 
         // 3. Export memory (if included)
         if options.include_memory {
@@ -152,20 +166,27 @@ impl Packager {
                 tracing::warn!("Memory bundling is deprecated. Core memory will be removed in a future release. Consider using external MCP memory servers instead.");
             }
             self.export_memory(&mut files, &mut manifest, &options)
-                .await?;
+                .await
+                .context("Failed to export memory")?;
         }
 
         // 4. Export skills
-        self.export_skills(&mut files, &mut manifest).await?;
+        self.export_skills(&mut files, &mut manifest)
+            .await
+            .context("Failed to export skills")?;
 
         // 5. Export workspace (if included)
         if options.include_workspace {
-            self.export_workspace(&mut files, &mut manifest).await?;
+            self.export_workspace(&mut files, &mut manifest)
+                .await
+                .context("Failed to export workspace")?;
         }
 
         // 6. Export sessions (if included)
         if options.include_sessions {
-            self.export_sessions(&mut files, &mut manifest).await?;
+            self.export_sessions(&mut files, &mut manifest)
+                .await
+                .context("Failed to export sessions")?;
         }
 
         // 7. Build capabilities and tools lists
@@ -173,25 +194,28 @@ impl Packager {
 
         // 8. Export MCP servers (if enabled)
         if options.include_mcp {
-            self.export_mcp_servers(&mut files, &mut manifest, &options).await?;
+            self.export_mcp_servers(&mut files, &mut manifest, &options)
+                .await
+                .context("Failed to export MCP servers")?;
         }
 
         // 9. Build tool registry references (if enabled)
         if options.include_tool_registry {
-            self.build_tool_registry_refs(&mut manifest, &options).await?;
+            self.build_tool_registry_refs(&mut manifest, &options)
+                .await
+                .context("Failed to build tool registry references")?;
         }
 
         // 10. Sign manifest
-        self.sign_manifest(&mut manifest)?;
+        self.sign_manifest(&mut manifest)
+            .context("Failed to sign manifest")?;
 
-        // 9. Add manifest to files
-        let manifest_toml = manifest.to_toml()?;
+        // 11. Add manifest to files
+        let manifest_toml = manifest.to_toml()
+            .context("Failed to serialize manifest")?;
         files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
 
-        // 10. Create archive
-        let output_path = self.create_archive(&files, &options).await?;
-
-        Ok(output_path)
+        Ok((files, manifest))
     }
 
     /// Export identity files
@@ -199,41 +223,18 @@ impl Packager {
         &self,
         files: &mut HashMap<String, Vec<u8>>,
         manifest: &mut AgentManifest,
-        options: &ExportOptions,
+        _options: &ExportOptions,
     ) -> anyhow::Result<()> {
         // Export DID document
         let did_doc = serde_json::to_vec_pretty(&self.identity.to_did_document()?)?;
         files.insert("identity/did.json".to_string(), did_doc);
         manifest.add_file("identity/did.json", &files["identity/did.json"]);
 
-        // Export keys (potentially encrypted)
-        let key_storage = KeyStorage::new()?;
-        let key_export = key_storage.export_keys(&self.identity.did)?;
-
-        let key_data = if options.encrypt {
-            if let Some(passphrase) = &options.passphrase {
-                let encrypted =
-                    encrypt_with_passphrase(&serde_json::to_vec(&key_export)?, passphrase)?;
-
-                // Update manifest with encryption info
-                let kdf_params: HashMap<String, String> = [
-                    ("memory_cost".to_string(), "65536".to_string()),
-                    ("time_cost".to_string(), "3".to_string()),
-                    ("parallelism".to_string(), "4".to_string()),
-                ]
-                .into_iter()
-                .collect();
-                manifest.set_encrypted("argon2id", kdf_params);
-
-                serialize_encrypted(&encrypted)
-            } else {
-                return Err(anyhow::anyhow!(
-                    "Encryption enabled but no passphrase provided"
-                ));
-            }
-        } else {
-            serde_json::to_vec(&key_export)?
-        };
+        // Export keys directly from the identity (we already have them in memory)
+        let keypair = self.identity.keypair.as_ref()
+            .context("Identity has no keypair")?;
+        let key_export = keypair.export();
+        let key_data = serde_json::to_vec(&key_export)?;
 
         files.insert("identity/keys.enc".to_string(), key_data);
         manifest.add_file("identity/keys.enc", &files["identity/keys.enc"]);
@@ -587,13 +588,9 @@ impl Packager {
 
         let manifest_toml = manifest_for_signing.to_toml()?;
 
-        // Sign with agent's DID key
-        let key_storage = KeyStorage::new()?;
-        let identity = key_storage.load(&self.identity.did)?;
-        let keypair = identity
-            .keypair
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("No keypair"))?;
+        // Sign with agent's DID key (from memory, not storage)
+        let keypair = self.identity.keypair.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Identity has no keypair"))?;
 
         let signature = keypair.sign(manifest_toml.as_bytes());
 
@@ -618,6 +615,14 @@ impl Packager {
         } else {
             std::path::PathBuf::from(format!("{}.agent", self.config.name))
         };
+
+        // Ensure parent directory exists
+        if let Some(parent) = output_path.parent() {
+            if !parent.exists() {
+                tokio::fs::create_dir_all(parent).await
+                    .with_context(|| format!("Failed to create output directory: {}", parent.display()))?;
+            }
+        }
 
         // Create tar.gz
         let tar_gz = std::fs::File::create(&output_path)?;
