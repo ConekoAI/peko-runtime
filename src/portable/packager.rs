@@ -126,6 +126,10 @@ impl Packager {
 
         // 3. Export memory (if included)
         if options.include_memory {
+            #[allow(deprecated)]
+            {
+                tracing::warn!("Memory bundling is deprecated. Core memory will be removed in a future release. Consider using external MCP memory servers instead.");
+            }
             self.export_memory(&mut files, &mut manifest, &options)
                 .await?;
         }
@@ -228,24 +232,24 @@ impl Packager {
     }
 
     /// Export memory database
+    ///
+    /// Deprecated: Core memory has been removed. This method now only
+    /// updates the manifest to indicate no memory is bundled.
+    #[deprecated(since = "0.9.0", note = "Core memory is deprecated. Use external MCP memory servers instead.")]
     async fn export_memory(
         &self,
         files: &mut HashMap<String, Vec<u8>>,
         manifest: &mut AgentManifest,
         _options: &ExportOptions,
     ) -> anyhow::Result<()> {
-        if let Some(memory_path) = &self.memory_path {
-            if memory_path.exists() {
-                let memory_data = tokio::fs::read(memory_path).await?;
+        // Memory bundling is deprecated - core memory has been removed.
+        // The manifest memory section is kept for backward compatibility
+        // but no actual memory data is exported.
+        manifest.memory.size_bytes = 0;
+        manifest.memory.encrypted = false;
+        manifest.memory.entry_count = None;
 
-                manifest.memory.size_bytes = memory_data.len() as u64;
-                manifest.memory.encrypted = false; // TODO: Support memory encryption
-
-                files.insert("memory/memory.db".to_string(), memory_data);
-                manifest.add_file("memory/memory.db", &files["memory/memory.db"]);
-            }
-        }
-
+        // Memory file path is no longer used since core memory is removed
         Ok(())
     }
 
@@ -455,11 +459,6 @@ impl Packager {
         portable.provider.api_key = None;
         portable.provider.api_key_env = None;
 
-        // Remove runtime-specific paths
-        if let Some(memory) = &mut portable.memory {
-            memory.database_path = None; // Will be set on import
-        }
-
         portable
     }
 
@@ -501,7 +500,10 @@ mod tests {
     fn test_export_options_default() {
         let opts = ExportOptions::default();
         assert!(!opts.encrypt);
-        assert!(opts.include_memory);
+        #[allow(deprecated)]
+        {
+            assert!(opts.include_memory); // Deprecated but still true for backward compat
+        }
         assert!(!opts.include_sessions);   // Default: false (large)
         assert!(opts.include_workspace);   // Default: true (essential)
         assert!(!opts.rotate_keys);

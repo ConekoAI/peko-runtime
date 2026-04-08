@@ -23,8 +23,6 @@ pub struct AgentConfig {
     pub capabilities: Vec<AgentCapability>,
     /// LLM provider configuration
     pub provider: super::provider::ProviderConfig,
-    /// Memory configuration
-    pub memory: Option<super::memory::MemoryConfig>,
     /// Tool configurations
     pub tools: Option<ToolConfig>,
     /// Channel configurations
@@ -55,7 +53,6 @@ impl Default for AgentConfig {
             tenant: None,
             capabilities: vec![],
             provider: super::provider::ProviderConfig::default(),
-            memory: None,
             tools: Some(ToolConfig::default()), // Default tool whitelist
             channels: None,
             auto_accept_trusted: false,
@@ -210,8 +207,6 @@ pub struct ToolConfig {
     pub skills: Vec<String>,
     /// HTTP tool settings
     pub http: Option<HttpToolConfig>,
-    /// Memory tool settings
-    pub memory: Option<MemoryToolConfig>,
     /// Custom tool definitions
     pub custom: Option<HashMap<String, serde_json::Value>>,
     /// Per-tool settings (snake_case keys like "str_replace_file", "write_file", etc.)
@@ -267,7 +262,6 @@ impl Default for ToolConfig {
             enabled: vec!["shell".to_string(), "session_status".to_string()],
             skills: Vec::new(),
             http: None,
-            memory: None,
             custom: None,
             read_file: None,
             write_file: None,
@@ -302,25 +296,6 @@ impl Default for HttpToolConfig {
             max_request_size: 10 * 1024 * 1024, // 10MB
             timeout_seconds: 30,
             require_https: true,
-        }
-    }
-}
-
-/// Memory tool configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct MemoryToolConfig {
-    /// Maximum entries to return per query
-    pub max_results: usize,
-    /// Default search scope
-    pub default_scope: String,
-}
-
-impl Default for MemoryToolConfig {
-    fn default() -> Self {
-        Self {
-            max_results: 10,
-            default_scope: "session".to_string(),
         }
     }
 }
@@ -440,8 +415,8 @@ mod tests {
         // Empty whitelist should disallow ALL tools (secure by default)
         let config = ToolConfig {
             enabled: vec![],
+            skills: Vec::new(),
             http: None,
-            memory: None,
             custom: None,
             read_file: None,
             write_file: None,
@@ -460,8 +435,8 @@ mod tests {
         // Custom whitelist
         let config = ToolConfig {
             enabled: vec!["filesystem".to_string(), "apply_patch".to_string()],
+            skills: Vec::new(),
             http: None,
-            memory: None,
             custom: None,
             read_file: None,
             write_file: None,

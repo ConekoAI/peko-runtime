@@ -212,18 +212,6 @@ mod tests {
     }
 
     #[test]
-    fn test_set_nested_on_none_field() {
-        // memory is None by default; setting memory.auto_cleanup should create
-        // the intermediate MemoryConfig object automatically.
-        let mut config = AgentConfig::default();
-        assert!(config.memory.is_none());
-
-        set_config_value(&mut config, "memory.auto_cleanup", "false").unwrap();
-        assert!(config.memory.is_some());
-        assert!(!config.memory.as_ref().unwrap().auto_cleanup);
-    }
-
-    #[test]
     fn test_set_invalid_type_fails() {
         let mut config = AgentConfig::default();
         let err = set_config_value(&mut config, "default_timeout_seconds", "not-a-number")

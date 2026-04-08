@@ -113,9 +113,6 @@ pub mod types;
 /// Configuration management
 pub mod config;
 
-/// Memory systems (SQLite, vector, hybrid)
-pub mod memory;
-
 /// Agent identity and key management
 pub mod identity;
 

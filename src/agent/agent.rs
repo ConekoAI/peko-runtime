@@ -3,7 +3,6 @@
 use crate::agent::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
-use crate::memory::sqlite::SqliteMemory;
 use crate::providers::Provider;
 use crate::session::context::{SessionContext, SessionRouter};
 use crate::session::manager::SessionManager;
@@ -12,7 +11,6 @@ use crate::tools::agent_spawn::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use std::sync::Mutex as StdMutex;
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
@@ -25,8 +23,6 @@ pub struct Agent {
     state: Arc<RwLock<AgentState>>,
     /// Agent identity
     pub identity: Identity,
-    /// Memory store (wrapped in Mutex for thread safety)
-    memory: Option<Arc<StdMutex<SqliteMemory>>>,
     /// LLM provider (stored in Arc for sharing with agentic loop)
     provider: Option<Arc<dyn Provider>>,
     /// Session manager for overlay lifecycle
@@ -254,9 +250,6 @@ impl Agent {
         // Load or create identity
         let identity = Self::load_or_create_identity(&config).await?;
 
-        // Initialize memory if configured
-        let memory = Self::init_memory(&config, &identity).await?;
-
         // Initialize provider if configured
         let provider = Self::init_provider(&config).await?;
 
@@ -294,7 +287,6 @@ impl Agent {
             config,
             state: Arc::new(RwLock::new(AgentState::Idle)),
             identity,
-            memory,
             provider,
             session_manager,
             session_router,
@@ -317,45 +309,12 @@ impl Agent {
             "Starting agent: {} ({})",
             self.config.name, self.identity.did
         );
-
-        // Store startup message in memory
-        if let Some(memory) = &self.memory {
-            let _ = memory.lock().unwrap().store(
-                &format!(
-                    "Agent {} started at {}",
-                    self.config.name,
-                    chrono::Utc::now()
-                ),
-                Some(serde_json::json!({
-                    "event": "startup",
-                    "agent_name": self.config.name,
-                    "did": self.identity.did,
-                })),
-            );
-        }
-
         Ok(())
     }
 
     /// Stop the agent
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping agent: {}", self.config.name);
-
-        // Store shutdown message in memory
-        if let Some(memory) = &self.memory {
-            let _ = memory.lock().unwrap().store(
-                &format!(
-                    "Agent {} stopped at {}",
-                    self.config.name,
-                    chrono::Utc::now()
-                ),
-                Some(serde_json::json!({
-                    "event": "shutdown",
-                    "agent_name": self.config.name,
-                })),
-            );
-        }
-
         Ok(())
     }
 
@@ -632,7 +591,6 @@ impl Agent {
                 document: self.identity.document.clone(),
                 keypair: None, // Don't clone keypair to avoid security issues
             },
-            memory: None,   // Don't clone memory to avoid lock issues
             provider: None, // Provider passed separately to avoid double-Arc
             session_manager: Arc::clone(&self.session_manager),
             session_router: SessionRouter::new(
@@ -660,51 +618,7 @@ impl Agent {
     /// display these events as they arrive for a responsive UI.
     ///
     /// Note: This method must be called within a `tokio::task::LocalSet`
-    /// because Agent contains non-Send types (rusqlite connections).
-    /// Search memory
-    pub fn search_memory(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<crate::types::memory::MemoryEntry>> {
-        match &self.memory {
-            Some(memory) => {
-                let entries = memory.lock().unwrap().search(query, limit)?;
-                Ok(entries
-                    .into_iter()
-                    .map(|e| crate::types::memory::MemoryEntry {
-                        id: e.id,
-                        agent_did: self.did().to_string(),
-                        scope: crate::types::memory::MemoryScope::Agent,
-                        memory_type: "search_result".to_string(),
-                        content: serde_json::json!({"content": e.content}),
-                        embedding: None,
-                        created_at: e.timestamp,
-                        updated_at: e.timestamp,
-                        expires_at: None,
-                        importance: 0.5,
-                        thread_id: None,
-                        tags: vec![],
-                        source: "sqlite".to_string(),
-                    })
-                    .collect())
-            }
-            None => Ok(vec![]),
-        }
-    }
-
-    /// Store in memory
-    pub fn store_memory(
-        &self,
-        content: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<String> {
-        match &self.memory {
-            Some(memory) => memory.lock().unwrap().store(content, metadata),
-            None => Err(anyhow::anyhow!("Memory not initialized")),
-        }
-    }
-
+    /// because Agent contains non-Send types.
     /// Get agent DID
     #[must_use]
     pub fn did(&self) -> &str {
@@ -970,38 +884,6 @@ impl Agent {
         info!("Created and stored new identity: {}", identity.did);
 
         Ok(identity)
-    }
-
-    async fn init_memory(
-        config: &AgentConfig,
-        identity: &Identity,
-    ) -> Result<Option<Arc<StdMutex<SqliteMemory>>>> {
-        if let Some(memory_config) = &config.memory {
-            let path = memory_config
-                .database_path
-                .as_deref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    let mut path = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
-                    path.push("pekobot");
-                    path.push("memory.db");
-                    path
-                });
-
-            // Ensure parent directory exists
-            if let Some(parent) = path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-
-            let namespace = identity.did.replace(':', "_");
-            let memory = SqliteMemory::new(&path, &namespace)
-                .context("Failed to initialize SQLite memory")?;
-
-            info!("Memory initialized at: {:?}", path);
-            Ok(Some(Arc::new(StdMutex::new(memory))))
-        } else {
-            Ok(None)
-        }
     }
 
     async fn init_provider(config: &AgentConfig) -> Result<Option<Arc<dyn Provider>>> {

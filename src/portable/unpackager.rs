@@ -314,7 +314,7 @@ impl Unpackager {
         files: &HashMap<String, Vec<u8>>,
         _manifest: &AgentManifest,
         new_name: &str,
-        identity: &Identity,
+        _identity: &Identity,
     ) -> anyhow::Result<AgentConfig> {
         let config_bytes = files
             .get("config/agent.toml")
@@ -325,33 +325,35 @@ impl Unpackager {
         // Update runtime-specific fields
         config.name = new_name.to_string();
 
-        // Set memory path
-        if let Some(memory) = &mut config.memory {
-            let memory_db_path = self.get_memory_path(&identity.did);
-            memory.database_path = Some(memory_db_path.to_string_lossy().to_string());
-        }
+        // Note: Memory import is no longer supported as core memory has been deprecated.
+        // The config.memory field no longer exists in AgentConfig.
 
         Ok(config)
     }
 
     /// Import memory database
+    ///
+    /// Deprecated: Core memory has been removed. Memory data in legacy packages
+    /// is no longer imported. This method returns a path but the data is not
+    /// actually imported.
+    #[deprecated(since = "0.9.0", note = "Core memory is deprecated. Use external MCP memory servers instead.")]
     async fn import_memory(
         &self,
         files: &HashMap<String, Vec<u8>>,
         identity: &Identity,
-        _manifest: &AgentManifest,
+        manifest: &AgentManifest,
     ) -> anyhow::Result<std::path::PathBuf> {
+        // Deprecated: Core memory has been removed.
+        // Log a warning but don't actually import memory data.
+        tracing::warn!(
+            "Memory import is deprecated. Found {} bytes of memory data in package ({} entries), but core memory is no longer supported. Use external MCP memory servers instead.",
+            manifest.memory.size_bytes,
+            manifest.memory.entry_count.unwrap_or(0)
+        );
+
+        // Return a path anyway to avoid breaking the result type,
+        // but the data is not actually imported.
         let memory_path = self.get_memory_path(&identity.did);
-
-        // Ensure directory exists
-        if let Some(parent) = memory_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        if let Some(memory_data) = files.get("memory/memory.db") {
-            tokio::fs::write(&memory_path, memory_data).await?;
-        }
-
         Ok(memory_path)
     }
 
@@ -493,7 +495,10 @@ mod tests {
     fn test_import_options_default() {
         let opts = ImportOptions::default();
         assert!(!opts.rotate_keys);
-        assert!(opts.import_memory);
+        #[allow(deprecated)]
+        {
+            assert!(opts.import_memory); // Deprecated but still true for backward compat
+        }
         assert!(!opts.skip_validation);
         assert!(!opts.force);
     }
