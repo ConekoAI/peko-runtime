@@ -10,6 +10,8 @@ use crate::common::identifiers::{
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
 use crate::common::types::agent::*;
+use crate::identity::{Identity, KeyStorage};
+use crate::portable::{self, ExportOptions as PortableExportOptions, ImportOptions as PortableImportOptions};
 use crate::types::agent::{AgentConfig, PromptConfig, SystemFileConfig};
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
@@ -575,15 +577,59 @@ impl AgentService {
 
         let output_path = opts
             .output_path
+            .clone()
             .unwrap_or_else(|| PathBuf::from(format!("{}_{}.agent", team, agent_name)));
 
-        // TODO: Implement actual export via Packager when available
-        // For now, just return the expected result
+        // Load agent config
+        let config_content = tokio::fs::read_to_string(&config_path).await?;
+        let config: AgentConfig = toml::from_str(&config_content)
+            .context("Failed to parse agent config")?;
+
+        // Generate a new identity for the agent export
+        // (In the future, this could load an existing identity if agents have DIDs)
+        let identity = Identity::new(agent_name, crate::identity::did::DIDScope::Local).await
+            .context("Failed to create identity for export")?;
+
+        // Store the identity temporarily for export
+        let key_storage = KeyStorage::new()?;
+        key_storage.store_identity(&identity).await?;
+
+        // Set up export paths
+        let skills_dir = self.resolver.skills_dir();
+        let workspace_dir = self.resolver.agent_workspace(agent_name, Some(team));
+        let sessions_dir = self.resolver.agent_sessions_dir(agent_name, Some(team));
+        let mcp_config_path = self.resolver.mcp_config();
+        let tools_dir = self.resolver.tools_dir();
+
+        // Build portable export options
+        let export_opts = PortableExportOptions {
+            encrypt: opts.encrypt,
+            passphrase: opts.passphrase.clone(),
+            include_memory: false, // Core memory is deprecated
+            include_sessions: true,
+            include_workspace: true,
+            include_mcp: true,
+            include_tool_registry: true,
+            rotate_keys: false,
+            description: Some(format!("Exported agent {} from team {}", agent_name, team)),
+            output_path: Some(output_path.to_string_lossy().to_string()),
+            mcp_config_path: Some(mcp_config_path),
+            tools_dir: Some(tools_dir),
+        };
+
+        // Create packager and export
+        let packager = portable::Packager::new(config, identity, None)
+            .with_skills_dir(&skills_dir)
+            .with_workspace_dir(&workspace_dir)
+            .with_sessions_dir(&sessions_dir);
+
+        let result_path = packager.export(export_opts).await
+            .context("Failed to export agent package")?;
 
         Ok(AgentExportResult {
             name: agent_name.to_string(),
             team: team.to_string(),
-            output_path,
+            output_path: result_path,
             encrypted: opts.encrypt,
         })
     }
@@ -598,23 +644,39 @@ impl AgentService {
             anyhow::bail!("File not found: {}", file_path.display());
         }
 
-        let agent_name = opts.name.unwrap_or_else(|| {
-            file_path.file_stem().map_or_else(
-                || "imported".to_string(),
-                |s| s.to_string_lossy().to_string(),
-            )
-        });
+        let team = opts.team.as_deref().unwrap_or("default");
 
-        let team = opts.team.unwrap_or_else(|| "default".to_string());
+        // Ensure team exists
+        if !self.team_service.team_exists(team) {
+            self.team_service.create_team(team, None).await?;
+        }
 
-        // TODO: Implement actual import via Unpackager when available
+        // Build portable import options
+        let import_opts = PortableImportOptions {
+            new_name: opts.name.clone(),
+            passphrase: opts.passphrase.clone(),
+            rotate_keys: true, // Always rotate keys on import for security
+            import_memory: false, // Core memory is deprecated
+            import_sessions: true,
+            import_workspace: true,
+            import_mcp: true,
+            install_tools_from_registry: false, // Don't auto-install tools
+            skip_validation: false,
+            force: false,
+        };
 
-        let config_path = self.resolver.agent_config(&agent_name, Some(&team));
+        // Import the package
+        let result = portable::import_agent(file_path, import_opts).await
+            .context("Failed to import agent package")?;
+
+        // Get the final agent name (could be from import or from the package)
+        let final_name = result.name;
+        let final_team = team.to_string();
 
         Ok(AgentImportResult {
-            name: agent_name,
-            team,
-            config_path,
+            name: final_name,
+            team: final_team,
+            config_path: result.config_path,
         })
     }
 

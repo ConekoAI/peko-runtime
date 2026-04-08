@@ -242,12 +242,26 @@ pub async fn handle_agent_export(
     team: Option<String>,
     output: Option<String>,
     encrypt: bool,
+    passphrase: Option<String>,
 ) -> anyhow::Result<()> {
     let service = paths.services().agent();
+
+    // Prompt for passphrase if encryption is enabled but no passphrase provided
+    let final_passphrase = if encrypt && passphrase.is_none() {
+        use std::io::{self, Write};
+        print!("Enter passphrase for encryption: ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        Some(input.trim().to_string())
+    } else {
+        passphrase
+    };
 
     let opts = AgentExportOptions {
         output_path: output.map(|p| p.into()),
         encrypt,
+        passphrase: final_passphrase,
     };
 
     let result = service.export_agent(&name, team.as_deref(), opts).await?;
@@ -271,12 +285,15 @@ pub async fn handle_agent_import(
     paths: &GlobalPaths,
     file_path: String,
     name: Option<String>,
+    team: Option<String>,
+    passphrase: Option<String>,
 ) -> anyhow::Result<()> {
     let service = paths.services().agent();
 
     let opts = AgentImportOptions {
         name,
-        team: None, // Use default team
+        team,
+        passphrase,
     };
 
     let result = service.import_agent(file_path.as_ref(), opts).await?;
@@ -289,16 +306,36 @@ pub async fn handle_agent_import(
 }
 
 /// Handle agent inspect command
-pub async fn handle_agent_inspect(file: String, _json: bool) -> anyhow::Result<()> {
+pub async fn handle_agent_inspect(file: String, json: bool) -> anyhow::Result<()> {
+    use crate::portable::get_package_info;
+
     if !std::path::Path::new(&file).exists() {
         eprintln!("❌ File not found: {}", file);
         return Ok(());
     }
 
-    println!("🔍 Inspecting '{}'...", file);
+    let info = get_package_info(&file).await?;
 
-    // TODO: Implement actual inspection via Unpackager when available
-    println!("Package format: .agent");
+    if json {
+        let output = serde_json::json!({
+            "name": info.name,
+            "version": info.version,
+            "description": info.description,
+            "did": info.did,
+            "created_at": info.created_at,
+            "export_format": info.export_format,
+            "pekobot_version": info.pekobot_version,
+            "encrypted": info.encrypted,
+            "capabilities": info.capabilities,
+            "required_tools": info.required_tools,
+            "valid": info.valid,
+            "warnings": info.warnings,
+            "errors": info.errors,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!("{}", info.format());
+    }
 
     Ok(())
 }

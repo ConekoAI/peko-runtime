@@ -176,6 +176,8 @@ pub struct AgentUpdateRequest {
 pub struct AgentExportOptions {
     pub output_path: Option<PathBuf>,
     pub encrypt: bool,
+    /// Passphrase for encryption (if encrypt is true)
+    pub passphrase: Option<String>,
 }
 
 /// Agent export result
@@ -192,6 +194,8 @@ pub struct AgentExportResult {
 pub struct AgentImportOptions {
     pub name: Option<String>,
     pub team: Option<String>,
+    /// Passphrase for decryption (if package is encrypted)
+    pub passphrase: Option<String>,
 }
 
 /// Agent import result
