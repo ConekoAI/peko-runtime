@@ -1,0 +1,429 @@
+//! Core types for the Extension system
+//!
+//! This module defines the fundamental types used throughout the Extension
+//! architecture, including identifiers, manifest types, and shared data structures.
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
+use std::path::PathBuf;
+
+/// Unique identifier for an extension
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ExtensionId(pub String);
+
+impl ExtensionId {
+    /// Create a new extension ID
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+impl fmt::Display for ExtensionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for ExtensionId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Unique identifier for a hook registration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct HookId(pub uuid::Uuid);
+
+impl HookId {
+    /// Generate a new unique hook ID
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for HookId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for HookId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Extension manifest metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionManifest {
+    /// Unique identifier for the extension
+    pub id: ExtensionId,
+    
+    /// Extension type (skill, mcp, tool, channel, etc.)
+    pub extension_type: String,
+    
+    /// Human-readable name
+    pub name: String,
+    
+    /// Description of what the extension does
+    pub description: String,
+    
+    /// Version of the extension
+    pub version: String,
+    
+    /// Path to the extension directory
+    pub path: PathBuf,
+    
+    /// Additional metadata (type-specific)
+    #[serde(flatten)]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl ExtensionManifest {
+    /// Create a new extension manifest
+    pub fn new(
+        id: impl Into<String>,
+        extension_type: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        version: impl Into<String>,
+        path: PathBuf,
+    ) -> Self {
+        Self {
+            id: ExtensionId::new(id),
+            extension_type: extension_type.into(),
+            name: name.into(),
+            description: description.into(),
+            version: version.into(),
+            path,
+            metadata: HashMap::new(),
+        }
+    }
+    
+    /// Get a metadata value
+    pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        self.metadata.get(key)
+    }
+    
+    /// Set a metadata value
+    pub fn set(&mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) {
+        self.metadata.insert(key.into(), value.into());
+    }
+}
+
+/// Result of a hook handler invocation
+#[derive(Debug)]
+pub enum HookResult {
+    /// Continue with modified output
+    Continue(HookOutput),
+    
+    /// Continue with original input (pass-through)
+    PassThrough,
+    
+    /// Stop propagation, handler consumed the event
+    Handled,
+    
+    /// Replace entire result with this output
+    Replace(HookOutput),
+    
+    /// Error occurred during handling
+    Error(anyhow::Error),
+}
+
+/// Output from a hook handler
+#[derive(Debug, Clone)]
+pub enum HookOutput {
+    /// No output
+    Unit,
+    
+    /// Text fragment (for prompt sections)
+    Text(String),
+    
+    /// Tool registration
+    Tool(crate::providers::ToolDefinition),
+    
+    /// Event emission
+    Event(crate::hooks::SystemEvent),
+    
+    /// Message transformation
+    Message(crate::types::message::ContentBlock),
+    
+    /// Generic JSON value
+    Json(serde_json::Value),
+    
+    /// Multiple outputs
+    Vec(Vec<HookOutput>),
+}
+
+impl HookOutput {
+    /// Create empty output
+    pub fn unit() -> Self {
+        Self::Unit
+    }
+    
+    /// Create text output
+    pub fn text(s: impl Into<String>) -> Self {
+        Self::Text(s.into())
+    }
+    
+    /// Create JSON output
+    pub fn json(v: impl Into<serde_json::Value>) -> Self {
+        Self::Json(v.into())
+    }
+    
+    /// Combine multiple outputs
+    pub fn combine(outputs: Vec<HookOutput>) -> Self {
+        Self::Vec(outputs)
+    }
+    
+    /// Convert to text if possible
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(s) => Some(s),
+            _ => None,
+        }
+    }
+    
+    /// Convert to JSON if possible
+    pub fn as_json(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Json(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+impl Default for HookOutput {
+    fn default() -> Self {
+        Self::Unit
+    }
+}
+
+/// Input to a hook handler
+#[derive(Debug, Clone)]
+pub enum HookInput {
+    /// No input
+    Unit,
+    
+    /// Prompt build state
+    PromptBuild(PromptBuildState),
+    
+    /// Tool registry access
+    ToolRegistry(ToolRegistryAccess),
+    
+    /// Tool call parameters
+    ToolCall {
+        tool_name: String,
+        params: serde_json::Value,
+    },
+    
+    /// System event
+    SystemEvent(crate::hooks::SystemEvent),
+    
+    /// Session snapshot
+    SessionState(SessionSnapshot),
+    
+    /// Message envelope
+    Message(MessageEnvelope),
+    
+    /// Generic JSON value
+    Json(serde_json::Value),
+}
+
+impl Default for HookInput {
+    fn default() -> Self {
+        Self::Unit
+    }
+}
+
+/// State during prompt building
+#[derive(Debug, Clone)]
+pub struct PromptBuildState {
+    /// Current agent name
+    pub agent_name: String,
+    
+    /// Current workspace path
+    pub workspace: PathBuf,
+    
+    /// Current model
+    pub model: String,
+    
+    /// Current channel
+    pub channel: String,
+    
+    /// Existing sections content
+    pub sections: HashMap<String, String>,
+}
+
+impl PromptBuildState {
+    /// Create new prompt build state
+    pub fn new(agent_name: impl Into<String>, workspace: PathBuf) -> Self {
+        Self {
+            agent_name: agent_name.into(),
+            workspace,
+            model: "default".to_string(),
+            channel: "discord".to_string(),
+            sections: HashMap::new(),
+        }
+    }
+    
+    /// Get a section's current content
+    pub fn section(&self, name: &str) -> Option<&str> {
+        self.sections.get(name).map(|s| s.as_str())
+    }
+    
+    /// Set a section's content
+    pub fn set_section(&mut self, name: impl Into<String>, content: impl Into<String>) {
+        self.sections.insert(name.into(), content.into());
+    }
+}
+
+/// Access to the tool registry
+#[derive(Debug, Clone)]
+pub struct ToolRegistryAccess {
+    /// Registered tool definitions
+    pub tools: Vec<crate::providers::ToolDefinition>,
+}
+
+impl ToolRegistryAccess {
+    /// Create new registry access
+    pub fn new(tools: Vec<crate::providers::ToolDefinition>) -> Self {
+        Self { tools }
+    }
+    
+    /// Add a tool definition
+    pub fn add_tool(&mut self, tool: crate::providers::ToolDefinition) {
+        self.tools.push(tool);
+    }
+}
+
+/// Snapshot of session state
+#[derive(Debug, Clone)]
+pub struct SessionSnapshot {
+    /// Session ID
+    pub session_id: String,
+    
+    /// Number of messages in session
+    pub message_count: usize,
+    
+    /// Current context window size (tokens)
+    pub context_tokens: usize,
+    
+    /// Session metadata
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// Message envelope for I/O hooks
+#[derive(Debug, Clone)]
+pub struct MessageEnvelope {
+    /// Message content
+    pub content: crate::types::message::ContentBlock,
+    
+    /// Source channel/entity
+    pub source: Option<String>,
+    
+    /// Target channel/entity
+    pub target: Option<String>,
+    
+    /// Message metadata
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl MessageEnvelope {
+    /// Create a new message envelope
+    pub fn new(content: crate::types::message::ContentBlock) -> Self {
+        Self {
+            content,
+            source: None,
+            target: None,
+            metadata: HashMap::new(),
+        }
+    }
+    
+    /// Set source
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+    
+    /// Set target
+    pub fn with_target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
+        self
+    }
+}
+
+/// Priority for hook handlers (higher = earlier)
+pub type HookPriority = i32;
+
+/// Default priority for handlers
+pub const DEFAULT_HOOK_PRIORITY: HookPriority = 100;
+
+/// Priority for system handlers (highest)
+pub const SYSTEM_HOOK_PRIORITY: HookPriority = 1000;
+
+/// Priority for user handlers (normal)
+pub const USER_HOOK_PRIORITY: HookPriority = 100;
+
+/// Priority for fallback handlers (lowest)
+pub const FALLBACK_HOOK_PRIORITY: HookPriority = 0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_extension_id() {
+        let id = ExtensionId::new("test-skill");
+        assert_eq!(id.0, "test-skill");
+        assert_eq!(id.to_string(), "test-skill");
+    }
+    
+    #[test]
+    fn test_extension_manifest() {
+        let manifest = ExtensionManifest::new(
+            "docker-skill",
+            "skill",
+            "Docker Skill",
+            "Manage Docker containers",
+            "1.0.0",
+            PathBuf::from("/tmp/skills/docker"),
+        );
+        
+        assert_eq!(manifest.id.0, "docker-skill");
+        assert_eq!(manifest.extension_type, "skill");
+        assert_eq!(manifest.name, "Docker Skill");
+    }
+    
+    #[test]
+    fn test_hook_output() {
+        let text = HookOutput::text("Hello");
+        assert_eq!(text.as_text(), Some("Hello"));
+        assert!(text.as_json().is_none());
+        
+        let json = HookOutput::json(serde_json::json!({"key": "value"}));
+        assert!(json.as_text().is_none());
+        assert!(json.as_json().is_some());
+    }
+    
+    #[test]
+    fn test_prompt_build_state() {
+        let state = PromptBuildState::new("test-agent", PathBuf::from("/tmp"));
+        assert_eq!(state.agent_name, "test-agent");
+        assert!(state.section("tools").is_none());
+    }
+    
+    #[test]
+    fn test_message_envelope() {
+        let envelope = MessageEnvelope::new(crate::types::message::ContentBlock::Text {
+            text: "Hello".to_string(),
+        })
+        .with_source("user")
+        .with_target("agent");
+        
+        assert_eq!(envelope.source, Some("user".to_string()));
+        assert_eq!(envelope.target, Some("agent".to_string()));
+    }
+}

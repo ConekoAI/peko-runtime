@@ -52,6 +52,8 @@ pub struct AgenticLoopV4 {
     system_prompt: String,
     /// Tool executor with context injection
     tool_executor: Arc<ToolExecutor>,
+    /// Optional extension core for hook integration (Phase 1: Extension Architecture)
+    extension_core: Option<Arc<crate::extensions::ExtensionCore>>,
 }
 
 impl AgenticLoopV4 {
@@ -70,6 +72,7 @@ impl AgenticLoopV4 {
             max_iterations: 10,
             system_prompt,
             tool_executor: Arc::new(ToolExecutor::new()),
+            extension_core: None,
         }
     }
 
@@ -78,6 +81,34 @@ impl AgenticLoopV4 {
     pub fn with_max_iterations(mut self, max: usize) -> Self {
         self.max_iterations = max;
         self
+    }
+
+    /// Set the extension core for hook integration
+    /// 
+    /// This enables extensions to register tools and intercept tool execution.
+    #[must_use]
+    pub fn with_extension_core(mut self, core: Arc<crate::extensions::ExtensionCore>) -> Self {
+        self.extension_core = Some(core);
+        self
+    }
+
+    /// Get dynamic tools from extension hooks
+    async fn get_dynamic_tools(&self) -> Vec<Arc<dyn Tool>> {
+        // Phase 1: Extension Architecture - Invoke ToolRegister hooks
+        // This will be fully implemented when adapters are added
+        // For now, return empty vec to maintain existing behavior
+        if let Some(core) = &self.extension_core {
+            let result = core.invoke_hook(
+                crate::extensions::HookPoint::ToolRegister,
+                crate::extensions::HookInput::Unit,
+            ).await;
+            
+            // Process result to extract tool definitions
+            // This is a placeholder for full implementation
+            tracing::debug!("ToolRegister hook result: {:?}", result);
+        }
+        
+        vec![]
     }
 
     /// Run the agent with a user prompt, optionally resuming from an existing session.

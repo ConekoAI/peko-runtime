@@ -49,6 +49,8 @@ pub struct SystemPromptBuilder {
     channel: String,
     capabilities: Vec<String>,
     skills: Vec<Skill>,
+    /// Optional extension core for hook integration (Phase 1: Extension Architecture)
+    extension_core: Option<Arc<crate::extensions::ExtensionCore>>,
 }
 
 impl SystemPromptBuilder {
@@ -67,7 +69,16 @@ impl SystemPromptBuilder {
             channel: "discord".to_string(),
             capabilities: vec![],
             skills: vec![],
+            extension_core: None,
         }
+    }
+
+    /// Set the extension core for hook integration
+    /// 
+    /// This enables extensions to inject content into prompt sections.
+    pub fn with_extension_core(mut self, core: Arc<crate::extensions::ExtensionCore>) -> Self {
+        self.extension_core = Some(core);
+        self
     }
 
     pub fn with_mode(mut self, mode: PromptMode) -> Self {
@@ -199,6 +210,10 @@ impl SystemPromptBuilder {
             lines.push("- Multiple tools can be called in parallel if they are independent.".to_string());
             lines.push("- When you have the final answer, provide it directly without tool calls.".to_string());
         }
+        
+        // Phase 1: Extension Architecture - Allow extensions to inject tool content
+        // Note: This is synchronous; async hook invocation will be added in future phases
+        // when the prompt builder becomes async or we add a pre-built hook cache.
         
         lines.join("\n")
     }

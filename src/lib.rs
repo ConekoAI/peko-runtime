@@ -103,6 +103,9 @@ pub mod cap;
 /// MCP (Model Context Protocol) support
 pub mod mcp;
 
+/// Unified Extension Architecture (ADR-017)
+pub mod extensions;
+
 // ============================================================================
 // Data & State
 // ============================================================================
