@@ -5,11 +5,13 @@
 //! - Enable/disable extensions
 //! - Show extension details
 //! - Create bundles from extensions
+//! - Configure extensions (global, team, agent levels)
 
 use crate::commands::GlobalPaths;
 use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extensions::types::ExtensionId;
 use clap::Subcommand;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Extension management subcommands
@@ -68,6 +70,43 @@ pub enum ExtCommands {
         /// Extension IDs to include
         ids: Vec<String>,
     },
+
+    /// Configure extension settings (global, team, or agent level)
+    ///
+    /// Examples:
+    ///   pekobot ext config my-extension --show
+    ///   pekobot ext config my-extension --global --set api_key=secret
+    ///   pekobot ext config my-extension --team myteam --set endpoint=https://api.example.com
+    ///   pekobot ext config my-extension --agent myteam/myagent --set timeout=30
+    ///   pekobot ext config my-extension --unset api_key
+    Config {
+        /// Extension ID
+        id: String,
+
+        /// Show current configuration
+        #[arg(long, conflicts_with_all = &["set", "unset"])]
+        show: bool,
+
+        /// Set a configuration value (key=value)
+        #[arg(long, value_name = "KEY=VALUE")]
+        set: Vec<String>,
+
+        /// Unset a configuration key
+        #[arg(long, value_name = "KEY")]
+        unset: Vec<String>,
+
+        /// Apply to global scope (default)
+        #[arg(long, group = "scope")]
+        global: bool,
+
+        /// Apply to team scope
+        #[arg(long, value_name = "TEAM", group = "scope")]
+        team: Option<String>,
+
+        /// Apply to agent scope (format: team/agent or just agent for default team)
+        #[arg(long, value_name = "AGENT", group = "scope")]
+        agent: Option<String>,
+    },
 }
 
 /// Create an ExtensionManager with all default adapters registered
@@ -113,6 +152,15 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
         ExtCommands::Uninstall { id } => handle_uninstall(&mut manager, id).await,
         ExtCommands::Info { id } => handle_info(&manager, id),
         ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
+        ExtCommands::Config {
+            id,
+            show,
+            set,
+            unset,
+            global,
+            team,
+            agent,
+        } => handle_config(paths, id, show, set, unset, global, team, agent).await,
     }
 }
 
@@ -322,4 +370,208 @@ fn handle_bundle(
             Err(e)
         }
     }
+}
+
+/// Extension configuration storage
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct ExtensionConfig {
+    /// Global settings (apply to all agents/teams)
+    #[serde(default)]
+    global: HashMap<String, serde_json::Value>,
+    
+    /// Per-team settings
+    #[serde(default)]
+    teams: HashMap<String, HashMap<String, serde_json::Value>>,
+    
+    /// Per-agent settings (format: "team/agent")
+    #[serde(default)]
+    agents: HashMap<String, HashMap<String, serde_json::Value>>,
+}
+
+impl ExtensionConfig {
+    fn config_path(data_dir: &std::path::Path, extension_id: &str) -> PathBuf {
+        data_dir.join("extensions").join(extension_id).join("config.toml")
+    }
+    
+    fn load(data_dir: &std::path::Path, extension_id: &str) -> anyhow::Result<Self> {
+        let path = Self::config_path(data_dir, extension_id);
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(&path)?;
+        let config: Self = toml::from_str(&content)?;
+        Ok(config)
+    }
+    
+    fn save(&self, data_dir: &std::path::Path, extension_id: &str) -> anyhow::Result<()> {
+        let path = Self::config_path(data_dir, extension_id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self)?;
+        std::fs::write(&path, content)?;
+        Ok(())
+    }
+    
+    fn get(&self, team: Option<&str>, agent: Option<&str>, key: &str) -> Option<&serde_json::Value> {
+        // Agent scope has highest priority
+        if let Some(agent_id) = agent {
+            if let Some(agent_config) = self.agents.get(agent_id) {
+                if let Some(value) = agent_config.get(key) {
+                    return Some(value);
+                }
+            }
+        }
+        
+        // Team scope has medium priority
+        if let Some(team_id) = team {
+            if let Some(team_config) = self.teams.get(team_id) {
+                if let Some(value) = team_config.get(key) {
+                    return Some(value);
+                }
+            }
+        }
+        
+        // Global scope has lowest priority
+        self.global.get(key)
+    }
+    
+    fn set(&mut self, team: Option<&str>, agent: Option<&str>, key: String, value: serde_json::Value) {
+        let target = match (team, agent) {
+            (Some(_), Some(_)) => {
+                let agent_id = agent.unwrap().to_string();
+                self.agents.entry(agent_id).or_default()
+            }
+            (Some(team_id), None) => {
+                self.teams.entry(team_id.to_string()).or_default()
+            }
+            _ => &mut self.global,
+        };
+        target.insert(key, value);
+    }
+    
+    fn unset(&mut self, team: Option<&str>, agent: Option<&str>, key: &str) -> bool {
+        match (team, agent) {
+            (Some(_), Some(_)) => {
+                if let Some(agent_config) = self.agents.get_mut(agent.unwrap()) {
+                    agent_config.remove(key).is_some()
+                } else {
+                    false
+                }
+            }
+            (Some(team_id), None) => {
+                if let Some(team_config) = self.teams.get_mut(team_id) {
+                    team_config.remove(key).is_some()
+                } else {
+                    false
+                }
+            }
+            _ => self.global.remove(key).is_some(),
+        }
+    }
+}
+
+/// Handle config command
+async fn handle_config(
+    paths: &GlobalPaths,
+    id: String,
+    show: bool,
+    set_values: Vec<String>,
+    unset_keys: Vec<String>,
+    _global: bool,
+    team: Option<String>,
+    agent: Option<String>,
+) -> anyhow::Result<()> {
+    // Parse agent ID if provided
+    let (team_id, agent_id) = match (&team, &agent) {
+        (Some(t), Some(a)) => (Some(t.as_str()), Some(format!("{}/{}", t, a))),
+        (None, Some(a)) => {
+            if a.contains('/') {
+                let parts: Vec<&str> = a.split('/').collect();
+                (Some(parts[0]), Some(a.clone()))
+            } else {
+                (Some("default"), Some(format!("default/{}", a)))
+            }
+        }
+        (Some(t), None) => (Some(t.as_str()), None),
+        _ => (None, None),
+    };
+    
+    let scope_label = match (&team_id, &agent_id) {
+        (Some(t), Some(a)) => format!("agent '{}'", a),
+        (Some(t), None) => format!("team '{}'", t),
+        _ => "global".to_string(),
+    };
+    
+    // Load or create config
+    let mut config = ExtensionConfig::load(&paths.data_dir, &id)?;
+    
+    // Handle --show (default if no other actions)
+    if show || (set_values.is_empty() && unset_keys.is_empty()) {
+        println!("Configuration for extension '{}' ({} scope):", id, scope_label);
+        println!();
+        
+        let target_config: &HashMap<String, serde_json::Value> = match (&team_id, &agent_id) {
+            (Some(_), Some(a)) => config.agents.get(a).unwrap_or(&config.global),
+            (Some(t), None) => config.teams.get(&t.to_string()).unwrap_or(&config.global),
+            _ => &config.global,
+        };
+        
+        if target_config.is_empty() {
+            println!("  No configuration set at this scope.");
+        } else {
+            for (key, value) in target_config {
+                println!("  {} = {}", key, value);
+            }
+        }
+        
+        // Also show inherited values
+        if team_id.is_some() || agent_id.is_some() {
+            println!();
+            println!("Inherited from global:");
+            let mut inherited = false;
+            for (key, value) in &config.global {
+                if !target_config.contains_key(key) {
+                    println!("  {} = {} (global)", key, value);
+                    inherited = true;
+                }
+            }
+            if !inherited {
+                println!("  (none)");
+            }
+        }
+        
+        return Ok(());
+    }
+    
+    // Handle --set
+    for pair in &set_values {
+        let parts: Vec<&str> = pair.splitn(2, '=').collect();
+        if parts.len() != 2 {
+            anyhow::bail!("Invalid format '{}'. Use KEY=VALUE", pair);
+        }
+        let key = parts[0].to_string();
+        let value = parts[1];
+        
+        // Try to parse as JSON, fallback to string
+        let json_value = serde_json::from_str(value)
+            .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+        
+        config.set(team_id, agent_id.as_deref(), key.clone(), json_value);
+        println!("Set {} = {} for extension '{}' at {} scope", key, value, id, scope_label);
+    }
+    
+    // Handle --unset
+    for key in &unset_keys {
+        if config.unset(team_id, agent_id.as_deref(), key) {
+            println!("Unset '{}' for extension '{}' at {} scope", key, id, scope_label);
+        } else {
+            println!("Key '{}' not found for extension '{}' at {} scope", key, id, scope_label);
+        }
+    }
+    
+    // Save config
+    config.save(&paths.data_dir, &id)?;
+    
+    Ok(())
 }

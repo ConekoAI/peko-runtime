@@ -1,6 +1,5 @@
 use clap::Parser;
 use clap_complete::generate;
-use pekobot::cap;
 use pekobot::commands::{
     agent, auth, config, cron, daemon, ext, gateway, init_logging, orchestration, provider, send,
     session, system, team, update, Cli, Commands, GlobalPaths,
@@ -94,7 +93,6 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         Commands::Team(cmd) => team::handle_team(cmd, paths, json).await,
         Commands::Send(args) => send::handle_send(args, paths, json).await,
         Commands::Auth(cmd) => auth::handle_auth(cmd, paths, json).await,
-        Commands::Cap(cmd) => cap::commands::handle_cap_command(cmd, paths, json).await,
         Commands::Ext(cmd) => ext::handle_ext_command(cmd, paths).await,
         Commands::Session(cmd) => session::handle_session(cmd, paths, json).await,
         Commands::Config(cmd) => config::handle_config(cmd, paths, json).await,

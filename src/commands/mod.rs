@@ -112,10 +112,6 @@ pub enum Commands {
     #[command(subcommand)]
     Auth(auth::AuthCommands),
 
-    /// Unified capability framework (tools, MCP, skills)
-    #[command(subcommand)]
-    Cap(crate::cap::commands::CapCommands),
-
     /// Extension management commands (skills, MCP, tools, channels, hooks)
     #[command(subcommand)]
     Ext(ext::ExtCommands),
