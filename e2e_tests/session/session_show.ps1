@@ -9,7 +9,7 @@
 # - Error case: no active session exists
 
 param(
-    [string]$Provider = "kimi"
+    [string]$Provider = "minimax"
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,8 +19,8 @@ Write-Host "Session Show Command Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Check prerequisites
-if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
-    Write-Error "KIMI_API_KEY environment variable not set"
+if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
+    Write-Error "MINIMAX_API_KEY environment variable not set"
     exit 1
 }
 
@@ -36,7 +36,7 @@ if (Test-Path $pekobotDir) {
 }
 
 # Set API key
-pekobot auth set kimi $env:KIMI_API_KEY 2>&1 | Out-Null
+pekobot auth set minimax $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create test agent

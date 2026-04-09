@@ -70,7 +70,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 1: Install calculator-skill extension" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$skillDir = "$PSScriptRoot/../cap/skill/python/calculator-skill"
+$skillDir = "$PSScriptRoot/../_archive/cap/skill/python/calculator-skill"
 Write-Host "Installing extension from: $skillDir" -ForegroundColor Yellow
 
 $installResult = pekobot ext install $skillDir 2>&1

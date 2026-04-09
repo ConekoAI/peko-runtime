@@ -80,7 +80,7 @@ if (Test-Path $mcpExtDir) {
 New-Item -ItemType Directory -Path $mcpExtDir -Force | Out-Null
 
 # Copy the MCP server script
-$serverSource = "$PSScriptRoot/../cap/mcp/python/mcp_server.py"
+$serverSource = "$PSScriptRoot/../_archive/cap/mcp/python/mcp_server.py"
 Copy-Item $serverSource "$mcpExtDir/mcp_server.py"
 
 # Create extension manifest (manifest.json)

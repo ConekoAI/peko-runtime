@@ -12,7 +12,7 @@
 # 4. Short flag -U works
 
 param(
-    [string]$Provider = "kimi"
+    [string]$Provider = "minimax"
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,8 +23,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Note: Sessions are shared storage, but each user has isolated active session pointers" -ForegroundColor Gray
 
 # Check prerequisites
-if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
-    Write-Error "KIMI_API_KEY environment variable not set"
+if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
+    Write-Error "MINIMAX_API_KEY environment variable not set"
     exit 1
 }
 
@@ -39,11 +39,11 @@ if (Test-Path $pekobotDir) {
     Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
 }
 
-# Set kimi api key
-pekobot auth set kimi $env:KIMI_API_KEY 2>&1 | Out-Null
+# Set minimax api key
+pekobot auth set minimax $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create an agent with kimi provider
+# Create an agent with minimax provider
 $agentName = "testagent"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green

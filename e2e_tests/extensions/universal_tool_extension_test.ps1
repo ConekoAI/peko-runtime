@@ -76,7 +76,7 @@ if (Test-Path $toolExtDir) {
 New-Item -ItemType Directory -Path $toolExtDir -Force | Out-Null
 
 # Copy the calculator tool files
-$toolSourceDir = "$PSScriptRoot/../cap/tool/custom/python/simple"
+$toolSourceDir = "$PSScriptRoot/../_archive/cap/tool/custom/python/simple"
 Copy-Item "$toolSourceDir/calculator_simple.py" "$toolExtDir/"
 
 # Create extension manifest (manifest.json)

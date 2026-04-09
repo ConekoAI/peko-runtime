@@ -219,15 +219,22 @@ impl SystemPromptBuilder {
 
         if let Some(ref core) = self.extension_core {
             // Try to invoke skills hooks via ExtensionCore
-            // Note: This uses block_on as the builder is currently synchronous.
-            // Future phases will make the builder fully async.
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            // Note: This uses block_in_place + block_on as the builder is currently synchronous
+            // but may be called from async contexts. Future phases will make the builder fully async.
+            if let Ok(_handle) = tokio::runtime::Handle::try_current() {
                 let hook_point = HookPoint::PromptSystemSection {
                     section: "skills".to_string(),
                     priority: 100,
                 };
+                let core = core.clone();
 
-                match handle.block_on(core.invoke_hook_text(hook_point, HookInput::Unit)) {
+                let result = tokio::task::block_in_place(move || {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        core.invoke_hook_text(hook_point, HookInput::Unit).await
+                    })
+                });
+
+                match result {
                     Some(skills_text) if !skills_text.is_empty() => {
                         return format!(
                             r"## Skills (mandatory)
