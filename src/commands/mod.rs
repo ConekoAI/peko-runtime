@@ -18,6 +18,7 @@ pub mod auth;
 pub mod config;
 pub mod cron;
 pub mod daemon;
+pub mod ext;
 pub mod gateway;
 pub mod mcp;
 pub mod orchestration;
@@ -114,6 +115,10 @@ pub enum Commands {
     /// Unified capability framework (tools, MCP, skills)
     #[command(subcommand)]
     Cap(crate::cap::commands::CapCommands),
+
+    /// Extension management commands (skills, MCP, tools, channels, hooks)
+    #[command(subcommand)]
+    Ext(ext::ExtCommands),
 
     /// Session management commands
     #[command(subcommand)]
