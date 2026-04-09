@@ -19,6 +19,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+// Extension Core imports for skill loading
+use crate::extensions::adapters::skill_adapter::{SkillAdapter, register_skills_with_core};
+
 /// Result of running the agentic loop
 #[derive(Debug, Clone)]
 pub struct AgenticResult {
@@ -52,18 +55,26 @@ pub struct AgenticLoopV4 {
     system_prompt: String,
     /// Tool executor with context injection
     tool_executor: Arc<ToolExecutor>,
-    /// Optional extension core for hook integration (Phase 1: Extension Architecture)
-    extension_core: Option<Arc<crate::extensions::ExtensionCore>>,
+    /// Extension core for hook integration (Phase 1: Extension Architecture)
+    /// This is now required for skill loading and tool registration.
+    extension_core: Arc<crate::extensions::ExtensionCore>,
 }
 
 impl AgenticLoopV4 {
     /// Create a new v4 agentic loop
+    /// 
+    /// # Arguments
+    /// * `agent` - The agent configuration
+    /// * `provider` - The LLM provider to use
+    /// * `tools` - Available tools for the agent
+    /// * `extension_core` - The ExtensionCore for skill loading and hook integration
     pub fn new(
         agent: Arc<Agent>,
         provider: Arc<dyn crate::providers::Provider>,
         tools: Vec<Arc<dyn Tool>>,
+        extension_core: Arc<crate::extensions::ExtensionCore>,
     ) -> Self {
-        let system_prompt = build_system_prompt(&agent, &tools);
+        let system_prompt = build_system_prompt(&agent, &tools, &extension_core);
 
         Self {
             agent,
@@ -72,7 +83,7 @@ impl AgenticLoopV4 {
             max_iterations: 10,
             system_prompt,
             tool_executor: Arc::new(ToolExecutor::new()),
-            extension_core: None,
+            extension_core,
         }
     }
 
@@ -83,30 +94,23 @@ impl AgenticLoopV4 {
         self
     }
 
-    /// Set the extension core for hook integration
-    /// 
-    /// This enables extensions to register tools and intercept tool execution.
+    /// Get the extension core
     #[must_use]
-    pub fn with_extension_core(mut self, core: Arc<crate::extensions::ExtensionCore>) -> Self {
-        self.extension_core = Some(core);
-        self
+    pub fn extension_core(&self) -> &Arc<crate::extensions::ExtensionCore> {
+        &self.extension_core
     }
 
     /// Get dynamic tools from extension hooks
     async fn get_dynamic_tools(&self) -> Vec<Arc<dyn Tool>> {
         // Phase 1: Extension Architecture - Invoke ToolRegister hooks
-        // This will be fully implemented when adapters are added
-        // For now, return empty vec to maintain existing behavior
-        if let Some(core) = &self.extension_core {
-            let result = core.invoke_hook(
-                crate::extensions::HookPoint::ToolRegister,
-                crate::extensions::HookInput::Unit,
-            ).await;
-            
-            // Process result to extract tool definitions
-            // This is a placeholder for full implementation
-            tracing::debug!("ToolRegister hook result: {:?}", result);
-        }
+        let result = self.extension_core.invoke_hook(
+            crate::extensions::HookPoint::ToolRegister,
+            crate::extensions::HookInput::Unit,
+        ).await;
+        
+        // Process result to extract tool definitions
+        // This is a placeholder for full implementation
+        tracing::debug!("ToolRegister hook result: {:?}", result);
         
         vec![]
     }
@@ -1401,7 +1405,13 @@ impl AgenticLoopV4 {
 
 /// Build system prompt from agent and tools using `SystemPromptBuilder`
 /// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.) and skills
-fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
+/// 
+/// Skills are loaded via the ExtensionCore using the SkillAdapter.
+fn build_system_prompt(
+    agent: &Agent, 
+    tools: &[Arc<dyn Tool>],
+    extension_core: &Arc<crate::extensions::ExtensionCore>,
+) -> String {
     info!("Building system prompt with {} tools: {:?}", tools.len(), tools.iter().map(|t| t.name()).collect::<Vec<_>>());
     
     // Use configured workspace if specified, otherwise use default with team
@@ -1430,7 +1440,7 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
         })
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // Load enabled skills from the skills directory using PathResolver for consistency
+    // Load enabled skills from the skills directory using ExtensionCore
     let path_resolver = crate::common::paths::PathResolver::new();
     let enabled_skills = agent
         .config
@@ -1439,7 +1449,9 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
         .map(|t| &t.skills)
         .unwrap_or(&vec![])
         .clone();
-    let skills = load_agent_skills(agent.name(), &enabled_skills, &path_resolver);
+    
+    // Load and register skills with ExtensionCore (asynchronous block)
+    let skills_loaded = load_and_register_skills_sync(agent.name(), &enabled_skills, &path_resolver, extension_core);
 
     // Extract custom bootstrap files from agent config if specified
     let bootstrap_files = agent
@@ -1453,42 +1465,145 @@ fn build_system_prompt(agent: &Agent, tools: &[Arc<dyn Tool>]) -> String {
         .with_mode(PromptMode::Full)
         .with_workspace(&workspace_dir)
         .with_tools(tools.to_vec())
-        .with_skills(skills)
+        .with_extension_core(Arc::clone(extension_core))
         .with_system_files(bootstrap_files)
         .build()
 }
 
-/// Load enabled skills for an agent from the skills directory
-fn load_agent_skills(agent_name: &str, enabled_skills: &[String], path_resolver: &crate::common::paths::PathResolver) -> Vec<crate::skills::Skill> {
+/// Load enabled skills for an agent from the skills directory using ExtensionCore
+/// 
+/// This function discovers skills from the filesystem and registers them with the
+/// ExtensionCore. Skills are then injected into the system prompt via the
+/// `PromptSystemSection { section: "skills" }` hook point.
+/// 
+/// # Returns
+/// The number of skills successfully registered with the ExtensionCore.
+fn load_and_register_skills_sync(
+    agent_name: &str, 
+    enabled_skills: &[String], 
+    path_resolver: &crate::common::paths::PathResolver,
+    extension_core: &Arc<crate::extensions::ExtensionCore>,
+) -> usize {
+    use std::thread;
+    
     // Use PathResolver for consistent path resolution
     let skills_dir = path_resolver.skills_dir();
 
     tracing::debug!("Loading skills from: {:?}", skills_dir);
     tracing::debug!("Enabled skills for agent {}: {:?}", agent_name, enabled_skills);
 
-    let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
-
-    if let Err(e) = registry.load_all() {
-        tracing::warn!("Failed to load skills for agent {}: {}", agent_name, e);
-        return Vec::new();
+    if !skills_dir.exists() {
+        tracing::debug!("Skills directory does not exist: {:?}", skills_dir);
+        return 0;
     }
 
-    tracing::debug!("Loaded {} skills from registry", registry.count());
+    // Discover skills using the SkillAdapter (synchronous)
+    let adapter = SkillAdapter::new();
+    let all_skills = adapter.discover_skills(&skills_dir);
+    
+    tracing::debug!("Discovered {} skills from directory", all_skills.len());
 
-    // Only return enabled skills
-    let skills: Vec<_> = registry
-        .list()
+    // Filter to only enabled skills
+    let skills_to_register: Vec<_> = all_skills
         .into_iter()
         .filter(|s| {
-            let is_enabled = enabled_skills.iter().any(|e| e.eq_ignore_ascii_case(&s.name));
-            tracing::debug!("Skill '{}' enabled: {}", s.name, is_enabled);
+            let is_enabled = enabled_skills.iter().any(|e| e.eq_ignore_ascii_case(&s.manifest.name));
+            tracing::debug!("Skill '{}' enabled: {}", s.manifest.name, is_enabled);
             is_enabled
         })
-        .cloned()
         .collect();
 
-    tracing::info!("Returning {} enabled skills for agent {}", skills.len(), agent_name);
-    skills
+    if skills_to_register.is_empty() {
+        tracing::info!("No enabled skills to register for agent {}", agent_name);
+        return 0;
+    }
+
+    // Register skills with ExtensionCore
+    // We need to spawn a blocking task since we're in a sync context
+    let core = Arc::clone(extension_core);
+    let count = skills_to_register.len();
+    
+    // Create a new runtime for the async registration
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We're in an async context, spawn a blocking task
+            let _ = handle.block_on(async {
+                register_skills_with_core(&core, skills_to_register).await
+            });
+        }
+        Err(_) => {
+            // No runtime available, create a new one for this operation
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::warn!("Failed to create runtime for skill registration: {}", e);
+                    return 0;
+                }
+            };
+            let _ = rt.block_on(async {
+                register_skills_with_core(&core, skills_to_register).await
+            });
+        }
+    }
+
+    tracing::info!("Registered {} enabled skills for agent {}", count, agent_name);
+    count
+}
+
+/// Load enabled skills for an agent from the skills directory (async version)
+/// 
+/// This is the preferred async version for use in async contexts.
+async fn load_and_register_skills(
+    agent_name: &str, 
+    enabled_skills: &[String], 
+    path_resolver: &crate::common::paths::PathResolver,
+    extension_core: &Arc<crate::extensions::ExtensionCore>,
+) -> usize {
+    // Use PathResolver for consistent path resolution
+    let skills_dir = path_resolver.skills_dir();
+
+    tracing::debug!("Loading skills from: {:?}", skills_dir);
+    tracing::debug!("Enabled skills for agent {}: {:?}", agent_name, enabled_skills);
+
+    if !skills_dir.exists() {
+        tracing::debug!("Skills directory does not exist: {:?}", skills_dir);
+        return 0;
+    }
+
+    // Discover skills using the SkillAdapter
+    let adapter = SkillAdapter::new();
+    let all_skills = adapter.discover_skills(&skills_dir);
+    
+    tracing::debug!("Discovered {} skills from directory", all_skills.len());
+
+    // Filter to only enabled skills
+    let skills_to_register: Vec<_> = all_skills
+        .into_iter()
+        .filter(|s| {
+            let is_enabled = enabled_skills.iter().any(|e| e.eq_ignore_ascii_case(&s.manifest.name));
+            tracing::debug!("Skill '{}' enabled: {}", s.manifest.name, is_enabled);
+            is_enabled
+        })
+        .collect();
+
+    if skills_to_register.is_empty() {
+        tracing::info!("No enabled skills to register for agent {}", agent_name);
+        return 0;
+    }
+
+    // Register skills with ExtensionCore
+    let count = skills_to_register.len();
+    match register_skills_with_core(extension_core, skills_to_register).await {
+        Ok(hook_ids) => {
+            tracing::info!("Registered {} enabled skills for agent {} (hook_ids: {:?})", 
+                count, agent_name, hook_ids.len());
+        }
+        Err(e) => {
+            tracing::warn!("Failed to register skills for agent {}: {}", agent_name, e);
+        }
+    }
+
+    count
 }
 
 /// Convert chat messages to prompt string (fallback)

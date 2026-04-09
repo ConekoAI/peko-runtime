@@ -172,7 +172,7 @@ impl CapabilityCatalogImpl {
             .collect()
     }
 
-    /// Load skills from skills directory
+    /// Load skills from skills directory using ExtensionCore-based discovery
     fn load_skills(&self) -> anyhow::Result<Vec<CapabilityInfo>> {
         let skills_dir = self.path_resolver.skills_dir();
         
@@ -180,18 +180,31 @@ impl CapabilityCatalogImpl {
             return Ok(Vec::new());
         }
 
-        let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
-        registry.load_all()?;
+        // Use SkillAdapter for skill discovery (ExtensionCore-based)
+        use crate::extensions::adapters::skill_adapter::SkillAdapter;
+        let adapter = SkillAdapter::new();
+        let discovered = adapter.discover_skills(&skills_dir);
 
         let mut caps = Vec::new();
-        for skill in registry.list() {
+        for skill in discovered {
+            let tags = skill.manifest.get("tags")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect())
+                .unwrap_or_default();
+            let author = skill.manifest.get("author")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from);
+            
             caps.push(CapabilityInfo::skill(
-                &skill.name,
-                &skill.description,
-                skill.base_dir.clone(),
-                skill.file_path.clone(),
-                skill.tags.clone(),
-                skill.author.clone(),
+                &skill.manifest.name,
+                &skill.manifest.description,
+                skill.base_dir,
+                skill.file_path,
+                tags,
+                author,
             ));
         }
 

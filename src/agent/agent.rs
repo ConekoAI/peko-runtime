@@ -3,6 +3,7 @@
 use crate::agent::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
+use crate::extensions::core::{ExtensionCore, global_core, init_global_core};
 use crate::providers::Provider;
 use crate::session::context::{SessionContext, SessionRouter};
 use crate::session::manager::SessionManager;
@@ -35,6 +36,8 @@ pub struct Agent {
     session_key_provider: Arc<DynamicSessionKeyProvider>,
     /// Current session ID for session_status tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
+    /// Extension core for skill loading and hook integration
+    extension_core: Arc<ExtensionCore>,
 }
 
 impl Agent {
@@ -283,6 +286,13 @@ impl Agent {
             config.name
         )));
 
+        // Get or initialize global extension core
+        let extension_core = global_core().unwrap_or_else(|| {
+            let core = Arc::new(ExtensionCore::new());
+            init_global_core(core.clone());
+            core
+        });
+
         let agent = Self {
             config,
             state: Arc::new(RwLock::new(AgentState::Idle)),
@@ -293,6 +303,7 @@ impl Agent {
             subagent_executor,
             session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
+            extension_core,
         };
 
         info!(
@@ -390,7 +401,12 @@ impl Agent {
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
-            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+            let loop_ = AgenticLoopV4::new(
+                agent_arc, 
+                provider_arc, 
+                tools,
+                Arc::clone(&self.extension_core),
+            );
 
             match loop_.run(prompt, on_event).await {
                 Ok(result) => Ok(result),
@@ -454,7 +470,12 @@ impl Agent {
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
-            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+            let loop_ = AgenticLoopV4::new(
+                agent_arc, 
+                provider_arc, 
+                tools,
+                Arc::clone(&self.extension_core),
+            );
 
             match loop_
                 .run_with_resume(prompt, on_event, session, history)
@@ -501,10 +522,17 @@ impl Agent {
             let provider_arc = Arc::clone(provider);
             let event_tx_clone = event_tx.clone();
 
+            let extension_core = self.extension_core.clone();
+            
             tokio::task::spawn_local(async move {
                 use crate::engine::loop_v4::AgenticLoopV4;
 
-                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc.clone(), tools);
+                let loop_ = AgenticLoopV4::new(
+                    agent_arc, 
+                    provider_arc.clone(), 
+                    tools,
+                    extension_core,
+                );
 
                 let _result = loop_
                     .run(&prompt, move |event| {
@@ -559,7 +587,12 @@ impl Agent {
 
             use crate::engine::loop_v4::AgenticLoopV4;
 
-            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, tools);
+            let loop_ = AgenticLoopV4::new(
+                agent_arc, 
+                provider_arc, 
+                tools,
+                Arc::clone(&self.extension_core),
+            );
 
             // Use streaming config with Live delivery mode for real-time output
             let streaming_config = crate::engine::OrchestratorConfig::live();
@@ -609,6 +642,7 @@ impl Agent {
             ),
             session_key_provider: Arc::clone(&self.session_key_provider),
             current_session_id: Arc::clone(&self.current_session_id),
+            extension_core: Arc::clone(&self.extension_core),
         }
     }
 

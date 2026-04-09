@@ -593,10 +593,14 @@ async fn handle_restart(name: &str, paths: &GlobalPaths) -> anyhow::Result<()> {
 async fn handle_skill_command(command: SkillCommands, paths: &GlobalPaths) -> anyhow::Result<()> {
     let skills_dir = paths.resolver().skills_dir();
     
+    // Use SkillAdapter for skill discovery (ExtensionCore-based)
+    use crate::extensions::adapters::skill_adapter::SkillAdapter;
+    let adapter = SkillAdapter::new();
+    
     match command {
         SkillCommands::List { long } => {
-            let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
-            let count = registry.load_all()?;
+            let discovered = adapter.discover_skills(&skills_dir);
+            let count = discovered.len();
             
             if count == 0 {
                 println!("No skills installed.");
@@ -604,26 +608,27 @@ async fn handle_skill_command(command: SkillCommands, paths: &GlobalPaths) -> an
                 return Ok(());
             }
             
-            let skills = registry.list();
-            
             if long {
                 println!("{:<20} {:<30} {}", "NAME", "DESCRIPTION", "TAGS");
                 println!("{}", "-".repeat(80));
-                for skill in skills {
-                    let tags = if skill.tags.is_empty() {
-                        "-".to_string()
-                    } else {
-                        skill.tags.join(", ")
-                    };
+                for skill in &discovered {
+                    let tags = skill.manifest.get("tags")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "))
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "-".to_string());
                     println!("{:<20} {:<30} {}", 
-                        skill.name, 
-                        truncate(&skill.description, 30),
+                        skill.manifest.name, 
+                        truncate(&skill.manifest.description, 30),
                         tags
                     );
                 }
             } else {
-                for skill in skills {
-                    println!("{}", skill.name);
+                for skill in &discovered {
+                    println!("{}", skill.manifest.name);
                 }
             }
             
@@ -692,19 +697,24 @@ async fn handle_skill_command(command: SkillCommands, paths: &GlobalPaths) -> an
         }
         
         SkillCommands::Info { name } => {
-            let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
-            registry.load_all()?;
+            let discovered = adapter.discover_skills(&skills_dir);
             
-            let skill = registry.get(&name)
+            let skill = discovered.iter()
+                .find(|s| s.manifest.name.eq_ignore_ascii_case(&name))
                 .ok_or_else(|| anyhow::anyhow!("Skill '{}' not found", name))?;
             
-            println!("Name: {}", skill.name);
-            println!("Description: {}", skill.description);
-            if !skill.tags.is_empty() {
-                println!("Tags: {}", skill.tags.join(", "));
+            println!("Name: {}", skill.manifest.name);
+            println!("Description: {}", skill.manifest.description);
+            if let Some(tags) = skill.manifest.get("tags").and_then(|v| v.as_array()) {
+                let tags_str: Vec<_> = tags.iter().filter_map(|v| v.as_str()).collect();
+                if !tags_str.is_empty() {
+                    println!("Tags: {}", tags_str.join(", "));
+                }
             }
-            if let Some(author) = &skill.author {
-                println!("Author: {}", author);
+            if let Some(author) = skill.manifest.get("author").and_then(|v| v.as_str()) {
+                if !author.is_empty() {
+                    println!("Author: {}", author);
+                }
             }
             println!("Path: {}", skill.file_path.display());
             println!("\nUse 'pekobot cap skill read {}' to view the full skill content.", name);
@@ -713,13 +723,13 @@ async fn handle_skill_command(command: SkillCommands, paths: &GlobalPaths) -> an
         }
         
         SkillCommands::Read { name } => {
-            let mut registry = crate::skills::SkillsRegistry::new(&skills_dir);
-            registry.load_all()?;
+            let discovered = adapter.discover_skills(&skills_dir);
             
-            let skill = registry.get(&name)
+            let skill = discovered.iter()
+                .find(|s| s.manifest.name.eq_ignore_ascii_case(&name))
                 .ok_or_else(|| anyhow::anyhow!("Skill '{}' not found", name))?;
             
-            let content = crate::skills::read_skill_content(skill)?;
+            let content = std::fs::read_to_string(&skill.file_path)?;
             println!("{}", content);
             
             Ok(())

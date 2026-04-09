@@ -3,6 +3,7 @@
 use crate::agent::Agent;
 use crate::engine::loop_v4::AgenticLoopV4;
 use crate::engine::{AgenticEvent, EngineConfig};
+use crate::extensions::core::ExtensionCore;
 use crate::providers::Provider;
 use crate::tools::Tool;
 use anyhow::Result;
@@ -72,6 +73,8 @@ pub struct AgentRunner {
     tools: Vec<Arc<dyn Tool>>,
     /// Run configuration
     config: RunConfig,
+    /// Extension core for skill loading and hook integration
+    extension_core: Arc<ExtensionCore>,
 }
 
 impl AgentRunner {
@@ -82,11 +85,37 @@ impl AgentRunner {
         tools: Vec<Arc<dyn Tool>>,
         config: impl Into<RunConfig>,
     ) -> Self {
+        // Create or get the global extension core
+        let extension_core = crate::extensions::core::global_core()
+            .unwrap_or_else(|| {
+                let core = Arc::new(ExtensionCore::new());
+                crate::extensions::core::init_global_core(core.clone());
+                core
+            });
+        
         Self {
             agent,
             provider,
             tools,
             config: config.into(),
+            extension_core,
+        }
+    }
+    
+    /// Create a new agent runner with an existing ExtensionCore
+    pub fn with_extension_core(
+        agent: Arc<Agent>,
+        provider: Arc<dyn Provider>,
+        tools: Vec<Arc<dyn Tool>>,
+        config: impl Into<RunConfig>,
+        extension_core: Arc<ExtensionCore>,
+    ) -> Self {
+        Self {
+            agent,
+            provider,
+            tools,
+            config: config.into(),
+            extension_core,
         }
     }
 
@@ -107,8 +136,13 @@ impl AgentRunner {
         };
 
         // Create the agentic loop with v4
-        let loop_ = AgenticLoopV4::new(self.agent.clone(), self.provider.clone(), tools)
-            .with_max_iterations(self.config.max_iterations);
+        let loop_ = AgenticLoopV4::new(
+            self.agent.clone(), 
+            self.provider.clone(), 
+            tools,
+            Arc::clone(&self.extension_core),
+        )
+        .with_max_iterations(self.config.max_iterations);
 
         // Run with timeout
         let timeout_duration = Duration::from_secs(
@@ -217,8 +251,21 @@ impl AgentRunner {
                 prompt.len()
             );
 
-            let loop_ = AgenticLoopV4::new(agent.clone(), provider, tools)
-                .with_max_iterations(max_iterations);
+            // Create or get extension core
+            let extension_core = crate::extensions::core::global_core()
+                .unwrap_or_else(|| {
+                    let core = Arc::new(ExtensionCore::new());
+                    crate::extensions::core::init_global_core(core.clone());
+                    core
+                });
+            
+            let loop_ = AgenticLoopV4::new(
+                agent.clone(), 
+                provider, 
+                tools,
+                extension_core,
+            )
+            .with_max_iterations(max_iterations);
 
             let timeout_duration = Duration::from_secs(timeout_secs * max_iterations as u64 + 10);
 

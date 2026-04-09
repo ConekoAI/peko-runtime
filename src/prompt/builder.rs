@@ -4,7 +4,6 @@
 
 use crate::prompt::bootstrap::{default_workspace_dir, inject_bootstrap_files, BootstrapConfig};
 use crate::prompt::placeholder::{Placeholder, replace_placeholders};
-use crate::skills::{build_skills_prompt, Skill};
 use crate::tools::Tool;
 use chrono::Local;
 use std::collections::HashMap;
@@ -48,7 +47,6 @@ pub struct SystemPromptBuilder {
     sandbox_enabled: bool,
     channel: String,
     capabilities: Vec<String>,
-    skills: Vec<Skill>,
     /// Optional extension core for hook integration (Phase 1: Extension Architecture)
     extension_core: Option<Arc<crate::extensions::ExtensionCore>>,
 }
@@ -68,7 +66,6 @@ impl SystemPromptBuilder {
             sandbox_enabled: false,
             channel: "discord".to_string(),
             capabilities: vec![],
-            skills: vec![],
             extension_core: None,
         }
     }
@@ -119,11 +116,6 @@ impl SystemPromptBuilder {
 
     pub fn with_model_aliases(mut self, aliases: Vec<String>) -> Self {
         self.model_aliases = aliases;
-        self
-    }
-
-    pub fn with_skills(mut self, skills: Vec<Skill>) -> Self {
-        self.skills = skills;
         self
     }
 
@@ -218,15 +210,45 @@ impl SystemPromptBuilder {
         lines.join("\n")
     }
     
-    /// Build the Skills section
+    /// Build the Skills section via Extension Core hooks
+    ///
+    /// Uses the ExtensionCore hook system to inject skills content from registered
+    /// skill extensions. This replaces the legacy SkillsRegistry approach.
     fn build_skills_section(&self) -> String {
-        let skill_refs: Vec<&Skill> = self.skills.iter().collect();
-        let skills_prompt = build_skills_prompt(&skill_refs);
-        if skills_prompt.is_empty() {
-            String::new()
-        } else {
-            skills_prompt
+        use crate::extensions::{HookInput, HookPoint};
+
+        if let Some(ref core) = self.extension_core {
+            // Try to invoke skills hooks via ExtensionCore
+            // Note: This uses block_on as the builder is currently synchronous.
+            // Future phases will make the builder fully async.
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let hook_point = HookPoint::PromptSystemSection {
+                    section: "skills".to_string(),
+                    priority: 100,
+                };
+
+                match handle.block_on(core.invoke_hook_text(hook_point, HookInput::Unit)) {
+                    Some(skills_text) if !skills_text.is_empty() => {
+                        return format!(
+                            r"## Skills (mandatory)
+Before replying: scan <available_skills> <description> entries.
+- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
+- If multiple could apply: choose the most specific one, then read/follow it.
+- If none clearly apply: do not read any SKILL.md.
+Constraints: never read more than one skill up front; only read after selecting.
+
+<available_skills>
+{}
+</available_skills>",
+                            skills_text
+                        );
+                    }
+                    _ => {}
+                }
+            }
         }
+
+        String::new()
     }
     
     /// Build the Runtime section
@@ -350,33 +372,56 @@ Be safe.
     }
 
     #[test]
-    fn test_builder_with_skills() {
-        use crate::skills::Skill;
+    fn test_builder_with_skills_via_extension_core() {
+        use crate::extensions::adapters::skill_adapter::{DiscoveredSkill, register_skills_with_core};
+        use crate::extensions::ExtensionManifest;
         use std::path::PathBuf;
 
+        // Create a tokio runtime for async operations
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        
         let tmp = TempDir::new().unwrap();
         let template = "{{skills}}";
         std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
-        let skills = vec![
-            Skill {
-                name: "docker".to_string(),
-                description: "Docker operations".to_string(),
-                file_path: PathBuf::from("/tmp/skills/docker/SKILL.md"),
-                base_dir: PathBuf::from("/tmp/skills/docker"),
-                tags: vec![],
-                author: None,
-            },
-        ];
+        // Create ExtensionCore and register skills
+        let core = crate::extensions::ExtensionCore::new();
+        
+        // Create a test skill using the new Extension system
+        let skill = DiscoveredSkill {
+            manifest: ExtensionManifest::new(
+                "docker",
+                "skill",
+                "docker",
+                "Docker operations",
+                "1.0.0",
+                PathBuf::from("/tmp/skills/docker"),
+            ),
+            file_path: PathBuf::from("/tmp/skills/docker/SKILL.md"),
+            base_dir: PathBuf::from("/tmp/skills/docker"),
+        };
+
+        // Register the skill with the ExtensionCore
+        rt.block_on(async {
+            register_skills_with_core(&core, vec![skill])
+                .await
+                .expect("Failed to register skills");
+        });
 
         let builder = SystemPromptBuilder::new("test-agent")
             .with_workspace(tmp.path())
             .with_mode(PromptMode::Full)
-            .with_skills(skills);
+            .with_extension_core(Arc::new(core));
 
-        let prompt = builder.build();
+        // Build needs to run in a tokio context because build_skills_section uses block_on
+        let prompt = rt.block_on(async {
+            // Use spawn_blocking to run the synchronous build in an async context
+            tokio::task::spawn_blocking(move || builder.build())
+                .await
+                .unwrap()
+        });
 
-        // Should include skills section
+        // Should include skills section from ExtensionCore hooks
         assert!(prompt.contains("<available_skills>"));
         assert!(prompt.contains("docker: Docker operations"));
     }
