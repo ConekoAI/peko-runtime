@@ -246,6 +246,7 @@ impl ExtensionAsyncAdapterExt for ExtensionAsyncAdapter {
 mod tests {
     use super::*;
     use crate::extensions::ExtensionCore;
+    use std::sync::Arc;
 
     #[test]
     fn test_extension_async_tool_creation() {

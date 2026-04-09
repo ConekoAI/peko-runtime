@@ -25,6 +25,7 @@ pub mod sessions_send;
 pub mod shell;
 pub mod str_replace_file;
 pub mod traits;
+pub mod wrapper;
 pub mod write_file;
 
 /// Universal Tool Protocol - Backend-agnostic tool integration
@@ -67,6 +68,10 @@ pub use write_file::WriteFileTool;
 // Async tool trait re-exports
 pub use async_tool::{
     into_async_tool, BoxedAsyncTool, SyncToAsyncAdapter, ToolAsyncExt, UnifiedAsyncTool,
+};
+pub use wrapper::{
+    get_reserved_params_prompt_section, ReservedParams, ToolWrapper, ToolWrapperFactory,
+    WrapperConfig,
 };
 
 // Async tool framework re-exports

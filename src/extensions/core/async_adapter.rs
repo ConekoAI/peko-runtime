@@ -415,6 +415,7 @@ mod tests {
     use super::*;
     use crate::extensions::core::context::{HookContext, HookHandler};
     use crate::extensions::core::HookPoint;
+    use crate::extensions::ExtensionId;
     use async_trait::async_trait;
 
     /// Mock async handler for testing

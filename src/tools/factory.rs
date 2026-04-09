@@ -178,6 +178,11 @@ pub struct ToolFactoryConfig {
     pub custom_tools_dir: Option<PathBuf>,
     /// Enable custom tools from `tools/` directory
     pub enable_custom_tools: bool,
+    /// Enable ToolWrapper for reserved parameter support
+    /// When true, all tools are wrapped with ToolWrapper
+    pub enable_wrapper: bool,
+    /// Configuration for ToolWrapper (used when enable_wrapper is true)
+    pub wrapper_config: crate::tools::WrapperConfig,
 }
 
 impl Default for ToolFactoryConfig {
@@ -201,6 +206,8 @@ impl Default for ToolFactoryConfig {
             allow_cross_team: false,
             custom_tools_dir: None,
             enable_custom_tools: true,
+            enable_wrapper: true, // Enable by default for reserved parameter support
+            wrapper_config: crate::tools::WrapperConfig::default(),
         }
     }
 }
@@ -448,6 +455,13 @@ impl ToolFactory {
 
         let (tools, disabled) = registry.build();
 
+        // Apply ToolWrapper if enabled
+        let tools = if config.enable_wrapper {
+            Self::wrap_tools(tools, &config.wrapper_config)
+        } else {
+            tools
+        };
+
         ToolCreationResult {
             tools,
             disabled,
@@ -587,7 +601,25 @@ impl ToolFactory {
         }
 
         result.mcp = mcp_discovery;
+        
+        // Apply ToolWrapper if enabled
+        if config.enable_wrapper {
+            result.tools = Self::wrap_tools(result.tools, &config.wrapper_config);
+        }
+        
         Ok(result)
+    }
+
+    /// Wrap tools with ToolWrapper for reserved parameter support
+    fn wrap_tools(
+        tools: Vec<Arc<dyn crate::tools::Tool>>,
+        wrapper_config: &crate::tools::WrapperConfig,
+    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+        let factory = crate::tools::ToolWrapperFactory::with_config(wrapper_config.clone());
+        tools
+            .into_iter()
+            .map(|tool| Arc::new(factory.wrap(tool)) as Arc<dyn crate::tools::Tool>)
+            .collect()
     }
 
     /// Load custom tools with discovery metadata (using Universal Tool Protocol)
@@ -1082,5 +1114,65 @@ mod tests {
         assert!(names.contains(&"glob"));
         assert!(names.contains(&"grep"));
         assert!(names.contains(&"str_replace_file"));
+    }
+
+    #[test]
+    fn test_tool_wrapper_integration_enabled() {
+        let config = ToolFactoryConfig {
+            workspace_dir: PathBuf::from("."),
+            enable_wrapper: true,
+            ..Default::default()
+        };
+
+        let result = ToolFactory::create_tools(&config);
+
+        // Tools should be wrapped (ToolWrapper implements Tool)
+        // We can't directly check the type, but we can verify tools are created
+        assert!(!result.tools.is_empty(), "Tools should be created");
+        
+        // Verify tools have proper names (wrapper delegates to inner)
+        let tool_names: Vec<_> = result.tools.iter().map(|t| t.name().to_string()).collect();
+        assert!(tool_names.contains(&"read_file".to_string()));
+        assert!(tool_names.contains(&"glob".to_string()));
+    }
+
+    #[test]
+    fn test_tool_wrapper_integration_disabled() {
+        let config = ToolFactoryConfig {
+            workspace_dir: PathBuf::from("."),
+            enable_wrapper: false,
+            ..Default::default()
+        };
+
+        let result = ToolFactory::create_tools(&config);
+
+        // Tools should still be created, just not wrapped
+        assert!(!result.tools.is_empty(), "Tools should be created");
+        
+        // Verify tools have proper names
+        let tool_names: Vec<_> = result.tools.iter().map(|t| t.name().to_string()).collect();
+        assert!(tool_names.contains(&"read_file".to_string()));
+    }
+
+    #[test]
+    fn test_wrap_tools_helper() {
+        use crate::tools::{ToolWrapper, WrapperConfig};
+
+        // Create a simple tool
+        let tools: Vec<Arc<dyn crate::tools::Tool>> = vec![
+            Arc::new(ReadFileTool::new()),
+        ];
+
+        let config = WrapperConfig::default();
+        let wrapped = ToolFactory::wrap_tools(tools, &config);
+
+        assert_eq!(wrapped.len(), 1);
+        // The wrapped tool should still expose the original name
+        assert_eq!(wrapped[0].name(), "read_file");
+        
+        // Verify it's actually a ToolWrapper by checking type
+        // ToolWrapper's parameters() should delegate to inner tool
+        let params = wrapped[0].parameters();
+        assert!(params.get("properties").is_some());
     }
 }

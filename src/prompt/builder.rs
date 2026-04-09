@@ -203,6 +203,10 @@ impl SystemPromptBuilder {
             lines.push("- When you have the final answer, provide it directly without tool calls.".to_string());
         }
         
+        // Add reserved parameters documentation
+        lines.push(String::new());
+        lines.push(crate::tools::get_reserved_params_prompt_section());
+        
         // Phase 1: Extension Architecture - Allow extensions to inject tool content
         // Note: This is synchronous; async hook invocation will be added in future phases
         // when the prompt builder becomes async or we add a pre-built hook cache.
@@ -518,5 +522,27 @@ You are {{agent_name}}.
         assert!(prompt.contains("## Your Role"));
         assert!(prompt.contains("## Available Tools"));
         assert!(prompt.contains("## Runtime"));
+    }
+
+    #[test]
+    fn test_reserved_params_in_tools_section() {
+        let tmp = TempDir::new().unwrap();
+        let template = r#"{{tools}}"#;
+        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
+
+        let builder = SystemPromptBuilder::new("test-agent")
+            .with_workspace(tmp.path())
+            .with_mode(PromptMode::Full);
+
+        let prompt = builder.build();
+
+        // Should contain reserved parameters documentation
+        assert!(prompt.contains("## Execution Control Parameters"));
+        assert!(prompt.contains("_async"));
+        assert!(prompt.contains("_timeout"));
+        assert!(prompt.contains("_progress"));
+        assert!(prompt.contains("_priority"));
+        assert!(prompt.contains("_callback"));
+        assert!(prompt.contains("_retry"));
     }
 }
