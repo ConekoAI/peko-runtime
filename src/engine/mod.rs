@@ -3,6 +3,8 @@
 //! Provides the core agentic loop, runner, and state management.
 //! This is the heart of Pekobot's agent execution.
 
+pub mod async_agentic_loop;
+pub mod async_tool_executor;
 pub mod chunker;
 pub mod event_processor;
 pub mod events;
@@ -29,6 +31,8 @@ pub use runner::AgentRunner;
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};
 pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};
+pub use async_agentic_loop::{AsyncAgenticConfig, AsyncAgenticLoop, AsyncToolMetrics};
+pub use async_tool_executor::{AsyncCapability, AsyncToolExecutor, ToolProgress};
 pub use task_manager::{TaskManager, TaskManagerConfig, TaskManagerStats};
 pub use tool_executor::{ToolExecutor, ToolExecutionContext};
 pub use tool_stream::{

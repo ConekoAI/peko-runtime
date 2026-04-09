@@ -28,15 +28,16 @@
 
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
-    ExtensionServices, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
+    HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
 use crate::extensions::types::{
-        ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
-    };
+    AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
+};
+use crate::agent::async_tool_framework::AsyncTaskStatus;
 use crate::tools::Tool;
+use uuid::Uuid;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -181,6 +182,33 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
                     tool_name: manifest.name.clone(),
                 },
                 Box::new(UniversalToolExecuteFactory {
+                    manifest: manifest.clone(),
+                }),
+            ),
+            // Async tool execution
+            HookBinding::new(
+                HookPoint::ToolExecuteAsync {
+                    tool_name: manifest.name.clone(),
+                },
+                Box::new(UniversalToolExecuteAsyncFactory {
+                    manifest: manifest.clone(),
+                }),
+            ),
+            // Check status for async tasks
+            HookBinding::new(
+                HookPoint::ToolCheckStatus {
+                    tool_name: manifest.name.clone(),
+                },
+                Box::new(UniversalToolCheckStatusFactory {
+                    manifest: manifest.clone(),
+                }),
+            ),
+            // Cancel for async tasks
+            HookBinding::new(
+                HookPoint::ToolCancel {
+                    tool_name: manifest.name.clone(),
+                },
+                Box::new(UniversalToolCancelFactory {
                     manifest: manifest.clone(),
                 }),
             ),
@@ -407,6 +435,196 @@ impl HookHandler for UniversalToolExecuteHandler {
     }
 }
 
+/// Factory for creating async tool execution handlers
+#[derive(Debug, Clone)]
+struct UniversalToolExecuteAsyncFactory {
+    manifest: ExtensionManifest,
+}
+
+impl HookHandlerFactory for UniversalToolExecuteAsyncFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        let executable = self
+            .manifest
+            .get("executable")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_default();
+
+        Box::new(UniversalToolExecuteAsyncHandler {
+            tool_name: self.manifest.name.clone(),
+            executable,
+        })
+    }
+}
+
+/// Handler that executes tools asynchronously
+#[derive(Debug, Clone)]
+struct UniversalToolExecuteAsyncHandler {
+    tool_name: String,
+    executable: PathBuf,
+}
+
+#[async_trait]
+impl HookHandler for UniversalToolExecuteAsyncHandler {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Validate this is the right tool
+        match ctx.as_tool_call() {
+            Some((tool_name, _)) if tool_name != self.tool_name => {
+                return HookResult::PassThrough;
+            }
+            None => return HookResult::PassThrough,
+            _ => {}
+        };
+
+        debug!(
+            tool_name = %self.tool_name,
+            "Executing universal tool asynchronously"
+        );
+
+        // Generate task ID
+        let task_id = format!("universal:{}:{}", self.tool_name, Uuid::new_v4());
+
+        // Create receipt
+        let receipt = AsyncReceipt {
+            task_id: task_id.clone(),
+            estimated_duration_secs: None,
+            check_status_tool: self.tool_name.clone(),
+            metadata: Some(serde_json::json!({
+                "tool_name": self.tool_name,
+                "executable": self.executable.to_string_lossy(),
+            })),
+        };
+
+        HookResult::Continue(HookOutput::Receipt(receipt))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::ToolExecuteAsync {
+            tool_name: self.tool_name.clone(),
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        UNIVERSAL_TOOL_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("UniversalToolExecuteAsyncHandler({})", self.tool_name)
+    }
+}
+
+/// Factory for creating check status handlers
+#[derive(Debug, Clone)]
+struct UniversalToolCheckStatusFactory {
+    manifest: ExtensionManifest,
+}
+
+impl HookHandlerFactory for UniversalToolCheckStatusFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        Box::new(UniversalToolCheckStatusHandler {
+            tool_name: self.manifest.name.clone(),
+        })
+    }
+}
+
+/// Handler that checks status of async tasks
+#[derive(Debug, Clone)]
+struct UniversalToolCheckStatusHandler {
+    tool_name: String,
+}
+
+#[async_trait]
+impl HookHandler for UniversalToolCheckStatusHandler {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Validate this is the right tool
+        match ctx.as_task_status() {
+            Some((_, tool_name)) if tool_name != self.tool_name => {
+                return HookResult::PassThrough;
+            }
+            None => return HookResult::PassThrough,
+            _ => {}
+        };
+
+        debug!(
+            tool_name = %self.tool_name,
+            "Checking universal tool task status"
+        );
+
+        // Universal tools don't have native async tracking
+        HookResult::Continue(HookOutput::TaskStatus(AsyncTaskStatus::Pending))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::ToolCheckStatus {
+            tool_name: self.tool_name.clone(),
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        UNIVERSAL_TOOL_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("UniversalToolCheckStatusHandler({})", self.tool_name)
+    }
+}
+
+/// Factory for creating cancel handlers
+#[derive(Debug, Clone)]
+struct UniversalToolCancelFactory {
+    manifest: ExtensionManifest,
+}
+
+impl HookHandlerFactory for UniversalToolCancelFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        Box::new(UniversalToolCancelHandler {
+            tool_name: self.manifest.name.clone(),
+        })
+    }
+}
+
+/// Handler that cancels async tasks
+#[derive(Debug, Clone)]
+struct UniversalToolCancelHandler {
+    tool_name: String,
+}
+
+#[async_trait]
+impl HookHandler for UniversalToolCancelHandler {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Validate this is the right tool
+        match ctx.as_task_cancel() {
+            Some((_, tool_name)) if tool_name != self.tool_name => {
+                return HookResult::PassThrough;
+            }
+            None => return HookResult::PassThrough,
+            _ => {}
+        };
+
+        debug!(
+            tool_name = %self.tool_name,
+            "Cancelling universal tool task"
+        );
+
+        // Universal tools don't have native cancel support
+        HookResult::Continue(HookOutput::Bool(false))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::ToolCancel {
+            tool_name: self.tool_name.clone(),
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        UNIVERSAL_TOOL_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("UniversalToolCancelHandler({})", self.tool_name)
+    }
+}
+
 /// Helper to load tools from directory using the adapter
 pub async fn load_tools_from_directory(path: &Path) -> Vec<DiscoveredUniversalTool> {
     let adapter = UniversalToolAdapter::new();
@@ -478,10 +696,59 @@ pub async fn register_tools_with_core(
             .await?;
         hook_ids.push(exec_reg.id);
 
+        // Register async execution handler
+        let exec_async_handler = Arc::new(UniversalToolExecuteAsyncHandler {
+            tool_name: tool.manifest.name.clone(),
+            executable: tool.executable.clone(),
+        });
+
+        let exec_async_reg = core
+            .register_hook(
+                HookPoint::ToolExecuteAsync {
+                    tool_name: tool.manifest.name.clone(),
+                },
+                exec_async_handler,
+                &extension_id,
+            )
+            .await?;
+        hook_ids.push(exec_async_reg.id);
+
+        // Register check status handler
+        let check_status_handler = Arc::new(UniversalToolCheckStatusHandler {
+            tool_name: tool.manifest.name.clone(),
+        });
+
+        let check_status_reg = core
+            .register_hook(
+                HookPoint::ToolCheckStatus {
+                    tool_name: tool.manifest.name.clone(),
+                },
+                check_status_handler,
+                &extension_id,
+            )
+            .await?;
+        hook_ids.push(check_status_reg.id);
+
+        // Register cancel handler
+        let cancel_handler = Arc::new(UniversalToolCancelHandler {
+            tool_name: tool.manifest.name.clone(),
+        });
+
+        let cancel_reg = core
+            .register_hook(
+                HookPoint::ToolCancel {
+                    tool_name: tool.manifest.name.clone(),
+                },
+                cancel_handler,
+                &extension_id,
+            )
+            .await?;
+        hook_ids.push(cancel_reg.id);
+
         info!(
             tool_name = %tool.manifest.name,
-            hook_count = 3,
-            "Registered universal tool with ExtensionCore"
+            hook_count = 6,
+            "Registered universal tool with ExtensionCore (including async hooks)"
         );
     }
 
@@ -495,7 +762,7 @@ pub async fn load_and_register_tools(
 ) -> Result<usize> {
     let tools = load_tools_from_directory(tools_dir.as_ref()).await;
     let hook_ids = register_tools_with_core(core, tools).await?;
-    Ok(hook_ids.len() / 3) // Each tool registers 3 hooks
+    Ok(hook_ids.len() / 6) // Each tool registers 6 hooks
 }
 
 #[cfg(test)]
@@ -647,8 +914,8 @@ mod tests {
 
         let hook_ids = register_tools_with_core(&core, tools).await.unwrap();
 
-        // Each tool registers 3 hooks (register, prompt, execute)
-        assert_eq!(hook_ids.len(), 6);
-        assert_eq!(core.hook_count().await, 6);
+        // Each tool registers 6 hooks (register, prompt, execute, async, status, cancel)
+        assert_eq!(hook_ids.len(), 12);
+        assert_eq!(core.hook_count().await, 12);
     }
 }

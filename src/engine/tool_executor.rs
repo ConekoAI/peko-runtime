@@ -292,6 +292,10 @@ mod tests {
             json!({"type": "object", "properties": {}})
         }
 
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
             Ok(json!({"result": "ok"}))
         }

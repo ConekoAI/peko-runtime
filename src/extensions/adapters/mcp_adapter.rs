@@ -28,14 +28,16 @@
 
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
-    ExtensionServices, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
+    HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
 use crate::extensions::types::{
-    ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
+    AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
+use crate::agent::async_tool_framework::AsyncTaskStatus;
+use uuid::Uuid;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use std::collections::HashMap;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -255,6 +257,36 @@ impl ExtensionTypeAdapter for McpAdapter {
                     tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, manifest.name),
                 },
                 Box::new(McpToolExecuteFactory {
+                    manager: self.manager.clone(),
+                    server_name: manifest.name.clone(),
+                }),
+            ),
+            // Async tool execution - for long-running MCP tools
+            HookBinding::new(
+                HookPoint::ToolExecuteAsync {
+                    tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, manifest.name),
+                },
+                Box::new(McpToolExecuteAsyncFactory {
+                    manager: self.manager.clone(),
+                    server_name: manifest.name.clone(),
+                }),
+            ),
+            // Check status - for async tasks
+            HookBinding::new(
+                HookPoint::ToolCheckStatus {
+                    tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, manifest.name),
+                },
+                Box::new(McpToolCheckStatusFactory {
+                    manager: self.manager.clone(),
+                    server_name: manifest.name.clone(),
+                }),
+            ),
+            // Cancel - for async tasks
+            HookBinding::new(
+                HookPoint::ToolCancel {
+                    tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, manifest.name),
+                },
+                Box::new(McpToolCancelFactory {
                     manager: self.manager.clone(),
                     server_name: manifest.name.clone(),
                 }),
@@ -589,6 +621,277 @@ impl HookHandler for McpToolExecuteHandler {
     }
 }
 
+/// Factory for MCP async tool execution handlers
+#[derive(Clone)]
+struct McpToolExecuteAsyncFactory {
+    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    server_name: String,
+}
+
+impl std::fmt::Debug for McpToolExecuteAsyncFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpToolExecuteAsyncFactory")
+            .field("manager", &"<McpManager>")
+            .field("server_name", &self.server_name)
+            .finish()
+    }
+}
+
+impl HookHandlerFactory for McpToolExecuteAsyncFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        Box::new(McpToolExecuteAsyncHandler {
+            manager: self.manager.clone(),
+            server_name: self.server_name.clone(),
+        })
+    }
+}
+
+/// Handler that executes MCP tools asynchronously
+#[derive(Clone)]
+struct McpToolExecuteAsyncHandler {
+    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    server_name: String,
+}
+
+impl std::fmt::Debug for McpToolExecuteAsyncHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpToolExecuteAsyncHandler")
+            .field("manager", &"<McpManager>")
+            .field("server_name", &self.server_name)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl HookHandler for McpToolExecuteAsyncHandler {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Parse tool name and params from context
+        let (tool_name, params) = match ctx.as_tool_call() {
+            Some((tool_name, params)) => {
+                let expected_prefix = format!("{}:{}", MCP_TOOL_PREFIX, self.server_name);
+                if !tool_name.starts_with(&expected_prefix) {
+                    return HookResult::PassThrough;
+                }
+                (tool_name.to_string(), params.clone())
+            }
+            None => return HookResult::PassThrough,
+        };
+
+        // Extract actual tool name
+        let actual_tool = tool_name
+            .strip_prefix(&format!("{}:{}:", MCP_TOOL_PREFIX, self.server_name))
+            .unwrap_or(&tool_name);
+
+        debug!(
+            server_name = %self.server_name,
+            tool_name = %actual_tool,
+            "Executing MCP tool asynchronously"
+        );
+
+        // For MCP, we execute synchronously but wrap in async receipt
+        // The actual async nature comes from the unified executor spawning
+        let manager = self.manager.clone();
+        let server_name = self.server_name.clone();
+        let actual_tool = actual_tool.to_string();
+        
+        // Generate task ID for tracking
+        let task_id = format!("mcp:{}:{}:{}", server_name, actual_tool, Uuid::new_v4());
+        
+        // Create receipt for async execution
+        let receipt = AsyncReceipt {
+            task_id: task_id.clone(),
+            estimated_duration_secs: None,
+            check_status_tool: format!("{}:{}", MCP_TOOL_PREFIX, server_name),
+            metadata: Some(serde_json::json!({
+                "server": server_name,
+                "tool": actual_tool,
+                "params": params,
+            })),
+        };
+
+        HookResult::Continue(HookOutput::Receipt(receipt))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::ToolExecuteAsync {
+            tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, self.server_name),
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        MCP_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("McpToolExecuteAsyncHandler({})", self.server_name)
+    }
+}
+
+/// Factory for MCP tool status check handlers
+#[derive(Clone)]
+struct McpToolCheckStatusFactory {
+    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    server_name: String,
+}
+
+impl std::fmt::Debug for McpToolCheckStatusFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpToolCheckStatusFactory")
+            .field("manager", &"<McpManager>")
+            .field("server_name", &self.server_name)
+            .finish()
+    }
+}
+
+impl HookHandlerFactory for McpToolCheckStatusFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        Box::new(McpToolCheckStatusHandler {
+            manager: self.manager.clone(),
+            server_name: self.server_name.clone(),
+        })
+    }
+}
+
+/// Handler that checks status of async MCP tasks
+#[derive(Clone)]
+struct McpToolCheckStatusHandler {
+    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    server_name: String,
+}
+
+impl std::fmt::Debug for McpToolCheckStatusHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpToolCheckStatusHandler")
+            .field("manager", &"<McpManager>")
+            .field("server_name", &self.server_name)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl HookHandler for McpToolCheckStatusHandler {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Parse task status request
+        let (task_id, _tool_name) = match ctx.as_task_status() {
+            Some((task_id, tool_name)) => {
+                let expected_prefix = format!("{}:{}", MCP_TOOL_PREFIX, self.server_name);
+                if !tool_name.starts_with(&expected_prefix) {
+                    return HookResult::PassThrough;
+                }
+                (task_id.to_string(), tool_name.to_string())
+            }
+            None => return HookResult::PassThrough,
+        };
+
+        debug!(
+            server_name = %self.server_name,
+            task_id = %task_id,
+            "Checking MCP task status"
+        );
+
+        // For now, MCP doesn't have native async task tracking
+        // We would need to query the MCP server if it supports async operations
+        // For compatibility, return pending status
+        HookResult::Continue(HookOutput::TaskStatus(AsyncTaskStatus::Pending))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::ToolCheckStatus {
+            tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, self.server_name),
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        MCP_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("McpToolCheckStatusHandler({})", self.server_name)
+    }
+}
+
+/// Factory for MCP tool cancel handlers
+#[derive(Clone)]
+struct McpToolCancelFactory {
+    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    server_name: String,
+}
+
+impl std::fmt::Debug for McpToolCancelFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpToolCancelFactory")
+            .field("manager", &"<McpManager>")
+            .field("server_name", &self.server_name)
+            .finish()
+    }
+}
+
+impl HookHandlerFactory for McpToolCancelFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        Box::new(McpToolCancelHandler {
+            manager: self.manager.clone(),
+            server_name: self.server_name.clone(),
+        })
+    }
+}
+
+/// Handler that cancels async MCP tasks
+#[derive(Clone)]
+struct McpToolCancelHandler {
+    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    server_name: String,
+}
+
+impl std::fmt::Debug for McpToolCancelHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpToolCancelHandler")
+            .field("manager", &"<McpManager>")
+            .field("server_name", &self.server_name)
+            .finish()
+    }
+}
+
+#[async_trait]
+impl HookHandler for McpToolCancelHandler {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Parse task cancel request
+        let (task_id, _tool_name) = match ctx.as_task_cancel() {
+            Some((task_id, tool_name)) => {
+                let expected_prefix = format!("{}:{}", MCP_TOOL_PREFIX, self.server_name);
+                if !tool_name.starts_with(&expected_prefix) {
+                    return HookResult::PassThrough;
+                }
+                (task_id.to_string(), tool_name.to_string())
+            }
+            None => return HookResult::PassThrough,
+        };
+
+        debug!(
+            server_name = %self.server_name,
+            task_id = %task_id,
+            "Cancelling MCP task"
+        );
+
+        // MCP doesn't have native cancel support in the standard protocol
+        // Return false to indicate cancellation not supported
+        HookResult::Continue(HookOutput::Bool(false))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::ToolCancel {
+            tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, self.server_name),
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        MCP_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("McpToolCancelHandler({})", self.server_name)
+    }
+}
+
 /// Helper to load MCP servers from directory using the adapter
 pub async fn load_servers_from_directory(
     path: &Path,
@@ -649,10 +952,61 @@ pub async fn register_servers_with_core(
             .await?;
         hook_ids.push(exec_reg.id);
 
+        // Register async tool execution handler
+        let exec_async_handler = Arc::new(McpToolExecuteAsyncHandler {
+            manager: manager.clone(),
+            server_name: server.manifest.name.clone(),
+        });
+
+        let exec_async_reg = core
+            .register_hook(
+                HookPoint::ToolExecuteAsync {
+                    tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, server.manifest.name),
+                },
+                exec_async_handler,
+                &extension_id,
+            )
+            .await?;
+        hook_ids.push(exec_async_reg.id);
+
+        // Register check status handler
+        let check_status_handler = Arc::new(McpToolCheckStatusHandler {
+            manager: manager.clone(),
+            server_name: server.manifest.name.clone(),
+        });
+
+        let check_status_reg = core
+            .register_hook(
+                HookPoint::ToolCheckStatus {
+                    tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, server.manifest.name),
+                },
+                check_status_handler,
+                &extension_id,
+            )
+            .await?;
+        hook_ids.push(check_status_reg.id);
+
+        // Register cancel handler
+        let cancel_handler = Arc::new(McpToolCancelHandler {
+            manager: manager.clone(),
+            server_name: server.manifest.name.clone(),
+        });
+
+        let cancel_reg = core
+            .register_hook(
+                HookPoint::ToolCancel {
+                    tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, server.manifest.name),
+                },
+                cancel_handler,
+                &extension_id,
+            )
+            .await?;
+        hook_ids.push(cancel_reg.id);
+
         info!(
             server_name = %server.manifest.name,
-            hook_count = 3,
-            "Registered MCP server with ExtensionCore"
+            hook_count = 6,
+            "Registered MCP server with ExtensionCore (including async hooks)"
         );
     }
 
@@ -667,7 +1021,7 @@ pub async fn load_and_register_servers(
 ) -> Result<usize> {
     let servers = load_servers_from_directory(servers_dir.as_ref(), manager.clone()).await;
     let hook_ids = register_servers_with_core(core, servers, manager).await?;
-    Ok(hook_ids.len() / 3) // Each server registers 3 hooks
+    Ok(hook_ids.len() / 6) // Each server registers 6 hooks
 }
 
 #[cfg(test)]

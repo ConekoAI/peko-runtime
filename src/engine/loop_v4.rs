@@ -875,6 +875,12 @@ impl AgenticLoopV4 {
         &self.tool_executor
     }
 
+    /// Get the system prompt
+    #[must_use]
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
     /// Fallback for providers without native tool support
     async fn fallback_chat_with_tools(
         &self,

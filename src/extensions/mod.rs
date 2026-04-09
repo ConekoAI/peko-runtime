@@ -81,6 +81,7 @@ pub use core::{
 
 // Re-export types
 pub use types::{
+    AsyncReceipt,
     ExtensionId,
     ExtensionManifest,
     HookId,
@@ -100,6 +101,7 @@ pub use types::{
 
 // Submodules
 pub mod adapters;
+pub mod async_integration;
 pub mod core;
 pub mod manager;
 pub mod migration;

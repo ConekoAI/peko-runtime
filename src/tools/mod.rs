@@ -11,6 +11,7 @@
 pub mod agent_management;
 pub mod agent_spawn;
 pub mod apply_patch;
+pub mod async_tool;
 pub mod context;
 pub mod cron_tool;
 pub mod factory;
@@ -62,6 +63,11 @@ pub use session_introspection::{
 pub use str_replace_file::StrReplaceFileTool;
 pub use traits::{Tool, ToolError, ToolResult};
 pub use write_file::WriteFileTool;
+
+// Async tool trait re-exports
+pub use async_tool::{
+    into_async_tool, BoxedAsyncTool, SyncToAsyncAdapter, ToolAsyncExt, UnifiedAsyncTool,
+};
 
 // Async tool framework re-exports
 pub use crate::agent::async_tool_framework::{

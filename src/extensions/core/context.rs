@@ -111,6 +111,27 @@ impl HookContext {
             _ => None,
         }
     }
+    
+    /// Get the raw input
+    pub fn input(&self) -> &HookInput {
+        &self.input
+    }
+    
+    /// Get input as task status check if applicable
+    pub fn as_task_status(&self) -> Option<(&str, &str)> {
+        match &self.input {
+            HookInput::TaskStatus { task_id, tool_name } => Some((task_id, tool_name)),
+            _ => None,
+        }
+    }
+    
+    /// Get input as task cancel request if applicable
+    pub fn as_task_cancel(&self) -> Option<(&str, &str)> {
+        match &self.input {
+            HookInput::TaskCancel { task_id, tool_name } => Some((task_id, tool_name)),
+            _ => None,
+        }
+    }
 }
 
 /// Mutable state for a hook invocation

@@ -314,6 +314,10 @@ mod tests {
             })
         }
 
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
             if self.delay_ms > 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;

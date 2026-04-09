@@ -76,6 +76,15 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
 
+    /// Convert to Any for downcasting
+    ///
+    /// This enables downcasting from `Arc<dyn Tool>` to concrete types
+    /// for capability detection and trait implementation checking.
+    fn as_any(&self) -> &dyn std::any::Any {
+        // Default implementation panics - tools must override
+        panic!("as_any not implemented for this tool")
+    }
+
     /// Get LLM-optimized description with usage guidance.
     ///
     /// This should include "Use when:" and "Don't use when:" guidance

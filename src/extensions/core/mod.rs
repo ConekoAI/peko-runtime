@@ -51,6 +51,9 @@
 // Re-export hook point definitions
 pub use hook_points::{common, HookPoint, HookPointBuilder};
 
+// Re-export async adapter
+pub use async_adapter::ExtensionAsyncAdapter;
+
 // Re-export context types
 pub use context::{
     ClosureHookHandler,
@@ -69,6 +72,7 @@ pub use context::{
 pub use registry::{global_core, init_global_core, ExtensionCore, RegisteredHook};
 
 // Submodules
+pub mod async_adapter;
 pub mod context;
 pub mod hook_points;
 pub mod registry;

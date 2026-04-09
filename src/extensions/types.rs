@@ -113,6 +113,52 @@ impl ExtensionManifest {
     }
 }
 
+/// Async execution receipt returned by extensions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsyncReceipt {
+    /// Unique task identifier
+    pub task_id: String,
+    
+    /// Estimated duration in seconds (for progress estimation)
+    pub estimated_duration_secs: Option<u64>,
+    
+    /// Name of tool to call for status checks
+    pub check_status_tool: String,
+    
+    /// Optional metadata
+    pub metadata: Option<serde_json::Value>,
+}
+
+impl AsyncReceipt {
+    /// Create a new async receipt
+    pub fn new(
+        task_id: impl Into<String>,
+        check_status_tool: impl Into<String>,
+    ) -> Self {
+        Self {
+            task_id: task_id.into(),
+            estimated_duration_secs: None,
+            check_status_tool: check_status_tool.into(),
+            metadata: None,
+        }
+    }
+    
+    /// Set estimated duration
+    pub fn with_duration(mut self, seconds: u64) -> Self {
+        self.estimated_duration_secs = Some(seconds);
+        self
+    }
+    
+    /// Set metadata
+    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+}
+
+/// Status of an async task (re-exported from async_tool_framework for convenience)
+pub use crate::agent::async_tool_framework::AsyncTaskStatus;
+
 /// Result of a hook handler invocation
 #[derive(Debug)]
 pub enum HookResult {
@@ -155,6 +201,15 @@ pub enum HookOutput {
     
     /// Multiple outputs
     Vec(Vec<HookOutput>),
+    
+    /// Async execution receipt (returned by ToolExecuteAsync)
+    Receipt(AsyncReceipt),
+    
+    /// Task status (returned by ToolCheckStatus)
+    TaskStatus(AsyncTaskStatus),
+    
+    /// Boolean result (for operations like cancel)
+    Bool(bool),
 }
 
 impl HookOutput {
@@ -193,6 +248,45 @@ impl HookOutput {
             _ => None,
         }
     }
+    
+    /// Convert to receipt if possible
+    pub fn as_receipt(&self) -> Option<&AsyncReceipt> {
+        match self {
+            Self::Receipt(r) => Some(r),
+            _ => None,
+        }
+    }
+    
+    /// Convert to task status if possible
+    pub fn as_task_status(&self) -> Option<&AsyncTaskStatus> {
+        match self {
+            Self::TaskStatus(s) => Some(s),
+            _ => None,
+        }
+    }
+    
+    /// Convert to bool if possible
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+    
+    /// Create a receipt output
+    pub fn receipt(receipt: AsyncReceipt) -> Self {
+        Self::Receipt(receipt)
+    }
+    
+    /// Create a task status output
+    pub fn task_status(status: AsyncTaskStatus) -> Self {
+        Self::TaskStatus(status)
+    }
+    
+    /// Create a boolean output
+    pub fn bool(value: bool) -> Self {
+        Self::Bool(value)
+    }
 }
 
 impl Default for HookOutput {
@@ -217,6 +311,18 @@ pub enum HookInput {
     ToolCall {
         tool_name: String,
         params: serde_json::Value,
+    },
+    
+    /// Async task status check
+    TaskStatus {
+        task_id: String,
+        tool_name: String,
+    },
+    
+    /// Async task cancellation request
+    TaskCancel {
+        task_id: String,
+        tool_name: String,
     },
     
     /// System event

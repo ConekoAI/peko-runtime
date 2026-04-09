@@ -79,6 +79,47 @@ pub enum HookPoint {
     /// Handlers return: `HookOutput::Json` (modified result)
     ToolResultTransform,
     
+    /// Execute tool asynchronously
+    /// 
+    /// Called during: Tool execution when async mode requested
+    /// 
+    /// Handlers receive: `HookInput::ToolCall { tool_name, params }`
+    /// Handlers return: `HookOutput::Receipt(AsyncReceipt)` or `HookResult::PassThrough`
+    /// 
+    /// If no handler returns a receipt, falls back to sync-in-background
+    /// 
+    /// # Fields
+    /// - `tool_name`: Specific tool name, or pattern for matching multiple tools
+    ToolExecuteAsync {
+        tool_name: String,
+    },
+    
+    /// Check status of async task
+    /// 
+    /// Called during: Status polling for async tasks
+    /// 
+    /// Handlers receive: `HookInput::TaskStatus { task_id, tool_name }`
+    /// Handlers return: `HookOutput::TaskStatus(AsyncTaskStatus)`
+    /// 
+    /// # Fields
+    /// - `tool_name`: Specific tool name pattern
+    ToolCheckStatus {
+        tool_name: String,
+    },
+    
+    /// Cancel async task
+    /// 
+    /// Called during: Task cancellation request
+    /// 
+    /// Handlers receive: `HookInput::TaskCancel { task_id, tool_name }`
+    /// Handlers return: `HookOutput::Bool(success)`
+    /// 
+    /// # Fields
+    /// - `tool_name`: Specific tool name pattern
+    ToolCancel {
+        tool_name: String,
+    },
+    
     // ═══════════════════════════════════════════════════════════════════════════
     // SESSION LIFECYCLE
     // ═══════════════════════════════════════════════════════════════════════════
@@ -212,6 +253,9 @@ impl HookPoint {
             
             Self::ToolRegister |
             Self::ToolExecute { .. } |
+            Self::ToolExecuteAsync { .. } |
+            Self::ToolCheckStatus { .. } |
+            Self::ToolCancel { .. } |
             Self::ToolResultTransform => "tool",
             
             Self::SessionStateChange |
@@ -244,6 +288,15 @@ impl HookPoint {
             Self::ToolRegister => "tool.register".to_string(),
             Self::ToolExecute { tool_name } => {
                 format!("tool.execute.{}", tool_name)
+            }
+            Self::ToolExecuteAsync { tool_name } => {
+                format!("tool.execute_async.{}", tool_name)
+            }
+            Self::ToolCheckStatus { tool_name } => {
+                format!("tool.check_status.{}", tool_name)
+            }
+            Self::ToolCancel { tool_name } => {
+                format!("tool.cancel.{}", tool_name)
             }
             Self::ToolResultTransform => "tool.result_transform".to_string(),
             
@@ -352,6 +405,48 @@ impl HookPointBuilder {
     /// Create a tool execution hook point with wildcard pattern
     pub fn tool_execute_pattern(pattern: impl Into<String>) -> HookPoint {
         HookPoint::ToolExecute {
+            tool_name: pattern.into(),
+        }
+    }
+    
+    /// Create an async tool execution hook point for a specific tool
+    pub fn tool_execute_async(tool_name: impl Into<String>) -> HookPoint {
+        HookPoint::ToolExecuteAsync {
+            tool_name: tool_name.into(),
+        }
+    }
+    
+    /// Create an async tool execution hook point with wildcard pattern
+    pub fn tool_execute_async_pattern(pattern: impl Into<String>) -> HookPoint {
+        HookPoint::ToolExecuteAsync {
+            tool_name: pattern.into(),
+        }
+    }
+    
+    /// Create a tool status check hook point for a specific tool
+    pub fn tool_check_status(tool_name: impl Into<String>) -> HookPoint {
+        HookPoint::ToolCheckStatus {
+            tool_name: tool_name.into(),
+        }
+    }
+    
+    /// Create a tool status check hook point with wildcard pattern
+    pub fn tool_check_status_pattern(pattern: impl Into<String>) -> HookPoint {
+        HookPoint::ToolCheckStatus {
+            tool_name: pattern.into(),
+        }
+    }
+    
+    /// Create a tool cancel hook point for a specific tool
+    pub fn tool_cancel(tool_name: impl Into<String>) -> HookPoint {
+        HookPoint::ToolCancel {
+            tool_name: tool_name.into(),
+        }
+    }
+    
+    /// Create a tool cancel hook point with wildcard pattern
+    pub fn tool_cancel_pattern(pattern: impl Into<String>) -> HookPoint {
+        HookPoint::ToolCancel {
             tool_name: pattern.into(),
         }
     }
@@ -505,5 +600,44 @@ mod tests {
         
         let hp = HookPointBuilder::event_subscribe("instance.*");
         assert!(matches!(hp, HookPoint::EventSubscribe { topic_pattern } if topic_pattern == "instance.*"));
+    }
+    
+    #[test]
+    fn test_async_hook_points() {
+        // Test ToolExecuteAsync
+        let hp = HookPoint::ToolExecuteAsync {
+            tool_name: "shell".to_string(),
+        };
+        assert_eq!(hp.name(), "tool.execute_async.shell");
+        assert_eq!(hp.category(), "tool");
+        assert!(hp.matches("tool.execute_async.shell"));
+        assert!(hp.matches("tool.execute_async.*"));
+        assert!(hp.matches("tool.*"));
+        
+        // Test ToolCheckStatus
+        let hp = HookPoint::ToolCheckStatus {
+            tool_name: "agent_spawn".to_string(),
+        };
+        assert_eq!(hp.name(), "tool.check_status.agent_spawn");
+        assert_eq!(hp.category(), "tool");
+        assert!(hp.matches("tool.check_status.agent_spawn"));
+        
+        // Test ToolCancel
+        let hp = HookPoint::ToolCancel {
+            tool_name: "long_task".to_string(),
+        };
+        assert_eq!(hp.name(), "tool.cancel.long_task");
+        assert_eq!(hp.category(), "tool");
+        assert!(hp.matches("tool.cancel.long_task"));
+        
+        // Test builders
+        let hp = HookPointBuilder::tool_execute_async("my_async_tool");
+        assert!(matches!(hp, HookPoint::ToolExecuteAsync { tool_name } if tool_name == "my_async_tool"));
+        
+        let hp = HookPointBuilder::tool_check_status("my_async_tool");
+        assert!(matches!(hp, HookPoint::ToolCheckStatus { tool_name } if tool_name == "my_async_tool"));
+        
+        let hp = HookPointBuilder::tool_cancel("my_async_tool");
+        assert!(matches!(hp, HookPoint::ToolCancel { tool_name } if tool_name == "my_async_tool"));
     }
 }
