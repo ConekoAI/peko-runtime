@@ -21,6 +21,7 @@ These tests verify the new unified extension management system via the `pekobot 
 | `skill_extension_test.ps1` | Tests skill extension lifecycle using Extension 2.0 |
 | `mcp_extension_test.ps1` | Tests MCP server extension management |
 | `universal_tool_extension_test.ps1` | Tests universal tool extension management |
+| `image_extension_test.ps1` | Tests extension handling in agent image export/import |
 
 ## Prerequisites
 
@@ -68,6 +69,28 @@ cd e2e_tests/extensions
 3. Extension installation and detection
 4. Universal tool type filtering
 5. Tool execution via agent
+
+### Image Extension Test
+1. Extension installation and enablement
+2. Agent export to .agent package
+3. Verification of package contents
+4. Agent import to new team
+5. Extension availability after import
+6. Extension functionality in imported agent
+
+## Extension Behavior in Agent Images
+
+Extensions are **system-wide resources** (not bundled per-agent):
+
+- Extensions are stored in `~/.pekobot/extensions/` (or `%APPDATA%/pekobot/extensions/` on Windows)
+- Extensions persist across agent export/import operations
+- Extensions are available to all agents after installation
+- Agent images contain only agent config, identity, and workspace
+
+This design allows:
+- Shared extensions across multiple agents
+- Smaller agent image sizes
+- Independent extension lifecycle management
 
 ## Migration from Legacy Tests
 
