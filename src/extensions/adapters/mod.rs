@@ -40,14 +40,31 @@
 //! }
 //! ```
 
-// Placeholder for future adapter implementations
-// These will be implemented in subsequent phases:
-// - Phase 2: pub mod skill_adapter;
-// - Phase 3: pub mod universal_tool_adapter;
-// - Phase 4: pub mod mcp_adapter;
-// - Phase 5: pub mod channel_adapter;
-// - Phase 6: pub mod hook_adapter;
-// - Phase 6: pub mod gateway_adapter;
+// Extension type adapters
+pub mod skill_adapter;
+pub mod universal_tool_adapter;
+pub mod mcp_adapter;
+pub mod channel_adapter;
+pub mod hook_adapter;
+pub mod gateway_adapter;
+
+// Re-export skill adapter types
+pub use skill_adapter::{DiscoveredSkill, SkillAdapter, load_skills_from_directory, register_skills_with_core};
+
+// Re-export universal tool adapter types
+pub use universal_tool_adapter::{DiscoveredUniversalTool, UniversalToolAdapter, load_tools_from_directory, register_tools_with_core};
+
+// Re-export MCP adapter types
+pub use mcp_adapter::{DiscoveredMcpServer, McpAdapter, load_servers_from_directory, register_servers_with_core};
+
+// Re-export channel adapter types
+pub use channel_adapter::{DiscoveredChannel, ChannelAdapter, ChannelExtensionConfig, MessageTransformerConfig, TransformType, discover_channel_extensions, load_and_register_channels, register_channels_with_core};
+
+// Re-export hook adapter types
+pub use hook_adapter::{DiscoveredHook, HookAdapter, HookExtensionConfig, EventSubscription, EventFilterConfig, WebhookConfig, CronConfig, discover_hook_extensions, load_and_register_hooks, register_hooks_with_core};
+
+// Re-export gateway adapter types
+pub use gateway_adapter::{DiscoveredGateway, GatewayAdapter, GatewayExtensionConfig, GatewayHookConfig, GatewayToolConfig, discover_gateway_extensions, load_and_register_gateways, register_gateways_with_core};
 
 // Re-export the adapter trait when implemented
 // pub use adapter_trait::ExtensionTypeAdapter;
@@ -233,7 +250,7 @@ impl Default for BuiltInAdapters {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_manifest_format_yaml_detection() {

@@ -12,12 +12,28 @@
 //!
 //! Skills format follows the Anthropic Skills specification:
 //! https://github.com/anthropics/skills
+//!
+//! # Extension Architecture Integration (Phase 2)
+//!
+//! This module now supports dual-mode operation:
+//! - Legacy mode: Direct skill loading via SkillsRegistry
+//! - Extension mode: Registration with ExtensionCore for unified management
+//!
+//! The Extension mode is the preferred approach for new code.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{info, warn};
+
+// Re-export Extension Architecture integration
+pub use crate::extensions::adapters::skill_adapter::{
+    DiscoveredSkill, SkillAdapter, build_skills_prompt as build_discovered_skills_prompt,
+    format_skills_for_prompt as format_discovered_skills_prompt,
+    load_skills_from_directory, register_skills_with_core,
+};
 
 /// A skill is documentation that teaches the LLM how to do something
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +147,49 @@ impl SkillsRegistry {
             tags: meta.tags,
             author: meta.author,
         })
+    }
+
+    /// Register all loaded skills with ExtensionCore (Phase 2: Extension Architecture)
+    ///
+    /// This method migrates skills from legacy mode to Extension mode, allowing
+    /// them to be managed through the unified Extension system.
+    ///
+    /// # Arguments
+    /// * `core` - The ExtensionCore to register with
+    ///
+    /// # Returns
+    /// Vector of hook IDs for the registered skills
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut registry = SkillsRegistry::new("~/.pekobot/skills");
+    /// registry.load_all()?;
+    ///
+    /// let core = ExtensionCore::new();
+    /// let hook_ids = registry.register_with_extension_core(&core).await?;
+    /// ```
+    pub async fn register_with_extension_core(
+        &self,
+        core: &crate::extensions::ExtensionCore,
+    ) -> Result<Vec<crate::extensions::HookId>> {
+        let discovered: Vec<DiscoveredSkill> = self
+            .skills
+            .values()
+            .map(|skill| DiscoveredSkill {
+                manifest: crate::extensions::types::ExtensionManifest::new(
+                    &skill.name,
+                    "skill",
+                    &skill.name,
+                    &skill.description,
+                    "1.0.0",
+                    skill.base_dir.clone(),
+                ),
+                file_path: skill.file_path.clone(),
+                base_dir: skill.base_dir.clone(),
+            })
+            .collect();
+
+        register_skills_with_core(core, discovered).await
     }
 
     /// Get a skill by name
@@ -267,6 +326,84 @@ fn compact_skill_path(path: &Path) -> String {
 pub fn read_skill_content(skill: &Skill) -> Result<String> {
     std::fs::read_to_string(&skill.file_path)
         .with_context(|| format!("Failed to read skill content from {:?}", skill.file_path))
+}
+
+/// Convenience function to load and register skills from a directory (Phase 2)
+///
+/// This is a one-step function to migrate from legacy skill loading to
+/// Extension Architecture.
+///
+/// # Arguments
+/// * `core` - The ExtensionCore to register with
+/// * `skills_dir` - Path to the skills directory
+///
+/// # Returns
+/// Number of skills registered
+///
+/// # Example
+/// ```rust,ignore
+/// let core = Arc::new(ExtensionCore::new());
+/// let count = load_and_register_skills(&core, "~/.pekobot/skills").await?;
+/// println!("Registered {} skills", count);
+/// ```
+pub async fn load_and_register_skills(
+    core: &crate::extensions::ExtensionCore,
+    skills_dir: impl Into<PathBuf>,
+) -> Result<usize> {
+    let mut registry = SkillsRegistry::new(skills_dir);
+    registry.load_all()?;
+
+    let hook_ids = registry.register_with_extension_core(core).await?;
+    Ok(hook_ids.len())
+}
+
+/// Build skills prompt using ExtensionCore hooks (Phase 2)
+///
+/// This function uses the ExtensionCore to collect skill contributions
+/// from registered handlers, providing a migration path from legacy
+/// skill formatting.
+///
+/// If no ExtensionCore is provided, falls back to legacy behavior.
+pub async fn build_skills_prompt_with_core(
+    core: Option<&crate::extensions::ExtensionCore>,
+    legacy_skills: &[&Skill],
+) -> String {
+    // Try ExtensionCore first
+    if let Some(core) = core {
+        let result = core
+            .invoke_hook(
+                crate::extensions::HookPoint::PromptSystemSection {
+                    section: "skills".to_string(),
+                    priority: 100,
+                },
+                crate::extensions::HookInput::Unit,
+            )
+            .await;
+
+        // If we got text output from hooks, format it
+        if let crate::extensions::HookResult::Continue(crate::extensions::HookOutput::Text(text)) =
+            result
+        {
+            if !text.is_empty() {
+                return format!(
+                    r"## Skills (mandatory)
+Before replying: scan <available_skills> <description> entries.
+- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
+- If multiple could apply: choose the most specific one, then read/follow it.
+- If none clearly apply: do not read any SKILL.md.
+Constraints: never read more than one skill up front; only read after selecting.
+
+<available_skills>
+{text}
+</available_skills>"
+                );
+            }
+        }
+    }
+
+    // Fallback to legacy behavior
+    let skill_refs: Vec<&Skill> = legacy_skills.iter().copied().collect();
+    build_skills_prompt(&skill_refs)
 }
 
 #[cfg(test)]

@@ -385,11 +385,13 @@ mod integration_tests {
         let core = Arc::new(ExtensionCore::new());
         init_global_core(core.clone());
 
-        let global = global_core();
-        assert!(global.is_some());
+        // Verify global instance is set
+        assert!(global_core().is_some());
 
-        // Should be the same instance
-        let retrieved = global.unwrap();
-        assert_eq!(Arc::strong_count(&core), 2); // core + global reference
+        // Verify both point to the same allocation
+        let global1 = global_core().unwrap();
+        let global2 = global_core().unwrap();
+        assert!(Arc::ptr_eq(&core, &global1));
+        assert!(Arc::ptr_eq(&global1, &global2));
     }
 }

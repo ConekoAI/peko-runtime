@@ -1,0 +1,654 @@
+//! Universal Tool Adapter for the Extension system
+//!
+//! This adapter integrates Universal Tools (external tools with manifest.json)
+//! into the unified Extension Architecture.
+//!
+//! # Universal Tool Format
+//!
+//! Universal tools are external executables with a manifest.json:
+//! ```json
+//! {
+//!   "name": "calculator",
+//!   "description": "Perform calculations",
+//!   "parameters": {
+//!     "type": "object",
+//!     "properties": {
+//!       "expression": { "type": "string" }
+//!     }
+//!   }
+//! }
+//! ```
+//!
+//! # Hook Points
+//!
+//! Universal tools hook into:
+//! - `ToolRegister` - Registers tools for native calling
+//! - `PromptSystemSection { section: "tools" }` - Adds tool descriptions to prompt
+//! - `ToolExecute { tool_name }` - Handles tool execution
+
+use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat};
+use crate::extensions::core::{
+    ExtensionServices, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
+};
+use crate::extensions::types::{
+        ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
+    };
+use crate::tools::Tool;
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tracing::{debug, error, info, warn};
+
+/// Universal tool extension type identifier
+pub const UNIVERSAL_TOOL_EXTENSION_TYPE: &str = "universal-tool";
+
+/// Default priority for universal tool hooks
+pub const UNIVERSAL_TOOL_HOOK_PRIORITY: i32 = 75;
+
+/// Universal tool adapter for Extension system
+#[derive(Debug)]
+pub struct UniversalToolAdapter;
+
+impl UniversalToolAdapter {
+    /// Create a new universal tool adapter
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Discover universal tools from a directory
+    pub async fn discover_tools(&self, path: &Path) -> Vec<DiscoveredUniversalTool> {
+        let mut tools = Vec::new();
+
+        if !path.exists() {
+            debug!("Tools directory does not exist: {:?}", path);
+            return tools;
+        }
+
+        let entries = match tokio::fs::read_dir(path).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!("Failed to read tools directory {:?}: {}", path, e);
+                return tools;
+            }
+        };
+
+        // Use the existing discovery logic from tools::universal
+        match crate::tools::universal::discover_universal_tools(path).await {
+            Ok(discovered) => {
+                for tool in discovered {
+                    if let Some(manifest_path) = tool.manifest {
+                        match self.parse_tool_manifest(&manifest_path, &tool.executable).await {
+                            Ok(manifest) => {
+                                tools.push(DiscoveredUniversalTool {
+                                    manifest,
+                                    executable: tool.executable,
+                                    manifest_path,
+                                });
+                            }
+                            Err(e) => {
+                                warn!("Failed to parse tool manifest {:?}: {}", manifest_path, e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to discover universal tools: {}", e);
+            }
+        }
+
+        tools
+    }
+
+    /// Parse a manifest.json file into an extension manifest
+    async fn parse_tool_manifest(
+        &self,
+        manifest_path: &Path,
+        executable: &Path,
+    ) -> Result<ExtensionManifest> {
+        let content = tokio::fs::read_to_string(manifest_path)
+            .await
+            .with_context(|| format!("Failed to read manifest {:?}", manifest_path))?;
+
+        let tool_manifest: crate::tools::universal::Manifest = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse manifest {:?}", manifest_path))?;
+
+        let mut manifest = ExtensionManifest::new(
+            &tool_manifest.name,
+            UNIVERSAL_TOOL_EXTENSION_TYPE,
+            &tool_manifest.name,
+            &tool_manifest.description,
+            "1.0.0", // Tools don't have explicit versioning in manifest
+            manifest_path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        );
+
+        // Store additional metadata
+        manifest.set("executable", executable.to_string_lossy().to_string());
+        manifest.set("manifest_path", manifest_path.to_string_lossy().to_string());
+        manifest.set("parameters", tool_manifest.parameters);
+        
+        if let Some(llm_desc) = tool_manifest.llm_description {
+            manifest.set("llm_description", llm_desc);
+        }
+
+        Ok(manifest)
+    }
+}
+
+impl Default for UniversalToolAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ExtensionTypeAdapter for UniversalToolAdapter {
+    fn extension_type(&self) -> &'static str {
+        UNIVERSAL_TOOL_EXTENSION_TYPE
+    }
+
+    fn manifest_format(&self) -> ManifestFormat {
+        ManifestFormat::Json {
+            schema: "universal-tool".to_string(),
+            file_name: "manifest.json",
+        }
+    }
+
+    fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding> {
+        vec![
+            // Register the tool for native calling
+            HookBinding::new(
+                HookPoint::ToolRegister,
+                Box::new(UniversalToolRegistrationFactory {
+                    manifest: manifest.clone(),
+                }),
+            ),
+            // Add to prompt tools section
+            HookBinding::new(
+                HookPoint::PromptSystemSection {
+                    section: "tools".to_string(),
+                    priority: UNIVERSAL_TOOL_HOOK_PRIORITY,
+                },
+                Box::new(UniversalToolPromptFactory {
+                    manifest: manifest.clone(),
+                }),
+            ),
+            // Handle tool execution
+            HookBinding::new(
+                HookPoint::ToolExecute {
+                    tool_name: manifest.name.clone(),
+                },
+                Box::new(UniversalToolExecuteFactory {
+                    manifest: manifest.clone(),
+                }),
+            ),
+        ]
+    }
+}
+
+/// A discovered universal tool before registration
+#[derive(Debug, Clone)]
+pub struct DiscoveredUniversalTool {
+    /// Extension manifest
+    pub manifest: ExtensionManifest,
+    /// Path to executable
+    pub executable: PathBuf,
+    /// Path to manifest
+    pub manifest_path: PathBuf,
+}
+
+/// Factory for creating tool registration handlers
+#[derive(Debug, Clone)]
+struct UniversalToolRegistrationFactory {
+    manifest: ExtensionManifest,
+}
+
+impl HookHandlerFactory for UniversalToolRegistrationFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        Box::new(UniversalToolRegistrationHandler {
+            tool_name: self.manifest.name.clone(),
+            description: self.manifest.description.clone(),
+            parameters: self.manifest.get("parameters").cloned().unwrap_or_default(),
+        })
+    }
+}
+
+/// Handler that registers the tool
+#[derive(Debug, Clone)]
+struct UniversalToolRegistrationHandler {
+    tool_name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[async_trait]
+impl HookHandler for UniversalToolRegistrationHandler {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Create a ToolDefinition for registration
+        let tool_def = crate::providers::ToolDefinition {
+            name: self.tool_name.clone(),
+            description: self.description.clone(),
+            parameters: self.parameters.clone(),
+        };
+
+        debug!(tool_name = %self.tool_name, "Registering universal tool");
+        HookResult::Continue(HookOutput::Tool(tool_def))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::ToolRegister
+    }
+
+    fn priority(&self) -> i32 {
+        UNIVERSAL_TOOL_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("UniversalToolRegistrationHandler({})", self.tool_name)
+    }
+}
+
+/// Factory for creating tool prompt handlers
+#[derive(Debug, Clone)]
+struct UniversalToolPromptFactory {
+    manifest: ExtensionManifest,
+}
+
+impl HookHandlerFactory for UniversalToolPromptFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        let llm_desc = self
+            .manifest
+            .get("llm_description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| self.manifest.description.clone());
+
+        Box::new(UniversalToolPromptHandler {
+            tool_name: self.manifest.name.clone(),
+            description: llm_desc,
+        })
+    }
+}
+
+/// Handler that injects tool description into prompt
+#[derive(Debug, Clone)]
+struct UniversalToolPromptHandler {
+    tool_name: String,
+    description: String,
+}
+
+#[async_trait]
+impl HookHandler for UniversalToolPromptHandler {
+    async fn handle(&self, _ctx: HookContext) -> HookResult {
+        let text = format!("### {}\n\n{}", self.tool_name, self.description);
+        HookResult::Continue(HookOutput::Text(text))
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::PromptSystemSection {
+            section: "tools".to_string(),
+            priority: UNIVERSAL_TOOL_HOOK_PRIORITY,
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        UNIVERSAL_TOOL_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("UniversalToolPromptHandler({})", self.tool_name)
+    }
+}
+
+/// Factory for creating tool execution handlers
+#[derive(Debug, Clone)]
+struct UniversalToolExecuteFactory {
+    manifest: ExtensionManifest,
+}
+
+impl HookHandlerFactory for UniversalToolExecuteFactory {
+    fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
+        let executable = self
+            .manifest
+            .get("executable")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_default();
+
+        let manifest_path = self
+            .manifest
+            .get("manifest_path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_default();
+
+        Box::new(UniversalToolExecuteHandler {
+            tool_name: self.manifest.name.clone(),
+            executable,
+            manifest_path,
+        })
+    }
+}
+
+/// Handler that executes the tool
+#[derive(Debug, Clone)]
+struct UniversalToolExecuteHandler {
+    tool_name: String,
+    executable: PathBuf,
+    manifest_path: PathBuf,
+}
+
+#[async_trait]
+impl HookHandler for UniversalToolExecuteHandler {
+    async fn handle(&self, ctx: HookContext) -> HookResult {
+        // Extract tool call parameters from context
+        let params = match ctx.as_tool_call() {
+            Some((tool_name, params)) => {
+                if tool_name != self.tool_name {
+                    return HookResult::PassThrough; // Not for this tool
+                }
+                params.clone()
+            }
+            None => {
+                // Try to get from JSON input
+                match ctx.as_json() {
+                    Some(json) => json.clone(),
+                    None => return HookResult::PassThrough,
+                }
+            }
+        };
+
+        debug!(
+            tool_name = %self.tool_name,
+            params = %serde_json::to_string(&params).unwrap_or_default(),
+            "Executing universal tool"
+        );
+
+        // Create the tool adapter and execute
+        match crate::tools::universal::UniversalToolAdapter::from_manifest(
+            &self.manifest_path,
+            &self.executable,
+        )
+        .await
+        {
+            Ok(adapter) => {
+                // Execute the tool using the Tool trait's execute method
+                match adapter.execute(params).await {
+                    Ok(result) => {
+                        HookResult::Continue(HookOutput::Json(result))
+                    }
+                    Err(e) => {
+                        error!(tool_name = %self.tool_name, error = %e, "Tool execution failed");
+                        HookResult::Error(e)
+                    }
+                }
+            }
+            Err(e) => {
+                error!(tool_name = %self.tool_name, error = %e, "Failed to create tool adapter");
+                HookResult::Error(e)
+            }
+        }
+    }
+
+    fn hook_point(&self) -> HookPoint {
+        HookPoint::ToolExecute {
+            tool_name: self.tool_name.clone(),
+        }
+    }
+
+    fn priority(&self) -> i32 {
+        UNIVERSAL_TOOL_HOOK_PRIORITY
+    }
+
+    fn name(&self) -> String {
+        format!("UniversalToolExecuteHandler({})", self.tool_name)
+    }
+}
+
+/// Helper to load tools from directory using the adapter
+pub async fn load_tools_from_directory(path: &Path) -> Vec<DiscoveredUniversalTool> {
+    let adapter = UniversalToolAdapter::new();
+    adapter.discover_tools(path).await
+}
+
+/// Register universal tools with an ExtensionCore
+pub async fn register_tools_with_core(
+    core: &crate::extensions::ExtensionCore,
+    tools: Vec<DiscoveredUniversalTool>,
+) -> Result<Vec<HookId>> {
+    let mut hook_ids = Vec::new();
+
+    for tool in tools {
+        let extension_id = ExtensionId::new(&tool.manifest.id.0);
+
+        // Register tool registration handler
+        let reg_handler = Arc::new(UniversalToolRegistrationHandler {
+            tool_name: tool.manifest.name.clone(),
+            description: tool.manifest.description.clone(),
+            parameters: tool.manifest.get("parameters").cloned().unwrap_or_default(),
+        });
+
+        let reg = core
+            .register_hook(HookPoint::ToolRegister, reg_handler, &extension_id)
+            .await?;
+        hook_ids.push(reg.id);
+
+        // Register prompt handler
+        let llm_desc = tool
+            .manifest
+            .get("llm_description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| tool.manifest.description.clone());
+
+        let prompt_handler = Arc::new(UniversalToolPromptHandler {
+            tool_name: tool.manifest.name.clone(),
+            description: llm_desc,
+        });
+
+        let prompt_reg = core
+            .register_hook(
+                HookPoint::PromptSystemSection {
+                    section: "tools".to_string(),
+                    priority: UNIVERSAL_TOOL_HOOK_PRIORITY,
+                },
+                prompt_handler,
+                &extension_id,
+            )
+            .await?;
+        hook_ids.push(prompt_reg.id);
+
+        // Register execution handler
+        let exec_handler = Arc::new(UniversalToolExecuteHandler {
+            tool_name: tool.manifest.name.clone(),
+            executable: tool.executable.clone(),
+            manifest_path: tool.manifest_path.clone(),
+        });
+
+        let exec_reg = core
+            .register_hook(
+                HookPoint::ToolExecute {
+                    tool_name: tool.manifest.name.clone(),
+                },
+                exec_handler,
+                &extension_id,
+            )
+            .await?;
+        hook_ids.push(exec_reg.id);
+
+        info!(
+            tool_name = %tool.manifest.name,
+            hook_count = 3,
+            "Registered universal tool with ExtensionCore"
+        );
+    }
+
+    Ok(hook_ids)
+}
+
+/// Convenience function to load and register universal tools
+pub async fn load_and_register_tools(
+    core: &crate::extensions::ExtensionCore,
+    tools_dir: impl AsRef<Path>,
+) -> Result<usize> {
+    let tools = load_tools_from_directory(tools_dir.as_ref()).await;
+    let hook_ids = register_tools_with_core(core, tools).await?;
+    Ok(hook_ids.len() / 3) // Each tool registers 3 hooks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extensions::HookInput;
+    use tempfile::TempDir;
+
+    fn create_test_tool(dir: &Path, name: &str, description: &str) -> PathBuf {
+        let tool_dir = dir.join(name);
+        std::fs::create_dir(&tool_dir).unwrap();
+
+        let manifest = serde_json::json!({
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "input": { "type": "string" }
+                }
+            }
+        });
+
+        let manifest_path = tool_dir.join("manifest.json");
+        std::fs::write(&manifest_path, manifest.to_string()).unwrap();
+
+        // Create a dummy executable (script)
+        let script_path = tool_dir.join(format!("{}.py", name));
+        std::fs::write(&script_path, "#!/usr/bin/env python3\nprint('{}')").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).unwrap();
+        }
+
+        tool_dir
+    }
+
+    #[test]
+    fn test_universal_tool_adapter_manifest_format() {
+        let adapter = UniversalToolAdapter::new();
+        let format = adapter.manifest_format();
+
+        assert!(matches!(format, ManifestFormat::Json { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_discover_tools() {
+        let temp = TempDir::new().unwrap();
+
+        create_test_tool(temp.path(), "tool1", "First tool");
+        create_test_tool(temp.path(), "tool2", "Second tool");
+
+        let adapter = UniversalToolAdapter::new();
+        let tools = adapter.discover_tools(temp.path()).await;
+
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().any(|t| t.manifest.name == "tool1"));
+        assert!(tools.iter().any(|t| t.manifest.name == "tool2"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_tool_manifest() {
+        let temp = TempDir::new().unwrap();
+        let tool_dir = create_test_tool(temp.path(), "calculator", "Calculate things");
+
+        let adapter = UniversalToolAdapter::new();
+        let manifest_path = tool_dir.join("manifest.json");
+        let executable = tool_dir.join("calculator.py");
+
+        let manifest = adapter
+            .parse_tool_manifest(&manifest_path, &executable)
+            .await
+            .unwrap();
+
+        assert_eq!(manifest.name, "calculator");
+        assert_eq!(manifest.description, "Calculate things");
+        assert_eq!(manifest.extension_type, "universal-tool");
+    }
+
+    #[tokio::test]
+    async fn test_tool_registration_handler() {
+        let handler = UniversalToolRegistrationHandler {
+            tool_name: "test_tool".to_string(),
+            description: "A test tool".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        };
+
+        let ctx = HookContext::new(
+            HookPoint::ToolRegister,
+            HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+
+        let result = handler.handle(ctx).await;
+
+        match result {
+            HookResult::Continue(HookOutput::Tool(tool_def)) => {
+                assert_eq!(tool_def.name, "test_tool");
+                assert_eq!(tool_def.description, "A test tool");
+            }
+            _ => panic!("Expected Continue with Tool, got {:?}", result),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tool_prompt_handler() {
+        let handler = UniversalToolPromptHandler {
+            tool_name: "test_tool".to_string(),
+            description: "Does something useful".to_string(),
+        };
+
+        let ctx = HookContext::new(
+            HookPoint::PromptSystemSection {
+                section: "tools".to_string(),
+                priority: 100,
+            },
+            HookInput::Unit,
+            Arc::new(ExtensionServices::new()),
+        );
+
+        let result = handler.handle(ctx).await;
+
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert!(text.contains("### test_tool"));
+                assert!(text.contains("Does something useful"));
+            }
+            _ => panic!("Expected Continue with Text, got {:?}", result),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_register_tools_with_core() {
+        let temp = TempDir::new().unwrap();
+        create_test_tool(temp.path(), "tool1", "First tool");
+        create_test_tool(temp.path(), "tool2", "Second tool");
+
+        let core = crate::extensions::ExtensionCore::new();
+        let tools = load_tools_from_directory(temp.path()).await;
+
+        assert_eq!(tools.len(), 2);
+
+        let hook_ids = register_tools_with_core(&core, tools).await.unwrap();
+
+        // Each tool registers 3 hooks (register, prompt, execute)
+        assert_eq!(hook_ids.len(), 6);
+        assert_eq!(core.hook_count().await, 6);
+    }
+}
