@@ -126,6 +126,88 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     async fn is_healthy(&self, _state: &ExtensionState) -> bool {
         true
     }
+
+    /// Parse a manifest file for this extension type
+    ///
+    /// This method allows adapters to customize manifest parsing.
+    /// The default implementation handles standard formats (JSON, TOML, YAML frontmatter).
+    ///
+    /// For custom formats (like SKILL.md with its own frontmatter schema),
+    /// adapters should override this method.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the manifest file
+    /// * `content` - Content of the manifest file
+    ///
+    /// # Returns
+    /// Parsed ExtensionManifest
+    fn parse_manifest(
+        &self,
+        path: &std::path::Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        use anyhow::Context;
+
+        match self.manifest_format() {
+            ManifestFormat::YamlFrontmatterMarkdown { .. } => {
+                parse_yaml_frontmatter_markdown(path, content)
+            }
+            ManifestFormat::Json { .. } => {
+                serde_json::from_str(content)
+                    .with_context(|| format!("Failed to parse JSON manifest at {:?}", path))
+            }
+            ManifestFormat::Toml { .. } => {
+                toml::from_str(content)
+                    .with_context(|| format!("Failed to parse TOML manifest at {:?}", path))
+            }
+            ManifestFormat::Custom { .. } => {
+                anyhow::bail!("Custom manifest formats must implement parse_manifest")
+            }
+        }
+    }
+}
+
+/// Parse YAML frontmatter from a markdown file
+///
+/// This is the default implementation used by the ExtensionTypeAdapter trait.
+/// It expects the YAML to be directly deserializable into ExtensionManifest.
+fn parse_yaml_frontmatter_markdown(
+    path: &std::path::Path,
+    content: &str,
+) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+    use anyhow::Context;
+
+    let mut lines = content.lines().peekable();
+
+    // Must start with ---
+    match lines.next() {
+        Some("---") => {}
+        _ => anyhow::bail!("YAML frontmatter must start with ---"),
+    }
+
+    let mut frontmatter_lines = Vec::new();
+    let mut found_end = false;
+
+    for line in lines.by_ref() {
+        if line == "---" {
+            found_end = true;
+            break;
+        }
+        frontmatter_lines.push(line);
+    }
+
+    if !found_end {
+        anyhow::bail!("YAML frontmatter must end with ---");
+    }
+
+    let frontmatter = frontmatter_lines.join("\n");
+
+    let mut manifest: crate::extensions::ExtensionManifest = serde_yaml::from_str(&frontmatter)
+        .with_context(|| format!("Failed to parse YAML frontmatter in {:?}", path))?;
+
+    manifest.path = path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+
+    Ok(manifest)
 }
 
 /// Manifest format definitions

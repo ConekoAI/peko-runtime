@@ -262,80 +262,35 @@ impl ExtensionManager {
         path: &Path,
         adapter: &dyn ExtensionTypeAdapter,
     ) -> Result<ExtensionManifest> {
-        let content = tokio::fs::read_to_string(path).await?;
+        let content = tokio::fs::read_to_string(path).await
+            .with_context(|| format!("Failed to read manifest at {:?}", path))?;
 
-        match adapter.manifest_format() {
-            crate::extensions::adapters::ManifestFormat::YamlFrontmatterMarkdown { .. } => {
-                self.parse_yaml_frontmatter(&content, path)
-            }
-            crate::extensions::adapters::ManifestFormat::Json { .. } => {
-                self.parse_json_manifest(&content, path)
-            }
-            crate::extensions::adapters::ManifestFormat::Toml { .. } => {
-                self.parse_toml_manifest(&content, path)
-            }
-            _ => anyhow::bail!("Custom manifest formats must be handled by the adapter"),
-        }
-    }
-
-    fn parse_yaml_frontmatter(&self, content: &str, path: &Path) -> Result<ExtensionManifest> {
-        let mut lines = content.lines().peekable();
-
-        match lines.next() {
-            Some("---") => {}
-            _ => anyhow::bail!("YAML frontmatter must start with ---"),
-        }
-
-        let mut frontmatter_lines = Vec::new();
-        let mut found_end = false;
-
-        for line in lines.by_ref() {
-            if line == "---" {
-                found_end = true;
-                break;
-            }
-            frontmatter_lines.push(line);
-        }
-
-        if !found_end {
-            anyhow::bail!("YAML frontmatter must end with ---");
-        }
-
-        let frontmatter = frontmatter_lines.join("\n");
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-
-        let mut manifest: ExtensionManifest = serde_yaml::from_str(&frontmatter)
-            .with_context(|| format!("Failed to parse YAML frontmatter in {:?}", path))?;
-
-        manifest.path = base_dir.to_path_buf();
-
-        Ok(manifest)
-    }
-
-    fn parse_json_manifest(&self, content: &str, path: &Path) -> Result<ExtensionManifest> {
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let mut manifest: ExtensionManifest = serde_json::from_str(content)
-            .with_context(|| format!("Failed to parse JSON manifest in {:?}", path))?;
-        manifest.path = base_dir.to_path_buf();
-        Ok(manifest)
-    }
-
-    fn parse_toml_manifest(&self, content: &str, path: &Path) -> Result<ExtensionManifest> {
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let mut manifest: ExtensionManifest = toml::from_str(content)
-            .with_context(|| format!("Failed to parse TOML manifest in {:?}", path))?;
-        manifest.path = base_dir.to_path_buf();
-        Ok(manifest)
+        // Use the adapter's parse_manifest method to allow custom parsing
+        adapter.parse_manifest(path, &content)
+            .with_context(|| format!("Failed to parse manifest at {:?}", path))
     }
 
     pub async fn load_all(&mut self) -> Result<LoadReport> {
         let mut report = LoadReport::default();
-        let discovery_paths = discovery_paths::all();
+        let mut scanned_paths = std::collections::HashSet::new();
 
-        for base_path in discovery_paths {
+        // Collect all paths to scan (discovery paths + storage)
+        let mut all_paths = discovery_paths::all();
+        if let Some(storage_dir) = self.storage.dir() {
+            all_paths.push(storage_dir.to_path_buf());
+        }
+
+        for base_path in all_paths {
             if !base_path.exists() {
                 continue;
             }
+
+            // Avoid scanning the same path twice
+            let canonical = std::fs::canonicalize(&base_path).unwrap_or(base_path.clone());
+            if scanned_paths.contains(&canonical) {
+                continue;
+            }
+            scanned_paths.insert(canonical);
 
             debug!("Scanning for extensions in {:?}", base_path);
 

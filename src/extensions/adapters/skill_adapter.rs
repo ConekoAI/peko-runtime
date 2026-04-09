@@ -168,6 +168,62 @@ impl ExtensionTypeAdapter for SkillAdapter {
             }),
         )]
     }
+
+    fn parse_manifest(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        // Parse SKILL.md frontmatter format
+        let mut lines = content.lines().peekable();
+
+        // Must start with ---
+        match lines.next() {
+            Some("---") => {}
+            _ => anyhow::bail!("YAML frontmatter must start with ---"),
+        }
+
+        let mut frontmatter_lines = Vec::new();
+        let mut found_end = false;
+
+        for line in lines.by_ref() {
+            if line == "---" {
+                found_end = true;
+                break;
+            }
+            frontmatter_lines.push(line);
+        }
+
+        if !found_end {
+            anyhow::bail!("YAML frontmatter must end with ---");
+        }
+
+        let frontmatter = frontmatter_lines.join("\n");
+
+        // Parse as SkillFrontmatter
+        let skill_frontmatter: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
+            .with_context(|| format!("Failed to parse SKILL.md frontmatter in {:?}", path))?;
+
+        // Convert to ExtensionManifest
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut manifest = ExtensionManifest::new(
+            &skill_frontmatter.name,
+            SKILL_EXTENSION_TYPE,
+            &skill_frontmatter.name,
+            &skill_frontmatter.description,
+            "1.0.0", // Skills don't have versions in their frontmatter, use default
+            base_dir.to_path_buf(),
+        );
+
+        // Store additional metadata
+        manifest.set("skill_file", path.to_string_lossy().to_string());
+        manifest.set("tags", skill_frontmatter.tags);
+        if let Some(author) = skill_frontmatter.author {
+            manifest.set("author", author);
+        }
+
+        Ok(manifest)
+    }
 }
 
 /// A discovered skill before registration

@@ -7,7 +7,7 @@
 //! - Create bundles from extensions
 
 use crate::commands::GlobalPaths;
-use crate::extensions::manager::{ExtensionManager, LoadedExtension};
+use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extensions::types::ExtensionId;
 use clap::Subcommand;
 use std::path::PathBuf;
@@ -70,9 +70,34 @@ pub enum ExtCommands {
     },
 }
 
+/// Create an ExtensionManager with all default adapters registered
+fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionManager {
+    use crate::extensions::adapters::{
+        mcp_adapter::McpAdapter, skill_adapter::SkillAdapter,
+        universal_tool_adapter::UniversalToolAdapter,
+    };
+
+    let mut manager = if let Some(storage) = storage {
+        ExtensionManager::with_storage(storage)
+    } else {
+        ExtensionManager::new()
+    };
+
+    // Register extension type adapters that don't require ExtensionCore
+    // Note: ChannelAdapter, HookAdapter, and GatewayAdapter require ExtensionCore
+    // and are typically used internally. They can be registered when needed.
+    manager.register_adapter(Box::new(SkillAdapter::new()));
+    manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
+    manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+
+    manager
+}
+
 /// Handle extension subcommands
-pub async fn handle_ext_command(command: ExtCommands, _paths: &GlobalPaths) -> anyhow::Result<()> {
-    let mut manager = ExtensionManager::new();
+pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> anyhow::Result<()> {
+    // Create storage in the data directory
+    let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
+    let mut manager = create_manager_with_adapters(Some(storage));
 
     // Load all extensions to populate the manager
     manager.load_all().await?;
