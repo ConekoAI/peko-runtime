@@ -72,7 +72,9 @@ pub struct SkillsRegistry {
 
 impl SkillsRegistry {
     /// Create a new skills registry
+    #[deprecated(since = "0.2.0", note = "Use ExtensionManager instead")]
     pub fn new(skills_dir: impl Into<PathBuf>) -> Self {
+        warn!("Legacy SkillsRegistry is deprecated. Use ExtensionManager instead.");
         Self {
             skills: HashMap::new(),
             skills_dir: skills_dir.into(),
@@ -80,7 +82,9 @@ impl SkillsRegistry {
     }
 
     /// Load all skills from the skills directory
+    #[deprecated(since = "0.2.0", note = "Use ExtensionManager instead")]
     pub fn load_all(&mut self) -> Result<usize> {
+        warn!("Legacy SkillsRegistry::load_all() is deprecated. Use ExtensionManager instead.");
         if !self.skills_dir.exists() {
             info!("Skills directory does not exist: {:?}", self.skills_dir);
             return Ok(0);

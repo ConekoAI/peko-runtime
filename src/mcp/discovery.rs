@@ -40,7 +40,9 @@ pub struct DiscoveredServer {
 }
 
 /// Check if MCP tools should be used (config exists and has servers)
+#[deprecated(since = "0.2.0", note = "Use discover_mcp_servers() instead")]
 pub async fn should_use_mcp_tools() -> bool {
+    warn!("should_use_mcp_tools() is deprecated. Use discover_mcp_servers() instead.");
     let config_path = mcp_config_path();
 
     if !config_path.exists() {
@@ -181,8 +183,38 @@ pub async fn discover_servers() -> anyhow::Result<Vec<DiscoveredServer>> {
     Ok(discovered)
 }
 
+/// Discover MCP servers and return their names with config paths
+/// 
+/// Returns a vector of tuples containing (server_name, config_path) for migration purposes.
+pub async fn discover_mcp_servers() -> Vec<(String, PathBuf)> {
+    let config_path = mcp_config_path();
+    let mut servers = Vec::new();
+
+    if !config_path.exists() {
+        debug!("MCP config not found at {:?}", config_path);
+        return servers;
+    }
+
+    match tokio::fs::read_to_string(&config_path).await {
+        Ok(content) => {
+            if let Ok(config) = toml::from_str::<McpConfig>(&content) {
+                for server_config in config.servers {
+                    servers.push((server_config.name, config_path.clone()));
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to read MCP config: {}", e);
+        }
+    }
+
+    servers
+}
+
 /// Get list of available MCP server names
+#[deprecated(since = "0.2.0", note = "Use discover_mcp_servers() instead")]
 pub async fn list_available_servers() -> Vec<String> {
+    warn!("list_available_servers() is deprecated. Use discover_mcp_servers() instead.");
     let mut servers = Vec::new();
 
     for name in ["web", "browser", "memory"] {

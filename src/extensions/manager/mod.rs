@@ -161,6 +161,16 @@ impl ExtensionManager {
         }
     }
 
+    pub fn with_storage(storage: ExtensionStorage) -> Self {
+        Self {
+            adapters: HashMap::new(),
+            extensions: HashMap::new(),
+            storage,
+            core: Arc::new(ExtensionCore::new()),
+            extension_states: HashMap::new(),
+        }
+    }
+
     pub fn with_storage_dir(mut self, storage_dir: PathBuf) -> Self {
         self.storage = ExtensionStorage::with_dir(storage_dir);
         self

@@ -36,9 +36,11 @@ pub struct DiscoveredTool {
 /// Tools are organized in subdirectories, one per tool:
 /// `{tools_dir}/calculator_tool/manifest.json`
 /// `{tools_dir}/calculator_tool/calculator_tool.py`
+#[deprecated(since = "0.2.0", note = "Use ExtensionManager instead")]
 pub async fn discover_universal_tools(
     dir: impl AsRef<Path>,
 ) -> Result<Vec<DiscoveredTool>> {
+    warn!("discover_universal_tools() is deprecated. Use ExtensionManager instead.");
     let dir = dir.as_ref();
     let mut tools = Vec::new();
 
@@ -135,7 +137,9 @@ pub async fn discover_universal_tools(
 }
 
 /// Load discovered tools as adapters
+#[deprecated(since = "0.2.0", note = "Use ExtensionManager instead")]
 pub async fn load_universal_tools(dir: impl AsRef<Path>) -> Result<Vec<UniversalToolAdapter>> {
+    warn!("load_universal_tools() is deprecated. Use ExtensionManager instead.");
     let discovered = discover_universal_tools(dir).await?;
     let mut adapters = Vec::new();
 

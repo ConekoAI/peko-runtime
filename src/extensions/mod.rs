@@ -102,6 +102,7 @@ pub use types::{
 pub mod adapters;
 pub mod core;
 pub mod manager;
+pub mod migration;
 pub mod types;
 
 /// Extension type identifiers

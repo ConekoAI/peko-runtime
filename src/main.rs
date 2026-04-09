@@ -18,6 +18,13 @@ async fn main() {
     // Set up global paths
     let paths = GlobalPaths::from_cli(&cli);
 
+    // Run auto-migration for legacy extensions (Phase 8)
+    // This is idempotent - will only migrate once
+    if let Err(e) = run_extension_migration(&paths).await {
+        tracing::warn!("Legacy extension migration failed: {}", e);
+        // Don't fail startup on migration error, just warn
+    }
+
     // Run the command and handle results/exit codes
     let result = run_command(cli.command, &paths, cli.json).await;
 
@@ -44,6 +51,41 @@ async fn main() {
             std::process::exit(exit_code);
         }
     }
+}
+
+/// Run auto-migration for legacy extensions (Phase 8)
+/// 
+/// This function checks if legacy extensions need to be migrated to the new
+/// Extension 2.0 system and performs the migration if needed.
+async fn run_extension_migration(paths: &GlobalPaths) -> anyhow::Result<()> {
+    use pekobot::extensions::manager::{ExtensionManager, ExtensionStorage};
+    use pekobot::extensions::migration::migrate_legacy_extensions;
+    
+    // Create extension manager with storage
+    let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
+    let mut manager = ExtensionManager::with_storage(storage);
+    
+    // Run migration
+    let report = migrate_legacy_extensions(&mut manager).await?;
+    
+    // Log results if anything was migrated
+    let total = report.total_migrated();
+    if total > 0 {
+        tracing::info!(
+            "Migrated {} legacy extensions: {} skills, {} MCP servers, {} universal tools",
+            total,
+            report.skills_migrated.len(),
+            report.mcp_servers_migrated.len(),
+            report.tools_migrated.len()
+        );
+    }
+    
+    // Log any errors
+    for (item, error) in &report.errors {
+        tracing::warn!("Failed to migrate {}: {}", item, error);
+    }
+    
+    Ok(())
 }
 
 async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyhow::Result<()> {
