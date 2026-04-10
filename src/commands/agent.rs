@@ -36,7 +36,7 @@ pub enum AgentCommands {
         #[arg(short, long)]
         config: Option<String>,
         /// LLM provider (openai, anthropic, ollama, kimi, `kimi_code`) - only used when creating default config
-        #[arg(short, long, default_value = "kimi_code")]
+        #[arg(short, long, default_value = "minimax")]
         provider: String,
         /// Model name - only used when creating default config
         #[arg(short, long)]
@@ -76,7 +76,7 @@ pub enum AgentCommands {
         #[arg(short, long)]
         team: Option<String>,
         /// Provider to use
-        #[arg(short, long, default_value = "kimi_code")]
+        #[arg(short, long, default_value = "minimax")]
         provider: String,
         /// Force overwrite if agent already exists (non-interactive)
         #[arg(short, long)]
@@ -154,7 +154,7 @@ pub enum AgentCommands {
         #[arg(short, long)]
         name: Option<String>,
         /// Provider to use
-        #[arg(short, long, default_value = "kimi_code")]
+        #[arg(short, long, default_value = "minimax")]
         provider: String,
         /// Model name
         #[arg(short, long)]
