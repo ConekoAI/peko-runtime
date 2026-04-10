@@ -9,30 +9,13 @@
 //! - `manifest`: Tool metadata and reserved parameter definitions
 //! - `transport`: Stdio communication layer
 //! - `adapter`: Tool trait implementation with parameter injection
-//! - `discovery`: Tool discovery from directories
-//!
-//! # Usage
-//!
-//! ```rust,ignore
-//! // Discover and load tools
-//! let tools = universal::load_universal_tools("./tools").await?;
-//!
-//! // Use in agent
-//! for tool in tools {
-//!     registry.register(Arc::new(tool));
-//! }
-//! ```
 //!
 //! # Extension Architecture Integration (Phase 3)
 //!
-//! This module now supports dual-mode operation:
-//! - Legacy mode: Direct tool loading via discovery/load functions
-//! - Extension mode: Registration with ExtensionCore for unified management
-//!
-//! The Extension mode is the preferred approach for new code.
+//! Tools are now managed through the Extension system via ExtensionManager.
+//! This module provides the core protocol implementation.
 
 pub mod adapter;
-pub mod discovery;
 pub mod manifest;
 pub mod protocol;
 pub mod transport;
@@ -41,7 +24,6 @@ pub mod transport;
 mod tests;
 
 pub use adapter::{UniversalToolAdapter, UniversalToolBuilder};
-pub use discovery::{discover_universal_tools, load_universal_tools, DiscoveredTool};
 pub use manifest::{
     merge_with_injection, Manifest, ParamSource, ParamSourceLegacy, 
     ProtocolConfig, ReservedParam, ReservedParamsConfig
@@ -53,3 +35,15 @@ pub use crate::extensions::adapters::universal_tool_adapter::{
     DiscoveredUniversalTool, UniversalToolAdapter as ExtensionUniversalToolAdapter,
     load_tools_from_directory, register_tools_with_core, load_and_register_tools,
 };
+
+use std::path::PathBuf;
+
+/// Get the default system-wide Universal Tools directory
+///
+/// This is `{data_dir}/tools` where `data_dir` is the Pekobot data directory
+/// (e.g., `~/.local/share/pekobot/tools` on Linux,
+///  `~/Library/Application Support/pekobot/tools` on macOS,
+///  `%APPDATA%/pekobot/tools` on Windows)
+pub fn default_tools_dir() -> PathBuf {
+    crate::common::paths::default_data_dir().join("tools")
+}

@@ -39,28 +39,6 @@ pub struct DiscoveredServer {
     pub error: Option<String>,
 }
 
-/// Check if MCP tools should be used (config exists and has servers)
-#[deprecated(since = "0.2.0", note = "Use discover_mcp_servers() instead")]
-pub async fn should_use_mcp_tools() -> bool {
-    warn!("should_use_mcp_tools() is deprecated. Use discover_mcp_servers() instead.");
-    let config_path = mcp_config_path();
-
-    if !config_path.exists() {
-        return false;
-    }
-
-    match tokio::fs::read_to_string(&config_path).await {
-        Ok(content) => {
-            if let Ok(config) = toml::from_str::<McpConfig>(&content) {
-                !config.servers.is_empty()
-            } else {
-                false
-            }
-        }
-        Err(_) => false,
-    }
-}
-
 /// Get MCP config path
 pub fn mcp_config_path() -> PathBuf {
     dirs::home_dir()
@@ -205,21 +183,6 @@ pub async fn discover_mcp_servers() -> Vec<(String, PathBuf)> {
         }
         Err(e) => {
             warn!("Failed to read MCP config: {}", e);
-        }
-    }
-
-    servers
-}
-
-/// Get list of available MCP server names
-#[deprecated(since = "0.2.0", note = "Use discover_mcp_servers() instead")]
-pub async fn list_available_servers() -> Vec<String> {
-    warn!("list_available_servers() is deprecated. Use discover_mcp_servers() instead.");
-    let mut servers = Vec::new();
-
-    for name in ["web", "browser", "memory"] {
-        if is_server_installed(name).await {
-            servers.push(name.to_string());
         }
     }
 

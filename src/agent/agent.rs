@@ -167,7 +167,7 @@ impl Agent {
         }
 
         // Load Universal Tools from system-wide tools directory
-        let tools_dir = crate::tools::universal::discovery::default_tools_dir();
+        let tools_dir = crate::tools::universal::default_tools_dir();
         tracing::info!(
             "Checking for Universal Tools in system directory: {}",
             tools_dir.display()

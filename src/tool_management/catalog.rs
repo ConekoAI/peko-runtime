@@ -14,7 +14,7 @@ use crate::tool_registry::{
     InstalledTool as RegistryInstalledTool, RemoteRegistryClient,
     RemoteRegistryConfig, ToolRegistry, ToolRegistryConfig,
 };
-use crate::tools::universal::discovery::{self, DiscoveredTool};
+// Legacy discovery removed - using ExtensionManager instead
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -130,24 +130,6 @@ impl ToolCatalogImpl {
         }
 
         Ok(tools)
-    }
-
-    /// Convert DiscoveredTool to InstalledToolInfo
-    async fn discovered_to_info(&self, discovered: DiscoveredTool) -> anyhow::Result<InstalledToolInfo> {
-        let manifest_path = discovered.manifest.clone();
-        let description = if let Some(ref path) = discovered.manifest {
-            let content = tokio::fs::read_to_string(path).await?;
-            let manifest: crate::tools::universal::Manifest = serde_json::from_str(&content)?;
-            manifest.description
-        } else {
-            String::new()
-        };
-
-        Ok(InstalledToolInfo::universal(
-            discovered.name,
-            discovered.executable,
-            manifest_path,
-        ))
     }
 
     /// Convert DiscoveredExtension to InstalledToolInfo

@@ -15,7 +15,7 @@ use crate::cap::{
 use crate::tool_registry::{
     RemoteRegistryClient, RemoteRegistryConfig, ToolRegistry, ToolRegistryConfig,
 };
-use crate::tools::universal::discovery::DiscoveredTool;
+// Legacy discovery removed - using ExtensionManager instead
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -140,24 +140,6 @@ impl CapabilityCatalogImpl {
         }
 
         Ok(caps)
-    }
-
-    /// Convert DiscoveredTool to CapabilityInfo
-    async fn discovered_to_info(&self, discovered: DiscoveredTool) -> anyhow::Result<CapabilityInfo> {
-        let manifest_path = discovered.manifest.clone();
-        let description = if let Some(ref path) = discovered.manifest {
-            let content = tokio::fs::read_to_string(path).await?;
-            let manifest: crate::tools::universal::Manifest = serde_json::from_str(&content)?;
-            manifest.description
-        } else {
-            String::new()
-        };
-
-        Ok(CapabilityInfo::universal(
-            discovered.name,
-            discovered.executable,
-            manifest_path,
-        ))
     }
 
     /// Convert DiscoveredExtension to CapabilityInfo

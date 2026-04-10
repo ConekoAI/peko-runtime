@@ -4,7 +4,7 @@
 //! Each submodule handles a specific command category:
 //!
 //! - `agent`: Agent lifecycle management
-//! - `tool`: Tool registry and Pekohub integration
+//! - `ext`: Extension management (tools, skills, MCP servers)
 //! - `session`: Session management and introspection
 //! - `config`: Configuration management
 //! - `system`: System diagnostics and maintenance
@@ -20,14 +20,14 @@ pub mod cron;
 pub mod daemon;
 pub mod ext;
 pub mod gateway;
-pub mod mcp;
+
 pub mod orchestration;
 pub mod provider;
 pub mod send;
 pub mod session;
 pub mod system;
 pub mod team;
-pub mod tool;
+
 pub mod update;
 
 use clap::{Parser, Subcommand};

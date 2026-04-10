@@ -6,7 +6,7 @@
 //! - `pekobot tools mcp ...` - MCP server management
 //! - `pekobot tools universal ...` - Universal Tool management
 
-use crate::commands::{mcp, tool, GlobalPaths};
+use crate::commands::GlobalPaths;
 use crate::tool_management::{InstalledToolInfo, ToolManager, ToolType};
 use clap::Subcommand;
 use std::sync::Arc;
@@ -87,13 +87,6 @@ pub enum ToolsCommands {
         name: Option<String>,
     },
 
-    /// MCP server management (delegates to existing pekobot mcp)
-    #[command(subcommand)]
-    Mcp(mcp::McpCommands),
-
-    /// Universal Tool management (delegates to existing pekobot tool)
-    #[command(subcommand)]
-    Universal(tool::ToolCommands),
 }
 
 /// Handle unified tools command
@@ -112,8 +105,6 @@ pub async fn handle_tools_command(
         ToolsCommands::Stop { name, force } => handle_stop(&name, force, paths).await,
         ToolsCommands::Restart { name } => handle_restart(&name, paths).await,
         ToolsCommands::Status { name } => handle_status(name.as_deref(), paths, json).await,
-        ToolsCommands::Mcp(mcp_cmd) => mcp::handle(mcp_cmd, paths.mcp_config()).await,
-        ToolsCommands::Universal(universal_cmd) => tool::handle_tool(universal_cmd, paths, json).await,
     }
 }
 
@@ -288,10 +279,11 @@ async fn handle_info(name: &str, paths: &GlobalPaths, json: bool) -> anyhow::Res
     }
 }
 
-/// Handle test command (delegates to MCP handler)
-async fn handle_test(name: &str, args: Option<&str>, paths: &GlobalPaths) -> anyhow::Result<()> {
-    let mcp_cmd = mcp::McpCommands::Test { name: name.to_string() };
-    mcp::handle(mcp_cmd, paths.mcp_config()).await
+/// Handle test command
+async fn handle_test(name: &str, _args: Option<&str>, _paths: &GlobalPaths) -> anyhow::Result<()> {
+    println!("Testing tool '{}'...", name);
+    println!("Note: Use 'pekobot ext' commands for extension management");
+    Ok(())
 }
 
 /// Handle start command

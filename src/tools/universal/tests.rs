@@ -216,10 +216,18 @@ for line in sys.stdin:
 "#;
     tokio::fs::write(&script_path, script).await.unwrap();
     
-    let tools = discovery::discover_universal_tools(dir).await.unwrap();
+    // Use ExtensionManager for discovery (legacy discovery module removed)
+    use crate::extensions::adapters::BuiltInAdapters;
+    use crate::extensions::manager::ExtensionManager;
+    let mut manager = ExtensionManager::new();
+    for adapter in BuiltInAdapters::new().adapters() {
+        manager.register_adapter(adapter);
+    }
+    let discovered = manager.scan_directory(dir).await.unwrap();
     
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0].name, "test_tool");
+    assert_eq!(discovered.len(), 1);
+    // The extension type should be "universal-tool" for manifest.json files
+    assert_eq!(discovered[0].extension_type, "universal-tool");
 }
 
 #[test]
