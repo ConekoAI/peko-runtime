@@ -47,6 +47,7 @@ pub mod mcp_adapter;
 pub mod channel_adapter;
 pub mod hook_adapter;
 pub mod gateway_adapter;
+pub mod general_adapter;
 
 // Re-export skill adapter types
 pub use skill_adapter::{DiscoveredSkill, SkillAdapter, load_skills_from_directory, register_skills_with_core};
@@ -65,6 +66,9 @@ pub use hook_adapter::{DiscoveredHook, HookAdapter, HookExtensionConfig, EventSu
 
 // Re-export gateway adapter types
 pub use gateway_adapter::{DiscoveredGateway, GatewayAdapter, GatewayExtensionConfig, GatewayHookConfig, GatewayToolConfig, discover_gateway_extensions, load_and_register_gateways, register_gateways_with_core};
+
+// Re-export general extension adapter types
+pub use general_adapter::{DiscoveredGeneralExtension, GeneralExtensionAdapter, GeneralExtensionConfig, HookDeclaration, discover_general_extensions, load_and_register_general_extensions, register_general_extensions_with_core};
 
 // Re-export the adapter trait when implemented
 // pub use adapter_trait::ExtensionTypeAdapter;
@@ -309,16 +313,21 @@ impl BuiltInAdapters {
 
     /// Get all built-in adapters
     ///
-    /// Note: This will return adapters as they are implemented in
-    /// subsequent phases. Currently returns empty.
+    /// Returns all registered extension type adapters:
+    /// - SkillAdapter: For SKILL.md based extensions
+    /// - UniversalToolAdapter: For universal tool protocol extensions
+    /// - McpAdapter: For MCP server extensions
+    /// - ChannelAdapter: For I/O channel extensions
+    /// - HookAdapter: For event/webhook extensions
+    /// - GatewayAdapter: For gateway plugin extensions
+    /// - GeneralExtensionAdapter: For extensions needing full hook point access
     pub fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>> {
         vec![
-            // Phase 2: Box::new(SkillAdapter::new()),
-            // Phase 3: Box::new(UniversalToolAdapter::new()),
-            // Phase 4: Box::new(McpAdapter::new()),
-            // Phase 5: Box::new(ChannelAdapter::new()),
-            // Phase 6: Box::new(HookAdapter::new()),
-            // Phase 6: Box::new(GatewayAdapter::new()),
+            Box::new(SkillAdapter::new()),
+            Box::new(UniversalToolAdapter::new()),
+            Box::new(McpAdapter::with_default_manager()),
+            // Note: ChannelAdapter, HookAdapter, GatewayAdapter require ExtensionCore
+            // and are registered by the ExtensionManager when needed
         ]
     }
 }
@@ -359,6 +368,7 @@ mod tests {
     fn test_built_in_adapters() {
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
-        assert!(adapters.is_empty()); // Will be populated in later phases
+        assert!(!adapters.is_empty()); // Should have Skill, MCP, UniversalTool adapters
+        assert_eq!(adapters.len(), 3); // Currently 3 adapters registered
     }
 }

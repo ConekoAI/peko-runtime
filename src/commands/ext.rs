@@ -8,6 +8,7 @@
 //! - Configure extensions (global, team, agent levels)
 
 use crate::commands::GlobalPaths;
+use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat, general_adapter};
 use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extensions::types::ExtensionId;
 use clap::Subcommand;
@@ -107,6 +108,34 @@ pub enum ExtCommands {
         #[arg(long, value_name = "AGENT", group = "scope")]
         agent: Option<String>,
     },
+
+    /// Validate an extension manifest
+    ///
+    /// Examples:
+    ///   pekobot ext validate ./my-extension
+    ///   pekobot ext validate ./my-skill --verbose
+    Validate {
+        /// Path to the extension directory or manifest
+        path: PathBuf,
+
+        /// Show detailed validation output
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Debug an installed extension
+    ///
+    /// Shows detailed information about the extension including:
+    /// - Resolved hook bindings
+    /// - Handler registrations
+    /// - Configuration
+    ///
+    /// Examples:
+    ///   pekobot ext debug my-extension
+    Debug {
+        /// Extension ID
+        id: String,
+    },
 }
 
 /// Create an ExtensionManager with all default adapters registered
@@ -134,33 +163,50 @@ fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionM
 
 /// Handle extension subcommands
 pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> anyhow::Result<()> {
-    // Create storage in the data directory
-    let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
-    let mut manager = create_manager_with_adapters(Some(storage));
-
-    // Load all extensions to populate the manager
-    manager.load_all().await?;
-
     match command {
-        ExtCommands::Install { path, r#type } => handle_install(&mut manager, path, r#type).await,
-        ExtCommands::List {
-            enabled_only,
-            r#type,
-        } => handle_list(&manager, enabled_only, r#type),
-        ExtCommands::Enable { id } => handle_enable(&mut manager, id).await,
-        ExtCommands::Disable { id } => handle_disable(&mut manager, id).await,
-        ExtCommands::Uninstall { id } => handle_uninstall(&mut manager, id).await,
-        ExtCommands::Info { id } => handle_info(&manager, id),
-        ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
-        ExtCommands::Config {
-            id,
-            show,
-            set,
-            unset,
-            global,
-            team,
-            agent,
-        } => handle_config(paths, id, show, set, unset, global, team, agent).await,
+        ExtCommands::Validate { path, verbose } => {
+            handle_validate(path, verbose).await
+        }
+        ExtCommands::Debug { id } => {
+            // Create storage in the data directory
+            let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
+            let mut manager = create_manager_with_adapters(Some(storage));
+            // Load all extensions to populate the manager
+            manager.load_all().await?;
+            handle_debug(&manager, id).await
+        }
+        _ => {
+            // Create storage in the data directory
+            let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
+            let mut manager = create_manager_with_adapters(Some(storage));
+
+            // Load all extensions to populate the manager
+            manager.load_all().await?;
+
+            match command {
+                ExtCommands::Install { path, r#type } => handle_install(&mut manager, path, r#type).await,
+                ExtCommands::List {
+                    enabled_only,
+                    r#type,
+                } => handle_list(&manager, enabled_only, r#type),
+                ExtCommands::Enable { id } => handle_enable(&mut manager, id).await,
+                ExtCommands::Disable { id } => handle_disable(&mut manager, id).await,
+                ExtCommands::Uninstall { id } => handle_uninstall(&mut manager, id).await,
+                ExtCommands::Info { id } => handle_info(&manager, id),
+                ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
+                ExtCommands::Config {
+                    id,
+                    show,
+                    set,
+                    unset,
+                    global,
+                    team,
+                    agent,
+                } => handle_config(paths, id, show, set, unset, global, team, agent).await,
+                // These are handled above
+                ExtCommands::Validate { .. } | ExtCommands::Debug { .. } => unreachable!(),
+            }
+        }
     }
 }
 
@@ -573,5 +619,288 @@ async fn handle_config(
     // Save config
     config.save(&paths.data_dir, &id)?;
     
+    Ok(())
+}
+
+/// Handle validate command
+async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
+    use crate::extensions::adapters::{
+        skill_adapter::SkillAdapter,
+        universal_tool_adapter::UniversalToolAdapter,
+        mcp_adapter::McpAdapter,
+        general_adapter::GeneralExtensionAdapter,
+    };
+
+    println!("Validating extension at: {}", path.display());
+    println!();
+
+    if !path.exists() {
+        anyhow::bail!("Path does not exist: {}", path.display());
+    }
+
+    // Try to detect extension type
+    let mut detected = false;
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    // Check for Skill (SKILL.md)
+    let skill_adapter = SkillAdapter::new();
+    if skill_adapter.manifest_format().detect(&path) {
+        detected = true;
+        if verbose {
+            println!("✓ Detected as: skill extension (SKILL.md)");
+        }
+        
+        let skills = skill_adapter.discover_skills(&path);
+        if skills.is_empty() {
+            errors.push("No valid skills found in directory".to_string());
+        } else {
+            if verbose {
+                for skill in &skills {
+                    println!("  ✓ Skill: {} - {}", skill.manifest.name, skill.manifest.description);
+                }
+            }
+            
+            // Validate hook resolution
+            for skill in &skills {
+                let bindings = skill_adapter.resolve_hooks(&skill.manifest);
+                if bindings.is_empty() {
+                    warnings.push(format!("Skill '{}' has no hook bindings", skill.manifest.name));
+                } else if verbose {
+                    println!("  ✓ Resolved {} hook(s)", bindings.len());
+                }
+            }
+        }
+    }
+
+    // Check for Universal Tool (manifest.json)
+    let universal_adapter = UniversalToolAdapter::new();
+    if universal_adapter.manifest_format().detect(&path) {
+        detected = true;
+        if verbose {
+            println!("✓ Detected as: universal tool extension (manifest.json)");
+        }
+        
+        let tools = universal_adapter.discover_tools(&path).await;
+        if tools.is_empty() {
+            errors.push("No valid tools found in directory".to_string());
+        } else {
+            if verbose {
+                for tool in &tools {
+                    println!("  ✓ Tool: {} - {}", tool.manifest.name, tool.manifest.description);
+                }
+            }
+            
+            // Validate hook resolution
+            for tool in &tools {
+                let bindings = universal_adapter.resolve_hooks(&tool.manifest);
+                if bindings.is_empty() {
+                    warnings.push(format!("Tool '{}' has no hook bindings", tool.manifest.name));
+                } else if verbose {
+                    println!("  ✓ Resolved {} hook(s)", bindings.len());
+                }
+            }
+        }
+    }
+
+    // Check for MCP Server (config.toml/config.json)
+    let mcp_adapter = McpAdapter::with_default_manager();
+    if mcp_adapter.manifest_format().detect(&path) {
+        detected = true;
+        if verbose {
+            println!("✓ Detected as: MCP server extension");
+        }
+        
+        let servers = mcp_adapter.discover_servers(&path).await;
+        if servers.is_empty() {
+            errors.push("No valid MCP servers found in directory".to_string());
+        } else {
+            if verbose {
+                for server in &servers {
+                    println!("  ✓ Server: {}", server.manifest.name);
+                }
+            }
+            
+            // Validate hook resolution
+            for server in &servers {
+                let bindings = mcp_adapter.resolve_hooks(&server.manifest);
+                if bindings.is_empty() {
+                    warnings.push(format!("Server '{}' has no hook bindings", server.manifest.name));
+                } else if verbose {
+                    println!("  ✓ Resolved {} hook(s)", bindings.len());
+                }
+            }
+        }
+    }
+
+    // Check for General Extension (manifest.yaml with hooks)
+    let general_adapter = GeneralExtensionAdapter::new();
+    if general_adapter.manifest_format().detect(&path) {
+        detected = true;
+        if verbose {
+            println!("✓ Detected as: general extension");
+        }
+        
+        let extensions = general_adapter::discover_general_extensions(&path).await?;
+        if extensions.is_empty() {
+            errors.push("No valid general extensions found in directory".to_string());
+        } else {
+            for ext in &extensions {
+                if verbose {
+                    println!("  ✓ Extension: {} - {}", ext.manifest.name, ext.manifest.description);
+                    println!("    Hooks declared: {}", ext.hooks.len());
+                }
+                
+                // Validate each hook declaration
+                for hook in &ext.hooks {
+                    // Check if the hook point is valid
+                    let valid_points = [
+                        "prompt.system_section", "prompt.pre_process", "prompt.post_process",
+                        "tool.register", "tool.execute", "tool.execute_async",
+                        "tool.check_status", "tool.cancel", "tool.result_transform",
+                        "session.state_change", "session.compaction", "session.context_build",
+                        "io.channel_input", "io.channel_output", 
+                        "io.message_pre_send", "io.message_post_receive",
+                        "event.subscribe", "event.emit",
+                        "agent.init", "agent.shutdown", "agent.iteration",
+                    ];
+                    
+                    if !valid_points.contains(&hook.point.as_str()) {
+                        warnings.push(format!(
+                            "Extension '{}' has unknown hook point: {}",
+                            ext.manifest.name, hook.point
+                        ));
+                    } else if verbose {
+                        println!("    ✓ Hook: {} -> {}", hook.point, hook.handler);
+                    }
+                }
+                
+                // Validate hook resolution
+                let bindings = general_adapter.resolve_hooks(&ext.manifest);
+                if bindings.is_empty() {
+                    warnings.push(format!("Extension '{}' has no valid hook bindings", ext.manifest.name));
+                } else if verbose {
+                    println!("  ✓ Resolved {} hook binding(s)", bindings.len());
+                }
+            }
+        }
+    }
+
+    println!();
+
+    if !detected {
+        anyhow::bail!(
+            "Could not detect extension type. Expected one of:\n\
+             - SKILL.md (skill extension)\n\
+             - manifest.json (universal tool)\n\
+             - config.toml/config.json (MCP server)\n\
+             - manifest.yaml with hooks (general extension)"
+        );
+    }
+
+    // Print summary
+    if errors.is_empty() && warnings.is_empty() {
+        println!("✓ Validation passed! Extension is valid and ready to install.");
+    } else if errors.is_empty() {
+        println!("⚠ Validation passed with warnings:");
+        for warning in &warnings {
+            println!("  ⚠ {}", warning);
+        }
+    } else {
+        println!("✗ Validation failed with errors:");
+        for error in &errors {
+            println!("  ✗ {}", error);
+        }
+        if !warnings.is_empty() {
+            println!();
+            println!("Additional warnings:");
+            for warning in &warnings {
+                println!("  ⚠ {}", warning);
+            }
+        }
+        anyhow::bail!("Extension validation failed");
+    }
+
+    Ok(())
+}
+
+/// Handle debug command
+async fn handle_debug(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
+    let ext_id = ExtensionId::new(&id);
+
+    let ext = manager
+        .get_extension(&ext_id)
+        .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", id))?;
+
+    println!("Debug Information for Extension: {}", id);
+    println!("{}", "=".repeat(60));
+    println!();
+
+    // Basic info
+    println!("Basic Information:");
+    println!("  ID:          {}", ext.manifest.id);
+    println!("  Name:        {}", ext.manifest.name);
+    println!("  Type:        {}", ext.extension_type);
+    println!("  Version:     {}", ext.manifest.version);
+    println!("  Status:      {}", if ext.enabled { "enabled" } else { "disabled" });
+    println!("  Description: {}", ext.manifest.description);
+    println!("  Path:        {}", ext.path.display());
+    println!();
+
+    // Hook registrations
+    println!("Hook Registrations:");
+    if ext.hook_ids.is_empty() {
+        println!("  (no hooks registered)");
+    } else {
+        println!("  Total hooks: {}", ext.hook_ids.len());
+        
+        // Get hook details from core
+        let core = manager.core();
+        let all_hooks = core.get_all_hooks().await;
+        
+        for hook_id in &ext.hook_ids {
+            if let Some(hook) = all_hooks.iter().find(|h| &h.id == hook_id) {
+                println!();
+                println!("  Hook ID:     {}", hook_id);
+                println!("    Point:     {}", hook.point.name());
+                println!("    Category:  {}", hook.point.category());
+                println!("    Priority:  {}", hook.priority);
+                println!("    Enabled:   {}", hook.enabled);
+            } else {
+                println!();
+                println!("  Hook ID:     {}", hook_id);
+                println!("    (details unavailable - hook may be pending)");
+            }
+        }
+    }
+    println!();
+
+    // Manifest metadata
+    println!("Manifest Metadata:");
+    if ext.manifest.metadata.is_empty() {
+        println!("  (no additional metadata)");
+    } else {
+        for (key, value) in &ext.manifest.metadata {
+            // Truncate long values
+            let value_str = format!("{}", value);
+            let display_value = if value_str.len() > 100 {
+                format!("{}... (truncated)", &value_str[..100])
+            } else {
+                value_str
+            };
+            println!("  {}: {}", key, display_value);
+        }
+    }
+    println!();
+
+    // Extension Core stats
+    println!("Extension Core Statistics:");
+    let core = manager.core();
+    println!("  Total hooks registered: {}", core.hook_count().await);
+    println!("  Hooks for this extension: {}", ext.hook_ids.len());
+    println!();
+
+    println!("Debug complete.");
+
     Ok(())
 }
