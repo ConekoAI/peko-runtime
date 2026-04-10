@@ -53,9 +53,10 @@ impl Agent {
         use crate::tools::session_introspection::AgentSessionRegistry;
 
         // Create core tools only (web tools now provided via MCP)
+        let workspace = self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone();
         let mut tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(FileSystemTool::new()),
-            Arc::new(ShellTool::new()),
+            Arc::new(FileSystemTool::new().with_workspace(workspace.clone())),
+            Arc::new(ShellTool::new().with_workspace(workspace.clone())),
         ];
 
         // Add session introspection tools backed by the real session manager
@@ -111,29 +112,15 @@ impl Agent {
 
         // Create core tools (granular filesystem tools are now preferred over FileSystemTool)
         // Initialize granular tools with workspace if configured
+        let workspace = self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone();
         let mut tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(ShellTool::new()),
+            Arc::new(ShellTool::new().with_workspace(workspace.clone())),
             // Granular filesystem tools - initialized with workspace if available
-            Arc::new(
-                ReadFileTool::new()
-                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
-            ),
-            Arc::new(
-                WriteFileTool::new()
-                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
-            ),
-            Arc::new(
-                GlobTool::new()
-                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
-            ),
-            Arc::new(
-                GrepTool::new()
-                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
-            ),
-            Arc::new(
-                StrReplaceFileTool::new()
-                    .with_workspace(self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone()),
-            ),
+            Arc::new(ReadFileTool::new().with_workspace(workspace.clone())),
+            Arc::new(WriteFileTool::new().with_workspace(workspace.clone())),
+            Arc::new(GlobTool::new().with_workspace(workspace.clone())),
+            Arc::new(GrepTool::new().with_workspace(workspace.clone())),
+            Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
         ];
 
         // Add session introspection tools backed by the real session manager

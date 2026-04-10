@@ -58,6 +58,11 @@ Write-Host "Enabled shell tool via extension framework" -ForegroundColor Green
 # Get workspace directory
 $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$agentName"
 
+# Create test subdirectory before tests (for TEST 2)
+New-Item -ItemType Directory -Path "$workspaceDir/testdir" -Force | Out-Null
+"test file" | Out-File -FilePath "$workspaceDir/testdir/test.txt" -Encoding UTF8
+Write-Host "Created test subdirectory" -ForegroundColor Green
+
 # ============================================================
 # TEST 1: Basic shell command
 # ============================================================
@@ -67,7 +72,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $cmd = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dir" } else { "ls" }
 Write-Host "Sending request to execute $cmd..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your shell tool to run '$cmd' in your workspace. Report the output." --no-stream 2>&1
+$result = pekobot send $agentName "Use your shell tool to run '$cmd' in your workspace. Report the output." --no-stream 2>$null
 Write-Host "Response: $result"
 
 if ($result -match "Directory" -or $result -match "total" -or $result -match "file") {
@@ -83,12 +88,8 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 2: Shell with different working directory" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Create a subdirectory
-New-Item -ItemType Directory -Path "$workspaceDir/testdir" -Force | Out-Null
-"test file" | Out-File -FilePath "$workspaceDir/testdir/test.txt" -Encoding UTF8
-
 Write-Host "Sending request to list files in subdirectory..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your shell tool to run '$cmd' in the 'testdir' subdirectory. Report what files you see." --no-stream 2>&1
+$result = pekobot send $agentName "Use your shell tool to run '$cmd' with the cwd parameter set to 'testdir'. This will list files in the testdir subdirectory. Report what files you see." --no-stream 2>$null
 Write-Host "Response: $result"
 
 if ($result -match "test.txt") {
