@@ -10,19 +10,17 @@ use crate::cap::builtin::BuiltInCapabilityRegistry;
 use crate::common::paths::PathResolver;
 use crate::mcp::config::McpConfig;
 use crate::cap::{
-    CapabilityCatalog, CapabilityInfo, CapabilitySearchResult, CapabilityType,
+    CapabilityCatalog, CapabilityInfo, CapabilitySearchResult,
 };
 use crate::tool_registry::{
-    InstalledTool as RegistryInstalledTool, RemoteRegistryClient,
-    RemoteRegistryConfig, ToolRegistry, ToolRegistryConfig,
+    RemoteRegistryClient, RemoteRegistryConfig, ToolRegistry, ToolRegistryConfig,
 };
-use crate::tools::universal::discovery::{self, DiscoveredTool};
+use crate::tools::universal::discovery::DiscoveredTool;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::warn;
 
 /// Unified capability catalog implementation
 pub struct CapabilityCatalogImpl {
@@ -122,11 +120,19 @@ impl CapabilityCatalogImpl {
 
     /// Load Universal Capabilities from tools directory
     async fn load_universal_capabilities(&self) -> anyhow::Result<Vec<CapabilityInfo>> {
-        let discovered = discovery::discover_universal_tools(&self.tools_dir).await?;
+        // Use ExtensionManager for unified discovery
+        use crate::extensions::adapters::BuiltInAdapters;
+        use crate::extensions::manager::ExtensionManager;
+        let mut manager = ExtensionManager::new();
+        for adapter in BuiltInAdapters::new().adapters() {
+            manager.register_adapter(adapter);
+        }
+
+        let discovered = manager.scan_directory(&self.tools_dir).await?;
 
         let mut caps = Vec::new();
-        for discovered_tool in discovered {
-            let info = self.discovered_to_info(discovered_tool).await;
+        for discovered_ext in discovered {
+            let info = self.discovered_ext_to_info(discovered_ext).await;
             match info {
                 Ok(c) => caps.push(c),
                 Err(e) => warn!("Failed to load universal tool: {}", e),
@@ -152,6 +158,60 @@ impl CapabilityCatalogImpl {
             discovered.executable,
             manifest_path,
         ))
+    }
+
+    /// Convert DiscoveredExtension to CapabilityInfo
+    async fn discovered_ext_to_info(
+        &self,
+        discovered: crate::extensions::manager::DiscoveredExtension,
+    ) -> anyhow::Result<CapabilityInfo> {
+        // Find executable
+        let tool_name = discovered.manifest_path.parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        
+        let tool_path = discovered.path.clone();
+        let executable = self.find_executable(&tool_path, tool_name).await;
+
+        Ok(CapabilityInfo::universal(
+            tool_name.to_string(),
+            executable.unwrap_or_else(|| tool_path.join(tool_name)),
+            Some(discovered.manifest_path),
+        ))
+    }
+
+    /// Find executable for a tool
+    async fn find_executable(&self, tool_path: &std::path::Path, tool_name: &str) -> Option<std::path::PathBuf> {
+        // Try common patterns
+        let candidates = vec![
+            tool_path.join(format!("{}.py", tool_name)),
+            tool_path.join(format!("{}.js", tool_name)),
+            tool_path.join(format!("{}.sh", tool_name)),
+            tool_path.join(tool_name),
+        ];
+
+        for candidate in candidates {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+
+        // Fallback: find any file that's not manifest.json
+        if let Ok(mut entries) = tokio::fs::read_dir(tool_path).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(name) = path.file_name() {
+                        if name != "manifest.json" {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Load downloaded capabilities from local registry

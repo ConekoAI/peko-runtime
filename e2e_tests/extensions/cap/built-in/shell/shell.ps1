@@ -4,7 +4,7 @@
 # Tests the Shell tool for executing system commands.
 
 param(
-    [string]$Provider = "kimi"
+    [string]$Provider = "minimax"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +14,8 @@ Write-Host "Shell Tool E2E Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Check prerequisites
-if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
-    Write-Error "KIMI_API_KEY environment variable not set"
+if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
+    Write-Error "MINIMAX_API_KEY environment variable not set"
     exit 1
 }
 
@@ -43,12 +43,12 @@ if (Test-Path $DataDir) {
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create agent with coding template
+# Create agent
 $agentName = "shell_test"
-pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
+pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable shell tool via extension framework
@@ -72,7 +72,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $cmd = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dir" } else { "ls" }
 Write-Host "Sending request to execute $cmd..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your shell tool to run '$cmd' in your workspace. Report the output." --no-stream 2>$null
+$result = pekobot send $agentName "Use your shell tool to check what's in your workspace." --no-stream 2>$null
 Write-Host "Response: $result"
 
 if ($result -match "Directory" -or $result -match "total" -or $result -match "file") {
@@ -89,7 +89,7 @@ Write-Host "TEST 2: Shell with different working directory" -ForegroundColor Cya
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to list files in subdirectory..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your shell tool to run '$cmd' with the cwd parameter set to 'testdir'. This will list files in the testdir subdirectory. Report what files you see." --no-stream 2>$null
+$result = pekobot send $agentName "Use your shell tool to check what's in testdir." --no-stream 2>$null
 Write-Host "Response: $result"
 
 if ($result -match "test.txt") {

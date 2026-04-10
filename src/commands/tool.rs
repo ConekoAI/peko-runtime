@@ -236,8 +236,6 @@ async fn generate_manifest_from_tool(executable: &PathBuf) -> anyhow::Result<cra
 
 /// Handle list command
 async fn handle_list(long: bool) -> anyhow::Result<()> {
-    use crate::tools::universal::discover_universal_tools;
-
     let tools_dir = tools_dir();
     println!("🔧 Installed Universal Tools:");
     println!("   Location: {}", tools_dir.display());
@@ -249,7 +247,15 @@ async fn handle_list(long: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let discovered = discover_universal_tools(&tools_dir).await?;
+    // Use ExtensionManager for unified discovery
+    use crate::extensions::adapters::BuiltInAdapters;
+    use crate::extensions::manager::ExtensionManager;
+    let mut manager = ExtensionManager::new();
+    for adapter in BuiltInAdapters::new().adapters() {
+        manager.register_adapter(adapter);
+    }
+
+    let discovered = manager.scan_directory(&tools_dir).await?;
 
     if discovered.is_empty() {
         println!("  No tools installed.");
@@ -258,15 +264,16 @@ async fn handle_list(long: bool) -> anyhow::Result<()> {
     }
 
     for tool in &discovered {
+        let tool_name = tool.path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
         if long {
-            println!("  📦 {}", tool.name);
-            println!("     Executable: {}", tool.executable.display());
-            if let Some(ref m) = tool.manifest {
-                println!("     Manifest: {}", m.display());
-            }
+            println!("  📦 {}", tool_name);
+            println!("     Path: {}", tool.path.display());
+            println!("     Manifest: {}", tool.manifest_path.display());
             println!();
         } else {
-            println!("  📦 {}", tool.name);
+            println!("  📦 {}", tool_name);
         }
     }
 
@@ -274,7 +281,10 @@ async fn handle_list(long: bool) -> anyhow::Result<()> {
     println!("Enable tools in your agent's config.toml:");
     println!("  [tools]");
     println!("  enabled = [\"shell\", \"filesystem{}, \"...\"]",
-        discovered.iter().map(|t| format!(", \"{}\"", t.name)).collect::<String>()
+        discovered.iter().map(|t| {
+            let name = t.path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+            format!(", \"{}\"", name)
+        }).collect::<String>()
     );
 
     Ok(())

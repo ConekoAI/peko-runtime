@@ -42,7 +42,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Universal tool extension type identifier
 pub const UNIVERSAL_TOOL_EXTENSION_TYPE: &str = "universal-tool";
@@ -61,6 +61,9 @@ impl UniversalToolAdapter {
     }
 
     /// Discover universal tools from a directory
+    ///
+    /// REFACTORED: Previously called deprecated discover_universal_tools().
+    /// Now implements its own directory scanning logic.
     pub async fn discover_tools(&self, path: &Path) -> Vec<DiscoveredUniversalTool> {
         let mut tools = Vec::new();
 
@@ -69,7 +72,7 @@ impl UniversalToolAdapter {
             return tools;
         }
 
-        let entries = match tokio::fs::read_dir(path).await {
+        let mut entries = match tokio::fs::read_dir(path).await {
             Ok(entries) => entries,
             Err(e) => {
                 warn!("Failed to read tools directory {:?}: {}", path, e);
@@ -77,32 +80,122 @@ impl UniversalToolAdapter {
             }
         };
 
-        // Use the existing discovery logic from tools::universal
-        match crate::tools::universal::discover_universal_tools(path).await {
-            Ok(discovered) => {
-                for tool in discovered {
-                    if let Some(manifest_path) = tool.manifest {
-                        match self.parse_tool_manifest(&manifest_path, &tool.executable).await {
-                            Ok(manifest) => {
-                                tools.push(DiscoveredUniversalTool {
-                                    manifest,
-                                    executable: tool.executable,
-                                    manifest_path,
-                                });
-                            }
-                            Err(e) => {
-                                warn!("Failed to parse tool manifest {:?}: {}", manifest_path, e);
-                            }
-                        }
+        // Scan directory for tool subdirectories
+        while let Some(entry) = entries.next_entry().await.ok().flatten() {
+            let tool_path = entry.path();
+
+            // Skip non-directories and hidden
+            if !tool_path.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+
+            // Look for manifest.json
+            let manifest_path = tool_path.join("manifest.json");
+            if !manifest_path.exists() {
+                trace!("No manifest.json found in {}", tool_path.display());
+                continue;
+            }
+
+            // Parse manifest to get tool info
+            match self.parse_tool_manifest_with_discovery(&manifest_path).await {
+                Ok((manifest, tool_name)) => {
+                    // Find executable
+                    if let Some(executable) = self.find_executable(&tool_path, &tool_name).await {
+                        tools.push(DiscoveredUniversalTool {
+                            manifest,
+                            executable,
+                            manifest_path,
+                        });
                     }
                 }
-            }
-            Err(e) => {
-                warn!("Failed to discover universal tools: {}", e);
+                Err(e) => {
+                    warn!("Failed to parse manifest {:?}: {}", manifest_path, e);
+                }
             }
         }
 
         tools
+    }
+
+    /// Parse manifest and extract tool name for discovery
+    async fn parse_tool_manifest_with_discovery(
+        &self,
+        manifest_path: &Path,
+    ) -> Result<(ExtensionManifest, String)> {
+        let content = tokio::fs::read_to_string(manifest_path)
+            .await
+            .with_context(|| format!("Failed to read manifest {:?}", manifest_path))?;
+
+        let tool_manifest: crate::tools::universal::Manifest = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse manifest {:?}", manifest_path))?;
+
+        let mut manifest = ExtensionManifest::new(
+            &tool_manifest.name,
+            UNIVERSAL_TOOL_EXTENSION_TYPE,
+            &tool_manifest.name,
+            &tool_manifest.description,
+            "1.0.0",
+            manifest_path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        );
+
+        // Store additional metadata
+        manifest.set("parameters", tool_manifest.parameters.clone());
+
+        if let Some(llm_desc) = tool_manifest.llm_description {
+            manifest.set("llm_description", llm_desc);
+        }
+
+        // Store reserved parameters
+        let reserved_config =
+            crate::extensions::services::ReservedParamsConfig::from_universal_legacy(
+                &tool_manifest.reserved_parameters,
+            );
+        if !reserved_config.is_empty() {
+            manifest.set(
+                "reserved_parameters",
+                serde_json::to_value(&reserved_config).unwrap_or_default(),
+            );
+        }
+
+        Ok((manifest, tool_manifest.name))
+    }
+
+    /// Find executable for a tool
+    async fn find_executable(&self, tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
+        // Try common patterns
+        let candidates = vec![
+            tool_path.join(format!("{}.py", tool_name)),
+            tool_path.join(format!("{}.js", tool_name)),
+            tool_path.join(format!("{}.sh", tool_name)),
+            tool_path.join(tool_name),
+        ];
+
+        for candidate in candidates {
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+
+        // Fallback: find any executable file that's not manifest.json
+        let mut entries = tokio::fs::read_dir(tool_path).await.ok()?;
+        while let Some(entry) = entries.next_entry().await.ok().flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name() {
+                    if name != "manifest.json" {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Parse a manifest.json file into an extension manifest

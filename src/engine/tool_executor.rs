@@ -153,7 +153,7 @@ impl ToolExecutor {
                 );
             }
             Err(e) => {
-                warn!(
+                info!(
                     tool = %tool_name,
                     error = %e,
                     duration_ms = duration.as_millis() as u64,

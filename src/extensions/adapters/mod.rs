@@ -41,6 +41,7 @@
 //! ```
 
 // Extension type adapters
+pub mod builtin_tool_adapter;
 pub mod skill_adapter;
 pub mod universal_tool_adapter;
 pub mod mcp_adapter;
@@ -48,6 +49,9 @@ pub mod channel_adapter;
 pub mod hook_adapter;
 pub mod gateway_adapter;
 pub mod general_adapter;
+
+// Re-export built-in tool adapter
+pub use builtin_tool_adapter::BuiltinToolAdapter;
 
 // Re-export skill adapter types
 pub use skill_adapter::{DiscoveredSkill, SkillAdapter, load_skills_from_directory, register_skills_with_core};

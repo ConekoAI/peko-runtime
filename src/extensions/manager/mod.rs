@@ -7,7 +7,7 @@
 //! - Bundling and packaging
 
 use crate::extensions::adapters::{ExtensionTypeAdapter, ExtensionState};
-use crate::extensions::core::ExtensionCore;
+use crate::extensions::core::{ExtensionCore, HookPoint};
 use crate::extensions::types::{ExtensionId, ExtensionManifest, HookId};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -129,6 +129,17 @@ pub struct ExtensionBundle {
     pub name: String,
     pub extensions: Vec<ExtensionManifest>,
     pub metadata: BundleMetadata,
+}
+
+/// Information about a built-in tool
+#[derive(Debug, Clone)]
+pub struct BuiltinToolInfo {
+    /// Full extension ID (e.g., "builtin:shell")
+    pub id: String,
+    /// Tool name without prefix (e.g., "shell")
+    pub name: String,
+    /// Whether the tool is currently enabled
+    pub enabled: bool,
 }
 
 /// Metadata for an extension bundle
@@ -578,6 +589,267 @@ impl ExtensionManager {
 
         Ok(installed_ids)
     }
+
+    // ============================================================================
+    // Built-in Tool Support
+    // ============================================================================
+
+    /// List all built-in tools registered with ExtensionCore
+    ///
+    /// Built-in tools have extension IDs starting with "builtin:"
+    pub async fn list_builtin_tools(&self) -> Vec<BuiltinToolInfo> {
+        let mut builtins = Vec::new();
+        
+        // Get all hooks from ExtensionCore
+        let hooks = self.core.get_all_hooks().await;
+        
+        // Group hooks by extension ID
+        let mut builtin_extensions: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+        
+        for hook in hooks {
+            if hook.extension_id.0.starts_with("builtin:") {
+                builtin_extensions
+                    .entry(hook.extension_id.0.clone())
+                    .or_default()
+                    .push(hook);
+            }
+        }
+        
+        // Create BuiltinToolInfo for each unique builtin
+        for (ext_id, hooks) in builtin_extensions {
+            let tool_name = ext_id.strip_prefix("builtin:").unwrap_or(&ext_id).to_string();
+            let enabled = hooks.iter().any(|h| h.enabled);
+            let has_execute_hook = hooks.iter().any(|h| {
+                matches!(h.point, HookPoint::ToolExecute { .. })
+            });
+            
+            if has_execute_hook {
+                builtins.push(BuiltinToolInfo {
+                    id: ext_id,
+                    name: tool_name,
+                    enabled,
+                });
+            }
+        }
+        
+        builtins.sort_by(|a, b| a.name.cmp(&b.name));
+        builtins
+    }
+
+    /// Enable a built-in tool by name
+    ///
+    /// # Arguments
+    /// * `tool_name` - The tool name (with or without "builtin:" prefix)
+    pub async fn enable_builtin(&self, tool_name: &str) -> Result<()> {
+        let ext_id = if tool_name.starts_with("builtin:") {
+            tool_name.to_string()
+        } else {
+            format!("builtin:{}", tool_name)
+        };
+        
+        let hooks = self.core.get_hooks_for_extension(&ExtensionId::new(&ext_id)).await;
+        
+        if hooks.is_empty() {
+            anyhow::bail!("Built-in tool '{}' not found", tool_name);
+        }
+        
+        for hook in hooks {
+            self.core.enable_hook(&hook.id).await?;
+        }
+        
+        info!("Enabled built-in tool '{}'", tool_name);
+        Ok(())
+    }
+
+    /// Disable a built-in tool by name
+    ///
+    /// # Arguments
+    /// * `tool_name` - The tool name (with or without "builtin:" prefix)
+    pub async fn disable_builtin(&self, tool_name: &str) -> Result<()> {
+        let ext_id = if tool_name.starts_with("builtin:") {
+            tool_name.to_string()
+        } else {
+            format!("builtin:{}", tool_name)
+        };
+        
+        let hooks = self.core.get_hooks_for_extension(&ExtensionId::new(&ext_id)).await;
+        
+        if hooks.is_empty() {
+            anyhow::bail!("Built-in tool '{}' not found", tool_name);
+        }
+        
+        for hook in hooks {
+            self.core.disable_hook(&hook.id).await?;
+        }
+        
+        info!("Disabled built-in tool '{}'", tool_name);
+        Ok(())
+    }
+
+    /// Check if a built-in tool is enabled
+    pub async fn is_builtin_enabled(&self, tool_name: &str) -> bool {
+        let ext_id = if tool_name.starts_with("builtin:") {
+            tool_name.to_string()
+        } else {
+            format!("builtin:{}", tool_name)
+        };
+        
+        let hooks = self.core.get_hooks_for_extension(&ExtensionId::new(&ext_id)).await;
+        hooks.iter().any(|h| h.enabled)
+    }
+
+    /// Scan a specific directory for extensions without loading them
+    ///
+    /// This is used for:
+    /// - Legacy tools directory (~/.pekobot/tools/)
+    /// - Workspace custom tools (./tools/)
+    /// - CAP catalog discovery
+    ///
+    /// Unlike `load_all()`, this scans an arbitrary path, not just discovery_paths.
+    pub async fn scan_directory(&self, path: &Path) -> Result<Vec<DiscoveredExtension>> {
+        let mut discovered = Vec::new();
+
+        if !path.exists() {
+            return Ok(discovered);
+        }
+
+        let mut entries = tokio::fs::read_dir(path).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            // Try to detect extension type using registered adapters
+            if let Some(adapter) = self.detect_extension_type(&path) {
+                let format = adapter.manifest_format();
+                if let Some(manifest_path) = format.manifest_path(&path) {
+                    discovered.push(DiscoveredExtension {
+                        path,
+                        manifest_path,
+                        extension_type: adapter.extension_type().to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(discovered)
+    }
+
+    /// Load extensions from a directory without installing to storage
+    ///
+    /// This loads extensions into the manager and registers their hooks,
+    /// but does NOT copy them to the storage directory.
+    ///
+    /// Returns the IDs of loaded extensions.
+    pub async fn load_from_directory(&mut self, path: &Path) -> Result<Vec<ExtensionId>> {
+        let discovered = self.scan_directory(path).await?;
+        let mut loaded_ids = Vec::new();
+
+        for discovered_ext in discovered {
+            // Check if already loaded
+            let manifest_content = tokio::fs::read_to_string(&discovered_ext.manifest_path).await?;
+            let adapter = self
+                .adapters
+                .get(&discovered_ext.extension_type)
+                .context("Adapter not found for extension type")?;
+            
+            let manifest = adapter
+                .parse_manifest(&discovered_ext.manifest_path, &manifest_content)?;
+            
+            if self.extensions.contains_key(&manifest.id) {
+                debug!("Extension '{}' already loaded, skipping", manifest.id);
+                continue;
+            }
+
+            // Load the extension
+            match self.try_load_extension(&discovered_ext.path).await {
+                Ok(id) => {
+                    loaded_ids.push(id);
+                }
+                Err(e) => {
+                    warn!("Failed to load extension from {:?}: {}", discovered_ext.path, e);
+                }
+            }
+        }
+
+        Ok(loaded_ids)
+    }
+
+    /// Get loaded universal tools as Arc<dyn Tool> trait objects
+    ///
+    /// This bridges the gap between ExtensionManager (tracks metadata)
+    /// and Agent (needs executable Tool instances).
+    ///
+    /// Only extensions of type "universal-tool" are returned.
+    pub async fn get_tool_instances(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
+        let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+
+        for (ext_id, loaded_ext) in &self.extensions {
+            if !loaded_ext.enabled {
+                continue;
+            }
+
+            // Only universal tools can be converted to Tool trait objects
+            if loaded_ext.extension_type == "universal-tool" {
+                if let Some(tool) = self.create_tool_instance(ext_id).await {
+                    tools.push(tool);
+                }
+            }
+        }
+
+        tools
+    }
+
+    /// Create a Tool trait object from a loaded universal tool extension
+    async fn create_tool_instance(&self, ext_id: &ExtensionId) -> Option<Arc<dyn crate::tools::Tool>> {
+        let loaded = self.extensions.get(ext_id)?;
+
+        // Find the manifest.json and executable paths
+        let manifest_path = loaded.path.join("manifest.json");
+        
+        // Try to find executable with same name as tool
+        let tool_name = &loaded.manifest.name;
+        let executable_candidates = vec![
+            loaded.path.join(format!("{}.py", tool_name)),
+            loaded.path.join(format!("{}.js", tool_name)),
+            loaded.path.join(format!("{}.sh", tool_name)),
+            loaded.path.join(tool_name),
+        ];
+
+        let executable = executable_candidates
+            .into_iter()
+            .find(|p| p.exists())
+            .or_else(|| {
+                // Fallback: find any file that's not manifest.json
+                std::fs::read_dir(&loaded.path)
+                    .ok()?
+                    .flatten()
+                    .find(|e| {
+                        let name = e.file_name();
+                        name != "manifest.json" && e.path().is_file()
+                    })
+                    .map(|e| e.path())
+            })?;
+
+        // Create UniversalToolAdapter from manifest
+        match crate::tools::universal::UniversalToolAdapter::from_manifest(&manifest_path, &executable).await {
+            Ok(adapter) => Some(Arc::new(adapter)),
+            Err(e) => {
+                warn!("Failed to create tool instance for '{}': {}", ext_id, e);
+                None
+            }
+        }
+    }
+}
+
+/// Discovered extension before loading
+#[derive(Debug, Clone)]
+pub struct DiscoveredExtension {
+    pub path: PathBuf,
+    pub manifest_path: PathBuf,
+    pub extension_type: String,
 }
 
 impl Default for ExtensionManager {

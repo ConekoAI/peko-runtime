@@ -10,8 +10,7 @@ use crate::session::manager::SessionManager;
 use crate::session::types::{ChannelType, Peer};
 use crate::tools::agent_spawn::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
-use anyhow::{Context, Result};
-use std::path::PathBuf;
+use anyhow::Result;
 use std::sync::{Arc, RwLock};
 use tokio::sync::RwLock as TokioRwLock;
 use tracing::{debug, error, info, warn};
@@ -104,9 +103,9 @@ impl Agent {
     /// and adds them to the built-in tools.
     async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
         use crate::tools::{
-            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            GlobTool, GrepTool, ReadFileTool, SessionStatusTool, ShellTool,
-            SessionsSendTool, StrReplaceFileTool, Tool, ToolFactory, WriteFileTool,
+            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, GlobTool, GrepTool,
+            ReadFileTool, SessionStatusTool, ShellTool, SessionsSendTool,
+            StrReplaceFileTool, Tool, ToolFactory, WriteFileTool,
         };
         use crate::tools::session_introspection::AgentSessionRegistry;
 
@@ -187,21 +186,27 @@ impl Agent {
                 tools_dir.display(),
                 self.config.name
             );
-            use crate::tools::universal::load_universal_tools;
-            match load_universal_tools(&tools_dir).await {
-                Ok(universal_tools) => {
-                    if universal_tools.is_empty() {
+            // Use ExtensionManager for unified tool discovery
+            use crate::extensions::adapters::BuiltInAdapters;
+            use crate::extensions::manager::ExtensionManager;
+            let mut manager = ExtensionManager::new();
+            for adapter in BuiltInAdapters::new().adapters() {
+                manager.register_adapter(adapter);
+            }
+            match manager.load_from_directory(&tools_dir).await {
+                Ok(loaded_ids) => {
+                    if loaded_ids.is_empty() {
                         tracing::info!("No Universal Tools found in {}", tools_dir.display());
                     } else {
                         tracing::info!(
                             "✅ Discovered {} Universal Tools: {:?}",
-                            universal_tools.len(),
-                            universal_tools.iter().map(|t| t.name()).collect::<Vec<_>>()
+                            loaded_ids.len(),
+                            loaded_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>()
                         );
-                        // Convert UniversalToolAdapter to Arc<dyn Tool>
-                        // They will be filtered by tools.enabled config below
+                        // Get tools as Arc<dyn Tool>
+                        let universal_tools = manager.get_tool_instances().await;
                         for tool in universal_tools {
-                            tools.push(Arc::new(tool));
+                            tools.push(tool);
                         }
                     }
                 }
