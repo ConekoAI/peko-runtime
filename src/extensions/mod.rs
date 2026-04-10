@@ -99,12 +99,19 @@ pub use types::{
     USER_HOOK_PRIORITY,
 };
 
+// Re-export services
+pub use services::{
+    ParamSource, ReservedParamsConfig, ReservedParamsService, Services as ExtensionServicesContainer,
+    ToolExecutionConfig, ToolExecutionService,
+};
+
 // Submodules
 pub mod adapters;
 pub mod async_integration;
 pub mod core;
 pub mod manager;
 pub mod migration;
+pub mod services;
 pub mod types;
 
 /// Extension type identifiers

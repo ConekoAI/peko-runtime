@@ -29,7 +29,9 @@
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
+    ToolExecutionConfig, // NEW
 };
+use crate::extensions::services::ReservedParamsConfig; // NEW
 use crate::extensions::types::{
     AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
@@ -569,19 +571,53 @@ impl HookHandler for McpToolExecuteHandler {
         debug!(
             server_name = %self.server_name,
             tool_name = %actual_tool,
-            "Executing MCP tool"
+            "Executing MCP tool via Extension Framework"
         );
 
+        // Get server configuration for reserved parameters
+        let server_config = {
+            let manager = self.manager.read().await;
+            manager.get_server_config(&self.server_name).await
+        };
+        
+        // Build reserved params config from server config
+        let reserved_params = server_config
+            .as_ref()
+            .map(|c| ReservedParamsConfig::from_mcp_legacy(&c.reserved_parameters))
+            .unwrap_or_default();
+        
+        // Use basic object schema (MCP doesn't expose full JSON schema for validation)
+        let tool_schema = serde_json::json!({"type": "object"});
+        
+        // Build execution config
+        let exec_config = ToolExecutionConfig::new(reserved_params, tool_schema);
+        
+        // Use the unified ToolExecutionService for parameter injection and execution
+        use crate::extensions::services::ToolExecutionService;
+        
+        // Validate that user didn't provide reserved params
+        if let Err(e) = ToolExecutionService::validate_user_params(&params, &exec_config.reserved_params) {
+            return HookResult::Error(e);
+        }
+        
+        // Inject reserved parameters
+        let merged_params = ToolExecutionService::inject_reserved_params(
+            params,
+            &exec_config.reserved_params,
+            ctx.as_tool_context()
+        );
+        
+        // Execute via MCP manager
         let manager = self.manager.read().await;
-        match manager
-            .call_tool(&self.server_name, actual_tool, params)
-            .await
-        {
-            Ok(result) => {
+        let result = manager.call_tool(&self.server_name, actual_tool, merged_params).await;
+        drop(manager);
+
+        match result {
+            Ok(mcp_result) => {
                 // Convert MCP result to JSON
                 let json_result = serde_json::json!({
-                    "success": !result.is_error,
-                    "contents": result.content.iter().map(|c| match c {
+                    "success": !mcp_result.is_error,
+                    "contents": mcp_result.content.iter().map(|c| match c {
                         crate::mcp::types::ToolResultContent::Text(t) => serde_json::json!({
                             "type": "text",
                             "text": t.text

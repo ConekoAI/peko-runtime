@@ -29,7 +29,9 @@
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
+    ToolExecutionConfig, // NEW
 };
+use crate::extensions::services::ReservedParamsConfig; // NEW
 use crate::extensions::types::{
     AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
@@ -128,10 +130,16 @@ impl UniversalToolAdapter {
         // Store additional metadata
         manifest.set("executable", executable.to_string_lossy().to_string());
         manifest.set("manifest_path", manifest_path.to_string_lossy().to_string());
-        manifest.set("parameters", tool_manifest.parameters);
+        manifest.set("parameters", tool_manifest.parameters.clone());
         
         if let Some(llm_desc) = tool_manifest.llm_description {
             manifest.set("llm_description", llm_desc);
+        }
+        
+        // Store reserved parameters (convert to unified format)
+        let reserved_config = ReservedParamsConfig::from_universal_legacy(&tool_manifest.reserved_parameters);
+        if !reserved_config.is_empty() {
+            manifest.set("reserved_parameters", serde_json::to_value(&reserved_config).unwrap_or_default());
         }
 
         Ok(manifest)
@@ -351,11 +359,27 @@ impl HookHandlerFactory for UniversalToolExecuteFactory {
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_default();
+        
+        // Extract reserved parameters from manifest
+        let reserved_params = self
+            .manifest
+            .get("reserved_parameters")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        
+        // Extract full parameter schema
+        let full_schema = self
+            .manifest
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"type": "object"}));
 
         Box::new(UniversalToolExecuteHandler {
             tool_name: self.manifest.name.clone(),
             executable,
             manifest_path,
+            reserved_params,
+            full_schema,
         })
     }
 }
@@ -366,6 +390,8 @@ struct UniversalToolExecuteHandler {
     tool_name: String,
     executable: PathBuf,
     manifest_path: PathBuf,
+    reserved_params: ReservedParamsConfig,
+    full_schema: serde_json::Value,
 }
 
 #[async_trait]
@@ -391,30 +417,39 @@ impl HookHandler for UniversalToolExecuteHandler {
         debug!(
             tool_name = %self.tool_name,
             params = %serde_json::to_string(&params).unwrap_or_default(),
-            "Executing universal tool"
+            "Executing universal tool via Extension Framework"
         );
 
-        // Create the tool adapter and execute
-        match crate::tools::universal::UniversalToolAdapter::from_manifest(
-            &self.manifest_path,
-            &self.executable,
-        )
-        .await
-        {
-            Ok(adapter) => {
-                // Execute the tool using the Tool trait's execute method
-                match adapter.execute(params).await {
-                    Ok(result) => {
-                        HookResult::Continue(HookOutput::Json(result))
-                    }
-                    Err(e) => {
-                        error!(tool_name = %self.tool_name, error = %e, "Tool execution failed");
-                        HookResult::Error(e)
-                    }
-                }
-            }
+        // Use the unified ToolExecutionService for parameter injection and execution
+        let exec_service = ctx.services.tool_execution();
+        let exec_config = ToolExecutionConfig::new(
+            self.reserved_params.clone(),
+            self.full_schema.clone(),
+        );
+
+        let result = exec_service
+            .execute(
+                params,
+                &exec_config,
+                ctx.as_tool_context(),
+                |merged_params| async move {
+                    // Create adapter and execute with merged params
+                    let adapter = crate::tools::universal::UniversalToolAdapter::from_manifest(
+                        &self.manifest_path,
+                        &self.executable,
+                    )
+                    .await?;
+                    
+                    // Execute with the merged parameters (injection already done)
+                    adapter.execute_raw(merged_params).await
+                },
+            )
+            .await;
+
+        match result {
+            Ok(output) => HookResult::Continue(HookOutput::Json(output)),
             Err(e) => {
-                error!(tool_name = %self.tool_name, error = %e, "Failed to create tool adapter");
+                error!(tool_name = %self.tool_name, error = %e, "Tool execution failed");
                 HookResult::Error(e)
             }
         }
@@ -679,10 +714,23 @@ pub async fn register_tools_with_core(
         hook_ids.push(prompt_reg.id);
 
         // Register execution handler
+        // Extract reserved parameters from manifest
+        let reserved_params = tool.manifest
+            .get("reserved_parameters")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        
+        let full_schema = tool.manifest
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+        
         let exec_handler = Arc::new(UniversalToolExecuteHandler {
             tool_name: tool.manifest.name.clone(),
             executable: tool.executable.clone(),
             manifest_path: tool.manifest_path.clone(),
+            reserved_params,
+            full_schema,
         });
 
         let exec_reg = core

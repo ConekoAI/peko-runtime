@@ -2,11 +2,21 @@
 //!
 //! SRP: This module ONLY handles manifest parsing and validation.
 //! No protocol logic, no execution.
+//!
+//! # Note on Reserved Parameters
+//!
+//! This module now uses the shared `ReservedParamsConfig` from `extensions::services`.
+//! The legacy `ReservedParam` and `ParamSource` types are kept for backward compatibility
+//! but are deprecated. Use `ReservedParamsConfig` and `ParamSource` from
+//! `crate::extensions::services` instead.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+
+// Re-export shared types for convenience
+pub use crate::extensions::services::{ParamSource, ReservedParamsConfig};
 
 /// Tool manifest with reserved parameter support
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +31,9 @@ pub struct Manifest {
     /// JSON Schema for exposed parameters (what LLM sees)
     pub parameters: Value,
     /// Reserved parameters (injected at runtime, hidden from LLM)
+    /// 
+    /// Note: This is stored in the legacy format for backward compatibility.
+    /// Use `reserved_params_config()` to get the unified `ReservedParamsConfig`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reserved_parameters: Option<HashMap<String, ReservedParam>>,
     /// Protocol configuration
@@ -31,20 +44,35 @@ pub struct Manifest {
     pub extra: HashMap<String, Value>,
 }
 
-/// Reserved parameter definition
+/// Reserved parameter definition (LEGACY)
+///
+/// # Deprecated
+/// Use `ReservedParamsConfig` from `crate::extensions::services` instead.
+/// This type is kept for backward compatibility during manifest parsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use ReservedParamsConfig from crate::extensions::services instead"
+)]
 pub struct ReservedParam {
     /// Source of the parameter value
-    pub source: ParamSource,
+    pub source: ParamSourceLegacy,
     /// Human-readable description
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 
-/// Source for parameter injection
+/// Source for parameter injection (LEGACY)
+///
+/// # Deprecated
+/// Use `ParamSource` from `crate::extensions::services` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ParamSource {
+#[deprecated(
+    since = "0.2.0",
+    note = "Use ParamSource from crate::extensions::services instead"
+)]
+pub enum ParamSourceLegacy {
     /// Injected from runtime context (session_id, agent_id, etc.)
     Runtime { field: String },
     /// Read from environment variable
@@ -94,6 +122,14 @@ impl Manifest {
         let content = std::fs::read_to_string(path)?;
         let manifest: Self = serde_json::from_str(&content)?;
         Ok(manifest)
+    }
+
+    /// Get reserved parameters as unified config
+    ///
+    /// This converts the legacy format to the new unified `ReservedParamsConfig`
+    /// used by the Extension Framework.
+    pub fn reserved_params_config(&self) -> ReservedParamsConfig {
+        ReservedParamsConfig::from_universal_legacy(&self.reserved_parameters)
     }
 
     /// Get the parameter schema exposed to LLM (no reserved params)
@@ -160,10 +196,17 @@ impl Manifest {
     }
 }
 
-/// Create a merged parameter set with injection
-/// 
+/// Create a merged parameter set with injection (LEGACY)
+///
+/// # Deprecated
+/// Use `ToolExecutionService::inject_reserved_params()` from `crate::extensions::services`
+/// instead. This function is kept for backward compatibility.
+///
 /// Takes user-provided params and injects reserved params from context.
-/// Uses the shared ContextResolver for consistent field resolution.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use ToolExecutionService::inject_reserved_params() from crate::extensions::services instead"
+)]
 pub fn merge_with_injection(
     manifest: &Manifest,
     user_params: Value,
@@ -186,13 +229,13 @@ pub fn merge_with_injection(
         
         for (name, spec) in reserved {
             let value = match &spec.source {
-                ParamSource::Runtime { field } => {
+                ParamSourceLegacy::Runtime { field } => {
                     ContextResolver::resolve_field(&adapter, field)
                 }
-                ParamSource::Env { var } => {
+                ParamSourceLegacy::Env { var } => {
                     std::env::var(var).map(Value::String).unwrap_or(Value::Null)
                 }
-                ParamSource::Static { value } => value.clone(),
+                ParamSourceLegacy::Static { value } => value.clone(),
             };
             obj.insert(name.clone(), value);
         }
@@ -208,10 +251,11 @@ mod tests {
 
     fn create_test_manifest() -> Manifest {
         let mut reserved = HashMap::new();
+        #[allow(deprecated)]
         reserved.insert(
             "session_id".to_string(),
             ReservedParam {
-                source: ParamSource::Runtime {
+                source: ParamSourceLegacy::Runtime {
                     field: "session_id".to_string(),
                 },
                 description: Some("Current session ID".to_string()),
@@ -258,6 +302,20 @@ mod tests {
     }
 
     #[test]
+    fn test_reserved_params_config_conversion() {
+        let manifest = create_test_manifest();
+        let config = manifest.reserved_params_config();
+        
+        // Should have converted to unified format
+        assert!(config.contains("session_id"));
+        assert!(matches!(
+            config.get("session_id").unwrap(),
+            ParamSource::Runtime { field } if field == "session_id"
+        ));
+    }
+
+    #[test]
+    #[allow(deprecated)]
     fn test_merge_with_injection() {
         let manifest = create_test_manifest();
         let user_params = json!({"query": "hello"});

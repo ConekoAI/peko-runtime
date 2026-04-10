@@ -470,7 +470,7 @@ impl McpManager {
     }
 
     /// Get server configuration
-    async fn get_server_config(&self, name: &str) -> Option<McpServerConfig> {
+    pub async fn get_server_config(&self, name: &str) -> Option<McpServerConfig> {
         let servers = self.servers.read().await;
         servers.get(name).map(|h| h.config.clone())
     }

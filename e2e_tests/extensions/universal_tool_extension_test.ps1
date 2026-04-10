@@ -79,21 +79,40 @@ New-Item -ItemType Directory -Path $toolExtDir -Force | Out-Null
 $toolSourceDir = "$PSScriptRoot/../_archive/cap/tool/custom/python/simple"
 Copy-Item "$toolSourceDir/calculator_simple.py" "$toolExtDir/"
 
-# Create extension manifest (manifest.json)
+# Create extension manifest (manifest.json) - Standard Universal Tool format
 $manifest = @"
 {
-  "id": "calculator-universal-tool",
-  "name": "calculator-universal-tool",
-  "version": "1.0.0",
-  "description": "Universal tool for arithmetic calculations",
-  "extension_type": "universal_tool",
-  "entry_point": "calculator_simple.py",
-  "tools": [
-    {
-      "name": "calculator_simple",
-      "description": "Perform arithmetic calculations"
+  "name": "calculator_simple",
+  "description": "Perform arithmetic calculations (add, subtract, multiply, divide)",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["add", "subtract", "multiply", "divide"],
+        "description": "The arithmetic operation to perform"
+      },
+      "a": {
+        "type": "number",
+        "description": "First operand"
+      },
+      "b": {
+        "type": "number",
+        "description": "Second operand"
+      }
+    },
+    "required": ["operation", "a", "b"]
+  },
+  "reserved_parameters": {
+    "session_id": {
+      "source": { "runtime": { "field": "session_id" } },
+      "description": "Current session ID"
+    },
+    "agent_id": {
+      "source": { "runtime": { "field": "agent_id" } },
+      "description": "ID of the calling agent"
     }
-  ]
+  }
 }
 "@
 $manifest | Out-File -FilePath "$toolExtDir/manifest.json" -Encoding utf8

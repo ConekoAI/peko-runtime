@@ -122,7 +122,7 @@ async fn test_parameter_injection() {
             m.insert(
                 "session_id".to_string(),
                 ReservedParam {
-                    source: ParamSource::Runtime {
+                    source: ParamSourceLegacy::Runtime {
                         field: "session_id".to_string(),
                     },
                     description: None,
@@ -131,7 +131,7 @@ async fn test_parameter_injection() {
             m.insert(
                 "agent_id".to_string(),
                 ReservedParam {
-                    source: ParamSource::Runtime {
+                    source: ParamSourceLegacy::Runtime {
                         field: "agent_id".to_string(),
                     },
                     description: None,

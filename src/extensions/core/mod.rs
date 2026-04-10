@@ -71,6 +71,15 @@ pub use context::{
 // Re-export registry types
 pub use registry::{global_core, init_global_core, ExtensionCore, RegisteredHook};
 
+// Re-export services for convenience
+pub use crate::extensions::services::{
+    ParamSource,
+    ReservedParamsConfig,
+    ReservedParamsService,
+    ToolExecutionConfig,
+    ToolExecutionService,
+};
+
 // Submodules
 pub mod async_adapter;
 pub mod context;

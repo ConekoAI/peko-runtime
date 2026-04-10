@@ -99,6 +99,57 @@ impl UniversalToolAdapter {
         result
     }
 
+    /// Execute with already-merged parameters (no validation/injection)
+    ///
+    /// This is used by the Extension Framework when ToolExecutionService
+    /// has already handled parameter injection.
+    pub async fn execute_raw(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        // Build execution context (minimal - params already merged by Extension Framework)
+        let context = ExecutionContext {
+            session_id: "unknown".to_string(),
+            agent_id: "unknown".to_string(),
+            peer_id: None,
+            workspace: std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string()),
+            run_id: None,
+        };
+
+        // Execute directly without validation/injection (already done by Extension Framework)
+        let mut transport: Transport = Transport::spawn(&self.executable).await?;
+
+        let exec_params = ExecuteParams {
+            tool: self.name.clone(),
+            args: params,
+            context,
+        };
+
+        let request = Request::new("tool/execute", serde_json::to_value(exec_params)?);
+        let result = self.execute_with_transport(&mut transport, request).await;
+
+        // Cleanup
+        if let Err(e) = transport.shutdown().await {
+            tracing::warn!("Transport shutdown error (non-fatal): {}", e);
+        }
+
+        // Convert to Value
+        match result {
+            Ok(exec_result) => {
+                if exec_result.success {
+                    Ok(exec_result.data.unwrap_or(serde_json::Value::Null))
+                } else {
+                    Err(anyhow::anyhow!(
+                        exec_result.error.unwrap_or_else(|| "Unknown error".to_string())
+                    ))
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Execute request with transport (separated for cleanup handling)
     async fn execute_with_transport(
         &self,

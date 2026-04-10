@@ -42,7 +42,10 @@ mod tests;
 
 pub use adapter::{UniversalToolAdapter, UniversalToolBuilder};
 pub use discovery::{discover_universal_tools, load_universal_tools, DiscoveredTool};
-pub use manifest::{merge_with_injection, Manifest, ParamSource, ProtocolConfig, ReservedParam};
+pub use manifest::{
+    merge_with_injection, Manifest, ParamSource, ParamSourceLegacy, 
+    ProtocolConfig, ReservedParam, ReservedParamsConfig
+};
 pub use protocol::{ErrorObject, ExecutionContext, ExecuteParams, ExecuteResult, Request, Response, ResponseResult, DescribeResult, PROTOCOL_VERSION};
 
 // Re-export Extension Architecture integration (Phase 3)

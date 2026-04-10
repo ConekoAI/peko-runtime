@@ -132,6 +132,13 @@ impl HookContext {
             _ => None,
         }
     }
+    
+    /// Get tool context from state if available
+    ///
+    /// This is used for runtime parameter resolution during tool execution.
+    pub fn as_tool_context(&self) -> Option<&crate::tools::ToolContext> {
+        self.state.get::<crate::tools::ToolContext>("tool_context")
+    }
 }
 
 /// Mutable state for a hook invocation
@@ -197,6 +204,12 @@ pub struct ExtensionServices {
     
     /// Telemetry/metrics service
     telemetry: TelemetryService,
+    
+    /// Tool execution service (handles parameter injection)
+    tool_execution: crate::extensions::services::ToolExecutionService,
+    
+    /// Reserved parameters service
+    reserved_params: crate::extensions::services::ReservedParamsService,
 }
 
 impl ExtensionServices {
@@ -205,6 +218,8 @@ impl ExtensionServices {
         Self {
             config: ExtensionConfig::default(),
             telemetry: TelemetryService::new(),
+            tool_execution: crate::extensions::services::ToolExecutionService::new(),
+            reserved_params: crate::extensions::services::ReservedParamsService::new(),
         }
     }
     
@@ -216,6 +231,16 @@ impl ExtensionServices {
     /// Get telemetry service
     pub fn telemetry(&self) -> &TelemetryService {
         &self.telemetry
+    }
+    
+    /// Get tool execution service
+    pub fn tool_execution(&self) -> &crate::extensions::services::ToolExecutionService {
+        &self.tool_execution
+    }
+    
+    /// Get reserved parameters service
+    pub fn reserved_params(&self) -> &crate::extensions::services::ReservedParamsService {
+        &self.reserved_params
     }
     
     /// Record a hook invocation

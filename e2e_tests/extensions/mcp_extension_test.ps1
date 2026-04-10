@@ -83,24 +83,21 @@ New-Item -ItemType Directory -Path $mcpExtDir -Force | Out-Null
 $serverSource = "$PSScriptRoot/../_archive/cap/mcp/python/mcp_server.py"
 Copy-Item $serverSource "$mcpExtDir/mcp_server.py"
 
-# Create extension manifest (manifest.json)
-$manifest = @"
-{
-  "id": "identity-mcp-server",
-  "name": "identity-mcp-server",
-  "version": "1.0.0",
-  "description": "MCP server with identity tools for E2E testing",
-  "extension_type": "mcp",
-  "mcp": {
-    "transport": "stdio",
-    "command": "$pythonCmd",
-    "args": ["mcp_server.py"],
-    "auto_start": true
-  }
-}
+# Create MCP config file (config.toml) - Standard MCP format
+$config = @"
+[[server]]
+name = "identity-mcp-server"
+transport = "stdio"
+command = "$pythonCmd"
+args = ["mcp_server.py"]
+auto_start = true
+
+[server.reserved_parameters]
+session_id = { source = "runtime", field = "session_id" }
+agent_id = { source = "runtime", field = "agent_id" }
 "@
-$manifest | Out-File -FilePath "$mcpExtDir/manifest.json" -Encoding utf8
-Write-Host "Created MCP extension manifest" -ForegroundColor Green
+$config | Out-File -FilePath "$mcpExtDir/config.toml" -Encoding utf8
+Write-Host "Created MCP extension config" -ForegroundColor Green
 
 # ============================================================
 # TEST 2: Install MCP extension

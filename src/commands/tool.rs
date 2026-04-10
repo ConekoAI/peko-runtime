@@ -202,6 +202,7 @@ async fn generate_manifest_from_tool(executable: &PathBuf) -> anyhow::Result<cra
         .unwrap_or(serde_json::json!({"type": "object"}));
     
     // Handle reserved_parameters from the describe response
+    #[allow(deprecated)]
     let reserved_parameters = result.get("reserved_parameters")
         .and_then(|v| {
             // Convert from SDK format to manifest format
@@ -209,7 +210,7 @@ async fn generate_manifest_from_tool(executable: &PathBuf) -> anyhow::Result<cra
             if let Some(obj) = v.as_object() {
                 for (key, _) in obj {
                     reserved.insert(key.clone(), crate::tools::universal::ReservedParam {
-                        source: crate::tools::universal::ParamSource::Runtime { 
+                        source: crate::tools::universal::ParamSourceLegacy::Runtime { 
                             field: key.clone() 
                         },
                         description: None,

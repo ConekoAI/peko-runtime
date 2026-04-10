@@ -2,14 +2,31 @@
 //!
 //! Defines configuration structures for MCP servers that can be loaded
 //! from TOML configuration files.
+//!
+//! # Note on Reserved Parameters
+//!
+//! This module now recommends using the shared `ReservedParamsConfig` from
+//! `extensions::services`. The legacy `ReservedParamConfig` type is kept for
+//! backward compatibility but is deprecated.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Configuration for a single reserved parameter
+// Re-export shared types for convenience
+pub use crate::extensions::services::{ParamSource, ReservedParamsConfig};
+
+/// Configuration for a single reserved parameter (LEGACY)
+///
+/// # Deprecated
+/// Use `ReservedParamsConfig` from `crate::extensions::services` instead.
+/// This type is kept for backward compatibility during config parsing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[deprecated(
+    since = "0.2.0",
+    note = "Use ReservedParamsConfig from crate::extensions::services instead"
+)]
 pub struct ReservedParamConfig {
     /// Source type: "runtime", "env", or "static"
     pub source: String,
@@ -302,6 +319,14 @@ impl McpServerConfig {
 
         // Return the original command path (may be relative to cwd)
         self.cwd.as_ref().map(|cwd| cwd.join(&path)).or(Some(path))
+    }
+
+    /// Get reserved parameters as unified config
+    ///
+    /// This converts the legacy `ReservedParamConfig` format to the new unified
+    /// `ReservedParamsConfig` used by the Extension Framework.
+    pub fn reserved_params_config(&self) -> ReservedParamsConfig {
+        ReservedParamsConfig::from_mcp_legacy(&self.reserved_parameters)
     }
 
     /// Validate the configuration
