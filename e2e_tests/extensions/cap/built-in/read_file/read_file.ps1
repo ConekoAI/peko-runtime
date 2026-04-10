@@ -52,11 +52,11 @@ pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable granular tools via extension framework
-pekobot ext enable read_file 2>&1 | Out-Null
-pekobot ext enable write_file 2>&1 | Out-Null
-pekobot ext enable glob 2>&1 | Out-Null
-pekobot ext enable grep 2>&1 | Out-Null
-pekobot ext enable str_replace_file 2>&1 | Out-Null
+pekobot ext enable read_file --target default/$agentName 2>&1 | Out-Null
+pekobot ext enable write_file --target default/$agentName 2>&1 | Out-Null
+pekobot ext enable glob --target default/$agentName 2>&1 | Out-Null
+pekobot ext enable grep --target default/$agentName 2>&1 | Out-Null
+pekobot ext enable str_replace_file --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools via extension framework" -ForegroundColor Green
 
 # Get workspace directory

@@ -52,7 +52,7 @@ pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable shell tool via extension framework
-pekobot ext enable shell 2>&1 | Out-Null
+pekobot ext enable shell --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled shell tool via extension framework" -ForegroundColor Green
 
 # Get workspace directory

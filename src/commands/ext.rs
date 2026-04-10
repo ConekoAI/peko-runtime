@@ -7,10 +7,12 @@
 //! - Create bundles from extensions
 //! - Configure extensions (global, team, agent levels)
 
+use crate::cap::builtin::BuiltInCapabilityRegistry;
 use crate::commands::GlobalPaths;
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat, general_adapter};
 use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extensions::types::ExtensionId;
+use crate::team::capability::TeamCapabilityManager;
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,16 +40,31 @@ pub enum ExtCommands {
         r#type: Option<String>,
     },
 
-    /// Enable an extension
+    /// Enable an extension or built-in capability
+    ///
+    /// Examples:
+    ///   pekobot ext enable my-extension
+    ///   pekobot ext enable shell --target default
+    ///   pekobot ext enable shell --target myteam/my-agent
     Enable {
-        /// Extension ID
+        /// Extension ID or built-in capability name (e.g., shell, read_file)
         id: String,
+        /// Target team or team/agent for built-in capabilities
+        #[arg(short, long, value_name = "TARGET")]
+        target: Option<String>,
     },
 
-    /// Disable an extension
+    /// Disable an extension or built-in capability
+    ///
+    /// Examples:
+    ///   pekobot ext disable my-extension
+    ///   pekobot ext disable shell --target default
     Disable {
-        /// Extension ID
+        /// Extension ID or built-in capability name
         id: String,
+        /// Target team or team/agent for built-in capabilities
+        #[arg(short, long, value_name = "TARGET")]
+        target: Option<String>,
     },
 
     /// Uninstall an extension
@@ -189,8 +206,12 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                     enabled_only,
                     r#type,
                 } => handle_list(&manager, enabled_only, r#type),
-                ExtCommands::Enable { id } => handle_enable(&mut manager, id).await,
-                ExtCommands::Disable { id } => handle_disable(&mut manager, id).await,
+                ExtCommands::Enable { id, target } => {
+                    handle_enable(&mut manager, paths, id, target).await
+                }
+                ExtCommands::Disable { id, target } => {
+                    handle_disable(&mut manager, paths, id, target).await
+                }
                 ExtCommands::Uninstall { id } => handle_uninstall(&mut manager, id).await,
                 ExtCommands::Info { id } => handle_info(&manager, id),
                 ExtCommands::Bundle { name, ids } => handle_bundle(&manager, name, ids),
@@ -290,7 +311,17 @@ fn handle_list(
 }
 
 /// Handle enable command
-async fn handle_enable(manager: &mut ExtensionManager, id: String) -> anyhow::Result<()> {
+async fn handle_enable(
+    manager: &mut ExtensionManager,
+    paths: &GlobalPaths,
+    id: String,
+    target: Option<String>,
+) -> anyhow::Result<()> {
+    // Check if this is a built-in capability
+    if BuiltInCapabilityRegistry::is_builtin(&id) {
+        return handle_enable_builtin(paths, &id, target.as_deref()).await;
+    }
+
     let ext_id = ExtensionId::new(&id);
 
     // Check if extension exists
@@ -310,8 +341,67 @@ async fn handle_enable(manager: &mut ExtensionManager, id: String) -> anyhow::Re
     }
 }
 
+/// Enable a built-in capability for a team or agent
+async fn handle_enable_builtin(
+    paths: &GlobalPaths,
+    capability: &str,
+    target: Option<&str>,
+) -> anyhow::Result<()> {
+    let target = target.unwrap_or("default");
+
+    // Parse target into team and optional agent
+    let (team, agent) = if target.contains('/') {
+        let parts: Vec<&str> = target.splitn(2, '/').collect();
+        (parts[0].to_string(), Some(parts[1].to_string()))
+    } else {
+        (target.to_string(), None)
+    };
+
+    if let Some(agent_name) = agent {
+        // Agent-level: update agent config
+        let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+        }
+
+        let content = std::fs::read_to_string(&config_path)?;
+        let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
+
+        // Ensure tools config exists
+        let tools = config.tools.get_or_insert_with(Default::default);
+
+        // Add to enabled whitelist if not already present
+        if !tools.enabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+            tools.enabled.push(capability.to_string());
+        }
+
+        // Save
+        let updated = toml::to_string_pretty(&config)?;
+        std::fs::write(&config_path, updated)?;
+
+        println!("Enabled '{}' for agent '{}' in team '{}'", capability, agent_name, team);
+    } else {
+        // Team-level: update team capabilities.toml
+        let team_mgr = TeamCapabilityManager::new(paths.resolver().clone());
+        team_mgr.enable(&team, capability)?;
+        println!("Enabled '{}' for team '{}'", capability, team);
+    }
+
+    Ok(())
+}
+
 /// Handle disable command
-async fn handle_disable(manager: &mut ExtensionManager, id: String) -> anyhow::Result<()> {
+async fn handle_disable(
+    manager: &mut ExtensionManager,
+    paths: &GlobalPaths,
+    id: String,
+    target: Option<String>,
+) -> anyhow::Result<()> {
+    // Check if this is a built-in capability
+    if BuiltInCapabilityRegistry::is_builtin(&id) {
+        return handle_disable_builtin(paths, &id, target.as_deref()).await;
+    }
+
     let ext_id = ExtensionId::new(&id);
 
     // Check if extension exists
@@ -329,6 +419,53 @@ async fn handle_disable(manager: &mut ExtensionManager, id: String) -> anyhow::R
             Err(e)
         }
     }
+}
+
+/// Disable a built-in capability for a team or agent
+async fn handle_disable_builtin(
+    paths: &GlobalPaths,
+    capability: &str,
+    target: Option<&str>,
+) -> anyhow::Result<()> {
+    let target = target.unwrap_or("default");
+
+    // Parse target into team and optional agent
+    let (team, agent) = if target.contains('/') {
+        let parts: Vec<&str> = target.splitn(2, '/').collect();
+        (parts[0].to_string(), Some(parts[1].to_string()))
+    } else {
+        (target.to_string(), None)
+    };
+
+    if let Some(agent_name) = agent {
+        // Agent-level: update agent config
+        let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+        }
+
+        let content = std::fs::read_to_string(&config_path)?;
+        let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
+
+        // Ensure tools config exists
+        let tools = config.tools.get_or_insert_with(Default::default);
+
+        // Remove from enabled whitelist
+        tools.enabled.retain(|e| !e.eq_ignore_ascii_case(capability));
+
+        // Save
+        let updated = toml::to_string_pretty(&config)?;
+        std::fs::write(&config_path, updated)?;
+
+        println!("Disabled '{}' for agent '{}' in team '{}'", capability, agent_name, team);
+    } else {
+        // Team-level: update team capabilities.toml
+        let team_mgr = TeamCapabilityManager::new(paths.resolver().clone());
+        team_mgr.disable(&team, capability)?;
+        println!("Disabled '{}' for team '{}'", capability, team);
+    }
+
+    Ok(())
 }
 
 /// Handle uninstall command

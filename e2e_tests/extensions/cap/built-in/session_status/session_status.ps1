@@ -52,7 +52,7 @@ pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable session_status tool via extension framework
-pekobot ext enable session_status 2>&1 | Out-Null
+pekobot ext enable session_status --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled session_status tool via extension framework" -ForegroundColor Green
 
 # ============================================================
