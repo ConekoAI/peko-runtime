@@ -31,6 +31,7 @@
 //! ```
 
 use crate::common::paths::default_data_dir;
+use crate::extensions::adapters::parsing;
 use crate::extensions::manager::ExtensionManager;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -365,37 +366,9 @@ pub async fn discover_legacy_skills() -> Result<Vec<LegacySkill>> {
 async fn parse_skill_md(
     path: &Path,
 ) -> Result<(String, String, Vec<String>, Option<String>)> {
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read SKILL.md at {:?}", path))?;
+    use serde::Deserialize;
 
-    // Parse YAML frontmatter
-    let mut lines = content.lines().peekable();
-
-    match lines.next() {
-        Some("---") => {}
-        _ => anyhow::bail!("SKILL.md must start with --- frontmatter delimiter"),
-    }
-
-    let mut frontmatter_lines = Vec::new();
-    let mut found_end = false;
-
-    for line in lines.by_ref() {
-        if line == "---" {
-            found_end = true;
-            break;
-        }
-        frontmatter_lines.push(line);
-    }
-
-    if !found_end {
-        anyhow::bail!("Frontmatter must end with ---");
-    }
-
-    let frontmatter = frontmatter_lines.join("\n");
-
-    // Parse YAML
-    #[derive(serde::Deserialize)]
+    #[derive(Deserialize)]
     struct SkillFrontmatter {
         name: String,
         description: String,
@@ -405,8 +378,8 @@ async fn parse_skill_md(
         author: Option<String>,
     }
 
-    let meta: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
-        .with_context(|| format!("Failed to parse YAML frontmatter in {:?}", path))?;
+    let (meta, _): (SkillFrontmatter, _) = parsing::parse_yaml_frontmatter_file(path).await
+        .with_context(|| format!("Failed to parse SKILL.md at {:?}", path))?;
 
     if meta.name.is_empty() {
         anyhow::bail!("Skill name cannot be empty");

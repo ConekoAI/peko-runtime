@@ -14,6 +14,7 @@
 //! - `MessagePreSend`: Transform messages before sending to channel
 //! - `MessagePostReceive`: Transform messages after receiving from channel
 
+use crate::extensions::adapters::parsing;
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
 use crate::extensions::core::{
     HookContext, HookHandler, HookHandlerFactory, HookPoint,
@@ -320,48 +321,106 @@ pub async fn discover_channel_extensions(dir: &Path) -> Result<Vec<DiscoveredCha
         .await
         .context("Failed to read channel extensions directory")?;
 
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .context("Failed to read directory entry")?
-    {
+    while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        
         if !path.is_dir() {
             continue;
         }
 
+        // Try YAML first, then TOML
         let manifest_path = path.join("manifest.yaml");
-        let manifest = if manifest_path.exists() {
-            match tokio::fs::read_to_string(&manifest_path).await {
-                Ok(content) => parse_channel_manifest(&content, &path),
-                Err(e) => {
-                    warn!("Failed to read manifest at {}: {}", manifest_path.display(), e);
-                    continue;
-                }
-            }
-        } else {
-            let manifest_path = path.join("manifest.toml");
-            if manifest_path.exists() {
-                match tokio::fs::read_to_string(&manifest_path).await {
-                    Ok(content) => parse_channel_manifest_toml(&content, &path),
-                    Err(e) => {
-                        warn!("Failed to read manifest at {}: {}", manifest_path.display(), e);
-                        continue;
+        if manifest_path.exists() {
+            match parsing::read_yaml_frontmatter_file(&manifest_path).await {
+                Ok((yaml, _)) => {
+                    match build_config_from_yaml(&yaml) {
+                        Ok(config) => {
+                            match parsing::build_manifest_from_yaml(&yaml, "channel", &path) {
+                                Ok(manifest) => {
+                                    discovered.push(DiscoveredChannel { manifest, config });
+                                    continue;
+                                }
+                                Err(e) => warn!("Failed to build manifest: {}", e),
+                            }
+                        }
+                        Err(e) => warn!("Failed to build config: {}", e),
                     }
                 }
-            } else {
-                None
+                Err(e) => warn!("Failed to parse YAML manifest: {}", e),
             }
-        };
+        }
 
-        if let Some((manifest, config)) = manifest {
-            discovered.push(DiscoveredChannel { manifest, config });
+        // Try TOML
+        let manifest_path = path.join("manifest.toml");
+        if manifest_path.exists() {
+            match parsing::read_toml_file(&manifest_path).await {
+                Ok(toml) => {
+                    match build_config_from_toml(&toml) {
+                        Ok(config) => {
+                            match parsing::build_manifest_from_toml(&toml, "channel", &path) {
+                                Ok(manifest) => {
+                                    discovered.push(DiscoveredChannel { manifest, config });
+                                }
+                                Err(e) => warn!("Failed to build manifest: {}", e),
+                            }
+                        }
+                        Err(e) => warn!("Failed to build config: {}", e),
+                    }
+                }
+                Err(e) => warn!("Failed to parse TOML manifest: {}", e),
+            }
         }
     }
 
     info!("Discovered {} channel extensions", discovered.len());
     Ok(discovered)
+}
+
+/// Build ChannelExtensionConfig from parsed YAML
+fn build_config_from_yaml(yaml: &serde_yaml::Value) -> Result<ChannelExtensionConfig> {
+    Ok(ChannelExtensionConfig {
+        channel_type: parsing::require_string_field(yaml, "channel_type")?,
+        name: parsing::require_string_field(yaml, "name")?,
+        description: parsing::optional_string_field(yaml, "description", ""),
+        transformers: Vec::new(), // Transformers would be parsed from yaml if present
+        handles_input: yaml
+            .get("handles_input")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        handles_output: yaml
+            .get("handles_output")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+    })
+}
+
+/// Build ChannelExtensionConfig from parsed TOML
+fn build_config_from_toml(toml: &toml::Value) -> Result<ChannelExtensionConfig> {
+    Ok(ChannelExtensionConfig {
+        channel_type: toml
+            .get("channel_type")
+            .and_then(|v| v.as_str())
+            .with_context(|| "Missing required field: channel_type")?
+            .to_string(),
+        name: toml
+            .get("name")
+            .and_then(|v| v.as_str())
+            .with_context(|| "Missing required field: name")?
+            .to_string(),
+        description: toml
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        transformers: Vec::new(),
+        handles_input: toml
+            .get("handles_input")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+        handles_output: toml
+            .get("handles_output")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
+    })
 }
 
 /// Parse channel manifest from YAML content

@@ -71,6 +71,7 @@
 //! - `agent.shutdown` - Agent shutdown hook
 //! - `agent.iteration` - Between loop iterations (params: iteration)
 
+use crate::extensions::adapters::parsing;
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
 use crate::extensions::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
 use crate::extensions::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
@@ -417,37 +418,94 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
 
         // Check for manifest.yaml
         let manifest_path = path.join("manifest.yaml");
-        let manifest = if manifest_path.exists() {
-            match tokio::fs::read_to_string(&manifest_path).await {
-                Ok(content) => parse_general_manifest(&content, &path),
-                Err(e) => {
-                    warn!("Failed to read manifest at {}: {}", manifest_path.display(), e);
-                    continue;
-                }
-            }
-        } else {
-            // Check for manifest.json
-            let manifest_path = path.join("manifest.json");
-            if manifest_path.exists() {
-                match tokio::fs::read_to_string(&manifest_path).await {
-                    Ok(content) => parse_general_manifest_json(&content, &path),
-                    Err(e) => {
-                        warn!("Failed to read manifest at {}: {}", manifest_path.display(), e);
-                        continue;
+        if manifest_path.exists() {
+            match parsing::read_yaml_frontmatter_file(&manifest_path).await {
+                Ok((yaml, _)) => {
+                    match extract_hooks_from_yaml(&yaml) {
+                        Ok(hooks) => {
+                            match parsing::build_manifest_from_yaml(&yaml, GENERAL_EXTENSION_TYPE, &path) {
+                                Ok(mut manifest) => {
+                                    // Store hooks in manifest metadata
+                                    if let Ok(hooks_json) = serde_json::to_value(&hooks) {
+                                        manifest.set("hooks", hooks_json);
+                                    }
+                                    discovered.push(DiscoveredGeneralExtension { manifest, hooks });
+                                    continue;
+                                }
+                                Err(e) => warn!("Failed to build manifest: {}", e),
+                            }
+                        }
+                        Err(e) => warn!("Failed to extract hooks: {}", e),
                     }
                 }
-            } else {
-                continue;
+                Err(e) => warn!("Failed to read manifest at {}: {}", manifest_path.display(), e),
             }
-        };
+        }
 
-        if let Some((manifest, hooks)) = manifest {
-            discovered.push(DiscoveredGeneralExtension { manifest, hooks });
+        // Check for manifest.json
+        let manifest_path = path.join("manifest.json");
+        if manifest_path.exists() {
+            match parsing::parse_json_file::<serde_json::Value>(&manifest_path).await {
+                Ok(json) => {
+                    match extract_hooks_from_json(&json) {
+                        Ok(hooks) => {
+                            match build_manifest_from_json(&json, &path) {
+                                Ok(manifest) => {
+                                    discovered.push(DiscoveredGeneralExtension { manifest, hooks });
+                                }
+                                Err(e) => warn!("Failed to build manifest: {}", e),
+                            }
+                        }
+                        Err(e) => warn!("Failed to extract hooks: {}", e),
+                    }
+                }
+                Err(e) => warn!("Failed to read manifest at {}: {}", manifest_path.display(), e),
+            }
         }
     }
 
     info!("Discovered {} general extensions", discovered.len());
     Ok(discovered)
+}
+
+/// Extract hook declarations from YAML
+fn extract_hooks_from_yaml(yaml: &serde_yaml::Value) -> Result<Vec<HookDeclaration>> {
+    yaml.get("hooks")
+        .and_then(|h| serde_yaml::from_value(h.clone()).ok())
+        .map(Ok)
+        .unwrap_or_else(|| Ok(Vec::new()))
+}
+
+/// Extract hook declarations from JSON
+fn extract_hooks_from_json(json: &serde_json::Value) -> Result<Vec<HookDeclaration>> {
+    json.get("hooks")
+        .and_then(|h| serde_json::from_value(h.clone()).ok())
+        .map(Ok)
+        .unwrap_or_else(|| Ok(Vec::new()))
+}
+
+/// Build manifest from JSON (general extension specific)
+fn build_manifest_from_json(json: &serde_json::Value, path: &Path) -> Result<ExtensionManifest> {
+    let id = json
+        .get("id")
+        .and_then(|v| v.as_str())
+        .with_context(|| "Missing required field: id")?;
+    let name = json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .with_context(|| "Missing required field: name")?;
+    let version = json.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
+    let description = json.get("description").and_then(|v| v.as_str()).unwrap_or("");
+
+    let mut manifest =
+        ExtensionManifest::new(id, GENERAL_EXTENSION_TYPE, name, description, version, path.to_path_buf());
+
+    // Store hooks in manifest
+    if let Some(hooks) = json.get("hooks") {
+        manifest.set("hooks", hooks.clone());
+    }
+
+    Ok(manifest)
 }
 
 /// Parse general extension manifest from YAML content

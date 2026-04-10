@@ -4,6 +4,17 @@
 //! Extension Core's hook points. Each adapter implements the `ExtensionTypeAdapter`
 //! trait.
 //!
+//! # Shared Utilities
+//!
+//! The [`parsing`] module provides common manifest parsing functions to reduce
+//! code duplication across adapters:
+//!
+//! - `parse_yaml_frontmatter()` - Extract YAML frontmatter from markdown
+//! - `parse_yaml_frontmatter_typed<T>()` - Parse and deserialize frontmatter
+//! - `extract_extension_fields()` - Get common id/name/version/description fields
+//! - `build_manifest_from_yaml()` - Construct ExtensionManifest from YAML
+//! - `discover_extensions()` - Generic extension discovery helper
+//!
 //! # Available Adapters
 //!
 //! | Adapter | Extension Type | Status |
@@ -216,6 +227,391 @@ fn parse_yaml_frontmatter_markdown(
     manifest.path = path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
 
     Ok(manifest)
+}
+
+/// Shared manifest parsing utilities
+///
+/// This module provides common parsing functions used across all adapters
+/// to reduce code duplication when parsing YAML frontmatter, TOML, and JSON manifests.
+pub mod parsing {
+    use anyhow::{Context, Result};
+    use serde::de::DeserializeOwned;
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    /// Parse YAML frontmatter from markdown content
+    ///
+    /// Extracts the content between `---` delimiters at the start of the file.
+    /// Returns the frontmatter as a string and the body content separately.
+    ///
+    /// # Arguments
+    /// * `content` - The full markdown content with YAML frontmatter
+    ///
+    /// # Returns
+    /// * `Ok((frontmatter, body))` - Tuple of frontmatter and body content
+    /// * `Err` - If frontmatter delimiters are missing or malformed
+    ///
+    /// # Example
+    /// ```
+    /// let content = r#"---
+    /// name: my-extension
+    /// version: 1.0.0
+    /// ---
+    /// # Content
+    /// Body here
+    /// "#;
+    /// let (frontmatter, body) = parse_yaml_frontmatter(content).unwrap();
+    /// ```
+    pub fn parse_yaml_frontmatter(content: &str) -> Result<(String, String)> {
+        let mut lines = content.lines().peekable();
+
+        // Must start with ---
+        match lines.next() {
+            Some("---") => {}
+            _ => anyhow::bail!("YAML frontmatter must start with ---"),
+        }
+
+        let mut frontmatter_lines = Vec::new();
+        let mut found_end = false;
+
+        for line in lines.by_ref() {
+            if line == "---" {
+                found_end = true;
+                break;
+            }
+            frontmatter_lines.push(line);
+        }
+
+        if !found_end {
+            anyhow::bail!("YAML frontmatter must end with ---");
+        }
+
+        let body = lines.collect::<Vec<_>>().join("\n");
+        Ok((frontmatter_lines.join("\n"), body))
+    }
+
+    /// Parse YAML frontmatter and deserialize into a type
+    ///
+    /// # Type Parameters
+    /// * `T` - The type to deserialize into (must implement DeserializeOwned)
+    ///
+    /// # Arguments
+    /// * `content` - The full markdown content with YAML frontmatter
+    ///
+    /// # Returns
+    /// * `Ok((metadata, body))` - Deserialized metadata and body content
+    pub fn parse_yaml_frontmatter_typed<T: DeserializeOwned>(
+        content: &str,
+    ) -> Result<(T, String)> {
+        let (frontmatter, body) = parse_yaml_frontmatter(content)?;
+        let metadata: T = serde_yaml::from_str(&frontmatter)
+            .context("Failed to parse YAML frontmatter")?;
+        Ok((metadata, body))
+    }
+
+    /// Parse a YAML frontmatter markdown file at the given path
+    ///
+    /// # Type Parameters
+    /// * `T` - The type to deserialize frontmatter into
+    ///
+    /// # Arguments
+    /// * `path` - Path to the markdown file
+    ///
+    /// # Returns
+    /// * `Ok((metadata, body))` - Deserialized metadata and body content
+    pub async fn parse_yaml_frontmatter_file<T: DeserializeOwned>(
+        path: &Path,
+    ) -> Result<(T, String)> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read file: {:?}", path))?;
+        parse_yaml_frontmatter_typed(&content)
+            .with_context(|| format!("Failed to parse frontmatter in: {:?}", path))
+    }
+
+    /// Parse a TOML file into a type
+    ///
+    /// # Type Parameters
+    /// * `T` - The type to deserialize into
+    ///
+    /// # Arguments
+    /// * `path` - Path to the TOML file
+    pub async fn parse_toml_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read TOML file: {:?}", path))?;
+        toml::from_str(&content)
+            .with_context(|| format!("Failed to parse TOML file: {:?}", path))
+    }
+
+    /// Parse a JSON file into a type
+    ///
+    /// # Type Parameters
+    /// * `T` - The type to deserialize into
+    ///
+    /// # Arguments
+    /// * `path` - Path to the JSON file
+    pub async fn parse_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read JSON file: {:?}", path))?;
+        serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse JSON file: {:?}", path))
+    }
+
+    /// Extract a required string field from YAML value
+    ///
+    /// # Arguments
+    /// * `yaml` - The YAML value object
+    /// * `field` - Field name to extract
+    ///
+    /// # Returns
+    /// * `Ok(String)` - The field value
+    /// * `Err` - If field is missing or not a string
+    pub fn require_string_field(yaml: &serde_yaml::Value, field: &str) -> Result<String> {
+        yaml.get(field)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .with_context(|| format!("Missing or invalid required field: {}", field))
+    }
+
+    /// Extract an optional string field from YAML value
+    ///
+    /// # Arguments
+    /// * `yaml` - The YAML value object
+    /// * `field` - Field name to extract
+    /// * `default` - Default value if field is missing
+    pub fn optional_string_field(
+        yaml: &serde_yaml::Value,
+        field: &str,
+        default: &str,
+    ) -> String {
+        yaml.get(field)
+            .and_then(|v| v.as_str())
+            .unwrap_or(default)
+            .to_string()
+    }
+
+    /// Extract common extension fields from YAML frontmatter
+    ///
+    /// Returns the standard extension fields used across all extension types:
+    /// - id
+    /// - name
+    /// - version (defaults to "1.0.0")
+    /// - description (defaults to "")
+    ///
+    /// # Arguments
+    /// * `yaml` - The parsed YAML value
+    pub fn extract_extension_fields(
+        yaml: &serde_yaml::Value,
+    ) -> Result<(String, String, String, String)> {
+        let id = require_string_field(yaml, "id")
+            .or_else(|_| require_string_field(yaml, "name"))?; // Fallback to 'name' for skills
+        let name = require_string_field(yaml, "name")?;
+        let version = optional_string_field(yaml, "version", "1.0.0");
+        let description = optional_string_field(yaml, "description", "");
+
+        Ok((id, name, version, description))
+    }
+
+    /// Same as extract_extension_fields but for TOML
+    pub fn extract_extension_fields_toml(
+        toml: &toml::Value,
+    ) -> Result<(String, String, String, String)> {
+        let id = toml
+            .get("id")
+            .or_else(|| toml.get("name"))
+            .and_then(|v| v.as_str())
+            .with_context(|| "Missing required field: id or name")?;
+        let name = toml
+            .get("name")
+            .and_then(|v| v.as_str())
+            .with_context(|| "Missing required field: name")?;
+        let version = toml
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("1.0.0");
+        let description = toml
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        Ok((id.to_string(), name.to_string(), version.to_string(), description.to_string()))
+    }
+
+    /// Convert a serde_yaml::Value to serde_json::Value
+    ///
+    /// Useful for storing YAML metadata in ExtensionManifest
+    pub fn yaml_to_json(yaml: serde_yaml::Value) -> serde_json::Value {
+        match yaml {
+            serde_yaml::Value::Null => serde_json::Value::Null,
+            serde_yaml::Value::Bool(b) => serde_json::Value::Bool(b),
+            serde_yaml::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    serde_json::Value::Number(i.into())
+                } else if let Some(f) = n.as_f64() {
+                    serde_json::json!(f)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            serde_yaml::Value::String(s) => serde_json::Value::String(s),
+            serde_yaml::Value::Sequence(seq) => {
+                serde_json::Value::Array(seq.into_iter().map(yaml_to_json).collect())
+            }
+            serde_yaml::Value::Mapping(map) => {
+                let json_map: serde_json::Map<String, serde_json::Value> = map
+                    .into_iter()
+                    .filter_map(|(k, v)| {
+                        k.as_str()
+                            .map(|key| (key.to_string(), yaml_to_json(v)))
+                    })
+                    .collect();
+                serde_json::Value::Object(json_map)
+            }
+            serde_yaml::Value::Tagged(tagged) => yaml_to_json(tagged.value),
+        }
+    }
+
+    /// Build an ExtensionManifest from parsed YAML fields
+    ///
+    /// # Arguments
+    /// * `yaml` - The parsed YAML value containing extension metadata
+    /// * `extension_type` - The extension type identifier (e.g., "skill", "channel")
+    /// * `path` - The base path of the extension
+    ///
+    /// # Returns
+    /// * `Ok(ExtensionManifest)` - The constructed manifest
+    pub fn build_manifest_from_yaml(
+        yaml: &serde_yaml::Value,
+        extension_type: &str,
+        path: &Path,
+    ) -> Result<crate::extensions::ExtensionManifest> {
+        let (id, name, version, description) = extract_extension_fields(yaml)?;
+
+        let mut manifest = crate::extensions::ExtensionManifest::new(
+            &id,
+            extension_type,
+            &name,
+            &description,
+            &version,
+            path.to_path_buf(),
+        );
+
+        // Store all additional fields as metadata
+        if let serde_yaml::Value::Mapping(map) = yaml {
+            for (k, v) in map {
+                if let Some(key) = k.as_str() {
+                    // Skip already-set fields
+                    if !["id", "name", "version", "description"].contains(&key) {
+                        manifest.set(key, yaml_to_json(v.clone()));
+                    }
+                }
+            }
+        }
+
+        Ok(manifest)
+    }
+
+    /// Build an ExtensionManifest from parsed TOML fields
+    pub fn build_manifest_from_toml(
+        toml: &toml::Value,
+        extension_type: &str,
+        path: &Path,
+    ) -> Result<crate::extensions::ExtensionManifest> {
+        let (id, name, version, description) = extract_extension_fields_toml(toml)?;
+
+        let mut manifest = crate::extensions::ExtensionManifest::new(
+            &id,
+            extension_type,
+            &name,
+            &description,
+            &version,
+            path.to_path_buf(),
+        );
+
+        // Store all additional fields as metadata
+        if let toml::Value::Table(table) = toml {
+            for (key, value) in table {
+                if !["id", "name", "version", "description"].contains(&key.as_str()) {
+                    if let Ok(json_val) = serde_json::to_value(value) {
+                        manifest.set(key, json_val);
+                    }
+                }
+            }
+        }
+
+        Ok(manifest)
+    }
+
+    /// Discover extensions in a directory using a detector function
+    ///
+    /// # Arguments
+    /// * `dir` - Directory to scan
+    /// * `detector` - Function that checks if a path contains an extension
+    /// * `parser` - Async function that parses the extension at the given path
+    ///
+    /// # Returns
+    /// * `Ok(Vec<T>)` - List of discovered extensions
+    pub async fn discover_extensions<T, D, P, Fut>(
+        dir: &Path,
+        detector: D,
+        mut parser: P,
+    ) -> Result<Vec<T>>
+    where
+        D: Fn(&Path) -> bool,
+        P: FnMut(&Path) -> Fut,
+        Fut: std::future::Future<Output = Result<Option<T>>>,
+    {
+        let mut discovered = Vec::new();
+
+        if !dir.exists() {
+            return Ok(discovered);
+        }
+
+        let mut entries = tokio::fs::read_dir(dir)
+            .await
+            .with_context(|| format!("Failed to read directory: {:?}", dir))?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            if detector(&path) {
+                if let Some(item) = parser(&path).await? {
+                    discovered.push(item);
+                }
+            }
+        }
+
+        Ok(discovered)
+    }
+
+    /// Check if a directory contains a file
+    pub fn has_file(dir: &Path, filename: &str) -> bool {
+        dir.join(filename).exists()
+    }
+
+    /// Read and parse a YAML frontmatter file asynchronously
+    pub async fn read_yaml_frontmatter_file(path: &Path) -> Result<(serde_yaml::Value, String)> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read file: {:?}", path))?;
+        let (frontmatter, body) = parse_yaml_frontmatter(&content)?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&frontmatter)
+            .context("Failed to parse YAML frontmatter")?;
+        Ok((yaml, body))
+    }
+
+    /// Read and parse a TOML file asynchronously
+    pub async fn read_toml_file(path: &Path) -> Result<toml::Value> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read file: {:?}", path))?;
+        toml::from_str(&content).context("Failed to parse TOML")
+    }
 }
 
 /// Manifest format definitions

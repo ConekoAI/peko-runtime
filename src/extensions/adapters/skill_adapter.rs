@@ -24,6 +24,7 @@
 //! Skills hook into:
 //! - `PromptSystemSection { section: "skills" }` - Injects available skills into system prompt
 
+use crate::extensions::adapters::parsing;
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
     ExtensionServices, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
@@ -101,11 +102,9 @@ impl SkillAdapter {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("Failed to read {path:?}"))?;
 
-        let (frontmatter, _body) = parse_frontmatter(&content)
+        // Use shared parsing utility
+        let (meta, _body): (SkillFrontmatter, _) = parsing::parse_yaml_frontmatter_typed(&content)
             .with_context(|| format!("Failed to parse frontmatter in {path:?}"))?;
-
-        let meta: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
-            .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
 
         if meta.name.is_empty() {
             anyhow::bail!("Skill name cannot be empty");
@@ -174,34 +173,8 @@ impl ExtensionTypeAdapter for SkillAdapter {
         path: &Path,
         content: &str,
     ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
-        // Parse SKILL.md frontmatter format
-        let mut lines = content.lines().peekable();
-
-        // Must start with ---
-        match lines.next() {
-            Some("---") => {}
-            _ => anyhow::bail!("YAML frontmatter must start with ---"),
-        }
-
-        let mut frontmatter_lines = Vec::new();
-        let mut found_end = false;
-
-        for line in lines.by_ref() {
-            if line == "---" {
-                found_end = true;
-                break;
-            }
-            frontmatter_lines.push(line);
-        }
-
-        if !found_end {
-            anyhow::bail!("YAML frontmatter must end with ---");
-        }
-
-        let frontmatter = frontmatter_lines.join("\n");
-
-        // Parse as SkillFrontmatter
-        let skill_frontmatter: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
+        // Use shared parsing utility
+        let (skill_frontmatter, _): (SkillFrontmatter, _) = parsing::parse_yaml_frontmatter_typed(content)
             .with_context(|| format!("Failed to parse SKILL.md frontmatter in {:?}", path))?;
 
         // Convert to ExtensionManifest
@@ -307,40 +280,7 @@ impl HookHandler for SkillPromptHandler {
     }
 }
 
-/// Parse YAML frontmatter from markdown content
-/// Format:
-/// ---
-/// name: skill-name
-/// description: What this skill does
-/// ---
-/// # Rest of content
-fn parse_frontmatter(content: &str) -> Result<(String, String)> {
-    let mut lines = content.lines().peekable();
-
-    // Must start with ---
-    match lines.next() {
-        Some("---") => {}
-        _ => anyhow::bail!("SKILL.md must start with --- frontmatter delimiter"),
-    }
-
-    let mut frontmatter_lines = Vec::new();
-    let mut found_end = false;
-
-    for line in lines.by_ref() {
-        if line == "---" {
-            found_end = true;
-            break;
-        }
-        frontmatter_lines.push(line);
-    }
-
-    if !found_end {
-        anyhow::bail!("Frontmatter must end with ---");
-    }
-
-    let body = lines.collect::<Vec<_>>().join("\n");
-    Ok((frontmatter_lines.join("\n"), body))
-}
+// parse_frontmatter now uses parsing::parse_yaml_frontmatter from shared utilities
 
 /// Replace home directory with ~ to save tokens
 fn compact_skill_path(path: &Path) -> String {
@@ -528,7 +468,7 @@ author: Test Author
 This is the body content.
 "#;
 
-        let (frontmatter, body) = parse_frontmatter(content).unwrap();
+        let (frontmatter, body) = parsing::parse_yaml_frontmatter(content).unwrap();
         assert!(frontmatter.contains("name: test-skill"));
         assert!(frontmatter.contains("description: A test skill"));
         assert!(body.contains("# Test Skill"));
