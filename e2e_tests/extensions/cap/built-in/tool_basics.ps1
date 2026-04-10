@@ -82,7 +82,7 @@ Write-Host "TEST 2: Create agent and enable tools" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $agentName = "tool_basics_test"
-pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
+pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable tools via extension framework

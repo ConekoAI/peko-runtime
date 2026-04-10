@@ -222,8 +222,8 @@ Pekobot uses a hierarchical command structure (`pekobot <noun> <verb>`):
 
 #### Agent Management
 ```bash
-# Create an agent from template
-pekobot agent create <NAME> --template <minimal|coding|research|full> --provider <openai|anthropic|ollama>
+# Create an agent
+pekobot agent create <NAME> --provider <openai|anthropic|ollama|kimi>
 
 # List all configured agents
 pekobot agent list [--long]

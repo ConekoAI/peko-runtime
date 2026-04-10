@@ -135,7 +135,6 @@ pub async fn handle_agent_create(
     paths: &GlobalPaths,
     name: String,
     team: Option<String>,
-    _template: String,
     provider: String,
     force: bool,
 ) -> anyhow::Result<()> {

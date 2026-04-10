@@ -68,16 +68,13 @@ pub enum AgentCommands {
         team: Option<String>,
     },
 
-    /// Create a new agent from template
+    /// Create a new agent
     Create {
         /// Agent name or team/agent format
         name: String,
         /// Team to create agent in (overrides team/ prefix if both provided)
         #[arg(short, long)]
         team: Option<String>,
-        /// Use template (minimal, coding, research, full)
-        #[arg(short = 'T', long, default_value = "minimal")]
-        template: String,
         /// Provider to use
         #[arg(short, long, default_value = "kimi_code")]
         provider: String,
@@ -229,10 +226,9 @@ pub async fn handle_agent(
         AgentCommands::Create {
             name,
             team,
-            template,
             provider,
             force,
-        } => handlers::handle_agent_create(paths, name, team, template, provider, force).await,
+        } => handlers::handle_agent_create(paths, name, team, provider, force).await,
         AgentCommands::Remove {
             name,
             team,

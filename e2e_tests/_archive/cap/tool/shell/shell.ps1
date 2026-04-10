@@ -48,7 +48,7 @@ Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent with coding template
 $agentName = "shell_test"
-pekobot agent create $agentName --provider $Provider -T coding 2>&1 | Out-Null
+pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable shell tool via extension framework
