@@ -1,0 +1,47 @@
+{
+  "name": "calculator_tool",
+  "description": "Perform basic arithmetic calculations",
+  "llm_description": "Use when you need to perform mathematical calculations. Examples: 'Calculate 2 + 2', 'What is 10 * 5?', 'Divide 100 by 4'",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "description": "Operation to perform: add, subtract, multiply, divide",
+        "enum": ["add", "subtract", "multiply", "divide"]
+      },
+      "a": {
+        "type": "number",
+        "description": "First number"
+      },
+      "b": {
+        "type": "number",
+        "description": "Second number"
+      }
+    },
+    "required": ["operation", "a", "b"]
+  },
+  "reserved_parameters": {
+    "session_id": {
+      "source": {
+        "runtime": {
+          "field": "session_id"
+        }
+      },
+      "description": "Current session ID for audit logging"
+    },
+    "agent_id": {
+      "source": {
+        "runtime": {
+          "field": "agent_id"
+        }
+      },
+      "description": "ID of the calling agent"
+    }
+  },
+  "protocol": {
+    "version": "2.0",
+    "transport": "stdio",
+    "supports_streaming": false
+  }
+}

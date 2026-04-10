@@ -1,0 +1,23 @@
+{
+  "name": "multi_file_calc",
+  "description": "Calculator tool with multi-file structure (demonstrates subdirectory support)",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["add", "subtract", "multiply", "divide"],
+        "description": "The arithmetic operation to perform"
+      },
+      "a": {
+        "type": "number",
+        "description": "First operand"
+      },
+      "b": {
+        "type": "number",
+        "description": "Second operand"
+      }
+    },
+    "required": ["operation", "a", "b"]
+  }
+}
