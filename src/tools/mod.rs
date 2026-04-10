@@ -40,7 +40,7 @@ pub mod universal;
 /// to avoid code duplication and ensure consistent behavior.
 pub mod shared;
 
-pub use sessions_send::{SendMode, SessionsSendTool};
+pub use sessions_send::SessionsSendTool;
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
 pub use agent_spawn::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool};

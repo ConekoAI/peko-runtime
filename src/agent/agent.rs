@@ -83,10 +83,6 @@ impl Agent {
         tools.push(Arc::new(
             SessionsSendTool::new()
                 .with_session_context(format!("agent:{}", self.config.name), &self.config.name)
-                .with_executor(
-                    self.subagent_executor.unified_executor().clone(),
-                    format!("agent:{}", self.config.name),
-                ),
         ));
 
         // Filter based on agent config whitelist
@@ -147,10 +143,6 @@ impl Agent {
         tools.push(Arc::new(
             SessionsSendTool::new()
                 .with_session_context(format!("agent:{}", self.config.name), &self.config.name)
-                .with_executor(
-                    self.subagent_executor.unified_executor().clone(),
-                    format!("agent:{}", self.config.name),
-                ),
         ));
 
         // Load MCP tools

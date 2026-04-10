@@ -1,33 +1,10 @@
 //! Agent Spawn Tool (OpenClaw-Style)
 //!
 //! Spawns subagent sessions for isolated task execution.
-//! Supports both async (default) and sync execution modes.
+//! Results are announced back to the parent via the event system.
 //!
-//! ## Modes
-//!
-//! ### Async Mode (default)
-//! Returns immediately with run_id. Results announced back via event system.
-//! OpenClaw-compatible response format:
-//! ```json
-//! {
-//!   "status": "accepted",
-//!   "childSessionKey": "agent:name:subagent:uuid",
-//!   "runId": "run_uuid",
-//!   "note": "auto-announces on completion, do not poll/sleep"
-//! }
-//! ```
-//!
-//! ### Sync Mode
-//! Blocks until subagent completes and returns result directly.
-//! Use for sequential decomposition patterns.
-//! ```json
-//! {
-//!   "status": "completed",
-//!   "runId": "run_uuid",
-//!   "result": { ... },
-//!   "mode": "sync"
-//! }
-//! ```
+//! Note: Async execution and timeout are handled by the framework-level
+//! ToolWrapper using `_async` and `_timeout` parameters.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -39,78 +16,6 @@ use crate::agent::subagent_registry::SharedSubagentRegistry;
 use crate::session::context::SessionContext;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::Tool;
-
-/// Execution mode for agent spawn
-#[derive(Debug, Clone, Serialize)]
-pub enum SpawnMode {
-    /// Asynchronous: return receipt immediately (default)
-    Async,
-    /// Synchronous: wait for subagent completion with timeout
-    Sync { timeout_secs: u64 },
-}
-
-impl<'de> Deserialize<'de> for SpawnMode {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{self, MapAccess, Visitor};
-        use std::fmt;
-
-        struct SpawnModeVisitor;
-
-        impl<'de> Visitor<'de> for SpawnModeVisitor {
-            type Value = SpawnMode;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("'async', 'sync', or a map with mode and optional timeout_secs")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                match value {
-                    "async" => Ok(SpawnMode::Async),
-                    "sync" => Ok(SpawnMode::Sync { timeout_secs: 300 }),
-                    _ => Err(de::Error::unknown_variant(value, &["async", "sync"])),
-                }
-            }
-
-            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                let mut mode: Option<String> = None;
-                let mut timeout_secs: u64 = 300;
-
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "mode" => mode = Some(map.next_value()?),
-                        "timeout_secs" => timeout_secs = map.next_value()?,
-                        _ => {
-                            // Skip unknown fields
-                            let _: serde_json::Value = map.next_value()?;
-                        }
-                    }
-                }
-
-                match mode.as_deref() {
-                    Some("async") => Ok(SpawnMode::Async),
-                    Some("sync") => Ok(SpawnMode::Sync { timeout_secs }),
-                    Some(other) => Err(de::Error::unknown_variant(other, &["async", "sync"])),
-                    None => Err(de::Error::missing_field("mode")),
-                }
-            }
-        }
-
-        deserializer.deserialize_any(SpawnModeVisitor)
-    }
-}
-
-fn default_sync_timeout() -> u64 {
-    300 // 5 minutes default for sync mode
-}
 
 /// Maximum allowed spawn depth (safety limit)
 const DEFAULT_MAX_SPAWN_DEPTH: u32 = 3;
@@ -193,6 +98,23 @@ impl SessionKeyProvider for DynamicSessionKeyProvider {
     }
 }
 
+/// Agent Spawn Arguments
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSpawnArgs {
+    /// Task description for the subagent
+    pub task: String,
+    /// Optional label for tracking
+    pub label: Option<String>,
+    /// Create isolated session without parent context
+    #[serde(default)]
+    pub isolated: bool,
+    /// Cleanup policy: "keep" or "delete"
+    #[serde(default)]
+    pub cleanup: Option<String>,
+    /// Parent session key (auto-detected if not provided)
+    pub parent_session_key: Option<String>,
+}
+
 /// Agent Spawn Tool
 ///
 /// Creates a subagent session and executes a task in the background.
@@ -270,8 +192,8 @@ impl AgentSpawnTool {
         &self.executor
     }
 
-    /// Execute subagent in async mode (default)
-    async fn execute_async(
+    /// Execute subagent spawn
+    async fn execute_spawn(
         &self,
         task: &str,
         isolated: bool,
@@ -325,68 +247,7 @@ impl AgentSpawnTool {
         }
     }
 
-    /// Execute subagent in sync mode (wait for completion)
-    async fn execute_sync(
-        &self,
-        task: &str,
-        isolated: bool,
-        parent_session_key: &str,
-        config: ExecutionConfig,
-        sync_timeout_secs: u64,
-    ) -> anyhow::Result<serde_json::Value> {
-        match self
-            .executor
-            .execute_and_wait(
-                task,
-                self.current_session.as_ref(),
-                isolated,
-                parent_session_key,
-                config,
-                sync_timeout_secs,
-            )
-            .await
-        {
-            Ok(run) => {
-                // Format successful completion response
-                let status_str = run.status.as_str();
-                let is_terminal = run.status.is_terminal();
-
-                let mut response = json!({
-                    "status": status_str,
-                    "runId": run.run_id,
-                    "mode": "sync",
-                    "childSessionKey": run.child_session_key,
-                    "isolated": isolated,
-                    "is_terminal": is_terminal,
-                });
-
-                // Add result if available
-                if let Some(result) = run.result {
-                    if let Some(obj) = response.as_object_mut() {
-                        obj.insert("output".to_string(), json!(result.output));
-                        if let Some(error) = result.error {
-                            obj.insert("error".to_string(), json!(error));
-                        }
-                    }
-                }
-
-                // Add label if present
-                if let Some(label) = run.label {
-                    if let Some(obj) = response.as_object_mut() {
-                        obj.insert("label".to_string(), json!(label));
-                    }
-                }
-
-                Ok(response)
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-                Self::format_error_response(error_msg)
-            }
-        }
-    }
-
-    /// Format error response for both sync and async modes
+    /// Format error response
     fn format_error_response(error_msg: String) -> anyhow::Result<serde_json::Value> {
         let lower_msg = error_msg.to_lowercase();
         // Check for specific error types
@@ -430,80 +291,81 @@ impl Tool for AgentSpawnTool {
     fn description(&self) -> &'static str {
         r#"Spawn a sub-agent run in an isolated session.
 
-Supports two execution modes:
-- **Async** (default): Returns immediately, results announced via event system
-- **Sync**: Blocks until completion, returns result directly
+Results are announced back to the parent via the event system when complete.
 
 This creates a spawn overlay - either isolated (new base session) or shared (inherits parent's base session).
 
 Parameters:
 - task: Description of the task to execute (required)
-- mode: "async" or "sync" - execution mode (default: "async")
 - label: Label for this spawn (optional)
 - isolated: If true, creates isolated session without parent context (default: false)
-- timeout_seconds: Maximum runtime in seconds (optional, default: 300)
 - cleanup: "keep" or "delete" - what to do with session after completion (default: "keep")
 - parent_session_key: Parent session key (optional - auto-detected if not provided)
 
 Examples:
-// Async mode (default) - shared context
+// Basic spawn - shared context
 {"task": "Continue research on Rust", "isolated": false}
 
-// Async mode with label
-{"task": "Long running analysis", "label": "analysis", "timeout_seconds": 600}
-
-// Sync mode - wait for completion
-{"task": "Quick analysis", "mode": "sync", "timeout_seconds": 60}
+// Spawn with label
+{"task": "Long running analysis", "label": "analysis"}
 
 // Isolated context - fresh session
-{"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}"#
+{"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}
+
+## Async Execution
+
+For framework-level async control, use:
+{"task": "Long task", "_async": true, "_timeout": 300}"#
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Description of the task to execute"
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Optional label for tracking this spawn"
+                },
+                "isolated": {
+                    "type": "boolean",
+                    "description": "If true, creates isolated session without parent context",
+                    "default": false
+                },
+                "cleanup": {
+                    "type": "string",
+                    "description": "What to do with session after completion: 'keep' or 'delete'",
+                    "default": "keep"
+                },
+                "parent_session_key": {
+                    "type": "string",
+                    "description": "Parent session key (auto-detected if not provided)"
+                }
+            },
+            "required": ["task"]
+        })
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // Parse parameters
-        let task = params
-            .get("task")
-            .and_then(|t| t.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing required 'task' parameter"))?
-            .to_string();
+        let args: AgentSpawnArgs = serde_json::from_value(params)
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
 
-        let label = params
-            .get("label")
-            .and_then(|l| l.as_str())
-            .map(std::string::ToString::to_string);
-
-        let isolated = params
-            .get("isolated")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-
-        let timeout_seconds = params
-            .get("timeout_seconds")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(300);
-
-        let cleanup =
-            params
-                .get("cleanup")
-                .and_then(|c| c.as_str())
-                .map_or(SpawnCleanupPolicy::Keep, |s| {
-                    match s.to_lowercase().as_str() {
-                        "delete" => SpawnCleanupPolicy::Delete,
-                        _ => SpawnCleanupPolicy::Keep,
-                    }
-                });
-
-        // Parse execution mode (default to async for backward compatibility)
-        let mode: SpawnMode = params
-            .get("mode")
-            .and_then(|m| serde_json::from_value(m.clone()).ok())
-            .unwrap_or(SpawnMode::Async);
+        let cleanup = args
+            .cleanup
+            .map_or(SpawnCleanupPolicy::Keep, |s| {
+                match s.to_lowercase().as_str() {
+                    "delete" => SpawnCleanupPolicy::Delete,
+                    _ => SpawnCleanupPolicy::Keep,
+                }
+            });
 
         // Get parent session key - from params, session provider, or current session context
-        let parent_session_key = if let Some(key) =
-            params.get("parent_session_key").and_then(|k| k.as_str())
-        {
-            key.to_string()
+        let parent_session_key = if let Some(key) = args.parent_session_key {
+            key
         } else if let Some(ref provider) = self.session_provider {
             provider.current_session_key()
         } else if let Some(ref ctx) = self.current_session {
@@ -515,28 +377,25 @@ Examples:
             ));
         };
 
-        // Build execution config
+        // Build execution config with defaults
         let config = ExecutionConfig {
-            timeout_seconds,
+            timeout_seconds: 300, // Default timeout, can be overridden by framework _timeout
             cleanup,
-            label: label.clone(),
+            label: args.label.clone(),
             announce_completion: true,
             max_depth: self.max_depth,
         };
 
-        // Execute based on mode
-        match mode {
-            SpawnMode::Async => {
-                // Async mode: spawn and return immediately
-                self.execute_async(&task, isolated, &parent_session_key, config, label, cleanup)
-                    .await
-            }
-            SpawnMode::Sync { timeout_secs } => {
-                // Sync mode: wait for completion
-                self.execute_sync(&task, isolated, &parent_session_key, config, timeout_secs)
-                    .await
-            }
-        }
+        // Execute spawn
+        self.execute_spawn(
+            &args.task,
+            args.isolated,
+            &parent_session_key,
+            config,
+            args.label,
+            cleanup,
+        )
+        .await
     }
 }
 
@@ -712,30 +571,6 @@ mod tests {
         assert_eq!(DEFAULT_MAX_CONCURRENT, 5);
     }
 
-    #[test]
-    fn test_spawn_mode_default_sync_timeout() {
-        assert_eq!(default_sync_timeout(), 300);
-    }
-
-    #[test]
-    fn test_spawn_mode_deserialization() {
-        // Test async mode
-        let json = serde_json::json!("async");
-        let mode: SpawnMode = serde_json::from_value(json).unwrap();
-        match mode {
-            SpawnMode::Async => {}
-            _ => panic!("Expected Async mode"),
-        }
-
-        // Test sync mode with default timeout
-        let json = serde_json::json!("sync");
-        let mode: SpawnMode = serde_json::from_value(json).unwrap();
-        match mode {
-            SpawnMode::Sync { timeout_secs } => assert_eq!(timeout_secs, 300),
-            _ => panic!("Expected Sync mode"),
-        }
-    }
-
     #[tokio::test]
     async fn test_async_mode_error_response_formatting() {
         // Test depth error
@@ -747,22 +582,30 @@ mod tests {
 
         // Test concurrent error
         let response = AgentSpawnTool::format_error_response(
-            "Maximum concurrent subagent runs exceeded".to_string(),
+            "Maximum concurrent runs exceeded".to_string(),
         )
         .unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("concurrent"));
 
         // Test timeout error
-        let response = AgentSpawnTool::format_error_response(
-            "Subagent execution timed out after 60s".to_string(),
-        )
-        .unwrap();
+        let response = AgentSpawnTool::format_error_response("Execution timed out".to_string()).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "timeout");
+    }
 
-        // Test generic error
-        let response =
-            AgentSpawnTool::format_error_response("Something went wrong".to_string()).unwrap();
-        assert_eq!(response["status"].as_str().unwrap(), "error");
+    #[test]
+    fn test_args_parsing() {
+        let json = r#"{
+            "task": "Do something",
+            "label": "my-task",
+            "isolated": true,
+            "cleanup": "delete"
+        }"#;
+
+        let args: AgentSpawnArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.task, "Do something");
+        assert_eq!(args.label, Some("my-task".to_string()));
+        assert!(args.isolated);
+        assert_eq!(args.cleanup, Some("delete".to_string()));
     }
 }

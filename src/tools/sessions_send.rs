@@ -4,6 +4,9 @@
 //! - Cross-team blocking: rejects if target session belongs to team peer
 //! - Intended for human-to-agent and tooling-to-agent communication
 //! - Agent-to-agent within team must use event bus (A2A)
+//!
+//! Note: Async execution and timeout are handled by the framework-level
+//! ToolWrapper using `_async` and `_timeout` parameters.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -13,36 +16,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::agent::async_tool_framework::{AsyncResultDeliveryMode, UnifiedAsyncExecutor};
 use crate::session::context::SessionRouter;
 use crate::session::manager::SessionManager;
 use crate::tools::Tool;
-
-/// Execution mode for sessions_send
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SendMode {
-    /// Synchronous: wait for response with timeout
-    Sync { timeout_secs: u64 },
-    /// Asynchronous: return receipt immediately
-    Async {
-        /// Optional label for tracking
-        #[serde(default)]
-        label: Option<String>,
-        /// Delivery mode for result
-        #[serde(default)]
-        delivery_mode: AsyncResultDeliveryMode,
-    },
-}
-
-impl Default for SendMode {
-    fn default() -> Self {
-        Self::Async {
-            label: None,
-            delivery_mode: AsyncResultDeliveryMode::default(),
-        }
-    }
-}
 
 /// Sessions Send tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,20 +27,6 @@ pub struct SessionsSendArgs {
     pub session_id: String,
     /// Message content
     pub message: String,
-    /// Async mode (default: true)
-    #[serde(default = "default_async")]
-    pub r#async: bool,
-    /// Timeout for sync mode (milliseconds)
-    #[serde(default = "default_timeout")]
-    pub timeout_ms: u64,
-}
-
-fn default_async() -> bool {
-    true
-}
-
-fn default_timeout() -> u64 {
-    60000 // 60 seconds default
 }
 
 /// Sessions Send result
@@ -104,8 +66,6 @@ impl std::error::Error for SessionsSendError {}
 
 /// Sessions Send tool for A2A messaging with cross-team blocking
 pub struct SessionsSendTool {
-    /// Unified async executor for background execution
-    executor: Option<UnifiedAsyncExecutor>,
     /// Session router for resolving agent sessions
     session_router: Option<SessionRouter>,
     /// Session manager for accessing sessions
@@ -116,8 +76,6 @@ pub struct SessionsSendTool {
     current_agent_name: Option<String>,
     /// Current team ID (for cross-team blocking)
     team_id: Option<String>,
-    /// Default timeout for sync mode
-    default_timeout_ms: u64,
 }
 
 impl SessionsSendTool {
@@ -125,13 +83,11 @@ impl SessionsSendTool {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            executor: None,
             session_router: None,
             session_manager: None,
             current_session_key: None,
             current_agent_name: None,
             team_id: None,
-            default_timeout_ms: 60000,
         }
     }
 
@@ -154,18 +110,6 @@ impl SessionsSendTool {
         self
     }
 
-    /// Configure with async executor
-    #[must_use]
-    pub fn with_executor(
-        mut self,
-        executor: UnifiedAsyncExecutor,
-        session_key: impl Into<String>,
-    ) -> Self {
-        self.executor = Some(executor);
-        self.current_session_key = Some(session_key.into());
-        self
-    }
-
     /// Configure with session router for agent resolution
     #[must_use]
     pub fn with_session_router(mut self, router: SessionRouter) -> Self {
@@ -177,13 +121,6 @@ impl SessionsSendTool {
     #[must_use]
     pub fn with_session_manager(mut self, manager: Arc<RwLock<SessionManager>>) -> Self {
         self.session_manager = Some(manager);
-        self
-    }
-
-    /// Set default timeout
-    #[must_use]
-    pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
-        self.default_timeout_ms = timeout_ms;
         self
     }
 
@@ -235,35 +172,11 @@ impl SessionsSendTool {
         session_id.split(':').nth(1).map(|s| s.to_string())
     }
 
-    /// Execute send in async mode
-    async fn execute_async(
-        &self,
-        target_session_id: String,
-        _message: String,
-    ) -> Result<serde_json::Value> {
-        // Check cross-team permission
-        self.check_cross_team_permission(&target_session_id).await?;
-
-        let message_id = format!("msg_{}", Uuid::new_v4().simple());
-
-        // In a real implementation, this would:
-        // 1. Queue the message for the target session
-        // 2. Return a receipt
-        // For now, return a simulated response
-
-        Ok(json!({
-            "message_id": message_id,
-            "queued": true,
-            "session_id": target_session_id,
-        }))
-    }
-
-    /// Execute send in sync mode
-    async fn execute_sync(
+    /// Execute send
+    async fn execute_send(
         &self,
         target_session_id: String,
         message: String,
-        _timeout_ms: u64,
     ) -> Result<serde_json::Value> {
         // Check cross-team permission
         self.check_cross_team_permission(&target_session_id).await?;
@@ -272,17 +185,17 @@ impl SessionsSendTool {
         let start = std::time::Instant::now();
 
         // In a real implementation, this would:
-        // 1. Send message to target session
-        // 2. Wait for response (with timeout)
-        // 3. Return the response
+        // 1. Queue the message for the target session
+        // 2. Return a receipt
         // For now, return a simulated response
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
         Ok(json!({
             "message_id": message_id,
-            "response": format!("Simulated response to: {}", message.chars().take(50).collect::<String>()),
+            "queued": true,
             "session_id": target_session_id,
+            "response": format!("Simulated response to: {}", message.chars().take(50).collect::<String>()),
             "duration_ms": duration_ms,
         }))
     }
@@ -313,10 +226,7 @@ Send messages to another session. For human-to-agent and tooling-to-agent commun
 - **Cross-team**: Blocked with `cross_agent_send_forbidden` error
 - **Non-team sessions**: Allowed
 
-## Modes
-
-### Async Mode (default)
-Returns immediately with message ID.
+## Usage
 ```json
 {
   "session_id": "sess_target123",
@@ -324,14 +234,15 @@ Returns immediately with message ID.
 }
 ```
 
-### Sync Mode
-Blocks until response or timeout.
+## Async Execution
+
+For long-running message handling, use the framework-level async parameter:
 ```json
 {
   "session_id": "sess_target123",
-  "message": "What's the status?",
-  "async": false,
-  "timeout_ms": 30000
+  "message": "Please check the report",
+  "_async": true,
+  "_timeout": 60
 }
 ```
 
@@ -352,18 +263,6 @@ Blocks until response or timeout.
                 "message": {
                     "type": "string",
                     "description": "Message content"
-                },
-                "async": {
-                    "type": "boolean",
-                    "description": "If false, wait for response (sync mode)",
-                    "default": true
-                },
-                "timeout_ms": {
-                    "type": "integer",
-                    "description": "Timeout in milliseconds for sync mode",
-                    "default": 60000,
-                    "minimum": 1000,
-                    "maximum": 300000
                 }
             },
             "required": ["session_id", "message"]
@@ -374,12 +273,7 @@ Blocks until response or timeout.
         let args: SessionsSendArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
 
-        if args.r#async {
-            self.execute_async(args.session_id, args.message).await
-        } else {
-            self.execute_sync(args.session_id, args.message, args.timeout_ms)
-                .await
-        }
+        self.execute_send(args.session_id, args.message).await
     }
 }
 
@@ -398,16 +292,12 @@ mod tests {
     fn test_sessions_send_args_parsing() {
         let json = r#"{
             "session_id": "sess_123",
-            "message": "Hello",
-            "async": false,
-            "timeout_ms": 30000
+            "message": "Hello"
         }"#;
 
         let args: SessionsSendArgs = serde_json::from_str(json).unwrap();
         assert_eq!(args.session_id, "sess_123");
         assert_eq!(args.message, "Hello");
-        assert!(!args.r#async);
-        assert_eq!(args.timeout_ms, 30000);
     }
 
     #[test]
@@ -430,13 +320,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_async_mode() {
+    async fn test_send_message() {
         let tool = SessionsSendTool::new();
 
         let params = json!({
             "session_id": "agent:other:session:123",
-            "message": "Test message",
-            "async": true
+            "message": "Test message"
         });
 
         let result = tool.execute(params).await;
@@ -445,24 +334,5 @@ mod tests {
         let response = result.unwrap();
         assert!(response["message_id"].as_str().is_some());
         assert_eq!(response["queued"].as_bool(), Some(true));
-    }
-
-    #[tokio::test]
-    async fn test_sync_mode() {
-        let tool = SessionsSendTool::new();
-
-        let params = json!({
-            "session_id": "agent:other:session:123",
-            "message": "Test message",
-            "async": false,
-            "timeout_ms": 5000
-        });
-
-        let result = tool.execute(params).await;
-        assert!(result.is_ok());
-
-        let response = result.unwrap();
-        assert!(response["message_id"].as_str().is_some());
-        assert!(response["response"].as_str().is_some());
     }
 }
