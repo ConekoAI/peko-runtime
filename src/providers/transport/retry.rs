@@ -29,7 +29,7 @@ impl Default for RetryPolicy {
             base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(30),
             backoff_multiplier: 2.0,
-            retryable_status_codes: [429, 500, 502, 503, 504].into_iter().collect(),
+            retryable_status_codes: [429, 500, 502, 503, 504, 529].into_iter().collect(),
         }
     }
 }
@@ -75,7 +75,7 @@ impl RetryableError for anyhow::Error {
 
         // Check for explicit status codes in error message
         // Format: "HTTP error 429: ..." or "429 Too Many Requests"
-        for code in [429u16, 500, 502, 503, 504] {
+        for code in [429u16, 500, 502, 503, 504, 529] {
             if msg.contains(&format!(" {}", code))
                 || msg.contains(&format!("HTTP error {}", code))
                 || msg.contains(&format!("status {}", code))
