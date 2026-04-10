@@ -36,6 +36,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+// Extension Framework integration
+use crate::extensions::async_integration::ExtensionAsyncTool;
+use crate::extensions::core::{ExtensionAsyncAdapter, global_core, HookPoint};
+use crate::extensions::{HookInput, HookOutput, HookResult};
+
 /// Helper for filtering disabled tools and building the final tool list
 ///
 /// This eliminates the repetitive pattern of checking if a tool is disabled
@@ -365,6 +370,115 @@ impl ToolFactory {
             .any(|d| d.to_lowercase() == tool_name.to_lowercase())
     }
 
+    /// Load extension tools by invoking the Extension Framework's ToolRegister hook
+    async fn load_extension_tools(
+        disabled_tools: &[String],
+        existing_names: &std::collections::HashSet<String>,
+    ) -> Vec<Arc<dyn crate::tools::Tool>> {
+        use crate::extensions::core::global_core;
+        use crate::extensions::{HookInput, HookOutput, HookResult};
+        
+        // Get the global extension core
+        let core = match global_core() {
+            Some(core) => core,
+            None => {
+                tracing::debug!("No ExtensionCore initialized, skipping extension tools");
+                return vec![];
+            }
+        };
+        
+        // Invoke ToolRegister hook to get tools from extensions
+        let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
+        
+        // Helper function to process a single tool definition
+        async fn process_tool_def(
+            core: &Arc<crate::extensions::core::ExtensionCore>,
+            def: crate::providers::ToolDefinition,
+            disabled_tools: &[String],
+            existing_names: &std::collections::HashSet<String>,
+        ) -> Option<Arc<dyn crate::tools::Tool>> {
+            let name = def.name.to_lowercase();
+            
+            // Skip disabled tools
+            if disabled_tools.iter().any(|d| d.to_lowercase() == name) {
+                tracing::debug!("Extension tool '{}' is disabled, skipping", def.name);
+                return None;
+            }
+            
+            // Skip tools that conflict with existing tools
+            if existing_names.contains(&name) {
+                tracing::debug!(
+                    "Extension tool '{}' conflicts with existing tool, skipping",
+                    def.name
+                );
+                return None;
+            }
+            
+            // Create an ExtensionAsyncTool that will invoke the ToolExecute hook
+            Some(ToolFactory::create_extension_tool(core, def).await)
+        }
+        
+        match result {
+            HookResult::Continue(HookOutput::Vec(outputs)) => {
+                let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+                
+                for output in outputs {
+                    if let HookOutput::Tool(def) = output {
+                        if let Some(tool) = process_tool_def(&core, def, disabled_tools, existing_names).await {
+                            tools.push(tool);
+                        }
+                    }
+                }
+                
+                tracing::info!("Loaded {} tools from Extension Framework", tools.len());
+                tools
+            }
+            HookResult::Continue(HookOutput::Tool(def)) => {
+                let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+                
+                if let Some(tool) = process_tool_def(&core, def, disabled_tools, existing_names).await {
+                    tools.push(tool);
+                }
+                
+                tracing::info!("Loaded {} tools from Extension Framework", tools.len());
+                tools
+            }
+            HookResult::PassThrough => {
+                tracing::debug!("No extension tools registered");
+                vec![]
+            }
+            HookResult::Handled => {
+                tracing::debug!("ToolRegister hook handled without returning tools");
+                vec![]
+            }
+            result => {
+                tracing::debug!("ToolRegister hook result: {:?}", result);
+                vec![]
+            }
+        }
+    }
+    
+    /// Create an ExtensionAsyncTool that invokes the Extension Framework
+    async fn create_extension_tool(
+        _core: &Arc<crate::extensions::core::ExtensionCore>,
+        def: crate::providers::ToolDefinition,
+    ) -> Arc<dyn crate::tools::Tool> {
+        // For now, create a simple wrapper that will invoke the ToolExecute hook
+        // The actual execution will be handled by the ExtensionAsyncAdapter
+        use crate::extensions::async_integration::ExtensionAsyncTool;
+        use crate::extensions::core::ExtensionAsyncAdapter;
+        
+        let adapter = ExtensionAsyncAdapter::new(_core.clone());
+        let tool = ExtensionAsyncTool::new(
+            adapter,
+            def.name,
+            def.description,
+            def.parameters,
+        );
+        
+        Arc::new(tool) as Arc<dyn crate::tools::Tool>
+    }
+
     /// Create all essential tools based on configuration (synchronous version)
     ///
     /// Respects `disabled_tools` configuration - disabled tools are excluded
@@ -601,6 +715,25 @@ impl ToolFactory {
         }
 
         result.mcp = mcp_discovery;
+        
+        // Step 4: Load tools from Extension Framework
+        // Get current tool names (built-in + custom + MCP) for conflict resolution
+        let existing_names: std::collections::HashSet<String> = result
+            .tools
+            .iter()
+            .map(|t| t.name().to_lowercase())
+            .collect();
+        
+        let ext_tools = Self::load_extension_tools(&config.disabled_tools, &existing_names).await;
+        if !ext_tools.is_empty() {
+            tracing::info!(
+                "✅ Loaded {} tools from Extension Framework",
+                ext_tools.len()
+            );
+            result.tools.extend(ext_tools);
+        } else {
+            tracing::debug!("ℹ️ No Extension Framework tools loaded");
+        }
         
         // Apply ToolWrapper if enabled
         if config.enable_wrapper {
