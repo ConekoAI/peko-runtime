@@ -230,21 +230,80 @@ impl AgenticLoopV4 {
 }
 ```
 
-### Phase 5: ToolWrapper Deprecation
+### Phase 5: ToolWrapper Deprecation & Responsibility Transfer
 
-`ToolWrapper` is no longer needed for `_async` handling (moved to ExtensionCore). Deprecate or repurpose:
+`ToolWrapper` is no longer needed. Its responsibilities are **explicitly transferred** to ExtensionCore services:
+
+| ToolWrapper Responsibility | New Owner | Location |
+|---------------------------|-----------|----------|
+| `_async` parameter detection | `AsyncExecutionRouter` | `ExtensionCore::services` |
+| `_timeout` handling | `ToolExecutionService` | `ExtensionCore::services` |
+| `_callback` handling | `AsyncToolExecutor` | `ExtensionCore::services` |
+| `_progress` handling | `AsyncToolExecutor` | `ExtensionCore::services` |
+| Panic isolation | `ToolExecutionService` | `ExtensionCore::services` |
+| Sync execution with timeout | `ToolExecutionService` | `ExtensionCore::services` |
 
 ```rust
-// ToolWrapper becomes a thin adapter for backward compatibility
-// or is removed entirely
+// DEPRECATED: ToolWrapper no longer needed
 #[deprecated(
     since = "0.12.0",
-    note = "Async handling moved to ExtensionCore::AsyncExecutionRouter"
+    note = "All responsibilities moved to ExtensionCore services"
 )]
 pub struct ToolWrapper;
 ```
 
-## Critical: Single Path + Preserving Async
+**Who calls what:**
+1. **AgenticLoopV4** calls `ExtensionCore::invoke_hook()`
+2. **Handler** (Builtin, MCP, Universal) receives the call
+3. **Handler** calls `AsyncExecutionRouter::route()` 
+4. **AsyncExecutionRouter** extracts `_async` and decides path
+5. **Async path**: `AsyncToolExecutor::execute_with_receipt()`
+6. **Sync path**: `ToolExecutionService::execute()` with timeout
+7. **Both paths** eventually call the actual tool execution closure
+
+## Critical: Single Path + Responsibility Transfer
+
+### ToolWrapper Responsibilities: Before vs After
+
+**Before (ToolWrapper era):**
+```
+LLM calls tool
+    │
+    ▼
+ToolWrapper::execute(params)
+    │
+    ├──► ReservedParams::extract(params)  ← _async, _timeout
+    │
+    ├──► _async=true? ──► AsyncToolExecutor::execute()
+    │
+    └──► _async=false? ──► ToolExecutor::execute_with_context()
+                              │
+                              └──► Panic isolation, timeout
+```
+
+**After (ExtensionCore era):**
+```
+LLM calls tool
+    │
+    ▼
+ExtensionCore::invoke_hook(ToolExecute)
+    │
+    ▼
+Handler::handle(ctx, input)
+    │
+    ├──► Get services from ctx.services
+    │
+    ▼
+AsyncExecutionRouter::route(params, services)
+    │
+    ├──► ReservedParams::extract(params)  ← _async, _timeout (MOVED HERE)
+    │
+    ├──► _async=true? ──► AsyncToolExecutor::execute() (via services)
+    │
+    └──► _async=false? ──► ToolExecutionService::execute() (via services)
+                              │
+                              └──► Panic isolation, timeout (MOVED HERE)
+```
 
 ### The Goal: ONE Path for ALL Tools
 
