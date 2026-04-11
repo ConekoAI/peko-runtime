@@ -7,7 +7,6 @@
 //! - Create bundles from extensions
 //! - Configure extensions (global, team, agent levels)
 
-use crate::cap::builtin::BuiltInCapabilityRegistry;
 use crate::commands::GlobalPaths;
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat, general_adapter};
 use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
@@ -317,11 +316,6 @@ async fn handle_enable(
     id: String,
     target: Option<String>,
 ) -> anyhow::Result<()> {
-    // Check if this is a built-in capability
-    if BuiltInCapabilityRegistry::is_builtin(&id) {
-        return handle_enable_builtin(paths, &id, target.as_deref()).await;
-    }
-
     let ext_id = ExtensionId::new(&id);
 
     // Check if extension exists
@@ -397,11 +391,6 @@ async fn handle_disable(
     id: String,
     target: Option<String>,
 ) -> anyhow::Result<()> {
-    // Check if this is a built-in capability
-    if BuiltInCapabilityRegistry::is_builtin(&id) {
-        return handle_disable_builtin(paths, &id, target.as_deref()).await;
-    }
-
     let ext_id = ExtensionId::new(&id);
 
     // Check if extension exists
