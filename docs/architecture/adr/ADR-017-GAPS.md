@@ -32,7 +32,6 @@ The Unified Extension Architecture (ADR-017) implementation is approximately **8
 
 | Component | Status | What's Missing |
 |-----------|--------|----------------|
-| ChannelAdapter | **Structure Complete** | Discovery, parsing, registration work. Handlers are pass-through (need actual transformation logic) |
 | HookAdapter | **Structure Complete** | Discovery, parsing, registration work. EventSubscriptionHandler is pass-through (need webhook/cron implementation) |
 | GatewayAdapter | **Structure Complete** | Discovery, parsing, registration work. GatewayHookHandler is pass-through (need actual gateway server integration) |
 
@@ -44,7 +43,6 @@ The Unified Extension Architecture (ADR-017) implementation is approximately **8
 | Documentation | Medium | 1-2 days | API docs, migration guide, best practices |
 | E2E tests for extension system | Medium | 2 days | Full install/enable/disable/uninstall cycle tests |
 | Bundle packaging (tar.gz) | Low | 1 day | ExtensionBundle struct exists but no serialization |
-| ChannelAdapter handler implementations | Low | 1 day | Message transformation logic |
 | HookAdapter handler implementations | Low | 1 day | Webhook dispatch, cron scheduling |
 | GatewayAdapter handler implementations | Low | 1-2 days | Gateway lifecycle management |
 
@@ -75,7 +73,6 @@ pub mod parsing {
 
 **Files Refactored:**
 - `skill_adapter.rs` - Uses shared YAML frontmatter parsing
-- `channel_adapter.rs` - Uses shared discovery and parsing
 - `hook_adapter.rs` - Uses shared discovery and parsing
 - `gateway_adapter.rs` - Uses shared discovery and parsing
 - `general_adapter.rs` - Uses shared discovery and parsing
@@ -175,7 +172,6 @@ let report = migrate_legacy_extensions_with_options(&mut manager, options).await
 | `extensions/adapters/skill_adapter.rs` | Good | Full test suite |
 | `extensions/adapters/universal_tool_adapter.rs` | Good | Full test suite |
 | `extensions/adapters/mcp_adapter.rs` | Partial | Basic tests only |
-| `extensions/adapters/channel_adapter.rs` | Minimal | Config tests only |
 | `extensions/adapters/hook_adapter.rs` | Minimal | Config tests only |
 | `extensions/adapters/gateway_adapter.rs` | Minimal | Config tests only |
 | `extensions/adapters/general_adapter.rs` | Good | Hook parsing tests |
@@ -201,7 +197,6 @@ The ADR-017 Unified Extension Architecture is **COMPLETE** and **production-read
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| ChannelAdapter handlers | Low | Pass-through, needs transformation logic |
 | HookAdapter handlers | Low | Pass-through, needs webhook/cron impl |
 | GatewayAdapter handlers | Low | Pass-through, needs server integration |
 | Documentation | Medium | API docs, migration guide, best practices |
