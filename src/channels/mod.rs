@@ -1,14 +1,10 @@
 //! Communication channels for agent I/O
 //!
-//! This module provides different channels for agents to communicate:
-//! - CLI: Interactive terminal interface
-//! - Discord: Discord Bot API integration
-//!
-//! Additional channels (HTTP, Telegram, Slack, Matrix, WhatsApp) will be
-//! implemented as GatewayPlugin extensions.
+//! This module provides the CLI channel for agents to communicate.
+//! Additional channels (Discord, HTTP, Telegram, Slack, Matrix, WhatsApp)
+//! are implemented as Gateway extensions.
 
 pub mod cli;
-pub mod discord;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -290,7 +286,6 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
 
 // Re-exports for convenience
 pub use cli::{CliChannel, CliMode};
-pub use discord::{DiscordChannel, DiscordConfig};
 
 #[cfg(test)]
 mod tests {
