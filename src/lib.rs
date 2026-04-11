@@ -128,9 +128,6 @@ pub(crate) mod daemon;
 /// HTTP API server
 pub mod api;
 
-/// Security policies and sandboxing
-pub mod security;
-
 /// Observability (metrics, tracing, audit, performance)
 pub mod observability;
 
