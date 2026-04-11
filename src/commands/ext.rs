@@ -11,7 +11,6 @@ use crate::commands::GlobalPaths;
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat, general_adapter};
 use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extensions::types::ExtensionId;
-use crate::team::capability::TeamCapabilityManager;
 use clap::Subcommand;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -375,9 +374,36 @@ async fn handle_enable_builtin(
 
         println!("Enabled '{}' for agent '{}' in team '{}'", capability, agent_name, team);
     } else {
-        // Team-level: update team capabilities.toml
-        let team_mgr = TeamCapabilityManager::new(paths.resolver().clone());
-        team_mgr.enable(&team, capability)?;
+        // Team-level: update team extensions config
+        let team_dir = paths.data_dir.join("teams").join(&team);
+        let ext_config_path = team_dir.join("extensions.toml");
+        
+        #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+        struct TeamExtConfig {
+            #[serde(default)]
+            enabled: Vec<String>,
+            #[serde(default)]
+            disabled: Vec<String>,
+        }
+        
+        let mut config: TeamExtConfig = if ext_config_path.exists() {
+            let content = std::fs::read_to_string(&ext_config_path)?;
+            toml::from_str(&content).unwrap_or_default()
+        } else {
+            TeamExtConfig::default()
+        };
+        
+        // Add to enabled, remove from disabled
+        if !config.enabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+            config.enabled.push(capability.to_string());
+        }
+        config.disabled.retain(|e| !e.eq_ignore_ascii_case(capability));
+        
+        // Save
+        std::fs::create_dir_all(&team_dir)?;
+        let updated = toml::to_string_pretty(&config)?;
+        std::fs::write(&ext_config_path, updated)?;
+        
         println!("Enabled '{}' for team '{}'", capability, team);
     }
 
@@ -448,9 +474,36 @@ async fn handle_disable_builtin(
 
         println!("Disabled '{}' for agent '{}' in team '{}'", capability, agent_name, team);
     } else {
-        // Team-level: update team capabilities.toml
-        let team_mgr = TeamCapabilityManager::new(paths.resolver().clone());
-        team_mgr.disable(&team, capability)?;
+        // Team-level: update team extensions config
+        let team_dir = paths.data_dir.join("teams").join(&team);
+        let ext_config_path = team_dir.join("extensions.toml");
+        
+        #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+        struct TeamExtConfig {
+            #[serde(default)]
+            enabled: Vec<String>,
+            #[serde(default)]
+            disabled: Vec<String>,
+        }
+        
+        let mut config: TeamExtConfig = if ext_config_path.exists() {
+            let content = std::fs::read_to_string(&ext_config_path)?;
+            toml::from_str(&content).unwrap_or_default()
+        } else {
+            TeamExtConfig::default()
+        };
+        
+        // Remove from enabled, add to disabled
+        config.enabled.retain(|e| !e.eq_ignore_ascii_case(capability));
+        if !config.disabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+            config.disabled.push(capability.to_string());
+        }
+        
+        // Save
+        std::fs::create_dir_all(&team_dir)?;
+        let updated = toml::to_string_pretty(&config)?;
+        std::fs::write(&ext_config_path, updated)?;
+        
         println!("Disabled '{}' for team '{}'", capability, team);
     }
 
