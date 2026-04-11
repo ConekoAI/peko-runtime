@@ -167,9 +167,9 @@ fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionM
         ExtensionManager::new()
     };
 
-    // Register extension type adapters that don't require ExtensionCore
-    // Note: ChannelAdapter, HookAdapter, and GatewayAdapter require ExtensionCore
-    // and are typically used internally. They can be registered when needed.
+    // Register extension type adapters
+    // Note: GatewayAdapter requires ExtensionCore and is registered by
+    // ExtensionManager when needed.
     manager.register_adapter(Box::new(SkillAdapter::new()));
     manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
     manager.register_adapter(Box::new(UniversalToolAdapter::new()));

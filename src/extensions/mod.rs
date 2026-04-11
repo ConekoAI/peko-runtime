@@ -23,7 +23,6 @@
 //! | `skill` | Documentation-based skills | `PromptSystemSection(skills)` |
 //! | `mcp` | MCP servers | `ToolRegister`, `PromptSystemSection(tools)`, `ToolExecute` |
 //! | `universal-tool` | Universal tool protocol | `ToolRegister`, `PromptSystemSection(tools)`, `ToolExecute` |
-//! | `hook` | Event/webhook handlers | `EventSubscribe`, `EventEmit` |
 //! | `gateway` | Messaging gateways | `ChannelInput`, `ChannelOutput`, `ToolRegister`, `EventEmit` |
 //!
 //! # Quick Start
@@ -124,9 +123,6 @@ pub mod extension_types {
     /// Universal tool extension type
     pub const UNIVERSAL_TOOL: &str = "universal-tool";
 
-    /// Hook extension type
-    pub const HOOK: &str = "hook";
-
     /// Gateway extension type
     pub const GATEWAY: &str = "gateway";
 
@@ -137,13 +133,12 @@ pub mod extension_types {
     pub fn is_valid_type(ext_type: &str) -> bool {
         matches!(
             ext_type,
-            SKILL | MCP | UNIVERSAL_TOOL | HOOK | GATEWAY
-        ) || ext_type.starts_with(CUSTOM_PREFIX)
+            SKILL | MCP | UNIVERSAL_TOOL | GATEWAY        ) || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types
     pub fn standard_types() -> Vec<&'static str> {
-        vec![SKILL, MCP, UNIVERSAL_TOOL, HOOK, GATEWAY]
+        vec![SKILL, MCP, UNIVERSAL_TOOL, GATEWAY]
     }
 }
 

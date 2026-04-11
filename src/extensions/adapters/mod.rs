@@ -22,8 +22,7 @@
 //! | `SkillAdapter` | SKILL.md files | Phase 2 |
 //! | `McpAdapter` | MCP server configs | Phase 4 |
 //! | `UniversalToolAdapter` | Universal tool manifests | Phase 3 |
-//! | `HookAdapter` | Event/webhook handlers | Phase 6 |
-//! | `GatewayAdapter` | Gateway plugins | Phase 6 |
+//! | `GatewayAdapter` | Gateway plugins (I/O channels) | Phase 6 |
 //!
 //! # Creating Custom Adapters
 //!
@@ -55,7 +54,6 @@ pub mod builtin_tool_adapter;
 pub mod skill_adapter;
 pub mod universal_tool_adapter;
 pub mod mcp_adapter;
-pub mod hook_adapter;
 pub mod gateway_adapter;
 pub mod general_adapter;
 
@@ -70,9 +68,6 @@ pub use universal_tool_adapter::{DiscoveredUniversalTool, UniversalToolAdapter, 
 
 // Re-export MCP adapter types
 pub use mcp_adapter::{DiscoveredMcpServer, McpAdapter, load_servers_from_directory, register_servers_with_core};
-
-// Re-export hook adapter types
-pub use hook_adapter::{DiscoveredHook, HookAdapter, HookExtensionConfig, EventSubscription, EventFilterConfig, WebhookConfig, CronConfig, discover_hook_extensions, load_and_register_hooks, register_hooks_with_core};
 
 // Re-export gateway adapter types
 pub use gateway_adapter::{DiscoveredGateway, GatewayAdapter, GatewayExtensionConfig, GatewayHookConfig, GatewayToolConfig, discover_gateway_extensions, load_and_register_gateways, register_gateways_with_core};
@@ -755,16 +750,14 @@ impl BuiltInAdapters {
     /// - SkillAdapter: For SKILL.md based extensions
     /// - UniversalToolAdapter: For universal tool protocol extensions
     /// - McpAdapter: For MCP server extensions
-    /// - HookAdapter: For event/webhook extensions
     /// - GatewayAdapter: For gateway plugin extensions (includes I/O channels)
-    /// - GeneralExtensionAdapter: For extensions needing full hook point access
     pub fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>> {
         vec![
             Box::new(SkillAdapter::new()),
             Box::new(UniversalToolAdapter::new()),
             Box::new(McpAdapter::with_default_manager()),
-            // Note: HookAdapter and GatewayAdapter require ExtensionCore
-            // and are registered by the ExtensionManager when needed
+            // Note: GatewayAdapter requires ExtensionCore
+            // and is registered by the ExtensionManager when needed
         ]
     }
 }
