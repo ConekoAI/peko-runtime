@@ -2,9 +2,10 @@
 
 **Goal:** Make Extensions 2.0 the single source of truth for all extensibility.
 
-**Status:** Phase 1 & 2 Complete (Dead code and duplicate abstractions removed)  
-**Started:** 2026-04-11
-**Lines Removed:** ~2,900
+**Status:** Phases 1-3 Complete  
+**Started:** 2026-04-11  
+**Lines Removed:** ~2,900  
+**Lines Added:** ~250 (builtin_registry.rs)
 
 ---
 
@@ -226,7 +227,7 @@ impl ToolFactory {
 - [ ] Delete `src/cap/`
 
 ### Step 3: Create Minimal Built-in Registry
-- [ ] Create `src/tools/builtin_registry.rs`
+- [x] Create `src/tools/builtin_registry.rs`
 
 ### Step 4: Refactor ToolFactory
 - [ ] Remove all discovery logic
