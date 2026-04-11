@@ -23,8 +23,8 @@ Tools currently execute through **two different paths** depending on tool type, 
 │                     CURRENT EXECUTION PATHS                             │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  Path A: Direct Execution (Built-in tools only)                         │
-│  ─────────────────────────────────────────────                          │
+│  BEFORE MIGRATION (Two Paths - This is the problem)                     │
+│                                                                         │
 │  AgenticLoopV4::run_loop()                                              │
 │       │                                                                 │
 │       ├──► Built-in? ──Yes──► self.tools.iter().find()                  │
@@ -35,6 +35,7 @@ Tools currently execute through **two different paths** depending on tool type, 
 │       │                           ├──► Panic isolation                  │
 │       │                           ├──► Timeout                          │
 │       │                           └──► Context injection                │
+│       │                           └──► _async handling (ToolWrapper)    │
 │       │                                                                 │
 │       └──► Extension tool? ──Yes──► ExtensionCore::invoke_hook()        │
 │                                         │                               │
@@ -42,11 +43,11 @@ Tools currently execute through **two different paths** depending on tool type, 
 │                                         ├──► Universal ──► Process      │
 │                                         └──► General ──► Custom         │
 │                                                                         │
-│  Path B: Extension Hooks (MCP, Universal, General)                      │
-│  ─────────────────────────────────────────────────                      │
-│  ExtensionCore::invoke_hook(HookPoint::ToolExecute)                     │
-│       │                                                                 │
-│       └──► Handler executes tool directly                               │
+│  PROBLEM:                                                               │
+│  • Two paths = duplicate logic (panic isolation, timeout)               │
+│  • Built-in tools bypass ExtensionCore entirely                         │
+│  • ToolWrapper _async only works for direct path                        │
+│  • Different context injection (fake vs real)                           │
 │                                                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -243,34 +244,70 @@ impl AgenticLoopV4 {
 pub struct ToolWrapper;
 ```
 
-## Critical: Preserving Async Capability
+## Critical: Single Path + Preserving Async
 
-### Current Gap
+### The Goal: ONE Path for ALL Tools
 
-**ToolWrapper handles `_async` for direct execution ONLY.** When we move to ExtensionCore hooks, we lose this capability unless we explicitly migrate it.
+After ADR-018a, there is **NO "Built-in direct" path**. ALL tools go through ExtensionCore:
 
-| Path | Before ADR | After ADR (if not fixed) |
-|------|------------|--------------------------|
-| Built-in direct | ✅ `_async` works | N/A (no direct path) |
-| Built-in via hooks | ❌ No `_async` | ✅ Must work |
-| MCP via hooks | ❌ No `_async` | ✅ Must work |
-| Universal via hooks | ❌ No `_async` | ✅ Must work |
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                  AFTER ADR-018a: SINGLE PATH                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  AgenticLoopV4::execute_tool()                                          │
+│       │                                                                 │
+│       └──► ExtensionCore::invoke_hook(HookPoint::ToolExecute)           │
+│                │                                                        │
+│                ├──► Built-in handler ──► ShellTool, ReadFileTool, etc.  │
+│                ├──► MCP handler ──► McpManager ──► JSON-RPC             │
+│                ├──► Universal handler ──► Process spawn                 │
+│                └──► General handler ──► Custom implementation           │
+│                                                                         │
+│  ALL handlers use:                                                      │
+│  • AsyncExecutionRouter (for _async param)                              │
+│  • ToolExecutionService (for panic isolation, timeout)                  │
+│  • Real ToolContext (session_id, workspace, etc.)                       │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### The Async Challenge
+
+**Current problem**: ToolWrapper handles `_async` but ONLY for the direct path. Since we're eliminating the direct path, we must migrate `_async` handling to ExtensionCore.
+
+| Before ADR-018a | After ADR-018a |
+|-----------------|----------------|
+| 2 paths (direct + hooks) | 1 path (hooks only) |
+| Built-in: direct path with `_async` | Built-in: hooks with `_async` ✅ |
+| MCP: hooks without `_async` | MCP: hooks with `_async` ✅ |
+| Universal: hooks without `_async` | Universal: hooks with `_async` ✅ |
 
 ### Solution: AsyncExecutionRouter
 
-The `AsyncExecutionRouter` (shown in Phase 2) extracts `_async` parameter **at the ExtensionCore layer**, ensuring ALL tools get async capability:
+Move `_async` extraction from ToolWrapper (client-side) to ExtensionCore (server-side):
 
 ```rust
-// All tools now support _async
-{
-    "name": "shell",
-    "arguments": {
-        "cmd": "long-running-process",
-        "_async": true,        // Works for ALL tools
-        "_timeout": 300
+// In ExtensionCore handler (ALL tools go through here)
+async fn handle(&self, ctx: HookContext, input: ToolExecuteInput) -> HookResult {
+    // Extract _async HERE (was in ToolWrapper before)
+    let reserved = ReservedParams::extract(&mut input.params)?;
+    
+    if reserved.async_mode {
+        // Async path
+        ctx.services.async_executor()
+            .execute_with_receipt(input.params, reserved)
+            .await
+    } else {
+        // Sync path with timeout
+        ctx.services.tool_execution()
+            .execute(|| tool.execute(input.params), reserved.timeout)
+            .await
     }
 }
 ```
+
+Now ALL tools (built-in, MCP, Universal, General) support `_async` uniformly.
 
 ## Benefits
 
@@ -292,13 +329,21 @@ The `AsyncExecutionRouter` (shown in Phase 2) extracts `_async` parameter **at t
 
 ## Acceptance Criteria
 
-- [ ] `AgenticLoopV4` routes ALL tools through `ExtensionCore`
-- [ ] `_async` parameter works for built-in tools via ExtensionCore
-- [ ] `_async` parameter works for MCP tools via ExtensionCore
-- [ ] `_async` parameter works for Universal tools via ExtensionCore
-- [ ] `ToolExecutor` used only via `ToolExecutionService` (internal)
-- [ ] No direct tool execution from `AgenticLoopV4`
+### Architecture
+- [ ] `AgenticLoopV4` routes **ALL** tools through `ExtensionCore` (no direct path)
+- [ ] No `AgenticLoopV4.tools` field (use ExtensionCore registry instead)
+- [ ] `ToolExecutor` used only via `ToolExecutionService` (internal to ExtensionCore)
+
+### Async Capability
+- [ ] `_async` parameter works for built-in tools
+- [ ] `_async` parameter works for MCP tools  
+- [ ] `_async` parameter works for Universal tools
+- [ ] `_async` parameter works for General extension tools
 - [ ] All 980+ tests pass with identical async behavior
+
+### Validation
+- [ ] No code path bypasses ExtensionCore for tool execution
+- [ ] Stack traces show consistent ExtensionCore → Handler → Tool flow
 
 ## Dependencies
 
