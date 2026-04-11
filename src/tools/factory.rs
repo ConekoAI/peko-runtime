@@ -27,7 +27,7 @@
 
 use crate::tools::traits::Tool;
 use crate::tools::{
-    ApplyPatchConfig, ApplyPatchTool, CronTool, FileSystemTool, GlobTool, GrepTool, ReadFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool,
     ShellTool, SessionStatusTool, SessionsHistoryTool, SessionsListTool, StrReplaceFileTool,
     WriteFileTool,
 };
@@ -146,11 +146,7 @@ impl Default for McpFactoryConfig {
 pub struct ToolFactoryConfig {
     /// Workspace directory (default for relative paths)
     pub workspace_dir: PathBuf,
-    /// Enable filesystem tool (legacy, deprecated)
-    pub enable_filesystem: bool,
-    /// Enable apply patch tool (legacy, deprecated)
-    pub enable_apply_patch: bool,
-    /// Enable granular filesystem tools (new)
+    /// Enable granular filesystem tools
     /// When true, enables ReadFile, Glob, Grep, WriteFile, StrReplaceFile
     pub enable_granular_fs: bool,
     /// Enable granular write tools (WriteFile, StrReplaceFile)
@@ -159,16 +155,13 @@ pub struct ToolFactoryConfig {
     pub enable_granular_write: bool,
     /// Enable shell tool (replaces process tool)
     pub enable_shell: bool,
-    /// Enable process tool (deprecated, use enable_shell)
-    pub enable_process: bool,
+
     /// Enable session introspection tools
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
     /// Path to cron database (defaults to `workspace_dir/cron.json`)
     pub cron_db_path: Option<PathBuf>,
-    /// Apply patch configuration
-    pub apply_patch_config: Option<ApplyPatchConfig>,
     /// MCP configuration
     pub mcp: McpFactoryConfig,
     /// List of disabled tool names (e.g., ["process", "cron"])
@@ -194,16 +187,12 @@ impl Default for ToolFactoryConfig {
     fn default() -> Self {
         Self {
             workspace_dir: PathBuf::from("."),
-            enable_filesystem: false, // Disabled by default, use granular tools instead
-            enable_apply_patch: false, // Disabled by default, use StrReplaceFile instead
             enable_granular_fs: true, // Enabled by default
             enable_granular_write: true, // Enable write tools by default
             enable_shell: true,
-            enable_process: true, // For backward compatibility
             enable_session_tools: true,
             enable_cron: true,
             cron_db_path: None,
-            apply_patch_config: None,
             mcp: McpFactoryConfig::default(),
             disabled_tools: Vec::new(),
             instance_id: None,
@@ -225,12 +214,9 @@ impl ToolFactoryConfig {
     pub fn minimal(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
-            enable_filesystem: false,
-            enable_apply_patch: false,
             enable_granular_fs: true,
             enable_granular_write: false, // Read-only: no WriteFile or StrReplaceFile
             enable_shell: true,
-            enable_process: true, // Backward compat
             enable_session_tools: false,
             enable_cron: false,
             mcp: McpFactoryConfig::disabled(),
@@ -245,8 +231,6 @@ impl ToolFactoryConfig {
     pub fn coding(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
-            enable_filesystem: false,
-            enable_apply_patch: false,
             enable_granular_fs: true,
             enable_session_tools: false,
             enable_cron: false,
@@ -262,28 +246,12 @@ impl ToolFactoryConfig {
     pub fn full(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
-            enable_filesystem: false,
-            enable_apply_patch: false,
             enable_granular_fs: true,
             mcp: McpFactoryConfig::disabled(),
             ..Default::default()
         }
     }
 
-    /// Create a legacy configuration (filesystem + apply_patch tools)
-    ///
-    /// Use this for backward compatibility with older agent configurations
-    /// that depend on the monolithic filesystem and apply_patch tools.
-    pub fn legacy(workspace_dir: PathBuf) -> Self {
-        Self {
-            workspace_dir,
-            enable_filesystem: true,
-            enable_apply_patch: true,
-            enable_granular_fs: false,
-            mcp: McpFactoryConfig::disabled(),
-            ..Default::default()
-        }
-    }
 }
 
 impl McpFactoryConfig {
@@ -391,17 +359,13 @@ impl ToolFactory {
         
         let registry_config = BuiltinRegistryConfig {
             workspace_dir: config.workspace_dir.clone(),
-            enable_filesystem: config.enable_filesystem,
-            enable_apply_patch: config.enable_apply_patch,
             enable_granular_fs: config.enable_granular_fs,
             enable_granular_write: config.enable_granular_write,
             enable_shell: config.enable_shell,
-            enable_process: config.enable_process,
             enable_session_tools: config.enable_session_tools,
             enable_cron: config.enable_cron,
             cron_db_path: config.cron_db_path.clone(),
             instance_id: config.instance_id.clone(),
-            apply_patch_config: config.apply_patch_config.clone(),
             disabled_tools: config.disabled_tools.clone(),
         };
 
@@ -529,17 +493,7 @@ impl ToolFactory {
         let mut registry = DisabledToolFilter::new(&config.disabled_tools);
 
         // Filesystem tool
-        registry.register("filesystem", config.enable_filesystem, || {
-            Arc::new(FileSystemTool::new().with_workspace(config.workspace_dir.clone()))
-        });
-
-        // Apply patch tool (legacy)
-        registry.register("apply_patch", config.enable_apply_patch, || {
-            let patch_config = config.apply_patch_config.clone().unwrap_or_default();
-            Arc::new(ApplyPatchTool::new(patch_config, config.workspace_dir.clone()))
-        });
-
-        // Granular filesystem tools (new)
+        // Granular filesystem tools
         registry.register("read_file", config.enable_granular_fs, || {
             Arc::new(ReadFileTool::new().with_workspace(config.workspace_dir.clone()))
         });
@@ -560,10 +514,9 @@ impl ToolFactory {
             Arc::new(StrReplaceFileTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
-        // Shell tool (accepts both enable_shell and enable_process for backward compat)
-        let shell_enabled = config.enable_shell || config.enable_process;
-        // Treat "process" as alias for "shell" in disabled list
-        let shell_disabled = registry.is_disabled("shell") || registry.is_disabled("process");
+        // Shell tool
+        let shell_enabled = config.enable_shell;
+        let shell_disabled = registry.is_disabled("shell");
         if shell_enabled {
             if shell_disabled {
                 registry.disabled.push("shell".to_string());
@@ -1053,7 +1006,6 @@ impl ToolFactory {
     ) -> ToolCreationResult {
         let config = ToolFactoryConfig {
             workspace_dir,
-            enable_apply_patch: false,
             enable_session_tools: false,
             enable_cron: false,
             disabled_tools,
@@ -1062,7 +1014,7 @@ impl ToolFactory {
         Self::create_tools(&config)
     }
 
-    /// Create coding tools (filesystem + apply_patch + process)
+    /// Create coding tools (granular filesystem + shell)
     /// Respects disabled_tools
     ///
     /// DEPRECATED: Use `create_tools` with `ToolFactoryConfig::coding()` instead.
@@ -1203,11 +1155,7 @@ impl ToolFactory {
     /// Get list of all available built-in tool names
     pub fn builtin_tool_names() -> Vec<&'static str> {
         vec![
-            // Legacy tools (deprecated, kept for backward compatibility)
-            "filesystem",
-            "apply_patch",
-            "process", // Deprecated alias for "shell"
-            // Granular filesystem tools (recommended)
+            // Granular filesystem tools
             "read_file",
             "write_file",
             "glob",
@@ -1272,7 +1220,7 @@ mod tests {
         assert!(ToolFactory::is_disabled(&disabled, "shell"));
         assert!(ToolFactory::is_disabled(&disabled, "SHELL"));
         assert!(ToolFactory::is_disabled(&disabled, "cron"));
-        assert!(!ToolFactory::is_disabled(&disabled, "filesystem"));
+        assert!(!ToolFactory::is_disabled(&disabled, "read_file"));
     }
 
     #[test]
@@ -1280,25 +1228,22 @@ mod tests {
         let disabled = vec![
             "shell".to_string(),
             "invalid_tool".to_string(),
-            "filesystem".to_string(),
+            "read_file".to_string(),
         ];
 
         let invalid = ToolFactory::validate_disabled_tools(&disabled);
         assert!(invalid.contains(&"invalid_tool".to_string()));
         assert!(!invalid.contains(&"shell".to_string()));
-        assert!(!invalid.contains(&"filesystem".to_string()));
+        assert!(!invalid.contains(&"read_file".to_string()));
     }
 
     #[test]
     fn test_builtin_tool_names() {
         let names = ToolFactory::builtin_tool_names();
-        // Legacy tools
-        assert!(names.contains(&"filesystem"));
         assert!(names.contains(&"shell"));
-        assert!(names.contains(&"process")); // Kept for backward compat
         assert!(names.contains(&"cron"));
         assert!(names.contains(&"agent_spawn"));
-        // New granular tools
+        // Granular filesystem tools
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"glob"));

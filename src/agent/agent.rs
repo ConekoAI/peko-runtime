@@ -46,16 +46,22 @@ impl Agent {
     /// Use `create_tools_async` for full tool loading including MCP servers.
     fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::tools::{
-            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, FileSystemTool,
-            SessionStatusTool, ShellTool, SessionsSendTool, Tool,
+            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool,
+            GlobTool, GrepTool, ReadFileTool, SessionStatusTool, ShellTool,
+            SessionsSendTool, StrReplaceFileTool, Tool, WriteFileTool,
         };
         use crate::tools::session_introspection::AgentSessionRegistry;
 
         // Create core tools only (web tools now provided via MCP)
         let workspace = self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone();
         let mut tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(FileSystemTool::new().with_workspace(workspace.clone())),
             Arc::new(ShellTool::new().with_workspace(workspace.clone())),
+            // Granular filesystem tools
+            Arc::new(ReadFileTool::new().with_workspace(workspace.clone())),
+            Arc::new(WriteFileTool::new().with_workspace(workspace.clone())),
+            Arc::new(GlobTool::new().with_workspace(workspace.clone())),
+            Arc::new(GrepTool::new().with_workspace(workspace.clone())),
+            Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
         ];
 
         // Add session introspection tools backed by the real session manager

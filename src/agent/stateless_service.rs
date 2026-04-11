@@ -998,13 +998,13 @@ mod tests {
     fn test_tool_call_info_creation() {
         let tool_call = ToolCallInfo {
             id: "tool_123".to_string(),
-            name: "filesystem".to_string(),
+            name: "read_file".to_string(),
             parameters: serde_json::json!({"path": "/tmp/test"}),
             result: Some("File contents".to_string()),
         };
 
         assert_eq!(tool_call.id, "tool_123");
-        assert_eq!(tool_call.name, "filesystem");
+        assert_eq!(tool_call.name, "read_file");
         assert_eq!(tool_call.result, Some("File contents".to_string()));
     }
 

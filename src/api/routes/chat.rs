@@ -301,13 +301,13 @@ mod tests {
     fn test_tool_call_summary() {
         let tool_call = ToolCallSummary {
             id: "tc_123".to_string(),
-            tool: "filesystem".to_string(),
+            tool: "read_file".to_string(),
             args: serde_json::json!({"path": "/tmp"}),
-            output: "File listing".to_string(),
+            output: "File contents".to_string(),
         };
 
         assert_eq!(tool_call.id, "tc_123");
-        assert_eq!(tool_call.tool, "filesystem");
-        assert_eq!(tool_call.output, "File listing");
+        assert_eq!(tool_call.tool, "read_file");
+        assert_eq!(tool_call.output, "File contents");
     }
 }

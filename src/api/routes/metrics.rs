@@ -202,14 +202,14 @@ mod tests {
     #[test]
     fn test_tool_metric_creation() {
         let tool_metric = ToolMetric {
-            name: "filesystem".to_string(),
+            name: "read_file".to_string(),
             p95_ms: 3.0,
             mean_ms: 2.0,
             count: 100,
             meets_target: true,
         };
 
-        assert_eq!(tool_metric.name, "filesystem");
+        assert_eq!(tool_metric.name, "read_file");
         assert!(tool_metric.meets_target);
     }
 }

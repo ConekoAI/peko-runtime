@@ -12,7 +12,7 @@
 use crate::extensions::adapters::BuiltinToolAdapter;
 use crate::extensions::core::ExtensionCore;
 use crate::tools::{
-    ApplyPatchConfig, ApplyPatchTool, CronTool, FileSystemTool, GlobTool, GrepTool, ReadFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool,
     SessionStatusTool, SessionsHistoryTool, SessionsListTool, ShellTool, StrReplaceFileTool,
     WriteFileTool,
 };
@@ -25,18 +25,12 @@ use std::sync::Arc;
 pub struct BuiltinRegistryConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
-    /// Enable filesystem tool (legacy, deprecated)
-    pub enable_filesystem: bool,
-    /// Enable apply patch tool (legacy, deprecated)
-    pub enable_apply_patch: bool,
     /// Enable granular filesystem tools (read_file, write_file, glob, grep, str_replace_file)
     pub enable_granular_fs: bool,
     /// Enable write tools (write_file, str_replace_file)
     pub enable_granular_write: bool,
     /// Enable shell tool
     pub enable_shell: bool,
-    /// Enable process tool (alias for shell, deprecated)
-    pub enable_process: bool,
     /// Enable session introspection tools
     pub enable_session_tools: bool,
     /// Enable cron tool
@@ -45,8 +39,6 @@ pub struct BuiltinRegistryConfig {
     pub cron_db_path: Option<PathBuf>,
     /// Instance ID for cron persistence
     pub instance_id: Option<String>,
-    /// Apply patch configuration
-    pub apply_patch_config: Option<ApplyPatchConfig>,
     /// List of disabled tool names
     pub disabled_tools: Vec<String>,
 }
@@ -55,17 +47,13 @@ impl Default for BuiltinRegistryConfig {
     fn default() -> Self {
         Self {
             workspace_dir: PathBuf::from("."),
-            enable_filesystem: false,
-            enable_apply_patch: false,
             enable_granular_fs: true,
             enable_granular_write: true,
             enable_shell: true,
-            enable_process: true,
             enable_session_tools: true,
             enable_cron: true,
             cron_db_path: None,
             instance_id: None,
-            apply_patch_config: None,
             disabled_tools: Vec::new(),
         }
     }
@@ -91,10 +79,9 @@ impl BuiltinRegistry {
 
         let workspace = config.workspace_dir.clone();
 
-        // Shell tool (includes 'process' alias)
-        let shell_enabled = config.enable_shell || config.enable_process;
-        let shell_disabled =
-            disabled_set.contains("shell") || disabled_set.contains("process");
+        // Shell tool
+        let shell_enabled = config.enable_shell;
+        let shell_disabled = disabled_set.contains("shell");
         if shell_enabled && !shell_disabled {
             let shell = Arc::new(ShellTool::new().with_workspace(&workspace));
             BuiltinToolAdapter::register_tool(core, shell).await?;
@@ -131,19 +118,6 @@ impl BuiltinRegistry {
                 let tool = Arc::new(StrReplaceFileTool::new().with_workspace(&workspace));
                 BuiltinToolAdapter::register_tool(core, tool).await?;
             }
-        }
-
-        // Legacy filesystem tool
-        if config.enable_filesystem && !disabled_set.contains("filesystem") {
-            let tool = Arc::new(FileSystemTool::new().with_workspace(&workspace));
-            BuiltinToolAdapter::register_tool(core, tool).await?;
-        }
-
-        // Apply patch tool
-        if config.enable_apply_patch && !disabled_set.contains("apply_patch") {
-            let patch_config = config.apply_patch_config.clone().unwrap_or_default();
-            let tool = Arc::new(ApplyPatchTool::new(patch_config, workspace.clone()));
-            BuiltinToolAdapter::register_tool(core, tool).await?;
         }
 
         // Session introspection tools
@@ -188,14 +162,11 @@ impl BuiltinRegistry {
     pub fn all_tool_names() -> Vec<&'static str> {
         vec![
             "shell",
-            "process", // alias for shell
             "read_file",
             "write_file",
             "glob",
             "grep",
             "str_replace_file",
-            "filesystem", // legacy
-            "apply_patch",
             "sessions_list",
             "sessions_history",
             "session_status",

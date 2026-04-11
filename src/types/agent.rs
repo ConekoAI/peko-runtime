@@ -405,8 +405,8 @@ mod tests {
         assert!(config.is_tool_enabled("Session_Status")); // case-insensitive
         
         // Should NOT be enabled (not in whitelist)
-        assert!(!config.is_tool_enabled("filesystem"));
-        assert!(!config.is_tool_enabled("apply_patch"));
+        assert!(!config.is_tool_enabled("read_file"));
+        assert!(!config.is_tool_enabled("write_file"));
         assert!(!config.is_tool_enabled("cron"));
     }
 
@@ -426,7 +426,7 @@ mod tests {
         };
 
         assert!(!config.is_tool_enabled("shell"));
-        assert!(!config.is_tool_enabled("filesystem"));
+        assert!(!config.is_tool_enabled("read_file"));
         assert!(!config.is_tool_enabled("any_tool"));
     }
 
@@ -434,7 +434,7 @@ mod tests {
     fn test_tool_config_custom_whitelist() {
         // Custom whitelist
         let config = ToolConfig {
-            enabled: vec!["filesystem".to_string(), "apply_patch".to_string()],
+            enabled: vec!["read_file".to_string(), "write_file".to_string()],
             skills: Vec::new(),
             http: None,
             custom: None,
@@ -445,8 +445,8 @@ mod tests {
             str_replace_file: None,
         };
 
-        assert!(config.is_tool_enabled("filesystem"));
-        assert!(config.is_tool_enabled("apply_patch"));
+        assert!(config.is_tool_enabled("read_file"));
+        assert!(config.is_tool_enabled("write_file"));
         assert!(!config.is_tool_enabled("shell"));
     }
 

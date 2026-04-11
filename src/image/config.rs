@@ -623,7 +623,7 @@ model = "claude-sonnet-4-6"
 max_tokens = 4096
 
 [capabilities]
-tools = ["filesystem", "web_search"]
+tools = ["read_file", "web_search"]
 
 [[hooks]]
 type = "cron"
@@ -635,7 +635,7 @@ session = "new"
         let config = AgentConfig::from_toml(toml).unwrap();
         assert_eq!(config.agent.name, "test-agent");
         assert_eq!(config.agent.version, "1.0.0");
-        assert_eq!(config.tools(), vec!["filesystem", "web_search"]);
+        assert_eq!(config.tools(), vec!["read_file", "web_search"]);
     }
 
     #[test]

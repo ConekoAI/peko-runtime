@@ -13,12 +13,10 @@ pub mod builtin_registry;
 
 pub mod agent_management;
 pub mod agent_spawn;
-pub mod apply_patch;
 pub mod async_tool;
 pub mod context;
 pub mod cron_tool;
 pub mod factory;
-pub mod filesystem;
 pub mod glob;
 pub mod grep;
 pub mod message_tool;
@@ -47,13 +45,11 @@ pub use sessions_send::SessionsSendTool;
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
 pub use agent_spawn::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool};
-pub use apply_patch::{ApplyPatchConfig, ApplyPatchTool};
 pub use context::{
     wrap_tool, AbortSignal, AbortableTool, ToolAdapter, ToolContext, ToolWithContext,
 };
 pub use cron_tool::CronTool;
 pub use factory::{McpDiscoveryResult, McpFactoryConfig, ToolFactory, ToolFactoryConfig};
-pub use filesystem::FileSystemTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};
