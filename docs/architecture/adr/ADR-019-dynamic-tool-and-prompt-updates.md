@@ -3,7 +3,7 @@
 **Status**: Proposed  
 **Date**: 2026-04-11  
 **Author**: Kimi Code CLI  
-**Depends On**: ADR-018 (ExtensionCore Tool Execution Consolidation)
+**Depends On**: ADR-018a (Tool Execution Unification), ADR-018b (Unified Tool Registry)
 
 ## Context
 
@@ -52,9 +52,14 @@ Session Start
 
 ### Prerequisites
 
-**THIS ADR DEPENDS ON ADR-018 BEING COMPLETED FIRST.**
+**THIS ADR DEPENDS ON ADR-018a AND ADR-018b BEING COMPLETED FIRST.**
 
-Once ADR-018 is complete, ALL tools route through ExtensionCore, enabling:
+Once complete:
+- ALL tools route through ExtensionCore (ADR-018a)
+- Single unified registry for tool metadata (ADR-018b)
+- Consistent descriptions via `Tool::description()` (ADR-018c)
+
+This enables:
 - Single permission check point
 - Unified tool registration lifecycle
 - Consistent dynamic updates
@@ -181,7 +186,7 @@ impl ExtensionCore {
 ```
 
 **Why ExtensionCore layer (not ToolExecutor)**:
-- After ADR-018, ALL tools route through ExtensionCore
+- After ADR-018a, ALL tools route through ExtensionCore
 - Single point of enforcement for all tool types
 - Hook-based permissions can be extended (rate limiting, audit, etc.)
 
@@ -306,7 +311,7 @@ impl ExtensionCore {
 **Proceed with implementation** using the phased approach outlined above, **AFTER ADR-018 is completed**.
 
 **Key Principles**:
-1. Architectural foundation first: ADR-018 consolidation required
+1. Architectural foundation first: ADR-018a/b consolidation required
 2. Safety first: Permission check at ExtensionCore layer (Phase 1)
 3. Gradual rollout: Each phase independently valuable
 4. Backward compatible: Changes are internal, no API changes
@@ -316,7 +321,9 @@ impl ExtensionCore {
 
 | Phase | Status | PR | Notes |
 |-------|--------|-----|-------|
-| ADR-018: ExtensionCore Consolidation | 🔲 Blocked | - | Prerequisite |
+| ADR-018a: Tool Execution Unification | 🔲 Blocked | - | Prerequisite |
+| ADR-018b: Unified Tool Registry | 🔲 Blocked | - | Prerequisite |
+| ADR-018c: Tool Naming Cleanup | 🔲 Blocked | - | Recommended |
 | Phase 1: Permission Check | 🔲 Blocked | - | Waiting on ADR-018 |
 | Phase 2: Dynamic Tool Definitions | 🔲 Not Started | - | - |
 | Phase 3: Dynamic System Prompt | 🔲 Not Started | - | - |
@@ -324,7 +331,9 @@ impl ExtensionCore {
 
 ## References
 
-- ADR-018 (Prerequisite): `docs/architecture/adr/ADR-018-extensioncore-tool-execution-consolidation.md`
+- ADR-018a (Prerequisite): `docs/architecture/adr/ADR-018a-tool-execution-unification.md`
+- ADR-018b (Prerequisite): `docs/architecture/adr/ADR-018b-unified-tool-registry.md`
+- ADR-018c (Recommended): `docs/architecture/adr/ADR-018c-tool-naming-cleanup.md`
 - Current static implementation: `src/engine/loop_v4.rs:71-88`
 - Tool execution: `src/engine/tool_executor.rs:117`
 - System prompt builder: `src/prompt/builder.rs`
