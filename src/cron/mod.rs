@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod event_trigger;
+pub mod events;
 pub mod idle;
 
 use anyhow::{Context, Result};

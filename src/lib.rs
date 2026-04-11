@@ -63,13 +63,11 @@ pub mod agent;
 pub mod engine;
 
 /// Message queue with lane-aware processing
-pub(crate) mod queue;
 
 /// Session storage (JSONL)
 pub mod session;
 
 /// Orchestration layer (event router, file watcher, webhooks)
-pub mod orchestration;
 
 /// Team runtime (multi-agent teams, event bus, shared services)
 pub mod team;
@@ -103,7 +101,6 @@ pub mod extensions;
 pub mod types;
 
 /// Configuration management
-pub mod config;
 
 /// Agent identity and key management
 pub mod identity;
@@ -172,7 +169,6 @@ pub(crate) mod compaction;
 // ============================================================================
 
 pub use agent::Agent;
-pub use config::Config;
 
 // Re-export event types for tool monitoring and streaming
 pub use engine::{AgenticEvent, LifecyclePhase};

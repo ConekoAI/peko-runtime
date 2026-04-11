@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::cron::CronScheduler;
-use crate::orchestration::events::SystemEvent;
+use crate::cron::events::SystemEvent;
 
 /// Service that listens for system events and triggers matching jobs
 pub struct EventTriggerService {
@@ -212,7 +212,7 @@ impl Default for EventTriggerServiceBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestration::events::FileChangeType;
+    use crate::cron::events::FileChangeType;
     use std::collections::HashMap;
 
     #[test]

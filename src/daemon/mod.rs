@@ -11,7 +11,7 @@
 use crate::common::paths::PathResolver;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
 use crate::observability::Observability;
-use crate::orchestration::events::SystemEvent;
+use crate::cron::events::SystemEvent;
 use crate::session::MaintenanceConfig;
 use crate::session::metadata_controller::MetadataController;
 use crate::types::agent::AgentConfig;

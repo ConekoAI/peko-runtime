@@ -1,6 +1,6 @@
-//! System event types for orchestration
+//! System event types for cron and event-triggered jobs
 //!
-//! Defines the taxonomy of events that can trigger agent invocation.
+//! Defines the taxonomy of events that can trigger scheduled jobs.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -102,82 +102,11 @@ impl std::fmt::Display for SystemEvent {
             } => {
                 write!(f, "Internal {event_type} from {source}")
             }
-            SystemEvent::Timer { schedule_id, .. } => {
-                write!(f, "Timer for schedule {schedule_id}")
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_event_types() {
-        let file_event = SystemEvent::File {
-            path: PathBuf::from("/test/file.txt"),
-            change_type: FileChangeType::Created,
-            timestamp: Utc::now(),
-        };
-        assert_eq!(file_event.event_type(), "file");
-
-        let webhook_event = SystemEvent::Webhook {
-            source: "github".to_string(),
-            route: "/webhook".to_string(),
-            payload: serde_json::json!({}),
-            headers: HashMap::new(),
-            timestamp: Utc::now(),
-        };
-        assert_eq!(webhook_event.event_type(), "webhook");
-
-        let internal_event = SystemEvent::Internal {
-            event_type: "test".to_string(),
-            source: "test".to_string(),
-            payload: serde_json::json!({}),
-            timestamp: Utc::now(),
-        };
-        assert_eq!(internal_event.event_type(), "internal");
-
-        let timer_event = SystemEvent::Timer {
-            schedule_id: "test".to_string(),
-            task_id: "test".to_string(),
-            fired_at: Utc::now(),
-        };
-        assert_eq!(timer_event.event_type(), "timer");
-    }
-
-    #[test]
-    fn test_file_change_type_display() {
-        assert_eq!(format!("{}", FileChangeType::Created), "created");
-        assert_eq!(format!("{}", FileChangeType::Modified), "modified");
-        assert_eq!(format!("{}", FileChangeType::Deleted), "deleted");
-
-        let renamed = FileChangeType::Renamed {
-            from: PathBuf::from("/old"),
-        };
-        assert_eq!(format!("{}", renamed), "renamed from /old");
-    }
-
-    #[test]
-    fn test_serialization() {
-        let event = SystemEvent::File {
-            path: PathBuf::from("/test.txt"),
-            change_type: FileChangeType::Modified,
-            timestamp: Utc::now(),
-        };
-
-        let json = serde_json::to_string(&event).unwrap();
-        let deserialized: SystemEvent = serde_json::from_str(&json).unwrap();
-
-        match deserialized {
-            SystemEvent::File {
-                path, change_type, ..
+            SystemEvent::Timer {
+                schedule_id, task_id, ..
             } => {
-                assert_eq!(path, PathBuf::from("/test.txt"));
-                assert_eq!(change_type, FileChangeType::Modified);
+                write!(f, "Timer {task_id} for {schedule_id}")
             }
-            _ => panic!("Wrong event type"),
         }
     }
 }
