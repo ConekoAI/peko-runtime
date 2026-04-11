@@ -128,9 +128,6 @@ pub(crate) mod daemon;
 /// HTTP API server
 pub mod api;
 
-/// Web UI (embedded HTML)
-pub mod web_ui;
-
 /// Security policies and sandboxing
 pub mod security;
 

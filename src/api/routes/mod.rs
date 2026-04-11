@@ -44,8 +44,6 @@ pub fn create_router() -> Router<AppState> {
         .merge(events::router())
         // Milestone 12: Performance metrics
         .merge(metrics::router())
-        // Milestone 10: Web UI
-        .merge(crate::web_ui::router())
 }
 
 #[cfg(test)]
