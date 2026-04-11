@@ -37,7 +37,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 // Extension Framework integration
-use crate::extensions::adapters::BuiltinToolAdapter;
 use crate::extensions::async_integration::ExtensionAsyncTool;
 use crate::extensions::core::{global_core, HookPoint};
 use crate::extensions::{HookInput, HookOutput, HookResult};
@@ -373,7 +372,7 @@ impl ToolFactory {
 
     /// Register built-in tools with ExtensionCore
     ///
-    /// This method registers all enabled built-in tools with the ExtensionCore,
+    /// Uses BuiltinRegistry to register all enabled built-in tools,
     /// making them discoverable via the ToolRegister hook and executable via
     /// the ToolExecute hook.
     async fn register_builtin_tools_with_extension_core(
@@ -387,117 +386,26 @@ impl ToolFactory {
             }
         };
 
-        let workspace = config.workspace_dir.clone();
+        // Use BuiltinRegistry for centralized registration
+        use crate::tools::builtin_registry::{BuiltinRegistry, BuiltinRegistryConfig};
+        
+        let registry_config = BuiltinRegistryConfig {
+            workspace_dir: config.workspace_dir.clone(),
+            enable_filesystem: config.enable_filesystem,
+            enable_apply_patch: config.enable_apply_patch,
+            enable_granular_fs: config.enable_granular_fs,
+            enable_granular_write: config.enable_granular_write,
+            enable_shell: config.enable_shell,
+            enable_process: config.enable_process,
+            enable_session_tools: config.enable_session_tools,
+            enable_cron: config.enable_cron,
+            cron_db_path: config.cron_db_path.clone(),
+            instance_id: config.instance_id.clone(),
+            apply_patch_config: config.apply_patch_config.clone(),
+            disabled_tools: config.disabled_tools.clone(),
+        };
 
-        // Register shell tool (if enabled)
-        let shell_enabled = config.enable_shell || config.enable_process;
-        let shell_disabled = Self::is_disabled(&config.disabled_tools, "shell")
-            || Self::is_disabled(&config.disabled_tools, "process");
-        if shell_enabled && !shell_disabled {
-            let shell = Arc::new(ShellTool::new().with_workspace(&workspace));
-            BuiltinToolAdapter::register_tool(&core, shell).await?;
-            tracing::debug!("Registered built-in tool: shell");
-        }
-
-        // Register granular filesystem tools
-        if config.enable_granular_fs {
-            // read_file
-            if !Self::is_disabled(&config.disabled_tools, "read_file") {
-                let read_file = Arc::new(ReadFileTool::new().with_workspace(&workspace));
-                BuiltinToolAdapter::register_tool(&core, read_file).await?;
-                tracing::debug!("Registered built-in tool: read_file");
-            }
-
-            // write_file
-            if config.enable_granular_write
-                && !Self::is_disabled(&config.disabled_tools, "write_file")
-            {
-                let write_file = Arc::new(WriteFileTool::new().with_workspace(&workspace));
-                BuiltinToolAdapter::register_tool(&core, write_file).await?;
-                tracing::debug!("Registered built-in tool: write_file");
-            }
-
-            // glob
-            if !Self::is_disabled(&config.disabled_tools, "glob") {
-                let glob = Arc::new(GlobTool::new().with_workspace(&workspace));
-                BuiltinToolAdapter::register_tool(&core, glob).await?;
-                tracing::debug!("Registered built-in tool: glob");
-            }
-
-            // grep
-            if !Self::is_disabled(&config.disabled_tools, "grep") {
-                let grep = Arc::new(GrepTool::new().with_workspace(&workspace));
-                BuiltinToolAdapter::register_tool(&core, grep).await?;
-                tracing::debug!("Registered built-in tool: grep");
-            }
-
-            // str_replace_file
-            if config.enable_granular_write
-                && !Self::is_disabled(&config.disabled_tools, "str_replace_file")
-            {
-                let str_replace = Arc::new(StrReplaceFileTool::new().with_workspace(&workspace));
-                BuiltinToolAdapter::register_tool(&core, str_replace).await?;
-                tracing::debug!("Registered built-in tool: str_replace_file");
-            }
-        }
-
-        // Register legacy filesystem tool (if enabled)
-        if config.enable_filesystem && !Self::is_disabled(&config.disabled_tools, "filesystem") {
-            let fs = Arc::new(FileSystemTool::new().with_workspace(&workspace));
-            BuiltinToolAdapter::register_tool(&core, fs).await?;
-            tracing::debug!("Registered built-in tool: filesystem");
-        }
-
-        // Register apply_patch tool (if enabled)
-        if config.enable_apply_patch && !Self::is_disabled(&config.disabled_tools, "apply_patch")
-        {
-            let patch_config = config.apply_patch_config.clone().unwrap_or_default();
-            let apply_patch = Arc::new(ApplyPatchTool::new(patch_config, workspace.clone()));
-            BuiltinToolAdapter::register_tool(&core, apply_patch).await?;
-            tracing::debug!("Registered built-in tool: apply_patch");
-        }
-
-        // Register session tools (if enabled)
-        if config.enable_session_tools {
-            if !Self::is_disabled(&config.disabled_tools, "sessions_list") {
-                let sessions_list = Arc::new(SessionsListTool::new(Box::new(
-                    crate::tools::InMemorySessionRegistry::new("main".to_string()),
-                )));
-                BuiltinToolAdapter::register_tool(&core, sessions_list).await?;
-                tracing::debug!("Registered built-in tool: sessions_list");
-            }
-
-            if !Self::is_disabled(&config.disabled_tools, "sessions_history") {
-                let sessions_history = Arc::new(SessionsHistoryTool::new(Box::new(
-                    crate::tools::InMemorySessionRegistry::new("main".to_string()),
-                )));
-                BuiltinToolAdapter::register_tool(&core, sessions_history).await?;
-                tracing::debug!("Registered built-in tool: sessions_history");
-            }
-
-            if !Self::is_disabled(&config.disabled_tools, "session_status") {
-                let session_status = Arc::new(SessionStatusTool::new(Box::new(
-                    crate::tools::InMemorySessionRegistry::new("main".to_string()),
-                )));
-                BuiltinToolAdapter::register_tool(&core, session_status).await?;
-                tracing::debug!("Registered built-in tool: session_status");
-            }
-        }
-
-        // Register cron tool (if enabled)
-        if config.enable_cron && !Self::is_disabled(&config.disabled_tools, "cron") {
-            let db_path = config
-                .cron_db_path
-                .clone()
-                .unwrap_or_else(|| workspace.join("cron.json"));
-            let instance_id = config
-                .instance_id
-                .clone()
-                .unwrap_or_else(|| "default".to_string());
-            let cron = Arc::new(CronTool::new(db_path, instance_id));
-            BuiltinToolAdapter::register_tool(&core, cron).await?;
-            tracing::debug!("Registered built-in tool: cron");
-        }
+        BuiltinRegistry::register(&core, &registry_config).await?;
 
         tracing::info!("Registered built-in tools with ExtensionCore");
         Ok(())

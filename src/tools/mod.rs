@@ -8,6 +8,9 @@
 //!
 //! Custom tools use the Universal Tool Protocol (see `universal` module).
 
+/// Built-in tool registry for ExtensionCore integration
+pub mod builtin_registry;
+
 pub mod agent_management;
 pub mod agent_spawn;
 pub mod apply_patch;
