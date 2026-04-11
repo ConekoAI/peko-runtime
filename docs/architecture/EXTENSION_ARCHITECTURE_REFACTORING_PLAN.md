@@ -2,9 +2,9 @@
 
 **Goal:** Make Extensions 2.0 the single source of truth for all extensibility.
 
-**Status:** Phases 1-3 Complete  
+**Status:** Phases 1-4 Complete  
 **Started:** 2026-04-11  
-**Lines Removed:** ~2,900  
+**Lines Removed:** ~3,200  
 **Lines Added:** ~250 (builtin_registry.rs)
 
 ---
@@ -175,16 +175,16 @@ impl ToolFactory {
 
 ---
 
-## Phase 4: Unified Extension Types
+## Phase 4: Unified Extension Types ✅
 
-### 4.1 Current State (5 types, but messy)
+### 4.1 Before (5 types)
 - `skill` → `SkillAdapter`
 - `mcp` → `McpAdapter`
 - `universal-tool` → `UniversalToolAdapter`
-- `hook` → `HookAdapter`
+- `hook` → `HookAdapter` ❌ REMOVED
 - `gateway` → `GatewayAdapter`
 
-### 4.2 Clean State (4 types)
+### 4.2 After (4 types)
 | Type | Purpose | Hook Points |
 |------|---------|-------------|
 | `skill` | Documentation | `PromptSystemSection` |
@@ -192,7 +192,7 @@ impl ToolFactory {
 | `universal-tool` | Local executables | `ToolRegister`, `ToolExecute` |
 | `gateway` | I/O channels | `ChannelInput`, `ChannelOutput`, `MessagePreSend`, etc. |
 
-**Remove:** `hook` type - fold into `gateway` or remove entirely (was never functional)
+**Removed:** `hook` type - was never functional, event/webhook can be added to gateway if needed
 
 ---
 
