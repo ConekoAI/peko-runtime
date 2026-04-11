@@ -1,20 +1,20 @@
 //! Pekobot - Lightweight Multi-Agent Runtime
 //!
-//! A Rust-based agent runtime with pluggable gateway support for multi-platform messaging.
+//! A Rust-based agent runtime with unified extension support for multi-platform messaging.
 
 //! ## Architecture
 //!
-//! Pekobot uses a minimal core (~500KB-1MB) with on-demand loaded plugins:
+//! Pekobot uses a minimal core (~500KB-1MB) with on-demand loaded extensions:
 //!
 //! - **Core**: Agent runtime, state machine, tool registry
-//! - **Gateways**: Pluggable messaging platform adapters (Discord, etc.)
-//! - **Tools**: On-demand tool plugins (same system as gateways)
+//! - **Extensions**: Unified extension system (skills, tools, MCP, gateways)
+//! - **Gateways**: Messaging platform adapters (Discord, Slack, etc.) as extensions
 //!
 //! ## Quick Start
 //!
 //! ```bash,ignore
-//! # Install a gateway plugin
-//! pekobot gateway install discord
+//! # Install a gateway extension
+//! pekobot ext install ./discord-gateway
 //!
 //! # Run single agent
 //! pekobot agent
@@ -23,27 +23,23 @@
 //! pekobot --help
 //! ```
 //!
-//! ## Gateway Plugin System
+//! ## Extension System
 //!
-//! Gateways are dynamic libraries that implement the `GatewayPlugin` trait:
+//! Extensions use the Unified Extension Architecture (ADR-017):
 //!
 //! ```rust,ignore
-//! use pekobot::gateway::{GatewayManager, GatewayConfig};
+//! use pekobot::extensions::{
+//!     ExtensionManager, ExtensionManifest,
+//!     adapters::gateway_adapter::GatewayAdapter
+//! };
 //!
 //! async fn example() {
-//!     let manager = GatewayManager::new(config).await.unwrap();
+//!     let manager = ExtensionManager::new();
+//!     manager.register_adapter(Box::new(GatewayAdapter::new(core)));
 //!     
-//!     // Load and start Discord gateway
-//!     manager.registry().load("discord").await.unwrap();
-//!     
-//!     // Create instance
-//!     let instance = manager.registry()
-//!         .create_instance("discord", config)
-//!         .await
-//!         .unwrap();
-//!     
-//!     // Start receiving messages
-//!     let stream = instance.start().await.unwrap();
+//!     // Install and enable gateway extension
+//!     manager.install("./discord-gateway").await.unwrap();
+//!     manager.enable("discord").await.unwrap();
 //! }
 //! ```
 
@@ -84,9 +80,6 @@ pub mod watcher;
 // ============================================================================
 // External Interfaces
 // ============================================================================
-
-/// Gateway plugin system and built-in channel implementations
-pub mod gateway;
 
 /// Built-in communication channels (CLI, HTTP, etc.)
 pub mod channels;

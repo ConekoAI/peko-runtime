@@ -10,7 +10,6 @@
 //! - `system`: System diagnostics and maintenance
 //! - `daemon`: Daemon mode for cron job execution
 //! - `cron`: Cron job scheduling
-//! - `gateway`: Gateway plugin management
 
 pub mod agent;
 pub mod agent_bootstrap;
@@ -19,8 +18,6 @@ pub mod config;
 pub mod cron;
 pub mod daemon;
 pub mod ext;
-pub mod gateway;
-
 pub mod orchestration;
 pub mod provider;
 pub mod send;
@@ -135,10 +132,6 @@ pub enum Commands {
     /// Cron job management
     #[command(subcommand)]
     Cron(cron::CronCommands),
-
-    /// Gateway plugin management
-    #[command(subcommand)]
-    Gateway(gateway::GatewayCommands),
 
     /// Orchestration layer management (event routing, webhooks, file watching)
     #[command(subcommand)]

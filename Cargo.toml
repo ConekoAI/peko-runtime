@@ -51,9 +51,6 @@ scopeguard = "1.2"
 async-trait = "0.1"
 futures = "0.3"
 
-# Dynamic library loading for gateway plugins
-libloading = "0.8"
-
 # System calls (for daemon process management)
 libc = "0.2"
 
@@ -102,9 +99,6 @@ tokio-stream = "0.1"
 
 # Windows system calls
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
-
-# Gateway plugin interface (local path during development)
-gateway-interface = { path = "gateway-interface" }
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -1,7 +1,7 @@
 use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, ext, gateway, init_logging, orchestration, provider, send,
+    agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, send,
     session, system, team, update, Cli, Commands, GlobalPaths,
 };
 use pekobot::types::config::PekobotConfig;
@@ -109,7 +109,6 @@ async fn run_command(command: Commands, paths: &GlobalPaths, json: bool) -> anyh
         Commands::System(cmd) => system::handle_system(cmd, paths, json).await,
         Commands::Daemon(cmd) => daemon::handle_daemon(cmd, paths, json).await,
         Commands::Cron(cmd) => cron::handle_cron(cmd, paths, json).await,
-        Commands::Gateway(cmd) => gateway::handle_gateway(cmd, paths, json).await,
         Commands::Orchestration(cmd) => {
             // Load configuration for orchestration commands
             let config_path = paths.config_dir.join("config.toml");
