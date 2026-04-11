@@ -315,6 +315,10 @@ async fn handle_enable(
     id: String,
     target: Option<String>,
 ) -> anyhow::Result<()> {
+    // Check if this is a built-in tool first
+    if crate::tools::builtin_registry::BuiltinRegistry::is_builtin(&id) {
+        return handle_enable_builtin(paths, &id, target.as_deref()).await;
+    }
     let ext_id = ExtensionId::new(&id);
 
     // Check if extension exists
@@ -417,6 +421,11 @@ async fn handle_disable(
     id: String,
     target: Option<String>,
 ) -> anyhow::Result<()> {
+    // Check if this is a built-in tool first
+    if crate::tools::builtin_registry::BuiltinRegistry::is_builtin(&id) {
+        return handle_disable_builtin(paths, &id, target.as_deref()).await;
+    }
+
     let ext_id = ExtensionId::new(&id);
 
     // Check if extension exists
