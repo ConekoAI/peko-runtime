@@ -17,7 +17,6 @@ use tracing::{debug, warn};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Credential {
     provider: String,
-    profile: String,
     api_key: String,
     #[allow(dead_code)]
     created_at: String,
@@ -174,8 +173,7 @@ impl ApiKeyResolver {
         // Try credentials.json first
         if !provider_name.is_empty() {
             if let Ok(credentials) = self.load_credentials() {
-                let key = format!("{}:default", provider_name);
-                if let Some(cred) = credentials.credentials.get(&key) {
+                if let Some(cred) = credentials.credentials.get(provider_name) {
                     debug!(
                         "Resolved API key for {} from credentials.json",
                         provider_name

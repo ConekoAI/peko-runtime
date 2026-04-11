@@ -16,9 +16,6 @@ pub enum AuthCommands {
         provider: String,
         /// API key value (or omit to enter interactively)
         key: Option<String>,
-        /// Profile name (default: "default")
-        #[arg(short, long)]
-        profile: Option<String>,
     },
 
     /// List configured credentials
@@ -32,18 +29,12 @@ pub enum AuthCommands {
     Remove {
         /// Provider name
         provider: String,
-        /// Profile name (default: "default")
-        #[arg(short, long)]
-        profile: Option<String>,
     },
 
     /// Test a credential
     Test {
         /// Provider name (test all if omitted)
         provider: Option<String>,
-        /// Profile name
-        #[arg(short, long)]
-        profile: Option<String>,
     },
 }
 
@@ -51,7 +42,6 @@ pub enum AuthCommands {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Credential {
     pub provider: String,
-    pub profile: String,
     pub api_key: String,
     pub created_at: String,
 }
@@ -60,47 +50,26 @@ pub struct Credential {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct CredentialsStore {
     pub version: u32,
-    pub credentials: HashMap<String, Credential>, // key: "provider:profile"
+    pub credentials: HashMap<String, Credential>, // key: provider name
 }
 
 impl CredentialsStore {
-    fn key(provider: &str, profile: &str) -> String {
-        format!("{provider}:{profile}")
-    }
-
     #[must_use]
-    pub fn get(&self, provider: &str, profile: &str) -> Option<&Credential> {
-        self.credentials.get(&Self::key(provider, profile))
+    pub fn get(&self, provider: &str) -> Option<&Credential> {
+        self.credentials.get(provider)
     }
 
-    pub fn set(&mut self, provider: &str, profile: &str, api_key: String) {
+    pub fn set(&mut self, provider: &str, api_key: String) {
         let credential = Credential {
             provider: provider.to_string(),
-            profile: profile.to_string(),
             api_key,
             created_at: chrono::Utc::now().to_rfc3339(),
         };
-        self.credentials
-            .insert(Self::key(provider, profile), credential);
+        self.credentials.insert(provider.to_string(), credential);
     }
 
-    pub fn remove(&mut self, provider: &str, profile: &str) -> bool {
-        self.credentials
-            .remove(&Self::key(provider, profile))
-            .is_some()
-    }
-
-    #[must_use]
-    pub fn list_for_provider(&self, provider: &str) -> Vec<&Credential> {
-        self.credentials
-            .values()
-            .filter(|c| c.provider == provider)
-            .collect()
-    }
-
-    #[must_use]
-    pub fn list_all(&self) -> Vec<&Credential> {
-        self.credentials.values().collect()
+    pub fn remove(&mut self, provider: &str) -> bool {
+        self.credentials.remove(provider).is_some()
     }
 
     #[must_use]
@@ -176,19 +145,14 @@ fn normalize_provider(provider: &str) -> &str {
 /// Handle auth commands
 pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) -> Result<()> {
     match cmd {
-        AuthCommands::Set {
-            provider,
-            key,
-            profile,
-        } => {
-            let profile = profile.unwrap_or_else(|| "default".to_string());
+        AuthCommands::Set { provider, key } => {
             let canonical_provider = normalize_provider(&provider);
 
             // Get API key interactively if not provided
             let api_key = if let Some(k) = key {
                 k
             } else {
-                print!("Enter API key for {provider} (profile: {profile}): ");
+                print!("Enter API key for {provider}: ");
                 std::io::stdout().flush()?;
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input)?;
@@ -201,10 +165,10 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
 
             // Load, update, save
             let mut store = load_credentials(paths)?;
-            store.set(canonical_provider, &profile, api_key);
+            store.set(canonical_provider, api_key);
             save_credentials(paths, &store)?;
 
-            println!("✓ API key saved for {canonical_provider} (profile: {profile})");
+            println!("✓ API key saved for {canonical_provider}");
             println!(
                 "  Location: {}",
                 paths.config_dir.join("credentials.json").display()
@@ -226,16 +190,13 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             println!();
 
             for provider in store.providers() {
-                println!("  {provider}:");
-                let creds = store.list_for_provider(&provider);
-                for cred in creds {
-                    let key_display = if show {
-                        &cred.api_key
-                    } else {
-                        &mask_key(&cred.api_key)
-                    };
-                    println!("    - {}: {}", cred.profile, key_display);
-                }
+                let cred = store.get(&provider).unwrap();
+                let key_display = if show {
+                    &cred.api_key
+                } else {
+                    &mask_key(&cred.api_key)
+                };
+                println!("  {provider}: {key_display}");
             }
 
             println!();
@@ -246,21 +207,19 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             Ok(())
         }
 
-        AuthCommands::Remove { provider, profile } => {
-            let profile = profile.unwrap_or_else(|| "default".to_string());
-
+        AuthCommands::Remove { provider } => {
             let mut store = load_credentials(paths)?;
-            if store.remove(&provider, &profile) {
+            if store.remove(&provider) {
                 save_credentials(paths, &store)?;
-                println!("✓ Removed credential for {provider} (profile: {profile})");
+                println!("✓ Removed credential for {provider}");
             } else {
-                println!("✗ No credential found for {provider} (profile: {profile})");
+                println!("✗ No credential found for {provider}");
             }
 
             Ok(())
         }
 
-        AuthCommands::Test { provider, profile } => {
+        AuthCommands::Test { provider } => {
             let store = load_credentials(paths)?;
 
             let providers_to_test = match provider {
@@ -277,9 +236,7 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
             println!();
 
             for provider in providers_to_test {
-                let profile_name = profile.as_deref().unwrap_or("default");
-
-                match store.get(&provider, profile_name) {
+                match store.get(&provider) {
                     Some(cred) => {
                         // Simple test - just verify key format
                         let valid = match provider.as_str() {
@@ -289,13 +246,13 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
                         };
 
                         if valid {
-                            println!("  ✓ {provider} ({profile_name}): Valid format");
+                            println!("  ✓ {provider}: Valid format");
                         } else {
-                            println!("  ⚠ {provider} ({profile_name}): Invalid key format");
+                            println!("  ⚠ {provider}: Invalid key format");
                         }
                     }
                     None => {
-                        println!("  ✗ {provider} ({profile_name}): Not found");
+                        println!("  ✗ {provider}: Not found");
                     }
                 }
             }
@@ -306,15 +263,9 @@ pub async fn handle_auth(cmd: AuthCommands, paths: &GlobalPaths, _json: bool) ->
 }
 
 /// Get API key for a provider (used by agent creation)
-pub fn get_api_key(
-    paths: &GlobalPaths,
-    provider: &str,
-    profile: Option<&str>,
-) -> Result<Option<String>> {
+pub fn get_api_key(paths: &GlobalPaths, provider: &str) -> Result<Option<String>> {
     let store = load_credentials(paths)?;
-    let profile = profile.unwrap_or("default");
-
-    Ok(store.get(provider, profile).map(|c| c.api_key.clone()))
+    Ok(store.get(provider).map(|c| c.api_key.clone()))
 }
 
 /// Auto-detect available providers
