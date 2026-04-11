@@ -2,8 +2,9 @@
 
 **Goal:** Make Extensions 2.0 the single source of truth for all extensibility.
 
-**Status:** In Progress  
+**Status:** Phase 1 & 2 Complete (Dead code and duplicate abstractions removed)  
 **Started:** 2026-04-11
+**Lines Removed:** ~2,900
 
 ---
 
@@ -95,7 +96,7 @@
 - Functionality superseded by `ExtensionManager`
 
 ### 1.2 Delete `src/tool_registry/`
-- [ ] **PENDING** - 3 files, ~435 lines
+- [x] **DONE** - 3 files, ~435 lines
 - Local registry functionality: use ExtensionManager
 - Remote/Pekohub: Doesn't exist, add later if needed
 - Used only by `cap/catalog.rs` (which we're also removing)
@@ -105,7 +106,7 @@
 ## Phase 2: Remove Duplicate Abstractions
 
 ### 2.1 Delete `src/cap/`
-- [ ] **PENDING** - 6 files, ~900 lines
+- [x] **DONE** - 6 files, ~900 lines
 - Replaced by Extensions 2.0
 
 **Migration:**
