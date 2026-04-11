@@ -306,7 +306,8 @@ This eliminates:
 | `src/tool_registry/` | 3 | ~435 | Unused, superseded by ExtensionManager |
 | `src/cap/` | 6 | ~1,800 | Duplicated Extensions 2.0 functionality |
 | `src/extensions/adapters/hook_adapter.rs` | 1 | ~343 | Never functional |
-| **Total** | **15** | **~3,700** | |
+| `src/skills/` | 1 | ~30 | Redundant facade (re-exported from extensions) |
+| **Total** | **16** | **~3,730** | |
 
 ### What Was Added
 
@@ -315,10 +316,11 @@ This eliminates:
 | `src/tools/builtin_registry.rs` | 1 | ~260 | Centralized built-in tool registration |
 
 ### Net Result
-- **~3,440 lines removed** (simpler codebase)
+- **~3,470 lines removed** (simpler codebase)
 - **4 extension types** instead of 6
 - **Single discovery path** through ExtensionManager
 - **Single CLI surface** via `pekobot ext`
+- **Cleaner module hierarchy** (removed redundant skills facade)
 
 ### Architecture Compliance
 
