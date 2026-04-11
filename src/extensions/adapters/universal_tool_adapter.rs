@@ -152,10 +152,7 @@ impl UniversalToolAdapter {
         }
 
         // Store reserved parameters
-        let reserved_config =
-            crate::extensions::services::ReservedParamsConfig::from_universal_legacy(
-                &tool_manifest.reserved_parameters,
-            );
+        let reserved_config = &tool_manifest.reserved_parameters;
         if !reserved_config.is_empty() {
             manifest.set(
                 "reserved_parameters",
@@ -166,36 +163,9 @@ impl UniversalToolAdapter {
         Ok((manifest, tool_manifest.name))
     }
 
-    /// Find executable for a tool
+    /// Find executable for a tool (delegates to shared utility)
     async fn find_executable(&self, tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
-        // Try common patterns
-        let candidates = vec![
-            tool_path.join(format!("{}.py", tool_name)),
-            tool_path.join(format!("{}.js", tool_name)),
-            tool_path.join(format!("{}.sh", tool_name)),
-            tool_path.join(tool_name),
-        ];
-
-        for candidate in candidates {
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-
-        // Fallback: find any executable file that's not manifest.json
-        let mut entries = tokio::fs::read_dir(tool_path).await.ok()?;
-        while let Some(entry) = entries.next_entry().await.ok().flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name() {
-                    if name != "manifest.json" {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-
-        None
+        super::parsing::find_executable(tool_path, tool_name).await
     }
 
     /// Parse a manifest.json file into an extension manifest
@@ -229,8 +199,8 @@ impl UniversalToolAdapter {
             manifest.set("llm_description", llm_desc);
         }
         
-        // Store reserved parameters (convert to unified format)
-        let reserved_config = ReservedParamsConfig::from_universal_legacy(&tool_manifest.reserved_parameters);
+        // Store reserved parameters
+        let reserved_config = &tool_manifest.reserved_parameters;
         if !reserved_config.is_empty() {
             manifest.set("reserved_parameters", serde_json::to_value(&reserved_config).unwrap_or_default());
         }

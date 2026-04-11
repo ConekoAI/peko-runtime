@@ -2,110 +2,13 @@
 //!
 //! Defines configuration structures for MCP servers that can be loaded
 //! from TOML configuration files.
-//!
-//! # Note on Reserved Parameters
-//!
-//! This module now recommends using the shared `ReservedParamsConfig` from
-//! `extensions::services`. The legacy `ReservedParamConfig` type is kept for
-//! backward compatibility but is deprecated.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
 // Re-export shared types for convenience
 pub use crate::extensions::services::{ParamSource, ReservedParamsConfig};
-
-/// Configuration for a single reserved parameter (LEGACY)
-///
-/// # Deprecated
-/// Use `ReservedParamsConfig` from `crate::extensions::services` instead.
-/// This type is kept for backward compatibility during config parsing.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[deprecated(
-    since = "0.2.0",
-    note = "Use ReservedParamsConfig from crate::extensions::services instead"
-)]
-pub struct ReservedParamConfig {
-    /// Source type: "runtime", "env", or "static"
-    pub source: String,
-    /// Field name (for runtime) or variable name (for env) or value (for static)
-    pub field: Option<String>,
-    /// Environment variable name (alternative to field for env source)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub var: Option<String>,
-    /// Static value (for static source)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
-    /// Optional description
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-impl ReservedParamConfig {
-    /// Create a runtime parameter from a context field
-    pub fn runtime(field: impl Into<String>) -> Self {
-        Self {
-            source: "runtime".to_string(),
-            field: Some(field.into()),
-            var: None,
-            value: None,
-            description: None,
-        }
-    }
-
-    /// Create a parameter from an environment variable
-    pub fn env(var: impl Into<String>) -> Self {
-        Self {
-            source: "env".to_string(),
-            field: None,
-            var: Some(var.into()),
-            value: None,
-            description: None,
-        }
-    }
-
-    /// Create a static parameter with a hardcoded value
-    pub fn static_value(val: impl Into<String>) -> Self {
-        Self {
-            source: "static".to_string(),
-            field: None,
-            var: None,
-            value: Some(val.into()),
-            description: None,
-        }
-    }
-
-    /// Get the parameter value based on the source and context
-    ///
-    /// Uses the shared ContextResolver for consistent field resolution
-    /// across Universal Tools and MCP.
-    pub fn resolve(&self, ctx: Option<&crate::tools::ToolContext>) -> Value {
-        use crate::tools::shared::context_resolver::{ContextResolver, ToolContextAdapter};
-        
-        match self.source.as_str() {
-            "runtime" => {
-                if let (Some(ctx), Some(field)) = (ctx, &self.field) {
-                    let adapter = ToolContextAdapter::new(ctx);
-                    ContextResolver::resolve_field(&adapter, field)
-                } else {
-                    Value::Null
-                }
-            }
-            "env" => self
-                .var
-                .as_ref()
-                .and_then(|v| std::env::var(v).ok())
-                .map_or(Value::Null, Value::String),
-            "static" => self
-                .value
-                .as_ref()
-                .map_or(Value::Null, |v| Value::String(v.clone())),
-            _ => Value::Null,
-        }
-    }
-}
 
 /// Transport type for MCP connections
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,8 +80,8 @@ pub struct McpServerConfig {
 
     /// Reserved parameters to inject into tool calls
     /// These are hidden from the LLM but injected by the runtime
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub reserved_parameters: HashMap<String, ReservedParamConfig>,
+    #[serde(default, skip_serializing_if = "ReservedParamsConfig::is_empty")]
+    pub reserved_parameters: ReservedParamsConfig,
 
     /// Whether to bundle this MCP server binary in portable packages
     /// When true, the binary at `command` path will be bundled during export
@@ -223,7 +126,7 @@ impl McpServerConfig {
             max_restarts: 0,
             init_timeout_secs: default_init_timeout_secs(),
             tool_timeout_secs: default_tool_timeout_secs(),
-            reserved_parameters: HashMap::new(),
+            reserved_parameters: ReservedParamsConfig::new(),
             bundle: false,
             bundled_path: None,
         }
@@ -244,7 +147,7 @@ impl McpServerConfig {
             max_restarts: 0,
             init_timeout_secs: default_init_timeout_secs(),
             tool_timeout_secs: default_tool_timeout_secs(),
-            reserved_parameters: HashMap::new(),
+            reserved_parameters: ReservedParamsConfig::new(),
             bundle: false,
             bundled_path: None,
         }
@@ -272,10 +175,7 @@ impl McpServerConfig {
 
     /// Set reserved parameters for injection
     #[must_use]
-    pub fn with_reserved_parameters(
-        mut self,
-        params: HashMap<String, ReservedParamConfig>,
-    ) -> Self {
+    pub fn with_reserved_parameters(mut self, params: ReservedParamsConfig) -> Self {
         self.reserved_parameters = params;
         self
     }
@@ -319,14 +219,6 @@ impl McpServerConfig {
 
         // Return the original command path (may be relative to cwd)
         self.cwd.as_ref().map(|cwd| cwd.join(&path)).or(Some(path))
-    }
-
-    /// Get reserved parameters as unified config
-    ///
-    /// This converts the legacy `ReservedParamConfig` format to the new unified
-    /// `ReservedParamsConfig` used by the Extension Framework.
-    pub fn reserved_params_config(&self) -> ReservedParamsConfig {
-        ReservedParamsConfig::from_mcp_legacy(&self.reserved_parameters)
     }
 
     /// Validate the configuration
@@ -493,7 +385,7 @@ impl McpConfig {
                 max_restarts: 0,
                 init_timeout_secs: default_init_timeout_secs(),
                 tool_timeout_secs: default_tool_timeout_secs(),
-                reserved_parameters: HashMap::new(),
+                reserved_parameters: ReservedParamsConfig::new(),
                 bundle: false,
                 bundled_path: None,
             });
@@ -758,21 +650,6 @@ health_check_interval_secs = 60
     }
 
     #[test]
-    fn test_reserved_param_config() {
-        let runtime_param = ReservedParamConfig::runtime("agent_id");
-        assert_eq!(runtime_param.source, "runtime");
-        assert_eq!(runtime_param.field, Some("agent_id".to_string()));
-
-        let env_param = ReservedParamConfig::env("API_KEY");
-        assert_eq!(env_param.source, "env");
-        assert_eq!(env_param.var, Some("API_KEY".to_string()));
-
-        let static_param = ReservedParamConfig::static_value("production");
-        assert_eq!(static_param.source, "static");
-        assert_eq!(static_param.value, Some("production".to_string()));
-    }
-
-    #[test]
     fn test_config_with_reserved_params_from_toml() {
         let toml = r#"
 [[server]]
@@ -795,17 +672,14 @@ environment = { source = "static", value = "production" }
 
         // Check runtime param
         let agent_id = memory.reserved_parameters.get("agent_id").unwrap();
-        assert_eq!(agent_id.source, "runtime");
-        assert_eq!(agent_id.field, Some("agent_id".to_string()));
+        assert!(matches!(agent_id, ParamSource::Runtime { field } if field == "agent_id"));
 
         // Check env param
         let api_key = memory.reserved_parameters.get("api_key").unwrap();
-        assert_eq!(api_key.source, "env");
-        assert_eq!(api_key.var, Some("API_KEY".to_string()));
+        assert!(matches!(api_key, ParamSource::Env { var } if var == "API_KEY"));
 
         // Check static param
         let env = memory.reserved_parameters.get("environment").unwrap();
-        assert_eq!(env.source, "static");
-        assert_eq!(env.value, Some("production".to_string()));
+        assert!(matches!(env, ParamSource::Static { value } if value == "production"));
     }
 }

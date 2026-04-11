@@ -17,8 +17,8 @@
 //! session_id = { source = "runtime", field = "session_id" }
 //! ```
 
+use crate::extensions::services::ReservedParamsConfig;
 use crate::mcp::{
-    config::ReservedParamConfig,
     tool_proxy::McpToolProxy,
     types::Tool as McpTool,
 };
@@ -26,7 +26,6 @@ use crate::tools::{Tool, ToolContext};
 use crate::tools::shared::proxy_utils::execute_with_context_handling;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, trace};
@@ -39,8 +38,8 @@ use tracing::{debug, trace};
 pub struct InjectableMcpToolProxy {
     /// The underlying MCP tool proxy
     inner: McpToolProxy,
-    /// Reserved parameter configurations (name -> config)
-    reserved_params: HashMap<String, ReservedParamConfig>,
+    /// Reserved parameter configurations
+    reserved_params: ReservedParamsConfig,
     /// Modified schema with reserved params removed (for LLM visibility)
     filtered_schema: Value,
 }
@@ -52,12 +51,12 @@ impl InjectableMcpToolProxy {
     /// * `server_name` - Name of the MCP server
     /// * `tool` - The MCP tool definition
     /// * `manager` - Reference to the MCP manager
-    /// * `reserved_params` - Map of parameter name to its configuration
+    /// * `reserved_params` - Reserved parameter configuration
     pub fn new(
         server_name: String,
         tool: McpTool,
         manager: Arc<RwLock<crate::mcp::manager::McpManager>>,
-        reserved_params: HashMap<String, ReservedParamConfig>,
+        reserved_params: ReservedParamsConfig,
     ) -> Self {
         let inner = McpToolProxy::new(server_name, tool.clone(), manager);
 
@@ -76,7 +75,7 @@ impl InjectableMcpToolProxy {
         server_name: String,
         tool: McpTool,
         manager: Arc<RwLock<crate::mcp::manager::McpManager>>,
-        reserved_params: HashMap<String, ReservedParamConfig>,
+        reserved_params: ReservedParamsConfig,
         estimated_duration_ms: u64,
     ) -> Self {
         let inner =
@@ -112,7 +111,7 @@ impl InjectableMcpToolProxy {
 
     /// Get the reserved parameter configurations
     #[must_use]
-    pub fn reserved_params(&self) -> &HashMap<String, ReservedParamConfig> {
+    pub fn reserved_params(&self) -> &ReservedParamsConfig {
         &self.reserved_params
     }
 
@@ -122,11 +121,11 @@ impl InjectableMcpToolProxy {
     /// while still validating them internally.
     ///
     /// Uses the shared schema filter for consistency with Universal Tools.
-    fn filter_schema(schema: &Value, reserved: &HashMap<String, ReservedParamConfig>) -> Value {
+    fn filter_schema(schema: &Value, reserved: &ReservedParamsConfig) -> Value {
         use crate::tools::shared::filter_reserved_params;
         use std::collections::HashSet;
         
-        let reserved_set: HashSet<String> = reserved.keys().cloned().collect();
+        let reserved_set: HashSet<String> = reserved.names().cloned().collect();
         filter_reserved_params(schema, &reserved_set)
     }
 
@@ -154,8 +153,8 @@ impl InjectableMcpToolProxy {
         let obj = params.as_object_mut().unwrap();
 
         // Inject each reserved parameter
-        for (name, config) in &self.reserved_params {
-            let value = config.resolve(ctx);
+        for name in self.reserved_params.names() {
+            let value = self.reserved_params.resolve(ctx).get(name).cloned().unwrap_or(Value::Null);
             trace!("Injecting reserved param '{}' = {:?}", name, value);
             obj.insert(name.clone(), value);
         }
@@ -247,7 +246,7 @@ impl std::fmt::Debug for InjectableMcpToolProxy {
         f.debug_struct("InjectableMcpToolProxy")
             .field("server_name", &self.server_name())
             .field("tool_name", &self.name())
-            .field("reserved_params", &self.reserved_params.keys().collect::<Vec<_>>())
+            .field("reserved_params", &self.reserved_params.names().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -255,7 +254,6 @@ impl std::fmt::Debug for InjectableMcpToolProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::config::ReservedParamConfig;
     use serde_json::json;
 
     #[test]
@@ -271,15 +269,9 @@ mod tests {
             "required": ["key", "agent_id"]
         });
 
-        let mut reserved = HashMap::new();
-        reserved.insert(
-            "agent_id".to_string(),
-            ReservedParamConfig::runtime("agent_id"),
-        );
-        reserved.insert(
-            "session_id".to_string(),
-            ReservedParamConfig::runtime("session_id"),
-        );
+        let reserved = ReservedParamsConfig::new()
+            .with_runtime("agent_id", "agent_id")
+            .with_runtime("session_id", "session_id");
 
         let filtered = InjectableMcpToolProxy::filter_schema(&schema, &reserved);
 
@@ -305,7 +297,7 @@ mod tests {
             }
         });
 
-        let reserved = HashMap::new();
+        let reserved = ReservedParamsConfig::new();
         let filtered = InjectableMcpToolProxy::filter_schema(&schema, &reserved);
 
         // Schema should be unchanged
@@ -313,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reserved_param_config_resolve() {
+    fn test_reserved_params_resolve() {
         // Create a ToolContext using the constructor
         let abort_signal = crate::tools::AbortSignal::new();
         let ctx = abort_signal
@@ -323,36 +315,31 @@ mod tests {
             .with_peer_id("peer_789")
             .with_workspace("/tmp/test");
 
-        let agent_config = ReservedParamConfig::runtime("agent_id");
-        assert_eq!(
-            agent_config.resolve(Some(&ctx)),
-            json!("agent_456")
-        );
+        let config = ReservedParamsConfig::new()
+            .with_runtime("agent_id", "agent_id")
+            .with_runtime("session_id", "session_id")
+            .with_runtime("peer_id", "peer_id")
+            .with_static("static_val", "hardcoded");
 
-        let session_config = ReservedParamConfig::runtime("session_id");
-        assert_eq!(
-            session_config.resolve(Some(&ctx)),
-            json!("sess_123")
-        );
-
-        let peer_config = ReservedParamConfig::runtime("peer_id");
-        assert_eq!(
-            peer_config.resolve(Some(&ctx)),
-            json!("peer_789")
-        );
-
-        // Test static resolution
-        let static_config = ReservedParamConfig::static_value("hardcoded");
-        assert_eq!(
-            static_config.resolve(None),
-            json!("hardcoded")
-        );
+        let resolved = config.resolve(Some(&ctx));
+        
+        assert_eq!(resolved.get("agent_id"), Some(&json!("agent_456")));
+        assert_eq!(resolved.get("session_id"), Some(&json!("sess_123")));
+        assert_eq!(resolved.get("peer_id"), Some(&json!("peer_789")));
+        assert_eq!(resolved.get("static_val"), Some(&json!("hardcoded")));
     }
 
     #[test]
-    fn test_reserved_param_config_resolve_no_context() {
-        let config = ReservedParamConfig::runtime("agent_id");
+    fn test_reserved_params_resolve_no_context() {
+        let config = ReservedParamsConfig::new()
+            .with_runtime("agent_id", "agent_id")
+            .with_static("static_val", "hardcoded");
+        
+        let resolved = config.resolve(None);
+        
         // Without context, runtime params resolve to null
-        assert_eq!(config.resolve(None), json!(null));
+        assert_eq!(resolved.get("agent_id"), Some(&json!(null)));
+        // Static params still resolve
+        assert_eq!(resolved.get("static_val"), Some(&json!("hardcoded")));
     }
 }

@@ -142,66 +142,7 @@ impl ReservedParamsConfig {
     }
 }
 
-impl ReservedParamsConfig {
-    /// Create from Universal Tool legacy format
-    ///
-    /// Converts the old manifest `ReservedParam` format to the new unified format.
-    /// This is a static method for convenience when parsing manifests.
-    #[allow(deprecated)]
-    pub fn from_universal_legacy(
-        legacy: &Option<std::collections::HashMap<String, crate::tools::universal::manifest::ReservedParam>>,
-    ) -> Self {
-        let mut config = ReservedParamsConfig::new();
 
-        if let Some(params) = legacy {
-            for (name, param) in params {
-                let source = match &param.source {
-                    crate::tools::universal::manifest::ParamSourceLegacy::Runtime { field } => {
-                        ParamSource::Runtime { field: field.clone() }
-                    }
-                    crate::tools::universal::manifest::ParamSourceLegacy::Env { var } => {
-                        ParamSource::Env { var: var.clone() }
-                    }
-                    crate::tools::universal::manifest::ParamSourceLegacy::Static { value } => {
-                        ParamSource::Static { value: value.clone() }
-                    }
-                };
-                config.params.insert(name.clone(), source);
-            }
-        }
-
-        config
-    }
-    
-    /// Create from MCP legacy format
-    ///
-    /// Converts the old `ReservedParamConfig` format to the new unified format.
-    pub fn from_mcp_legacy(
-        legacy: &std::collections::HashMap<String, crate::mcp::config::ReservedParamConfig>,
-    ) -> Self {
-        let mut config = ReservedParamsConfig::new();
-
-        for (name, param) in legacy {
-            let source = match param.source.as_str() {
-                "runtime" => param.field.as_ref().map(|f| ParamSource::Runtime {
-                    field: f.clone(),
-                }),
-                "env" => param.var.as_ref().map(|v| ParamSource::Env { var: v.clone() }),
-                "static" => param
-                    .value
-                    .as_ref()
-                    .map(|v| ParamSource::Static { value: v.clone().into() }),
-                _ => None,
-            };
-
-            if let Some(src) = source {
-                config.params.insert(name.clone(), src);
-            }
-        }
-
-        config
-    }
-}
 
 impl ParamSource {
     /// Resolve this parameter source to a value
@@ -263,47 +204,6 @@ impl ReservedParamsService {
         }
     }
 
-    /// Parse from a legacy MCP config
-    ///
-    /// Converts the old `ReservedParamConfig` format to the new unified format
-    pub fn from_mcp_legacy(
-        &self,
-        legacy: &std::collections::HashMap<String, crate::mcp::config::ReservedParamConfig>,
-    ) -> ReservedParamsConfig {
-        let mut config = ReservedParamsConfig::new();
-
-        for (name, param) in legacy {
-            let source = match param.source.as_str() {
-                "runtime" => param.field.as_ref().map(|f| ParamSource::Runtime {
-                    field: f.clone(),
-                }),
-                "env" => param.var.as_ref().map(|v| ParamSource::Env { var: v.clone() }),
-                "static" => param
-                    .value
-                    .as_ref()
-                    .map(|v| ParamSource::Static { value: v.clone().into() }),
-                _ => None,
-            };
-
-            if let Some(src) = source {
-                config.params.insert(name.clone(), src);
-            }
-        }
-
-        config
-    }
-
-    /// Parse from a legacy Universal Tool manifest
-    ///
-    /// Converts the old `ReservedParam` format to the new unified format.
-    /// Note: This delegates to `ReservedParamsConfig::from_universal_legacy()`.
-    #[allow(deprecated)]
-    pub fn from_universal_legacy(
-        &self,
-        legacy: &Option<std::collections::HashMap<String, crate::tools::universal::manifest::ReservedParam>>,
-    ) -> ReservedParamsConfig {
-        ReservedParamsConfig::from_universal_legacy(legacy)
-    }
 }
 
 /// Configuration file format

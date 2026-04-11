@@ -237,7 +237,7 @@ pub mod parsing {
     use anyhow::{Context, Result};
     use serde::de::DeserializeOwned;
     use std::collections::HashMap;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     /// Parse YAML frontmatter from markdown content
     ///
@@ -611,6 +611,49 @@ pub mod parsing {
             .await
             .with_context(|| format!("Failed to read file: {:?}", path))?;
         toml::from_str(&content).context("Failed to parse TOML")
+    }
+
+    /// Find the executable file for a tool/capability in a directory
+    ///
+    /// This function looks for common executable patterns (.py, .js, .sh, or no extension)
+    /// and falls back to finding any file that isn't manifest.json.
+    ///
+    /// # Arguments
+    /// * `tool_path` - The directory to search
+    /// * `tool_name` - The name of the tool (used for common patterns)
+    ///
+    /// # Returns
+    /// * `Some(PathBuf)` - Path to the executable if found
+    /// * `None` - If no executable was found
+    pub async fn find_executable(tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
+        // Try common patterns first
+        let candidates = [
+            tool_path.join(format!("{}.py", tool_name)),
+            tool_path.join(format!("{}.js", tool_name)),
+            tool_path.join(format!("{}.sh", tool_name)),
+            tool_path.join(tool_name),
+        ];
+
+        for candidate in &candidates {
+            if candidate.exists() {
+                return Some(candidate.clone());
+            }
+        }
+
+        // Fallback: find any file that's not manifest.json
+        let mut entries = tokio::fs::read_dir(tool_path).await.ok()?;
+        while let Some(entry) = entries.next_entry().await.ok().flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name() {
+                    if name != "manifest.json" {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+
+        None
     }
 }
 

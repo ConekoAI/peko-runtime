@@ -3,9 +3,10 @@
 //! SRP: This module adapts external tools to the Tool trait.
 //! Handles: transport management, parameter injection, protocol translation.
 
-use super::manifest::{merge_with_injection, Manifest};
+use super::manifest::Manifest;
 use super::protocol::{DescribeResult, ExecuteParams, ExecuteResult, Request, Response, ResponseResult, ExecutionContext};
 use super::transport::Transport;
+use crate::extensions::services::ReservedParamsConfig;
 use crate::tools::{Tool, ToolContext};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -69,8 +70,27 @@ impl UniversalToolAdapter {
         // Validate user params (ensure no reserved params leaked in)
         self.manifest.validate_params(&params)?;
 
-        // Merge with injection
-        let merged = merge_with_injection(&self.manifest, params, &context)?;
+        // Merge with injection - resolve reserved params and merge with user params
+        let mut merged = params;
+        if !self.manifest.reserved_parameters.is_empty() {
+            // Convert ExecutionContext to ToolContext for resolution
+            let tool_ctx = crate::tools::AbortSignal::new()
+                .create_context(&context.run_id.clone().unwrap_or_default(), "tool", &self.name)
+                .with_agent_id(&context.agent_id)
+                .with_session_id(&context.session_id)
+                .with_peer_id(context.peer_id.as_deref().unwrap_or(""))
+                .with_workspace(&context.workspace);
+            
+            let resolved = self.manifest.reserved_parameters.resolve(Some(&tool_ctx));
+            
+            // Merge resolved params into user params
+            if let Some(obj) = merged.as_object_mut() {
+                for (name, value) in resolved {
+                    obj.insert(name, value);
+                }
+            }
+        }
+        
         tracing::debug!(
             "UniversalToolAdapter - merged params: {}",
             serde_json::to_string(&merged).unwrap_or_default()
@@ -332,6 +352,7 @@ impl Default for UniversalToolBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extensions::services::ReservedParamsConfig;
     use serde_json::json;
 
     #[test]
@@ -341,7 +362,7 @@ mod tests {
             description: "Test tool".to_string(),
             llm_description: None,
             parameters: json!({"type": "object"}),
-            reserved_parameters: None,
+            reserved_parameters: ReservedParamsConfig::new(),
             protocol: super::super::manifest::ProtocolConfig::default(),
             extra: std::collections::HashMap::new(),
         };
@@ -368,7 +389,7 @@ mod tests {
                     "q": {"type": "string"}
                 }
             }),
-            reserved_parameters: None,
+            reserved_parameters: ReservedParamsConfig::new(),
             protocol: super::super::manifest::ProtocolConfig::default(),
             extra: std::collections::HashMap::new(),
         };

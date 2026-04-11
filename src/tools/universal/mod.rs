@@ -24,10 +24,7 @@ pub mod transport;
 mod tests;
 
 pub use adapter::{UniversalToolAdapter, UniversalToolBuilder};
-pub use manifest::{
-    merge_with_injection, Manifest, ParamSource, ParamSourceLegacy, 
-    ProtocolConfig, ReservedParam, ReservedParamsConfig
-};
+pub use manifest::{Manifest, ParamSource, ProtocolConfig, ReservedParamsConfig};
 pub use protocol::{ErrorObject, ExecutionContext, ExecuteParams, ExecuteResult, Request, Response, ResponseResult, DescribeResult, PROTOCOL_VERSION};
 
 // Re-export Extension Architecture integration (Phase 3)

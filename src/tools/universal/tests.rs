@@ -85,11 +85,8 @@ async fn test_manifest_loading() {
         },
         "reserved_parameters": {
             "session_id": {
-                "source": {
-                    "runtime": {
-                        "field": "session_id"
-                    }
-                }
+                "source": "runtime",
+                "field": "session_id"
             }
         }
     });
@@ -117,46 +114,26 @@ async fn test_parameter_injection() {
                 "query": {"type": "string"}
             }
         }),
-        reserved_parameters: Some({
-            let mut m = std::collections::HashMap::new();
-            m.insert(
-                "session_id".to_string(),
-                ReservedParam {
-                    source: ParamSourceLegacy::Runtime {
-                        field: "session_id".to_string(),
-                    },
-                    description: None,
-                },
-            );
-            m.insert(
-                "agent_id".to_string(),
-                ReservedParam {
-                    source: ParamSourceLegacy::Runtime {
-                        field: "agent_id".to_string(),
-                    },
-                    description: None,
-                },
-            );
-            m
-        }),
+        reserved_parameters: ReservedParamsConfig::new()
+            .with_runtime("session_id", "session_id")
+            .with_runtime("agent_id", "agent_id"),
         protocol: ProtocolConfig::default(),
         extra: std::collections::HashMap::new(),
     };
     
-    let user_params = json!({"query": "hello"});
-    let context = ExecutionContext {
-        session_id: "sess_123".to_string(),
-        agent_id: "agent_456".to_string(),
-        peer_id: None,
-        workspace: "/tmp".to_string(),
-        run_id: None,
-    };
+    // Verify reserved params are configured
+    assert!(manifest.reserved_parameters.contains("session_id"));
+    assert!(manifest.reserved_parameters.contains("agent_id"));
     
-    let merged = merge_with_injection(&manifest, user_params, &context).unwrap();
+    // Verify we can resolve them with a ToolContext
+    let tool_ctx = crate::tools::AbortSignal::new()
+        .create_context("run_1", "tool", "inject_test")
+        .with_session_id("sess_123")
+        .with_agent_id("agent_456");
     
-    assert_eq!(merged["query"], "hello");
-    assert_eq!(merged["session_id"], "sess_123");
-    assert_eq!(merged["agent_id"], "agent_456");
+    let resolved = manifest.reserved_parameters.resolve(Some(&tool_ctx));
+    assert_eq!(resolved.get("session_id"), Some(&json!("sess_123")));
+    assert_eq!(resolved.get("agent_id"), Some(&json!("agent_456")));
 }
 
 #[tokio::test]
@@ -265,7 +242,7 @@ fn test_builder_pattern() {
         description: "Test".to_string(),
         llm_description: None,
         parameters: json!({"type": "object"}),
-        reserved_parameters: None,
+        reserved_parameters: ReservedParamsConfig::new(),
         protocol: ProtocolConfig::default(),
         extra: std::collections::HashMap::new(),
     };
@@ -291,7 +268,7 @@ fn test_tool_trait_implementation() {
                 "q": {"type": "string"}
             }
         }),
-        reserved_parameters: None,
+        reserved_parameters: ReservedParamsConfig::new(),
         protocol: ProtocolConfig::default(),
         extra: std::collections::HashMap::new(),
     };

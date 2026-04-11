@@ -22,6 +22,7 @@ pub mod validation;
 pub use context_resolver::ContextResolver;
 pub use process_transport::{ProcessConfig, ProcessTransport, ProcessTransportBuilder};
 pub use proxy_utils::{execute_with_context_handling, estimate_tool_duration, format_status};
-pub use reserved_params::{ReservedParam, ReservedParamSource, ReservedParams, resolve_all};
+// Reserved params re-exported from extensions::services
+pub use reserved_params::ReservedParamSource;
 pub use schema_filter::filter_reserved_params;
 pub use validation::{validate_no_reserved_params_leak, ValidationError};

@@ -6,23 +6,20 @@
 //!
 //! # Architecture
 //!
-//! ```
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                    EXTENSION SERVICES                           │
-//! ├─────────────────────────────────────────────────────────────────┤
-//! │                                                                 │
-//! │  ReservedParamsService    ToolExecutionService                  │
-//! │  ├── Config parsing       ├── Parameter injection               │
-//! │  ├── Validation           ├── Schema filtering                  │
-//! │  └── Resolution           └── Execution pipeline                │
-//! │                                                                 │
-//! └─────────────────────────────────────────────────────────────────┘
-//!                              │
-//!                              ▼
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                    EXTENSION ADAPTERS                           │
-//! │  (Universal Tool, MCP, etc. - thin wrappers around services)    │
-//! └─────────────────────────────────────────────────────────────────┘
+//! ```text
+//! +--------------------- EXTENSION SERVICES ------------------------+
+//! |                                                                 |
+//! |  ReservedParamsService    ToolExecutionService                  |
+//! |  - Config parsing         - Parameter injection                 |
+//! |  - Validation             - Schema filtering                    |
+//! |  - Resolution             - Execution pipeline                  |
+//! |                                                                 |
+//! +---------------------------+-------------------------------------+
+//!                             |
+//!                             v
+//! +--------------------- EXTENSION ADAPTERS ------------------------+
+//! |  (Universal Tool, MCP, etc. - thin wrappers around services)    |
+//! +-----------------------------------------------------------------+
 //! ```
 
 // Reserved parameters module

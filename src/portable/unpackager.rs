@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
+use crate::extensions::services::ReservedParamsConfig;
 use crate::mcp::config::{McpConfig, McpServerConfig, TransportType};
 use crate::portable::{
     crypto::{decrypt_with_passphrase, deserialize_encrypted},
@@ -666,7 +667,7 @@ impl Unpackager {
             max_restarts: 0,
             init_timeout_secs: 30,
             tool_timeout_secs: 60,
-            reserved_parameters: HashMap::new(),
+            reserved_parameters: ReservedParamsConfig::new(),
             bundle: from_bundle,
             bundled_path: binary_path.clone(),
         }

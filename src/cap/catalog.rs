@@ -8,6 +8,7 @@
 
 use crate::cap::builtin::BuiltInCapabilityRegistry;
 use crate::common::paths::PathResolver;
+use crate::extensions::adapters::parsing;
 use crate::mcp::config::McpConfig;
 use crate::cap::{
     CapabilityCatalog, CapabilityInfo, CapabilitySearchResult,
@@ -164,36 +165,9 @@ impl CapabilityCatalogImpl {
     }
 
     /// Find executable for a tool
+    /// Find executable for a capability (delegates to shared utility)
     async fn find_executable(&self, tool_path: &std::path::Path, tool_name: &str) -> Option<std::path::PathBuf> {
-        // Try common patterns
-        let candidates = vec![
-            tool_path.join(format!("{}.py", tool_name)),
-            tool_path.join(format!("{}.js", tool_name)),
-            tool_path.join(format!("{}.sh", tool_name)),
-            tool_path.join(tool_name),
-        ];
-
-        for candidate in candidates {
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-
-        // Fallback: find any file that's not manifest.json
-        if let Ok(mut entries) = tokio::fs::read_dir(tool_path).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(name) = path.file_name() {
-                        if name != "manifest.json" {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-
-        None
+        parsing::find_executable(tool_path, tool_name).await
     }
 
     /// Load downloaded capabilities from local registry

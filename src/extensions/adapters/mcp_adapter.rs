@@ -580,10 +580,10 @@ impl HookHandler for McpToolExecuteHandler {
             manager.get_server_config(&self.server_name).await
         };
         
-        // Build reserved params config from server config
+        // Get reserved params config from server config
         let reserved_params = server_config
             .as_ref()
-            .map(|c| ReservedParamsConfig::from_mcp_legacy(&c.reserved_parameters))
+            .map(|c| c.reserved_parameters.clone())
             .unwrap_or_default();
         
         // Use basic object schema (MCP doesn't expose full JSON schema for validation)
