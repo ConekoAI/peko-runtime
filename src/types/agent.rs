@@ -258,8 +258,19 @@ impl ToolConfig {
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
-            // Default whitelist: shell and session_status only
-            enabled: vec!["shell".to_string(), "session_status".to_string()],
+            // Default whitelist: all built-in tools enabled
+            enabled: vec![
+                "shell".to_string(),
+                "read_file".to_string(),
+                "write_file".to_string(),
+                "glob".to_string(),
+                "grep".to_string(),
+                "str_replace_file".to_string(),
+                "sessions_list".to_string(),
+                "sessions_history".to_string(),
+                "session_status".to_string(),
+                "cron".to_string(),
+            ],
             skills: Vec::new(),
             http: None,
             custom: None,
@@ -388,26 +399,36 @@ mod tests {
     fn test_tool_config_default_whitelist() {
         let config = ToolConfig::default();
         
-        // Default whitelist should contain shell and session_status
+        // Default whitelist should contain all built-in tools
         assert!(config.enabled.contains(&"shell".to_string()));
+        assert!(config.enabled.contains(&"read_file".to_string()));
+        assert!(config.enabled.contains(&"write_file".to_string()));
         assert!(config.enabled.contains(&"session_status".to_string()));
-        assert_eq!(config.enabled.len(), 2);
+        assert_eq!(config.enabled.len(), 10);
     }
 
     #[test]
     fn test_tool_config_is_tool_enabled() {
         let config = ToolConfig::default();
         
-        // Should be enabled (in whitelist)
+        // All built-in tools should be enabled by default
         assert!(config.is_tool_enabled("shell"));
+        assert!(config.is_tool_enabled("read_file"));
+        assert!(config.is_tool_enabled("write_file"));
+        assert!(config.is_tool_enabled("glob"));
+        assert!(config.is_tool_enabled("grep"));
+        assert!(config.is_tool_enabled("str_replace_file"));
+        assert!(config.is_tool_enabled("sessions_list"));
+        assert!(config.is_tool_enabled("sessions_history"));
         assert!(config.is_tool_enabled("session_status"));
-        assert!(config.is_tool_enabled("SHELL")); // case-insensitive
-        assert!(config.is_tool_enabled("Session_Status")); // case-insensitive
+        assert!(config.is_tool_enabled("cron"));
         
-        // Should NOT be enabled (not in whitelist)
-        assert!(!config.is_tool_enabled("read_file"));
-        assert!(!config.is_tool_enabled("write_file"));
-        assert!(!config.is_tool_enabled("cron"));
+        // Case-insensitive matching
+        assert!(config.is_tool_enabled("SHELL"));
+        assert!(config.is_tool_enabled("Session_Status"));
+        
+        // Unknown tools should not be enabled
+        assert!(!config.is_tool_enabled("unknown_tool"));
     }
 
     #[test]
@@ -454,11 +475,13 @@ mod tests {
     fn test_agent_config_has_default_tools() {
         let config = AgentConfig::default();
         
-        // Should have default tool config with whitelist
+        // Should have default tool config with all built-in tools enabled
         assert!(config.tools.is_some());
         let tools = config.tools.unwrap();
         
         assert!(tools.enabled.contains(&"shell".to_string()));
+        assert!(tools.enabled.contains(&"read_file".to_string()));
+        assert!(tools.enabled.contains(&"write_file".to_string()));
         assert!(tools.enabled.contains(&"session_status".to_string()));
     }
 
@@ -468,9 +491,10 @@ mod tests {
         let config = ToolConfig::default();
         let toml = toml::to_string(&config).unwrap();
         
-        // Should contain the enabled list
+        // Should contain the enabled list with all tools
         assert!(toml.contains("enabled"));
         assert!(toml.contains("shell"));
+        assert!(toml.contains("read_file"));
         assert!(toml.contains("session_status"));
     }
 }

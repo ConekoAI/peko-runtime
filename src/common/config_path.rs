@@ -135,9 +135,14 @@ mod tests {
     fn test_get_array() {
         let config = AgentConfig::default();
         let value = get_config_value(&config, "tools.enabled").unwrap();
+        // Default includes all built-in tools
         assert_eq!(
             value,
-            serde_json::json!(["shell", "session_status"])
+            serde_json::json!([
+                "shell", "read_file", "write_file", "glob", "grep",
+                "str_replace_file", "sessions_list", "sessions_history",
+                "session_status", "cron"
+            ])
         );
     }
 
