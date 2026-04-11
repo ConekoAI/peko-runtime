@@ -1,8 +1,9 @@
-# ADR-021: Dynamic Tool and System Prompt Updates
+# ADR-019: Dynamic Tool and System Prompt Updates
 
 **Status**: Proposed  
 **Date**: 2026-04-11  
 **Author**: Kimi Code CLI  
+**Depends On**: ADR-018 (ExtensionCore Tool Execution Consolidation)
 
 ## Context
 
@@ -48,6 +49,15 @@ Session Start
 | Skills updated | No effect | New skills injected |
 
 ## Proposed Solution
+
+### Prerequisites
+
+**THIS ADR DEPENDS ON ADR-018 BEING COMPLETED FIRST.**
+
+Once ADR-018 is complete, ALL tools route through ExtensionCore, enabling:
+- Single permission check point
+- Unified tool registration lifecycle
+- Consistent dynamic updates
 
 ### Architecture (Dynamic)
 
@@ -145,52 +155,45 @@ loop {
 - ✅ OpenAI/Anthropic: Accept dynamic tool list per call
 - ✅ Legacy providers: Tool list embedded in prompt (rebuilt anyway)
 
-#### 3. Tool Permission Check at Execution Layer
+#### 3. Tool Permission Check at ExtensionCore Layer
 
-**Location**: `src/engine/tool_executor.rs:117`
+**Location**: `src/extensions/core.rs` - Hook dispatch
+
+After ADR-018, ALL tools go through ExtensionCore, enabling centralized permission checking:
 
 ```rust
-pub async fn execute_with_context(
-    &self,
-    tool: Arc<dyn Tool>,
-    params: serde_json::Value,
-    context: &ToolExecutionContext,
-) -> Result<serde_json::Value> {
-    // ADD: Permission check against current config
-    if !self.is_tool_enabled(&tool.name(), context).await {
-        return Err(anyhow::anyhow!(
-            "Tool '{}' is currently disabled. \
-             Enable it in agent config to use it.",
-            tool.name()
-        ));
+impl ExtensionCore {
+    pub async fn invoke_hook(&self, hook_point: HookPoint) -> HookResult {
+        // ADD: Permission check for ALL tool executions
+        if let HookPoint::ToolExecute { tool_name, context, .. } = &hook_point {
+            if !self.is_tool_enabled(tool_name, context).await {
+                return HookResult::Error(format!(
+                    "Tool '{}' is currently disabled. \
+                     Enable it in agent config to use it.",
+                    tool_name
+                ));
+            }
+        }
+        
+        // ... existing hook dispatch
     }
-    
-    // ... existing execution logic
-}
-
-async fn is_tool_enabled(&self, tool_name: &str, context: &ToolExecutionContext) -> bool {
-    // Load current ToolConfig and check whitelist
-    let config = load_tool_config_for_session(&context.session_id).await;
-    config.is_tool_enabled(tool_name)
 }
 ```
 
-**Alternative**: Use Extension Framework hook
-```rust
-// HookPoint::ToolExecute with wildcard pattern
-// Could enable complex permission rules (time-based, rate-limited, etc.)
-```
-
-**Recommendation**: Direct check in executor (simpler, no hook overhead for security)
+**Why ExtensionCore layer (not ToolExecutor)**:
+- After ADR-018, ALL tools route through ExtensionCore
+- Single point of enforcement for all tool types
+- Hook-based permissions can be extended (rate limiting, audit, etc.)
 
 ## Implementation Phases
 
 ### Phase 1: Tool Permission Check (Safety Net)
 **Priority**: High  
 **Risk**: Low  
-**Effort**: ~2 hours
+**Effort**: ~2 hours  
+**Depends On**: ADR-018
 
-- Add `is_tool_enabled()` check in `ToolExecutor::execute_with_context()`
+- Add `is_tool_enabled()` check in `ExtensionCore::invoke_hook()` for `HookPoint::ToolExecute`
 - Load current `ToolConfig` at execution time
 - Return clear error message if disabled
 
@@ -202,7 +205,8 @@ async fn is_tool_enabled(&self, tool_name: &str, context: &ToolExecutionContext)
 ### Phase 2: Dynamic Tool Definitions
 **Priority**: Medium  
 **Risk**: Low  
-**Effort**: ~4 hours
+**Effort**: ~4 hours  
+**Depends On**: Phase 1
 
 - Move `build_tool_definitions()` inside loop iteration
 - Ensure fresh tool list passed to provider each call
@@ -216,7 +220,8 @@ async fn is_tool_enabled(&self, tool_name: &str, context: &ToolExecutionContext)
 ### Phase 3: Dynamic System Prompt
 **Priority**: Medium  
 **Risk**: Medium  
-**Effort**: ~8 hours
+**Effort**: ~8 hours  
+**Depends On**: Phase 2
 
 - Create `build_system_prompt_fresh()` async method
 - Rebuild prompt each iteration from current state
@@ -231,7 +236,8 @@ async fn is_tool_enabled(&self, tool_name: &str, context: &ToolExecutionContext)
 ### Phase 4: Optimization (Future)
 **Priority**: Low  
 **Risk**: Low  
-**Effort**: ~4 hours
+**Effort**: ~4 hours  
+**Depends On**: Phase 3
 
 - Cache prompt sections that rarely change
 - Invalidate cache on file/config changes
@@ -297,25 +303,28 @@ async fn is_tool_enabled(&self, tool_name: &str, context: &ToolExecutionContext)
 
 ## Decision
 
-**Proceed with implementation** using the three-phase approach outlined above.
+**Proceed with implementation** using the phased approach outlined above, **AFTER ADR-018 is completed**.
 
 **Key Principles**:
-1. Safety first: Permission check at execution layer (Phase 1)
-2. Gradual rollout: Each phase independently valuable
-3. Backward compatible: Changes are internal, no API changes
-4. Measurable: Each phase has clear acceptance criteria
+1. Architectural foundation first: ADR-018 consolidation required
+2. Safety first: Permission check at ExtensionCore layer (Phase 1)
+3. Gradual rollout: Each phase independently valuable
+4. Backward compatible: Changes are internal, no API changes
+5. Measurable: Each phase has clear acceptance criteria
 
 ## Progress Tracking
 
 | Phase | Status | PR | Notes |
 |-------|--------|-----|-------|
-| Phase 1: Permission Check | 🔲 Not Started | - | - |
+| ADR-018: ExtensionCore Consolidation | 🔲 Blocked | - | Prerequisite |
+| Phase 1: Permission Check | 🔲 Blocked | - | Waiting on ADR-018 |
 | Phase 2: Dynamic Tool Definitions | 🔲 Not Started | - | - |
 | Phase 3: Dynamic System Prompt | 🔲 Not Started | - | - |
 | Phase 4: Optimization | 🔲 Not Started | - | Future work |
 
 ## References
 
+- ADR-018 (Prerequisite): `docs/architecture/adr/ADR-018-extensioncore-tool-execution-consolidation.md`
 - Current static implementation: `src/engine/loop_v4.rs:71-88`
 - Tool execution: `src/engine/tool_executor.rs:117`
 - System prompt builder: `src/prompt/builder.rs`
