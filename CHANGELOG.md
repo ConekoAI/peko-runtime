@@ -2,6 +2,49 @@
 
 All notable changes to Pekobot.
 
+## [0.2.0] - Documentation Reorganization - 2026-04-11
+
+Major documentation update to reflect the Unified Extension Architecture (ADR-017) implementation.
+
+### Documentation Restructure ✅
+
+**New Structure:**
+- `docs/executive/` - Executive summaries and overviews
+- `docs/architecture/` - Technical architecture (OVERVIEW.md, EXTENSION_SYSTEM.md, ADRs)
+- `docs/planning/migration/` - Consolidated migration guides
+- `docs/archive/` - Historical and superseded documents
+
+**Key Updates:**
+- **EXECUTIVE_SUMMARY.md** - Updated to v2.0, now reflects unified extension architecture with 22 hook points
+- **API_SURFACE.md** - Updated to v2.0, documents new Extension Core and Extension Manager APIs
+- **Architecture Overview** - New document (v5.0) documenting post-ADR-017 architecture
+- **Extension System Guide** - New comprehensive guide for the unified extension system
+- **Migration Guide** - Consolidated migration documentation
+
+### Archived Documents ✅
+
+Moved to `docs/archive/`:
+- UNIFIED_ARCHITECTURE_SPEC.md (v4.0, superseded by new architecture docs)
+- ASYNC_INFRASTRUCTURE_COMPARISON.md (historical analysis)
+- LEGACY_CODE_AUDIT.md
+- PHASE1_ROADMAP.md (retired)
+
+### API Changes
+
+**New APIs (2.0):**
+- `ExtensionCore` - Central hook registry with 22 hook points
+- `ExtensionManager` - Unified extension lifecycle management
+- `HookHandler` trait - Extension implementation interface
+- `ExtensionTypeAdapter` trait - Type-specific extension adapters
+
+**Removed APIs (2.0):**
+- `MessageService` (replaced by `StatelessAgentService`)
+- `AgentManager` (replaced by `StatelessAgentManager`)
+- `SessionResolver` (merged into `SessionManager`)
+- `AgentCreationService` (merged into `AgentService`)
+
+---
+
 ## [0.1.0] - Phase 1 - 2026-03-18
 
 Phase 1 establishes the **Core Runtime** including agent image/instance model, daemon with HTTP API, session management, built-in tools, team composition, and event bus.

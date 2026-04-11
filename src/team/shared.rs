@@ -215,7 +215,7 @@ impl SharedServicesFabric {
 
     /// Get vector memory namespace for an agent instance
     ///
-    /// Per UNIFIED_ARCHITECTURE_SPEC §6.2:
+    /// Per DATA_MODEL.md §2.4 (namespacing):
     /// - Private namespace: `{instance_id}`
     /// - Agent-type namespace: `{agent_name}`
     /// - Team shared namespace: `_team_shared`

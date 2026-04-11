@@ -1,32 +1,232 @@
 # Public API Surface Documentation
 
-> Generated during Phase 0 of refactoring - establishes baseline for compatibility
+> **Version:** 2.0 (Post-ADR-017)  
+> **Last Updated:** 2026-04-11  
 
-## Module: `agent`
+This document defines the public API surface for Pekobot, including the new Unified Extension Architecture (ADR-017) APIs.
 
-### Public Types (Affected by Refactoring)
+---
 
-#### `agent::manager` (DEPRECATED - Phase 1)
+## Table of Contents
+
+1. [Module: `extensions`](#module-extensions) - NEW: Unified Extension System
+2. [Module: `agent`](#module-agent)
+3. [Module: `providers`](#module-providers)
+4. [Module: `common::services`](#module-commonservices)
+5. [Module: `tools::factory`](#module-toolsfactory)
+6. [Module: `session::context`](#module-sessioncontext)
+7. [Compatibility Notes](#compatibility-notes)
+
+---
+
+## Module: `extensions`
+
+**Status:** ACTIVE (New in 2.0)  
+**ADR:** ADR-017: Unified Extension Architecture
+
+The extensions module provides a unified system for all agent capabilities (tools, skills, MCP servers, channels, gateways) through 22 hook points.
+
+### `extensions::core`
+
+#### `ExtensionCore`
+
+Central registry for all extension hooks.
+
 ```rust
-pub struct AgentManager { ... }
-impl AgentManager {
-    pub async fn new() -> Result<(Self, mpsc::Receiver<ManagerEvent>)>
-    pub async fn with_data_dir(data_dir: PathBuf) -> Result<(Self, mpsc::Receiver<ManagerEvent>)>
-    pub async fn spawn(&self, config: AgentConfig) -> Result<AgentHandle>
-    pub async fn stop(&self, did: &str) -> Result<()>
-    pub async fn get(&self, did: &str) -> Option<AgentHandle>
-    pub async fn get_by_name(&self, name: &str) -> Option<AgentHandle>
-    pub async fn list_agents(&self) -> Vec<AgentInfo>
-    pub async fn shutdown(&self) -> Result<()>
-    pub fn create_all_tools(&self, agent_did: &str) -> Vec<Arc<dyn Tool>>
-    pub async fn create_all_tools_async(&self, agent_did: &str) -> Result<Vec<Arc<dyn Tool>>>
-    // ... 4 more tool creation methods
+pub struct ExtensionCore { ... }
+
+impl ExtensionCore {
+    /// Register a hook handler
+    pub async fn register_hook(
+        &self,
+        point: HookPoint,
+        handler: Arc<dyn HookHandler>,
+        extension_id: &ExtensionId,
+    ) -> Result<HookId>
+    
+    /// Unregister a hook
+    pub async fn unregister_hook(&self, hook_id: &HookId) -> Result<()>
+    
+    /// Enable/disable hooks
+    pub async fn enable_hook(&self, hook_id: &HookId) -> Result<()>
+    pub async fn disable_hook(&self, hook_id: &HookId) -> Result<()>
+    
+    /// Invoke hooks at a specific point
+    pub async fn invoke_hooks(
+        &self,
+        point: HookPoint,
+        context: HookContext,
+    ) -> Result<Vec<HookResult>>
+    
+    /// List all registered hooks
+    pub async fn list_hooks(&self) -> Vec<HookInfo>
+    
+    /// Get hooks for a specific extension
+    pub async fn get_hooks_for_extension(&self, ext_id: &ExtensionId) -> Vec<HookInfo>
 }
 ```
 
-**Migration Path**: Use `StatelessAgentManager` instead
+#### `HookPoint`
+
+All 22 extension hook points:
+
+```rust
+pub enum HookPoint {
+    // Prompt lifecycle
+    PromptSystemSection { section: String, priority: i32 },
+    PromptPreProcess,
+    PromptPostProcess,
+    
+    // Tool lifecycle
+    ToolRegister,
+    ToolExecute { tool_name: String },
+    ToolExecuteAsync { tool_name: String },
+    ToolCheckStatus { tool_name: String },
+    ToolCancel { tool_name: String },
+    ToolResultTransform,
+    
+    // Session lifecycle
+    SessionStateChange,
+    SessionCompaction,
+    SessionContextBuild,
+    
+    // I/O lifecycle
+    ChannelInput,
+    ChannelOutput,
+    MessagePreSend,
+    MessagePostReceive,
+    
+    // Event lifecycle
+    EventSubscribe { topic_pattern: String },
+    EventEmit,
+    
+    // Agent lifecycle
+    AgentInit,
+    AgentShutdown,
+    AgentIteration { iteration: usize },
+}
+```
+
+#### `HookHandler` Trait
+
+```rust
+#[async_trait]
+pub trait HookHandler: Send + Sync + std::fmt::Debug {
+    async fn handle(&self, ctx: HookContext) -> HookResult;
+    fn hook_point(&self) -> HookPoint;
+    fn priority(&self) -> i32 { 100 }
+    fn name(&self) -> String;
+}
+```
+
+---
+
+### `extensions::manager`
+
+#### `ExtensionManager`
+
+Unified lifecycle management for all extension types.
+
+```rust
+pub struct ExtensionManager { ... }
+
+impl ExtensionManager {
+    /// Create new manager with discovery
+    pub async fn new() -> Result<Self>
+    
+    /// Install extension from path
+    pub async fn install(&mut self, path: &Path) -> Result<ExtensionId>
+    
+    /// List all extensions
+    pub async fn list_extensions(&self, filter: ExtensionFilter) -> Vec<ExtensionInfo>
+    
+    /// Enable/disable extensions
+    pub async fn enable(&mut self, id: &ExtensionId) -> Result<()>
+    pub async fn disable(&mut self, id: &ExtensionId) -> Result<()>
+    
+    /// Uninstall extension
+    pub async fn uninstall(&mut self, id: &ExtensionId) -> Result<()>
+    
+    /// Get extension info
+    pub async fn get_info(&self, id: &ExtensionId) -> Result<ExtensionInfo>
+    
+    /// Validate extension at path
+    pub async fn validate(&self, path: &Path) -> Result<ValidationReport>
+    
+    /// Debug: show resolved hooks
+    pub async fn debug_extension(&self, id: &ExtensionId) -> Result<DebugInfo>
+    
+    /// Create extension bundle
+    pub async fn bundle_create(
+        &self,
+        name: &str,
+        extension_ids: Vec<ExtensionId>,
+    ) -> Result<PathBuf>
+    
+    /// Install bundle
+    pub async fn bundle_install(&mut self, path: &Path) -> Result<Vec<ExtensionId>>
+}
+```
+
+#### ExtensionFilter
+
+```rust
+pub struct ExtensionFilter {
+    pub enabled_only: bool,
+    pub extension_type: Option<ExtensionType>,
+    pub search: Option<String>,
+}
+
+pub enum ExtensionType {
+    Skill,
+    Mcp,
+    UniversalTool,
+    Channel,
+    Hook,
+    Gateway,
+    General,
+    Builtin,
+}
+```
+
+---
+
+### `extensions::adapters`
+
+#### `ExtensionTypeAdapter` Trait
+
+```rust
+#[async_trait]
+pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
+    fn extension_type(&self) -> &'static str;
+    fn manifest_format(&self) -> ManifestFormat;
+    fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding>;
+    async fn initialize(&self, manifest: &ExtensionManifest) -> Result<ExtensionState>;
+    async fn shutdown(&self, state: ExtensionState) -> Result<()>;
+    async fn is_healthy(&self, state: &ExtensionState) -> bool;
+}
+```
+
+#### Built-in Adapters
+
+| Adapter | Type | Purpose |
+|---------|------|---------|
+| `SkillAdapter` | `skill` | SKILL.md-based capabilities |
+| `McpAdapter` | `mcp` | MCP server integration |
+| `UniversalToolAdapter` | `universal-tool` | Executable tools |
+| `BuiltinToolAdapter` | `builtin` | Core built-in tools |
+| `ChannelAdapter` | `channel` | I/O channels |
+| `GatewayAdapter` | `gateway` | Platform gateways |
+| `GeneralAdapter` | `general` | Multi-hook extensions |
+
+---
+
+## Module: `agent`
+
+### Public Types
 
 #### `agent::stateless_manager` (ACTIVE)
+
 ```rust
 pub struct StatelessAgentManager { ... }
 pub enum StatelessManagerEvent { ... }
@@ -42,35 +242,19 @@ impl StatelessAgentManager {
 }
 ```
 
+#### `agent::manager` (REMOVED in 2.0)
+
+**Status:** ❌ REMOVED  
+**Replaced by:** `StatelessAgentManager`
+
 ---
 
 ## Module: `providers`
 
-### Public Types (Affected by Refactoring)
+### Public Types
 
-#### `providers::kimi` (TO BE CONSOLIDATED - Phase 2)
-```rust
-pub struct KimiProvider { ... }
-impl KimiProvider {
-    pub fn from_env() -> Result<Self>
-    pub fn new(api_key: String) -> Self
-    pub fn with_model(self, model: &str) -> Self
-}
-impl Provider for KimiProvider { ... }
-```
+#### `providers::openai_compatible` (ACTIVE)
 
-**Migration Path**: Will become thin wrapper around `OpenAICompatibleBase`
-
-#### `providers::kimi_code` (DEPRECATED - Phase 3)
-```rust
-pub struct KimiCodeProvider { ... }
-pub struct KimiCodeConfig { ... }
-impl KimiCodeProvider { ... }
-```
-
-**Migration Path**: Use `AnthropicProvider` or `MoonshotProvider` instead
-
-#### `providers::openai_compatible` (ENHANCED - Phase 2)
 ```rust
 pub struct OpenAICompatibleProvider { ... }
 pub struct OpenAICompatibleConfig { ... }
@@ -82,39 +266,31 @@ impl OpenAICompatibleConfig {
 }
 ```
 
-**Change**: Will become base class for all OpenAI-compatible providers
+#### `providers::kimi` (ACTIVE)
+
+```rust
+pub struct KimiProvider { ... }
+
+impl KimiProvider {
+    pub fn from_env() -> Result<Self>
+    pub fn new(api_key: String) -> Self
+    pub fn with_model(self, model: &str) -> Self
+}
+```
+
+#### `providers::kimi_code` (REMOVED in 2.0)
+
+**Status:** ❌ REMOVED  
+**Replaced by:** `AnthropicProvider` or `KimiProvider`
 
 ---
 
 ## Module: `common::services`
 
-### Public Types (Affected by Refactoring)
+### Public Types
 
-#### `common::services::agent_creation_service` (TO BE REMOVED - Phase 4)
-```rust
-pub struct AgentCreationService { ... }
-pub struct AgentCreationRequest { ... }
-pub enum AgentSource { ... }
-pub struct AgentCreationResult { ... }
+#### `common::services::agent_service` (ACTIVE)
 
-impl AgentCreationService {
-    pub fn new(config_service: Arc<AgentConfigService>, path_resolver: PathResolver, team_manager: Arc<TeamManager>) -> Self
-    pub async fn create(&self, request: AgentCreationRequest, auth_resolver: &dyn AuthResolver) -> Result<AgentCreationResult>
-}
-```
-
-**Migration Path**: Use `AgentService::create_agent()` instead
-
-#### `common::services::agent_config_builder` (TO BE REMOVED - Phase 4)
-```rust
-pub struct AgentConfigBuilder { ... }
-pub fn build_default_config(name: &str, provider: &str, model: Option<String>, workspace: Option<PathBuf>) -> AgentConfig
-pub async fn build_config_with_auth(...) -> Result<AgentConfig>
-```
-
-**Migration Path**: Use `AgentService` methods directly
-
-#### `common::services::agent_service` (ENHANCED - Phase 4)
 ```rust
 pub struct AgentService { ... }
 
@@ -133,9 +309,8 @@ impl AgentService {
 }
 ```
 
-**Change**: Will absorb functionality from `AgentCreationService`
+#### `common::services::agent_config_service` (ACTIVE)
 
-#### `common::services::agent_config_service` (REFINED - Phase 4)
 ```rust
 pub struct AgentConfigService { ... }
 pub struct AgentConfigEntry { ... }
@@ -151,29 +326,31 @@ impl AgentConfigService {
 }
 ```
 
-**Change**: Will be reduced to filesystem-only operations
+#### `common::services::agent_creation_service` (REMOVED in 2.0)
+
+**Status:** ❌ REMOVED  
+**Replaced by:** `AgentService::create_agent()`
+
+#### `common::services::agent_config_builder` (REMOVED in 2.0)
+
+**Status:** ❌ REMOVED  
+**Replaced by:** `AgentService` methods directly
+
+#### `common::services::message_service` (REMOVED in 2.0)
+
+**Status:** ❌ REMOVED in ADR-016  
+**Replaced by:** `StatelessAgentService`
 
 ---
 
 ## Module: `tools::factory`
 
-### Public Types (Affected by Refactoring)
+### Public Types
 
-#### `tools::factory::ToolFactory` (SIMPLIFIED - Phase 5)
+#### `tools::factory::ToolFactory`
 
-**Current (6 methods)**:
-```rust
-impl ToolFactory {
-    pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult
-    pub async fn create_tools_async(config: &ToolFactoryConfig) -> Result<ToolCreationResult>
-    pub fn create_minimal_tools(workspace_dir: PathBuf, disabled_tools: Vec<String>) -> ToolCreationResult
-    pub fn create_coding_tools(workspace_dir: PathBuf, disabled_tools: Vec<String>) -> ToolCreationResult
-    pub fn create_full_tools(workspace_dir: PathBuf, disabled_tools: Vec<String>) -> ToolCreationResult
-    pub async fn create_full_tools_async(workspace_dir: PathBuf, disabled_tools: Vec<String>) -> Result<ToolCreationResult>
-}
-```
+**Status:** Simplified in 2.0
 
-**Target (2 methods + configuration)**:
 ```rust
 impl ToolFactory {
     pub fn create_tools(config: &ToolFactoryConfig) -> ToolCreationResult
@@ -187,26 +364,32 @@ impl ToolFactoryConfig {
 }
 ```
 
+**Note:** Convenience methods `create_minimal_tools`, `create_coding_tools`, `create_full_tools` are deprecated. Use `ToolFactoryConfig` constructors instead.
+
 ---
 
-## Module: `session::context` & `agent::context`
+## Module: `session::context`
 
-### Public Types (Affected by Refactoring)
+### Public Types
 
-#### `session::context::SessionContext` (TO BE RENAMED - Phase 6)
+#### `session::context::ExecutionContext`
+
+**Status:** ACTIVE (Renamed from SessionContext in 2.0)
+
 ```rust
-pub struct SessionContext {
+pub struct ExecutionContext {
     pub hybrid: HybridSession,
     pub channel_type: Option<ChannelType>,
     pub is_subagent: bool,
 }
 ```
 
-**Migration Path**: Will be renamed to `ExecutionContext`
+#### `session::key::SessionKeyContext`
 
-#### `session::key::SessionContext` (TO BE RENAMED - Phase 6)
+**Status:** ACTIVE (Renamed from SessionContext in 2.0)
+
 ```rust
-pub struct SessionContext {  // Will become SessionKeyContext
+pub struct SessionKeyContext {
     pub agent: String,
     pub team: String,
     pub session_type: SessionType,
@@ -214,85 +397,93 @@ pub struct SessionContext {  // Will become SessionKeyContext
 }
 ```
 
-**Migration Path**: Rename to `SessionKeyContext`
+#### `agent::context::AgentContext` (REMOVED in 2.0)
 
-#### `agent::context::AgentContext` (DEPRECATED - Phase 6)
-```rust
-pub struct AgentContext { ... }
-```
-
-**Migration Path**: Use `session::context::ExecutionContext` instead
-
----
-
-## Call Site Inventory
-
-### Files using `AgentManager` (Phase 1)
-```bash
-# To find:
-grep -r "AgentManager" --include="*.rs" src/ | grep -v "StatelessAgentManager" | grep -v "mod.rs"
-```
-
-### Files using `KimiProvider` (Phase 2)
-```bash
-# To find:
-grep -r "KimiProvider" --include="*.rs" src/
-```
-
-### Files using `AgentCreationService` (Phase 4)
-```bash
-# To find:
-grep -r "AgentCreationService" --include="*.rs" src/
-```
-
-### Files using convenience tool methods (Phase 5)
-```bash
-# To find:
-grep -r "create_minimal_tools\|create_coding_tools\|create_full_tools" --include="*.rs" src/
-```
+**Status:** ❌ REMOVED  
+**Replaced by:** `ExecutionContext`
 
 ---
 
 ## Compatibility Notes
 
-### Breaking Changes
-1. **Phase 1**: `AgentManager` removal (already deprecated in comments)
-2. **Phase 3**: `KimiCodeProvider` removal
-3. **Phase 4**: `AgentCreationService` removal
-4. **Phase 4**: `AgentConfigBuilder` removal
-5. **Phase 6**: `AgentContext` removal
+### Breaking Changes (2.0)
 
-### Non-Breaking Changes
-1. **Phase 2**: `KimiProvider` becomes thin wrapper (same API)
-2. **Phase 4**: `AgentService` gains new methods (backward compatible)
-3. **Phase 5**: Convenience methods deprecated but still available
-4. **Phase 6**: Context types get type aliases for backward compatibility
+| Component | Status | Replacement |
+|-----------|--------|-------------|
+| `AgentManager` | ❌ Removed | `StatelessAgentManager` |
+| `MessageService` | ❌ Removed | `StatelessAgentService` |
+| `AgentCreationService` | ❌ Removed | `AgentService::create_agent()` |
+| `AgentConfigBuilder` | ❌ Removed | `AgentService` methods |
+| `SessionResolver` | ❌ Removed | `SessionManager::resolve_session()` |
+| `AgentContext` | ❌ Removed | `ExecutionContext` |
+| `KimiCodeProvider` | ❌ Removed | `AnthropicProvider` or `KimiProvider` |
+
+### New APIs (2.0)
+
+| Component | Status | Purpose |
+|-----------|--------|---------|
+| `ExtensionCore` | ✅ New | Central hook registry |
+| `ExtensionManager` | ✅ New | Extension lifecycle |
+| `HookPoint` (22 variants) | ✅ New | Extension hook points |
+| `HookHandler` trait | ✅ New | Hook implementation |
+| `ExtensionTypeAdapter` trait | ✅ New | Extension type implementations |
+
+### Type Aliases for Backward Compatibility
+
+```rust
+// SessionContext → ExecutionContext
+pub type SessionContext = ExecutionContext;
+
+// SessionContext (key module) → SessionKeyContext  
+pub type SessionContext = SessionKeyContext;
+```
 
 ---
 
-## Test Coverage
+## Test Coverage Requirements
 
 ### Critical Paths
-The following operations must be tested after each phase:
 
-1. **Agent Lifecycle**
+The following operations must be tested:
+
+1. **Extension Lifecycle**
+   - Register extension
+   - Enable/disable hooks
+   - Invoke hooks
+   - Unregister extension
+
+2. **Agent Lifecycle**
    - Create agent
    - Get agent info
    - List agents
    - Delete agent
 
-2. **Provider Operations**
+3. **Provider Operations**
    - Chat with tools
    - Stream responses
    - Token usage tracking
 
-3. **Session Operations**
+4. **Session Operations**
    - Create session
    - Add messages
    - Branch session
    - Delete session
 
-4. **Tool Operations**
-   - Create tools
-   - Execute filesystem tool
-   - Execute process tool
+5. **Tool Operations**
+   - Register tools via ExtensionCore
+   - Execute built-in tools
+   - Execute universal tools
+   - Execute MCP tools
+
+---
+
+## Related Documentation
+
+- [Architecture Overview](docs/architecture/OVERVIEW.md)
+- [Extension System](docs/architecture/EXTENSION_SYSTEM.md)
+- [ADR-017: Unified Extension Architecture](docs/architecture/adr/ADR-017.md)
+- [Data Model](DATA_MODEL.md)
+
+---
+
+*Version 2.0 · Post-ADR-017 · 2026-04-11*

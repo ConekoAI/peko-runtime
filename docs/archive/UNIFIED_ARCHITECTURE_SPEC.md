@@ -1,10 +1,21 @@
 # Pekobot — Unified Architecture Specification
 
-**Version:** 4.0
-**Date:** 2026-03-16
-**Status:** Draft
+> ⚠️ **DEPRECATED: This document has been superseded by ADR-017 and the new architecture documentation.**
+> 
+> **Version:** 4.0 (Superseded)  
+> **Date:** 2026-03-16  
+> **Status:** Archived (Pre-ADR-017)  
+> 
+> **Current Documentation:**
+> - [Architecture Overview](../architecture/OVERVIEW.md) - Post-ADR-017 architecture
+> - [Extension System](../architecture/EXTENSION_SYSTEM.md) - Unified extension architecture
+> - [ADR-017](../architecture/adr/ADR-017.md) - Unified Extension Architecture ADR
+> 
+> ---
+> 
+> **Historical Note:** This document describes the architecture before the Unified Extension Architecture (ADR-017) was implemented. It predates the unified extension system with 22 hook points. The core concepts (image/instance model, stateless execution) remain valid, but the extension system described in Section 8 has been completely replaced by the unified hook-based architecture.
 
-Pekobot is a filesystem-first runtime for AI agents — analogous to Docker, but for autonomous AI processes. This document is the single authoritative reference for Pekobot's architecture, covering the agent model, runtime, daemon, CLI, and the two planned upper layers: the Control Plane and the Capability Ecosystem.
+Pekobot is a filesystem-first runtime for AI agents — analogous to Docker, but for autonomous AI processes. This document was the authoritative reference for Pekobot's architecture before ADR-017.
 
 ---
 

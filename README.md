@@ -50,6 +50,59 @@ Pekobot is a Rust-based agent runtime that supports local multi-agent orchestrat
 - ✅ **Portable Agents** — Export/import agents as `.agent` packages
 - ✅ **Coneko Adapter** — Optional network integration
 
+## Unified Extension Architecture (New in 2.0)
+
+Pekobot 2.0 introduces a **Unified Extension Architecture** where all capabilities—tools, skills, MCP servers, channels, and gateways—are implemented through a single, consistent hook-based system.
+
+### Extension Types
+
+| Extension | Type | Purpose |
+|-----------|------|---------|
+| **Skills** | `SKILL.md` | Documentation-driven agent capabilities |
+| **MCP Servers** | `config.json` | External tool server integration |
+| **Universal Tools** | `manifest.json` | Executable command-line tools |
+| **Built-in Tools** | Native code | Core runtime tools |
+| **Channels** | `CHANNEL.toml` | I/O adapters (CLI, HTTP, etc.) |
+| **Gateways** | `GATEWAY.toml` | Platform integrations (Discord, Slack) |
+| **General Extensions** | `extension.yaml` | Multi-hook custom extensions |
+
+### Unified CLI
+
+All extensions are managed through a single interface:
+
+```bash
+# Install any extension type (auto-detected)
+pekobot ext install ./my-skill
+pekobot ext install ./mcp-server.json
+pekobot ext install ./discord-gateway
+
+# List all extensions
+pekobot ext list
+# ID           TYPE      STATUS   HOOKS
+# docker       skill     enabled  prompt:skills
+# filesystem   mcp       enabled  prompt:tools, tool:*
+# discord      gateway   enabled  channel:*, event:*
+
+# Enable/disable
+pekobot ext enable docker
+pekobot ext disable docker
+```
+
+### The 22 Hook Points
+
+Extensions hook into the agentic loop at 22 different points:
+
+- **Prompt Hooks**: `PromptSystemSection`, `PromptPreProcess`, `PromptPostProcess`
+- **Tool Hooks**: `ToolRegister`, `ToolExecute`, `ToolExecuteAsync`, `ToolCheckStatus`, `ToolCancel`
+- **Session Hooks**: `SessionStateChange`, `SessionCompaction`, `SessionContextBuild`
+- **I/O Hooks**: `ChannelInput`, `ChannelOutput`, `MessagePreSend`, `MessagePostReceive`
+- **Event Hooks**: `EventSubscribe`, `EventEmit`
+- **Lifecycle Hooks**: `AgentInit`, `AgentShutdown`, `AgentIteration`
+
+Learn more: [Extension System Documentation](docs/architecture/EXTENSION_SYSTEM.md)
+
+---
+
 ## Tool Architecture
 
 Pekobot uses a **minimal core + on-demand tools** architecture:
@@ -458,19 +511,39 @@ cargo run --example http_tool
 
 ## Architecture
 
+### Unified Extension Architecture (Post-ADR-017)
+
 ```
 pekobot/
-├── agent/        # Agent management and orchestration
-├── a2a/          # A2A Protocol implementation
-├── channels/     # Communication channels (CLI, HTTP)
-├── coneko/       # Optional Coneko network adapter
-├── config/       # TOML/JSON configuration
-├── identity/     # DID identity and ed25519 keys
-├── memory/       # SQLite persistence
-├── providers/    # LLM provider integrations
-├── tools/        # Agent tools (HTTP, etc.)
-└── types/        # Core type definitions
+├── extensions/           # Unified extension system
+│   ├── core/            # ExtensionCore - 22 hook points
+│   ├── adapters/        # Type-specific adapters
+│   │   ├── skill_adapter.rs
+│   │   ├── mcp_adapter.rs
+│   │   ├── universal_tool_adapter.rs
+│   │   ├── builtin_tool_adapter.rs
+│   │   ├── channel_adapter.rs
+│   │   ├── gateway_adapter.rs
+│   │   └── general_adapter.rs
+│   └── manager/         # ExtensionManager - lifecycle
+├── agent/               # Agent management and orchestration
+├── a2a/                 # A2A Protocol implementation
+├── channels/            # Communication channels (CLI, HTTP)
+├── coneko/              # Optional Coneko network adapter
+├── config/              # TOML/JSON configuration
+├── identity/            # DID identity and ed25519 keys
+├── memory/              # SQLite persistence
+├── providers/           # LLM provider integrations
+├── tools/               # Built-in tools
+└── types/               # Core type definitions
 ```
+
+### Key Architectural Decisions
+
+- **Stateless Execution**: Agents cold-start on every request for reproducibility
+- **Unified Extensions**: Single architecture for all capabilities (tools, skills, MCP, etc.)
+- **Hook-Based Registration**: 22 extension points for maximum composability
+- **Filesystem-First**: All state stored on disk for easy backup and migration
 
 ## Project Status
 
@@ -484,7 +557,8 @@ pekobot/
 | 6 | ✅ | Channels (CLI + HTTP) |
 | 7 | ✅ | Coneko adapter |
 | 8 | ✅ | Polish (docs, examples, tests, Docker) |
-| 9 | ✅ | **CLI Redesign** — Hierarchical commands, shell completions |
+| 9 | ✅ | CLI Redesign — Hierarchical commands, shell completions |
+| 10 | ✅ | **Unified Extension Architecture (ADR-017)** — Single system for tools, skills, MCP |
 
 ### CLI Redesign (2026-02-24)
 
@@ -881,6 +955,14 @@ docker-compose up
 ## License
 
 MIT
+
+## Documentation
+
+- [Executive Summary](docs/executive/EXECUTIVE_SUMMARY.md) — Overview and value proposition
+- [Architecture Overview](docs/architecture/OVERVIEW.md) — Technical architecture
+- [Extension System](docs/architecture/EXTENSION_SYSTEM.md) — Unified extension architecture
+- [Getting Started](docs/getting-started/GETTING_STARTED.md) — Installation and first steps
+- [CLI Reference](docs/user-guide/CLI_REFERENCE.md) — Command reference
 
 ## Related Projects
 
