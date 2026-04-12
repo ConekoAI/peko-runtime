@@ -569,6 +569,10 @@ impl Agent {
     where
         F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
     {
+        // Initialize tool config on ExtensionCore (mirrors AgentRunner behavior)
+        let tool_config = self.config.tools.clone().unwrap_or_default();
+        self.extension_core.set_tool_config(tool_config).await;
+
         // Capture current session ID so session_status can look it up
         {
             let session_id = session.read().await.id.clone();

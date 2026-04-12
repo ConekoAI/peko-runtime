@@ -85,12 +85,12 @@ $agentName = "tool_basics_test"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
-# Enable tools via extension framework
+# Enable tools via extension framework for this agent
 Write-Host "`nEnabling tools via extension framework..." -ForegroundColor Yellow
-pekobot ext enable read_file 2>&1 | Out-Null
-pekobot ext enable write_file 2>&1 | Out-Null
-pekobot ext enable glob 2>&1 | Out-Null
-Write-Host "✓ Enabled read_file, write_file, glob" -ForegroundColor Green
+pekobot ext enable read_file --target default/$agentName 2>&1 | Out-Null
+pekobot ext enable write_file --target default/$agentName 2>&1 | Out-Null
+pekobot ext enable glob --target default/$agentName 2>&1 | Out-Null
+Write-Host "✓ Enabled read_file, write_file, glob for agent" -ForegroundColor Green
 
 # Show extension info
 Write-Host "`nExtension info for read_file:" -ForegroundColor Cyan
