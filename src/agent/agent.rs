@@ -4,6 +4,7 @@ use crate::agent::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::extensions::core::{ExtensionCore, global_core, init_global_core};
+use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
 use crate::providers::Provider;
 use crate::session::context::{SessionContext, SessionRouter};
 use crate::session::manager::SessionManager;
@@ -232,6 +233,18 @@ impl Agent {
         }
         
         tracing::info!("Total tools available after filtering: {}", tools.len());
+
+        // ADR-018: Register tools with ExtensionCore for unified execution
+        // This ensures tools are discoverable via ToolRegister hook and executable via ToolExecute hook
+        for tool in &tools {
+            if let Err(e) = BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await {
+                tracing::warn!("Failed to register tool '{}' with ExtensionCore: {}", tool.name(), e);
+            } else {
+                tracing::debug!("Registered tool '{}' with ExtensionCore", tool.name());
+            }
+        }
+        
+        tracing::info!("Registered {} tools with ExtensionCore", tools.len());
 
         Ok(tools)
     }
