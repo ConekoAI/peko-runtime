@@ -102,18 +102,15 @@ impl AgenticLoopV4 {
         &self.extension_core
     }
 
-    /// Get dynamic tools from extension hooks
+    /// Get dynamic tools from extension registry
     async fn get_dynamic_tools(&self) -> Vec<Arc<dyn Tool>> {
-        // Phase 1: Extension Architecture - Invoke ToolRegister hooks
-        let result = self.extension_core.invoke_hook(
-            crate::extensions::HookPoint::ToolRegister,
-            crate::extensions::HookInput::Unit,
-        ).await;
+        // Get tool definitions from unified registry
+        let tool_defs = self.extension_core.list_tool_definitions().await;
         
-        // Process result to extract tool definitions
-        // This is a placeholder for full implementation
-        tracing::debug!("ToolRegister hook result: {:?}", result);
+        tracing::debug!("Found {} tools in extension registry", tool_defs.len());
         
+        // TODO: Convert ToolDefinition to Arc<dyn Tool> if needed
+        // For now, tools are loaded via ToolFactory which uses the same registry
         vec![]
     }
 

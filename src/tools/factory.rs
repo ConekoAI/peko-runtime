@@ -375,13 +375,12 @@ impl ToolFactory {
         Ok(())
     }
 
-    /// Load extension tools by invoking the Extension Framework's ToolRegister hook
+    /// Load extension tools from the unified ExtensionCore registry
     async fn load_extension_tools(
         disabled_tools: &[String],
         existing_names: &std::collections::HashSet<String>,
     ) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::extensions::core::global_core;
-        use crate::extensions::{HookInput, HookOutput, HookResult};
         
         // Get the global extension core
         let core = match global_core() {
@@ -392,22 +391,18 @@ impl ToolFactory {
             }
         };
         
-        // Invoke ToolRegister hook to get tools from extensions
-        let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
+        // Get all registered tools from the unified registry
+        let tool_defs = core.list_tool_definitions().await;
         
-        // Helper function to process a single tool definition
-        async fn process_tool_def(
-            core: &Arc<crate::extensions::core::ExtensionCore>,
-            def: crate::providers::ToolDefinition,
-            disabled_tools: &[String],
-            existing_names: &std::collections::HashSet<String>,
-        ) -> Option<Arc<dyn crate::tools::Tool>> {
+        let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+        
+        for def in tool_defs {
             let name = def.name.to_lowercase();
             
             // Skip disabled tools
             if disabled_tools.iter().any(|d| d.to_lowercase() == name) {
                 tracing::debug!("Extension tool '{}' is disabled, skipping", def.name);
-                return None;
+                continue;
             }
             
             // Skip tools that conflict with existing tools
@@ -416,51 +411,15 @@ impl ToolFactory {
                     "Extension tool '{}' conflicts with existing tool, skipping",
                     def.name
                 );
-                return None;
+                continue;
             }
             
             // Create an ExtensionAsyncTool that will invoke the ToolExecute hook
-            Some(ToolFactory::create_extension_tool(core, def).await)
+            tools.push(ToolFactory::create_extension_tool(&core, def).await);
         }
         
-        match result {
-            HookResult::Continue(HookOutput::Vec(outputs)) => {
-                let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
-                
-                for output in outputs {
-                    if let HookOutput::Tool(def) = output {
-                        if let Some(tool) = process_tool_def(&core, def, disabled_tools, existing_names).await {
-                            tools.push(tool);
-                        }
-                    }
-                }
-                
-                tracing::info!("Loaded {} tools from Extension Framework", tools.len());
-                tools
-            }
-            HookResult::Continue(HookOutput::Tool(def)) => {
-                let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
-                
-                if let Some(tool) = process_tool_def(&core, def, disabled_tools, existing_names).await {
-                    tools.push(tool);
-                }
-                
-                tracing::info!("Loaded {} tools from Extension Framework", tools.len());
-                tools
-            }
-            HookResult::PassThrough => {
-                tracing::debug!("No extension tools registered");
-                vec![]
-            }
-            HookResult::Handled => {
-                tracing::debug!("ToolRegister hook handled without returning tools");
-                vec![]
-            }
-            result => {
-                tracing::debug!("ToolRegister hook result: {:?}", result);
-                vec![]
-            }
-        }
+        tracing::info!("Loaded {} tools from Extension Framework", tools.len());
+        tools
     }
     
     /// Create an ExtensionAsyncTool that invokes the Extension Framework

@@ -500,11 +500,11 @@ impl ExtensionCore {
         // Get the handler's actual hook point (should be ToolExecute)
         let exec_point = handler.hook_point();
         
-        // Create registration for ToolRegister (for discovery)
+        // Create registration with the handler's actual hook point
         let registration = RegisteredHook::with_tool_metadata(
             hook_id.clone(),
             extension_id.clone(),
-            HookPoint::ToolRegister,
+            exec_point.clone(),  // Use actual execution point, not ToolRegister
             handler.clone(),
             priority,
             metadata,
@@ -516,16 +516,7 @@ impl ExtensionCore {
             hooks.insert(hook_id.clone(), registration.clone());
         }
         
-        // Add to point index for ToolRegister (for discovery)
-        {
-            let mut by_point = self.hooks_by_point.write().await;
-            let point_name = HookPoint::ToolRegister.name();
-            let entry = by_point.entry(point_name).or_insert_with(Vec::new);
-            entry.push(hook_id.clone());
-        }
-        
-        // CRITICAL: Also index by the handler's actual hook point (ToolExecute)
-        // This is what invoke_hook looks up when executing the tool
+        // Index by the handler's hook point for execution lookup
         {
             let mut by_point = self.hooks_by_point.write().await;
             let exec_point_name = exec_point.name();

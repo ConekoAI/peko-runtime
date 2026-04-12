@@ -78,49 +78,6 @@ impl BuiltinToolAdapter {
 // Hook Handlers
 // ============================================================================
 
-/// Handler for ToolRegister hook
-pub struct BuiltinRegisterHandler {
-    tool: Arc<dyn Tool>,
-}
-
-impl std::fmt::Debug for BuiltinRegisterHandler {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BuiltinRegisterHandler")
-            .field("tool_name", &self.tool.name())
-            .finish()
-    }
-}
-
-impl BuiltinRegisterHandler {
-    /// Create a new registration handler for a tool
-    pub fn new(tool: Arc<dyn Tool>) -> Self {
-        Self { tool }
-    }
-}
-
-#[async_trait]
-impl HookHandler for BuiltinRegisterHandler {
-    async fn handle(&self, _ctx: HookContext) -> HookResult {
-        use crate::providers::ToolDefinition;
-
-        let tool_def = ToolDefinition {
-            name: self.tool.name().to_string(),
-            description: self.tool.description(), // Use LLM-optimized description
-            parameters: self.tool.parameters(),
-        };
-
-        HookResult::Continue(HookOutput::Tool(tool_def))
-    }
-
-    fn hook_point(&self) -> HookPoint {
-        HookPoint::ToolRegister
-    }
-
-    fn name(&self) -> String {
-        format!("BuiltinRegister({})", self.tool.name())
-    }
-}
-
 /// Handler for ToolExecute hook - DIRECT execution
 pub struct BuiltinExecuteHandler {
     tool: Arc<dyn Tool>,
@@ -320,9 +277,6 @@ mod tests {
         let tool: Arc<dyn Tool> = Arc::new(MockTool {
             name: "test_tool".to_string(),
         });
-
-        let reg_handler = BuiltinRegisterHandler::new(tool.clone());
-        assert_eq!(reg_handler.name(), "BuiltinRegister(test_tool)");
 
         let exec_handler = BuiltinExecuteHandler::new(tool.clone());
         assert_eq!(exec_handler.name(), "BuiltinExecute(test_tool)");
