@@ -478,20 +478,10 @@ impl ExtensionCore {
     ) -> Result<RegisteredHook> {
         let tool_name = metadata.name.clone();
         
-        // Check whitelist
-        if !self.is_tool_enabled(&tool_name).await {
-            return Err(anyhow::anyhow!(
-                "Tool '{}' is not enabled according to whitelist",
-                tool_name
-            ));
-        }
-        
-        // Check for duplicates
+        // ADR-019: Allow re-registration for dynamic enable/disable
+        // If tool already registered, unregister it first (idempotent)
         if self.get_tool_metadata(&tool_name).await.is_some() {
-            return Err(anyhow::anyhow!(
-                "Tool '{}' is already registered",
-                tool_name
-            ));
+            let _ = self.unregister_tool(&tool_name).await;
         }
         
         let hook_id = HookId::new();

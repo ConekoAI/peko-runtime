@@ -258,19 +258,9 @@ impl ToolConfig {
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
-            // Default whitelist: all built-in tools enabled
-            enabled: vec![
-                "shell".to_string(),
-                "read_file".to_string(),
-                "write_file".to_string(),
-                "glob".to_string(),
-                "grep".to_string(),
-                "str_replace_file".to_string(),
-                "sessions_list".to_string(),
-                "sessions_history".to_string(),
-                "session_status".to_string(),
-                "cron".to_string(),
-            ],
+            // Default: empty whitelist - tools must be explicitly enabled
+            // This ensures secure-by-default behavior
+            enabled: Vec::new(),
             skills: Vec::new(),
             http: None,
             custom: None,

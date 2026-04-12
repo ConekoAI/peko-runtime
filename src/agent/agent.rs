@@ -225,16 +225,11 @@ impl Agent {
             }
         }
 
-        tracing::info!("Total tools available before filtering: {}", tools.len());
+        tracing::info!("Total tools available: {}", tools.len());
 
-        // Filter based on agent config whitelist
-        if let Some(ref tool_config) = self.config.tools {
-            tools.retain(|tool| tool_config.is_tool_enabled(tool.name()));
-        }
-        
-        tracing::info!("Total tools available after filtering: {}", tools.len());
-
-        // ADR-018: Register tools with ExtensionCore for unified execution
+        // ADR-018/019: Register ALL tools with ExtensionCore
+        // Tools are filtered dynamically at query/execution time based on current config
+        // This enables mid-session enable/disable without re-registration
         // This ensures tools are discoverable via ToolRegister hook and executable via ToolExecute hook
         for tool in &tools {
             if let Err(e) = BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await {
@@ -448,6 +443,10 @@ impl Agent {
         }
 
         self.set_state(AgentState::Busy);
+
+        // Initialize tool config on ExtensionCore (mirrors AgentRunner behavior)
+        let tool_config = self.config.tools.clone().unwrap_or_default();
+        self.extension_core.set_tool_config(tool_config).await;
 
         let result = if let Some(provider) = &self.provider {
             // Load tools including MCP tools
