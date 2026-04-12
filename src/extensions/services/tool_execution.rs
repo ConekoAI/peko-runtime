@@ -1,27 +1,37 @@
 //! Tool Execution Service
 //!
-//! Centralized service for tool execution with parameter injection.
-//! Part of ExtensionCore's shared services.
+//! Centralized service for tool execution with parameter injection, panic isolation,
+//! and timeout handling. Part of ExtensionCore's shared services.
+//!
+//! This is the unified execution service used by ALL tool handlers (built-in, MCP, Universal).
+//! It provides consistent:
+//! - Parameter validation and injection
+//! - Panic isolation (catches tool panics)
+//! - Timeout enforcement
+//! - Context propagation
 //!
 //! # Pipeline
 //!
 //! 1. **Validation**: Ensure user params don't contain reserved parameter names
 //! 2. **Injection**: Merge reserved parameters from config into user params
-//! 3. **Execution**: Call the tool-specific executor with merged params
-//! 4. **Result**: Return the execution result
+//! 3. **Panic Isolation**: Execute in a context that catches panics
+//! 4. **Timeout**: Enforce execution time limits
+//! 5. **Execution**: Call the tool-specific executor with merged params
+//! 6. **Result**: Return the execution result
 //!
 //! # Usage
 //!
 //! ```rust,ignore
 //! let exec_service = ExtensionCore::tool_execution();
 //!
-//! let result = exec_service.execute(
+//! let result = exec_service.execute_with_isolation(
 //!     user_params,
 //!     &ToolExecutionConfig {
 //!         reserved_params: config,
 //!         full_schema: schema,
 //!     },
 //!     Some(&tool_context),
+//!     Duration::from_secs(120),
 //!     |merged_params| async {
 //!         // Tool-specific execution
 //!         adapter.execute_raw(merged_params).await
@@ -34,23 +44,160 @@ use crate::tools::ToolContext;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::panic::AssertUnwindSafe;
+use std::time::Duration;
+use tracing::{error, info, instrument};
 
 /// Tool execution service
 ///
-/// Handles parameter injection and validation for all tool executions
-/// in the Extension system.
-#[derive(Debug, Default)]
-pub struct ToolExecutionService;
+/// Handles parameter injection, validation, panic isolation, and timeout
+/// for ALL tool executions in the Extension system.
+///
+/// This is the single implementation for:
+/// - Panic isolation (catches tool panics)
+/// - Timeout enforcement
+/// - Parameter injection
+/// - Context propagation
+#[derive(Debug)]
+pub struct ToolExecutionService {
+    /// Default timeout for tool execution
+    default_timeout: Duration,
+}
+
+impl Default for ToolExecutionService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ToolExecutionService {
-    /// Create a new tool execution service
+    /// Create a new tool execution service with default timeout
     pub fn new() -> Self {
-        Self
+        Self {
+            default_timeout: Duration::from_secs(120),
+        }
     }
 
-    /// Execute a tool with parameter injection
+    /// Create with custom default timeout
+    pub fn with_timeout(default_timeout: Duration) -> Self {
+        Self { default_timeout }
+    }
+
+    /// Execute a tool with full isolation (panic + timeout)
     ///
-    /// This is the unified entry point for all tool execution in the extension system.
+    /// This is the PRIMARY execution method for ALL tools in ADR-018a.
+    /// It combines parameter injection, panic isolation, and timeout.
+    ///
+    /// # Arguments
+    /// * `params` - User-provided parameters
+    /// * `config` - Execution configuration including reserved params
+    /// * `ctx` - Optional tool context for runtime parameter resolution
+    /// * `timeout` - Optional timeout override (uses default if None)
+    /// * `executor` - Async closure that performs the actual tool execution
+    ///
+    /// # Returns
+    /// The result of the tool execution
+    #[instrument(skip(self, config, ctx, executor), level = "debug")]
+    pub async fn execute_with_isolation<F, Fut>(
+        &self,
+        params: Value,
+        config: &ToolExecutionConfig,
+        ctx: Option<&ToolContext>,
+        timeout: Option<Duration>,
+        executor: F,
+    ) -> Result<Value>
+    where
+        F: FnOnce(Value) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + Send,
+    {
+        // Step 1: Validate user params
+        Self::validate_user_params(&params, &config.reserved_params)?;
+
+        // Step 2: Inject reserved parameters
+        let merged = Self::inject_reserved_params(params, &config.reserved_params, ctx);
+
+        info!(
+            "ToolExecutionService: executing with isolation (timeout: {:?})",
+            timeout
+        );
+
+        // Step 3: Execute with panic isolation and timeout
+        self.execute_with_panic_isolation(merged, timeout, executor).await
+    }
+
+    /// Execute with panic isolation and timeout
+    ///
+    /// Catches panics during tool execution and converts them to errors.
+    /// This ensures that a buggy tool doesn't crash the entire agent.
+    #[instrument(skip(self, params, executor), level = "debug")]
+    async fn execute_with_panic_isolation<F, Fut>(
+        &self,
+        params: Value,
+        timeout: Option<Duration>,
+        executor: F,
+    ) -> Result<Value>
+    where
+        F: FnOnce(Value) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + Send,
+    {
+        let effective_timeout = timeout.unwrap_or(self.default_timeout);
+
+        // Spawn the tool execution in a blocking task with panic catching
+        let spawn_result = tokio::task::spawn_blocking({
+            move || {
+                // Use AssertUnwindSafe because we're catching the panic anyway
+                let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    // Create a runtime for the async tool execution
+                    let rt = tokio::runtime::Handle::current();
+                    rt.block_on(async move {
+                        executor(params).await
+                    })
+                }));
+
+                match result {
+                    Ok(tool_result) => tool_result,
+                    Err(panic_info) => {
+                        let panic_msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                            s.clone()
+                        } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else {
+                            "Unknown panic".to_string()
+                        };
+
+                        Err(anyhow::anyhow!(
+                            "Tool panicked: {}",
+                            panic_msg
+                        ))
+                    }
+                }
+            }
+        });
+
+        // Apply timeout to the spawned task
+        let result = tokio::time::timeout(effective_timeout, spawn_result).await;
+
+        match result {
+            Ok(Ok(tool_result)) => tool_result,
+            Ok(Err(e)) => {
+                if e.is_panic() {
+                    error!("Task panicked during execution: {}", e);
+                    Err(anyhow::anyhow!("Tool task panicked"))
+                } else {
+                    Err(anyhow::anyhow!("Tool task cancelled"))
+                }
+            }
+            Err(_) => Err(anyhow::anyhow!(
+                "Tool timed out after {:?}",
+                effective_timeout
+            )),
+        }
+    }
+
+    /// Execute a tool with parameter injection (legacy - no isolation)
+    ///
+    /// This method provides parameter injection without panic isolation.
+    /// For ADR-018a compliance, use `execute_with_isolation` instead.
     ///
     /// # Pipeline
     /// 1. Validate user params (no reserved params allowed from user)

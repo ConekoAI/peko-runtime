@@ -284,8 +284,8 @@ mod tests {
             &self.name
         }
 
-        fn description(&self) -> &str {
-            "Mock tool"
+        fn description(&self) -> String {
+            "Mock tool".to_string()
         }
 
         fn parameters(&self) -> serde_json::Value {

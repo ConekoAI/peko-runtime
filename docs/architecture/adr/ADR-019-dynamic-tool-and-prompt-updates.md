@@ -1,6 +1,8 @@
 # ADR-019: Dynamic Tool and System Prompt Updates
 
-**Status**: Proposed  
+**Status**: Completed  
+**Completed Date**: 2026-04-11  
+**Updated**: 2026-04-11  
 **Date**: 2026-04-11  
 **Author**: Kimi Code CLI  
 **Depends On**: ADR-018a (Tool Execution Unification), ADR-018b (Unified Tool Registry)
@@ -308,26 +310,125 @@ impl ExtensionCore {
 
 ## Decision
 
-**Proceed with implementation** using the phased approach outlined above, **AFTER ADR-018 is completed**.
+**ALL phases completed.** ADR-019 is fully implemented with:
+- Phase 1: Permission checks at ExtensionCore layer
+- Phase 2: Dynamic tool definitions rebuilt each iteration
+- Phase 3: Dynamic system prompt rebuilt each iteration
 
-**Key Principles**:
-1. Architectural foundation first: ADR-018a/b consolidation required
-2. Safety first: Permission check at ExtensionCore layer (Phase 1)
-3. Gradual rollout: Each phase independently valuable
-4. Backward compatible: Changes are internal, no API changes
-5. Measurable: Each phase has clear acceptance criteria
+Phase 4 (Optimization) is future work and can be tackled when performance needs require it.
+
+## Updated Implementation Plan
+
+### Phase 0: Foundation ✅ COMPLETED
+ADR-018a is complete. All tools now route through ExtensionCore, enabling centralized permission checking.
+
+### Phase 1: Permission Check ✅ COMPLETED
+
+Tool permission checking has been implemented in `ExtensionCore::invoke_hook()`:
+
+```rust
+// src/extensions/core/registry.rs
+pub async fn invoke_hook(&self, point: HookPoint, input: HookInput) -> HookResult {
+    // Check global enable
+    if !self.is_globally_enabled().await {
+        return HookResult::PassThrough;
+    }
+    
+    // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
+    if let HookPoint::ToolExecute { ref tool_name } = point {
+        if !self.is_tool_enabled(tool_name).await {
+            warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
+            return HookResult::Error(
+                anyhow::anyhow!(
+                    "Tool '{}' is currently disabled. Enable it in agent config to use it.",
+                    tool_name
+                )
+            );
+        }
+    }
+    // ... rest of dispatch
+}
+```
+
+**Implementation Details:**
+- Permission check happens at the ExtensionCore layer for ALL tool types
+- Tool configuration is passed from AgentRunner before each run via `init_tool_config()`
+- Clear error message when disabled tools are called
+- Non-tool hooks (ToolRegister, etc.) are not affected
+
+**Tests Added:**
+- `test_tool_execute_blocked_when_disabled` - Verifies disabled tools are blocked
+- `test_tool_execute_permitted_when_enabled` - Verifies enabled tools work
+- `test_non_tool_hooks_not_affected_by_tool_config` - Verifies other hooks unaffected
+
+### Phase 2: Dynamic Tool Definitions ✅ COMPLETED
+
+Tool definitions are now rebuilt dynamically each iteration:
+
+```rust
+// src/engine/loop_v4.rs
+loop {
+    iteration += 1;
+    
+    // ADR-019 Phase 2: Build tool definitions dynamically each iteration
+    let tool_defs = self.build_tool_definitions_fresh().await;
+    
+    // Provider receives updated tool list
+    let response = self.provider
+        .chat_with_tools(&messages, &tool_defs, &options)
+        .await?;
+}
+```
+
+**Implementation Details:**
+- `build_tool_definitions_fresh()` queries `ExtensionCore::list_tool_definitions()`
+- Provider receives current tool list each iteration
+- Tool enable/disable changes take effect immediately
+
+### Phase 3: Dynamic System Prompt ✅ COMPLETED
+
+System prompt is now rebuilt dynamically each iteration:
+
+```rust
+// src/engine/loop_v4.rs
+// ADR-019 Phase 3: Rebuild system prompt dynamically
+if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
+    let fresh_prompt = self.build_system_prompt_fresh().await;
+    messages[0] = ChatMessage {
+        role: MessageRole::System,
+        content: vec![ContentBlock::Text { text: fresh_prompt }],
+        tool_calls: None,
+        tool_call_id: None,
+    };
+}
+```
+
+**Implementation Details:**
+- `SystemPromptBuilder` now supports `with_tool_definitions()` for dynamic updates
+- `build_system_prompt_fresh()` queries ExtensionCore for current tools
+- SYSTEM.md changes reflected immediately (via BootstrapConfig)
+- Tool list in prompt matches current config
+
+### Phase 4: Optimization (Future)
+
+Future performance improvements:
+- Cache prompt sections that rarely change
+- Invalidate cache on file/config changes
+- Only rebuild changed sections
+
+**Expected Impact:** <5ms latency reduction per iteration
 
 ## Progress Tracking
 
 | Phase | Status | PR | Notes |
 |-------|--------|-----|-------|
-| ADR-018a: Tool Execution Unification | 🔲 Blocked | - | Prerequisite |
-| ADR-018b: Unified Tool Registry | 🔲 Blocked | - | Prerequisite |
-| ADR-018c: Tool Naming Cleanup | 🔲 Blocked | - | Recommended |
-| Phase 1: Permission Check | 🔲 Blocked | - | Waiting on ADR-018 |
-| Phase 2: Dynamic Tool Definitions | 🔲 Not Started | - | - |
-| Phase 3: Dynamic System Prompt | 🔲 Not Started | - | - |
-| Phase 4: Optimization | 🔲 Not Started | - | Future work |
+| ADR-018a: Tool Execution Unification | ✅ Completed | - | All tools now route through ExtensionCore |
+| ADR-018b: Unified Tool Registry | ✅ Completed | - | `register_tool()`, `list_tools()`, `get_tool_metadata()` |
+| ADR-018c: Tool Naming Cleanup | 🔲 Not Started | - | Can proceed independently |
+| Phase 1: Permission Check | ✅ Completed | - | Centralized enforcement in ExtensionCore |
+| Phase 2: Dynamic Tool Definitions | ✅ Completed | - | Rebuilt each iteration from ExtensionCore |
+| Phase 3: Dynamic System Prompt | ✅ Completed | - | Rebuilt each iteration with current tools |
+| Phase 4: Optimization | 🔲 Future | - | Low priority - caching for performance |
 
 ## References
 

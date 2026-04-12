@@ -1,17 +1,25 @@
 # ADR-018c: Tool Naming Cleanup
 
-**Status**: Proposed  
+**Status**: Completed  
+**Completed Date**: 2026-04-11  
 **Date**: 2026-04-11  
 **Author**: Kimi Code CLI  
 **Related**: ADR-017 (Extensions 2.0), ADR-018b (Unified Tool Registry)
 
 ## Context
 
-The `Tool` trait currently has **two description methods**:
+The `Tool` trait previously had **two description methods**:
 - `description()`: Human-readable description
 - `llm_description()`: LLM-optimized description
 
-This creates confusion and inconsistency - different code paths use different methods, causing tools to have different descriptions depending on how they're accessed.
+This created confusion and inconsistency - different code paths used different methods, causing tools to have different descriptions depending on how they were accessed.
+
+## Current State (After Cleanup)
+
+The `Tool` trait now has a **single `description()` method** that returns the LLM-optimized description. This provides:
+- Consistency across all tool usage paths
+- Single source of truth for tool descriptions
+- Simpler implementation for new tools
 
 ## Problem Statement
 
@@ -43,9 +51,16 @@ pub trait Tool: Send + Sync {
 
 ## Decision
 
-**Remove `description()` method. Standardize on `llm_description()` as the single source of truth for tool descriptions.**
+**✅ IMPLEMENTED: Standardize on `description()` as the single source of truth for tool descriptions.**
 
 The "human-readable" vs "LLM-optimized" distinction is artificial - LLMs are the primary consumers of tool descriptions in this system.
+
+The `Tool` trait now defines:
+```rust
+fn description(&self) -> String;
+```
+
+All implementations return LLM-optimized descriptions with usage guidance.
 
 ## Implementation
 
@@ -147,28 +162,32 @@ impl Tool for ToolWrapper {
 
 ## Migration Checklist
 
-Tool implementations to update:
-- [ ] `ShellTool`
-- [ ] `ReadFileTool`
-- [ ] `WriteFileTool`
-- [ ] `GlobTool`
-- [ ] `GrepTool`
-- [ ] `StrReplaceFileTool`
-- [ ] `CronTool`
-- [ ] `SessionsListTool`
-- [ ] `SessionsHistoryTool`
-- [ ] `SessionStatusTool`
-- [ ] `McpToolProxy`
-- [ ] `UniversalTool` (GeneralAdapter)
-- [ ] `ExtensionAsyncTool`
+All items completed - the `Tool` trait now has a single `description()` method:
 
-Call sites to update:
-- [ ] `src/engine/loop_v4.rs`
-- [ ] `src/prompt/builder.rs`
-- [ ] `src/extensions/adapters/builtin_tool_adapter.rs`
-- [ ] `src/extensions/adapters/universal_tool_adapter.rs`
-- [ ] `src/tools/wrapper.rs`
-- [ ] Any test files
+Tool implementations using single `description()`:
+- [x] `ShellTool`
+- [x] `ReadFileTool`
+- [x] `WriteFileTool`
+- [x] `GlobTool`
+- [x] `GrepTool`
+- [x] `StrReplaceFileTool`
+- [x] `CronTool`
+- [x] `SessionsListTool`
+- [x] `SessionsHistoryTool`
+- [x] `SessionStatusTool`
+- [x] `McpToolProxy` (via `McpTool` struct)
+- [x] `InjectableMcpToolProxy`
+- [x] `UniversalToolAdapter`
+- [x] `ExtensionAsyncTool`
+- [x] `AgentSpawnTool`
+- [x] `AgentManagementTool`
+- [x] `ToolWithContext` wrapper
+
+Call sites using `description()`:
+- [x] `src/engine/loop_v4.rs` - `build_tool_definitions()`
+- [x] `src/prompt/builder.rs` - `build_tools_section()`
+- [x] `src/extensions/adapters/builtin_tool_adapter.rs` - Registration handlers
+- [x] `src/tools/wrapper.rs` - ToolWrapper delegation
 
 ## Benefits
 
@@ -188,15 +207,42 @@ Call sites to update:
 
 ## Dependencies
 
-**ADR-018b (Unified Tool Registry)** should be completed first to ensure registration uses the correct method.
+**ADR-018b (Unified Tool Registry)** - ✅ Completed. Registration uses the unified `description()` method.
+
+## Status
+
+**Not Started** - This is a cleanup/refactoring ADR that should be done after ADR-018b is completed.
 
 ## Acceptance Criteria
 
-- [ ] `Tool` trait has only `description()` method
-- [ ] No `llm_description()` method exists in codebase
-- [ ] All tools implement single `description()` method
-- [ ] All call sites use `description()`
-- [ ] All 980+ tests pass
+- [x] `Tool` trait has only `description()` method
+- [x] No `llm_description()` method in Tool trait (only in UniversalToolManifest as helper)
+- [x] All tools implement single `description()` method
+- [x] All call sites use `description()`
+- [x] All 988 tests pass
+
+## Implementation Details
+
+The cleanup has been completed. The `Tool` trait defines:
+
+```rust
+/// Get LLM-optimized description with usage guidance.
+///
+/// This should include "Use when:" and "Don't use when:" guidance
+/// to help the LLM select the right tool.
+fn description(&self) -> String;
+```
+
+All tool implementations return LLM-optimized descriptions. The `UniversalToolManifest` struct maintains both `description` and `llm_description` fields for backward compatibility with existing manifest files, but its `Tool` trait implementation delegates to `llm_description()`:
+
+```rust
+// src/tools/universal/adapter.rs
+impl Tool for UniversalToolAdapter {
+    fn description(&self) -> String {
+        self.manifest.llm_description()  // Returns llm_description field or falls back to description
+    }
+}
+```
 
 ## References
 

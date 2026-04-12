@@ -225,11 +225,7 @@ impl Tool for UniversalToolAdapter {
         &self.name
     }
 
-    fn description(&self) -> &str {
-        &self.manifest.description
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         self.manifest.llm_description()
     }
 
@@ -397,8 +393,7 @@ mod tests {
         let adapter = UniversalToolAdapter::from_manifest_embedded(manifest, "/bin/true");
 
         assert_eq!(adapter.name(), "query");
-        assert_eq!(adapter.description(), "Query tool");
-        assert_eq!(adapter.llm_description(), "Use for querying");
+        assert_eq!(adapter.description(), "Use for querying");
         assert!(adapter.parameters()["properties"]["q"].is_object());
     }
 }

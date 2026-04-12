@@ -60,8 +60,8 @@ impl crate::tools::Tool for ExtensionAsyncTool {
         &self.tool_name
     }
 
-    fn description(&self) -> &str {
-        &self.description
+    fn description(&self) -> String {
+        self.description.clone()
     }
 
     fn parameters(&self) -> Value {

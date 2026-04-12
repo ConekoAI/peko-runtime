@@ -184,12 +184,8 @@ impl Tool for InjectableMcpToolProxy {
         self.inner.name()
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> String {
         self.inner.description()
-    }
-
-    fn llm_description(&self) -> String {
-        self.inner.llm_description()
     }
 
     fn parameters(&self) -> Value {

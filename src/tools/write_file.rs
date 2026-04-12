@@ -162,11 +162,7 @@ impl Tool for WriteFileTool {
         "write_file"
     }
 
-    fn description(&self) -> &'static str {
-        "Write or append content to files"
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         r#"## Purpose
 Write or append content to files. Creates parent directories automatically.
 

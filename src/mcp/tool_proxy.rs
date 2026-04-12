@@ -170,11 +170,7 @@ impl Tool for McpToolProxy {
         &self.tool.name
     }
 
-    fn description(&self) -> &str {
-        &self.tool.description
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         format!(
             "{} (via MCP server: {})",
             self.tool.description, self.server_name
@@ -273,7 +269,7 @@ mod tests {
 
         assert_eq!(proxy.name(), "test_tool");
         assert_eq!(proxy.server_name(), "test_server");
-        assert!(proxy.llm_description().contains("test_server"));
+        assert!(proxy.description().contains("test_server"));
     }
 
     #[test]

@@ -655,6 +655,9 @@ impl HookHandler for McpToolExecuteHandler {
             "Executing MCP tool via Extension Framework"
         );
 
+        // ADR-018a: Use AsyncExecutionRouter for unified execution
+        // This provides _async routing, panic isolation, and timeout
+        
         // Get server configuration for reserved parameters
         let server_config = {
             let manager = self.manager.read().await;
@@ -673,47 +676,71 @@ impl HookHandler for McpToolExecuteHandler {
         // Build execution config
         let exec_config = ToolExecutionConfig::new(reserved_params, tool_schema);
         
-        // Use the unified ToolExecutionService for parameter injection and execution
-        use crate::extensions::services::ToolExecutionService;
+        // Get services from context
+        let exec_service = ctx.services.tool_execution();
+        let async_router = ctx.services.async_router();
         
-        // Validate that user didn't provide reserved params
-        if let Err(e) = ToolExecutionService::validate_user_params(&params, &exec_config.reserved_params) {
-            return HookResult::Error(e);
-        }
+        // Build execution context
+        let tool_ctx = match ctx.as_tool_context() {
+            Some(tc) => crate::extensions::services::ToolExecutionContext::new(
+                tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.session_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.run_id.clone(),
+            ).with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
+            None => crate::extensions::services::ToolExecutionContext::new(
+                "unknown", "unknown", "unknown"
+            ),
+        };
         
-        // Inject reserved parameters
-        let merged_params = ToolExecutionService::inject_reserved_params(
-            params,
-            &exec_config.reserved_params,
-            ctx.as_tool_context()
-        );
+        // Clone params for mutation (AsyncExecutionRouter extracts _async, etc.)
+        let mut params_mut = params.clone();
         
-        // Execute via MCP manager
-        let manager = self.manager.read().await;
-        let result = manager.call_tool(&self.server_name, actual_tool, merged_params).await;
-        drop(manager);
+        // Clone manager and server/tool names for the closure
+        let manager = self.manager.clone();
+        let server_name = self.server_name.clone();
+        let actual_tool_owned = actual_tool.to_string();
+        
+        // Route execution through AsyncExecutionRouter
+        let result = async_router
+            .route(
+                &mut params_mut,
+                exec_service,
+                &tool_ctx,
+                &exec_config,
+                move |p| {
+                    let manager = manager.clone();
+                    let server = server_name.clone();
+                    let tool = actual_tool_owned.clone();
+                    async move {
+                        let mgr = manager.read().await;
+                        let mcp_result = mgr.call_tool(&server, &tool, p).await?;
+                        // Convert MCP result to JSON
+                        let json_result = serde_json::json!({
+                            "success": !mcp_result.is_error,
+                            "contents": mcp_result.content.iter().map(|c| match c {
+                                crate::mcp::types::ToolResultContent::Text(t) => serde_json::json!({
+                                    "type": "text",
+                                    "text": t.text
+                                }),
+                                crate::mcp::types::ToolResultContent::Image(i) => serde_json::json!({
+                                    "type": "image",
+                                    "data": i.data,
+                                    "mime_type": i.mime_type
+                                }),
+                                crate::mcp::types::ToolResultContent::Resource(r) => serde_json::json!({
+                                    "type": "resource",
+                                    "resource": r.resource
+                                }),
+                            }).collect::<Vec<_>>(),
+                        });
+                        Ok(json_result)
+                    }
+                },
+            )
+            .await;
 
         match result {
-            Ok(mcp_result) => {
-                // Convert MCP result to JSON
-                let json_result = serde_json::json!({
-                    "success": !mcp_result.is_error,
-                    "contents": mcp_result.content.iter().map(|c| match c {
-                        crate::mcp::types::ToolResultContent::Text(t) => serde_json::json!({
-                            "type": "text",
-                            "text": t.text
-                        }),
-                        crate::mcp::types::ToolResultContent::Image(i) => serde_json::json!({
-                            "type": "image",
-                            "data": i.data,
-                            "mime_type": i.mime_type
-                        }),
-                        crate::mcp::types::ToolResultContent::Resource(r) => serde_json::json!({
-                            "type": "resource",
-                            "resource": r.resource
-                        }),
-                    }).collect::<Vec<_>>()
-                });
+            Ok(json_result) => {
                 HookResult::Continue(HookOutput::Json(json_result))
             }
             Err(e) => {
@@ -1213,6 +1240,7 @@ auto_start = true
         let handler = McpToolExecuteHandler {
             manager,
             server_name: "test".to_string(),
+            tool_name: None,
         };
 
         assert_eq!(handler.server_name, "test");

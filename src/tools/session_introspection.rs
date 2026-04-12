@@ -195,8 +195,8 @@ impl Tool for SessionsListTool {
         "sessions_list"
     }
 
-    fn description(&self) -> &'static str {
-        "List active sessions with optional filtering"
+    fn description(&self) -> String {
+        "List active sessions with optional filtering".to_string()
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -241,8 +241,8 @@ impl Tool for SessionsHistoryTool {
         "sessions_history"
     }
 
-    fn description(&self) -> &'static str {
-        "Get message history for a specific session"
+    fn description(&self) -> String {
+        "Get message history for a specific session".to_string()
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -291,10 +291,10 @@ impl Tool for SessionStatusTool {
         "session_status"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> String {
         "Returns current session status including timestamp, token usage, and model information. \
          Use this tool when you need to know the current date and time. \
-         Optional timezone parameter allows formatting time for a specific timezone (e.g., 'America/New_York', 'Europe/London', 'UTC')."
+         Optional timezone parameter allows formatting time for a specific timezone (e.g., 'America/New_York', 'Europe/London', 'UTC').".to_string()
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {

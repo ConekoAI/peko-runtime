@@ -343,9 +343,9 @@ impl Tool for MessageTool {
         "message"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> String {
         "Send messages to communication channels. Supports Discord, Slack, Telegram, WhatsApp, Signal, Email, and webhooks. \
-        Parameters: {\"channel\": \"discord|slack|telegram|whatsapp|signal|email|webhook\", \"recipient\": \"channel_id|user_id|email|url\", \"content\": \"message text\", \"subject\": \"optional for email\"}"
+        Parameters: {\"channel\": \"discord|slack|telegram|whatsapp|signal|email|webhook\", \"recipient\": \"channel_id|user_id|email|url\", \"content\": \"message text\", \"subject\": \"optional for email\"}".to_string()
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {

@@ -427,7 +427,7 @@ impl<T: ToolWithContext> AbortableTool<T> {
 #[async_trait::async_trait]
 pub trait ToolWithContext: Send + Sync {
     fn name(&self) -> &str;
-    fn description(&self) -> &str;
+    fn description(&self) -> String;
 
     /// Execute with full context (abort signal + progress callbacks)
     async fn execute_with_context(
@@ -459,7 +459,7 @@ impl<T: super::Tool + Send + Sync> ToolWithContext for ToolAdapter<T> {
         self.inner.name()
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> String {
         self.inner.description()
     }
 

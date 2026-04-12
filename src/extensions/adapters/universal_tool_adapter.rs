@@ -561,23 +561,33 @@ impl HookHandler for UniversalToolExecuteHandler {
             "Executing universal tool via Extension Framework"
         );
 
-        // Use the unified ToolExecutionService for parameter injection and execution
+        // Use AsyncExecutionRouter for unified execution with panic isolation and timeout
+        let async_router = ctx.services.async_router();
         let exec_service = ctx.services.tool_execution();
-        let exec_config = ToolExecutionConfig::new(
-            self.reserved_params.clone(),
-            self.full_schema.clone(),
-        );
+        
+        let tool_ctx = crate::extensions::services::async_router::ToolExecutionContext::new(
+            "agent",
+            "session",
+            ctx.invocation_id.clone(),
+        ).with_workspace(".");
 
-        let result = exec_service
-            .execute(
-                params,
+        let exec_config = ToolExecutionConfig::with_schema(self.full_schema.clone());
+
+        let mut params_mut = params.clone();
+        let manifest_path = self.manifest_path.clone();
+        let executable = self.executable.clone();
+
+        let result = async_router
+            .route(
+                &mut params_mut,
+                exec_service,
+                &tool_ctx,
                 &exec_config,
-                ctx.as_tool_context(),
-                |merged_params| async move {
+                move |merged_params| async move {
                     // Create adapter and execute with merged params
                     let adapter = crate::tools::universal::UniversalToolAdapter::from_manifest(
-                        &self.manifest_path,
-                        &self.executable,
+                        &manifest_path,
+                        &executable,
                     )
                     .await?;
                     

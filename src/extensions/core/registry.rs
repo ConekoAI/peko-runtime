@@ -328,6 +328,21 @@ impl ExtensionCore {
             return HookResult::PassThrough;
         }
         
+        // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
+        // This ensures ALL tools (built-in, MCP, Universal) are checked consistently
+        if let HookPoint::ToolExecute { ref tool_name } = point {
+            if !self.is_tool_enabled(tool_name).await {
+                warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
+                return HookResult::Error(
+                    anyhow::anyhow!(
+                        "Tool '{}' is currently disabled. Enable it in agent config to use it.",
+                        tool_name
+                    )
+                );
+            }
+            trace!(tool_name = %tool_name, "Tool execution permitted");
+        }
+        
         let handlers = self.get_hooks_for_point(&point).await;
         
         if handlers.is_empty() {
@@ -823,5 +838,108 @@ mod tests {
         ).await;
         
         assert_eq!(text, Some("prompt text".to_string()));
+    }
+    
+    // ==================== ADR-019: Tool Permission Check Tests ====================
+    
+    #[tokio::test]
+    async fn test_tool_execute_blocked_when_disabled() {
+        let core = ExtensionCore::new();
+        
+        // Create a tool execution handler
+        let handler = Arc::new(MockHandler {
+            point: HookPoint::ToolExecute { tool_name: "test_tool".to_string() },
+            output: HookResult::Continue(HookOutput::text("executed")),
+        });
+        
+        // Register the tool with empty whitelist (all tools disabled)
+        let tool_config = crate::types::agent::ToolConfig {
+            enabled: vec![], // Empty whitelist = all tools disabled
+            ..Default::default()
+        };
+        core.set_tool_config(tool_config).await;
+        
+        // Try to execute the tool - should be blocked
+        let result = core.invoke_hook(
+            HookPoint::ToolExecute { tool_name: "test_tool".to_string() },
+            HookInput::ToolCall { tool_name: "test_tool".to_string(), params: serde_json::json!({}) },
+        ).await;
+        
+        match result {
+            HookResult::Error(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("disabled"), "Error should mention tool is disabled: {}", msg);
+            }
+            _ => panic!("Expected Error when tool is disabled, got {:?}", result),
+        }
+    }
+    
+    #[tokio::test]
+    async fn test_tool_execute_permitted_when_enabled() {
+        let core = ExtensionCore::new();
+        
+        // Create and register a tool execution handler
+        let handler = Arc::new(MockHandler {
+            point: HookPoint::ToolExecute { tool_name: "enabled_tool".to_string() },
+            output: HookResult::Continue(HookOutput::Json(serde_json::json!({"result": "success"}))),
+        });
+        
+        let ext_id = ExtensionId::new("test");
+        core.register_hook(
+            HookPoint::ToolExecute { tool_name: "enabled_tool".to_string() },
+            handler,
+            &ext_id,
+        ).await.unwrap();
+        
+        // Configure whitelist to enable the tool
+        let tool_config = crate::types::agent::ToolConfig {
+            enabled: vec!["enabled_tool".to_string()],
+            ..Default::default()
+        };
+        core.set_tool_config(tool_config).await;
+        
+        // Execute the tool - should succeed
+        let result = core.invoke_hook(
+            HookPoint::ToolExecute { tool_name: "enabled_tool".to_string() },
+            HookInput::ToolCall { tool_name: "enabled_tool".to_string(), params: serde_json::json!({}) },
+        ).await;
+        
+        match result {
+            HookResult::Continue(HookOutput::Json(json)) => {
+                assert_eq!(json["result"], "success");
+            }
+            _ => panic!("Expected Continue with JSON result, got {:?}", result),
+        }
+    }
+    
+    #[tokio::test]
+    async fn test_non_tool_hooks_not_affected_by_tool_config() {
+        let core = ExtensionCore::new();
+        
+        // Create a non-tool handler
+        let handler = Arc::new(MockHandler {
+            point: HookPoint::ToolRegister,
+            output: HookResult::Continue(HookOutput::text("registration info")),
+        });
+        
+        let ext_id = ExtensionId::new("test");
+        core.register_hook(HookPoint::ToolRegister, handler, &ext_id).await.unwrap();
+        
+        // Set empty whitelist (would block tools, but shouldn't affect ToolRegister)
+        let tool_config = crate::types::agent::ToolConfig {
+            enabled: vec![],
+            ..Default::default()
+        };
+        core.set_tool_config(tool_config).await;
+        
+        // ToolRegister hook should work normally
+        let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
+        
+        match result {
+            HookResult::Continue(HookOutput::Text(text)) => {
+                assert_eq!(text, "registration info");
+            }
+            _ => panic!("Expected Continue with text, got {:?}", result),
+        }
     }
 }

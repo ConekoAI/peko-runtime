@@ -285,11 +285,7 @@ impl Tool for GlobTool {
         "glob"
     }
 
-    fn description(&self) -> &'static str {
-        "List files and directories matching a glob pattern"
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         r#"## Purpose
 Find files and directories matching a glob pattern.
 

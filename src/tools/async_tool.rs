@@ -164,12 +164,8 @@ impl<T: Tool + Send + Sync + 'static> Tool for SyncToAsyncAdapter<T> {
         self.inner.name()
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> String {
         self.inner.description()
-    }
-
-    fn llm_description(&self) -> String {
-        self.inner.llm_description()
     }
 
     fn parameters(&self) -> Value {
@@ -326,8 +322,8 @@ mod tests {
             &self.name
         }
 
-        fn description(&self) -> &str {
-            "A mock tool for testing"
+        fn description(&self) -> String {
+            "A mock tool for testing".to_string()
         }
 
         fn as_any(&self) -> &dyn std::any::Any {

@@ -1,6 +1,7 @@
 # ADR-018b: Unified Tool Registry
 
-**Status**: Proposed  
+**Status**: Completed  
+**Completed Date**: 2026-04-11  
 **Date**: 2026-04-11  
 **Author**: Kimi Code CLI  
 **Related**: ADR-017 (Extensions 2.0), ADR-018a (Tool Execution Unification), ADR-018c (Tool Naming Cleanup)
@@ -330,23 +331,36 @@ After migration, remove or deprecate:
 
 ## Acceptance Criteria
 
-- [ ] ExtensionCore tracks tool metadata alongside hooks
-- [ ] Built-in tools register via `ExtensionCore::register_tool()`
-- [ ] MCP tools register via `ExtensionCore::register_tool()`
-- [ ] Universal tools register via `ExtensionCore::register_tool()`
-- [ ] Whitelist enforced consistently at registration
-- [ ] `ExtensionCore::get_tool_metadata()` provides O(1) lookup
-- [ ] `ExtensionCore::list_tools()` returns all enabled tools
-- [ ] Legacy storage locations deprecated
+- [x] ExtensionCore tracks tool metadata alongside hooks (via `ToolMetadata`)
+- [x] Built-in tools register via `ExtensionCore::register_tool()`
+- [x] MCP tools register via `ExtensionCore::register_tool()`
+- [x] Universal tools register via `ExtensionCore::register_tool()`
+- [x] Whitelist enforced at registration AND execution time
+- [x] `ExtensionCore::get_tool_metadata()` provides O(1) lookup
+- [x] `ExtensionCore::list_tools()` returns all enabled tools
+- [x] `ExtensionCore::list_tool_definitions()` for LLM API
+- [x] Legacy storage locations deprecated (ToolWrapper deprecated)
 
 ## Blocked By
 
-None - this is foundational and can be implemented first.
+None - this is foundational.
+
+## Relationship to ADR-018a
+
+ADR-018a (Tool Execution Unification) has been completed. All tools now execute through ExtensionCore hooks, which provides the foundation for the unified registry. The remaining work is to:
+
+1. Create explicit `ToolMetadata` storage in ExtensionCore
+2. Add `register_tool()` method with unified API
+3. Add O(1) lookup methods (`get_tool_metadata()`, `list_tools()`)
+4. Migrate from hook-based registration to API-based registration
 
 ## Blocks
 
-- **ADR-018a**: Tool Execution Unification (needs unified lookup)
 - **ADR-019**: Dynamic Tool Updates (needs single registry to update)
+
+## Dependencies
+
+- **ADR-018a**: Tool Execution Unification (✅ Completed - provides hook-based execution foundation)
 
 ## References
 

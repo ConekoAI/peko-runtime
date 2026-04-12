@@ -9,7 +9,7 @@ use crate::tools::Tool;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 /// Configuration for running an agent
 #[derive(Debug, Clone)]
@@ -119,8 +119,24 @@ impl AgentRunner {
         }
     }
 
+    /// Initialize tool configuration from agent config
+    /// 
+    /// This ensures the ExtensionCore has the correct tool whitelist
+    async fn init_tool_config(&self) {
+        // Get tool config from agent
+        let tool_config = self.agent.config.tools.clone().unwrap_or_default();
+        
+        // Set it on the ExtensionCore for permission checking
+        self.extension_core.set_tool_config(tool_config).await;
+        
+        trace!(agent_name = %self.agent.name(), "Tool configuration initialized");
+    }
+
     /// Run the agent with a prompt
     pub async fn run(&self, prompt: &str) -> Result<RunResult> {
+        // Initialize tool configuration before running
+        self.init_tool_config().await;
+        
         let start_time = std::time::Instant::now();
         info!(
             "AgentRunner starting for agent: {} (prompt: {} chars)",
@@ -225,6 +241,9 @@ impl AgentRunner {
         &self,
         prompt: &str,
     ) -> Result<tokio::sync::mpsc::Receiver<AgenticEvent>> {
+        // Initialize tool configuration before running
+        self.init_tool_config().await;
+        
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(10000);
 
         // Filter tools if disabled

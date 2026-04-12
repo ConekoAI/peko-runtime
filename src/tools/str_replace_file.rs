@@ -281,11 +281,7 @@ impl Tool for StrReplaceFileTool {
         "str_replace_file"
     }
 
-    fn description(&self) -> &'static str {
-        "Make targeted string replacements in files"
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         r#"## Purpose
 Make targeted string replacements in files. Each 'old' string must appear exactly once in the file.
 

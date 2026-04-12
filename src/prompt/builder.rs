@@ -4,6 +4,7 @@
 
 use crate::prompt::bootstrap::{default_workspace_dir, inject_bootstrap_files, BootstrapConfig};
 use crate::prompt::placeholder::{Placeholder, replace_placeholders};
+use crate::providers::ToolDefinition;
 use crate::tools::Tool;
 use chrono::Local;
 use std::collections::HashMap;
@@ -38,6 +39,8 @@ pub struct SystemPromptBuilder {
     mode: PromptMode,
     bootstrap_config: BootstrapConfig,
     tools: Vec<Arc<dyn Tool>>,
+    /// Tool definitions from unified registry (ADR-019 Phase 3)
+    tool_definitions: Vec<ToolDefinition>,
     agent_name: String,
     workspace: PathBuf,
     model: String,
@@ -57,6 +60,7 @@ impl SystemPromptBuilder {
             mode: PromptMode::Full,
             bootstrap_config: BootstrapConfig::default(),
             tools: vec![],
+            tool_definitions: vec![],
             agent_name: agent_name.to_string(),
             workspace: default_workspace_dir(),
             model: "default".to_string(),
@@ -85,6 +89,15 @@ impl SystemPromptBuilder {
 
     pub fn with_tools(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
         self.tools = tools;
+        self
+    }
+    
+    /// Set tool definitions from unified registry (ADR-019 Phase 3)
+    /// 
+    /// This allows building prompts with ToolDefinition instead of Arc<dyn Tool>,
+    /// enabling dynamic tool updates without session restart.
+    pub fn with_tool_definitions(mut self, definitions: Vec<ToolDefinition>) -> Self {
+        self.tool_definitions = definitions;
         self
     }
 
@@ -184,17 +197,34 @@ impl SystemPromptBuilder {
         let mut lines: Vec<String> = vec![];
         
         lines.push("## Available Tools".to_string());
-        if self.tools.is_empty() {
+        
+        // ADR-019 Phase 3: Support both Arc<dyn Tool> and ToolDefinition
+        // Prefer tool_definitions if available (dynamic updates), fall back to tools
+        let has_tool_defs = !self.tool_definitions.is_empty();
+        let has_tools = !self.tools.is_empty();
+        
+        if !has_tool_defs && !has_tools {
             lines.push("No tools available.".to_string());
         } else {
             lines.push("You have access to the following tools. Use them wisely.".to_string());
             lines.push(String::new());
             
-            for tool in &self.tools {
-                lines.push(format!("### {}", tool.name()));
-                lines.push(String::new());
-                lines.push(tool.llm_description());
-                lines.push(String::new());
+            // Use tool_definitions if available (from unified registry)
+            if has_tool_defs {
+                for def in &self.tool_definitions {
+                    lines.push(format!("### {}", def.name));
+                    lines.push(String::new());
+                    lines.push(def.description.clone());
+                    lines.push(String::new());
+                }
+            } else {
+                // Fall back to legacy Tool trait objects
+                for tool in &self.tools {
+                    lines.push(format!("### {}", tool.name()));
+                    lines.push(String::new());
+                    lines.push(tool.description());
+                    lines.push(String::new());
+                }
             }
             
             lines.push("### Tool Use Guidelines".to_string());

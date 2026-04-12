@@ -277,7 +277,6 @@ fn test_tool_trait_implementation() {
     
     // Test Tool trait methods
     assert_eq!(adapter.name(), "trait_test");
-    assert_eq!(adapter.description(), "Test description");
-    assert_eq!(adapter.llm_description(), "LLM optimized");
+    assert_eq!(adapter.description(), "LLM optimized");
     assert!(adapter.parameters()["properties"]["q"].is_object());
 }

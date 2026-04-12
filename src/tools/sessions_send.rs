@@ -213,11 +213,7 @@ impl Tool for SessionsSendTool {
         "sessions_send"
     }
 
-    fn description(&self) -> &'static str {
-        "Send messages to other sessions. Cross-team sends blocked - use A2A bus for agent-to-agent within team."
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         r#"## Purpose
 Send messages to another session. For human-to-agent and tooling-to-agent communication.
 

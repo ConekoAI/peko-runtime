@@ -40,8 +40,8 @@ mod tests {
             &self.name
         }
 
-        fn description(&self) -> &str {
-            "Mock tool for testing context injection"
+        fn description(&self) -> String {
+            "Mock tool for testing context injection".to_string()
         }
 
         fn parameters(&self) -> serde_json::Value {

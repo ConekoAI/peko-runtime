@@ -74,7 +74,15 @@ impl ToolResult {
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
-    fn description(&self) -> &str;
+
+    /// Get LLM-optimized description with usage guidance.
+    ///
+    /// This should include "Use when:" and "Don't use when:" guidance
+    /// to help the LLM select the right tool.
+    ///
+    /// Example: "Execute terminal commands. Use when: running build/test commands,
+    /// inspecting system state. Don't use when: a safer dedicated tool exists."
+    fn description(&self) -> String;
 
     /// Convert to Any for downcasting
     ///
@@ -83,18 +91,6 @@ pub trait Tool: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any {
         // Default implementation panics - tools must override
         panic!("as_any not implemented for this tool")
-    }
-
-    /// Get LLM-optimized description with usage guidance.
-    ///
-    /// This should include "Use when:" and "Don't use when:" guidance
-    /// to help the LLM select the right tool. Default implementation
-    /// returns the regular description.
-    ///
-    /// Example: "Execute terminal commands. Use when: running build/test commands,
-    /// inspecting system state. Don't use when: a safer dedicated tool exists."
-    fn llm_description(&self) -> String {
-        self.description().to_string()
     }
 
     /// Get the JSON Schema for this tool's parameters

@@ -1,6 +1,34 @@
-//! Tool Wrapper - Reserved Parameters for Agent Control
+//! Tool Wrapper - Reserved Parameters for Agent Control (DEPRECATED)
 //!
-//! Provides a universal wrapper for all tools that adds reserved parameter support,
+//! ⚠️ DEPRECATED: This module is deprecated as of ADR-018a.
+//!
+//! Use the Extension Framework's AsyncExecutionRouter instead, which provides
+//! unified reserved parameter handling, timeout management, and panic isolation
+//! for all tool types (built-in, MCP, universal).
+//!
+//! # Migration Guide
+//!
+//! Instead of wrapping tools with ToolWrapper:
+//! ```rust,ignore
+//! // OLD - ToolWrapper approach
+//! let tool = ToolWrapper::new(Arc::new(my_tool), WrapperConfig::default());
+//! ```
+//!
+//! Use ExtensionCore hooks for tool execution:
+//! ```rust,ignore
+//! // NEW - ExtensionCore approach
+//! let hook_point = HookPointBuilder::tool_execute("my_tool");
+//! let result = extension_core.invoke_hook(hook_point, HookInput::ToolCall { ... }).await;
+//! ```
+//!
+//! The Extension Framework automatically handles:
+//! - Reserved parameter extraction (`_async`, `_timeout`, etc.)
+//! - Timeout enforcement with panic isolation
+//! - Async/sync mode routing
+//!
+//! # Deprecated Functionality
+//!
+//! This module provided a universal wrapper for all tools that adds reserved parameter support,
 //! allowing agents to control execution mode without modifying tool schemas.
 //!
 //! # Reserved Parameters
@@ -43,7 +71,14 @@ use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
 /// Reserved parameters extracted from tool calls
+/// 
+/// # Deprecated
+/// Use `AsyncReservedParams` from `crate::extensions::services` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[deprecated(
+    since = "0.1.0",
+    note = "Use AsyncReservedParams from crate::extensions::services instead"
+)]
 pub struct ReservedParams {
     /// Request async execution
     #[serde(rename = "_async", default)]
@@ -157,7 +192,14 @@ impl ReservedParams {
 }
 
 /// Configuration for tool wrapper
+/// 
+/// # Deprecated
+/// ToolWrapper is deprecated. Configuration is now handled by AsyncExecutionRouter.
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "0.1.0",
+    note = "ToolWrapper is deprecated. Use ExtensionCore tool execution hooks instead"
+)]
 pub struct WrapperConfig {
     /// Default timeout for sync execution
     pub default_sync_timeout_secs: u64,
@@ -207,6 +249,15 @@ impl WrapperConfig {
 }
 
 /// Wrapper for any tool that handles reserved parameters
+/// 
+/// # Deprecated
+/// Use ExtensionCore tool execution hooks with AsyncExecutionRouter instead.
+/// All tool execution now routes through the Extension Framework for unified
+/// handling of reserved parameters, timeouts, and panic isolation.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use ExtensionCore::invoke_hook with ToolExecute hook point instead"
+)]
 pub struct ToolWrapper {
     /// Inner tool implementation
     inner: Arc<dyn Tool>,
@@ -435,7 +486,7 @@ impl Tool for ToolWrapper {
         self.inner.name()
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> String {
         self.inner.description()
     }
 
@@ -524,6 +575,13 @@ impl ToolWrapper {
 }
 
 /// Factory for creating wrapped tools
+/// 
+/// # Deprecated
+/// Use ExtensionCore tool execution hooks instead of wrapping tools.
+#[deprecated(
+    since = "0.1.0",
+    note = "Use ExtensionCore tool execution hooks instead"
+)]
 pub struct ToolWrapperFactory {
     config: WrapperConfig,
 }
@@ -559,6 +617,15 @@ impl Default for ToolWrapperFactory {
 }
 
 /// System prompt section for reserved parameters
+/// 
+/// # Deprecated
+/// This prompt section is no longer needed with the Extension Framework.
+/// Reserved parameters are now documented in the system prompt by the
+/// Extension Framework's ToolRegister hook handlers.
+#[deprecated(
+    since = "0.1.0",
+    note = "Reserved parameters are now documented by the Extension Framework"
+)]
 pub fn get_reserved_params_prompt_section() -> String {
     r#"## Execution Control Parameters (All Tools)
 
@@ -646,8 +713,8 @@ mod tests {
             &self.name
         }
 
-        fn description(&self) -> &str {
-            "A mock tool for testing"
+        fn description(&self) -> String {
+            "A mock tool for testing".to_string()
         }
 
         fn parameters(&self) -> Value {
@@ -759,8 +826,8 @@ mod tests {
                 "conflicting"
             }
 
-            fn description(&self) -> &str {
-                "Has _async param"
+            fn description(&self) -> String {
+                "Has _async param".to_string()
             }
 
             fn parameters(&self) -> Value {

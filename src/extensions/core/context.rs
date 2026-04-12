@@ -210,6 +210,9 @@ pub struct ExtensionServices {
     
     /// Reserved parameters service
     reserved_params: crate::extensions::services::ReservedParamsService,
+    
+    /// Async execution router
+    async_router: crate::extensions::services::AsyncExecutionRouter,
 }
 
 impl ExtensionServices {
@@ -220,6 +223,7 @@ impl ExtensionServices {
             telemetry: TelemetryService::new(),
             tool_execution: crate::extensions::services::ToolExecutionService::new(),
             reserved_params: crate::extensions::services::ReservedParamsService::new(),
+            async_router: crate::extensions::services::AsyncExecutionRouter::new(),
         }
     }
     
@@ -241,6 +245,11 @@ impl ExtensionServices {
     /// Get reserved parameters service
     pub fn reserved_params(&self) -> &crate::extensions::services::ReservedParamsService {
         &self.reserved_params
+    }
+    
+    /// Get async execution router
+    pub fn async_router(&self) -> &crate::extensions::services::AsyncExecutionRouter {
+        &self.async_router
     }
     
     /// Record a hook invocation

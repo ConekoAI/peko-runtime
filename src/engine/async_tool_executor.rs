@@ -475,8 +475,8 @@ mod tests {
             &self.name
         }
 
-        fn description(&self) -> &str {
-            "Mock async tool"
+        fn description(&self) -> String {
+            "Mock async tool".to_string()
         }
 
         fn parameters(&self) -> Value {

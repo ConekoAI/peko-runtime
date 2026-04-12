@@ -303,8 +303,8 @@ mod tests {
             &self.name
         }
 
-        fn description(&self) -> &str {
-            "Mock tool for testing"
+        fn description(&self) -> String {
+            "Mock tool for testing".to_string()
         }
 
         fn parameters(&self) -> serde_json::Value {
@@ -390,8 +390,8 @@ mod tests {
             &self.name
         }
 
-        fn description(&self) -> &str {
-            "Mock tool that panics"
+        fn description(&self) -> String {
+            "Mock tool that panics".to_string()
         }
 
         fn parameters(&self) -> serde_json::Value {
@@ -436,8 +436,8 @@ mod tests {
                 "numeric_panicker"
             }
 
-            fn description(&self) -> &str {
-                "Panics with a number"
+            fn description(&self) -> String {
+                "Panics with a number".to_string()
             }
 
             fn parameters(&self) -> serde_json::Value {

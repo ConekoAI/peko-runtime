@@ -288,7 +288,7 @@ impl Tool for AgentSpawnTool {
         "agent_spawn"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> String {
         r#"Spawn a sub-agent run in an isolated session.
 
 Results are announced back to the parent via the event system when complete.
@@ -316,6 +316,7 @@ Examples:
 
 For framework-level async control, use:
 {"task": "Long task", "_async": true, "_timeout": 300}"#
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -419,13 +420,13 @@ impl Tool for AgentSpawnStatusTool {
         "agent_spawn_status"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> String {
         r"Check the status of a previously spawned subagent.
 
 Parameters:
 - run_id: The run ID returned by agent_spawn (required)
 
-Returns the current status and result if complete."
+Returns the current status and result if complete.".to_string()
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -503,8 +504,8 @@ impl Tool for AgentSpawnListTool {
         "agent_spawn_list"
     }
 
-    fn description(&self) -> &'static str {
-        "List all active subagent runs for the current session."
+    fn description(&self) -> String {
+        "List all active subagent runs for the current session.".to_string()
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {

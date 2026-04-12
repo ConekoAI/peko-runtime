@@ -139,11 +139,7 @@ impl Tool for ShellTool {
         "shell"
     }
 
-    fn description(&self) -> &'static str {
-        "Execute system shell commands with full access. Pipes, redirection, and shell builtins supported."
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         let (simple_cmd, pipe_cmd, redirect_cmd, env_cmd) = if cfg!(windows) {
             (
                 r#"{"command": "Get-ChildItem"}"#,

@@ -362,11 +362,7 @@ impl Tool for GrepTool {
         "grep"
     }
 
-    fn description(&self) -> &'static str {
-        "Search file contents using regular expressions"
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         r#"## Purpose
 Search file contents using regular expressions. Finds files by their content.
 

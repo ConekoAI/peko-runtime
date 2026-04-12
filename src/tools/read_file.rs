@@ -159,11 +159,7 @@ impl Tool for ReadFileTool {
         "read_file"
     }
 
-    fn description(&self) -> &'static str {
-        "Read file contents with optional line range and encoding"
-    }
-
-    fn llm_description(&self) -> String {
+    fn description(&self) -> String {
         r#"## Purpose
 Read file contents with support for partial reading (line ranges) and binary files.
 

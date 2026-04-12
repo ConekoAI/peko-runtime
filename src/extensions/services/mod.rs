@@ -28,7 +28,11 @@ pub mod reserved_params;
 // Tool execution module
 pub mod tool_execution;
 
+// Async execution router module
+pub mod async_router;
+
 // Re-export main types
+pub use async_router::{AsyncExecutionRouter, AsyncReservedParams, ToolExecutionContext};
 pub use reserved_params::{ParamSource, ReservedParamsConfig, ReservedParamsService};
 pub use tool_execution::{ToolExecutionConfig, ToolExecutionService};
 
@@ -39,8 +43,10 @@ use std::sync::Arc;
 pub struct Services {
     /// Reserved parameters service
     reserved_params: Arc<reserved_params::ReservedParamsService>,
-    /// Tool execution service
+    /// Tool execution service (with panic isolation and timeout)
     tool_execution: Arc<tool_execution::ToolExecutionService>,
+    /// Async execution router (for _async parameter handling)
+    async_router: Arc<async_router::AsyncExecutionRouter>,
 }
 
 impl Services {
@@ -49,6 +55,7 @@ impl Services {
         Self {
             reserved_params: Arc::new(reserved_params::ReservedParamsService::new()),
             tool_execution: Arc::new(tool_execution::ToolExecutionService::new()),
+            async_router: Arc::new(async_router::AsyncExecutionRouter::new()),
         }
     }
 
@@ -70,6 +77,16 @@ impl Services {
     /// Get arc to tool execution service
     pub fn tool_execution_arc(&self) -> Arc<tool_execution::ToolExecutionService> {
         self.tool_execution.clone()
+    }
+
+    /// Get the async execution router
+    pub fn async_router(&self) -> &async_router::AsyncExecutionRouter {
+        &self.async_router
+    }
+
+    /// Get arc to async execution router
+    pub fn async_router_arc(&self) -> Arc<async_router::AsyncExecutionRouter> {
+        self.async_router.clone()
     }
 }
 

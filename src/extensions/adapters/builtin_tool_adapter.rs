@@ -39,7 +39,7 @@ impl BuiltinToolAdapter {
         // Create tool metadata for unified registry
         let metadata = ToolMetadata {
             name: tool_name.clone(),
-            description: tool.llm_description(), // Use LLM-optimized description
+            description: tool.description(), // Use LLM-optimized description
             parameters: tool.parameters(),
             source: ToolSource::BuiltIn,
             reserved_params: ReservedParamsConfig::new(), // Built-in tools get default reserved params
@@ -105,7 +105,7 @@ impl HookHandler for BuiltinRegisterHandler {
 
         let tool_def = ToolDefinition {
             name: self.tool.name().to_string(),
-            description: self.tool.llm_description(), // Use LLM-optimized description
+            description: self.tool.description(), // Use LLM-optimized description
             parameters: self.tool.parameters(),
         };
 
@@ -155,10 +155,55 @@ impl HookHandler for BuiltinExecuteHandler {
             return HookResult::PassThrough;
         }
 
-        // DIRECT execution via trait call
-        // No process spawn, no network call, no serialization overhead
-        match self.tool.execute(params.clone()).await {
-            Ok(result) => HookResult::Continue(HookOutput::Json(result)),
+        // ADR-018a: Use AsyncExecutionRouter for unified execution
+        // This provides:
+        // - _async parameter extraction and routing
+        // - Panic isolation via ToolExecutionService
+        // - Timeout enforcement
+        // - Consistent context injection
+        
+        let exec_service = ctx.services.tool_execution();
+        let async_router = ctx.services.async_router();
+        
+        // Build execution context from hook state or use defaults
+        let tool_ctx = match ctx.as_tool_context() {
+            Some(tc) => crate::extensions::services::ToolExecutionContext::new(
+                tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.session_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.run_id.clone(),
+            ).with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
+            None => crate::extensions::services::ToolExecutionContext::new(
+                "unknown", "unknown", "unknown"
+            ),
+        };
+        
+        // Create execution config (built-in tools have no reserved params)
+        let exec_config = crate::extensions::services::ToolExecutionConfig::with_schema(
+            self.tool.parameters()
+        );
+        
+        // Clone params for mutation (AsyncExecutionRouter extracts _async, etc.)
+        let mut params_mut = params.clone();
+        
+        // Clone tool for the closure (needed for 'static bound)
+        let tool = self.tool.clone();
+        
+        // Route execution through AsyncExecutionRouter
+        let result = async_router
+            .route(
+                &mut params_mut,
+                exec_service,
+                &tool_ctx,
+                &exec_config,
+                move |p| {
+                    let tool = tool.clone();
+                    async move { tool.execute(p).await }
+                },
+            )
+            .await;
+        
+        match result {
+            Ok(value) => HookResult::Continue(HookOutput::Json(value)),
             Err(e) => HookResult::Error(e),
         }
     }
@@ -201,7 +246,7 @@ impl BuiltinPromptHandler {
 #[async_trait]
 impl HookHandler for BuiltinPromptHandler {
     async fn handle(&self, _ctx: HookContext) -> HookResult {
-        let description = self.tool.llm_description();
+        let description = self.tool.description();
         let text = format!("### {}\n\n{}", self.tool.name(), description);
 
         HookResult::Continue(HookOutput::Text(text))
@@ -245,8 +290,8 @@ mod tests {
             &self.name
         }
 
-        fn description(&self) -> &str {
-            "A mock tool for testing"
+        fn description(&self) -> String {
+            "A mock tool for testing".to_string()
         }
 
         fn parameters(&self) -> serde_json::Value {
