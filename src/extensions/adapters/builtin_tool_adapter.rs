@@ -12,7 +12,8 @@
 //! ```
 
 use crate::extensions::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
-use crate::extensions::types::{ExtensionId, HookOutput};
+use crate::extensions::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
+use crate::extensions::services::ReservedParamsConfig;
 use crate::extensions::HookResult;
 use crate::tools::Tool;
 use anyhow::Result;
@@ -26,33 +27,31 @@ pub struct BuiltinToolAdapter;
 impl BuiltinToolAdapter {
     /// Register a built-in tool with the ExtensionCore
     ///
-    /// Registers three hooks:
-    /// - `ToolRegister`: Makes tool visible to LLM
-    /// - `ToolExecute`: Handles tool execution via direct trait call
-    /// - `PromptSystemSection`: Adds tool description to system prompt
+    /// Uses the unified tool registry (ADR-018b) for single source of truth.
+    /// Registers:
+    /// - Tool metadata via `register_tool()` (includes name, description, parameters, source)
+    /// - Execution handler for direct trait calls
+    /// - Prompt section handler for system prompt
     pub async fn register_tool(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
         let tool_name = tool.name().to_string();
         let ext_id = ExtensionId::new(&format!("builtin:{}", tool_name));
 
-        // 1. Register for LLM visibility
-        core.register_hook(
-            HookPoint::ToolRegister,
-            Arc::new(BuiltinRegisterHandler::new(tool.clone())),
-            &ext_id,
-        )
-        .await?;
+        // Create tool metadata for unified registry
+        let metadata = ToolMetadata {
+            name: tool_name.clone(),
+            description: tool.llm_description(), // Use LLM-optimized description
+            parameters: tool.parameters(),
+            source: ToolSource::BuiltIn,
+            reserved_params: ReservedParamsConfig::new(), // Built-in tools get default reserved params
+        };
 
-        // 2. Register execution handler (DIRECT trait call)
-        core.register_hook(
-            HookPoint::ToolExecute {
-                tool_name: tool_name.clone(),
-            },
-            Arc::new(BuiltinExecuteHandler::new(tool.clone())),
-            &ext_id,
-        )
-        .await?;
+        // Create execution handler
+        let exec_handler = Arc::new(BuiltinExecuteHandler::new(tool.clone()));
 
-        // 3. Register prompt section
+        // 1. Register tool in unified registry (metadata + execution handler)
+        core.register_tool(metadata, exec_handler, &ext_id).await?;
+
+        // 2. Register prompt section (still via hook for prompt injection)
         core.register_hook(
             HookPoint::PromptSystemSection {
                 section: "tools".to_string(),
@@ -106,7 +105,7 @@ impl HookHandler for BuiltinRegisterHandler {
 
         let tool_def = ToolDefinition {
             name: self.tool.name().to_string(),
-            description: self.tool.description().to_string(),
+            description: self.tool.llm_description(), // Use LLM-optimized description
             parameters: self.tool.parameters(),
         };
 
