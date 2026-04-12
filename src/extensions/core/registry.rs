@@ -497,7 +497,10 @@ impl ExtensionCore {
         let hook_id = HookId::new();
         let priority = handler.priority();
         
-        // Create registration with tool metadata
+        // Get the handler's actual hook point (should be ToolExecute)
+        let exec_point = handler.hook_point();
+        
+        // Create registration for ToolRegister (for discovery)
         let registration = RegisteredHook::with_tool_metadata(
             hook_id.clone(),
             extension_id.clone(),
@@ -513,12 +516,30 @@ impl ExtensionCore {
             hooks.insert(hook_id.clone(), registration.clone());
         }
         
-        // Add to point index for ToolRegister
+        // Add to point index for ToolRegister (for discovery)
         {
             let mut by_point = self.hooks_by_point.write().await;
             let point_name = HookPoint::ToolRegister.name();
             let entry = by_point.entry(point_name).or_insert_with(Vec::new);
             entry.push(hook_id.clone());
+        }
+        
+        // CRITICAL: Also index by the handler's actual hook point (ToolExecute)
+        // This is what invoke_hook looks up when executing the tool
+        {
+            let mut by_point = self.hooks_by_point.write().await;
+            let exec_point_name = exec_point.name();
+            let entry = by_point.entry(exec_point_name).or_insert_with(Vec::new);
+            entry.push(hook_id.clone());
+            
+            // Sort by priority (higher first)
+            let hooks = self.hooks.read().await;
+            entry.sort_by_key(|id| {
+                hooks
+                    .get(id)
+                    .map(|h| -h.priority)
+                    .unwrap_or(0)
+            });
         }
         
         // Add to tool index for O(1) lookup
@@ -531,6 +552,7 @@ impl ExtensionCore {
             hook_id = %hook_id,
             tool_name = %tool_name,
             extension_id = %extension_id,
+            exec_point = %exec_point,
             "Registered tool"
         );
         
