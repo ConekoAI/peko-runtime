@@ -71,6 +71,9 @@ pub use context::{
 // Re-export registry types
 pub use registry::{global_core, init_global_core, ExtensionCore, RegisteredHook};
 
+// Re-export tool registry types
+pub use crate::extensions::types::{ToolMetadata, ToolSource};
+
 // Re-export services for convenience
 pub use crate::extensions::services::{
     ParamSource,

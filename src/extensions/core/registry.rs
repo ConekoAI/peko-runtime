@@ -6,7 +6,7 @@
 use crate::extensions::core::context::{ExtensionServices, HookContext};
 use crate::extensions::core::hook_points::HookPoint;
 use crate::extensions::types::{
-    ExtensionId, HookId, HookInput, HookOutput, HookPriority, HookResult,
+    ExtensionId, HookId, HookInput, HookOutput, HookPriority, HookResult, ToolMetadata, ToolSource,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -34,6 +34,9 @@ pub struct RegisteredHook {
     
     /// Whether currently enabled
     pub enabled: bool,
+    
+    /// Tool metadata (only populated for ToolRegister hooks)
+    pub tool_metadata: Option<ToolMetadata>,
 }
 
 impl RegisteredHook {
@@ -52,6 +55,27 @@ impl RegisteredHook {
             handler,
             priority,
             enabled: true,
+            tool_metadata: None,
+        }
+    }
+    
+    /// Create a new registered hook with tool metadata
+    pub fn with_tool_metadata(
+        id: HookId,
+        extension_id: ExtensionId,
+        point: HookPoint,
+        handler: Arc<dyn super::context::HookHandler>,
+        priority: HookPriority,
+        tool_metadata: ToolMetadata,
+    ) -> Self {
+        Self {
+            id,
+            extension_id,
+            point,
+            handler,
+            priority,
+            enabled: true,
+            tool_metadata: Some(tool_metadata),
         }
     }
 }
@@ -68,11 +92,17 @@ pub struct ExtensionCore {
     /// Hooks indexed by hook point for faster lookup
     hooks_by_point: RwLock<HashMap<String, Vec<HookId>>>,
     
+    /// Tool index: maps tool name to hook ID for O(1) lookup
+    tool_index: RwLock<HashMap<String, HookId>>,
+    
     /// Extension services shared across all handlers
     services: Arc<ExtensionServices>,
     
     /// Global enable/disable flag
     globally_enabled: RwLock<bool>,
+    
+    /// Tool configuration (whitelist, per-tool settings)
+    tool_config: RwLock<crate::types::agent::ToolConfig>,
 }
 
 impl ExtensionCore {
@@ -81,8 +111,10 @@ impl ExtensionCore {
         Self {
             hooks: RwLock::new(HashMap::new()),
             hooks_by_point: RwLock::new(HashMap::new()),
+            tool_index: RwLock::new(HashMap::new()),
             services: Arc::new(ExtensionServices::new()),
             globally_enabled: RwLock::new(true),
+            tool_config: RwLock::new(crate::types::agent::ToolConfig::default()),
         }
     }
     
@@ -91,9 +123,24 @@ impl ExtensionCore {
         Self {
             hooks: RwLock::new(HashMap::new()),
             hooks_by_point: RwLock::new(HashMap::new()),
+            tool_index: RwLock::new(HashMap::new()),
             services,
             globally_enabled: RwLock::new(true),
+            tool_config: RwLock::new(crate::types::agent::ToolConfig::default()),
         }
+    }
+    
+    /// Set the tool configuration (whitelist, etc.)
+    pub async fn set_tool_config(&self, config: crate::types::agent::ToolConfig) {
+        let mut tool_config = self.tool_config.write().await;
+        *tool_config = config;
+        debug!("Updated tool configuration");
+    }
+    
+    /// Check if a tool is enabled according to whitelist
+    pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
+        let config = self.tool_config.read().await;
+        config.is_tool_enabled(tool_name)
     }
     
     /// Register a hook handler
@@ -391,6 +438,171 @@ impl ExtensionCore {
     /// Get the number of registered hooks for a specific point
     pub async fn hook_count_for_point(&self, point: &HookPoint) -> usize {
         self.get_hooks_for_point(point).await.len()
+    }
+    
+    // ==================== UNIFIED TOOL REGISTRY (ADR-018b) ====================
+    
+    /// Register a tool with the unified registry
+    ///
+    /// This method registers both the tool metadata and its execution handler.
+    /// It enforces the whitelist at registration time.
+    ///
+    /// # Arguments
+    /// * `metadata` - Tool metadata (name, description, parameters, etc.)
+    /// * `handler` - The handler implementation for tool execution
+    /// * `extension_id` - ID of the extension that owns this tool
+    ///
+    /// # Returns
+    /// The registration information
+    #[instrument(skip(self, handler, metadata), fields(extension_id = %extension_id, tool_name = %metadata.name))]
+    pub async fn register_tool(
+        &self,
+        metadata: ToolMetadata,
+        handler: Arc<dyn super::context::HookHandler>,
+        extension_id: &ExtensionId,
+    ) -> Result<RegisteredHook> {
+        let tool_name = metadata.name.clone();
+        
+        // Check whitelist
+        if !self.is_tool_enabled(&tool_name).await {
+            return Err(anyhow::anyhow!(
+                "Tool '{}' is not enabled according to whitelist",
+                tool_name
+            ));
+        }
+        
+        // Check for duplicates
+        if self.get_tool_metadata(&tool_name).await.is_some() {
+            return Err(anyhow::anyhow!(
+                "Tool '{}' is already registered",
+                tool_name
+            ));
+        }
+        
+        let hook_id = HookId::new();
+        let priority = handler.priority();
+        
+        // Create registration with tool metadata
+        let registration = RegisteredHook::with_tool_metadata(
+            hook_id.clone(),
+            extension_id.clone(),
+            HookPoint::ToolRegister,
+            handler.clone(),
+            priority,
+            metadata,
+        );
+        
+        // Add to hooks map
+        {
+            let mut hooks = self.hooks.write().await;
+            hooks.insert(hook_id.clone(), registration.clone());
+        }
+        
+        // Add to point index for ToolRegister
+        {
+            let mut by_point = self.hooks_by_point.write().await;
+            let point_name = HookPoint::ToolRegister.name();
+            let entry = by_point.entry(point_name).or_insert_with(Vec::new);
+            entry.push(hook_id.clone());
+        }
+        
+        // Add to tool index for O(1) lookup
+        {
+            let mut tool_index = self.tool_index.write().await;
+            tool_index.insert(tool_name.clone(), hook_id.clone());
+        }
+        
+        debug!(
+            hook_id = %hook_id,
+            tool_name = %tool_name,
+            extension_id = %extension_id,
+            "Registered tool"
+        );
+        
+        Ok(registration)
+    }
+    
+    /// Get tool metadata by name (O(1) lookup)
+    ///
+    /// # Arguments
+    /// * `tool_name` - The name of the tool
+    ///
+    /// # Returns
+    /// The tool metadata if found, None otherwise
+    pub async fn get_tool_metadata(&self, tool_name: &str) -> Option<ToolMetadata> {
+        let tool_index = self.tool_index.read().await;
+        let hooks = self.hooks.read().await;
+        
+        tool_index.get(tool_name)
+            .and_then(|hook_id| hooks.get(hook_id))
+            .and_then(|hook| hook.tool_metadata.clone())
+    }
+    
+    /// Get the hook ID for a tool by name
+    ///
+    /// # Arguments
+    /// * `tool_name` - The name of the tool
+    ///
+    /// # Returns
+    /// The hook ID if found, None otherwise
+    pub async fn get_tool_hook_id(&self, tool_name: &str) -> Option<HookId> {
+        let tool_index = self.tool_index.read().await;
+        tool_index.get(tool_name).cloned()
+    }
+    
+    /// List all registered tools
+    ///
+    /// # Returns
+    /// A list of tool metadata for all enabled tools
+    pub async fn list_tools(&self) -> Vec<ToolMetadata> {
+        let tool_index = self.tool_index.read().await;
+        let hooks = self.hooks.read().await;
+        let config = self.tool_config.read().await;
+        
+        tool_index.values()
+            .filter_map(|hook_id| hooks.get(hook_id))
+            .filter(|hook| hook.enabled)
+            .filter_map(|hook| hook.tool_metadata.clone())
+            .filter(|metadata| config.is_tool_enabled(&metadata.name))
+            .collect()
+    }
+    
+    /// List all registered tools as ToolDefinitions (for LLM API)
+    ///
+    /// # Returns
+    /// A list of ToolDefinition for all enabled tools
+    pub async fn list_tool_definitions(&self) -> Vec<crate::providers::ToolDefinition> {
+        self.list_tools().await
+            .into_iter()
+            .map(|metadata| metadata.to_tool_definition())
+            .collect()
+    }
+    
+    /// Unregister a tool by name
+    ///
+    /// # Arguments
+    /// * `tool_name` - The name of the tool to unregister
+    #[instrument(skip(self), fields(tool_name = %tool_name))]
+    pub async fn unregister_tool(&self, tool_name: &str) -> Result<()> {
+        let hook_id = {
+            let mut tool_index = self.tool_index.write().await;
+            tool_index.remove(tool_name)
+        };
+        
+        if let Some(hook_id) = hook_id {
+            // Also unregister from hooks
+            self.unregister_hook(&hook_id).await?;
+            debug!(tool_name = %tool_name, "Unregistered tool");
+        } else {
+            warn!(tool_name = %tool_name, "Attempted to unregister unknown tool");
+        }
+        
+        Ok(())
+    }
+    
+    /// Get the number of registered tools
+    pub async fn tool_count(&self) -> usize {
+        self.tool_index.read().await.len()
     }
 }
 
