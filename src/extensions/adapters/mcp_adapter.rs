@@ -28,8 +28,8 @@
 
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
-    HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
-    ToolExecutionConfig, // NEW
+    ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
+    ToolExecutionConfig, ToolMetadata, ToolSource, // NEW
 };
 use crate::extensions::services::ReservedParamsConfig; // NEW
 use crate::extensions::types::{
@@ -205,6 +205,79 @@ impl McpAdapter {
     /// Get the MCP manager
     pub fn manager(&self) -> Arc<RwLock<crate::mcp::McpManager>> {
         self.manager.clone()
+    }
+
+    /// Register MCP server tools with the unified registry (ADR-018b)
+    ///
+    /// This method queries the MCP server for its tools and registers them
+    /// with ExtensionCore using the unified tool registry.
+    ///
+    /// # Arguments
+    /// * `core` - The ExtensionCore to register tools with
+    /// * `server_name` - Name of the MCP server
+    ///
+    /// # Returns
+    /// Number of tools registered
+    pub async fn register_server_tools(
+        &self,
+        core: &ExtensionCore,
+        server_name: &str,
+    ) -> Result<usize> {
+        let manager = self.manager.read().await;
+        
+        // Get tools from all MCP servers and filter by server name
+        let all_tools = manager.list_all_tools().await;
+        let tools: Vec<_> = all_tools.into_iter()
+            .filter(|(srv, _)| srv == server_name)
+            .map(|(_, tool)| tool)
+            .collect();
+        
+        let ext_id = ExtensionId::new(format!("mcp:{}", server_name));
+        let mut registered_count = 0;
+        
+        for tool in tools {
+            let tool_name = format!("{}:{}:{}", MCP_TOOL_PREFIX, server_name, tool.name);
+            
+            // Create tool metadata
+            let metadata = ToolMetadata {
+                name: tool_name.clone(),
+                description: if tool.description.is_empty() {
+                    format!("MCP tool: {}", tool.name)
+                } else {
+                    tool.description
+                },
+                parameters: tool.input_schema,
+                source: ToolSource::Mcp { server: server_name.to_string() },
+                reserved_params: ReservedParamsConfig::new(), // MCP tools can configure this
+            };
+            
+            // Create execution handler with specific tool name
+            let exec_handler = Arc::new(McpToolExecuteHandler {
+                manager: self.manager.clone(),
+                server_name: server_name.to_string(),
+                tool_name: Some(tool.name),
+            });
+            
+            // Register with unified registry
+            match core.register_tool(metadata, exec_handler, &ext_id).await {
+                Ok(_) => {
+                    debug!(tool_name = %tool_name, "Registered MCP tool");
+                    registered_count += 1;
+                }
+                Err(e) => {
+                    // Tool might already be registered or not in whitelist
+                    warn!(tool_name = %tool_name, error = %e, "Failed to register MCP tool");
+                }
+            }
+        }
+        
+        info!(
+            server_name = %server_name,
+            registered = registered_count,
+            "Registered MCP server tools"
+        );
+        
+        Ok(registered_count)
     }
 }
 
@@ -527,6 +600,7 @@ impl HookHandlerFactory for McpToolExecuteFactory {
         Box::new(McpToolExecuteHandler {
             manager: self.manager.clone(),
             server_name: self.server_name.clone(),
+            tool_name: None, // Wildcard pattern handler
         })
     }
 }
@@ -536,6 +610,9 @@ impl HookHandlerFactory for McpToolExecuteFactory {
 struct McpToolExecuteHandler {
     manager: Arc<RwLock<crate::mcp::McpManager>>,
     server_name: String,
+    /// Specific tool name (optional - for unified registry registration)
+    /// If None, handles wildcard pattern mcp:{server}:*
+    tool_name: Option<String>,
 }
 
 impl std::fmt::Debug for McpToolExecuteHandler {
@@ -543,6 +620,7 @@ impl std::fmt::Debug for McpToolExecuteHandler {
         f.debug_struct("McpToolExecuteHandler")
             .field("manager", &"<McpManager>")
             .field("server_name", &self.server_name)
+            .field("tool_name", &self.tool_name)
             .finish()
     }
 }
@@ -563,10 +641,13 @@ impl HookHandler for McpToolExecuteHandler {
             None => return HookResult::PassThrough,
         };
 
-        // Extract actual tool name (after mcp:server:)
-        let actual_tool = tool_name
-            .strip_prefix(&format!("{}:{}:", MCP_TOOL_PREFIX, self.server_name))
-            .unwrap_or(&tool_name);
+        // Use specific tool name if set (unified registry), otherwise extract from pattern
+        let actual_tool = match &self.tool_name {
+            Some(name) => name.as_str(),
+            None => tool_name
+                .strip_prefix(&format!("{}:{}:", MCP_TOOL_PREFIX, self.server_name))
+                .unwrap_or(&tool_name),
+        };
 
         debug!(
             server_name = %self.server_name,
@@ -975,6 +1056,7 @@ pub async fn register_servers_with_core(
         let exec_handler = Arc::new(McpToolExecuteHandler {
             manager: manager.clone(),
             server_name: server.manifest.name.clone(),
+            tool_name: None, // Wildcard pattern handler
         });
 
         let exec_reg = core
