@@ -28,8 +28,8 @@
 
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
-    HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
-    ToolExecutionConfig, // NEW
+    ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
+    ToolExecutionConfig, ToolMetadata, ToolSource, // NEW
 };
 use crate::extensions::services::ReservedParamsConfig; // NEW
 use crate::extensions::types::{
@@ -206,6 +206,84 @@ impl UniversalToolAdapter {
         }
 
         Ok(manifest)
+    }
+
+    /// Register a universal tool with the unified registry (ADR-018b)
+    ///
+    /// This method registers a universal tool directly with ExtensionCore
+    /// using the unified tool registry for single source of truth.
+    ///
+    /// # Arguments
+    /// * `core` - The ExtensionCore to register with
+    /// * `manifest` - The tool's extension manifest
+    ///
+    /// # Returns
+    /// Ok if registration succeeds
+    pub async fn register_tool(
+        &self,
+        core: &ExtensionCore,
+        manifest: &ExtensionManifest,
+    ) -> Result<()> {
+        let tool_name = manifest.name.clone();
+        let ext_id = ExtensionId::new(format!("universal:{}", tool_name));
+
+        // Extract description - prefer llm_description if available
+        let description = manifest
+            .get("llm_description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| manifest.description.clone());
+
+        // Extract parameters schema
+        let parameters = manifest
+            .get("parameters")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+
+        // Extract reserved parameters
+        let reserved_params = manifest
+            .get("reserved_parameters")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        // Create tool metadata
+        let metadata = ToolMetadata {
+            name: tool_name.clone(),
+            description,
+            parameters,
+            source: ToolSource::Universal { 
+                extension_id: ext_id.0.clone() 
+            },
+            reserved_params,
+        };
+
+        // Get executable path
+        let executable = manifest
+            .get("executable")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_default();
+
+        let manifest_path = manifest
+            .get("manifest_path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_default();
+
+        // Create execution handler
+        let exec_handler = Arc::new(UniversalToolExecuteHandler {
+            tool_name: tool_name.clone(),
+            executable,
+            manifest_path,
+            reserved_params: metadata.reserved_params.clone(),
+            full_schema: metadata.parameters.clone(),
+        });
+
+        // Register with unified registry
+        core.register_tool(metadata, exec_handler, &ext_id).await?;
+
+        info!(tool_name = %tool_name, "Registered universal tool");
+        Ok(())
     }
 }
 
