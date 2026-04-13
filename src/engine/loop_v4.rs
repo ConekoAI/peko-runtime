@@ -733,8 +733,13 @@ impl AgenticLoopV4 {
 
                         // Execute tool via ExtensionCore for unified execution (ADR-018a)
                         let start_time = std::time::Instant::now();
+                        
+                        // Check if tool is available in agent's tool list OR in ExtensionCore
+                        let tool_in_list = self.tools.iter().any(|t| t.name() == name);
+                        let tool_in_extension = self.extension_core.get_tool_metadata(&name).await.is_some();
+                        
                         let tool_result =
-                            if self.tools.iter().any(|t| t.name() == name) {
+                            if tool_in_list || tool_in_extension {
                                 // Route through ExtensionCore for unified execution with panic isolation
                                 let hook_point = HookPointBuilder::tool_execute(name);
                                 let hook_input = HookInput::ToolCall {
@@ -742,14 +747,20 @@ impl AgenticLoopV4 {
                                     params: arguments.clone(),
                                 };
                                 
-                                match self.extension_core.invoke_hook(hook_point, hook_input).await {
+                                let hook_result = self.extension_core.invoke_hook(hook_point, hook_input).await;
+                                info!("Hook result for tool '{}': {:?}", name, std::mem::discriminant(&hook_result));
+                                match hook_result {
                                     HookResult::Continue(HookOutput::Json(result)) => {
-                                        info!("Tool '{}' executed successfully via ExtensionCore", name);
+                                        info!("Tool '{}' executed successfully via ExtensionCore: {}", name, result);
                                         result.to_string()
                                     }
                                     HookResult::Continue(HookOutput::Text(result)) => {
-                                        info!("Tool '{}' executed successfully via ExtensionCore", name);
+                                        info!("Tool '{}' executed successfully via ExtensionCore (text)", name);
                                         result
+                                    }
+                                    HookResult::Continue(other) => {
+                                        warn!("Tool '{}' returned non-Json/Text output: {:?}", name, std::mem::discriminant(&other));
+                                        format!("Error: Unexpected output type from tool")
                                     }
                                     HookResult::PassThrough => {
                                         // No handler registered - tool not found in extensions
@@ -760,9 +771,13 @@ impl AgenticLoopV4 {
                                         info!("Tool '{}' failed via ExtensionCore: {}", name, e);
                                         format!("Error: {e}")
                                     }
-                                    _ => {
-                                        warn!("Unexpected hook result for tool '{}'", name);
-                                        format!("Error: Unexpected result from tool execution")
+                                    HookResult::Handled => {
+                                        warn!("Hook result for tool '{}' was Handled (consumed)", name);
+                                        format!("Error: Tool execution was consumed by handler")
+                                    }
+                                    HookResult::Replace(output) => {
+                                        warn!("Hook result for tool '{}' was Replace: {:?}", name, output);
+                                        format!("Error: Tool execution was replaced")
                                     }
                                 }
                             } else {
@@ -912,13 +927,22 @@ impl AgenticLoopV4 {
             .clone()
             .unwrap_or_else(|| PathBuf::from("."));
         
-        // Build prompt with tool definitions (not Arc<dyn Tool>)
-        SystemPromptBuilder::new(self.agent.name())
+        // Build prompt with both ExtensionCore tool definitions AND self.tools
+        // This ensures MCP tools (which are in self.tools but not in ExtensionCore) are included
+        let mut builder = SystemPromptBuilder::new(self.agent.name())
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
-            .with_tool_definitions(tool_defs)
-            .with_extension_core(Arc::clone(&self.extension_core))
-            .build()
+            .with_extension_core(Arc::clone(&self.extension_core));
+        
+        // If ExtensionCore has tool definitions, use those (for dynamic updates)
+        // Otherwise fall back to self.tools
+        if !tool_defs.is_empty() {
+            builder = builder.with_tool_definitions(tool_defs);
+        } else {
+            builder = builder.with_tools(self.tools.clone());
+        }
+        
+        builder.build()
     }
 
     /// Get the tool executor
@@ -1364,8 +1388,13 @@ impl AgenticLoopV4 {
 
                         // Execute tool via ExtensionCore for unified execution (ADR-018a)
                         let start_time = std::time::Instant::now();
+                        
+                        // Check if tool is available in agent's tool list OR in ExtensionCore
+                        let tool_in_list = self.tools.iter().any(|t| t.name() == name);
+                        let tool_in_extension = self.extension_core.get_tool_metadata(&name).await.is_some();
+                        
                         let tool_result =
-                            if self.tools.iter().any(|t| t.name() == name) {
+                            if tool_in_list || tool_in_extension {
                                 // Route through ExtensionCore for unified execution with panic isolation
                                 let hook_point = HookPointBuilder::tool_execute(name);
                                 let hook_input = HookInput::ToolCall {
@@ -1382,6 +1411,29 @@ impl AgenticLoopV4 {
                                         info!("Tool '{}' executed successfully via ExtensionCore", name);
                                         result
                                     }
+                                    HookResult::Continue(HookOutput::Vec(outputs)) => {
+                                        // Multiple outputs from different handlers - find first useful one
+                                        info!("Tool '{}' returned Vec with {} outputs", name, outputs.len());
+                                        let result = outputs.iter().find_map(|o| match o {
+                                            HookOutput::Json(v) => Some(v.to_string()),
+                                            HookOutput::Text(t) => Some(t.clone()),
+                                            _ => None,
+                                        });
+                                        match result {
+                                            Some(r) => {
+                                                info!("Tool '{}' executed successfully via ExtensionCore (from {} outputs)", name, outputs.len());
+                                                r
+                                            }
+                                            None => {
+                                                warn!("Tool '{}' returned Vec with no Json/Text: {:?}", name, outputs);
+                                                format!("Error: Unexpected Vec output from tool")
+                                            }
+                                        }
+                                    }
+                                    HookResult::Continue(other) => {
+                                        warn!("Tool '{}' returned non-Json/Text output: {:?}", name, std::mem::discriminant(&other));
+                                        format!("Error: Unexpected output type from tool")
+                                    }
                                     HookResult::PassThrough => {
                                         // No handler registered - tool not found in extensions
                                         warn!("Tool '{}' not handled by ExtensionCore", name);
@@ -1391,9 +1443,13 @@ impl AgenticLoopV4 {
                                         info!("Tool '{}' failed via ExtensionCore: {}", name, e);
                                         format!("Error: {e}")
                                     }
-                                    _ => {
-                                        warn!("Unexpected hook result for tool '{}'", name);
-                                        format!("Error: Unexpected result from tool execution")
+                                    HookResult::Handled => {
+                                        warn!("Hook result for tool '{}' was Handled (consumed)", name);
+                                        format!("Error: Tool execution was consumed by handler")
+                                    }
+                                    HookResult::Replace(output) => {
+                                        warn!("Hook result for tool '{}' was Replace: {:?}", name, output);
+                                        format!("Error: Tool execution was replaced")
                                     }
                                 }
                             } else {

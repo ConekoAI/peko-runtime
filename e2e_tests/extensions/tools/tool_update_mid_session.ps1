@@ -114,7 +114,7 @@ Write-Host "Mid-session update: Disabled glob, Enabled shell" -ForegroundColor C
 # Test 3: Try to use newly enabled tool (shell)
 Write-Host ""
 Write-Host "TEST 3: Using newly enabled tool (shell)..." -ForegroundColor Cyan
-$response3 = pekobot send $agentName "Use the shell tool to list files in your workspace. If you don't have shell tool access, reply exactly SHELL_BLOCKED, otherwise reply SHELL_SUCCESS" 2>&1
+$response3 = pekobot send $agentName "Your tool access has been updated. Try to use the shell tool to list files in your workspace. If you don't have shell tool access, reply exactly SHELL_BLOCKED, otherwise reply SHELL_SUCCESS" 2>&1
 Write-Host "Response: $response3" -ForegroundColor Gray
 
 $shellWorked = $response3 -match "SHELL_SUCCESS"

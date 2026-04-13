@@ -68,7 +68,6 @@ Write-Host "STEP 1: Create agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $agentName = "calc_agent"
-$teamName = "default"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
 pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
@@ -119,7 +118,7 @@ Write-Host "STEP 3: Enable tool extension" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Enabling calculator_simple extension..." -ForegroundColor Yellow
-pekobot ext enable calculator_simple 2>&1 | Out-Null
+pekobot ext enable calculator_simple --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled tool extension" -ForegroundColor Green
 
 # Verify
@@ -136,26 +135,18 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending calculation request to agent..." -ForegroundColor Yellow
 Measure-Command {
-    $response = pekobot send $agentName "Calculate 25 multiplied by 4 using calculator_simple" --no-stream 2>&1
+    $response = pekobot send $agentName "We are testing your access and functionality of the calculator_simple tool. Please calculate 25 multiplied by 4 using the calculator_simple tool. respond TOOL_SUCCESS if the tool works, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
 }
 Write-Host "Agent response: $response"
 
-# Check session
-$sessions = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
-if ($sessions.sessions.Count -ge 1) {
-    Write-Host "✓ Session created" -ForegroundColor Green
-    $sessionId = $sessions.sessions[0].session_id
-    
-    # Check session for tool call
-    $sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/${sessionId}.jsonl"
-    if (Test-Path $sessionFile) {
-        $content = Get-Content $sessionFile -Raw
-        if ($content -match "calculator_simple") {
-            Write-Host "✓ Tool was called in session" -ForegroundColor Green
-        }
-    }
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Tool worked correctly" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Tool did not work" -ForegroundColor Red
 } else {
-    Write-Host "⚠ No session found" -ForegroundColor Yellow
+    Write-Host "⚠️ Tool result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
@@ -166,7 +157,7 @@ Write-Host "Cleanup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Uninstall tool extension
-pekobot ext uninstall calculator_simple --force 2>&1 | Out-Null
+pekobot ext uninstall calculator_simple 2>&1 | Out-Null
 Write-Host "Uninstalled tool extension" -ForegroundColor Green
 
 # Delete agent

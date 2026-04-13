@@ -69,7 +69,8 @@ class UniversalToolAdapter:
 
         try:
             for line in self._stdin:
-                line = line.strip()
+                # Strip BOM and whitespace (Windows PowerShell adds BOM to UTF-8 output)
+                line = line.lstrip('\ufeff').strip()
                 if not line:
                     continue
                 

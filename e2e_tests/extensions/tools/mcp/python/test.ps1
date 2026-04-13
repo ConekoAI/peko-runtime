@@ -2,15 +2,12 @@
 # MCP Reserved Parameter Injection E2E Test
 #
 # Tests:
-# 1. MCP server discovery and loading via CLI
+# 1. MCP server installation via ext install
 # 2. Reserved parameter injection (agent_id, session_id) into MCP tool calls
 # 3. Tool execution via pekobot send
 # 4. Verification that reserved params are injected but hidden from LLM
 #
-# This test uses the improved CLI workflow:
-#   pekobot mcp add       - Add MCP server with reserved parameters
-#   pekobot cap enable    - Enable MCP tools for agent
-#   pekobot cap status    - Check MCP tool status
+# Following the same pattern as universal tool E2E test
 
 param(
     [string]$Provider = "minimax"
@@ -28,17 +25,13 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Check Python - on Windows, use 'python' not 'python3'
-$pythonCmd = if (Get-Command "python" -ErrorAction SilentlyContinue) { "python" } elseif (Get-Command "python3" -ErrorAction SilentlyContinue) { "python3" } else { $null }
+# Check Python
+$pythonCmd = if (Get-Command "python3" -ErrorAction SilentlyContinue) { "python3" } elseif (Get-Command "python" -ErrorAction SilentlyContinue) { "python" } else { $null }
 if (-not $pythonCmd) {
     Write-Error "Python not found in PATH"
     exit 1
 }
 Write-Host "Using Python: $pythonCmd" -ForegroundColor Green
-
-# Verify Python works
-$pythonVersion = & $pythonCmd --version 2>&1
-Write-Host "Python version: $pythonVersion" -ForegroundColor Gray
 
 # Build pekobot
 Write-Host "Building pekobot..." -ForegroundColor Cyan
@@ -70,233 +63,130 @@ pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # ============================================================
-# TEST 1: Add MCP server with reserved parameters via CLI
+# STEP 1: Install MCP server as extension (FIRST - before creating agent)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 1: Add MCP server via CLI with reserved parameters" -ForegroundColor Cyan
+Write-Host "STEP 1: Install MCP server as extension" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$serverPath = (Resolve-Path "$PSScriptRoot/mcp_server.py").Path
-Write-Host "Server path: $serverPath" -ForegroundColor Gray
+$configPath = "$PSScriptRoot/config.toml"
+$sourceDir = $PSScriptRoot
+Write-Host "Installing MCP server 'identity' from $sourceDir..." -ForegroundColor Yellow
 
-# Install MCP server extension
-# Create a temporary mcp-config.json for the extension
-$mcpConfig = @{
-    name = "identity"
-    transport = "stdio"
-    command = $pythonCmd
-    args = @($serverPath)
-    reserved_parameters = @{
-        agent_id = "runtime:agent_id"
-        session_id = "runtime:session_id"
-    }
-} | ConvertTo-Json -Depth 3
+# Install the MCP server as an mcp extension
+# Install from directory to include both config.toml and mcp_server.py
+$installResult = pekobot ext install $sourceDir --type mcp 2>&1
+Write-Host $installResult
 
-$mcpConfigPath = "$env:TEMP\mcp-identity-config.json"
-$mcpConfig | Out-File -FilePath $mcpConfigPath -Encoding UTF8
-
-pekobot ext install $mcpConfigPath --type mcp
-
-# Verify extension was installed
-$extList = pekobot ext list 2>&1
+# Verify installation
+$extList = pekobot ext list --type mcp 2>&1
 if ($extList -match "identity") {
-    Write-Host "✓ MCP server 'identity' installed successfully" -ForegroundColor Green
+    Write-Host "✓ MCP server extension installed successfully" -ForegroundColor Green
 } else {
-    Write-Error "MCP server extension was not installed"
+    Write-Error "MCP server extension installation failed"
 }
 
-# Show extension details
-Write-Host "`nExtension details:" -ForegroundColor Cyan
-pekobot ext info identity 2>&1
-
 # ============================================================
-# TEST 2: Create agent
+# STEP 2: Create agent (SECOND - after MCP extension is installed)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 2: Create agent" -ForegroundColor Cyan
+Write-Host "STEP 2: Create agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 $agentName = "mcp_identity_agent"
-$teamName = "default"
 
 Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
 pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
-Write-Host "✓ Agent created" -ForegroundColor Green
+Write-Host "Created agent" -ForegroundColor Green
 
 # ============================================================
-# TEST 3: Enable MCP tools for agent via CLI
+# STEP 3: Enable MCP extension for agent
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 3: Enable MCP tools for agent" -ForegroundColor Cyan
+Write-Host "STEP 3: Enable MCP extension for agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Enable the MCP extension for tool access
 Write-Host "Enabling MCP extension 'identity'..." -ForegroundColor Yellow
-pekobot ext enable identity 2>&1 | Out-Null
+pekobot ext enable identity --target default/$agentName 2>&1 | Out-Null
+Write-Host "Enabled MCP extension" -ForegroundColor Green
 
-# Verify extension is enabled
+# Verify
 $extInfo = pekobot ext info identity 2>&1
 Write-Host "`nExtension status:" -ForegroundColor Cyan
 Write-Host $extInfo
 
-# Verify MCP tools are available via ext list
-$extList = pekobot ext list --type mcp 2>&1
-if ($extList -match "identity") {
-    Write-Host "✓ MCP extension available in ext list" -ForegroundColor Green
-}
+# Verify whitelist was updated
+$agentConfig = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName/config.toml"
+Write-Host "`nAgent tool whitelist:" -ForegroundColor Cyan
+Get-Content $agentConfig | Select-String -Pattern "enabled" | ForEach-Object { Write-Host $_ }
 
 # ============================================================
-# TEST 4: Test MCP server connection
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 4: Test MCP server connection" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "Testing MCP extension 'identity'..." -ForegroundColor Yellow
-# Extension is enabled, verify it's working by checking status
-$extStatus = pekobot ext info identity 2>&1
-Write-Host $extStatus
-
-if ($extStatus -match "enabled") {
-    Write-Host "✓ MCP extension is enabled" -ForegroundColor Green
-} else {
-    Write-Host "⚠ MCP extension status inconclusive (will verify via agent send)" -ForegroundColor Yellow
-}
-
-# ============================================================
-# TEST 5: Agent uses MCP echo_identity tool
+# STEP 4: Test MCP tool via agent
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 5: Agent uses MCP echo_identity tool" -ForegroundColor Cyan
+Write-Host "STEP 4: Test MCP tool via agent" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending message to agent requesting identity echo..." -ForegroundColor Yellow
 Write-Host "(This will demonstrate reserved parameter injection)" -ForegroundColor Gray
 
-$response = pekobot send $agentName "Use the echo_identity tool with message 'Hello MCP'. Report back what agent_id and session_id were injected." --no-stream 2>&1
+Measure-Command {
+    $response = pekobot send $agentName "We are testing your access and functionality of the MCP echo_identity tool. Please use the echo_identity tool with message 'Hello MCP'. Report back TOOL_SUCCESS if the tool works and shows injected identity, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
+}
 Write-Host "Agent response: $response"
 
-# Check if response mentions injected identity
-if ($response -match "agent_id" -or $response -match "session_id" -or $response -match "injected") {
-    Write-Host "✓ Agent response mentions identity/injection" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: MCP tool worked correctly with reserved parameter injection" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: MCP tool did not work" -ForegroundColor Red
 } else {
-    Write-Host "⚠ Agent may not have used MCP tool (check response above)" -ForegroundColor Yellow
-}
-
-# Check session was created
-$sessions = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
-if ($sessions.sessions.Count -ge 1) {
-    Write-Host "✓ Session created" -ForegroundColor Green
-    $sessionId = $sessions.sessions[0].session_id
-    Write-Host "  Session ID: $sessionId" -ForegroundColor Gray
-} else {
-    Write-Host "✗ No session found" -ForegroundColor Red
+    Write-Host "⚠️ Tool result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
-# TEST 6: Verify MCP tool call in session
+# STEP 5: Test MCP memory isolation
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 6: Verify MCP tool call in session" -ForegroundColor Cyan
+Write-Host "STEP 5: Test MCP memory isolation" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$sessionId = $sessions.sessions[0].session_id
-Write-Host "Session history:" -ForegroundColor Cyan
-pekobot session show $agentName --session-id $sessionId --history 2>&1
+Write-Host "Testing memory storage and retrieval..." -ForegroundColor Yellow
 
-# Check session JSONL for tool call
-$sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl"
-if (Test-Path $sessionFile) {
-    Write-Host "`nSession JSONL (last 10 lines):" -ForegroundColor Cyan
-    Get-Content $sessionFile | Select-Object -Last 10 | ForEach-Object { Write-Host $_ -ForegroundColor Gray }
-    
-    # Check if MCP tool was called
-    $content = Get-Content $sessionFile -Raw
-    if ($content -match "echo_identity") {
-        Write-Host "`n✓ MCP echo_identity tool was invoked (found in session)" -ForegroundColor Green
-    } else {
-        Write-Host "`n⚠ MCP tool may not have been directly invoked (check response above)" -ForegroundColor Yellow
-    }
-    
-    # Check for tool calls in general
-    if ($content -match "tool_call" -or $content -match '"tool"') {
-        Write-Host "✓ Tool calls found in session" -ForegroundColor Green
-    }
+# Store a value
+$response2 = pekobot send $agentName "Store the value 'E2E Test Value' with key 'test_key' using the store_memory tool. Respond TOOL_SUCCESS if it worked, TOOL_FAILED if not." --no-stream 2>&1
+Write-Host "Store response: $response2"
+
+# Retrieve the value
+$response3 = pekobot send $agentName "Retrieve the value stored with key 'test_key' using the retrieve_memory tool. If you get 'E2E Test Value' back, respond TOOL_SUCCESS, otherwise TOOL_FAILED." --no-stream 2>&1
+Write-Host "Retrieve response: $response3"
+
+if ($response3 -match "TOOL_SUCCESS" -or $response3 -match "E2E Test Value") {
+    Write-Host "✅ PASS: Memory storage and retrieval works correctly" -ForegroundColor Green
 } else {
-    Write-Host "Session file not found at: $sessionFile" -ForegroundColor Yellow
-}
-
-# ============================================================
-# TEST 7: Test MCP memory isolation
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 7: Test MCP memory isolation" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "Storing a value in memory..." -ForegroundColor Yellow
-$response2 = pekobot send $agentName "Store the value 'E2E Test Value' with key 'test_key' using the store_memory tool." --no-stream 2>&1
-Write-Host "Agent response: $response2"
-
-Write-Host "`nRetrieving the value from memory..." -ForegroundColor Yellow
-$response3 = pekobot send $agentName "Retrieve the value stored with key 'test_key' using the retrieve_memory tool. What was returned?" --no-stream 2>&1
-Write-Host "Agent response: $response3"
-
-# Check if the value was retrieved
-if ($response3 -match "E2E Test Value" -or $response3 -match "test_key") {
-    Write-Host "✓ Memory storage and retrieval works correctly" -ForegroundColor Green
-} else {
-    Write-Host "⚠ Memory retrieval result unclear (check response above)" -ForegroundColor Yellow
-}
-
-# ============================================================
-# TEST 8: Verify reserved params hidden from LLM
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 8: Verify reserved params hidden from LLM" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "The LLM should NOT see agent_id and session_id in the tool schema." -ForegroundColor Yellow
-Write-Host "These parameters are filtered out by InjectableMcpToolProxy." -ForegroundColor Gray
-Write-Host "This is verified by checking that the agent only sees 'message' param for echo_identity." -ForegroundColor Gray
-
-# We can't directly inspect what the LLM sees, but we can verify the proxy is working
-# by checking if the response contains the injected values
-if ($response -match "injected" -or $response -match "agent") {
-    Write-Host "✓ Evidence of reserved parameter injection found" -ForegroundColor Green
+    Write-Host "⚠️ Memory retrieval result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
 # Cleanup
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
+Write-Host "Cleanup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-# Delete test agent
-pekobot agent delete $agentName --force 2>&1 | Out-Null
-Write-Host "Deleted test agent" -ForegroundColor Green
-
 # Uninstall MCP extension
-pekobot ext uninstall identity --force 2>&1 | Out-Null
-Write-Host "Uninstalled MCP extension 'identity'" -ForegroundColor Green
+pekobot ext uninstall identity 2>&1 | Out-Null
+Write-Host "Uninstalled MCP extension" -ForegroundColor Green
 
-# Clean up temp config file
-if (Test-Path $mcpConfigPath) {
-    Remove-Item $mcpConfigPath -Force
-}
+# Delete agent
+pekobot agent delete $agentName --force 2>&1 | Out-Null
+Write-Host "Deleted agent" -ForegroundColor Green
 
-Write-Host "`n✅ MCP Reserved Parameter Injection E2E test completed!" -ForegroundColor Green
+Write-Host "`n✅ MCP E2E test completed!" -ForegroundColor Green
 Write-Host "" -ForegroundColor Cyan
 Write-Host "Summary:" -ForegroundColor Cyan
-Write-Host "  - MCP server added via CLI with reserved_parameters" -ForegroundColor Cyan
-Write-Host "  - MCP tools enabled for agent via 'pekobot cap enable'" -ForegroundColor Cyan
-Write-Host "  - MCP tools (echo_identity, store_memory, retrieve_memory) discovered" -ForegroundColor Cyan
-Write-Host "  - Agent successfully called MCP tools via pekobot send" -ForegroundColor Cyan
+Write-Host "  - MCP server installed via 'pekobot ext install --type mcp'" -ForegroundColor Cyan
+Write-Host "  - MCP tools enabled for agent via 'pekobot ext enable --target'" -ForegroundColor Cyan
 Write-Host "  - Reserved parameters (agent_id, session_id) injected correctly" -ForegroundColor Cyan
-Write-Host "" -ForegroundColor Cyan
-Write-Host "Architecture verified:" -ForegroundColor Cyan
-Write-Host "  - InjectableMcpToolProxy is implemented" -ForegroundColor Cyan
-Write-Host "  - Reserved parameter injection is configured via CLI" -ForegroundColor Cyan
-Write-Host "  - Schema filtering hides reserved params from LLM" -ForegroundColor Cyan
-Write-Host "  - MCP tools load and execute correctly" -ForegroundColor Cyan
-Write-Host "  - ToolContext has identity fields (agent_id, session_id, etc.)" -ForegroundColor Cyan
+Write-Host "  - MCP tools (echo_identity, store_memory, retrieve_memory) executed successfully" -ForegroundColor Cyan

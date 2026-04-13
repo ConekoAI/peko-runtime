@@ -94,7 +94,14 @@ impl Agent {
 
         // Filter based on agent config whitelist
         if let Some(ref tool_config) = self.config.tools {
-            tools.retain(|tool| tool_config.is_tool_enabled(tool.name()));
+            eprintln!("DEBUG: Whitelist: {:?}", tool_config.enabled);
+            let before_count = tools.len();
+            tools.retain(|tool| {
+                let enabled = tool_config.is_tool_enabled(tool.name());
+                eprintln!("DEBUG: Tool '{}' enabled: {}", tool.name(), enabled);
+                enabled
+            });
+            eprintln!("DEBUG: Filtered {} tools to {}", before_count, tools.len());
         }
 
         tools
@@ -173,73 +180,84 @@ impl Agent {
             }
         }
 
-        // Load Universal Tools from system-wide tools directory
-        let tools_dir = crate::tools::universal::default_tools_dir();
+        // Track extension tools separately to avoid double registration
+        let mut extension_tools: Vec<Arc<dyn Tool>> = vec![];
+
+        // Load Universal Tools from extensions directory (where `pekobot ext install` puts them)
+        let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
         tracing::info!(
-            "Checking for Universal Tools in system directory: {}",
-            tools_dir.display()
+            "Checking for Universal Tools in extensions directory: {}",
+            extensions_dir.display()
         );
-        if tools_dir.exists() {
+        if extensions_dir.exists() {
             tracing::info!(
                 "Loading Universal Tools from '{}' for agent '{}'...",
-                tools_dir.display(),
+                extensions_dir.display(),
                 self.config.name
             );
             // Use ExtensionManager for unified tool discovery
             use crate::extensions::adapters::BuiltInAdapters;
             use crate::extensions::manager::ExtensionManager;
-            let mut manager = ExtensionManager::new();
+            let mut manager = ExtensionManager::with_core(self.extension_core.clone());
             for adapter in BuiltInAdapters::new().adapters() {
                 manager.register_adapter(adapter);
             }
-            match manager.load_from_directory(&tools_dir).await {
+            match manager.load_from_directory(&extensions_dir).await {
                 Ok(loaded_ids) => {
                     if loaded_ids.is_empty() {
-                        tracing::info!("No Universal Tools found in {}", tools_dir.display());
+                        tracing::debug!("No extensions found in {}", extensions_dir.display());
                     } else {
                         tracing::info!(
-                            "✅ Discovered {} Universal Tools: {:?}",
+                            "✅ Loaded {} extensions: {:?}",
                             loaded_ids.len(),
                             loaded_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>()
                         );
-                        // Get tools as Arc<dyn Tool>
-                        let universal_tools = manager.get_tool_instances().await;
-                        for tool in universal_tools {
-                            tools.push(tool);
+                        // Get tools filtered by agent's tool whitelist
+                        // Extension state is controlled by AgentConfig.tools.enabled
+                        let tool_config = self.config.tools.as_ref();
+                        let ext_tools = manager.get_tool_instances(|tool_name| {
+                            tool_config.map_or(false, |tc| tc.is_tool_enabled(tool_name))
+                        }).await;
+                        tracing::info!("✅ ExtensionManager returned {} tool instances (filtered by whitelist)", ext_tools.len());
+                        for tool in ext_tools {
+                            tracing::info!("  - Adding tool: {}", tool.name());
+                            extension_tools.push(tool);
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("❌ Failed to load Universal Tools: {}", e);
-                    // Continue without Universal Tools
+                    tracing::warn!("❌ Failed to load extensions: {}", e);
+                    // Continue without extensions
                 }
             }
         } else {
             tracing::debug!(
-                "System tools directory not found at {} - creating it",
-                tools_dir.display()
+                "Extensions directory not found at {} - no universal tools to load",
+                extensions_dir.display()
             );
-            // Create the directory for future use
-            if let Err(e) = tokio::fs::create_dir_all(&tools_dir).await {
-                tracing::debug!("Failed to create tools directory: {}", e);
-            }
         }
 
-        tracing::info!("Total tools available: {}", tools.len());
+        // Combine all tools for return
+        let tool_count_before = tools.len();
+        tools.extend(extension_tools.clone());
+        
+        tracing::info!("Total tools available: {} ({} built-in, {} extension)", 
+            tools.len(), tool_count_before, extension_tools.len());
 
-        // ADR-018/019: Register ALL tools with ExtensionCore
-        // Tools are filtered dynamically at query/execution time based on current config
-        // This enables mid-session enable/disable without re-registration
-        // This ensures tools are discoverable via ToolRegister hook and executable via ToolExecute hook
-        for tool in &tools {
+        // ADR-018/019: Register ONLY built-in tools with ExtensionCore
+        // Extension tools (Universal and MCP) are already registered via ExtensionManager hooks
+        // This prevents double registration (DRY violation fix)
+        let builtin_count = tool_count_before;
+        for tool in tools.iter().take(builtin_count) {
             if let Err(e) = BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await {
-                tracing::warn!("Failed to register tool '{}' with ExtensionCore: {}", tool.name(), e);
+                tracing::warn!("Failed to register built-in tool '{}' with ExtensionCore: {}", tool.name(), e);
             } else {
-                tracing::debug!("Registered tool '{}' with ExtensionCore", tool.name());
+                tracing::debug!("Registered built-in tool '{}' with ExtensionCore", tool.name());
             }
         }
         
-        tracing::info!("Registered {} tools with ExtensionCore", tools.len());
+        tracing::info!("Registered {} built-in tools with ExtensionCore ({} extension tools already registered via hooks)", 
+            builtin_count, extension_tools.len());
 
         Ok(tools)
     }

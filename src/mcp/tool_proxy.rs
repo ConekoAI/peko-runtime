@@ -16,7 +16,12 @@ use tokio::sync::RwLock;
 use tracing::{debug, trace};
 
 /// An MCP tool wrapped as a Pekobot Tool
+///
+/// Uses full names with mcp: prefix (e.g., "mcp:identity:echo_identity")
+/// for consistent identification across whitelist, hooks, and execution.
 pub struct McpToolProxy {
+    /// Full tool name: mcp:{server_name}:{tool_name}
+    name: String,
     /// The server this tool belongs to
     server_name: String,
     /// The tool definition from MCP
@@ -37,8 +42,12 @@ impl McpToolProxy {
     pub fn new(server_name: String, tool: McpTool, manager: Arc<RwLock<McpManager>>) -> Self {
         // Estimate duration based on tool name heuristics
         let estimated_duration = estimate_tool_duration(&tool.name);
+        
+        // Create full name with mcp: prefix for consistent identification
+        let name = format!("mcp:{}:{}", server_name, tool.name);
 
         Self {
+            name,
             server_name,
             tool,
             manager,
@@ -53,7 +62,10 @@ impl McpToolProxy {
         manager: Arc<RwLock<McpManager>>,
         estimated_duration_ms: u64,
     ) -> Self {
+        let name = format!("mcp:{}:{}", server_name, tool.name);
+        
         Self {
+            name,
             server_name,
             tool,
             manager,
@@ -167,7 +179,9 @@ impl McpToolProxy {
 #[async_trait]
 impl Tool for McpToolProxy {
     fn name(&self) -> &str {
-        &self.tool.name
+        // Return full name with mcp: prefix for consistent identification
+        // Format: mcp:{server_name}:{tool_name}
+        &self.name
     }
 
     fn description(&self) -> String {

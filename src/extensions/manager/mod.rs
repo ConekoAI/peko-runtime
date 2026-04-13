@@ -26,12 +26,15 @@ pub struct ExtensionManager {
 }
 
 /// An extension that has been loaded into the manager
+/// 
+/// Note: Enable/disable state is NOT stored here. It is managed by the agent/team
+/// configuration (AgentConfig.tools.enabled whitelist). ExtensionManager handles
+/// loading and lifecycle; access control is determined by configuration.
 #[derive(Debug, Clone)]
 pub struct LoadedExtension {
     pub manifest: ExtensionManifest,
     pub extension_type: String,
     pub hook_ids: Vec<HookId>,
-    pub enabled: bool,
     pub path: PathBuf,
 }
 
@@ -69,8 +72,20 @@ impl ExtensionStorage {
                 .with_context(|| format!("Failed to remove existing extension at {:?}", target_dir))?;
         }
 
-        copy_dir_recursive(source, &target_dir)
-            .with_context(|| format!("Failed to copy extension from {:?} to {:?}", source, target_dir))?;
+        // Handle single file (e.g., MCP config.toml) vs directory
+        if source.is_file() {
+            // Create target directory and copy the file into it
+            std::fs::create_dir_all(&target_dir)
+                .with_context(|| format!("Failed to create target directory {:?}", target_dir))?;
+            let file_name = source.file_name()
+                .context("Invalid source file name")?;
+            let target_file = target_dir.join(file_name);
+            std::fs::copy(source, &target_file)
+                .with_context(|| format!("Failed to copy file from {:?} to {:?}", source, target_file))?;
+        } else {
+            copy_dir_recursive(source, &target_dir)
+                .with_context(|| format!("Failed to copy extension from {:?} to {:?}", source, target_dir))?;
+        }
 
         Ok(target_dir)
     }
@@ -202,9 +217,12 @@ impl ExtensionManager {
     }
 
     fn detect_extension_type(&self, path: &Path) -> Option<&dyn ExtensionTypeAdapter> {
+        tracing::debug!("detect_extension_type: checking {} with {} adapters", path.display(), self.adapters.len());
         for adapter in self.adapters.values() {
             let format = adapter.manifest_format();
-            if format.detect(path) {
+            let detected = format.detect(path);
+            tracing::debug!("  Adapter '{}': detected = {}", adapter.extension_type(), detected);
+            if detected {
                 debug!("Detected extension type '{}' at {:?}", adapter.extension_type(), path);
                 return Some(adapter.as_ref());
             }
@@ -228,9 +246,30 @@ impl ExtensionManager {
         adapter: &dyn ExtensionTypeAdapter,
     ) -> Result<(ExtensionId, Vec<HookId>, ExtensionManifest)> {
         let format = adapter.manifest_format();
-        let manifest_path = format
-            .manifest_path(path)
-            .context("Could not determine manifest path")?;
+        
+        // For custom formats, the path itself may be the manifest file
+        // or a directory containing the manifest file
+        let manifest_path = match format.manifest_path(path) {
+            Some(p) => p,
+            None => {
+                if path.is_file() {
+                    path.to_path_buf()
+                } else if path.is_dir() {
+                    // Try to find config.toml or config.json in the directory
+                    let toml_path = path.join("config.toml");
+                    let json_path = path.join("config.json");
+                    if toml_path.exists() {
+                        toml_path
+                    } else if json_path.exists() {
+                        json_path
+                    } else {
+                        anyhow::bail!("Could not determine manifest path for {:?}", path)
+                    }
+                } else {
+                    anyhow::bail!("Could not determine manifest path for {:?}", path)
+                }
+            }
+        };
 
         let manifest = self.parse_manifest(&manifest_path, adapter).await?;
         let extension_id = manifest.id.clone();
@@ -259,6 +298,50 @@ impl ExtensionManager {
             ext_type,
             hook_ids.len()
         );
+
+        // For universal tools, also register with the unified registry (ADR-018b)
+        // This ensures tools appear in list_tool_definitions() queries
+        if ext_type == "universal-tool" {
+            use crate::extensions::adapters::universal_tool_adapter::UniversalToolAdapter;
+            let adapter = UniversalToolAdapter::new();
+            info!("Registering universal tool '{}' with unified registry...", extension_id);
+            if let Err(e) = adapter.register_tool(&self.core, &manifest).await {
+                warn!("Failed to register universal tool '{}' with unified registry: {}", extension_id, e);
+            } else {
+                info!("Successfully registered universal tool '{}' with unified registry", extension_id);
+                // Verify registration
+                let count = self.core.tool_count().await;
+                info!("Unified registry now has {} tools", count);
+            }
+        }
+        
+        // For MCP servers, ensure config is loaded and register tools with unified registry
+        if ext_type == "mcp" {
+            use crate::extensions::adapters::mcp_adapter::McpAdapter;
+            
+            // Get config path from manifest and ensure server config is loaded
+            if let Some(config_path) = manifest.get("config_path").and_then(|v| v.as_str()) {
+                // Use MCP adapter with global shared manager
+                let adapter = McpAdapter::with_default_manager();
+                
+                // First, ensure the server config is loaded into the MCP manager
+                if let Err(e) = adapter.ensure_server_config(config_path).await {
+                    warn!("Failed to load MCP server config for '{}': {}", extension_id, e);
+                } else {
+                    info!("Registering MCP server '{}' tools with unified registry...", extension_id);
+                    if let Err(e) = adapter.register_server_tools(&self.core, &manifest.name).await {
+                        warn!("Failed to register MCP server '{}' tools with unified registry: {}", extension_id, e);
+                    } else {
+                        info!("Successfully registered MCP server '{}' tools with unified registry", extension_id);
+                        // Verify registration
+                        let count = self.core.tool_count().await;
+                        info!("Unified registry now has {} tools", count);
+                    }
+                }
+            } else {
+                warn!("MCP extension '{}' missing config_path in manifest", extension_id);
+            }
+        }
 
         // Store state after hooks are registered (so self can be borrowed mutably after)
         if !state.is_unit() {
@@ -359,7 +442,6 @@ impl ExtensionManager {
             manifest,
             extension_type: ext_type,
             hook_ids,
-            enabled: true,
             path: path.to_path_buf(),
         };
 
@@ -385,9 +467,30 @@ impl ExtensionManager {
         let adapter_ref = adapter.as_ref();
         let ext_type_name = adapter_ref.extension_type().to_string();
         let format = adapter_ref.manifest_format();
-        let manifest_path = format
-            .manifest_path(path)
-            .context("Could not determine manifest path")?;
+        
+        // For custom formats, the path itself may be the manifest file
+        let manifest_path = match format.manifest_path(path) {
+            Some(p) => p,
+            None => {
+                // Custom format: check if path is a file (direct manifest) or directory
+                if path.is_file() {
+                    path.to_path_buf()
+                } else if path.is_dir() {
+                    // For directories with Custom format, look for manifest files
+                    let candidates = vec![
+                        path.join("config.toml"),
+                        path.join("config.json"),
+                        path.join("manifest.json"),
+                        path.join("manifest.toml"),
+                    ];
+                    candidates.into_iter()
+                        .find(|p| p.exists())
+                        .context(format!("Could not find manifest file in directory {:?}", path))?
+                } else {
+                    anyhow::bail!("Could not determine manifest path for {:?}", path)
+                }
+            }
+        };
         
         // Parse manifest before any mutable borrow
         let manifest = self.parse_manifest(&manifest_path, adapter_ref).await?;
@@ -418,7 +521,6 @@ impl ExtensionManager {
             manifest,
             extension_type: ext_type,
             hook_ids,
-            enabled: true,
             path: target_path,
         };
 
@@ -461,34 +563,40 @@ impl ExtensionManager {
         Ok(())
     }
 
+    /// Enable hooks for an extension at runtime.
+    /// 
+    /// Note: This only affects hook registration state, not tool access.
+    /// Tool access is controlled by AgentConfig.tools.enabled whitelist.
     pub async fn enable(&mut self, id: &ExtensionId) -> Result<()> {
         let loaded_ext = self
             .extensions
-            .get_mut(id)
+            .get(id)
             .context(format!("Extension '{}' not found", id))?;
 
         for hook_id in &loaded_ext.hook_ids {
             self.core.enable_hook(hook_id).await?;
         }
 
-        loaded_ext.enabled = true;
-        info!("Enabled extension '{}'", id);
+        info!("Enabled extension hooks for '{}'", id);
 
         Ok(())
     }
 
+    /// Disable hooks for an extension at runtime.
+    /// 
+    /// Note: This only affects hook registration state, not tool access.
+    /// Tool access is controlled by AgentConfig.tools.enabled whitelist.
     pub async fn disable(&mut self, id: &ExtensionId) -> Result<()> {
         let loaded_ext = self
             .extensions
-            .get_mut(id)
+            .get(id)
             .context(format!("Extension '{}' not found", id))?;
 
         for hook_id in &loaded_ext.hook_ids {
             self.core.disable_hook(hook_id).await?;
         }
 
-        loaded_ext.enabled = false;
-        info!("Disabled extension '{}'", id);
+        info!("Disabled extension hooks for '{}'", id);
 
         Ok(())
     }
@@ -710,27 +818,53 @@ impl ExtensionManager {
         let mut discovered = Vec::new();
 
         if !path.exists() {
+            tracing::debug!("Extensions directory does not exist: {}", path.display());
             return Ok(discovered);
         }
 
+        tracing::debug!("Scanning directory: {}", path.display());
         let mut entries = tokio::fs::read_dir(path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            
             if !path.is_dir() {
+                tracing::trace!("Skipping non-directory: {}", name);
                 continue;
             }
 
+            tracing::debug!("Checking directory: {}", name);
+            
             // Try to detect extension type using registered adapters
             if let Some(adapter) = self.detect_extension_type(&path) {
                 let format = adapter.manifest_format();
-                if let Some(manifest_path) = format.manifest_path(&path) {
-                    discovered.push(DiscoveredExtension {
-                        path,
-                        manifest_path,
-                        extension_type: adapter.extension_type().to_string(),
-                    });
-                }
+                tracing::info!("Detected extension type '{}' in {}", adapter.extension_type(), name);
+                
+                // Get manifest path - for Custom formats, we need to determine it manually
+                let manifest_path = match format.manifest_path(&path) {
+                    Some(p) => p,
+                    None => {
+                        // For Custom formats, check common manifest file names
+                        let candidates = vec![
+                            path.join("config.toml"),
+                            path.join("config.json"),
+                            path.join("manifest.json"),
+                            path.join("manifest.toml"),
+                        ];
+                        candidates.into_iter()
+                            .find(|p| p.exists())
+                            .unwrap_or_else(|| path.join("config.toml"))
+                    }
+                };
+                
+                discovered.push(DiscoveredExtension {
+                    path,
+                    manifest_path,
+                    extension_type: adapter.extension_type().to_string(),
+                });
+            } else {
+                tracing::debug!("No adapter detected extension type for: {}", name);
             }
         }
 
@@ -744,7 +878,9 @@ impl ExtensionManager {
     ///
     /// Returns the IDs of loaded extensions.
     pub async fn load_from_directory(&mut self, path: &Path) -> Result<Vec<ExtensionId>> {
+        tracing::info!("Scanning directory for extensions: {}", path.display());
         let discovered = self.scan_directory(path).await?;
+        tracing::info!("Discovered {} extensions", discovered.len());
         let mut loaded_ids = Vec::new();
 
         for discovered_ext in discovered {
@@ -777,25 +913,46 @@ impl ExtensionManager {
         Ok(loaded_ids)
     }
 
-    /// Get loaded universal tools as Arc<dyn Tool> trait objects
+    /// Get loaded extensions as Arc<dyn Tool> trait objects
     ///
     /// This bridges the gap between ExtensionManager (tracks metadata)
     /// and Agent (needs executable Tool instances).
     ///
-    /// Only extensions of type "universal-tool" are returned.
-    pub async fn get_tool_instances(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
+    /// Supports both "universal-tool" and "mcp" extension types.
+    /// 
+    /// Note: Tool access control is handled by the caller via `is_tool_allowed` predicate.
+    /// ExtensionManager does not track enable/disable state; that is the responsibility
+    /// of the agent/team configuration layer (AgentConfig.tools.enabled whitelist).
+    ///
+    /// # Arguments
+    /// * `is_tool_allowed` - Function that takes a tool name and returns true if the tool should be included
+    pub async fn get_tool_instances<F>(&self, is_tool_allowed: F) -> Vec<Arc<dyn crate::tools::Tool>>
+    where
+        F: Fn(&str) -> bool,
+    {
         let mut tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
 
         for (ext_id, loaded_ext) in &self.extensions {
-            if !loaded_ext.enabled {
-                continue;
-            }
-
-            // Only universal tools can be converted to Tool trait objects
-            if loaded_ext.extension_type == "universal-tool" {
-                if let Some(tool) = self.create_tool_instance(ext_id).await {
-                    tools.push(tool);
+            match loaded_ext.extension_type.as_str() {
+                "universal-tool" => {
+                    // For universal tools, the extension name is the tool name
+                    let tool_name = &loaded_ext.manifest.name;
+                    if is_tool_allowed(tool_name) {
+                        if let Some(tool) = self.create_tool_instance(ext_id).await {
+                            tools.push(tool);
+                        }
+                    }
                 }
+                "mcp" => {
+                    // Create MCP tool instances and filter individually
+                    let mcp_tools = self.create_mcp_tool_instances(ext_id).await;
+                    for tool in mcp_tools {
+                        if is_tool_allowed(tool.name()) {
+                            tools.push(tool);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -839,6 +996,49 @@ impl ExtensionManager {
             Err(e) => {
                 warn!("Failed to create tool instance for '{}': {}", ext_id, e);
                 None
+            }
+        }
+    }
+
+    /// Create Tool trait objects from a loaded MCP extension
+    async fn create_mcp_tool_instances(&self, ext_id: &ExtensionId) -> Vec<Arc<dyn crate::tools::Tool>> {
+        let loaded = match self.extensions.get(ext_id) {
+            Some(l) => l,
+            None => return Vec::new(),
+        };
+
+        // Get server name from manifest
+        let server_name = &loaded.manifest.name;
+
+        // Create MCP adapter with the global shared manager
+        let adapter = crate::extensions::adapters::McpAdapter::with_default_manager();
+        
+        // Start the MCP server if not already running
+        // This is needed because list_all_tools only returns tools from running servers
+        let manager = adapter.manager();
+        {
+            let mgr = manager.read().await;
+            let server_state = mgr.get_server_state(server_name).await;
+            drop(mgr);
+            
+            if server_state.is_err() || !server_state.unwrap().running {
+                let mut mgr = manager.write().await;
+                if let Err(e) = mgr.start_server(server_name).await {
+                    warn!("Failed to start MCP server '{}': {}", server_name, e);
+                    return Vec::new();
+                }
+            }
+        }
+
+        // Create tool instances
+        match adapter.create_tool_instances(server_name).await {
+            Ok(tools) => {
+                info!("Created {} MCP tool instances for '{}'", tools.len(), ext_id);
+                tools
+            }
+            Err(e) => {
+                warn!("Failed to create MCP tool instances for '{}': {}", ext_id, e);
+                Vec::new()
             }
         }
     }

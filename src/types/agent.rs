@@ -227,10 +227,27 @@ impl ToolConfig {
     ///
     /// - If whitelist has entries: only listed tools are allowed (unless per-tool enabled=true)
     /// - If whitelist is empty: NO tools allowed (secure by default)
+    /// - Supports wildcard patterns like "mcp:identity:*" which matches full tool names
+    ///
+    /// Tools must be referenced by their full names (e.g., "mcp:identity:echo_identity")
+    /// for consistent identification across extension types.
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        // Check if tool is in the whitelist (case-insensitive)
+        // Check if tool is in the whitelist (case-insensitive, supports wildcards)
         let in_whitelist = self.enabled.iter()
-            .any(|t| t.eq_ignore_ascii_case(tool_name));
+            .any(|pattern| {
+                // Direct match (case-insensitive)
+                if pattern.eq_ignore_ascii_case(tool_name) {
+                    return true;
+                }
+                
+                // Support wildcard patterns like "mcp:identity:*"
+                // This matches full names like "mcp:identity:echo_identity"
+                if pattern.ends_with('*') {
+                    let prefix = &pattern[..pattern.len()-1];
+                    return tool_name.to_lowercase().starts_with(&prefix.to_lowercase());
+                }
+                false
+            });
 
         // Get per-tool settings if they exist
         let per_tool_enabled = self.get_tool_settings(tool_name)

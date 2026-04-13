@@ -159,12 +159,21 @@ fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionM
         mcp_adapter::McpAdapter, skill_adapter::SkillAdapter,
         universal_tool_adapter::UniversalToolAdapter,
     };
+    use crate::extensions::core::{global_core, init_global_core, ExtensionCore};
+    use std::sync::Arc;
 
-    let mut manager = if let Some(storage) = storage {
-        ExtensionManager::with_storage(storage)
-    } else {
-        ExtensionManager::new()
-    };
+    // Get or initialize global ExtensionCore for consistency with agent
+    let core = global_core().unwrap_or_else(|| {
+        let core = Arc::new(ExtensionCore::new());
+        init_global_core(core.clone());
+        core
+    });
+
+    let mut manager = ExtensionManager::with_core(core);
+    
+    if let Some(storage) = storage {
+        manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
+    }
 
     // Register extension type adapters
     // Note: GatewayAdapter requires ExtensionCore and is registered by
@@ -255,9 +264,12 @@ async fn handle_install(
 }
 
 /// Handle list command
+/// 
+/// Note: Extensions are always "installed" globally. Enable/disable state
+/// is per-agent and controlled by AgentConfig.tools.enabled whitelist.
 fn handle_list(
     manager: &ExtensionManager,
-    enabled_only: bool,
+    _enabled_only: bool,  // Kept for CLI compatibility, but ignored
     ext_type: Option<String>,
 ) -> anyhow::Result<()> {
     let extensions = manager.list_extensions();
@@ -268,13 +280,10 @@ fn handle_list(
         return Ok(());
     }
 
-    // Filter extensions based on criteria
+    // Filter extensions by type only (enabled state is per-agent, not global)
     let filtered: Vec<&LoadedExtension> = extensions
         .into_iter()
         .filter(|ext| {
-            if enabled_only && !ext.enabled {
-                return false;
-            }
             if let Some(ref t) = ext_type {
                 if &ext.extension_type != t {
                     return false;
@@ -291,19 +300,20 @@ fn handle_list(
 
     println!("Installed Extensions:");
     println!();
-    println!("{:<20} {:<12} {:<8} {}", "ID", "TYPE", "STATUS", "NAME");
-    println!("{}", "-".repeat(60));
+    println!("{:<20} {:<12} {}", "ID", "TYPE", "NAME");
+    println!("{}", "-".repeat(50));
 
     for ext in &filtered {
-        let status = if ext.enabled { "enabled" } else { "disabled" };
         println!(
-            "{:<20} {:<12} {:<8} {}",
-            ext.manifest.id, ext.extension_type, status, ext.manifest.name
+            "{:<20} {:<12} {}",
+            ext.manifest.id, ext.extension_type, ext.manifest.name
         );
     }
 
     println!();
     println!("Total: {} extension(s)", filtered.len());
+    println!();
+    println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
 
     Ok(())
 }
@@ -321,14 +331,34 @@ async fn handle_enable(
     }
     let ext_id = ExtensionId::new(&id);
 
-    // Check if extension exists
-    if manager.get_extension(&ext_id).is_none() {
-        anyhow::bail!("Extension '{}' not found", id);
-    }
+    // Check if extension exists and get data we need
+    let (tool_name, ext_type) = {
+        let ext = manager.get_extension(&ext_id)
+            .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", id))?;
+        (ext.manifest.name.clone(), ext.extension_type.clone())
+    };
 
     match manager.enable(&ext_id).await {
         Ok(()) => {
             println!("Extension '{}' enabled", id);
+            
+            // Also add to agent tool whitelist for tools that need it (universal-tool and mcp)
+            let needs_whitelist = ext_type == "universal-tool" || ext_type == "mcp";
+            if needs_whitelist {
+                let target = target.as_deref().unwrap_or("default");
+                // For MCP tools, use wildcard pattern to match all tools from this server
+                let whitelist_entry = if ext_type == "mcp" {
+                    format!("mcp:{}:*", tool_name)
+                } else {
+                    tool_name.clone()
+                };
+                if let Err(e) = add_tool_to_agent_whitelist(paths, &whitelist_entry, target).await {
+                    tracing::warn!("Failed to add tool '{}' to agent whitelist: {}", whitelist_entry, e);
+                } else {
+                    println!("Added '{}' to agent '{}' tool whitelist", whitelist_entry, target);
+                }
+            }
+            
             Ok(())
         }
         Err(e) => {
@@ -336,6 +366,88 @@ async fn handle_enable(
             Err(e)
         }
     }
+}
+
+/// Add a tool to an agent's tool whitelist
+async fn add_tool_to_agent_whitelist(
+    paths: &GlobalPaths,
+    tool_name: &str,
+    target: &str,
+) -> anyhow::Result<()> {
+    // Parse target into team and optional agent
+    // Format: "team/agent" or "team" (team only, applies to all agents)
+    let (team, agent) = if target.contains('/') {
+        let parts: Vec<&str> = target.splitn(2, '/').collect();
+        (parts[0].to_string(), Some(parts[1].to_string()))
+    } else {
+        // Target is just a team name - apply to all agents in that team
+        (target.to_string(), None)
+    };
+
+    if let Some(agent_name) = agent {
+        // Agent-level: update specific agent config
+        let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+        }
+
+        update_agent_config_with_tool(&config_path, tool_name)?;
+        println!("Added '{}' to agent '{}/{}' tool whitelist", tool_name, team, agent_name);
+        tracing::info!("Added '{}' to agent '{}/{}' tool whitelist", tool_name, team, agent_name);
+    } else {
+        // Team-level: update all agents in the team
+        let agents_dir = paths.resolver().agents_dir(Some(&team));
+        if !agents_dir.exists() {
+            anyhow::bail!("Team '{}' not found (no agents directory)", team);
+        }
+        
+        let mut updated_count = 0;
+        
+        // Find all agents in the team
+        for entry in std::fs::read_dir(&agents_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            
+            let agent_name = entry.file_name().to_string_lossy().to_string();
+            let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
+            
+            if config_path.exists() {
+                update_agent_config_with_tool(&config_path, tool_name)?;
+                updated_count += 1;
+            }
+        }
+        
+        if updated_count > 0 {
+            println!("Added '{}' to {} agent(s) in team '{}' tool whitelist", tool_name, updated_count, team);
+            tracing::info!("Added '{}' to {} agent(s) in team '{}' tool whitelist", tool_name, updated_count, team);
+        } else {
+            tracing::warn!("No agents found in team '{}' to add tool '{}' to", team, tool_name);
+        }
+    }
+    
+    Ok(())
+}
+
+/// Helper to update a single agent's config with a tool
+fn update_agent_config_with_tool(config_path: &std::path::Path, tool_name: &str) -> anyhow::Result<()> {
+    let content = std::fs::read_to_string(config_path)?;
+    let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
+
+    // Ensure tools config exists
+    let tools = config.tools.get_or_insert_with(Default::default);
+
+    // Add to enabled whitelist if not already present
+    if !tools.enabled.iter().any(|e| e.eq_ignore_ascii_case(tool_name)) {
+        tools.enabled.push(tool_name.to_string());
+    }
+
+    // Save
+    let updated = toml::to_string_pretty(&config)?;
+    std::fs::write(config_path, updated)?;
+    
+    Ok(())
 }
 
 /// Enable a built-in capability for a team or agent
@@ -556,9 +668,12 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
     println!("Name:        {}", ext.manifest.name);
     println!("Type:        {}", ext.extension_type);
     println!("Version:     {}", ext.manifest.version);
-    println!("Status:      {}", if ext.enabled { "enabled" } else { "disabled" });
+    println!("Status:      installed");
     println!("Description: {}", ext.manifest.description);
     println!("Path:        {}", ext.path.display());
+    println!();
+    println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
+    println!("Use 'pekobot ext enable {} --target <team>/<agent>' to enable for a specific agent.", id);
 
     if !ext.hook_ids.is_empty() {
         println!();
@@ -1030,9 +1145,11 @@ async fn handle_debug(manager: &ExtensionManager, id: String) -> anyhow::Result<
     println!("  Name:        {}", ext.manifest.name);
     println!("  Type:        {}", ext.extension_type);
     println!("  Version:     {}", ext.manifest.version);
-    println!("  Status:      {}", if ext.enabled { "enabled" } else { "disabled" });
+    println!("  Status:      installed");
     println!("  Description: {}", ext.manifest.description);
     println!("  Path:        {}", ext.path.display());
+    println!();
+    println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
     println!();
 
     // Hook registrations

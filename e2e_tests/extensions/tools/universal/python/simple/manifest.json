@@ -22,12 +22,12 @@
   },
   "reserved_parameters": {
     "session_id": {
-      "source": { "runtime": { "field": "session_id" } },
-      "description": "Current session ID"
+      "source": "runtime",
+      "field": "session_id"
     },
     "agent_id": {
-      "source": { "runtime": { "field": "agent_id" } },
-      "description": "ID of the calling agent"
+      "source": "runtime",
+      "field": "agent_id"
     }
   }
 }

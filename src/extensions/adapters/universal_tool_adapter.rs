@@ -306,6 +306,53 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
         }
     }
 
+    fn parse_manifest(
+        &self,
+        path: &std::path::Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        use anyhow::Context;
+
+        // Parse as universal tool manifest (different structure from ExtensionManifest)
+        let tool_manifest: crate::tools::universal::Manifest = serde_json::from_str(content)
+            .with_context(|| format!("Failed to parse universal tool manifest at {:?}", path))?;
+
+        // Find the executable
+        let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
+        let executable = super::parsing::find_executable_sync(tool_path, &tool_manifest.name)
+            .with_context(|| format!("Failed to find executable for tool '{}' in {:?}", tool_manifest.name, tool_path))?;
+
+        // Build ExtensionManifest from tool manifest
+        let mut manifest = ExtensionManifest::new(
+            &tool_manifest.name,
+            UNIVERSAL_TOOL_EXTENSION_TYPE,
+            &tool_manifest.name,
+            &tool_manifest.description,
+            "1.0.0", // Tools don't have explicit versioning in manifest
+            tool_path.to_path_buf(),
+        );
+
+        // Store additional metadata
+        manifest.set("executable", executable.to_string_lossy().to_string());
+        manifest.set("manifest_path", path.to_string_lossy().to_string());
+        manifest.set("parameters", tool_manifest.parameters.clone());
+        
+        if let Some(llm_desc) = tool_manifest.llm_description {
+            manifest.set("llm_description", llm_desc);
+        }
+        
+        // Store reserved parameters
+        let reserved_config = &tool_manifest.reserved_parameters;
+        if !reserved_config.is_empty() {
+            manifest.set(
+                "reserved_parameters",
+                serde_json::to_value(&reserved_config).unwrap_or_default(),
+            );
+        }
+
+        Ok(manifest)
+    }
+
     fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding> {
         vec![
             // Register the tool for native calling
@@ -598,7 +645,10 @@ impl HookHandler for UniversalToolExecuteHandler {
             .await;
 
         match result {
-            Ok(output) => HookResult::Continue(HookOutput::Json(output)),
+            Ok(output) => {
+                info!(tool_name = %self.tool_name, output = %output, "Tool executed successfully");
+                HookResult::Continue(HookOutput::Json(output))
+            }
             Err(e) => {
                 error!(tool_name = %self.tool_name, error = %e, "Tool execution failed");
                 HookResult::Error(e)

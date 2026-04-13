@@ -41,7 +41,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -53,6 +53,19 @@ pub const MCP_HOOK_PRIORITY: i32 = 50;
 
 /// Prefix for MCP tool names
 pub const MCP_TOOL_PREFIX: &str = "mcp";
+
+/// Global MCP manager instance shared across all adapters
+static GLOBAL_MCP_MANAGER: OnceLock<Arc<RwLock<crate::mcp::McpManager>>> = OnceLock::new();
+
+/// Get or initialize the global MCP manager
+fn get_global_mcp_manager() -> Arc<RwLock<crate::mcp::McpManager>> {
+    GLOBAL_MCP_MANAGER
+        .get_or_init(|| {
+            let config = crate::mcp::McpConfig::default();
+            Arc::new(RwLock::new(crate::mcp::McpManager::new(config)))
+        })
+        .clone()
+}
 
 /// MCP adapter for Extension system
 pub struct McpAdapter {
@@ -74,8 +87,19 @@ impl McpAdapter {
         Self { manager }
     }
 
-    /// Create a new MCP adapter with default manager
+    /// Create a new MCP adapter with the global shared manager
+    /// 
+    /// This ensures all MCP adapters share the same manager instance,
+    /// so server configs loaded by one adapter are visible to all others.
     pub fn with_default_manager() -> Self {
+        Self {
+            manager: get_global_mcp_manager(),
+        }
+    }
+
+    /// Create a new MCP adapter with a fresh manager (for testing only)
+    #[cfg(test)]
+    pub fn with_fresh_manager() -> Self {
         let config = crate::mcp::McpConfig::default();
         let manager = Arc::new(RwLock::new(crate::mcp::McpManager::new(config)));
         Self { manager }
@@ -202,9 +226,64 @@ impl McpAdapter {
         Ok(manifest)
     }
 
+    /// Load server config from a file
+    async fn load_server_config(path: &Path) -> Result<crate::mcp::McpServerConfig> {
+        let content = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read config {:?}", path))?;
+
+        // Try TOML first, then JSON
+        let server_configs: Vec<crate::mcp::McpServerConfig> = if path.extension().map(|e| e == "toml").unwrap_or(false) {
+            let config: crate::mcp::McpConfig = toml::from_str(&content)
+                .with_context(|| format!("Failed to parse TOML config {:?}", path))?;
+            config.servers
+        } else {
+            let config: crate::mcp::McpConfig = serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse JSON config {:?}", path))?;
+            config.servers
+        };
+
+        // Take the first server config
+        server_configs.into_iter().next()
+            .ok_or_else(|| anyhow::anyhow!("No server configurations found in config file"))
+    }
+
     /// Get the MCP manager
     pub fn manager(&self) -> Arc<RwLock<crate::mcp::McpManager>> {
         self.manager.clone()
+    }
+
+    /// Ensure server config is loaded into the MCP manager
+    /// 
+    /// Loads the server config from the given path and adds it to the manager
+    /// if not already present.
+    pub async fn ensure_server_config(&self, config_path: &str) -> Result<()> {
+        let path = Path::new(config_path);
+        let mut server_config = Self::load_server_config(path).await?;
+        let server_name = server_config.name.clone();
+        
+        // Set the working directory to the config file's directory
+        // This ensures relative paths in args (like "mcp_server.py") work correctly
+        if server_config.cwd.is_none() {
+            server_config.cwd = path.parent().map(|p| p.to_path_buf());
+            if let Some(ref cwd) = server_config.cwd {
+                info!(server_name = %server_name, cwd = %cwd.display(), "Set MCP server working directory");
+            }
+        }
+        
+        // Check if server already exists
+        let manager = self.manager.read().await;
+        let exists = manager.get_server_state(&server_name).await.is_ok();
+        drop(manager);
+        
+        if !exists {
+            // Add server config to manager
+            let manager = self.manager.read().await;
+            manager.add_server_config(server_config).await?;
+            info!(server_name = %server_name, "Added MCP server config to manager");
+        }
+        
+        Ok(())
     }
 
     /// Register MCP server tools with the unified registry (ADR-018b)
@@ -279,6 +358,52 @@ impl McpAdapter {
         
         Ok(registered_count)
     }
+
+    /// Create Tool trait instances for all tools provided by an MCP server
+    ///
+    /// This method queries the MCP server for its tools and creates `Arc<dyn Tool>`
+    /// instances that can be used by the agent.
+    ///
+    /// # Arguments
+    /// * `server_name` - Name of the MCP server
+    ///
+    /// # Returns
+    /// Vector of `Arc<dyn Tool>` instances for each tool provided by the server
+    pub async fn create_tool_instances(
+        &self,
+        server_name: &str,
+    ) -> Result<Vec<Arc<dyn crate::tools::Tool>>> {
+        let manager = self.manager.read().await;
+        
+        // Get tools from all MCP servers and filter by server name
+        let all_tools = manager.list_all_tools().await;
+        let server_tools: Vec<_> = all_tools.into_iter()
+            .filter(|(srv, _)| srv == server_name)
+            .map(|(_, tool)| tool)
+            .collect();
+        
+        drop(manager);
+        
+        let mut tool_instances: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+        
+        for tool in server_tools {
+            // Create a proxy that implements the Tool trait
+            let proxy = crate::mcp::tool_proxy::McpToolProxy::new(
+                server_name.to_string(),
+                tool,
+                self.manager.clone(),
+            );
+            tool_instances.push(Arc::new(proxy));
+        }
+        
+        info!(
+            server_name = %server_name,
+            tool_count = tool_instances.len(),
+            "Created MCP tool instances"
+        );
+        
+        Ok(tool_instances)
+    }
 }
 
 impl Default for McpAdapter {
@@ -294,13 +419,62 @@ impl ExtensionTypeAdapter for McpAdapter {
     }
 
     fn manifest_format(&self) -> ManifestFormat {
+        // Check if path is a direct config file (ends with .toml or .json)
+        // Otherwise look for config.toml/config.json in directory
         ManifestFormat::Custom {
             detector: |path| {
-                path.join("config.toml").exists()
-                    || path.join("config.json").exists()
-                    || path.extension().map(|e| e == "toml" || e == "json").unwrap_or(false)
+                // Direct file path (e.g., path/to/config.toml)
+                if path.extension().map(|e| e == "toml" || e == "json").unwrap_or(false) {
+                    return path.exists();
+                }
+                // Directory containing config.toml or config.json
+                path.join("config.toml").exists() || path.join("config.json").exists()
             },
         }
+    }
+
+    fn parse_manifest(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        // For MCP, parse the server config synchronously
+        // The content is already read by the caller, so we parse it directly
+        let server_configs: Vec<crate::mcp::McpServerConfig> = if path.extension().map(|e| e == "toml").unwrap_or(false) {
+            let config: crate::mcp::McpConfig = toml::from_str(content)
+                .with_context(|| format!("Failed to parse TOML config {:?}", path))?;
+            config.servers
+        } else {
+            let config: crate::mcp::McpConfig = serde_json::from_str(content)
+                .with_context(|| format!("Failed to parse JSON config {:?}", path))?;
+            config.servers
+        };
+
+        // Take the first server config
+        let server_config = server_configs.into_iter().next()
+            .context("No server configurations found in config file")?;
+
+        // Build ExtensionManifest from server config
+        let mut manifest = ExtensionManifest::new(
+            &server_config.name,
+            MCP_EXTENSION_TYPE,
+            &server_config.name,
+            &format!("MCP server: {}", server_config.name),
+            "1.0.0",
+            path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        );
+
+        // Store server configuration
+        manifest.set("config_path", path.to_string_lossy().to_string());
+        manifest.set("transport", format!("{:?}", server_config.transport));
+        manifest.set("command", server_config.command.unwrap_or_default());
+        
+        // Store reserved parameters if not empty
+        if !server_config.reserved_parameters.is_empty() {
+            manifest.set("reserved_parameters", serde_json::to_value(&server_config.reserved_parameters)?);
+        }
+
+        Ok(manifest)
     }
 
     fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding> {
@@ -374,13 +548,6 @@ impl ExtensionTypeAdapter for McpAdapter {
         let server_name = manifest.name.clone();
         let manager = self.manager.read().await;
         
-        // Add server config if not already present
-        let config_path = manifest
-            .get("config_path")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("Missing config_path in manifest"))?;
-
         info!(server_name = %server_name, "Initializing MCP server");
         
         // Try to start the server
@@ -466,32 +633,72 @@ impl HookHandler for McpServerInitHandler {
     async fn handle(&self, _ctx: HookContext) -> HookResult {
         debug!(server_name = %self.server_name, "Initializing MCP server on agent init");
         
-        // The MCP manager is already initialized with configs
-        // This hook ensures the server is started if auto_start is enabled
-        let manager = self.manager.read().await;
-        
-        match manager.get_server_state(&self.server_name).await {
-            Ok(state) if state.running => {
-                debug!(server_name = %self.server_name, "MCP server already running");
-                HookResult::Continue(HookOutput::Unit)
+        // Ensure server config is loaded
+        let server_config = match McpAdapter::load_server_config(&self.config_path).await {
+            Ok(config) => config,
+            Err(e) => {
+                warn!(server_name = %self.server_name, error = %e, "Failed to load MCP server config");
+                return HookResult::Continue(HookOutput::Unit);
             }
-            _ => {
-                // Server not running, try to start if auto_start
-                drop(manager);
-                let manager = self.manager.write().await;
-                match manager.start_server(&self.server_name).await {
-                    Ok(()) => {
-                        info!(server_name = %self.server_name, "MCP server started");
-                        HookResult::Continue(HookOutput::Unit)
-                    }
-                    Err(e) => {
-                        warn!(server_name = %self.server_name, error = %e, "Failed to start MCP server");
-                        // Don't fail, server will be started on demand
-                        HookResult::Continue(HookOutput::Unit)
-                    }
+        };
+        
+        // Check if server already exists in manager
+        let manager = self.manager.read().await;
+        let exists = manager.get_server_state(&self.server_name).await.is_ok();
+        drop(manager);
+        
+        if !exists {
+            // Add server config to manager
+            let manager = self.manager.read().await;
+            if let Err(e) = manager.add_server_config(server_config).await {
+                warn!(server_name = %self.server_name, error = %e, "Failed to add MCP server config");
+                return HookResult::Continue(HookOutput::Unit);
+            }
+            info!(server_name = %self.server_name, "Added MCP server config to manager");
+        }
+        
+        // Start the server if not running
+        let manager = self.manager.read().await;
+        let was_running = match manager.get_server_state(&self.server_name).await {
+            Ok(state) if state.running => true,
+            _ => false,
+        };
+        drop(manager);
+        
+        let server_started = if !was_running {
+            let manager = self.manager.write().await;
+            match manager.start_server(&self.server_name).await {
+                Ok(()) => {
+                    info!(server_name = %self.server_name, "MCP server started");
+                    true
+                }
+                Err(e) => {
+                    warn!(server_name = %self.server_name, error = %e, "Failed to start MCP server");
+                    false
                 }
             }
+        } else {
+            true
+        };
+        
+        // Register tools with unified registry after server is running
+        if server_started {
+            if let Some(core) = crate::extensions::core::global_core() {
+                let adapter = McpAdapter::new(self.manager.clone());
+                match adapter.register_server_tools(&core, &self.server_name).await {
+                    Ok(count) => {
+                        info!(server_name = %self.server_name, count = count, "Registered MCP tools with unified registry");
+                    }
+                    Err(e) => {
+                        warn!(server_name = %self.server_name, error = %e, "Failed to register MCP tools");
+                    }
+                }
+            } else {
+                warn!("No global ExtensionCore available for MCP tool registration");
+            }
         }
+        
+        HookResult::Continue(HookOutput::Unit)
     }
 
     fn hook_point(&self) -> HookPoint {

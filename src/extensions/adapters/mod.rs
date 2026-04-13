@@ -645,6 +645,40 @@ pub mod parsing {
 
         None
     }
+
+    /// Synchronous version of find_executable
+    ///
+    /// Used in contexts where async is not available (e.g., parse_manifest trait method).
+    pub fn find_executable_sync(tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
+        // Try common patterns first
+        let candidates = [
+            tool_path.join(format!("{}.py", tool_name)),
+            tool_path.join(format!("{}.js", tool_name)),
+            tool_path.join(format!("{}.sh", tool_name)),
+            tool_path.join(tool_name),
+        ];
+
+        for candidate in &candidates {
+            if candidate.exists() {
+                return Some(candidate.clone());
+            }
+        }
+
+        // Fallback: find any file that's not manifest.json
+        let entries = std::fs::read_dir(tool_path).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name() {
+                    if name != "manifest.json" {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+
+        None
+    }
 }
 
 /// Manifest format definitions

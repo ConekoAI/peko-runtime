@@ -745,33 +745,20 @@ impl ToolFactory {
         // Load extensions
         let loaded_ids = manager.load_from_directory(tools_dir).await?;
 
-        // Get tools as Arc<dyn Tool>
-        let universal_tools = manager.get_tool_instances().await;
+        // Get tools as Arc<dyn Tool>, filtering out disabled tools
+        let disabled_set: std::collections::HashSet<String> = disabled_tools
+            .iter()
+            .map(|d| d.to_lowercase())
+            .collect();
+        let universal_tools = manager.get_tool_instances(|tool_name| {
+            let name_lower = tool_name.to_lowercase();
+            // Filter out disabled tools and tools that conflict with built-in tools
+            !disabled_set.contains(&name_lower) && !existing_names.contains(&name_lower)
+        }).await;
 
-        // Filter tools
-        let mut loaded_tools: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
+        // Tools are already filtered by get_tool_instances
+        let loaded_tools: Vec<Arc<dyn crate::tools::Tool>> = universal_tools;
         let failed_tools: Vec<(String, String)> = Vec::new();
-
-        for tool in universal_tools {
-            let name = tool.name().to_lowercase();
-
-            // Check if disabled
-            if disabled_tools.iter().any(|d| d.to_lowercase() == name) {
-                tracing::debug!("Custom tool '{}' is disabled, skipping", tool.name());
-                continue;
-            }
-
-            // Check for conflicts with built-in tools
-            if existing_names.contains(&name) {
-                tracing::info!(
-                    "Custom tool '{}' has same name as built-in tool, keeping built-in",
-                    tool.name()
-                );
-                continue;
-            }
-
-            loaded_tools.push(tool);
-        }
 
         let loaded_count = loaded_tools.len();
 

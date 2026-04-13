@@ -475,6 +475,37 @@ impl McpManager {
         servers.get(name).map(|h| h.config.clone())
     }
 
+    /// Add a server configuration dynamically
+    /// 
+    /// This allows adding MCP servers at runtime without reloading the entire config.
+    /// Returns true if the server was added, false if it already exists.
+    pub async fn add_server_config(&self, config: McpServerConfig) -> Result<bool> {
+        let mut servers = self.servers.write().await;
+        
+        if servers.contains_key(&config.name) {
+            return Ok(false); // Server already exists
+        }
+        
+        let handle = ServerHandle {
+            config: config.clone(),
+            client: None,
+            health_task: None,
+            state: ServerState {
+                name: config.name.clone(),
+                running: false,
+                healthy: false,
+                restart_count: 0,
+                last_error: None,
+                server_info: None,
+                tools: Vec::new(),
+            },
+        };
+        
+        servers.insert(config.name.clone(), handle);
+        info!(server_name = %config.name, "Added MCP server configuration");
+        Ok(true)
+    }
+
     /// Start health check task for a server
     fn start_health_check(&self, name: &str, client: Arc<RwLock<McpClient>>) -> JoinHandle<()> {
         let name = name.to_string();
