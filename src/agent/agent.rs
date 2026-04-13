@@ -115,7 +115,7 @@ impl Agent {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, GlobTool, GrepTool,
             ReadFileTool, SessionStatusTool, ShellTool, SessionsSendTool,
-            StrReplaceFileTool, Tool, ToolFactory, WriteFileTool,
+            StrReplaceFileTool, Tool, WriteFileTool,
         };
         use crate::tools::session_introspection::AgentSessionRegistry;
 
@@ -158,27 +158,6 @@ impl Agent {
             SessionsSendTool::new()
                 .with_session_context(format!("agent:{}", self.config.name), &self.config.name)
         ));
-
-        // Load MCP tools
-        tracing::info!("Loading MCP tools for agent '{}'...", self.config.name);
-        match ToolFactory::load_mcp_tools(&crate::tools::McpFactoryConfig::default()).await {
-            Ok(mcp_tools) => {
-                if mcp_tools.is_empty() {
-                    tracing::info!("No MCP tools found (config may be missing or empty)");
-                } else {
-                    tracing::info!(
-                        "✅ Agent loaded {} MCP tools: {:?}",
-                        mcp_tools.len(),
-                        mcp_tools.iter().map(|t| t.name()).collect::<Vec<_>>()
-                    );
-                    tools.extend(mcp_tools);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("❌ Failed to load MCP tools for agent: {}", e);
-                // Continue without MCP tools
-            }
-        }
 
         // Track extension tools separately to avoid double registration
         let mut extension_tools: Vec<Arc<dyn Tool>> = vec![];
@@ -414,6 +393,13 @@ impl Agent {
                 tools.len()
             );
 
+            // Invoke AgentInit hooks to start MCP servers and initialize extensions
+            let init_result = self.extension_core.invoke_hook(
+                crate::extensions::core::HookPoint::AgentInit,
+                crate::extensions::types::HookInput::Unit,
+            ).await;
+            tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
+
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
@@ -487,6 +473,13 @@ impl Agent {
                 tools.len()
             );
 
+            // Invoke AgentInit hooks to start MCP servers and initialize extensions
+            let init_result = self.extension_core.invoke_hook(
+                crate::extensions::core::HookPoint::AgentInit,
+                crate::extensions::types::HookInput::Unit,
+            ).await;
+            tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
+
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
@@ -547,6 +540,13 @@ impl Agent {
             tokio::task::spawn_local(async move {
                 use crate::engine::loop_v4::AgenticLoopV4;
 
+                // Invoke AgentInit hooks to start MCP servers and initialize extensions
+                let init_result = extension_core.invoke_hook(
+                    crate::extensions::core::HookPoint::AgentInit,
+                    crate::extensions::types::HookInput::Unit,
+                ).await;
+                tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
+
                 let loop_ = AgenticLoopV4::new(
                     agent_arc, 
                     provider_arc.clone(), 
@@ -606,6 +606,13 @@ impl Agent {
                 Ok(tools) => tools,
                 Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {e}")),
             };
+
+            // Invoke AgentInit hooks to start MCP servers and initialize extensions
+            let init_result = self.extension_core.invoke_hook(
+                crate::extensions::core::HookPoint::AgentInit,
+                crate::extensions::types::HookInput::Unit,
+            ).await;
+            tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
 
             let provider_arc = Arc::clone(provider);
 

@@ -112,6 +112,10 @@ impl super::ApiAdapter for OpenAiAdapter {
         &self.base_url
     }
 
+    fn supports_native_tools(&self) -> bool {
+        true
+    }
+
     fn build_request(
         &self,
         messages: &[Message],

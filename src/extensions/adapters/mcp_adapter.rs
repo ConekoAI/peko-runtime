@@ -850,7 +850,14 @@ impl HookHandler for McpToolExecuteHandler {
 
         // Use specific tool name if set (unified registry), otherwise extract from pattern
         let actual_tool = match &self.tool_name {
-            Some(name) => name.as_str(),
+            Some(name) => {
+                // Verify the requested tool matches this handler's specific tool
+                let expected_full_name = format!("{}:{}:{}", MCP_TOOL_PREFIX, self.server_name, name);
+                if tool_name != expected_full_name {
+                    return HookResult::PassThrough;
+                }
+                name.as_str()
+            }
             None => tool_name
                 .strip_prefix(&format!("{}:{}:", MCP_TOOL_PREFIX, self.server_name))
                 .unwrap_or(&tool_name),
@@ -958,8 +965,13 @@ impl HookHandler for McpToolExecuteHandler {
     }
 
     fn hook_point(&self) -> HookPoint {
-        HookPoint::ToolExecute {
-            tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, self.server_name),
+        match &self.tool_name {
+            Some(tool_name) => HookPoint::ToolExecute {
+                tool_name: format!("{}:{}:{}", MCP_TOOL_PREFIX, self.server_name, tool_name),
+            },
+            None => HookPoint::ToolExecute {
+                tool_name: format!("{}:{}:*", MCP_TOOL_PREFIX, self.server_name),
+            },
         }
     }
 

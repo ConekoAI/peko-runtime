@@ -290,19 +290,65 @@ impl ExtensionCore {
     }
     
     /// Get hooks for a specific hook point
+    /// 
+    /// Supports wildcard matching for tool execution hooks. If an exact match
+    /// is not found, checks for wildcard patterns (e.g., "mcp:identity:*" matches
+    /// "mcp:identity:echo_identity").
     pub async fn get_hooks_for_point(&self, point: &HookPoint) -> Vec<RegisteredHook> {
         let by_point = self.hooks_by_point.read().await;
         let hooks = self.hooks.read().await;
+        let point_name = point.name();
         
-        by_point
-            .get(&point.name())
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| hooks.get(id).cloned())
-                    .filter(|h| h.enabled)
-                    .collect()
-            })
-            .unwrap_or_default()
+        // First try exact match
+        if let Some(ids) = by_point.get(&point_name) {
+            return ids.iter()
+                .filter_map(|id| hooks.get(id).cloned())
+                .filter(|h| h.enabled)
+                .collect();
+        }
+        
+        // For tool execution hooks, try wildcard matching
+        // e.g., "tool.execute.mcp:identity:echo_identity" should match "tool.execute.mcp:identity:*"
+        if let HookPoint::ToolExecute { tool_name } | HookPoint::ToolExecuteAsync { tool_name } |
+           HookPoint::ToolCheckStatus { tool_name } | HookPoint::ToolCancel { tool_name } = point {
+            for (registered_name, ids) in by_point.iter() {
+                // Check if this is a tool execution hook with a wildcard pattern
+                if let Some(prefix) = registered_name.strip_prefix("tool.execute.") {
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len()-1]) {
+                        return ids.iter()
+                            .filter_map(|id| hooks.get(id).cloned())
+                            .filter(|h| h.enabled)
+                            .collect();
+                    }
+                }
+                if let Some(prefix) = registered_name.strip_prefix("tool.execute_async.") {
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len()-1]) {
+                        return ids.iter()
+                            .filter_map(|id| hooks.get(id).cloned())
+                            .filter(|h| h.enabled)
+                            .collect();
+                    }
+                }
+                if let Some(prefix) = registered_name.strip_prefix("tool.check_status.") {
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len()-1]) {
+                        return ids.iter()
+                            .filter_map(|id| hooks.get(id).cloned())
+                            .filter(|h| h.enabled)
+                            .collect();
+                    }
+                }
+                if let Some(prefix) = registered_name.strip_prefix("tool.cancel.") {
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len()-1]) {
+                        return ids.iter()
+                            .filter_map(|id| hooks.get(id).cloned())
+                            .filter(|h| h.enabled)
+                            .collect();
+                    }
+                }
+            }
+        }
+        
+        Vec::new()
     }
     
     /// Invoke hooks for a specific point

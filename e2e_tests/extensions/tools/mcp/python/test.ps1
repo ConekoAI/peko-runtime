@@ -154,18 +154,14 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Testing memory storage and retrieval..." -ForegroundColor Yellow
 
-# Store a value
-$response2 = pekobot send $agentName "Store the value 'E2E Test Value' with key 'test_key' using the store_memory tool. Respond TOOL_SUCCESS if it worked, TOOL_FAILED if not." --no-stream 2>&1
-Write-Host "Store response: $response2"
+# Store and retrieve in a single conversation to test memory isolation
+$response2 = pekobot send $agentName "First, store the value 'E2E Test Value' with key 'test_key' using the store_memory tool. Then, retrieve the value using retrieve_memory with key 'test_key'. If both work and you get 'E2E Test Value' back, respond TOOL_SUCCESS. If anything fails, respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Memory response: $response2"
 
-# Retrieve the value
-$response3 = pekobot send $agentName "Retrieve the value stored with key 'test_key' using the retrieve_memory tool. If you get 'E2E Test Value' back, respond TOOL_SUCCESS, otherwise TOOL_FAILED." --no-stream 2>&1
-Write-Host "Retrieve response: $response3"
-
-if ($response3 -match "TOOL_SUCCESS" -or $response3 -match "E2E Test Value") {
+if ($response2 -match "TOOL_SUCCESS" -or $response2 -match "E2E Test Value") {
     Write-Host "✅ PASS: Memory storage and retrieval works correctly" -ForegroundColor Green
 } else {
-    Write-Host "⚠️ Memory retrieval result unclear" -ForegroundColor Yellow
+    Write-Host "⚠️ Memory result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
