@@ -154,12 +154,13 @@ pub enum ExtCommands {
 }
 
 /// Create an ExtensionManager with all default adapters registered
-fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionManager {
+async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionManager {
     use crate::extensions::adapters::{
         mcp_adapter::McpAdapter, skill_adapter::SkillAdapter,
         universal_tool_adapter::UniversalToolAdapter,
     };
     use crate::extensions::core::{global_core, init_global_core, ExtensionCore};
+    use crate::tools::builtin_registry::{BuiltinRegistry, BuiltinRegistryConfig};
     use std::sync::Arc;
 
     // Get or initialize global ExtensionCore for consistency with agent
@@ -168,6 +169,11 @@ fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionM
         init_global_core(core.clone());
         core
     });
+
+    // Register built-in tools so they appear in ExtensionCore queries (e.g. ext list)
+    if let Err(e) = BuiltinRegistry::register(&core, &BuiltinRegistryConfig::default()).await {
+        tracing::warn!("Failed to register built-in tools with ExtensionCore: {}", e);
+    }
 
     let mut manager = ExtensionManager::with_core(core);
     
@@ -194,7 +200,7 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
         ExtCommands::Debug { id } => {
             // Create storage in the data directory
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
-            let mut manager = create_manager_with_adapters(Some(storage));
+            let mut manager = create_manager_with_adapters(Some(storage)).await;
             // Load all extensions to populate the manager
             manager.load_all().await?;
             handle_debug(&manager, id).await
@@ -202,7 +208,7 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
         _ => {
             // Create storage in the data directory
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
-            let mut manager = create_manager_with_adapters(Some(storage));
+            let mut manager = create_manager_with_adapters(Some(storage)).await;
 
             // Load all extensions to populate the manager
             manager.load_all().await?;
