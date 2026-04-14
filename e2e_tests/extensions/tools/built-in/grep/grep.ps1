@@ -46,7 +46,7 @@ if (Test-Path $DataDir) {
 pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create agent with coding template (enables granular tools)
+# Create agent
 $agentName = "grep_test"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
@@ -90,20 +90,24 @@ FIXME: Handle errors properly
 Write-Host "Created test files: main.rs, script.py, notes.txt" -ForegroundColor Green
 
 # ============================================================
-# TEST 1: Search with regex pattern (run FIRST to avoid context issues)
+# TEST 1: Search with regex pattern
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 1: Search with regex pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for 'calculate'..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your grep tool with pattern='calculate' to search for the word 'calculate' in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your grep tool with pattern='calculate' to search for the word 'calculate' in your workspace. After getting the result, respond TOOL_SUCCESS if it found script.py, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "calculate") {
-    Write-Host "✓ Found Python function definitions" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Found Python function definitions" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Grep did not find 'calculate'" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify Python functions in response"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
@@ -114,13 +118,17 @@ Write-Host "TEST 2: Search for 'fn' pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for 'fn'..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your grep tool (NOT shell) with pattern='fn ' and glob='*.rs' to search for Rust function definitions in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your grep tool (NOT shell) with pattern='fn ' and glob='*.rs' to search for Rust function definitions in your workspace. After getting the result, respond TOOL_SUCCESS if it found main.rs, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "main" -or $result -match "helper") {
-    Write-Host "✓ Found function definitions" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Found function definitions" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Grep did not find Rust functions" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify function definitions in response"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
@@ -131,13 +139,17 @@ Write-Host "TEST 3: Search for TODO|FIXME pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to search for TODO..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your grep tool (NOT shell) with pattern='TODO|FIXME' and case_insensitive=true to search in your workspace. Report exactly what the grep tool returns." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your grep tool (NOT shell) with pattern='TODO|FIXME' and case_insensitive=true to search in your workspace. After getting the result, respond TOOL_SUCCESS if it found notes.txt, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "TODO" -or $result -match "FIXME") {
-    Write-Host "✓ Found TODO/FIXME comments" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Found TODO/FIXME comments" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Grep did not find TODO/FIXME" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify TODO/FIXME in response"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================

@@ -46,7 +46,7 @@ if (Test-Path $DataDir) {
 pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create agent with coding template
+# Create agent
 $agentName = "sessionstatus_test"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
@@ -63,24 +63,22 @@ Write-Host "TEST 1: Basic session_status call" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to call session_status..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your session_status tool to get information about the current session. Report the session_id and agent_id from the result." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your session_status tool to get information about the current session. After getting the result, respond TOOL_SUCCESS if you see a session_id and agent_id in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "session" -or $result -match "agent") {
-    Write-Host "✓ Session status retrieved successfully" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Session status retrieved successfully" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: SessionStatus did not work" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify session status output"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
-# Get session id
-$jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
-$sessionId = $jsonOutput.sessions[0].session_id
-
-# print the session jsonl
-Write-Host "`nSession JSONL (last 5 lines):" -ForegroundColor Cyan
-Get-Content "$env:APPDATA/pekobot/sessions/default/$agentName/$sessionId.jsonl" | Select-Object -Last 5 | ForEach-Object { Write-Host $_ -ForegroundColor Gray }
-
+# ============================================================
 # Cleanup
+# ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan

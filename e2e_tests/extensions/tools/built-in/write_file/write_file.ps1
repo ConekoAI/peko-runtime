@@ -46,7 +46,7 @@ if (Test-Path $DataDir) {
 pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create agent with coding template (enables granular tools)
+# Create agent
 $agentName = "writefile_test"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
@@ -70,14 +70,14 @@ Write-Host "TEST 1: Create a new file" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to create a file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your write_file tool (NOT shell) to create a file called 'hello.txt' in your workspace with the content 'Hello from write_file tool!'. Use mode='create'." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your write_file tool (NOT shell) to create a file called 'hello.txt' in your workspace with the content 'Hello from write_file tool!'. Use mode='create'. After writing, respond TOOL_SUCCESS if the file was created, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
 $testFile = "$workspaceDir/hello.txt"
 if (Test-Path $testFile) {
     $content = Get-Content $testFile -Raw
-    if ($content -match "Hello from WriteFile") {
-        Write-Host "✓ File created with correct content" -ForegroundColor Green
+    if ($content -match "Hello from write_file tool") {
+        Write-Host "✅ PASS: File created with correct content" -ForegroundColor Green
     } else {
         Write-Warning "⚠ File created but content doesn't match"
     }
@@ -93,14 +93,14 @@ Write-Host "TEST 2: Overwrite existing file" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to overwrite the file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your write_file tool (NOT shell) to overwrite 'hello.txt' with the content 'Updated content!' using mode='overwrite'." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your write_file tool (NOT shell) to overwrite 'hello.txt' with the content 'Updated content!' using mode='overwrite'. After writing, respond TOOL_SUCCESS if the file was updated, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
 Start-Sleep -Milliseconds 500
 if (Test-Path $testFile) {
     $content = Get-Content $testFile -Raw
     if ($content -match "Updated content") {
-        Write-Host "✓ File overwritten successfully" -ForegroundColor Green
+        Write-Host "✅ PASS: File overwritten successfully" -ForegroundColor Green
     } else {
         Write-Warning "⚠ File content doesn't match expected"
     }
@@ -116,15 +116,15 @@ Write-Host "TEST 3: Create file in nested directory" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to create nested file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your write_file tool (NOT shell) to create 'subdir/nested.txt' with content 'nested file content' in your workspace. Create any needed directories with mode='create'." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your write_file tool (NOT shell) to create 'subdir/nested.txt' with content 'nested file content' in your workspace. Create any needed directories with mode='create'. After writing, respond TOOL_SUCCESS if the file was created, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
 $nestedFile = "$workspaceDir/subdir/nested.txt"
 Start-Sleep -Milliseconds 500
 if (Test-Path $nestedFile) {
     $content = Get-Content $nestedFile -Raw
     if ($content -match "nested file content") {
-        Write-Host "✓ Nested file created successfully" -ForegroundColor Green
+        Write-Host "✅ PASS: Nested file created successfully" -ForegroundColor Green
     } else {
         Write-Warning "⚠ Nested file content doesn't match"
     }

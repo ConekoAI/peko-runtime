@@ -72,13 +72,17 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $cmd = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dir" } else { "ls" }
 Write-Host "Sending request to execute $cmd..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your shell tool to check what's in your workspace." --no-stream 2>$null
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your shell tool to check what's in your workspace. After executing the tool, respond TOOL_SUCCESS if you can see files listed, otherwise respond TOOL_FAILED." --no-stream 2>$null
+Write-Host "Response: $response"
 
-if ($result -match "Directory" -or $result -match "total" -or $result -match "file") {
-    Write-Host "✓ Shell command executed successfully" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Shell command executed successfully" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Shell command did not work" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify shell output"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
@@ -89,13 +93,17 @@ Write-Host "TEST 2: Shell with different working directory" -ForegroundColor Cya
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to list files in subdirectory..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your shell tool to check what's in testdir." --no-stream 2>$null
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your shell tool to check what's in testdir. After executing the tool, respond TOOL_SUCCESS if you see test.txt, otherwise respond TOOL_FAILED." --no-stream 2>$null
+Write-Host "Response: $response"
 
-if ($result -match "test.txt") {
-    Write-Host "✓ Shell command with working directory executed successfully" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Shell command with working directory executed successfully" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Subdirectory shell command did not work" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify subdirectory listing"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================

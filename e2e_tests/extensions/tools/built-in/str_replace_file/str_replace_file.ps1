@@ -46,7 +46,7 @@ if (Test-Path $DataDir) {
 pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create agent with coding template (enables granular tools)
+# Create agent
 $agentName = "strreplace_test"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
@@ -82,13 +82,13 @@ Write-Host "TEST 1: Simple string replacement" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to replace 'Original Name' with 'New Name'..." -ForegroundColor Yellow
-$result = pekobot send $agentName 'Use your str_replace_file tool (NOT shell) to modify config.txt. Set old_string=`name = "Original Name"` and new_string=`name = "New Name"`. The old string must match exactly.' --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName 'Use your str_replace_file tool (NOT shell) to modify config.txt. Set old_string=`name = "Original Name"` and new_string=`name = "New Name"`. The old string must match exactly. After replacing, respond TOOL_SUCCESS if the replacement succeeded, otherwise respond TOOL_FAILED.' --no-stream 2>&1
+Write-Host "Response: $response"
 
 Start-Sleep -Milliseconds 500
 $content = Get-Content $testFile -Raw
 if ($content -match "New Name") {
-    Write-Host "✓ String replacement successful" -ForegroundColor Green
+    Write-Host "✅ PASS: String replacement successful" -ForegroundColor Green
 } else {
     Write-Warning "⚠ Could not verify replacement in file"
 }
@@ -101,13 +101,13 @@ Write-Host "TEST 2: Multiple replacements" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to make multiple replacements..." -ForegroundColor Yellow
-$result = pekobot send $agentName 'Use your str_replace_file tool (NOT shell) to modify config.txt. Make TWO replacements: 1) old_string=`version = "1.0.0"`, new_string=`version = "2.0.0"` 2) old_string=`debug = true`, new_string=`debug = false`.' --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName 'Use your str_replace_file tool (NOT shell) to modify config.txt. Make TWO replacements: 1) old_string=`version = "1.0.0"`, new_string=`version = "2.0.0"` 2) old_string=`debug = true`, new_string=`debug = false`. After replacing, respond TOOL_SUCCESS if both succeeded, otherwise respond TOOL_FAILED.' --no-stream 2>&1
+Write-Host "Response: $response"
 
 Start-Sleep -Milliseconds 500
 $content = Get-Content $testFile -Raw
 if ($content -match "2.0.0" -and $content -match "false") {
-    Write-Host "✓ Multiple replacements successful" -ForegroundColor Green
+    Write-Host "✅ PASS: Multiple replacements successful" -ForegroundColor Green
 } else {
     Write-Warning "⚠ Could not verify all replacements in file"
 }
@@ -120,13 +120,13 @@ Write-Host "TEST 3: Verify unchanged when string not found" -ForegroundColor Cya
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request with non-existent string..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your str_replace_file tool (NOT shell) to modify config.txt. Try to replace old_string='NONEXISTENT_STRING' with new_string='something'. This should fail since the string doesn't exist." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your str_replace_file tool (NOT shell) to modify config.txt. Try to replace old_string='NONEXISTENT_STRING' with new_string='something'. This should fail since the string doesn't exist. After attempting, respond TOOL_SUCCESS if the tool reported an error and the file was NOT changed, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
 Start-Sleep -Milliseconds 500
 $content = Get-Content $testFile -Raw
 if ($content -notmatch "something" -and $content -match "2.0.0") {
-    Write-Host "✓ File unchanged after failed replacement (atomic)" -ForegroundColor Green
+    Write-Host "✅ PASS: File unchanged after failed replacement (atomic)" -ForegroundColor Green
 } else {
     Write-Warning "⚠ File may have been modified after failed replacement"
 }

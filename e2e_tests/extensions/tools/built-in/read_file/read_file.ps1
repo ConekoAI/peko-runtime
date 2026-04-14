@@ -46,7 +46,7 @@ if (Test-Path $DataDir) {
 pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create agent with coding template (enables granular tools)
+# Create agent
 $agentName = "readfile_test"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
@@ -83,13 +83,17 @@ Write-Host "TEST 1: Read entire file" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to read the test file..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your read_file tool (not shell) to read the file called 'test_read.txt' in your workspace. Report exactly what the read_file tool returns." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your read_file tool (not shell) to read the file called 'test_read.txt' in your workspace. After reading, respond TOOL_SUCCESS if you see 'Line 1: Hello', otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "Line 1" -or $result -match "Hello" -or $result -match "World") {
-    Write-Host "✓ File content read successfully" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: File content read successfully" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: ReadFile did not work" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify file content in response"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
@@ -100,13 +104,17 @@ Write-Host "TEST 2: Read with line range" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to read lines 2-3..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your read_file tool with line_range parameter set to '2-3' to read only lines 2-3 from 'test_read.txt'. Tell me exactly what those lines contain." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your read_file tool with line_range parameter set to '2-3' to read only lines 2-3 from 'test_read.txt'. After reading, respond TOOL_SUCCESS if you see 'Line 2: World' and 'Line 3: Testing', otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "World" -or $result -match "Testing") {
-    Write-Host "✓ Line range read successfully" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Line range read successfully" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Line range read did not work" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify line range in response"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================

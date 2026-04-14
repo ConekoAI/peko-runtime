@@ -46,7 +46,7 @@ if (Test-Path $DataDir) {
 pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create agent with coding template (enables granular tools)
+# Create agent
 $agentName = "glob_test"
 pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
@@ -87,14 +87,17 @@ Write-Host "TEST 1: Glob *.py pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .py files..." -ForegroundColor Yellow
-Start-Sleep -Seconds 2
-$result = pekobot send $agentName "Use your glob tool with pattern='*.py'. Report the raw JSON output from the tool." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your glob tool with pattern='*.py'. After getting the result, respond TOOL_SUCCESS if script.py is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "script.py") {
-    Write-Host "✓ Found .py files correctly" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Found .py files correctly" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Glob did not find .py files" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify .py files in response"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
@@ -105,34 +108,38 @@ Write-Host "TEST 2: Glob *.rs pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .rs files..." -ForegroundColor Yellow
-$result = pekobot send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. Report exactly what the glob tool returns." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. After getting the result, respond TOOL_SUCCESS if file1.rs is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "\.rs" -and $result -match "file1") {
-    Write-Host "✓ Found .rs files correctly" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Found .rs files correctly" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Glob did not find .rs files" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify .rs files in response"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
-# Use read_file to reset context between glob calls
-$null = pekobot send $agentName "Use your read_file tool (NOT shell) to read the file 'file1.rs'. Report the content." --no-stream 2>&1
-
 # ============================================================
-# TEST 3: Glob **/*.rs (recursive) - needs fresh context
+# TEST 3: Glob **/*.rs (recursive)
 # ============================================================
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "TEST 3: Glob **/*.rs recursive pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find all .rs files recursively..." -ForegroundColor Yellow
-Start-Sleep -Seconds 2
-$result = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. Report exactly what the glob tool returns." --no-stream 2>&1
-Write-Host "Response: $result"
+$response = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. After getting the result, respond TOOL_SUCCESS if main.rs is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Write-Host "Response: $response"
 
-if ($result -match "main.rs") {
-    Write-Host "✓ Found recursive .rs files correctly" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Found recursive .rs files correctly" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Recursive glob did not work" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify recursive search in response"
+    Write-Host "⚠️ Result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
