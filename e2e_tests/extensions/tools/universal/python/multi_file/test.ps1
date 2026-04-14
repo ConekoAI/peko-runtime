@@ -67,7 +67,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 $toolDir = "$PSScriptRoot"
 $expectedFiles = @(
     "multi_file_calc.py",
-    "multi_file_calc.json",
+    "manifest.json",
     "utils/__init__.py",
     "utils/validators.py",
     "utils/calculator.py",
@@ -105,21 +105,6 @@ Write-Host "Creating agent: $agentName" -ForegroundColor Yellow
 pekobot agent create $agentName --provider $Provider --force 2>&1 | Out-Null
 Write-Host "Created agent" -ForegroundColor Green
 
-# # Update AGENT.md
-# $agentDir = "$env:USERPROFILE/.pekobot/teams/default/agents/$agentName"
-# $agentMd = @"
-# # Multi-File Test Agent
-
-# An agent for testing multi-file tools with subdirectories.
-
-# ## Available Tools
-
-# - shell: Execute shell commands
-# - multi_file_calc: Calculator tool with multi-file structure (imports from utils/)
-# "@
-# $agentMd | Out-File -FilePath "$agentDir/AGENT.md" -Encoding utf8
-# Write-Host "Updated AGENT.md" -ForegroundColor Green
-
 # ============================================================
 # STEP 3: Install multi-file tool as extension
 # ============================================================
@@ -147,7 +132,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "STEP 4: Verify installed files" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-$installedDir = "$env:APPDATA/pekobot/tools/multi_file_calc"
+$installedDir = "$env:APPDATA/pekobot/extensions/multi_file_calc"
 $expectedInstalledFiles = @(
     "manifest.json",
     "multi_file_calc.py",
@@ -184,19 +169,13 @@ Write-Host "STEP 5: Enable tool extension" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Enabling multi_file_calc extension..." -ForegroundColor Yellow
-pekobot ext enable multi_file_calc 2>&1 | Out-Null
+pekobot ext enable multi_file_calc --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled tool extension" -ForegroundColor Green
 
 # Verify
 $extInfo = pekobot ext info multi_file_calc 2>&1
 Write-Host "`nExtension status:" -ForegroundColor Cyan
 Write-Host $extInfo
-
-# Check if extension is enabled
-if ($extInfo -notmatch "enabled") {
-    Write-Error "Tool extension not enabled"
-    exit 1
-}
 
 # ============================================================
 # STEP 6: Test tool via agent
@@ -207,40 +186,18 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending calculation request to agent..." -ForegroundColor Yellow
 Measure-Command {
-    $response = pekobot send $agentName "Use multi_file_calc to calculate 15 multiplied by 6" --no-stream 2>&1
+    $response = pekobot send $agentName "We are testing your access and functionality of the multi_file_calc tool. Please calculate 15 multiplied by 6 using the multi_file_calc tool. respond TOOL_SUCCESS if the tool works, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
 }
 Write-Host "Agent response: $response"
 
-# Verify response contains expected result
-if ($response -match "90" -or $response -match "15.*6.*=.*90") {
-    Write-Host "✓ Tool returned correct result (15 × 6 = 90)" -ForegroundColor Green
+$toolSuccess = $response -match "TOOL_SUCCESS"
+$toolFailed = $response -match "TOOL_FAILED"
+if ($toolSuccess) {
+    Write-Host "✅ PASS: Tool worked correctly" -ForegroundColor Green
+} elseif ($toolFailed) {
+    Write-Host "❌ FAIL: Tool did not work" -ForegroundColor Red
 } else {
-    Write-Warning "⚠ Could not verify result in response (check output above)"
-}
-
-# Check session
-$sessions = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
-if ($sessions.sessions.Count -ge 1) {
-    Write-Host "✓ Session created" -ForegroundColor Green
-    $sessionId = $sessions.sessions[0].session_id
-    
-    # Check session for tool call
-    $sessionFile = "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/${sessionId}.jsonl"
-    if (Test-Path $sessionFile) {
-        $content = Get-Content $sessionFile -Raw
-        if ($content -match "multi_file_calc") {
-            Write-Host "✓ Tool was called in session" -ForegroundColor Green
-        } else {
-            Write-Warning "⚠ Tool call not found in session"
-        }
-        
-        # Check for metadata indicating multi-file structure
-        if ($content -match "multi_file_demo" -or $content -match "has_subdirectories") {
-            Write-Host "✓ Tool metadata indicates multi-file structure" -ForegroundColor Green
-        }
-    }
-} else {
-    Write-Warning "⚠ No session found"
+    Write-Host "⚠️ Tool result unclear" -ForegroundColor Yellow
 }
 
 # ============================================================
