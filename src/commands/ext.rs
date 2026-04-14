@@ -212,7 +212,7 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                 ExtCommands::List {
                     enabled_only,
                     r#type,
-                } => handle_list(&manager, enabled_only, r#type),
+                } => handle_list(&manager, enabled_only, r#type).await,
                 ExtCommands::Enable { id, target } => {
                     handle_enable(&mut manager, paths, id, target).await
                 }
@@ -265,23 +265,24 @@ async fn handle_install(
 
 /// Handle list command
 /// 
-/// Note: Extensions are always "installed" globally. Enable/disable state
-/// is per-agent and controlled by AgentConfig.tools.enabled whitelist.
-fn handle_list(
+/// Shows both installed extensions and built-in extensions registered with
+/// ExtensionCore. Built-ins are compiled into the binary and always available.
+async fn handle_list(
     manager: &ExtensionManager,
     _enabled_only: bool,  // Kept for CLI compatibility, but ignored
     ext_type: Option<String>,
 ) -> anyhow::Result<()> {
     let extensions = manager.list_extensions();
 
-    if extensions.is_empty() {
-        println!("No extensions installed.");
-        println!("Use 'pekobot ext install <path>' to install an extension.");
-        return Ok(());
-    }
+    // Get built-in extensions from ExtensionCore
+    let builtins = if let Some(core) = crate::extensions::core::global_core() {
+        core.list_builtin_extensions().await
+    } else {
+        Vec::new()
+    };
 
-    // Filter extensions by type only (enabled state is per-agent, not global)
-    let filtered: Vec<&LoadedExtension> = extensions
+    // Filter installed extensions by type
+    let filtered_installed: Vec<&LoadedExtension> = extensions
         .into_iter()
         .filter(|ext| {
             if let Some(ref t) = ext_type {
@@ -293,27 +294,48 @@ fn handle_list(
         })
         .collect();
 
-    if filtered.is_empty() {
+    // Filter built-ins by type
+    let filtered_builtins: Vec<&crate::extensions::core::BuiltinExtensionInfo> = builtins
+        .iter()
+        .filter(|b| {
+            if let Some(ref t) = ext_type {
+                if &b.ext_type != t {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    if filtered_installed.is_empty() && filtered_builtins.is_empty() {
         println!("No extensions match the specified criteria.");
         return Ok(());
     }
 
-    println!("Installed Extensions:");
-    println!();
-    println!("{:<20} {:<12} {}", "ID", "TYPE", "NAME");
-    println!("{}", "-".repeat(50));
+    println!("{:<24} {:<14} {:<18} {}", "ID", "TYPE", "NAME", "SOURCE");
+    println!("{}", "-".repeat(72));
 
-    for ext in &filtered {
+    for b in &filtered_builtins {
+        let status = if b.enabled { "" } else { " [disabled]" };
         println!(
-            "{:<20} {:<12} {}",
-            ext.manifest.id, ext.extension_type, ext.manifest.name
+            "{:<24} {:<14} {:<18} {}{}",
+            b.id, b.ext_type, b.name, "built-in", status
+        );
+    }
+
+    for ext in &filtered_installed {
+        println!(
+            "{:<24} {:<14} {:<18} {}",
+            ext.manifest.id, ext.extension_type, ext.manifest.name, "installed"
         );
     }
 
     println!();
-    println!("Total: {} extension(s)", filtered.len());
-    println!();
-    println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
+    println!("Total: {} extension(s)", filtered_installed.len() + filtered_builtins.len());
+    if !filtered_builtins.is_empty() {
+        println!("Note: Built-in extensions are compiled into the binary.");
+        println!("      Installed extensions are loaded from disk.");
+    }
 
     Ok(())
 }
@@ -325,9 +347,17 @@ async fn handle_enable(
     id: String,
     target: Option<String>,
 ) -> anyhow::Result<()> {
-    // Check if this is a built-in tool first
-    if crate::tools::builtin_registry::BuiltinRegistry::is_builtin(&id) {
-        return handle_enable_builtin(paths, &id, target.as_deref()).await;
+    // Normalize built-in IDs: accept both "shell" and "builtin:tool:shell"
+    let is_builtin = crate::tools::builtin_registry::BuiltinRegistry::is_builtin(&id)
+        || id.starts_with("builtin:");
+    if is_builtin {
+        let capability = if id.starts_with("builtin:") {
+            // Extract name from builtin:{type}:{name}
+            id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
+        } else {
+            id.clone()
+        };
+        return handle_enable_builtin(paths, &capability, target.as_deref()).await;
     }
     let ext_id = ExtensionId::new(&id);
 
@@ -523,6 +553,21 @@ async fn handle_enable_builtin(
         println!("Enabled '{}' for team '{}'", capability, team);
     }
 
+    // Also enable ExtensionCore hooks for immediate effect
+    if let Some(core) = crate::extensions::core::global_core() {
+        let builtins = core.list_builtin_extensions().await;
+        for b in &builtins {
+            if b.name.eq_ignore_ascii_case(capability) {
+                let ext_id = ExtensionId::new(&b.id);
+                let hooks = core.get_hooks_for_extension(&ext_id).await;
+                for hook in hooks {
+                    let _ = core.enable_hook(&hook.id).await;
+                }
+                tracing::info!("Enabled built-in hooks for '{}'", b.id);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -533,9 +578,16 @@ async fn handle_disable(
     id: String,
     target: Option<String>,
 ) -> anyhow::Result<()> {
-    // Check if this is a built-in tool first
-    if crate::tools::builtin_registry::BuiltinRegistry::is_builtin(&id) {
-        return handle_disable_builtin(paths, &id, target.as_deref()).await;
+    // Normalize built-in IDs: accept both "shell" and "builtin:tool:shell"
+    let is_builtin = crate::tools::builtin_registry::BuiltinRegistry::is_builtin(&id)
+        || id.starts_with("builtin:");
+    if is_builtin {
+        let capability = if id.starts_with("builtin:") {
+            id.splitn(3, ':').nth(2).unwrap_or(&id).to_string()
+        } else {
+            id.clone()
+        };
+        return handle_disable_builtin(paths, &capability, target.as_deref()).await;
     }
 
     let ext_id = ExtensionId::new(&id);
@@ -626,6 +678,21 @@ async fn handle_disable_builtin(
         std::fs::write(&ext_config_path, updated)?;
         
         println!("Disabled '{}' for team '{}'", capability, team);
+    }
+
+    // Also disable ExtensionCore hooks for immediate effect
+    if let Some(core) = crate::extensions::core::global_core() {
+        let builtins = core.list_builtin_extensions().await;
+        for b in &builtins {
+            if b.name.eq_ignore_ascii_case(capability) {
+                let ext_id = ExtensionId::new(&b.id);
+                let hooks = core.get_hooks_for_extension(&ext_id).await;
+                for hook in hooks {
+                    let _ = core.disable_hook(&hook.id).await;
+                }
+                tracing::info!("Disabled built-in hooks for '{}'", b.id);
+            }
+        }
     }
 
     Ok(())

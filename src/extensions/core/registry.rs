@@ -80,6 +80,24 @@ impl RegisteredHook {
     }
 }
 
+/// Information about a built-in extension
+///
+/// Built-in extensions are compiled into the binary and register hooks
+/// with ExtensionCore under IDs like `builtin:tool:shell`.
+#[derive(Debug, Clone)]
+pub struct BuiltinExtensionInfo {
+    /// Full extension ID (e.g., "builtin:tool:shell")
+    pub id: String,
+    /// Extension type (e.g., "tool", "gateway")
+    pub ext_type: String,
+    /// Short name (e.g., "shell")
+    pub name: String,
+    /// Whether any hook for this extension is enabled
+    pub enabled: bool,
+    /// Which hook points are registered
+    pub capabilities: Vec<String>,
+}
+
 /// Central registry for extension hooks
 ///
 /// This is the core component that manages all hook registrations and
@@ -287,6 +305,51 @@ impl ExtensionCore {
     pub async fn get_all_hooks(&self) -> Vec<RegisteredHook> {
         let hooks = self.hooks.read().await;
         hooks.values().cloned().collect()
+    }
+    
+    /// List all built-in extensions registered with this core
+    ///
+    /// Built-in extensions have IDs in the form `builtin:{type}:{name}`.
+    /// This is type-agnostic — it will return tools, gateways, skills, or any
+    /// future built-in extension type that registers hooks.
+    pub async fn list_builtin_extensions(&self) -> Vec<BuiltinExtensionInfo> {
+        let hooks = self.hooks.read().await;
+        let mut groups: HashMap<String, Vec<&RegisteredHook>> = HashMap::new();
+        
+        for hook in hooks.values() {
+            let ext_id = &hook.extension_id.0;
+            if ext_id.starts_with("builtin:") {
+                groups.entry(ext_id.clone()).or_default().push(hook);
+            }
+        }
+        
+        let mut results = Vec::new();
+        for (ext_id, hooks) in groups {
+            // Parse builtin:{type}:{name}
+            let parts: Vec<&str> = ext_id.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                let ext_type = parts[1].to_string();
+                let name = parts[2].to_string();
+                let enabled = hooks.iter().any(|h| h.enabled);
+                let mut capabilities: Vec<String> = hooks
+                    .iter()
+                    .map(|h| h.point.name())
+                    .collect();
+                capabilities.sort_unstable();
+                capabilities.dedup();
+                
+                results.push(BuiltinExtensionInfo {
+                    id: ext_id,
+                    ext_type,
+                    name,
+                    enabled,
+                    capabilities,
+                });
+            }
+        }
+        
+        results.sort_by(|a, b| a.ext_type.cmp(&b.ext_type).then(a.name.cmp(&b.name)));
+        results
     }
     
     /// Get hooks for a specific hook point

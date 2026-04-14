@@ -34,7 +34,7 @@ impl BuiltinToolAdapter {
     /// - Prompt section handler for system prompt
     pub async fn register_tool(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
         let tool_name = tool.name().to_string();
-        let ext_id = ExtensionId::new(&format!("builtin:{}", tool_name));
+        let ext_id = ExtensionId::new(&format!("builtin:tool:{}", tool_name));
 
         // Create tool metadata for unified registry
         let metadata = ToolMetadata {
