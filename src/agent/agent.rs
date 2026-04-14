@@ -41,77 +41,12 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Create tools for this agent based on configuration
+    /// Initialize built-in tools and register them with ExtensionCore.
     ///
-    /// This synchronous version creates built-in tools only (no MCP).
-    /// Use `create_tools_async` for full tool loading including MCP servers.
-    fn create_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
-        use crate::tools::{
-            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool,
-            GlobTool, GrepTool, ReadFileTool, SessionStatusTool, ShellTool,
-            SessionsSendTool, StrReplaceFileTool, Tool, WriteFileTool,
-        };
-        use crate::tools::session_introspection::AgentSessionRegistry;
-
-        // Create core tools only (web tools now provided via MCP)
-        let workspace = self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone();
-        let mut tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(ShellTool::new().with_workspace(workspace.clone())),
-            // Granular filesystem tools
-            Arc::new(ReadFileTool::new().with_workspace(workspace.clone())),
-            Arc::new(WriteFileTool::new().with_workspace(workspace.clone())),
-            Arc::new(GlobTool::new().with_workspace(workspace.clone())),
-            Arc::new(GrepTool::new().with_workspace(workspace.clone())),
-            Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
-        ];
-
-        // Add session introspection tools backed by the real session manager
-        let session_registry = AgentSessionRegistry::new(
-            self.session_manager.clone(),
-            self.current_session_id.clone(),
-        );
-        tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
-
-        // Add agent spawn tool v2 with executor and session provider
-        tools.push(Arc::new(AgentSpawnTool::with_session_provider(
-            self.subagent_executor.clone(),
-            Box::new(self.session_key_provider.clone()),
-        )));
-
-        // Add spawn status and list tools
-        tools.push(Arc::new(AgentSpawnStatusTool::new(
-            self.subagent_executor.clone(),
-        )));
-        tools.push(Arc::new(AgentSpawnListTool::new(
-            self.subagent_executor.registry().clone(),
-        )));
-
-        // Add sessions_send tool for A2A messaging
-        tools.push(Arc::new(
-            SessionsSendTool::new()
-                .with_session_context(format!("agent:{}", self.config.name), &self.config.name)
-        ));
-
-        // Filter based on agent config whitelist
-        if let Some(ref tool_config) = self.config.tools {
-            eprintln!("DEBUG: Whitelist: {:?}", tool_config.enabled);
-            let before_count = tools.len();
-            tools.retain(|tool| {
-                let enabled = tool_config.is_tool_enabled(tool.name());
-                eprintln!("DEBUG: Tool '{}' enabled: {}", tool.name(), enabled);
-                enabled
-            });
-            eprintln!("DEBUG: Filtered {} tools to {}", before_count, tools.len());
-        }
-
-        tools
-    }
-
-    /// Create tools for this agent including MCP tools
-    ///
-    /// This asynchronous version loads MCP tools from configured MCP servers
-    /// and adds them to the built-in tools.
-    async fn create_tools_async(&self) -> anyhow::Result<Vec<Arc<dyn crate::tools::Tool>>> {
+    /// This asynchronous version loads Universal Tools from extensions directory
+    /// and registers only built-in tools with ExtensionCore. Extension tools
+    /// (Universal and MCP) are already registered via ExtensionManager hooks.
+    async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, GlobTool, GrepTool,
             ReadFileTool, SessionStatusTool, ShellTool, SessionsSendTool,
@@ -159,8 +94,12 @@ impl Agent {
                 .with_session_context(format!("agent:{}", self.config.name), &self.config.name)
         ));
 
-        // Track extension tools separately to avoid double registration
-        let mut extension_tools: Vec<Arc<dyn Tool>> = vec![];
+        // Filter based on agent config whitelist
+        if let Some(ref tool_config) = self.config.tools {
+            let before_count = tools.len();
+            tools.retain(|tool| tool_config.is_tool_enabled(tool.name()));
+            tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
+        }
 
         // Load Universal Tools from extensions directory (where `pekobot ext install` puts them)
         let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
@@ -191,17 +130,6 @@ impl Agent {
                             loaded_ids.len(),
                             loaded_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>()
                         );
-                        // Get tools filtered by agent's tool whitelist
-                        // Extension state is controlled by AgentConfig.tools.enabled
-                        let tool_config = self.config.tools.as_ref();
-                        let ext_tools = manager.get_tool_instances(|tool_name| {
-                            tool_config.map_or(false, |tc| tc.is_tool_enabled(tool_name))
-                        }).await;
-                        tracing::info!("✅ ExtensionManager returned {} tool instances (filtered by whitelist)", ext_tools.len());
-                        for tool in ext_tools {
-                            tracing::info!("  - Adding tool: {}", tool.name());
-                            extension_tools.push(tool);
-                        }
                     }
                 }
                 Err(e) => {
@@ -216,18 +144,10 @@ impl Agent {
             );
         }
 
-        // Combine all tools for return
-        let tool_count_before = tools.len();
-        tools.extend(extension_tools.clone());
-        
-        tracing::info!("Total tools available: {} ({} built-in, {} extension)", 
-            tools.len(), tool_count_before, extension_tools.len());
-
         // ADR-018/019: Register ONLY built-in tools with ExtensionCore
         // Extension tools (Universal and MCP) are already registered via ExtensionManager hooks
         // This prevents double registration (DRY violation fix)
-        let builtin_count = tool_count_before;
-        for tool in tools.iter().take(builtin_count) {
+        for tool in &tools {
             if let Err(e) = BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await {
                 tracing::warn!("Failed to register built-in tool '{}' with ExtensionCore: {}", tool.name(), e);
             } else {
@@ -235,10 +155,9 @@ impl Agent {
             }
         }
         
-        tracing::info!("Registered {} built-in tools with ExtensionCore ({} extension tools already registered via hooks)", 
-            builtin_count, extension_tools.len());
+        tracing::info!("Registered {} built-in tools with ExtensionCore", tools.len());
 
-        Ok(tools)
+        Ok(())
     }
 
     /// Create a new agent with the given configuration
@@ -373,24 +292,16 @@ impl Agent {
         self.set_state(AgentState::Busy);
 
         let result = if let Some(provider) = &self.provider {
-            // Load tools including MCP tools
-            let tools = match self.create_tools_async().await {
-                Ok(tools) => tools,
-                Err(e) => {
-                    self.set_state(AgentState::Idle);
-                    return Err(anyhow::anyhow!("Failed to create tools: {e}"));
-                }
-            };
+            // Initialize built-in tools with ExtensionCore
+            if let Err(e) = self.init_builtins_async().await {
+                self.set_state(AgentState::Idle);
+                return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
+            }
 
             let supports_native = provider.supports_native_tools();
             info!(
-                "Executing with {} tool calling ({} tools available)",
-                if supports_native {
-                    "native"
-                } else {
-                    "text-based"
-                },
-                tools.len()
+                "Executing with {} tool calling",
+                if supports_native { "native" } else { "text-based" }
             );
 
             // Invoke AgentInit hooks to start MCP servers and initialize extensions
@@ -404,9 +315,8 @@ impl Agent {
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
             let loop_ = AgenticLoopV4::new(
-                agent_arc, 
-                provider_arc, 
-                tools,
+                agent_arc,
+                provider_arc,
                 Arc::clone(&self.extension_core),
             );
 
@@ -448,29 +358,21 @@ impl Agent {
 
         self.set_state(AgentState::Busy);
 
-        // Initialize tool config on ExtensionCore (mirrors AgentRunner behavior)
+        // Initialize tool config on ExtensionCore
         let tool_config = self.config.tools.clone().unwrap_or_default();
         self.extension_core.set_tool_config(tool_config).await;
 
         let result = if let Some(provider) = &self.provider {
-            // Load tools including MCP tools
-            let tools = match self.create_tools_async().await {
-                Ok(tools) => tools,
-                Err(e) => {
-                    self.set_state(AgentState::Idle);
-                    return Err(anyhow::anyhow!("Failed to create tools: {e}"));
-                }
-            };
+            // Initialize built-in tools with ExtensionCore
+            if let Err(e) = self.init_builtins_async().await {
+                self.set_state(AgentState::Idle);
+                return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
+            }
 
             let supports_native = provider.supports_native_tools();
             info!(
-                "Executing with session and {} tool calling ({} tools available)",
-                if supports_native {
-                    "native"
-                } else {
-                    "text-based"
-                },
-                tools.len()
+                "Executing with session and {} tool calling",
+                if supports_native { "native" } else { "text-based" }
             );
 
             // Invoke AgentInit hooks to start MCP servers and initialize extensions
@@ -484,9 +386,8 @@ impl Agent {
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
             let loop_ = AgenticLoopV4::new(
-                agent_arc, 
-                provider_arc, 
-                tools,
+                agent_arc,
+                provider_arc,
                 Arc::clone(&self.extension_core),
             );
 
@@ -526,11 +427,10 @@ impl Agent {
         // We need to get the provider and tools into the task
         if let Some(provider) = &self.provider {
             let agent_arc = Arc::new(self.clone_for_loop(Arc::clone(provider)));
-            // Load tools including MCP tools before spawning
-            let tools = match self.create_tools_async().await {
-                Ok(tools) => tools,
-                Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {e}")),
-            };
+            // Initialize built-in tools with ExtensionCore
+            if let Err(e) = self.init_builtins_async().await {
+                return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
+            }
 
             let provider_arc = Arc::clone(provider);
             let event_tx_clone = event_tx.clone();
@@ -548,9 +448,8 @@ impl Agent {
                 tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
 
                 let loop_ = AgenticLoopV4::new(
-                    agent_arc, 
-                    provider_arc.clone(), 
-                    tools,
+                    agent_arc,
+                    provider_arc.clone(),
                     extension_core,
                 );
 
@@ -601,11 +500,10 @@ impl Agent {
         // We need to get the provider and tools
         if let Some(provider) = &self.provider {
             let agent_arc = Arc::new(self.clone_for_loop(Arc::clone(provider)));
-            // Load tools including MCP tools before spawning
-            let tools = match self.create_tools_async().await {
-                Ok(tools) => tools,
-                Err(e) => return Err(anyhow::anyhow!("Failed to create tools: {e}")),
-            };
+            // Initialize built-in tools with ExtensionCore
+            if let Err(e) = self.init_builtins_async().await {
+                return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
+            }
 
             // Invoke AgentInit hooks to start MCP servers and initialize extensions
             let init_result = self.extension_core.invoke_hook(
@@ -619,9 +517,8 @@ impl Agent {
             use crate::engine::loop_v4::AgenticLoopV4;
 
             let loop_ = AgenticLoopV4::new(
-                agent_arc, 
-                provider_arc, 
-                tools,
+                agent_arc,
+                provider_arc,
                 Arc::clone(&self.extension_core),
             );
 

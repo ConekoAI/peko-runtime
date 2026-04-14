@@ -7,11 +7,10 @@
 //! - Streaming support with incremental tool call construction
 
 use crate::agent::Agent;
-use crate::engine::{AgenticEvent, LifecyclePhase, ToolExecutor, ToolExecutionContext};
+use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
 use crate::session::UnifiedSession;
-use crate::tools::Tool;
 use crate::types::message::ContentBlock;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -52,13 +51,9 @@ pub struct ToolCall {
 pub struct AgenticLoopV4 {
     agent: Arc<Agent>,
     provider: Arc<dyn crate::providers::Provider>,
-    tools: Vec<Arc<dyn Tool>>,
     max_iterations: usize,
     system_prompt: String,
-    /// Tool executor with context injection
-    tool_executor: Arc<ToolExecutor>,
-    /// Extension core for hook integration (Phase 1: Extension Architecture)
-    /// This is now required for skill loading and tool registration.
+    /// Extension core for skill loading and tool registration.
     extension_core: Arc<crate::extensions::ExtensionCore>,
 }
 
@@ -68,23 +63,19 @@ impl AgenticLoopV4 {
     /// # Arguments
     /// * `agent` - The agent configuration
     /// * `provider` - The LLM provider to use
-    /// * `tools` - Available tools for the agent
     /// * `extension_core` - The ExtensionCore for skill loading and hook integration
     pub fn new(
         agent: Arc<Agent>,
         provider: Arc<dyn crate::providers::Provider>,
-        tools: Vec<Arc<dyn Tool>>,
         extension_core: Arc<crate::extensions::ExtensionCore>,
     ) -> Self {
-        let system_prompt = build_system_prompt(&agent, &tools, &extension_core);
+        let system_prompt = build_system_prompt(&agent, &extension_core);
 
         Self {
             agent,
             provider,
-            tools,
             max_iterations: 10,
             system_prompt,
-            tool_executor: Arc::new(ToolExecutor::new()),
             extension_core,
         }
     }
@@ -100,18 +91,6 @@ impl AgenticLoopV4 {
     #[must_use]
     pub fn extension_core(&self) -> &Arc<crate::extensions::ExtensionCore> {
         &self.extension_core
-    }
-
-    /// Get dynamic tools from extension registry
-    async fn get_dynamic_tools(&self) -> Vec<Arc<dyn Tool>> {
-        // Get tool definitions from unified registry
-        let tool_defs = self.extension_core.list_tool_definitions().await;
-        
-        tracing::debug!("Found {} tools in extension registry", tool_defs.len());
-        
-        // TODO: Convert ToolDefinition to Arc<dyn Tool> if needed
-        // For now, tools are loaded via ToolFactory which uses the same registry
-        vec![]
     }
 
     /// Run the agent with a user prompt, optionally resuming from an existing session.
@@ -407,7 +386,7 @@ impl AgenticLoopV4 {
             
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
             // This allows tool changes to take effect without session restart
-            let tool_defs = self.build_tool_definitions_fresh().await;
+            let tool_defs = self.build_tool_definitions().await;
             
             // ADR-019 Phase 3: Rebuild system prompt dynamically
             // Update the first message (system prompt) with fresh content
@@ -734,12 +713,11 @@ impl AgenticLoopV4 {
                         // Execute tool via ExtensionCore for unified execution (ADR-018a)
                         let start_time = std::time::Instant::now();
                         
-                        // Check if tool is available in agent's tool list OR in ExtensionCore
-                        let tool_in_list = self.tools.iter().any(|t| t.name() == name);
+                        // Check if tool is registered in ExtensionCore
                         let tool_in_extension = self.extension_core.get_tool_metadata(&name).await.is_some();
                         
                         let tool_result =
-                            if tool_in_list || tool_in_extension {
+                            if tool_in_extension {
                                 // Route through ExtensionCore for unified execution with panic isolation
                                 let hook_point = HookPointBuilder::tool_execute(name);
                                 let hook_input = HookInput::ToolCall {
@@ -879,26 +857,11 @@ impl AgenticLoopV4 {
         }
     }
 
-    /// Build tool definitions from tool registry (static - uses self.tools)
-    fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let defs: Vec<ToolDefinition> = self.tools
-            .iter()
-            .map(|tool| ToolDefinition {
-                name: tool.name().to_string(),
-                description: tool.description(),
-                parameters: tool.parameters(),
-            })
-            .collect();
-        
-        info!("Building {} tool definitions: {:?}", defs.len(), defs.iter().map(|d| &d.name).collect::<Vec<_>>());
-        defs
-    }
-    
     /// Build tool definitions dynamically from ExtensionCore (ADR-019 Phase 2)
     /// 
     /// This queries the unified tool registry for currently enabled tools,
     /// allowing tool changes to take effect without session restart.
-    async fn build_tool_definitions_fresh(&self) -> Vec<ToolDefinition> {
+    async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
         let defs = self.extension_core.list_tool_definitions().await;
         
         info!(
@@ -927,28 +890,12 @@ impl AgenticLoopV4 {
             .clone()
             .unwrap_or_else(|| PathBuf::from("."));
         
-        // Build prompt with both ExtensionCore tool definitions AND self.tools
-        // This ensures MCP tools (which are in self.tools but not in ExtensionCore) are included
-        let mut builder = SystemPromptBuilder::new(self.agent.name())
+        SystemPromptBuilder::new(self.agent.name())
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
-            .with_extension_core(Arc::clone(&self.extension_core));
-        
-        // If ExtensionCore has tool definitions, use those (for dynamic updates)
-        // Otherwise fall back to self.tools
-        if !tool_defs.is_empty() {
-            builder = builder.with_tool_definitions(tool_defs);
-        } else {
-            builder = builder.with_tools(self.tools.clone());
-        }
-        
-        builder.build()
-    }
-
-    /// Get the tool executor
-    #[must_use]
-    pub fn tool_executor(&self) -> &Arc<ToolExecutor> {
-        &self.tool_executor
+            .with_extension_core(Arc::clone(&self.extension_core))
+            .with_tool_definitions(tool_defs)
+            .build()
     }
 
     /// Get the system prompt
@@ -1147,7 +1094,7 @@ impl AgenticLoopV4 {
             info!("Streaming agent loop: iteration {}", iteration);
             
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
-            let tool_defs = self.build_tool_definitions_fresh().await;
+            let tool_defs = self.build_tool_definitions().await;
             
             // ADR-019 Phase 3: Rebuild system prompt dynamically
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
@@ -1389,12 +1336,11 @@ impl AgenticLoopV4 {
                         // Execute tool via ExtensionCore for unified execution (ADR-018a)
                         let start_time = std::time::Instant::now();
                         
-                        // Check if tool is available in agent's tool list OR in ExtensionCore
-                        let tool_in_list = self.tools.iter().any(|t| t.name() == name);
+                        // Check if tool is registered in ExtensionCore
                         let tool_in_extension = self.extension_core.get_tool_metadata(&name).await.is_some();
                         
                         let tool_result =
-                            if tool_in_list || tool_in_extension {
+                            if tool_in_extension {
                                 // Route through ExtensionCore for unified execution with panic isolation
                                 let hook_point = HookPointBuilder::tool_execute(name);
                                 let hook_input = HookInput::ToolCall {
@@ -1537,12 +1483,11 @@ impl AgenticLoopV4 {
 /// 
 /// Skills are loaded via the ExtensionCore using the SkillAdapter.
 fn build_system_prompt(
-    agent: &Agent, 
-    tools: &[Arc<dyn Tool>],
+    agent: &Agent,
     extension_core: &Arc<crate::extensions::ExtensionCore>,
 ) -> String {
-    info!("Building system prompt with {} tools: {:?}", tools.len(), tools.iter().map(|t| t.name()).collect::<Vec<_>>());
-    
+    info!("Building initial system prompt for agent '{}'", agent.name());
+
     // Use configured workspace if specified, otherwise use default with team
     let workspace_dir = agent
         .config
@@ -1578,9 +1523,9 @@ fn build_system_prompt(
         .map(|t| &t.skills)
         .unwrap_or(&vec![])
         .clone();
-    
+
     // Load and register skills with ExtensionCore (asynchronous block)
-    let skills_loaded = load_and_register_skills_sync(agent.name(), &enabled_skills, &path_resolver, extension_core);
+    let _skills_loaded = load_and_register_skills_sync(agent.name(), &enabled_skills, &path_resolver, extension_core);
 
     // Extract custom bootstrap files from agent config if specified
     let bootstrap_files = agent
@@ -1593,7 +1538,6 @@ fn build_system_prompt(
     SystemPromptBuilder::new(agent.name())
         .with_mode(PromptMode::Full)
         .with_workspace(&workspace_dir)
-        .with_tools(tools.to_vec())
         .with_extension_core(Arc::clone(extension_core))
         .with_system_files(bootstrap_files)
         .build()

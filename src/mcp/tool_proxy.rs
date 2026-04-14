@@ -281,7 +281,7 @@ mod tests {
 
         let proxy = McpToolProxy::new("test_server".to_string(), mcp_tool, manager);
 
-        assert_eq!(proxy.name(), "test_tool");
+        assert_eq!(proxy.name(), "mcp:test_server:test_tool");
         assert_eq!(proxy.server_name(), "test_server");
         assert!(proxy.description().contains("test_server"));
     }

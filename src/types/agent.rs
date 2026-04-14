@@ -406,19 +406,29 @@ mod tests {
     fn test_tool_config_default_whitelist() {
         let config = ToolConfig::default();
         
-        // Default whitelist should contain all built-in tools
-        assert!(config.enabled.contains(&"shell".to_string()));
-        assert!(config.enabled.contains(&"read_file".to_string()));
-        assert!(config.enabled.contains(&"write_file".to_string()));
-        assert!(config.enabled.contains(&"session_status".to_string()));
-        assert_eq!(config.enabled.len(), 10);
+        // Default whitelist is empty (secure-by-default)
+        assert!(config.enabled.is_empty());
     }
 
     #[test]
     fn test_tool_config_is_tool_enabled() {
-        let config = ToolConfig::default();
+        let config = ToolConfig {
+            enabled: vec![
+                "shell".to_string(),
+                "read_file".to_string(),
+                "write_file".to_string(),
+                "glob".to_string(),
+                "grep".to_string(),
+                "str_replace_file".to_string(),
+                "sessions_list".to_string(),
+                "sessions_history".to_string(),
+                "session_status".to_string(),
+                "cron".to_string(),
+            ],
+            ..Default::default()
+        };
         
-        // All built-in tools should be enabled by default
+        // All whitelisted tools should be enabled
         assert!(config.is_tool_enabled("shell"));
         assert!(config.is_tool_enabled("read_file"));
         assert!(config.is_tool_enabled("write_file"));
@@ -482,26 +492,23 @@ mod tests {
     fn test_agent_config_has_default_tools() {
         let config = AgentConfig::default();
         
-        // Should have default tool config with all built-in tools enabled
+        // Default tool config exists but whitelist is empty (secure-by-default)
         assert!(config.tools.is_some());
         let tools = config.tools.unwrap();
-        
-        assert!(tools.enabled.contains(&"shell".to_string()));
-        assert!(tools.enabled.contains(&"read_file".to_string()));
-        assert!(tools.enabled.contains(&"write_file".to_string()));
-        assert!(tools.enabled.contains(&"session_status".to_string()));
+        assert!(tools.enabled.is_empty());
     }
 
     #[test]
     fn test_tool_config_toml_serialization() {
-        // Test TOML format
-        let config = ToolConfig::default();
+        let config = ToolConfig {
+            enabled: vec!["shell".to_string(), "read_file".to_string()],
+            ..Default::default()
+        };
         let toml = toml::to_string(&config).unwrap();
         
-        // Should contain the enabled list with all tools
+        // Should contain the enabled list
         assert!(toml.contains("enabled"));
         assert!(toml.contains("shell"));
         assert!(toml.contains("read_file"));
-        assert!(toml.contains("session_status"));
     }
 }

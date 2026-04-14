@@ -26,7 +26,7 @@ pub mod sessions_send;
 pub mod shell;
 pub mod str_replace_file;
 pub mod traits;
-pub mod wrapper;
+// pub mod wrapper;  // Removed in ADR-019 cleanup
 pub mod write_file;
 
 /// Universal Tool Protocol - Backend-agnostic tool integration
@@ -68,21 +68,8 @@ pub use write_file::WriteFileTool;
 pub use async_tool::{
     into_async_tool, BoxedAsyncTool, SyncToAsyncAdapter, ToolAsyncExt, UnifiedAsyncTool,
 };
-/// ToolWrapper and related types - DEPRECATED
-/// 
-/// These types are deprecated as of ADR-018a. Reserved parameter handling,
-/// timeout management, and panic isolation are now handled by the
-/// AsyncExecutionRouter within the ExtensionCore.
-/// 
-/// Use the Extension Framework's tool execution hooks instead.
-#[deprecated(
-    since = "0.1.0",
-    note = "Use ExtensionCore tool execution hooks with AsyncExecutionRouter instead. ToolWrapper functionality is now unified in the Extension Framework."
-)]
-pub use wrapper::{
-    get_reserved_params_prompt_section, ReservedParams, ToolWrapper, ToolWrapperFactory,
-    WrapperConfig,
-};
+// ToolWrapper and wrapper.rs removed in ADR-019 cleanup.
+// Reserved parameter handling is now unified in ExtensionCore execution hooks.
 
 // Async tool framework re-exports
 pub use crate::agent::async_tool_framework::{
