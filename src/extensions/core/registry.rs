@@ -500,7 +500,7 @@ impl ExtensionCore {
                     return HookResult::Replace(output);
                 }
                 HookResult::Error(e) => {
-                    error!(handler_id = %hook_id, error = %e, "Handler error");
+                    debug!(handler_id = %hook_id, error = %e, "Handler error");
                     return HookResult::Error(e);
                 }
             }
