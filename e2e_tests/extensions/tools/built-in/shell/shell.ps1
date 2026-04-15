@@ -72,7 +72,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $cmd = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dir" } else { "ls" }
 Write-Host "Sending request to execute $cmd..." -ForegroundColor Yellow
-$response = peko send $agentName "Use your shell tool to check what's in your workspace. After executing the tool, respond TOOL_SUCCESS if you can see files listed, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your shell tool to check what's in your workspace. After executing the tool, respond TOOL_SUCCESS if you can see files listed, otherwise respond TOOL_FAILED." 2>&1
 Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 

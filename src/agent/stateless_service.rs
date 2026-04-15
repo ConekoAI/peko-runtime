@@ -16,8 +16,7 @@ use crate::agent::Agent;
 use crate::common::paths::PathResolver;
 use crate::common::services::AgentConfigService;
 use crate::engine::AgenticEvent;
-use crate::providers::{ChatMessage, MessageRole, TokenUsage};
-use crate::session::jsonl::SessionStorage;
+use crate::providers::{ChatMessage, TokenUsage};
 use crate::session::manager::SessionManager;
 use crate::session::types::{ChannelType, Peer};
 // Note: Session storage uses jsonl module directly
@@ -504,12 +503,7 @@ impl StatelessAgentService {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
-        // 2. Load session history
-        let history = self
-            .load_session_history(&request.agent_name, &request.session_id)
-            .await?;
-
-        // 3. Open the specific session by ID
+        // 2. Open the specific session by ID
         // This ensures we write to the correct session file
         let team = Some(config_entry.team.as_str());
         let mut session_manager =
@@ -534,6 +528,11 @@ impl StatelessAgentService {
                 handle.base().clone()
             }
         };
+
+        // 3. Load session history from the opened session
+        let history = self
+            .load_session_history(session.clone())
+            .await?;
 
         // 4. Cold-start agent (spawn)
         let agent = Agent::new(config_entry.config.clone())
@@ -640,10 +639,6 @@ impl StatelessAgentService {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
 
-        let _history = self
-            .load_session_history(&request.agent_name, &request.session_id)
-            .await?;
-
         let _agent = Agent::new(config_entry.config.clone())
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
@@ -672,7 +667,7 @@ impl StatelessAgentService {
             }
         };
 
-        // Delegate to the internal method
+        // Delegate to the internal method (which loads history itself)
         self.execute_streaming_with_session(request, session).await
     }
 
@@ -691,7 +686,7 @@ impl StatelessAgentService {
 
         // Load history for the agent
         let history = self
-            .load_session_history(&request.agent_name, &request.session_id)
+            .load_session_history(session.clone())
             .await?;
 
         // Load agent
@@ -758,64 +753,14 @@ impl StatelessAgentService {
     }
 
     /// Load session history from storage
+    ///
+    /// Uses the session's native load_history to preserve full ContentBlock fidelity
+    /// (including ToolCall and ToolResult blocks), instead of the lossy normalized format.
     async fn load_session_history(
         &self,
-        agent_name: &str,
-        session_id: &str,
+        session: Arc<RwLock<crate::session::UnifiedSession>>,
     ) -> Result<Vec<ChatMessage>> {
-        let sessions_dir =
-            get_agent_session_dir(&self.config_service, &self.path_resolver, agent_name).await?;
-
-        // Use standard SessionStorage (reads {session_id}.jsonl)
-        let storage = SessionStorage::new(sessions_dir);
-
-        // Load events from storage using normalized format for backward compatibility
-        let entries = storage.load_normalized(session_id).await?;
-        let mut messages = Vec::new();
-
-        for entry in entries {
-            match entry {
-                crate::session::NormalizedEntry::UserMessage { content, .. } => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::User,
-                        content: vec![ContentBlock::Text { text: content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                crate::session::NormalizedEntry::AssistantMessage { content, .. } => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: vec![ContentBlock::Text { text: content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                crate::session::NormalizedEntry::SystemMessage { content, .. } => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::System,
-                        content: vec![ContentBlock::Text { text: content }],
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-                crate::session::NormalizedEntry::ToolResult {
-                    content,
-                    tool_call_id,
-                    ..
-                } => {
-                    messages.push(ChatMessage {
-                        role: MessageRole::Tool,
-                        content: vec![ContentBlock::Text { text: content }],
-                        tool_calls: None,
-                        tool_call_id: Some(tool_call_id),
-                    });
-                }
-                // Skip other entry types for history loading
-                _ => {}
-            }
-        }
-
+        let messages = session.read().await.load_history().await?;
         Ok(messages)
     }
 

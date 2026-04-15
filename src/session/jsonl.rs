@@ -376,12 +376,21 @@ impl SessionStorage {
                     content: text,
                     timestamp,
                 }),
-                MessageRole::Tool => Some(NormalizedEntry::ToolResult {
-                    tool_call_id: msg.tool_call_id().unwrap_or_default().to_string(),
-                    tool_name: String::new(),
-                    content: text,
-                    is_error: false,
-                }),
+                MessageRole::Tool => {
+                    let tool_name = msg.message.content.iter().find_map(|block| {
+                        if let crate::types::message::ContentBlock::ToolResult { name, .. } = block {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }).unwrap_or_default();
+                    Some(NormalizedEntry::ToolResult {
+                        tool_call_id: msg.tool_call_id().unwrap_or_default().to_string(),
+                        tool_name,
+                        content: text,
+                        is_error: false,
+                    })
+                }
             };
         }
 

@@ -1151,10 +1151,22 @@ impl AgenticLoopV4 {
 
             // Get streaming response
             info!("Calling stream_with_tools with {} messages and {} tool definitions", messages.len(), tool_defs.len());
-            let mut stream = self
+            let mut stream = match self
                 .provider
                 .stream_with_tools(&messages, &tool_defs, &options)
-                .await?;
+                .await
+            {
+                Ok(stream) => stream,
+                Err(e) => {
+                    warn!("Failed to start stream: {}", e);
+                    on_event(AgenticEvent::Lifecycle {
+                        run_id: run_id.clone(),
+                        phase: LifecyclePhase::Error,
+                        error: Some(e.to_string()),
+                    });
+                    return Err(e);
+                }
+            };
             
             info!("Stream started, processing events...");
 

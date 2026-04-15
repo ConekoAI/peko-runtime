@@ -510,14 +510,16 @@ impl UnifiedSession {
                     .collect::<String>(),
             ),
             "tool" => {
-                // For tool messages, extract tool_call_id and content from content blocks
+                // For tool messages, extract tool_call_id, tool_name, and content from content blocks
                 let mut tool_call_id = String::new();
+                let mut tool_name = String::new();
                 let mut content_parts = Vec::new();
 
                 for block in &final_content_blocks {
                     match block {
-                        ContentBlock::ToolResult { tool_call_id: id, content, .. } => {
+                        ContentBlock::ToolResult { tool_call_id: id, name, content, .. } => {
                             tool_call_id = id.clone();
+                            tool_name = name.clone();
                             // Extract text from nested content
                             for c in content {
                                 if let ContentBlock::Text { text } = c {
@@ -533,7 +535,7 @@ impl UnifiedSession {
                 }
 
                 let content_text = content_parts.join("");
-                SessionMessage::tool_result(tool_call_id, content_text)
+                SessionMessage::tool_result(tool_call_id, tool_name, content_text)
             }
             _ => {
                 // Default to user message for unknown roles
@@ -962,5 +964,75 @@ mod tests {
 
         let context = entries_to_context_text(&entries);
         assert!(context.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_history_preserves_tool_calls_and_results() {
+        use crate::types::message::ContentBlock;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = crate::session::types::Peer::User("default".to_string());
+        let session_id = "test-session-123";
+
+        // Create a session
+        storage.create_session(session_id, None).await.unwrap();
+
+        // Open it as a UnifiedSession
+        let mut session = UnifiedSession::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+            .await
+            .unwrap();
+
+        // Add assistant message with text + tool call
+        session.add_assistant_with_blocks(
+            vec![
+                ContentBlock::Text { text: "I'll read the file.".to_string() },
+                ContentBlock::ToolCall {
+                    id: "tool_abc".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "test.txt"}),
+                },
+            ],
+            Some(vec![crate::session::events::ToolCallBlock {
+                id: "tool_abc".to_string(),
+                name: "read_file".to_string(),
+                arguments: serde_json::json!({"path": "test.txt"}),
+            }]),
+            None,
+            None,
+        ).await.unwrap();
+
+        // Add tool result
+        session.add_tool_result("tool_abc", "read_file", "Hello World").await.unwrap();
+
+        // Load history
+        let history = session.load_history().await.unwrap();
+
+        // Should have: SessionCreated (skipped), Assistant, Tool
+        assert_eq!(history.len(), 2, "Expected assistant + tool messages");
+
+        // Check assistant message preserves tool call
+        let assistant = &history[0];
+        assert!(matches!(assistant.role, crate::providers::MessageRole::Assistant));
+        assert_eq!(assistant.content.len(), 2, "Assistant should have text + tool call");
+        assert!(matches!(assistant.content[0], ContentBlock::Text { .. }));
+        assert!(matches!(assistant.content[1], ContentBlock::ToolCall { .. }));
+        if let ContentBlock::ToolCall { id, name, arguments } = &assistant.content[1] {
+            assert_eq!(id, "tool_abc");
+            assert_eq!(name, "read_file");
+            assert_eq!(arguments, &serde_json::json!({"path": "test.txt"}));
+        }
+
+        // Check tool result preserves tool_call_id
+        let tool = &history[1];
+        assert!(matches!(tool.role, crate::providers::MessageRole::Tool));
+        assert_eq!(tool.content.len(), 1);
+        if let ContentBlock::ToolResult { tool_call_id, name, content, is_error } = &tool.content[0] {
+            assert_eq!(tool_call_id, "tool_abc");
+            assert_eq!(name, "read_file");
+            assert_eq!(*is_error, false);
+            assert_eq!(content, &vec![ContentBlock::Text { text: "Hello World".to_string() }]);
+        }
     }
 }
