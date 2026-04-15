@@ -8,7 +8,7 @@
 //! - Configure extensions (global, team, agent levels)
 
 use crate::commands::GlobalPaths;
-use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat, general_adapter};
+use crate::extensions::adapters::{ExtensionTypeAdapter, general_adapter};
 use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extensions::types::ExtensionId;
 use clap::Subcommand;
@@ -420,14 +420,10 @@ async fn add_tool_to_agent_whitelist(
         (target.to_string(), None)
     };
 
-    if let Some(agent_name) = agent {
-        // Agent-level: update specific agent config
-        let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
-        if !config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
-        }
+    let config_service = paths.services().agent_config();
 
-        update_agent_config_with_tool(&config_path, tool_name)?;
+    if let Some(agent_name) = agent {
+        config_service.enable_tool_sync(&agent_name, &team, tool_name)?;
         println!("Added '{}' to agent '{}/{}' tool whitelist", tool_name, team, agent_name);
         tracing::info!("Added '{}' to agent '{}/{}' tool whitelist", tool_name, team, agent_name);
     } else {
@@ -447,10 +443,8 @@ async fn add_tool_to_agent_whitelist(
             }
             
             let agent_name = entry.file_name().to_string_lossy().to_string();
-            let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
-            
-            if config_path.exists() {
-                update_agent_config_with_tool(&config_path, tool_name)?;
+            if paths.resolver().agent_config(&agent_name, Some(&team)).exists() {
+                config_service.enable_tool_sync(&agent_name, &team, tool_name)?;
                 updated_count += 1;
             }
         }
@@ -462,26 +456,6 @@ async fn add_tool_to_agent_whitelist(
             tracing::warn!("No agents found in team '{}' to add tool '{}' to", team, tool_name);
         }
     }
-    
-    Ok(())
-}
-
-/// Helper to update a single agent's config with a tool
-fn update_agent_config_with_tool(config_path: &std::path::Path, tool_name: &str) -> anyhow::Result<()> {
-    let content = std::fs::read_to_string(config_path)?;
-    let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
-
-    // Ensure tools config exists
-    let tools = config.tools.get_or_insert_with(Default::default);
-
-    // Add to enabled whitelist if not already present
-    if !tools.enabled.iter().any(|e| e.eq_ignore_ascii_case(tool_name)) {
-        tools.enabled.push(tool_name.to_string());
-    }
-
-    // Save
-    let updated = toml::to_string_pretty(&config)?;
-    std::fs::write(config_path, updated)?;
     
     Ok(())
 }
@@ -502,59 +476,19 @@ async fn handle_enable_builtin(
         (target.to_string(), None)
     };
 
+    let config_service = paths.services().agent_config();
+
     if let Some(agent_name) = agent {
-        // Agent-level: update agent config
-        let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
-        if !config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
-        }
-
-        let content = std::fs::read_to_string(&config_path)?;
-        let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
-
-        // Ensure tools config exists
-        let tools = config.tools.get_or_insert_with(Default::default);
-
-        // Add to enabled whitelist if not already present
-        if !tools.enabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
-            tools.enabled.push(capability.to_string());
-        }
-
-        // Save
-        let updated = toml::to_string_pretty(&config)?;
-        std::fs::write(&config_path, updated)?;
-
+        config_service.enable_tool_sync(&agent_name, &team, capability)?;
         println!("Enabled '{}' for agent '{}' in team '{}'", capability, agent_name, team);
     } else {
         // Team-level: update team extensions config
         let team_dir = paths.data_dir.join("teams").join(&team);
         let ext_config_path = team_dir.join("extensions.toml");
         
-        #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-        struct TeamExtConfig {
-            #[serde(default)]
-            enabled: Vec<String>,
-            #[serde(default)]
-            disabled: Vec<String>,
-        }
-        
-        let mut config: TeamExtConfig = if ext_config_path.exists() {
-            let content = std::fs::read_to_string(&ext_config_path)?;
-            toml::from_str(&content).unwrap_or_default()
-        } else {
-            TeamExtConfig::default()
-        };
-        
-        // Add to enabled, remove from disabled
-        if !config.enabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
-            config.enabled.push(capability.to_string());
-        }
-        config.disabled.retain(|e| !e.eq_ignore_ascii_case(capability));
-        
-        // Save
-        std::fs::create_dir_all(&team_dir)?;
-        let updated = toml::to_string_pretty(&config)?;
-        std::fs::write(&ext_config_path, updated)?;
+        let mut config = crate::common::types::TeamExtConfig::load(&ext_config_path)?;
+        config.enable(capability);
+        config.save(&ext_config_path)?;
         
         println!("Enabled '{}' for team '{}'", capability, team);
     }
@@ -631,57 +565,19 @@ async fn handle_disable_builtin(
         (target.to_string(), None)
     };
 
+    let config_service = paths.services().agent_config();
+
     if let Some(agent_name) = agent {
-        // Agent-level: update agent config
-        let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
-        if !config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
-        }
-
-        let content = std::fs::read_to_string(&config_path)?;
-        let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
-
-        // Ensure tools config exists
-        let tools = config.tools.get_or_insert_with(Default::default);
-
-        // Remove from enabled whitelist
-        tools.enabled.retain(|e| !e.eq_ignore_ascii_case(capability));
-
-        // Save
-        let updated = toml::to_string_pretty(&config)?;
-        std::fs::write(&config_path, updated)?;
-
+        config_service.disable_tool_sync(&agent_name, &team, capability)?;
         println!("Disabled '{}' for agent '{}' in team '{}'", capability, agent_name, team);
     } else {
         // Team-level: update team extensions config
         let team_dir = paths.data_dir.join("teams").join(&team);
         let ext_config_path = team_dir.join("extensions.toml");
         
-        #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-        struct TeamExtConfig {
-            #[serde(default)]
-            enabled: Vec<String>,
-            #[serde(default)]
-            disabled: Vec<String>,
-        }
-        
-        let mut config: TeamExtConfig = if ext_config_path.exists() {
-            let content = std::fs::read_to_string(&ext_config_path)?;
-            toml::from_str(&content).unwrap_or_default()
-        } else {
-            TeamExtConfig::default()
-        };
-        
-        // Remove from enabled, add to disabled
-        config.enabled.retain(|e| !e.eq_ignore_ascii_case(capability));
-        if !config.disabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
-            config.disabled.push(capability.to_string());
-        }
-        
-        // Save
-        std::fs::create_dir_all(&team_dir)?;
-        let updated = toml::to_string_pretty(&config)?;
-        std::fs::write(&ext_config_path, updated)?;
+        let mut config = crate::common::types::TeamExtConfig::load(&ext_config_path)?;
+        config.disable(capability);
+        config.save(&ext_config_path)?;
         
         println!("Disabled '{}' for team '{}'", capability, team);
     }

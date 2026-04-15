@@ -13,6 +13,6 @@ pub use agent::{
 };
 pub use team::{
     TeamAgentDefinition, TeamConfigSource, TeamCreationResult, TeamDeletionResult,
-    TeamDeployRequest, TeamDeployResult, TeamExportResult, TeamImportResult, TeamInfo,
-    TeamMetadata, TeamRuntimeInfo, TeamRuntimeStatus, TeamScaleRequest, TeamScaleResult,
+    TeamDeployRequest, TeamDeployResult, TeamExportResult, TeamExtConfig, TeamImportResult,
+    TeamInfo, TeamMetadata, TeamRuntimeInfo, TeamRuntimeStatus, TeamScaleRequest, TeamScaleResult,
 };

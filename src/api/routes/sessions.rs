@@ -11,8 +11,12 @@
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
-use crate::api::types::{PaginatedResponse, PaginationParams};
+use crate::api::types::{
+    BranchResponse, HistoryEventResponse, HistoryResponse, PaginatedResponse, PaginationParams,
+    SessionResponse,
+};
 use crate::common::services::{HistoryEvent, HistoryQuery, SessionInfo};
+use crate::common::time::format_timestamp_rfc3339;
 use crate::session::events::SessionEvent;
 
 use axum::{
@@ -20,37 +24,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{debug, info};
-
-/// Session response object (API_CONTRACT §2.3)
-#[derive(Debug, Clone, Serialize)]
-pub struct SessionResponse {
-    pub id: String,
-    pub instance_id: String,
-    pub created_at: String,
-    pub updated_at: String,
-    pub turn_count: u32,
-    pub message_count: usize,
-    /// Current context window size (total_tokens from last assistant message)
-    pub context_window: usize,
-    /// Cumulative input tokens across all assistant messages
-    pub total_input_tokens: usize,
-    /// Cumulative output tokens across all assistant messages
-    pub total_output_tokens: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-}
 
 impl From<SessionInfo> for SessionResponse {
     fn from(info: SessionInfo) -> Self {
         Self {
             id: info.id,
-            instance_id: info.agent_name,
-            created_at: format_timestamp(info.created_at),
-            updated_at: format_timestamp(info.updated_at),
+            agent_name: info.agent_name,
+            _instance_id: None,
+            created_at: format_timestamp_rfc3339(info.created_at),
+            updated_at: format_timestamp_rfc3339(info.updated_at),
             turn_count: info.turn_count,
             message_count: info.message_count,
             context_window: info.context_window,
@@ -60,36 +44,6 @@ impl From<SessionInfo> for SessionResponse {
             title: info.title,
         }
     }
-}
-
-/// Format a millisecond timestamp to RFC3339 string
-fn format_timestamp(ms: u64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms as i64)
-        .map(|dt| dt.to_rfc3339())
-        .unwrap_or_default()
-}
-
-/// History event response (API_CONTRACT §5.3)
-#[derive(Debug, Clone, Serialize)]
-pub struct HistoryEventResponse {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub args: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    pub created_at: String,
 }
 
 impl From<&SessionEvent> for HistoryEventResponse {
@@ -261,16 +215,6 @@ impl From<HistoryEvent> for HistoryEventResponse {
     }
 }
 
-/// History response
-#[derive(Debug, Clone, Serialize)]
-pub struct HistoryResponse {
-    pub session_id: String,
-    pub items: Vec<HistoryEventResponse>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-    pub has_more: bool,
-}
-
 /// History query parameters
 #[derive(Debug, Deserialize)]
 pub struct HistoryParams {
@@ -296,14 +240,6 @@ fn default_limit_100() -> usize {
 pub struct BranchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-}
-
-/// Branch session response
-#[derive(Debug, Serialize)]
-pub struct BranchResponse {
-    #[serde(flatten)]
-    pub session: SessionResponse,
-    pub parent_session_id: String,
 }
 
 /// List all sessions for an agent

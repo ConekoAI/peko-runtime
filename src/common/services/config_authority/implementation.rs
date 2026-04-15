@@ -64,7 +64,7 @@ impl ConfigAuthorityImpl {
     }
 
     /// Get the canonical config path for an agent
-    fn config_path(&self, agent_name: &str, team: Option<&str>) -> PathBuf {
+    pub fn config_path(&self, agent_name: &str, team: Option<&str>) -> PathBuf {
         self.path_resolver.agent_config(agent_name, team)
     }
 

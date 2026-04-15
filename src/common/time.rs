@@ -53,6 +53,13 @@ pub fn format_timestamp_ms(ts_ms: u64) -> String {
     }
 }
 
+/// Format a millisecond timestamp to RFC3339 string
+pub fn format_timestamp_rfc3339(ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms as i64)
+        .map(|dt| dt.to_rfc3339())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

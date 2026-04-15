@@ -149,3 +149,49 @@ pub struct TeamImportResult {
     pub path: PathBuf,
     pub agents_imported: usize,
 }
+
+/// Team extension configuration (extensions.toml)
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TeamExtConfig {
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    #[serde(default)]
+    pub disabled: Vec<String>,
+}
+
+impl TeamExtConfig {
+    /// Load from team extensions.toml
+    pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(path)?;
+        Ok(toml::from_str(&content).unwrap_or_default())
+    }
+
+    /// Save to team extensions.toml
+    pub fn save(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = toml::to_string_pretty(self)?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Enable a capability
+    pub fn enable(&mut self, capability: &str) {
+        if !self.enabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+            self.enabled.push(capability.to_string());
+        }
+        self.disabled.retain(|e| !e.eq_ignore_ascii_case(capability));
+    }
+
+    /// Disable a capability
+    pub fn disable(&mut self, capability: &str) {
+        self.enabled.retain(|e| !e.eq_ignore_ascii_case(capability));
+        if !self.disabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+            self.disabled.push(capability.to_string());
+        }
+    }
+}

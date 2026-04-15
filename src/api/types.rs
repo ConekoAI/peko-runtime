@@ -144,6 +144,82 @@ impl ErrorResponse {
 }
 
 // =============================================================================
+// Session Types
+// =============================================================================
+
+/// Session response object (API_CONTRACT §2.3)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionResponse {
+    pub id: String,
+    /// Agent name (replaces instance_id in stateless model)
+    #[serde(rename = "agent_name")]
+    pub agent_name: String,
+    /// Legacy field name (deprecated)
+    #[serde(rename = "instance_id", default)]
+    #[deprecated(since = "0.2.0", note = "Use agent_name instead")]
+    pub _instance_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub turn_count: u32,
+    #[serde(default)]
+    pub message_count: usize,
+    /// Current context window size (total_tokens from last assistant message)
+    #[serde(default)]
+    pub context_window: usize,
+    /// Cumulative input tokens across all assistant messages
+    #[serde(default)]
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all assistant messages
+    #[serde(default)]
+    pub total_output_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub parent_session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub title: Option<String>,
+}
+
+/// History event response (API_CONTRACT §5.3)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEventResponse {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub args: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
+    pub created_at: String,
+}
+
+/// History response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryResponse {
+    pub session_id: String,
+    pub items: Vec<HistoryEventResponse>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cursor: Option<String>,
+    pub has_more: bool,
+}
+
+/// Branch response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchResponse {
+    #[serde(flatten)]
+    pub session: SessionResponse,
+    pub parent_session_id: String,
+}
+
+// =============================================================================
 // Common Request Types
 // =============================================================================
 

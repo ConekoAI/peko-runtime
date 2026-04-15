@@ -132,6 +132,54 @@ impl AgentConfigService {
     pub fn authority(&self) -> &Arc<ConfigAuthorityImpl> {
         &self.authority
     }
+
+    /// Enable a tool in an agent's config whitelist (synchronous)
+    pub fn enable_tool_sync(
+        &self,
+        agent_name: &str,
+        team: &str,
+        tool_name: &str,
+    ) -> anyhow::Result<()> {
+        let config_path = self.authority.config_path(agent_name, Some(team));
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+        }
+
+        let content = std::fs::read_to_string(&config_path)?;
+        let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
+
+        let tools = config.tools.get_or_insert_with(Default::default);
+        if !tools.enabled.iter().any(|e| e.eq_ignore_ascii_case(tool_name)) {
+            tools.enabled.push(tool_name.to_string());
+        }
+
+        let updated = toml::to_string_pretty(&config)?;
+        std::fs::write(&config_path, updated)?;
+        Ok(())
+    }
+
+    /// Disable a tool in an agent's config whitelist (synchronous)
+    pub fn disable_tool_sync(
+        &self,
+        agent_name: &str,
+        team: &str,
+        tool_name: &str,
+    ) -> anyhow::Result<()> {
+        let config_path = self.authority.config_path(agent_name, Some(team));
+        if !config_path.exists() {
+            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+        }
+
+        let content = std::fs::read_to_string(&config_path)?;
+        let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
+
+        let tools = config.tools.get_or_insert_with(Default::default);
+        tools.enabled.retain(|e| !e.eq_ignore_ascii_case(tool_name));
+
+        let updated = toml::to_string_pretty(&config)?;
+        std::fs::write(&config_path, updated)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

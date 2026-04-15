@@ -3,7 +3,9 @@
 //! This module provides a client for the Pekobot HTTP API.
 //! All CLI commands use this client to communicate with the daemon.
 
-use crate::api::types::{ErrorResponse, HealthResponse, InfoResponse};
+use crate::api::types::{
+    BranchResponse, ErrorResponse, HealthResponse, HistoryResponse, InfoResponse, SessionResponse,
+};
 use reqwest::{Client, Response, StatusCode};
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
@@ -668,69 +670,8 @@ pub type InstanceResponse = AgentConfigResponse;
 #[deprecated(since = "0.2.0", note = "Use PaginatedAgentsResponse instead")]
 pub type PaginatedInstancesResponse = PaginatedAgentsResponse;
 
-/// Session response
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SessionResponse {
-    pub id: String,
-    /// Agent name (replaces instance_id in stateless model)
-    #[serde(rename = "agent_name")]
-    pub agent_name: String,
-    /// Legacy field name (deprecated)
-    #[serde(rename = "instance_id", default)]
-    #[deprecated(since = "0.2.0", note = "Use agent_name instead")]
-    pub _instance_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub turn_count: u32,
-    #[serde(default)]
-    pub parent_session_id: Option<String>,
-    #[serde(default)]
-    pub title: Option<String>,
-}
-
 /// Paginated sessions response
 pub type PaginatedSessionsResponse = PaginatedResponse<SessionResponse>;
-
-/// History event response
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HistoryEventResponse {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(default)]
-    pub role: Option<String>,
-    #[serde(default)]
-    pub content: Option<String>,
-    #[serde(default)]
-    pub tool: Option<String>,
-    #[serde(default)]
-    pub args: Option<serde_json::Value>,
-    #[serde(default)]
-    pub tool_call_id: Option<String>,
-    #[serde(default)]
-    pub output: Option<String>,
-    #[serde(default)]
-    pub error: Option<String>,
-    pub created_at: String,
-}
-
-/// History response
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HistoryResponse {
-    pub session_id: String,
-    pub items: Vec<HistoryEventResponse>,
-    #[serde(default)]
-    pub cursor: Option<String>,
-    pub has_more: bool,
-}
-
-/// Branch response
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct BranchResponse {
-    #[serde(flatten)]
-    pub session: SessionResponse,
-    pub parent_session_id: String,
-}
 
 /// Team response
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -770,6 +711,7 @@ pub type PaginatedImagesResponse = PaginatedResponse<ImageResponse>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::types::HistoryEventResponse;
 
     #[test]
     fn test_client_error_exit_codes() {
