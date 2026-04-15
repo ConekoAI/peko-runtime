@@ -168,46 +168,6 @@ impl UniversalToolAdapter {
         super::parsing::find_executable(tool_path, tool_name).await
     }
 
-    /// Parse a manifest.json file into an extension manifest
-    async fn parse_tool_manifest(
-        &self,
-        manifest_path: &Path,
-        executable: &Path,
-    ) -> Result<ExtensionManifest> {
-        let content = tokio::fs::read_to_string(manifest_path)
-            .await
-            .with_context(|| format!("Failed to read manifest {:?}", manifest_path))?;
-
-        let tool_manifest: crate::tools::universal::Manifest = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse manifest {:?}", manifest_path))?;
-
-        let mut manifest = ExtensionManifest::new(
-            &tool_manifest.name,
-            UNIVERSAL_TOOL_EXTENSION_TYPE,
-            &tool_manifest.name,
-            &tool_manifest.description,
-            "1.0.0", // Tools don't have explicit versioning in manifest
-            manifest_path.parent().unwrap_or(Path::new(".")).to_path_buf(),
-        );
-
-        // Store additional metadata
-        manifest.set("executable", executable.to_string_lossy().to_string());
-        manifest.set("manifest_path", manifest_path.to_string_lossy().to_string());
-        manifest.set("parameters", tool_manifest.parameters.clone());
-        
-        if let Some(llm_desc) = tool_manifest.llm_description {
-            manifest.set("llm_description", llm_desc);
-        }
-        
-        // Store reserved parameters
-        let reserved_config = &tool_manifest.reserved_parameters;
-        if !reserved_config.is_empty() {
-            manifest.set("reserved_parameters", serde_json::to_value(&reserved_config).unwrap_or_default());
-        }
-
-        Ok(manifest)
-    }
-
     /// Register a universal tool with the unified registry (ADR-018b)
     ///
     /// This method registers a universal tool directly with ExtensionCore
@@ -270,12 +230,12 @@ impl UniversalToolAdapter {
             .map(PathBuf::from)
             .unwrap_or_default();
 
+        let _reserved_params = metadata.reserved_params.clone();
         // Create execution handler
         let exec_handler = Arc::new(UniversalToolExecuteHandler {
             tool_name: tool_name.clone(),
             executable,
             manifest_path,
-            reserved_params: metadata.reserved_params.clone(),
             full_schema: metadata.parameters.clone(),
         });
 
@@ -549,7 +509,7 @@ impl HookHandlerFactory for UniversalToolExecuteFactory {
             .unwrap_or_default();
         
         // Extract reserved parameters from manifest
-        let reserved_params = self
+        let _reserved_params: crate::extensions::services::ReservedParamsConfig = self
             .manifest
             .get("reserved_parameters")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -562,11 +522,11 @@ impl HookHandlerFactory for UniversalToolExecuteFactory {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({"type": "object"}));
 
+        let _ = _reserved_params;
         Box::new(UniversalToolExecuteHandler {
             tool_name: self.manifest.name.clone(),
             executable,
             manifest_path,
-            reserved_params,
             full_schema,
         })
     }
@@ -578,7 +538,6 @@ struct UniversalToolExecuteHandler {
     tool_name: String,
     executable: PathBuf,
     manifest_path: PathBuf,
-    reserved_params: ReservedParamsConfig,
     full_schema: serde_json::Value,
 }
 
@@ -916,7 +875,7 @@ pub async fn register_tools_with_core(
 
         // Register execution handler
         // Extract reserved parameters from manifest
-        let reserved_params = tool.manifest
+        let _reserved_params: crate::extensions::services::ReservedParamsConfig = tool.manifest
             .get("reserved_parameters")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
@@ -926,11 +885,11 @@ pub async fn register_tools_with_core(
             .cloned()
             .unwrap_or_else(|| serde_json::json!({"type": "object"}));
         
+        let _ = _reserved_params;
         let exec_handler = Arc::new(UniversalToolExecuteHandler {
             tool_name: tool.manifest.name.clone(),
             executable: tool.executable.clone(),
             manifest_path: tool.manifest_path.clone(),
-            reserved_params,
             full_schema,
         });
 
@@ -1075,25 +1034,6 @@ mod tests {
         assert_eq!(tools.len(), 2);
         assert!(tools.iter().any(|t| t.manifest.name == "tool1"));
         assert!(tools.iter().any(|t| t.manifest.name == "tool2"));
-    }
-
-    #[tokio::test]
-    async fn test_parse_tool_manifest() {
-        let temp = TempDir::new().unwrap();
-        let tool_dir = create_test_tool(temp.path(), "calculator", "Calculate things");
-
-        let adapter = UniversalToolAdapter::new();
-        let manifest_path = tool_dir.join("manifest.json");
-        let executable = tool_dir.join("calculator.py");
-
-        let manifest = adapter
-            .parse_tool_manifest(&manifest_path, &executable)
-            .await
-            .unwrap();
-
-        assert_eq!(manifest.name, "calculator");
-        assert_eq!(manifest.description, "Calculate things");
-        assert_eq!(manifest.extension_type, "universal-tool");
     }
 
     #[tokio::test]

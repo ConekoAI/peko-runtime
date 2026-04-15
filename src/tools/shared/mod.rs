@@ -15,7 +15,6 @@
 pub mod context_resolver;
 pub mod process_transport;
 pub mod proxy_utils;
-pub mod reserved_params;
 pub mod schema_filter;
 pub mod validation;
 
@@ -23,6 +22,6 @@ pub use context_resolver::ContextResolver;
 pub use process_transport::{ProcessConfig, ProcessTransport, ProcessTransportBuilder};
 pub use proxy_utils::{execute_with_context_handling, estimate_tool_duration, format_status};
 // Reserved params re-exported from extensions::services
-pub use reserved_params::ReservedParamSource;
+pub use crate::extensions::services::ParamSource as ReservedParamSource;
 pub use schema_filter::filter_reserved_params;
 pub use validation::{validate_no_reserved_params_leak, ValidationError};

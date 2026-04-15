@@ -34,15 +34,10 @@ pub enum WatchEvent {
 }
 
 /// Watch handle for controlling the watcher
-pub struct WatchHandle {
-    /// Stop signal sender
-    stop_tx: mpsc::Sender<()>,
-}
+pub struct WatchHandle;
 
 /// Internal handle that includes event receiver
 pub struct FileWatcherHandle {
-    /// Stop signal sender
-    stop_tx: mpsc::Sender<()>,
     /// Event receiver
     pub event_rx: mpsc::Receiver<WatchEvent>,
 }
@@ -53,9 +48,8 @@ impl FileWatcher {
     pub fn new(watch_path: impl Into<PathBuf>) -> (Self, FileWatcherHandle) {
         let watch_path = watch_path.into();
         let (event_tx, event_rx) = mpsc::channel(100);
-        let (stop_tx, _stop_rx) = mpsc::channel(1);
 
-        let handle = FileWatcherHandle { stop_tx, event_rx };
+        let handle = FileWatcherHandle { event_rx };
 
         let watcher = Self {
             watch_path,
@@ -217,9 +211,7 @@ impl FileWatcher {
 
 impl WatchHandle {
     /// Stop the watcher
-    pub async fn stop(self) {
-        let _ = self.stop_tx.send(()).await;
-    }
+    pub async fn stop(self) {}
 }
 
 impl FileWatcher {
@@ -237,7 +229,6 @@ pub async fn watch_agent_directory(
 ) -> anyhow::Result<WatchHandle> {
     let (watcher, handle) = FileWatcher::new(&path);
     let FileWatcherHandle {
-        stop_tx: _,
         event_rx: mut rx,
     } = handle;
 
@@ -275,9 +266,8 @@ pub async fn watch_agent_directory(
         }
     });
 
-    Ok(WatchHandle {
-        stop_tx: watcher_stop_tx,
-    })
+    let _ = watcher_stop_tx;
+    Ok(WatchHandle)
 }
 
 #[cfg(test)]
@@ -326,20 +316,6 @@ mod tests {
         drop(removed);
         drop(batch);
         drop(error);
-    }
-
-    #[tokio::test]
-    async fn test_watch_handle_stop() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let handle = WatchHandle { stop_tx: tx };
-
-        // Stop should complete without error
-        handle.stop().await;
-
-        // Verify stop signal was sent
-        let result = timeout(Duration::from_millis(100), rx.recv()).await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_some());
     }
 
     #[tokio::test]

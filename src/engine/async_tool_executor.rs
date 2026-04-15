@@ -392,13 +392,6 @@ impl AsyncToolExecutor {
         })
     }
 
-    /// Report progress for a task
-    async fn report_progress(&self, task_id: &str, progress: ToolProgress) {
-        let callbacks = self.progress_callbacks.read().await;
-        if let Some(callback) = callbacks.get(task_id) {
-            callback(progress);
-        }
-    }
 }
 
 impl Default for AsyncToolExecutor {

@@ -6,8 +6,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Distributed tracer
 pub struct Tracer {
-    /// Active spans
-    spans: HashMap<String, TraceSpan>,
     /// Span counter for IDs
     counter: AtomicU64,
 }
@@ -58,7 +56,6 @@ impl Tracer {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            spans: HashMap::new(),
             counter: AtomicU64::new(0),
         }
     }

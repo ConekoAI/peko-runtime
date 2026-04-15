@@ -217,28 +217,22 @@ pub struct CoalescingChunker {
     inner: BlockChunker,
     coalesce_buffer: String,
     min_coalesce_chars: usize,
-    max_coalesce_chars: usize,
 }
 
 impl CoalescingChunker {
     /// Create a new coalescing chunker
     #[must_use]
     pub fn new() -> Self {
-        Self::with_config(ChunkerConfig::default(), 1500, 3000)
+        Self::with_config(ChunkerConfig::default(), 1500)
     }
 
     /// Create with custom config
     #[must_use]
-    pub fn with_config(
-        chunker_config: ChunkerConfig,
-        min_coalesce: usize,
-        max_coalesce: usize,
-    ) -> Self {
+    pub fn with_config(chunker_config: ChunkerConfig, min_coalesce: usize) -> Self {
         Self {
             inner: BlockChunker::with_config(chunker_config),
             coalesce_buffer: String::new(),
             min_coalesce_chars: min_coalesce,
-            max_coalesce_chars: max_coalesce,
         }
     }
 
@@ -379,7 +373,6 @@ mod tests {
                 emit_partial: true,
             },
             50,  // min_coalesce - higher than test text
-            100, // max_coalesce
         );
 
         // Feed small chunks (total ~31 chars, below 50 threshold)

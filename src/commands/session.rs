@@ -22,9 +22,6 @@ use clap::Subcommand;
 use serde::Serialize;
 use std::path::PathBuf;
 
-/// Default peer ID for CLI operations
-const CLI_DEFAULT_PEER_ID: &str = "default";
-
 /// Get the active session ID for an agent using CLI default peer
 ///
 /// This helper centralizes the logic for resolving the active session

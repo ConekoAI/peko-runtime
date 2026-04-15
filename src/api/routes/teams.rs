@@ -286,12 +286,6 @@ mod base64 {
         encoder.into_inner()
     }
 
-    pub fn decode(input: &str) -> Option<Vec<u8>> {
-        use ::base64::Engine;
-        ::base64::engine::general_purpose::STANDARD
-            .decode(input)
-            .ok()
-    }
 }
 
 #[cfg(test)]

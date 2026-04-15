@@ -18,20 +18,17 @@ pub struct MetricsCollector {
 
 /// Counter metric
 pub struct Counter {
-    name: String,
     value: AtomicU64,
 }
 
 /// Histogram metric
 pub struct Histogram {
-    name: String,
     values: Vec<u64>,
     max_samples: usize,
 }
 
 /// Gauge metric
 pub struct Gauge {
-    name: String,
     value: AtomicU64,
 }
 
@@ -49,6 +46,7 @@ impl MetricsCollector {
 
     /// Increment counter
     pub fn counter(&mut self, name: &str, value: u64) {
+        let _ = name;
         self.counters
             .entry(name.to_string())
             .or_insert_with(|| AtomicU64::new(0))
@@ -57,6 +55,7 @@ impl MetricsCollector {
 
     /// Record histogram value
     pub fn histogram(&mut self, name: &str, value: u64) {
+        let _ = name;
         let values = self.histograms.entry(name.to_string()).or_default();
 
         values.push(value);
@@ -69,6 +68,7 @@ impl MetricsCollector {
 
     /// Set gauge value
     pub fn gauge(&mut self, name: &str, value: u64) {
+        let _ = name;
         self.gauges
             .entry(name.to_string())
             .or_insert_with(|| AtomicU64::new(0))
@@ -171,9 +171,8 @@ pub struct HistogramStats {
 
 impl Counter {
     /// Create counter
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(_name: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
             value: AtomicU64::new(0),
         }
     }
@@ -196,9 +195,8 @@ impl Counter {
 
 impl Gauge {
     /// Create gauge
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new(_name: impl Into<String>) -> Self {
         Self {
-            name: name.into(),
             value: AtomicU64::new(0),
         }
     }
@@ -216,9 +214,8 @@ impl Gauge {
 
 impl Histogram {
     /// Create histogram
-    pub fn new(name: impl Into<String>, max_samples: usize) -> Self {
+    pub fn new(_name: impl Into<String>, max_samples: usize) -> Self {
         Self {
-            name: name.into(),
             values: Vec::with_capacity(max_samples),
             max_samples,
         }

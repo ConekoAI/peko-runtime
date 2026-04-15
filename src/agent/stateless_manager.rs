@@ -49,8 +49,7 @@ pub struct StatelessAgentManager {
     agent_service: Arc<StatelessAgentService>,
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
-    /// Image registry for resolving images
-    image_registry: Arc<RwLock<ImageRegistry>>,
+
     /// Event channel
     events: mpsc::Sender<StatelessManagerEvent>,
     /// Data directory
@@ -106,11 +105,6 @@ impl StatelessAgentManager {
 
         let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
-        // Create image registry
-        let registry_path = data_dir.join("registry");
-        let registry_config = RegistryConfig::new(&registry_path);
-        let image_registry = Arc::new(RwLock::new(ImageRegistry::new(registry_config)));
-
         // Create agent service with team-aware paths
         let agent_service = Arc::new(
             StatelessAgentService::new(config_service.clone(), path_resolver)
@@ -125,7 +119,6 @@ impl StatelessAgentManager {
             config_service,
             agent_service,
             lifecycle,
-            image_registry,
             events: events_tx,
             data_dir: data_dir.clone(),
         };

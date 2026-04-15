@@ -560,20 +560,6 @@ impl UnifiedSession {
         Ok(())
     }
 
-    /// Add a user message (internal implementation)
-    ///
-    /// Convenience wrapper around `add_llm_message` for user messages.
-    async fn add_user_native(&mut self, text: impl Into<String>) -> Result<()> {
-        self.add_llm_message(
-            "user",
-            vec![ContentBlock::Text { text: text.into() }],
-            None,
-            None,
-            None,
-        )
-        .await
-    }
-
     /// Add an assistant message with content blocks
     ///
     /// Advanced method that allows passing tool calls as blocks.
@@ -762,51 +748,12 @@ impl UnifiedSession {
 }
 
 // ============================================================
-// Helper Functions
-// ============================================================
-
-/// Parse a peer from a session key
-fn parse_peer_from_key(key: &str) -> Result<Peer> {
-    // Format: agent:{agent}:peer:{type}:{id}
-    let parts: Vec<&str> = key.split(':').collect();
-
-    if parts.len() < 5 {
-        return Err(anyhow::anyhow!("Invalid session key format: {key}"));
-    }
-
-    // Find "peer" in the key
-    if let Some(peer_idx) = parts.iter().position(|&p| p == "peer") {
-        let peer_type = parts.get(peer_idx + 1).unwrap_or(&"user");
-        let peer_id_parts: Vec<_> = parts
-            .iter()
-            .skip(peer_idx + 2)
-            .take_while(|&&p| p != "overlay")
-            .copied()
-            .collect();
-        let peer_id = peer_id_parts.join(":");
-
-        match *peer_type {
-            "agent" => Ok(Peer::Agent(peer_id)),
-            _ => Ok(Peer::User(peer_id)),
-        }
-    } else {
-        // Legacy format fallback
-        Ok(Peer::User("default".to_string()))
-    }
-}
-
-// ============================================================
 // Tests
 // ============================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-
-    fn setup_test_dir() -> TempDir {
-        TempDir::new().unwrap()
-    }
 
     // Note: Creation tests moved to SessionManager tests
     // UnifiedSession::create* methods were removed in Phase 3
@@ -821,27 +768,6 @@ mod tests {
         let peer = Peer::Agent("helper".to_string());
         let key = crate::session::key::derive_base_session_key("test_agent", &peer);
         assert_eq!(key, "agent:test_agent:peer:agent:helper");
-    }
-
-    #[test]
-    fn test_parse_peer_from_key() {
-        // User peer
-        let peer = parse_peer_from_key("agent:test:peer:user:alice").unwrap();
-        assert_eq!(peer, Peer::User("alice".to_string()));
-
-        // Agent peer
-        let peer = parse_peer_from_key("agent:test:peer:agent:helper").unwrap();
-        assert_eq!(peer, Peer::Agent("helper".to_string()));
-
-        // Complex user ID
-        let peer = parse_peer_from_key("agent:test:peer:user:domain_user_123").unwrap();
-        assert_eq!(peer, Peer::User("domain_user_123".to_string()));
-    }
-
-    #[test]
-    fn test_parse_peer_from_key_invalid() {
-        let result = parse_peer_from_key("invalid_key");
-        assert!(result.is_err());
     }
 
     // ====================================================================================

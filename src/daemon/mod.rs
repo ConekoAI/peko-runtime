@@ -747,31 +747,6 @@ impl Daemon {
         Ok(())
     }
 
-    /// Get current daemon status
-    pub async fn get_status(&self) -> DaemonStatus {
-        self.status.lock().await.clone()
-    }
-}
-
-/// Spawn a daemon in the background and return control handle
-pub fn spawn_daemon(config: DaemonConfig) -> Result<DaemonHandle> {
-    let (command_tx, command_rx) = mpsc::channel(100);
-
-    let daemon = Daemon::new(config, command_rx)?;
-    let status = daemon.status.clone();
-
-    // Spawn daemon in background task
-    let handle = tokio::spawn(async move {
-        if let Err(e) = daemon.run().await {
-            error!("Daemon error: {}", e);
-        }
-    });
-
-    Ok(DaemonHandle {
-        command_tx,
-        status,
-        _handle: handle,
-    })
 }
 
 /// Handle for controlling a spawned daemon
@@ -823,7 +798,7 @@ mod tests {
         let (_tx, rx) = mpsc::channel(10);
         let daemon = Daemon::new(config, rx).unwrap();
 
-        let status = daemon.get_status().await;
+        let status = daemon.status.lock().await.clone();
         assert!(!status.running);
     }
 }

@@ -1109,7 +1109,7 @@ impl std::fmt::Debug for McpToolCheckStatusFactory {
 impl HookHandlerFactory for McpToolCheckStatusFactory {
     fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
         Box::new(McpToolCheckStatusHandler {
-            manager: self.manager.clone(),
+            _manager: self.manager.clone(),
             server_name: self.server_name.clone(),
         })
     }
@@ -1118,7 +1118,7 @@ impl HookHandlerFactory for McpToolCheckStatusFactory {
 /// Handler that checks status of async MCP tasks
 #[derive(Clone)]
 struct McpToolCheckStatusHandler {
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    _manager: Arc<RwLock<crate::mcp::McpManager>>,
     server_name: String,
 }
 
@@ -1192,7 +1192,7 @@ impl std::fmt::Debug for McpToolCancelFactory {
 impl HookHandlerFactory for McpToolCancelFactory {
     fn create(&self, _manifest: ExtensionManifest) -> Box<dyn HookHandler> {
         Box::new(McpToolCancelHandler {
-            manager: self.manager.clone(),
+            _manager: self.manager.clone(),
             server_name: self.server_name.clone(),
         })
     }
@@ -1201,7 +1201,7 @@ impl HookHandlerFactory for McpToolCancelFactory {
 /// Handler that cancels async MCP tasks
 #[derive(Clone)]
 struct McpToolCancelHandler {
-    manager: Arc<RwLock<crate::mcp::McpManager>>,
+    _manager: Arc<RwLock<crate::mcp::McpManager>>,
     server_name: String,
 }
 
@@ -1335,7 +1335,7 @@ pub async fn register_servers_with_core(
 
         // Register check status handler
         let check_status_handler = Arc::new(McpToolCheckStatusHandler {
-            manager: manager.clone(),
+            _manager: manager.clone(),
             server_name: server.manifest.name.clone(),
         });
 
@@ -1352,7 +1352,7 @@ pub async fn register_servers_with_core(
 
         // Register cancel handler
         let cancel_handler = Arc::new(McpToolCancelHandler {
-            manager: manager.clone(),
+            _manager: manager.clone(),
             server_name: server.manifest.name.clone(),
         });
 

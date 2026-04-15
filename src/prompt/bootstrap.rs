@@ -49,16 +49,6 @@ impl BootstrapConfig {
         }
     }
 
-    /// Create config with default files and specified workspace
-    fn with_default_files_with_workspace(workspace_dir: PathBuf) -> Self {
-        Self {
-            workspace_dir,
-            max_chars_per_file: 20_000,
-            files: vec![
-                BootstrapFile::required("SYSTEM.md"),
-            ],
-        }
-    }
 }
 
 /// Bootstrap file definition
@@ -98,7 +88,6 @@ pub struct InjectedContext {
 pub struct InjectedSection {
     pub name: String,
     pub content: String,
-    pub source_file: String,
     pub truncated: bool,
 }
 
@@ -125,7 +114,6 @@ pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
                 sections.push(InjectedSection {
                     name: file_def.section_name.clone(),
                     content,
-                    source_file: file_def.name.clone(),
                     truncated,
                 });
 
@@ -136,7 +124,6 @@ pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
                 sections.push(InjectedSection {
                     name: file_def.section_name.clone(),
                     content: format!("<!-- {}: file not found -->", file_def.name),
-                    source_file: file_def.name.clone(),
                     truncated: false,
                 });
             }

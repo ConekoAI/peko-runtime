@@ -21,11 +21,6 @@ use tracing::{debug, info, warn};
 /// Approximate characters per token for estimation
 const CHARS_PER_TOKEN: usize = 4;
 
-/// System prompt for initial summarization
-const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
-
-Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
-
 /// Prompt for initial summarization (when no previous summary exists)
 const INITIAL_SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another AI will use to continue the work.
 

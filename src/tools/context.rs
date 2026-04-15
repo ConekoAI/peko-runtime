@@ -394,16 +394,16 @@ impl Default for AbortSignal {
 /// Similar to `OpenClaw`'s `wrapToolWithAbortSignal`, this wrapper
 /// intercepts tool execution and passes an abort signal to the tool.
 pub struct AbortableTool<T: ToolWithContext> {
-    inner: T,
     abort_signal: AbortSignal,
+    _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T: ToolWithContext> AbortableTool<T> {
     /// Create a new abortable tool wrapper
-    pub fn new(inner: T) -> Self {
+    pub fn new(_inner: T) -> Self {
         Self {
-            inner,
             abort_signal: AbortSignal::new(),
+            _phantom: std::marker::PhantomData,
         }
     }
 

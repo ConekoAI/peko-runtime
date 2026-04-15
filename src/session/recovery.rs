@@ -209,23 +209,6 @@ impl SessionRecovery {
         Ok(())
     }
 
-    /// Extract instance ID from session directory path
-    fn extract_instance_id(&self, dir: &Path) -> Result<String> {
-        // Try to extract from path
-        // Expected format: .../{instance_id}/sessions
-        let parent = dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Cannot extract instance_id from path: {:?}", dir))?;
-
-        let instance_id = parent
-            .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Cannot extract instance_id from path: {:?}", dir))?
-            .to_string_lossy()
-            .to_string();
-
-        Ok(instance_id)
-    }
-
     /// Clean up all temp files in workspace
     pub async fn cleanup_all_temp_files(&self) -> Result<usize> {
         let mut cleaned = 0;
@@ -321,24 +304,6 @@ mod tests {
 
         assert_eq!(dirs.len(), 1);
         assert!(dirs[0].ends_with("sessions"));
-    }
-
-    #[tokio::test]
-    async fn test_extract_instance_id() {
-        let temp = TempDir::new().unwrap();
-
-        // Create path structure
-        let sessions_dir = temp
-            .path()
-            .join("agents")
-            .join("inst_abc123")
-            .join("sessions");
-        fs::create_dir_all(&sessions_dir).await.unwrap();
-
-        let recovery = SessionRecovery::new(temp.path());
-        let instance_id = recovery.extract_instance_id(&sessions_dir).unwrap();
-
-        assert_eq!(instance_id, "inst_abc123");
     }
 
     #[tokio::test]

@@ -254,21 +254,6 @@ pub struct StatelessAgentService {
     path_resolver: PathResolver,
 }
 
-/// Get team-aware session directory for an agent
-async fn get_agent_session_dir(
-    config_service: &ConfigAuthorityImpl,
-    path_resolver: &PathResolver,
-    agent_name: &str,
-) -> Result<PathBuf> {
-    // Look up agent to get team
-    let team_id: Option<String> = config_service
-        .get(agent_name, None)
-        .await?
-        .map(|entry| entry.team);
-
-    Ok(path_resolver.agent_sessions_dir(agent_name, team_id.as_deref()))
-}
-
 impl StatelessAgentService {
     /// Create a new stateless agent service
     pub async fn new(

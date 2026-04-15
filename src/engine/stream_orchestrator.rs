@@ -108,8 +108,6 @@ pub struct StreamOrchestrator {
     state: OrchestratorState,
     /// Block chunker for text chunking
     chunker: BlockChunker,
-    /// Tool call parser for incremental JSON
-    tool_parser: ToolCallStreamParser,
     /// Stream buffer for coalescing
     buffer: StreamBuffer,
     /// Sequence counter for events
@@ -135,7 +133,6 @@ impl StreamOrchestrator {
             config,
             state: OrchestratorState::Idle,
             chunker,
-            tool_parser: ToolCallStreamParser::new(),
             buffer,
             sequence: 0,
             run_id,

@@ -412,8 +412,6 @@ struct OpenAiDelta {
 struct OpenAiToolCallDelta {
     index: u32,
     id: Option<String>,
-    #[serde(rename = "type")]
-    tool_type: Option<String>,
     function: Option<OpenAiDeltaFunction>,
 }
 

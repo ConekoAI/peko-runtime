@@ -26,7 +26,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct WebhookRequest {
     #[serde(flatten)]
-    extra: HashMap<String, serde_json::Value>,
+    _extra: HashMap<String, serde_json::Value>,
 }
 
 /// Webhook response

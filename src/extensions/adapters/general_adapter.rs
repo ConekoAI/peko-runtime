@@ -508,67 +508,6 @@ fn build_manifest_from_json(json: &serde_json::Value, path: &Path) -> Result<Ext
     Ok(manifest)
 }
 
-/// Parse general extension manifest from YAML content
-fn parse_general_manifest(
-    content: &str,
-    path: &Path,
-) -> Option<(ExtensionManifest, Vec<HookDeclaration>)> {
-    // Parse YAML frontmatter
-    let parts: Vec<&str> = content.splitn(3, "---").collect();
-
-    let frontmatter = if parts.len() >= 2 {
-        parts[1].trim()
-    } else {
-        content.trim()
-    };
-
-    let yaml: serde_yaml::Value = serde_yaml::from_str(frontmatter).ok()?;
-
-    let id = yaml.get("id")?.as_str()?;
-    let name = yaml.get("name")?.as_str()?;
-    let version = yaml.get("version")?.as_str().unwrap_or("1.0.0");
-    let description = yaml.get("description")?.as_str().unwrap_or("");
-
-    let hooks: Vec<HookDeclaration> = yaml
-        .get("hooks")
-        .and_then(|h| serde_yaml::from_value(h.clone()).ok())
-        .unwrap_or_default();
-
-    let mut manifest = ExtensionManifest::new(id, GENERAL_EXTENSION_TYPE, name, description, version, path.to_path_buf());
-    
-    // Store hooks in manifest metadata so resolve_hooks can find them
-    if let Ok(hooks_json) = serde_json::to_value(&hooks) {
-        manifest.set("hooks", hooks_json);
-    }
-
-    Some((manifest, hooks))
-}
-
-/// Parse general extension manifest from JSON content
-fn parse_general_manifest_json(
-    content: &str,
-    path: &Path,
-) -> Option<(ExtensionManifest, Vec<HookDeclaration>)> {
-    let json: serde_json::Value = serde_json::from_str(content).ok()?;
-
-    let id = json.get("id")?.as_str()?;
-    let name = json.get("name")?.as_str()?;
-    let version = json.get("version")?.as_str().unwrap_or("1.0.0");
-    let description = json.get("description")?.as_str().unwrap_or("");
-
-    let hooks: Vec<HookDeclaration> = json
-        .get("hooks")
-        .and_then(|h| serde_json::from_value(h.clone()).ok())
-        .unwrap_or_default();
-
-    let mut manifest = ExtensionManifest::new(id, GENERAL_EXTENSION_TYPE, name, description, version, path.to_path_buf());
-    
-    // Store hooks in manifest metadata so resolve_hooks can find them
-    manifest.set("hooks", serde_json::to_value(&hooks).unwrap_or_default());
-
-    Some((manifest, hooks))
-}
-
 /// A discovered general extension before registration
 #[derive(Debug, Clone)]
 pub struct DiscoveredGeneralExtension {

@@ -731,29 +731,6 @@ impl ExtensionConfig {
         Ok(())
     }
     
-    fn get(&self, team: Option<&str>, agent: Option<&str>, key: &str) -> Option<&serde_json::Value> {
-        // Agent scope has highest priority
-        if let Some(agent_id) = agent {
-            if let Some(agent_config) = self.agents.get(agent_id) {
-                if let Some(value) = agent_config.get(key) {
-                    return Some(value);
-                }
-            }
-        }
-        
-        // Team scope has medium priority
-        if let Some(team_id) = team {
-            if let Some(team_config) = self.teams.get(team_id) {
-                if let Some(value) = team_config.get(key) {
-                    return Some(value);
-                }
-            }
-        }
-        
-        // Global scope has lowest priority
-        self.global.get(key)
-    }
-    
     fn set(&mut self, team: Option<&str>, agent: Option<&str>, key: String, value: serde_json::Value) {
         let target = match (team, agent) {
             (Some(_), Some(_)) => {

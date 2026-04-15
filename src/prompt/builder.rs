@@ -25,6 +25,7 @@ pub enum PromptMode {
 
 impl PromptMode {
     /// Parse from string
+    #[must_use]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "minimal" => Self::Minimal,
@@ -49,7 +50,6 @@ pub struct SystemPromptBuilder {
     model_aliases: Vec<String>,
     sandbox_enabled: bool,
     channel: String,
-    capabilities: Vec<String>,
     /// Optional extension core for hook integration (Phase 1: Extension Architecture)
     extension_core: Option<Arc<crate::extensions::ExtensionCore>>,
 }
@@ -69,7 +69,6 @@ impl SystemPromptBuilder {
             model_aliases: vec![],
             sandbox_enabled: false,
             channel: "discord".to_string(),
-            capabilities: vec![],
             extension_core: None,
         }
     }

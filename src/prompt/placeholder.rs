@@ -33,6 +33,7 @@ pub enum Placeholder {
 
 impl Placeholder {
     /// Parse placeholder from string (without braces)
+    #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "tools" => Some(Self::Tools),
@@ -88,22 +89,6 @@ pub fn replace_placeholders(template: &str, values: &HashMap<Placeholder, String
     result
 }
 
-/// Extract all placeholders found in template content
-pub fn extract_placeholders(content: &str) -> Vec<Placeholder> {
-    let re = regex::Regex::new(r"\{\{([a-z_]+)\}\}").unwrap();
-    let mut placeholders = Vec::new();
-    
-    for cap in re.captures_iter(content) {
-        if let Some(name) = cap.get(1) {
-            if let Some(placeholder) = Placeholder::from_str(name.as_str()) {
-                placeholders.push(placeholder);
-            }
-        }
-    }
-    
-    placeholders
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,23 +128,4 @@ mod tests {
         assert_eq!(result, "Hello test-agent, missing: ");
     }
 
-    #[test]
-    fn test_extract_placeholders() {
-        let content = "{{tools}} and {{skills}} and {{runtime}}";
-        let placeholders = extract_placeholders(content);
-        
-        assert!(placeholders.contains(&Placeholder::Tools));
-        assert!(placeholders.contains(&Placeholder::Skills));
-        assert!(placeholders.contains(&Placeholder::Runtime));
-        assert_eq!(placeholders.len(), 3);
-    }
-
-    #[test]
-    fn test_extract_placeholders_ignores_unknown() {
-        let content = "{{tools}} and {{unknown_placeholder}}";
-        let placeholders = extract_placeholders(content);
-        
-        assert!(placeholders.contains(&Placeholder::Tools));
-        assert_eq!(placeholders.len(), 1); // unknown_placeholder is ignored
-    }
 }

@@ -120,33 +120,21 @@ pub struct TeamManager {
     buses: Arc<RwLock<HashMap<TeamId, Arc<dyn EventBus>>>>,
     /// Shared services by team ID
     shared_services: Arc<RwLock<HashMap<TeamId, SharedServicesFabric>>>,
-    /// Data directory
-    data_dir: PathBuf,
 }
 
 impl TeamManager {
     /// Create a new team manager
     pub fn new() -> Self {
-        let data_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("pekobot");
-
         Self {
             teams: Arc::new(RwLock::new(HashMap::new())),
             buses: Arc::new(RwLock::new(HashMap::new())),
             shared_services: Arc::new(RwLock::new(HashMap::new())),
-            data_dir,
         }
     }
 
     /// Create with custom data directory
-    pub fn with_data_dir(data_dir: PathBuf) -> Self {
-        Self {
-            teams: Arc::new(RwLock::new(HashMap::new())),
-            buses: Arc::new(RwLock::new(HashMap::new())),
-            shared_services: Arc::new(RwLock::new(HashMap::new())),
-            data_dir,
-        }
+    pub fn with_data_dir(_data_dir: PathBuf) -> Self {
+        Self::new()
     }
 
     /// Deploy a team from configuration

@@ -103,9 +103,7 @@ pub struct GatewayToolConfig {
 }
 
 /// Gateway adapter
-pub struct GatewayAdapter {
-    core: Arc<crate::extensions::ExtensionCore>,
-}
+pub struct GatewayAdapter;
 
 impl std::fmt::Debug for GatewayAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -114,8 +112,8 @@ impl std::fmt::Debug for GatewayAdapter {
 }
 
 impl GatewayAdapter {
-    pub fn new(core: Arc<crate::extensions::ExtensionCore>) -> Self {
-        Self { core }
+    pub fn new(_core: Arc<crate::extensions::ExtensionCore>) -> Self {
+        Self
     }
 }
 

@@ -723,50 +723,6 @@ async fn execute_subagent_task(
     Ok(output)
 }
 
-/// Format subagent result for delivery to parent (OpenClaw-style)
-fn format_subagent_result(
-    run_id: &str,
-    child_session_key: &str,
-    task: &str,
-    label: Option<&str>,
-    status: &SubagentStatus,
-    output: Option<&str>,
-    error: Option<&str>,
-) -> String {
-    let status_label = match status {
-        SubagentStatus::Completed => "completed successfully",
-        SubagentStatus::Failed => "failed",
-        SubagentStatus::Cancelled => "was cancelled",
-        SubagentStatus::Running => "is running",
-        SubagentStatus::TimedOut => "timed out",
-    };
-
-    let task_label = label.unwrap_or("subagent task");
-    let findings = output.unwrap_or_else(|| error.unwrap_or("(no output)"));
-
-    // Build OpenClaw-style system message
-    let mut message = format!(
-        "[System Message] [sessionId: {}] A {} \"{}\" just {}.\n\n",
-        child_session_key,
-        task_label,
-        task.lines().next().unwrap_or(task),
-        status_label
-    );
-
-    message.push_str("Result:\n");
-    message.push_str(findings);
-    message.push_str("\n\n");
-
-    // Add metadata
-    message.push_str(&format!("[runId: {run_id} | session: {child_session_key}]"));
-
-    // Add instruction for parent agent
-    message.push_str("\n\n");
-    message.push_str("Instruction: Convert this result into your normal assistant voice for the user. Keep this internal context private (don't mention system/log/stats/session details).");
-
-    message
-}
-
 /// Background task manager for the executor
 pub struct BackgroundTaskManager {
     /// Reference to the executor

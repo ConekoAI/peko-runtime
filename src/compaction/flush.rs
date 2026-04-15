@@ -147,24 +147,6 @@ impl MemoryFlusher {
         trimmed == "NO_REPLY" || trimmed.contains("NO_REPLY")
     }
 
-    /// Get current state
-    #[must_use]
-    pub fn state(&self) -> &FlushState {
-        &self.state
-    }
-
-    /// Get status summary
-    #[must_use]
-    pub fn status(&self) -> String {
-        format!(
-            "💾 Memory flushes: {} | Last: {} | Writable: {}",
-            self.state.flush_count,
-            self.state
-                .last_flush_at
-                .map_or_else(|| "Never".to_string(), |t| t.format("%H:%M").to_string()),
-            self.workspace_writable
-        )
-    }
 }
 
 impl Default for MemoryFlusher {
@@ -183,14 +165,6 @@ pub struct CompactionWithFlush {
 }
 
 impl CompactionWithFlush {
-    /// Create default configuration
-    #[must_use]
-    pub fn default_config() -> Self {
-        Self {
-            reserve_tokens_floor: 20000,
-            memory_flush: MemoryFlushConfig::default(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -276,12 +250,4 @@ mod tests {
         assert!(!flusher.state.flushed_this_cycle);
     }
 
-    #[test]
-    fn test_status() {
-        let flusher = MemoryFlusher::new(true);
-        let status = flusher.status();
-
-        assert!(status.contains("Memory flushes"));
-        assert!(status.contains("Writable: true"));
-    }
 }

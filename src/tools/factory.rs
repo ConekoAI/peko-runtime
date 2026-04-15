@@ -304,43 +304,6 @@ impl std::fmt::Debug for ToolCreationResult {
 
 impl ToolFactory {
 
-    /// Register built-in tools with ExtensionCore
-    ///
-    /// Uses BuiltinRegistry to register all enabled built-in tools,
-    /// making them discoverable via the ToolRegister hook and executable via
-    /// the ToolExecute hook.
-    async fn register_builtin_tools_with_extension_core(
-        config: &ToolFactoryConfig,
-    ) -> anyhow::Result<()> {
-        let core = match global_core() {
-            Some(core) => core,
-            None => {
-                tracing::debug!("ExtensionCore not initialized, skipping built-in tool registration");
-                return Ok(());
-            }
-        };
-
-        // Use BuiltinRegistry for centralized registration
-        use crate::tools::builtin_registry::{BuiltinRegistry, BuiltinRegistryConfig};
-        
-        let registry_config = BuiltinRegistryConfig {
-            workspace_dir: config.workspace_dir.clone(),
-            enable_granular_fs: config.enable_granular_fs,
-            enable_granular_write: config.enable_granular_write,
-            enable_shell: config.enable_shell,
-            enable_session_tools: config.enable_session_tools,
-            enable_cron: config.enable_cron,
-            cron_db_path: config.cron_db_path.clone(),
-            instance_id: config.instance_id.clone(),
-            disabled_tools: config.disabled_tools.clone(),
-        };
-
-        BuiltinRegistry::register(&core, &registry_config).await?;
-
-        tracing::info!("Registered built-in tools with ExtensionCore");
-        Ok(())
-    }
-
     /// Create all essential tools based on configuration (synchronous version)
     ///
     /// Respects `disabled_tools` configuration - disabled tools are excluded

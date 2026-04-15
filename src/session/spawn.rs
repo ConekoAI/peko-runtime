@@ -269,11 +269,6 @@ impl SpawnOverlay {
         }
     }
 
-    /// Generate the overlay ID from the spawn ID
-    fn generate_overlay_id(spawn_id: &str) -> String {
-        spawn_id.to_string()
-    }
-
     /// Create from stored data (for deserialization)
     pub fn from_stored(
         spawn_id: impl Into<String>,

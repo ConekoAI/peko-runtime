@@ -1635,62 +1635,6 @@ fn load_and_register_skills_sync(
     count
 }
 
-/// Load enabled skills for an agent from the skills directory (async version)
-/// 
-/// This is the preferred async version for use in async contexts.
-async fn load_and_register_skills(
-    agent_name: &str, 
-    enabled_skills: &[String], 
-    path_resolver: &crate::common::paths::PathResolver,
-    extension_core: &Arc<crate::extensions::ExtensionCore>,
-) -> usize {
-    // Use PathResolver for consistent path resolution
-    let skills_dir = path_resolver.skills_dir();
-
-    tracing::debug!("Loading skills from: {:?}", skills_dir);
-    tracing::debug!("Enabled skills for agent {}: {:?}", agent_name, enabled_skills);
-
-    if !skills_dir.exists() {
-        tracing::debug!("Skills directory does not exist: {:?}", skills_dir);
-        return 0;
-    }
-
-    // Discover skills using the SkillAdapter
-    let adapter = SkillAdapter::new();
-    let all_skills = adapter.discover_skills(&skills_dir);
-    
-    tracing::debug!("Discovered {} skills from directory", all_skills.len());
-
-    // Filter to only enabled skills
-    let skills_to_register: Vec<_> = all_skills
-        .into_iter()
-        .filter(|s| {
-            let is_enabled = enabled_skills.iter().any(|e| e.eq_ignore_ascii_case(&s.manifest.name));
-            tracing::debug!("Skill '{}' enabled: {}", s.manifest.name, is_enabled);
-            is_enabled
-        })
-        .collect();
-
-    if skills_to_register.is_empty() {
-        tracing::info!("No enabled skills to register for agent {}", agent_name);
-        return 0;
-    }
-
-    // Register skills with ExtensionCore
-    let count = skills_to_register.len();
-    match register_skills_with_core(extension_core, skills_to_register).await {
-        Ok(hook_ids) => {
-            tracing::info!("Registered {} enabled skills for agent {} (hook_ids: {:?})", 
-                count, agent_name, hook_ids.len());
-        }
-        Err(e) => {
-            tracing::warn!("Failed to register skills for agent {}: {}", agent_name, e);
-        }
-    }
-
-    count
-}
-
 /// Convert chat messages to prompt string (fallback)
 fn messages_to_prompt(messages: &[ChatMessage]) -> String {
     messages
@@ -1714,24 +1658,6 @@ fn messages_to_prompt(messages: &[ChatMessage]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// Extract tool calls from `ContentBlock` for session storage
-fn extract_tool_calls(blocks: &[ContentBlock]) -> Vec<ToolCall> {
-    blocks
-        .iter()
-        .filter_map(|b| match b {
-            ContentBlock::ToolCall {
-                id: _,
-                name,
-                arguments,
-            } => Some(ToolCall {
-                name: name.clone(),
-                parameters: arguments.clone(),
-            }),
-            _ => None,
-        })
-        .collect()
 }
 
 /// Parse legacy JSON response format (fallback)
@@ -1792,22 +1718,5 @@ fn parse_content_block(value: &serde_json::Value) -> Option<ContentBlock> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_extract_tool_calls() {
-        let blocks = vec![
-            ContentBlock::Text {
-                text: "Let me search".to_string(),
-            },
-            ContentBlock::ToolCall {
-                id: "call_1".to_string(),
-                name: "web_search".to_string(),
-                arguments: serde_json::json!({"query": "test"}),
-            },
-        ];
 
-        let calls = extract_tool_calls(&blocks);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "web_search");
-        assert_eq!(calls[0].parameters, serde_json::json!({"query": "test"}));
-    }
 }
