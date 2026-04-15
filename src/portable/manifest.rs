@@ -67,7 +67,7 @@ pub struct AgentManifest {
     pub agent: AgentMetadata,
     /// Identity configuration
     pub identity: IdentityConfig,
-    /// Memory configuration (deprecated, kept for backward compatibility)
+    /// Memory configuration (kept for backward compatibility)
     pub memory: MemoryConfig,
     /// Capabilities exported with this agent
     pub capabilities: CapabilitiesConfig,

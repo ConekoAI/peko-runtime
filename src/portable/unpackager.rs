@@ -44,8 +44,7 @@ pub struct ImportOptions {
     pub passphrase: Option<String>,
     /// Rotate keys (generate new DID)
     pub rotate_keys: bool,
-    /// Import memory database (deprecated)
-    pub import_memory: bool,
+
     /// Import session history
     pub import_sessions: bool,
     /// Import workspace files
@@ -66,7 +65,7 @@ impl Default for ImportOptions {
             new_name: None,
             passphrase: None,
             rotate_keys: false,
-            import_memory: true,       // Deprecated but kept for compat
+
             import_sessions: true,     // Default: import if present
             import_workspace: true,    // Default: import if present
             import_mcp: true,          // Import MCP servers by default
@@ -86,8 +85,7 @@ pub struct ImportResult {
     pub did: String,
     /// Whether keys were rotated
     pub keys_rotated: bool,
-    /// Path to imported memory database (deprecated)
-    pub memory_path: Option<std::path::PathBuf>,
+
     /// Path to imported workspace
     pub workspace_path: Option<std::path::PathBuf>,
     /// Path to imported sessions
@@ -199,13 +197,6 @@ impl Unpackager {
         // Import configuration
         let config = self.import_config(&files, &manifest, &name, &identity)?;
 
-        // Import memory
-        let memory_path = if options.import_memory {
-            Some(self.import_memory(&files, &identity, &manifest).await?)
-        } else {
-            None
-        };
-
         // Import skills
         self.import_skills(&files).await?;
 
@@ -262,7 +253,6 @@ impl Unpackager {
             name,
             did: identity.did,
             keys_rotated: options.rotate_keys,
-            memory_path,
             workspace_path,
             sessions_path,
             config_path,
@@ -388,32 +378,6 @@ impl Unpackager {
         Ok(config)
     }
 
-    /// Import memory database
-    ///
-    /// Deprecated: Core memory has been removed. Memory data in legacy packages
-    /// is no longer imported. This method returns a path but the data is not
-    /// actually imported.
-    #[deprecated(since = "0.9.0", note = "Core memory is deprecated. Use external MCP memory servers instead.")]
-    async fn import_memory(
-        &self,
-        files: &HashMap<String, Vec<u8>>,
-        identity: &Identity,
-        manifest: &AgentManifest,
-    ) -> anyhow::Result<std::path::PathBuf> {
-        // Deprecated: Core memory has been removed.
-        // Log a warning but don't actually import memory data.
-        tracing::warn!(
-            "Memory import is deprecated. Found {} bytes of memory data in package ({} entries), but core memory is no longer supported. Use external MCP memory servers instead.",
-            manifest.memory.size_bytes,
-            manifest.memory.entry_count.unwrap_or(0)
-        );
-
-        // Return a path anyway to avoid breaking the result type,
-        // but the data is not actually imported.
-        let memory_path = self.get_memory_path(&identity.did);
-        Ok(memory_path)
-    }
-
     /// Import skills
     async fn import_skills(&self, files: &HashMap<String, Vec<u8>>) -> anyhow::Result<()> {
         let skills_dir = self.base_dir.join("skills");
@@ -505,24 +469,6 @@ impl Unpackager {
         tokio::fs::write(&config_path, config_toml).await?;
 
         Ok(config_path)
-    }
-
-    /// Get memory path for a DID
-    fn get_memory_path(&self, did: &str) -> std::path::PathBuf {
-        let data_dir = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("pekobot")
-            .join("memory");
-
-        // Hash DID to create safe filename
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        did.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        data_dir.join(format!("{hash:x}.db"))
     }
 
     /// Import MCP servers from package
@@ -732,10 +678,6 @@ mod tests {
     fn test_import_options_default() {
         let opts = ImportOptions::default();
         assert!(!opts.rotate_keys);
-        #[allow(deprecated)]
-        {
-            assert!(opts.import_memory); // Deprecated but still true for backward compat
-        }
         assert!(opts.import_mcp);
         assert!(!opts.install_tools_from_registry);
         assert!(!opts.skip_validation);

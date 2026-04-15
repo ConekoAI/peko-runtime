@@ -109,7 +109,6 @@ impl TeamPackager {
         let agent_opts = AgentExportOptions {
             encrypt: false,
             passphrase: None,
-            include_memory: false,
             include_sessions: options.include_sessions,
             include_workspace: options.include_workspace,
             include_mcp: options.include_mcp,

@@ -25,8 +25,7 @@ pub struct ExportOptions {
     pub encrypt: bool,
     /// Passphrase for encryption (if encrypt is true)
     pub passphrase: Option<String>,
-    /// Include memory database (deprecated, kept for compatibility)
-    pub include_memory: bool,
+
     /// Include session history (can be large)
     pub include_sessions: bool,
     /// Include workspace files (SYSTEM.md, AGENTS.md, etc.)
@@ -52,7 +51,7 @@ impl Default for ExportOptions {
         Self {
             encrypt: false,
             passphrase: None,
-            include_memory: true,        // Deprecated but kept for compat
+
             include_sessions: false,     // Off by default (can be large)
             include_workspace: true,     // On by default (essential files)
             include_mcp: true,           // Bundle MCP servers by default
@@ -159,18 +158,7 @@ impl Packager {
         self.export_config(&mut files, &mut manifest)
             .context("Failed to export config")?;
 
-        // 3. Export memory (if included)
-        if options.include_memory {
-            #[allow(deprecated)]
-            {
-                tracing::warn!("Memory bundling is deprecated. Core memory will be removed in a future release. Consider using external MCP memory servers instead.");
-            }
-            self.export_memory(&mut files, &mut manifest, &options)
-                .await
-                .context("Failed to export memory")?;
-        }
-
-        // 4. Export skills
+        // 3. Export skills
         self.export_skills(&mut files, &mut manifest)
             .await
             .context("Failed to export skills")?;
@@ -264,27 +252,6 @@ impl Packager {
     }
 
     /// Export memory database
-    ///
-    /// Deprecated: Core memory has been removed. This method now only
-    /// updates the manifest to indicate no memory is bundled.
-    #[deprecated(since = "0.9.0", note = "Core memory is deprecated. Use external MCP memory servers instead.")]
-    async fn export_memory(
-        &self,
-        files: &mut HashMap<String, Vec<u8>>,
-        manifest: &mut AgentManifest,
-        _options: &ExportOptions,
-    ) -> anyhow::Result<()> {
-        // Memory bundling is deprecated - core memory has been removed.
-        // The manifest memory section is kept for backward compatibility
-        // but no actual memory data is exported.
-        manifest.memory.size_bytes = 0;
-        manifest.memory.encrypted = false;
-        manifest.memory.entry_count = None;
-
-        // Memory file path is no longer used since core memory is removed
-        Ok(())
-    }
-
     /// Export skills
     /// Copies entire skill directories (not just .toml files)
     async fn export_skills(
@@ -695,10 +662,6 @@ mod tests {
     fn test_export_options_default() {
         let opts = ExportOptions::default();
         assert!(!opts.encrypt);
-        #[allow(deprecated)]
-        {
-            assert!(opts.include_memory); // Deprecated but still true for backward compat
-        }
         assert!(!opts.include_sessions);   // Default: false (large)
         assert!(opts.include_workspace);   // Default: true (essential)
         assert!(opts.include_mcp);         // Default: true

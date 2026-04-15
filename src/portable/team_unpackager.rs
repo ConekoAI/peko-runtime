@@ -216,7 +216,6 @@ impl TeamUnpackager {
             new_name: Some(name.to_string()),
             passphrase: None,
             rotate_keys: options.rotate_keys,
-            import_memory: false,
             import_sessions: options.import_sessions,
             import_workspace: options.import_workspace,
             import_mcp: options.import_mcp,

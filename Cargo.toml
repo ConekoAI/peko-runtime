@@ -100,6 +100,10 @@ tokio-stream = "0.1"
 # Windows system calls
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
+[features]
+default = []
+mcp = []
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3.10"

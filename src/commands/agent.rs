@@ -25,32 +25,7 @@ mod handlers;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AgentCommands {
-    /// Send a single message to an agent (non-interactive)
-    ///
-    /// **DEPRECATED:** Use `pekobot send <agent> <message>` instead.
-    #[command(alias = "run")]
-    Start {
-        /// Agent name (defaults to 'peko' if not specified)
-        name: Option<String>,
-        /// Custom configuration file path (optional, defaults to ~/.pekobot/teams/default/agents/{name}/config.toml)
-        #[arg(short, long)]
-        config: Option<String>,
-        /// LLM provider (openai, anthropic, ollama, kimi, `kimi_code`) - only used when creating default config
-        #[arg(short, long, default_value = "minimax")]
-        provider: String,
-        /// Model name - only used when creating default config
-        #[arg(short, long)]
-        model: Option<String>,
-        /// Database path for memory
-        #[arg(long)]
-        db: Option<String>,
-        /// Message to send (required, non-interactive only)
-        #[arg(short = 'M', long, required = true)]
-        message: String,
-        /// Start a new session (don't resume existing CLI session)
-        #[arg(short, long)]
-        new: bool,
-    },
+
 
     /// List all configured agents
     List {
@@ -205,20 +180,6 @@ pub async fn handle_agent(
     json: bool,
 ) -> anyhow::Result<()> {
     match cmd {
-        AgentCommands::Start {
-            name,
-            config,
-            provider,
-            model,
-            db,
-            message,
-            new,
-        } => {
-            // DEPRECATED: Use `pekobot send` instead
-            eprintln!("⚠️  Warning: 'pekobot agent start --message' is deprecated.");
-            eprintln!("   Use 'pekobot send <agent> \"<message>\"' instead.");
-            Ok(())
-        }
         AgentCommands::List { long } => handlers::handle_agent_list(paths, long, json).await,
         AgentCommands::Show { name, team } => {
             handlers::handle_agent_show(paths, name, team, json).await

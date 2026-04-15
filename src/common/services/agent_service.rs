@@ -607,7 +607,6 @@ impl AgentService {
         let export_opts = PortableExportOptions {
             encrypt: false,
             passphrase: None,
-            include_memory: false,
             include_sessions: true,
             include_workspace: true,
             include_mcp: true,
@@ -658,7 +657,6 @@ impl AgentService {
             new_name: opts.name.clone(),
             passphrase: None,
             rotate_keys: true, // Always rotate keys on import for security
-            import_memory: false,
             import_sessions: true,
             import_workspace: true,
             import_mcp: true,

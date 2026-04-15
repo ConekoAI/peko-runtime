@@ -32,7 +32,6 @@ impl From<SessionInfo> for SessionResponse {
         Self {
             id: info.id,
             agent_name: info.agent_name,
-            _instance_id: None,
             created_at: format_timestamp_rfc3339(info.created_at),
             updated_at: format_timestamp_rfc3339(info.updated_at),
             turn_count: info.turn_count,

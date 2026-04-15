@@ -154,10 +154,6 @@ pub struct SessionResponse {
     /// Agent name (replaces instance_id in stateless model)
     #[serde(rename = "agent_name")]
     pub agent_name: String,
-    /// Legacy field name (deprecated)
-    #[serde(rename = "instance_id", default)]
-    #[deprecated(since = "0.2.0", note = "Use agent_name instead")]
-    pub _instance_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub turn_count: u32,

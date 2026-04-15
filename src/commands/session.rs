@@ -135,18 +135,7 @@ pub enum SessionCommands {
         team: Option<String>,
     },
 
-    /// Send message to a session (requires daemon)
-    ///
-    /// **DEPRECATED:** Use `pekobot send <agent> <message>` instead.
-    Send {
-        /// Instance ID (must be running)
-        instance_id: String,
-        /// Session ID (optional - uses active session if not provided)
-        #[arg(short, long)]
-        session_id: Option<String>,
-        /// Message content
-        message: String,
-    },
+
 }
 
 /// Handle session commands
@@ -245,11 +234,7 @@ pub async fn handle_session(
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
             switch_session(paths, team, agent_name, &session_id, paths.user(), json).await
         }
-        SessionCommands::Send {
-            instance_id,
-            session_id,
-            message,
-        } => send_message(&instance_id, session_id, &message).await,
+
     }
 }
 
@@ -812,41 +797,6 @@ async fn switch_session(
         println!();
         println!("   Future 'pekobot send' commands will use this session.");
     }
-
-    Ok(())
-}
-
-/// Send message to a session (requires daemon)
-///
-/// **DEPRECATED:** `session send` is deprecated. Use `pekobot send <agent> <message>` instead.
-async fn send_message(
-    instance_id: &str,
-    session_id: Option<String>,
-    message: &str,
-) -> anyhow::Result<()> {
-    // Show deprecation warning
-    eprintln!("⚠️  Warning: 'pekobot session send' is deprecated.");
-    eprintln!("   Use 'pekobot send <agent> \"<message>\"' instead.");
-    eprintln!();
-
-    println!(
-        "📤 Sending message to instance '{}': {}",
-        instance_id, message
-    );
-    if let Some(sid) = session_id {
-        println!("   Session: {}", sid);
-    } else {
-        println!("   (Using active session)");
-    }
-
-    println!();
-    println!("   💡 Message sending requires the daemon to be running.");
-    println!("      Start the daemon with: pekobot daemon start --foreground");
-    println!();
-    println!(
-        "      Or use: pekobot agent start {} --message \"{}\"",
-        instance_id, message
-    );
 
     Ok(())
 }

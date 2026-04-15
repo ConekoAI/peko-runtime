@@ -819,8 +819,6 @@ mod tests {
         let session = SessionResponse {
             id: "sess_123".to_string(),
             agent_name: "test-agent".to_string(),
-            #[allow(deprecated)]
-            _instance_id: None,
             created_at: "2026-03-17T10:00:00Z".to_string(),
             updated_at: "2026-03-17T10:05:00Z".to_string(),
             turn_count: 5,
@@ -888,8 +886,6 @@ mod tests {
         let session = SessionResponse {
             id: "sess_child".to_string(),
             agent_name: "test-agent".to_string(),
-            #[allow(deprecated)]
-            _instance_id: None,
             created_at: "2026-03-17T10:00:00Z".to_string(),
             updated_at: "2026-03-17T10:00:00Z".to_string(),
             turn_count: 0,

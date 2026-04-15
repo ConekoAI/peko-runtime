@@ -69,17 +69,7 @@ pub enum AsyncTaskResult {
         error: Option<String>,
         token_usage: Option<(u32, u32, u32)>,
     },
-    /// Agent-to-agent invocation result
-    ///
-    /// # Deprecated
-    /// Use `SessionMessage` instead for unified A2A handling.
-    #[deprecated(since = "0.3.0", note = "Use SessionMessage instead")]
-    Invocation {
-        content: String,
-        from: String,
-        success: bool,
-        error: Option<String>,
-    },
+
     /// Session-to-session message (A2A unified)
     ///
     /// Used for agent-to-agent messaging through the same queue mechanism
@@ -154,25 +144,7 @@ impl AsyncTaskResult {
 
                 format!("## {} Result {}\n\n{}", label_part, status_emoji, content)
             }
-            #[allow(deprecated)]
-            Self::Invocation {
-                content,
-                from,
-                success,
-                error,
-            } => {
-                let status = if *success {
-                    "✅ Success"
-                } else {
-                    "❌ Failed"
-                };
-                let display_content = error.as_deref().unwrap_or(content);
 
-                format!(
-                    "## Message from {}\n\n**Status:** {}\n\n{}",
-                    from, status, display_content
-                )
-            }
             Self::SessionMessage {
                 from_session,
                 to_session,
@@ -219,8 +191,7 @@ impl AsyncTaskResult {
                     )
                 }
             }
-            #[allow(deprecated)]
-            Self::Invocation { success, .. } => format!("invocation: success={}", success),
+
             Self::SessionMessage {
                 message_type,
                 content,
@@ -1494,39 +1465,6 @@ mod tests {
         assert!(formatted.contains("Task failed"));
 
         assert_eq!(result.summary(), "subagent: failed");
-    }
-
-    #[test]
-    fn test_async_task_result_invocation() {
-        let result = AsyncTaskResult::Invocation {
-            content: "Here is the research result".to_string(),
-            from: "researcher_agent".to_string(),
-            success: true,
-            error: None,
-        };
-
-        let formatted = result.format_for_announcement("agent_invoke");
-        assert!(formatted.contains("Message from researcher_agent"));
-        assert!(formatted.contains("✅ Success"));
-        assert!(formatted.contains("Here is the research result"));
-
-        assert_eq!(result.summary(), "invocation: success=true");
-    }
-
-    #[test]
-    fn test_async_task_result_invocation_failed() {
-        let result = AsyncTaskResult::Invocation {
-            content: "".to_string(),
-            from: "helper_agent".to_string(),
-            success: false,
-            error: Some("Agent not available".to_string()),
-        };
-
-        let formatted = result.format_for_announcement("agent_invoke");
-        assert!(formatted.contains("❌ Failed"));
-        assert!(formatted.contains("Agent not available"));
-
-        assert_eq!(result.summary(), "invocation: success=false");
     }
 
     #[test]
