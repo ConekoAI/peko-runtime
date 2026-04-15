@@ -8,7 +8,7 @@ use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
-use tracing::{debug, error};
+use tracing::debug;
 
 /// Authentication configuration
 #[derive(Debug, Clone)]
@@ -136,7 +136,7 @@ impl HttpClient {
 
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
-                error!("HTTP error {}: {}", status, error_text);
+                debug!("HTTP error {}: {}", status, error_text);
                 return Err(anyhow::anyhow!("HTTP error {}: {}", status, error_text));
             }
 
@@ -175,7 +175,7 @@ impl HttpClient {
 
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
-                error!("HTTP error {}: {}", status, error_text);
+                debug!("HTTP error {}: {}", status, error_text);
                 return Err(anyhow::anyhow!("HTTP error {}: {}", status, error_text));
             }
 
@@ -211,7 +211,7 @@ impl HttpClient {
 
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
-                error!("HTTP error {}: {}", status, error_text);
+                debug!("HTTP error {}: {}", status, error_text);
                 return Err(anyhow::anyhow!("HTTP error {}: {}", status, error_text));
             }
 
