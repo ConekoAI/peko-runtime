@@ -142,8 +142,59 @@ impl AppState {
         let cache_dir = dirs::cache_dir()
             .map(|d| d.join("pekobot"))
             .unwrap_or_else(|| data_dir.join("cache"));
+        let team_manager = Arc::new(TeamManager::new());
 
-        // Create stateless components
+        Self::build(
+            workspace_path,
+            host.into(),
+            port,
+            config,
+            config_dir,
+            data_dir,
+            cache_dir,
+            team_manager,
+        )
+        .await
+    }
+
+    /// Create new application state with custom data directory
+    pub async fn with_data_dir(
+        workspace_path: impl Into<PathBuf>,
+        host: impl Into<String>,
+        port: u16,
+        config: DaemonConfigSnapshot,
+        data_dir: PathBuf,
+    ) -> anyhow::Result<Self> {
+        let workspace_path: PathBuf = workspace_path.into();
+        let cache_dir = dirs::cache_dir()
+            .map(|d| d.join("pekobot"))
+            .unwrap_or_else(|| data_dir.join("cache"));
+        let config_dir = data_dir.join("config");
+        let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
+
+        Self::build(
+            workspace_path,
+            host.into(),
+            port,
+            config,
+            config_dir,
+            data_dir,
+            cache_dir,
+            team_manager,
+        )
+        .await
+    }
+
+    async fn build(
+        workspace_path: PathBuf,
+        host: String,
+        port: u16,
+        config: DaemonConfigSnapshot,
+        config_dir: PathBuf,
+        data_dir: PathBuf,
+        cache_dir: PathBuf,
+        team_manager: Arc<TeamManager>,
+    ) -> anyhow::Result<Self> {
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             config_dir.clone(),
             data_dir.clone(),
@@ -160,7 +211,6 @@ impl AppState {
         );
 
         let lifecycle = Arc::new(LifecycleManager::new());
-        let team_manager = Arc::new(TeamManager::new());
 
         let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
 
@@ -180,75 +230,7 @@ impl AppState {
             data_dir,
             cache_dir,
             port,
-            host: host.into(),
-            config,
-            team_manager,
-            hook_registry: Arc::new(HookRegistry::new()),
-            event_broadcaster: Arc::new(EventBroadcaster::new()),
-            registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
-            observability: Arc::new(Observability::new("api")),
-            config_service,
-            agent_service,
-            agent_mgmt_service,
-            lifecycle,
-            session_service,
-            team_service,
-            inner: Arc::new(RwLock::new(AppStateInner::default())),
-        })
-    }
-
-    /// Create new application state with custom data directory
-    pub async fn with_data_dir(
-        workspace_path: impl Into<PathBuf>,
-        host: impl Into<String>,
-        port: u16,
-        config: DaemonConfigSnapshot,
-        data_dir: PathBuf,
-    ) -> anyhow::Result<Self> {
-        let workspace_path: PathBuf = workspace_path.into();
-        let cache_dir = dirs::cache_dir()
-            .map(|d| d.join("pekobot"))
-            .unwrap_or_else(|| data_dir.join("cache"));
-
-        // Create stateless components
-        // Use data_dir for config as well to ensure isolation in tests
-        let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            data_dir.join("config"),
-            data_dir.join("data"),
-            cache_dir.clone(),
-        );
-
-        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
-
-        let path_resolver_clone = path_resolver.clone();
-        let agent_service = Arc::new(
-            StatelessAgentService::new(config_service.clone(), path_resolver)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create agent service: {}", e))?,
-        );
-
-        let lifecycle = Arc::new(LifecycleManager::new());
-        let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
-
-        let session_service = Arc::new(SessionService::new(path_resolver_clone.clone()));
-
-        // Create unified services
-        let team_service = Arc::new(TeamManagementService::new(
-            TeamService::new(path_resolver_clone.clone()),
-            team_manager.clone(),
-            path_resolver_clone.clone(),
-        ));
-
-        let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone));
-
-        Ok(Self {
-            started_at: SystemTime::now(),
-            workspace_path,
-            config_dir: data_dir.join("config"),
-            data_dir: data_dir.clone(),
-            cache_dir,
-            port,
-            host: host.into(),
+            host,
             config,
             team_manager,
             hook_registry: Arc::new(HookRegistry::new()),

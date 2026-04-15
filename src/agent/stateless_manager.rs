@@ -8,8 +8,8 @@
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::{ExecutionRequest, ExecutionResult, StatelessAgentService};
 use crate::common::services::{AgentConfigEntry, AgentConfigService};
+use crate::common::paths::PathResolver;
 use crate::image::registry::{ImageRegistry, RegistryConfig};
-use crate::image::ImageRef;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,9 +66,6 @@ impl StatelessAgentManager {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("pekobot");
 
-        std::fs::create_dir_all(&data_dir)?;
-
-        // Create agent configuration service
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             dirs::home_dir()
                 .map(|d| d.join(".pekobot"))
@@ -78,37 +75,8 @@ impl StatelessAgentManager {
                 .map(|d| d.join("pekobot"))
                 .unwrap_or_else(|| data_dir.join("cache")),
         );
-        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
 
-        // Create image registry
-        let registry_path = data_dir.join("registry");
-        let registry_config = RegistryConfig::new(&registry_path);
-        let image_registry = Arc::new(RwLock::new(ImageRegistry::new(registry_config)));
-
-        // Create agent service with team-aware paths
-        let agent_service = Arc::new(
-            StatelessAgentService::new(config_service.clone(), path_resolver)
-                .await
-                .context("Failed to create agent service")?,
-        );
-
-        // Create lifecycle manager
-        let lifecycle = Arc::new(LifecycleManager::new());
-
-        let manager = Self {
-            config_service,
-            agent_service,
-            lifecycle,
-            image_registry,
-            events: events_tx,
-            data_dir: data_dir.clone(),
-        };
-
-        info!(
-            "StatelessAgentManager initialized at {}",
-            data_dir.display()
-        );
-
+        let manager = Self::build(data_dir, events_tx, path_resolver).await?;
         Ok((manager, events_rx))
     }
 
@@ -119,15 +87,23 @@ impl StatelessAgentManager {
         let data_dir = data_dir.into();
         let (events_tx, events_rx) = mpsc::channel(100);
 
-        std::fs::create_dir_all(&data_dir)?;
-
-        // Create agent configuration service
-        // Use data_dir for both config and data to ensure isolation in tests
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
             data_dir.join("config"),
             data_dir.join("data"),
             data_dir.join("cache"),
         );
+
+        let manager = Self::build(data_dir, events_tx, path_resolver).await?;
+        Ok((manager, events_rx))
+    }
+
+    async fn build(
+        data_dir: PathBuf,
+        events_tx: mpsc::Sender<StatelessManagerEvent>,
+        path_resolver: PathResolver,
+    ) -> Result<Self> {
+        std::fs::create_dir_all(&data_dir)?;
+
         let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
 
         // Create image registry
@@ -159,7 +135,7 @@ impl StatelessAgentManager {
             data_dir.display()
         );
 
-        Ok((manager, events_rx))
+        Ok(manager)
     }
 
     /// Register an agent from an image

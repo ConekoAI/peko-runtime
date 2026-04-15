@@ -292,10 +292,9 @@ impl Agent {
         self.set_state(AgentState::Busy);
 
         let result = if let Some(provider) = &self.provider {
-            // Initialize built-in tools with ExtensionCore
-            if let Err(e) = self.init_builtins_async().await {
+            if let Err(e) = self.prepare_execution().await {
                 self.set_state(AgentState::Idle);
-                return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
+                return Err(e);
             }
 
             let supports_native = provider.supports_native_tools();
@@ -303,13 +302,6 @@ impl Agent {
                 "Executing with {} tool calling",
                 if supports_native { "native" } else { "text-based" }
             );
-
-            // Invoke AgentInit hooks to start MCP servers and initialize extensions
-            let init_result = self.extension_core.invoke_hook(
-                crate::extensions::core::HookPoint::AgentInit,
-                crate::extensions::types::HookInput::Unit,
-            ).await;
-            tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
 
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
@@ -363,10 +355,9 @@ impl Agent {
         self.extension_core.set_tool_config(tool_config).await;
 
         let result = if let Some(provider) = &self.provider {
-            // Initialize built-in tools with ExtensionCore
-            if let Err(e) = self.init_builtins_async().await {
+            if let Err(e) = self.prepare_execution().await {
                 self.set_state(AgentState::Idle);
-                return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
+                return Err(e);
             }
 
             let supports_native = provider.supports_native_tools();
@@ -374,13 +365,6 @@ impl Agent {
                 "Executing with session and {} tool calling",
                 if supports_native { "native" } else { "text-based" }
             );
-
-            // Invoke AgentInit hooks to start MCP servers and initialize extensions
-            let init_result = self.extension_core.invoke_hook(
-                crate::extensions::core::HookPoint::AgentInit,
-                crate::extensions::types::HookInput::Unit,
-            ).await;
-            tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
 
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
@@ -427,10 +411,7 @@ impl Agent {
         // We need to get the provider and tools into the task
         if let Some(provider) = &self.provider {
             let agent_arc = Arc::new(self.clone_for_loop(Arc::clone(provider)));
-            // Initialize built-in tools with ExtensionCore
-            if let Err(e) = self.init_builtins_async().await {
-                return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
-            }
+            self.prepare_execution().await?;
 
             let provider_arc = Arc::clone(provider);
             let event_tx_clone = event_tx.clone();
@@ -439,13 +420,6 @@ impl Agent {
             
             tokio::task::spawn_local(async move {
                 use crate::engine::loop_v4::AgenticLoopV4;
-
-                // Invoke AgentInit hooks to start MCP servers and initialize extensions
-                let init_result = extension_core.invoke_hook(
-                    crate::extensions::core::HookPoint::AgentInit,
-                    crate::extensions::types::HookInput::Unit,
-                ).await;
-                tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
 
                 let loop_ = AgenticLoopV4::new(
                     agent_arc,
@@ -500,17 +474,7 @@ impl Agent {
         // We need to get the provider and tools
         if let Some(provider) = &self.provider {
             let agent_arc = Arc::new(self.clone_for_loop(Arc::clone(provider)));
-            // Initialize built-in tools with ExtensionCore
-            if let Err(e) = self.init_builtins_async().await {
-                return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
-            }
-
-            // Invoke AgentInit hooks to start MCP servers and initialize extensions
-            let init_result = self.extension_core.invoke_hook(
-                crate::extensions::core::HookPoint::AgentInit,
-                crate::extensions::types::HookInput::Unit,
-            ).await;
-            tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
+            self.prepare_execution().await?;
 
             let provider_arc = Arc::clone(provider);
 
@@ -539,6 +503,21 @@ impl Agent {
         } else {
             Err(anyhow::anyhow!("No provider configured"))
         }
+    }
+
+    /// Prepare agent for execution by initializing built-in tools and invoking AgentInit hooks.
+    async fn prepare_execution(&self) -> anyhow::Result<()> {
+        if let Err(e) = self.init_builtins_async().await {
+            return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
+        }
+
+        let init_result = self.extension_core.invoke_hook(
+            crate::extensions::core::HookPoint::AgentInit,
+            crate::extensions::types::HookInput::Unit,
+        ).await;
+        tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
+
+        Ok(())
     }
 
     /// Clone the agent for use in the agentic loop

@@ -67,8 +67,53 @@ impl From<crate::common::services::AgentConfigEntry> for AgentConfigResponse {
             image_digest: "sha256:unknown".to_string(), // Not directly available in new structure
             team_id: Some(entry.team),
             capabilities,
-            registered_at: chrono::Utc::now().to_rfc3339(), // Not directly available, use current time
-            updated_at: None,                               // Not directly available
+            registered_at: entry
+                .registered_at
+                .map(|d| d.to_rfc3339())
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            updated_at: entry.updated_at.map(|d| d.to_rfc3339()),
+        }
+    }
+}
+
+impl From<crate::common::types::agent::AgentSummary> for AgentConfigResponse {
+    fn from(summary: crate::common::types::agent::AgentSummary) -> Self {
+        let capabilities = summary
+            .config
+            .capabilities
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        Self {
+            name: summary.name,
+            image_ref: summary.config.provider.default_model.clone(),
+            image_digest: "sha256:unknown".to_string(),
+            team_id: Some(summary.team),
+            capabilities,
+            registered_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: None,
+        }
+    }
+}
+
+impl From<crate::common::types::agent::AgentInfo> for AgentConfigResponse {
+    fn from(info: crate::common::types::agent::AgentInfo) -> Self {
+        let capabilities = info
+            .config
+            .capabilities
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        Self {
+            name: info.name,
+            image_ref: info.config.provider.default_model.clone(),
+            image_digest: "sha256:unknown".to_string(),
+            team_id: Some(info.team),
+            capabilities,
+            registered_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: None,
         }
     }
 }
@@ -184,20 +229,7 @@ async fn list_agents(
 
     let items: Vec<AgentConfigResponse> = agents
         .into_iter()
-        .map(|summary| AgentConfigResponse {
-            name: summary.name,
-            image_ref: summary.config.provider.default_model.clone(),
-            image_digest: "sha256:unknown".to_string(),
-            team_id: Some(summary.team),
-            capabilities: summary
-                .config
-                .capabilities
-                .iter()
-                .map(|c| c.name.clone())
-                .collect(),
-            registered_at: chrono::Utc::now().to_rfc3339(),
-            updated_at: None,
-        })
+        .map(AgentConfigResponse::from)
         .skip(params.offset())
         .take(params.limit())
         .collect();
@@ -267,20 +299,7 @@ async fn get_agent(
         .map_err(|e| ApiError::internal(format!("Failed to get agent: {}", e), ""))?
         .ok_or_else(|| ApiError::not_found("agent", name.clone(), ""))?;
 
-    Ok(Json(AgentConfigResponse {
-        name: agent.name,
-        image_ref: agent.config.provider.default_model.clone(),
-        image_digest: "sha256:unknown".to_string(),
-        team_id: Some(agent.team),
-        capabilities: agent
-            .config
-            .capabilities
-            .iter()
-            .map(|c| c.name.clone())
-            .collect(),
-        registered_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: None,
-    }))
+    Ok(Json(AgentConfigResponse::from(agent)))
 }
 
 /// Unregister agent
@@ -439,20 +458,7 @@ async fn update_agent(
 
     info!("Updated agent '{}' configuration", name);
 
-    Ok(Json(AgentConfigResponse {
-        name: agent.name,
-        image_ref: agent.config.provider.default_model.clone(),
-        image_digest: "sha256:unknown".to_string(),
-        team_id: Some(agent.team),
-        capabilities: agent
-            .config
-            .capabilities
-            .iter()
-            .map(|c| c.name.clone())
-            .collect(),
-        registered_at: chrono::Utc::now().to_rfc3339(),
-        updated_at: Some(chrono::Utc::now().to_rfc3339()),
-    }))
+    Ok(Json(AgentConfigResponse::from(agent)))
 }
 
 /// Generate a short random ID
