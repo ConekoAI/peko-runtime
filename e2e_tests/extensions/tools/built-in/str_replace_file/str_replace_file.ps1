@@ -1,10 +1,10 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # StrReplaceFile Tool E2E Test
 #
 # Tests the StrReplaceFile tool for targeted string replacements.
 
 param(
-    [string]$Provider = "kimi"
+    [string]$Provider = "minimax"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +14,8 @@ Write-Host "StrReplaceFile Tool E2E Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Check prerequisites
-if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
-    Write-Error "KIMI_API_KEY environment variable not set"
+if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
+    Write-Error "MINIMAX_API_KEY environment variable not set"
     exit 1
 }
 
@@ -43,20 +43,20 @@ if (Test-Path $DataDir) {
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent
 $agentName = "strreplace_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable granular tools via extension framework
-pekobot ext enable read_file --target default/$agentName 2>&1 | Out-Null
-pekobot ext enable write_file --target default/$agentName 2>&1 | Out-Null
-pekobot ext enable glob --target default/$agentName 2>&1 | Out-Null
-pekobot ext enable grep --target default/$agentName 2>&1 | Out-Null
-pekobot ext enable str_replace_file --target default/$agentName 2>&1 | Out-Null
+peko ext enable read_file --target default/$agentName 2>&1 | Out-Null
+peko ext enable write_file --target default/$agentName 2>&1 | Out-Null
+peko ext enable glob --target default/$agentName 2>&1 | Out-Null
+peko ext enable grep --target default/$agentName 2>&1 | Out-Null
+peko ext enable str_replace_file --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools via extension framework" -ForegroundColor Green
 
 # Get workspace directory
@@ -82,7 +82,8 @@ Write-Host "TEST 1: Simple string replacement" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to replace 'Original Name' with 'New Name'..." -ForegroundColor Yellow
-$response = pekobot send $agentName 'Use your str_replace_file tool (NOT shell) to modify config.txt. Set old_string=`name = "Original Name"` and new_string=`name = "New Name"`. The old string must match exactly. After replacing, respond TOOL_SUCCESS if the replacement succeeded, otherwise respond TOOL_FAILED.' --no-stream 2>&1
+$response = peko send $agentName "Use your str_replace_file tool (NOT shell) to modify config.txt. Replace the line: name = Original Name with: name = New Name. After replacing, respond TOOL_SUCCESS if the replacement succeeded, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 Start-Sleep -Milliseconds 500
@@ -101,7 +102,8 @@ Write-Host "TEST 2: Multiple replacements" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to make multiple replacements..." -ForegroundColor Yellow
-$response = pekobot send $agentName 'Use your str_replace_file tool (NOT shell) to modify config.txt. Make TWO replacements: 1) old_string=`version = "1.0.0"`, new_string=`version = "2.0.0"` 2) old_string=`debug = true`, new_string=`debug = false`. After replacing, respond TOOL_SUCCESS if both succeeded, otherwise respond TOOL_FAILED.' --no-stream 2>&1
+$response = peko send $agentName "Use your str_replace_file tool (NOT shell) to modify config.txt. Make TWO replacements: 1) Replace version = 1.0.0 with version = 2.0.0 2) Replace debug = true with debug = false. After replacing, respond TOOL_SUCCESS if both succeeded, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 Start-Sleep -Milliseconds 500
@@ -120,7 +122,8 @@ Write-Host "TEST 3: Verify unchanged when string not found" -ForegroundColor Cya
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request with non-existent string..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Use your str_replace_file tool (NOT shell) to modify config.txt. Try to replace old_string='NONEXISTENT_STRING' with new_string='something'. This should fail since the string doesn't exist. After attempting, respond TOOL_SUCCESS if the tool reported an error and the file was NOT changed, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your str_replace_file tool (NOT shell) to modify config.txt. Try to replace old_string='NONEXISTENT_STRING' with new_string='something'. This should fail since the string doesn't exist. After attempting, respond TOOL_SUCCESS if the tool reported an error and the file was NOT changed, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 Start-Sleep -Milliseconds 500
@@ -144,7 +147,7 @@ if (Test-Path $testFile) {
     Write-Host "Removed test file" -ForegroundColor Green
 }
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ StrReplaceFile e2e tests completed!" -ForegroundColor Green

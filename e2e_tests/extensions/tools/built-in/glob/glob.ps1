@@ -1,10 +1,10 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # Glob Tool E2E Test
 #
 # Tests the Glob tool for listing files matching patterns.
 
 param(
-    [string]$Provider = "kimi"
+    [string]$Provider = "minimax"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +14,8 @@ Write-Host "Glob Tool E2E Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Check prerequisites
-if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
-    Write-Error "KIMI_API_KEY environment variable not set"
+if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
+    Write-Error "MINIMAX_API_KEY environment variable not set"
     exit 1
 }
 
@@ -43,20 +43,20 @@ if (Test-Path $DataDir) {
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent
 $agentName = "glob_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable granular tools via extension framework
-pekobot ext enable glob --target default/$agentName 2>&1 | Out-Null
-pekobot ext enable read_file --target default/$agentName 2>&1 | Out-Null
-pekobot ext enable write_file --target default/$agentName 2>&1 | Out-Null
-pekobot ext enable grep --target default/$agentName 2>&1 | Out-Null
-pekobot ext enable str_replace_file --target default/$agentName 2>&1 | Out-Null
+peko ext enable glob --target default/$agentName 2>&1 | Out-Null
+peko ext enable read_file --target default/$agentName 2>&1 | Out-Null
+peko ext enable write_file --target default/$agentName 2>&1 | Out-Null
+peko ext enable grep --target default/$agentName 2>&1 | Out-Null
+peko ext enable str_replace_file --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled granular filesystem tools via extension framework" -ForegroundColor Green
 
 # Get workspace directory
@@ -87,7 +87,8 @@ Write-Host "TEST 1: Glob *.py pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .py files..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Use your glob tool with pattern='*.py'. After getting the result, respond TOOL_SUCCESS if script.py is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your glob tool with pattern='*.py'. After getting the result, respond TOOL_SUCCESS if script.py is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 $toolSuccess = $response -match "TOOL_SUCCESS"
@@ -108,7 +109,8 @@ Write-Host "TEST 2: Glob *.rs pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .rs files..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. After getting the result, respond TOOL_SUCCESS if file1.rs is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. After getting the result, respond TOOL_SUCCESS if file1.rs is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 $toolSuccess = $response -match "TOOL_SUCCESS"
@@ -129,7 +131,8 @@ Write-Host "TEST 3: Glob **/*.rs recursive pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find all .rs files recursively..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. After getting the result, respond TOOL_SUCCESS if main.rs is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. After getting the result, respond TOOL_SUCCESS if main.rs is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 $toolSuccess = $response -match "TOOL_SUCCESS"
@@ -156,7 +159,7 @@ Remove-Item "$workspaceDir/script.py" -Force -ErrorAction SilentlyContinue
 Remove-Item "$workspaceDir/src" -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host "Removed test files" -ForegroundColor Green
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ Glob e2e tests completed!" -ForegroundColor Green

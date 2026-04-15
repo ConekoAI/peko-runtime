@@ -1,10 +1,10 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # SessionStatus Tool E2E Test
 #
 # Tests the SessionStatus tool for retrieving session information.
 
 param(
-    [string]$Provider = "kimi"
+    [string]$Provider = "minimax"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +14,8 @@ Write-Host "SessionStatus Tool E2E Test" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Check prerequisites
-if (-not $env:KIMI_API_KEY -and $Provider -eq "kimi") {
-    Write-Error "KIMI_API_KEY environment variable not set"
+if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
+    Write-Error "MINIMAX_API_KEY environment variable not set"
     exit 1
 }
 
@@ -43,16 +43,16 @@ if (Test-Path $DataDir) {
 }
 
 # Set API key
-pekobot auth set $Provider $env:KIMI_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent
 $agentName = "sessionstatus_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable session_status tool via extension framework
-pekobot ext enable session_status --target default/$agentName 2>&1 | Out-Null
+peko ext enable session_status --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled session_status tool via extension framework" -ForegroundColor Green
 
 # ============================================================
@@ -63,7 +63,8 @@ Write-Host "TEST 1: Basic session_status call" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to call session_status..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Use your session_status tool to get information about the current session. After getting the result, respond TOOL_SUCCESS if you see a session_id and agent_id in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your session_status tool to get information about the current session. After getting the result, respond TOOL_SUCCESS if you see a session_id and agent_name in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 $toolSuccess = $response -match "TOOL_SUCCESS"
@@ -83,7 +84,7 @@ Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ SessionStatus tool e2e tests completed!" -ForegroundColor Green

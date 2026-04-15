@@ -208,7 +208,7 @@ Write-Host "Cleanup" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Uninstall tool extension
-pekobot ext uninstall multi_file_calc --force 2>&1 | Out-Null
+pekobot ext uninstall multi_file_calc 2>&1 | Out-Null
 Write-Host "Uninstalled tool extension" -ForegroundColor Green
 
 # Delete agent

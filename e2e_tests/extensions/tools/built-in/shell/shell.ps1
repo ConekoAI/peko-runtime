@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # Shell Tool E2E Test
 #
 # Tests the Shell tool for executing system commands.
@@ -43,16 +43,16 @@ if (Test-Path $DataDir) {
 }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
 # Create agent
 $agentName = "shell_test"
-pekobot agent create $agentName --provider $Provider 2>&1 | Out-Null
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 # Enable shell tool via extension framework
-pekobot ext enable shell --target default/$agentName 2>&1 | Out-Null
+peko ext enable shell --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled shell tool via extension framework" -ForegroundColor Green
 
 # Get workspace directory
@@ -72,7 +72,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $cmd = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dir" } else { "ls" }
 Write-Host "Sending request to execute $cmd..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Use your shell tool to check what's in your workspace. After executing the tool, respond TOOL_SUCCESS if you can see files listed, otherwise respond TOOL_FAILED." --no-stream 2>$null
+$response = peko send $agentName "Use your shell tool to check what's in your workspace. After executing the tool, respond TOOL_SUCCESS if you can see files listed, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 $toolSuccess = $response -match "TOOL_SUCCESS"
@@ -93,7 +94,8 @@ Write-Host "TEST 2: Shell with different working directory" -ForegroundColor Cya
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to list files in subdirectory..." -ForegroundColor Yellow
-$response = pekobot send $agentName "Use your shell tool to check what's in testdir. After executing the tool, respond TOOL_SUCCESS if you see test.txt, otherwise respond TOOL_FAILED." --no-stream 2>$null
+$response = peko send $agentName "Use your shell tool to check what's in testdir. After executing the tool, respond TOOL_SUCCESS if you see test.txt, otherwise respond TOOL_FAILED." --no-stream 2>&1
+Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
 $toolSuccess = $response -match "TOOL_SUCCESS"
@@ -119,7 +121,7 @@ if (Test-Path "$workspaceDir/testdir") {
     Write-Host "Removed test directory" -ForegroundColor Green
 }
 
-pekobot agent delete $agentName --force 2>&1 | Out-Null
+peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 Write-Host "`n✅ Shell tool e2e tests completed!" -ForegroundColor Green
