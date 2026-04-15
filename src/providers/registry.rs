@@ -5,16 +5,15 @@
 //!
 //! 1. **Base adapters**: `OpenAiAdapter` and `AnthropicAdapter` handle API format conversion
 //! 2. **Metadata registry**: Maps provider names to their API type, base URL, and auth config
-//! 3. **Factory function**: Creates the appropriate adapter and wraps it in ProviderCore
+//! 3. **Factory function**: Creates the appropriate adapter and wraps it in Provider
 //!
 //! This approach means:
 //! - Adding a new OpenAI-compatible provider = adding a metadata entry
 //! - Only truly unique APIs need a new adapter implementation
 
 use crate::providers::{
-    adapters::{AnthropicAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
-    core::ProviderCore,
-    traits::Provider,
+    adapters::{AnyAdapter, AnthropicAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
+    core::Provider,
 };
 use crate::types::provider::{ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
@@ -284,7 +283,7 @@ const BUILT_IN_PROVIDERS: &[ProviderMetadata] = &[
 /// This is the main factory function. It looks up the provider metadata
 /// and creates the appropriate provider implementation using the new
 /// adapter-based architecture.
-pub fn create_provider(config: ProviderConfig) -> Result<Arc<dyn Provider>> {
+pub fn create_provider(config: ProviderConfig) -> Result<Arc<Provider>> {
     let registry = ProviderRegistry::new();
 
     // Convert ProviderType to string for lookup
@@ -339,7 +338,7 @@ pub fn create_provider(config: ProviderConfig) -> Result<Arc<dyn Provider>> {
 }
 
 /// Create an OpenAI-compatible provider
-fn create_openai_compatible_provider(config: &ProviderConfig) -> Result<Arc<dyn Provider>> {
+fn create_openai_compatible_provider(config: &ProviderConfig) -> Result<Arc<Provider>> {
     let api_key = config
         .api_key
         .clone()
@@ -362,12 +361,12 @@ fn create_openai_compatible_provider(config: &ProviderConfig) -> Result<Arc<dyn 
         .unwrap_or_else(|| "gpt-4o-mini".to_string());
 
     // Create a generic OpenAI-compatible adapter
-    let adapter = OpenAiCompatibleAdapter::new("openai-compatible", base_url.clone(), model);
-    Ok(Arc::new(ProviderCore::new(
-        adapter,
-        api_key,
-        config.clone(),
-    )?))
+    let adapter = AnyAdapter::OpenAiCompatible(OpenAiCompatibleAdapter::new(
+        "openai-compatible",
+        base_url.clone(),
+        model,
+    ));
+    Ok(Arc::new(Provider::new(adapter, api_key, config.clone())?))
 }
 
 /// Create provider with appropriate adapter
@@ -377,23 +376,23 @@ fn create_provider_with_adapter(
     base_url: String,
     model: String,
     config: ProviderConfig,
-) -> Result<Arc<dyn Provider>> {
+) -> Result<Arc<Provider>> {
     match metadata.api_type {
         ApiType::OpenAICompletions => {
-            let adapter = if base_url.is_empty() || base_url == metadata.base_url {
+            let adapter = AnyAdapter::OpenAi(if base_url.is_empty() || base_url == metadata.base_url {
                 OpenAiAdapter::new(model)
             } else {
                 OpenAiAdapter::new(model).with_base_url(base_url)
-            };
-            Ok(Arc::new(ProviderCore::new(adapter, api_key, config)?))
+            });
+            Ok(Arc::new(Provider::new(adapter, api_key, config)?))
         }
         ApiType::AnthropicMessages => {
-            let adapter = if base_url.is_empty() {
+            let adapter = AnyAdapter::Anthropic(if base_url.is_empty() {
                 AnthropicAdapter::new(model)
             } else {
                 AnthropicAdapter::new(model).with_base_url(base_url)
-            };
-            Ok(Arc::new(ProviderCore::new(adapter, api_key, config)?))
+            });
+            Ok(Arc::new(Provider::new(adapter, api_key, config)?))
         }
     }
 }
@@ -401,7 +400,7 @@ fn create_provider_with_adapter(
 /// Create provider by name with defaults
 ///
 /// Convenience function for creating providers with just a name
-pub fn create_provider_by_name(name: &str) -> Result<Arc<dyn Provider>> {
+pub fn create_provider_by_name(name: &str) -> Result<Arc<Provider>> {
     let registry = ProviderRegistry::new();
     let metadata = registry
         .get(name)

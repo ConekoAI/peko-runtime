@@ -216,3 +216,94 @@ fn extract_text_content(blocks: &[ContentBlock]) -> String {
         .collect::<Vec<_>>()
         .join("")
 }
+
+/// Type-erased adapter enum for concrete provider cores.
+///
+/// Delegates all `ApiAdapter` methods to the underlying adapter variant,
+/// allowing `Provider` to be a single concrete type instead of generic.
+#[derive(Debug, Clone)]
+pub enum AnyAdapter {
+    OpenAi(OpenAiAdapter),
+    Anthropic(AnthropicAdapter),
+    OpenAiCompatible(OpenAiCompatibleAdapter),
+}
+
+impl ApiAdapter for AnyAdapter {
+    fn name(&self) -> &str {
+        match self {
+            Self::OpenAi(a) => a.name(),
+            Self::Anthropic(a) => a.name(),
+            Self::OpenAiCompatible(a) => a.name(),
+        }
+    }
+
+    fn default_model(&self) -> &str {
+        match self {
+            Self::OpenAi(a) => a.default_model(),
+            Self::Anthropic(a) => a.default_model(),
+            Self::OpenAiCompatible(a) => a.default_model(),
+        }
+    }
+
+    fn base_url(&self) -> &str {
+        match self {
+            Self::OpenAi(a) => a.base_url(),
+            Self::Anthropic(a) => a.base_url(),
+            Self::OpenAiCompatible(a) => a.base_url(),
+        }
+    }
+
+    fn build_request(
+        &self,
+        messages: &[Message],
+        tools: Option<&[ToolDefinition]>,
+        options: &ChatOptions,
+        stream: bool,
+    ) -> Result<(String, Value)> {
+        match self {
+            Self::OpenAi(a) => a.build_request(messages, tools, options, stream),
+            Self::Anthropic(a) => a.build_request(messages, tools, options, stream),
+            Self::OpenAiCompatible(a) => a.build_request(messages, tools, options, stream),
+        }
+    }
+
+    fn parse_response(&self, response: Value) -> Result<ChatResponse> {
+        match self {
+            Self::OpenAi(a) => a.parse_response(response),
+            Self::Anthropic(a) => a.parse_response(response),
+            Self::OpenAiCompatible(a) => a.parse_response(response),
+        }
+    }
+
+    fn parse_sse_event(&self, data: &str) -> Result<Option<StreamEvent>> {
+        match self {
+            Self::OpenAi(a) => a.parse_sse_event(data),
+            Self::Anthropic(a) => a.parse_sse_event(data),
+            Self::OpenAiCompatible(a) => a.parse_sse_event(data),
+        }
+    }
+
+    fn auth_config(&self, api_key: &str) -> AuthConfig {
+        match self {
+            Self::OpenAi(a) => a.auth_config(api_key),
+            Self::Anthropic(a) => a.auth_config(api_key),
+            Self::OpenAiCompatible(a) => a.auth_config(api_key),
+        }
+    }
+
+    fn extra_headers(&self) -> Vec<(String, String)> {
+        match self {
+            Self::OpenAi(a) => a.extra_headers(),
+            Self::Anthropic(a) => a.extra_headers(),
+            Self::OpenAiCompatible(a) => a.extra_headers(),
+        }
+    }
+
+    fn supports_native_tools(&self) -> bool {
+        match self {
+            Self::OpenAi(a) => a.supports_native_tools(),
+            Self::Anthropic(a) => a.supports_native_tools(),
+            Self::OpenAiCompatible(a) => a.supports_native_tools(),
+        }
+    }
+}

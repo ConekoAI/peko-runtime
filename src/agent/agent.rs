@@ -5,7 +5,6 @@ use crate::common::paths::PathResolver;
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::extensions::core::{ExtensionCore, global_core, init_global_core};
 use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
-use crate::providers::Provider;
 use crate::session::context::{SessionContext, SessionRouter};
 use crate::session::manager::SessionManager;
 use crate::session::types::{ChannelType, Peer};
@@ -25,7 +24,7 @@ pub struct Agent {
     /// Agent identity
     pub identity: Identity,
     /// LLM provider (stored in Arc for sharing with agentic loop)
-    provider: Option<Arc<dyn Provider>>,
+    provider: Option<Arc<crate::providers::Provider>>,
     /// Session manager for overlay lifecycle
     session_manager: Arc<TokioRwLock<SessionManager>>,
     /// Session router for message routing
@@ -251,7 +250,7 @@ impl Agent {
 
     /// Get provider reference
     #[must_use]
-    pub fn get_provider(&self) -> Option<&dyn Provider> {
+    pub fn get_provider(&self) -> Option<&crate::providers::Provider> {
         self.provider.as_deref()
     }
 
@@ -522,7 +521,7 @@ impl Agent {
 
     /// Clone the agent for use in the agentic loop
     /// This creates a shallow copy that shares the same identity
-    fn clone_for_loop(&self, provider: Arc<dyn Provider>) -> Self {
+    fn clone_for_loop(&self, provider: Arc<crate::providers::Provider>) -> Self {
         Self {
             config: self.config.clone(),
             state: Arc::new(RwLock::new(AgentState::Busy)),
@@ -827,7 +826,7 @@ impl Agent {
         Ok(identity)
     }
 
-    async fn init_provider(config: &AgentConfig) -> Result<Option<Arc<dyn Provider>>> {
+    async fn init_provider(config: &AgentConfig) -> Result<Option<Arc<crate::providers::Provider>>> {
         use crate::providers::registry::create_provider;
         use crate::types::provider::ProviderType;
 

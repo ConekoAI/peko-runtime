@@ -50,7 +50,7 @@ pub struct ToolCall {
 /// v4 agentic loop with native tool calling
 pub struct AgenticLoopV4 {
     agent: Arc<Agent>,
-    provider: Arc<dyn crate::providers::Provider>,
+    provider: Arc<crate::providers::Provider>,
     max_iterations: usize,
     system_prompt: String,
     /// Extension core for skill loading and tool registration.
@@ -66,7 +66,7 @@ impl AgenticLoopV4 {
     /// * `extension_core` - The ExtensionCore for skill loading and hook integration
     pub fn new(
         agent: Arc<Agent>,
-        provider: Arc<dyn crate::providers::Provider>,
+        provider: Arc<crate::providers::Provider>,
         extension_core: Arc<crate::extensions::ExtensionCore>,
     ) -> Self {
         let system_prompt = build_system_prompt(&agent, &extension_core);

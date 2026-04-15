@@ -70,7 +70,7 @@ Write-Host "TEST 1: Create a new file" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to create a file..." -ForegroundColor Yellow
-$response = peko send $agentName "Use your write_file tool (NOT shell) to create a file called 'hello.txt' in your workspace with the content 'Hello from write_file tool!'. Use mode='create'. After writing, respond TOOL_SUCCESS if the file was created, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your write_file tool (NOT shell) to create a file called 'hello.txt' in your workspace with the content 'Hello from write_file tool!'. Use mode='create'. After writing, respond TOOL_SUCCESS if the file was created, otherwise respond TOOL_FAILED with an explanation." --no-stream 2>&1
 Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 

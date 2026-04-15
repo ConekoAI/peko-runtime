@@ -9,7 +9,7 @@
 //! - Result notification via callback
 
 use crate::compaction::{CompactionConfig, CompactionResult, Compactor};
-use crate::providers::{ChatMessage, Provider};
+use crate::providers::ChatMessage;
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Instant;
@@ -87,7 +87,7 @@ struct WorkerState {
 
 impl BackgroundCompactor {
     /// Create a new background compactor with the given provider
-    pub fn new(provider: Arc<dyn Provider>) -> Self {
+    pub fn new(provider: Arc<crate::providers::Provider>) -> Self {
         let (request_tx, mut request_rx) = mpsc::channel::<CompactionRequest>(4);
         let state = Arc::new(Mutex::new(WorkerState {
             last_compaction: None,
@@ -126,7 +126,7 @@ impl BackgroundCompactor {
 
     /// Create with custom config and quota
     pub fn with_config(
-        provider: Arc<dyn Provider>,
+        provider: Arc<crate::providers::Provider>,
         config: CompactionConfig,
         quota: CompactionQuota,
     ) -> Self {
@@ -282,7 +282,7 @@ impl BackgroundCompactor {
 /// Process a compaction request (default config)
 async fn process_compaction_request(
     request: CompactionRequest,
-    provider: Arc<dyn Provider>,
+    provider: Arc<crate::providers::Provider>,
     state: Arc<Mutex<WorkerState>>,
 ) -> Result<()> {
     process_compaction_request_with_config(request, provider, state, CompactionConfig::default())
@@ -292,7 +292,7 @@ async fn process_compaction_request(
 /// Process a compaction request with custom config
 async fn process_compaction_request_with_config(
     request: CompactionRequest,
-    provider: Arc<dyn Provider>,
+    provider: Arc<crate::providers::Provider>,
     state: Arc<Mutex<WorkerState>>,
     config: CompactionConfig,
 ) -> Result<()> {

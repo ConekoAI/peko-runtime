@@ -86,7 +86,7 @@ pub struct SubagentExecutor {
     /// Channel for announcing completed runs
     announcement_tx: Option<AnnouncementSender>,
     /// Provider for LLM execution
-    provider: Option<Arc<dyn crate::providers::Provider>>,
+    provider: Option<Arc<crate::providers::Provider>>,
     /// Agent configuration for creating subagents
     agent_config: Option<AgentConfig>,
     /// Session manager for accessing sessions
@@ -175,7 +175,7 @@ impl SubagentExecutor {
     }
 
     /// Set the provider for LLM execution
-    pub fn with_provider(mut self, provider: Arc<dyn crate::providers::Provider>) -> Self {
+    pub fn with_provider(mut self, provider: Arc<crate::providers::Provider>) -> Self {
         self.provider = Some(provider);
         self
     }
@@ -646,7 +646,7 @@ async fn execute_subagent_task(
     session_key: &str,
     system_prompt: &str,
     task_message: &str,
-    provider: Option<Arc<dyn crate::providers::Provider>>,
+    provider: Option<Arc<crate::providers::Provider>>,
     _agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
 ) -> Result<String> {

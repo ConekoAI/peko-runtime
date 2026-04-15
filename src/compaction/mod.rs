@@ -11,7 +11,7 @@
 pub mod background;
 pub mod flush;
 
-use crate::providers::{ChatMessage, MessageRole, Provider};
+use crate::providers::{ChatMessage, MessageRole};
 use crate::types::message::ContentBlock;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
@@ -338,7 +338,7 @@ impl Compactor {
     async fn generate_summary_with_llm(
         &self,
         messages: &[ChatMessage],
-        provider: &Arc<dyn Provider>,
+        provider: &Arc<crate::providers::Provider>,
     ) -> Result<String> {
         let history = self.format_history_for_summary(messages);
 
@@ -392,7 +392,7 @@ impl Compactor {
     pub async fn compact(
         &mut self,
         messages: &[ChatMessage],
-        provider: &Arc<dyn Provider>,
+        provider: &Arc<crate::providers::Provider>,
     ) -> Result<CompactionResult> {
         if messages.len() < 4 {
             return Err(anyhow::anyhow!(
