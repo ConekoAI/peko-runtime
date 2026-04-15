@@ -6,7 +6,7 @@
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
-    AgentConfigService, AgentService, SessionService, TeamManagementService,
+    AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService, TeamManagementService,
     TeamService,
 };
 use crate::hooks::{EventBroadcaster, HookRegistry};
@@ -64,7 +64,7 @@ pub struct AppState {
     observability: Arc<Observability>,
 
     /// Agent configuration service (unified)
-    config_service: Arc<AgentConfigService>,
+    config_service: Arc<ConfigAuthorityImpl>,
 
     /// Stateless agent execution service
     agent_service: Arc<StatelessAgentService>,
@@ -96,7 +96,7 @@ impl std::fmt::Debug for AppState {
             .field("host", &self.host)
             .field("config", &self.config)
             .field("team_manager", &"<TeamManager>")
-            .field("config_service", &"<AgentConfigService>")
+            .field("config_service", &"<ConfigAuthorityImpl>")
             .field("agent_service", &"<StatelessAgentService>")
             .field("agent_mgmt_service", &"<AgentService>")
             .field("team_service", &"<TeamManagementService>")
@@ -201,7 +201,7 @@ impl AppState {
             cache_dir.clone(),
         );
 
-        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+        let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
         let path_resolver_clone = path_resolver.clone();
         let agent_service = Arc::new(
@@ -336,7 +336,7 @@ impl AppState {
     }
 
     /// Get the agent configuration service
-    pub fn config_service(&self) -> &Arc<AgentConfigService> {
+    pub fn config_service(&self) -> &Arc<ConfigAuthorityImpl> {
         &self.config_service
     }
 

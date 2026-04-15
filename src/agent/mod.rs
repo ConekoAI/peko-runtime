@@ -1,10 +1,8 @@
 //! Agent runtime and multi-agent management (Stateless Architecture)
-#![allow(deprecated)]
 //!
 //! This module provides:
 //! - Single agent runtime (Agent struct)
 //! - Stateless agent management (StatelessAgentManager)
-//! - Configuration registry (ConfigRegistry)
 //! - Stateless execution service (StatelessAgentService)
 //! - Subagent spawning and management
 
@@ -16,16 +14,8 @@ pub use agent::Agent;
 pub mod stateless_manager;
 pub use stateless_manager::{StatelessAgentManager, StatelessManagerEvent};
 
-// State management for stateless architecture
-// NOTE: config_registry is deprecated - use AgentConfigService from common::services
-#[allow(deprecated)]
-pub mod config_registry;
+// Stateless execution service
 pub mod stateless_service;
-
-// Deprecated: use AgentConfigEntry from crate::common::services::config_authority
-#[deprecated(since = "0.11.0", note = "Use AgentConfigEntry from crate::common::services::config_authority instead")]
-pub use config_registry::AgentConfigEntry;
-pub use config_registry::ConfigRegistry;
 pub use stateless_service::{
     ExecutionContext, ExecutionRequest, ExecutionResult, StatelessAgentService,
 };
@@ -34,23 +24,10 @@ pub use stateless_service::{
 pub mod lifecycle;
 pub use lifecycle::{ExecutionRecord, LifecycleManager};
 
-// Pool (used by command handler, deprecated but still needed)
-#[deprecated(
-    since = "0.2.0",
-    note = "Stateless architecture does not use agent pools"
-)]
-pub mod pool;
-#[deprecated(
-    since = "0.2.0",
-    note = "Stateless architecture does not use agent pools"
-)]
-pub use pool::{AgentHandle, AgentPool, PoolConfig};
-
 pub mod registry;
 pub use registry::{CapabilityRecord, LocalRegistry};
 
 // Manager submodules
-pub mod commands;
 pub mod context;
 pub mod types;
 

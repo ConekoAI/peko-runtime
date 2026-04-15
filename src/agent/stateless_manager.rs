@@ -7,7 +7,7 @@
 
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::{ExecutionRequest, ExecutionResult, StatelessAgentService};
-use crate::common::services::{AgentConfigEntry, AgentConfigService};
+use crate::common::services::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl};
 use crate::common::paths::PathResolver;
 use crate::image::registry::{ImageRegistry, RegistryConfig};
 use anyhow::{Context, Result};
@@ -44,7 +44,7 @@ pub enum StatelessManagerEvent {
 /// No persistent agent instances - agents are cold-started per request.
 pub struct StatelessAgentManager {
     /// Agent configuration service
-    config_service: Arc<AgentConfigService>,
+    config_service: Arc<ConfigAuthorityImpl>,
     /// Stateless agent service
     agent_service: Arc<StatelessAgentService>,
     /// Lifecycle manager (tracks active executions only)
@@ -104,7 +104,7 @@ impl StatelessAgentManager {
     ) -> Result<Self> {
         std::fs::create_dir_all(&data_dir)?;
 
-        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+        let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
         // Create image registry
         let registry_path = data_dir.join("registry");
@@ -142,7 +142,7 @@ impl StatelessAgentManager {
     ///
     /// Note: Image-based registration requires ConfigRegistry for config extraction.
     /// For now, this is a placeholder that creates a default config.
-    /// Use AgentConfigService directly for non-image registration.
+    /// Use ConfigAuthorityImpl directly for non-image registration.
     ///
     /// # Arguments
     /// * `name` - Unique name for the agent
@@ -159,7 +159,7 @@ impl StatelessAgentManager {
         let config = crate::types::agent::AgentConfig::default();
         let team = team_id.as_deref().unwrap_or("default");
 
-        // Save config using AgentConfigService
+        // Save config using ConfigAuthorityImpl
         self.config_service.save(name, team, &config).await?;
 
         // Load and return the entry
@@ -199,22 +199,22 @@ impl StatelessAgentManager {
 
     /// Get agent configuration
     pub async fn get(&self, name: &str, team: Option<&str>) -> Result<Option<AgentConfigEntry>> {
-        self.config_service.get(name, team).await
+        Ok(self.config_service.get(name, team).await?)
     }
 
     /// List all registered agents
     pub async fn list(&self) -> Result<Vec<AgentConfigEntry>> {
-        self.config_service.list_all().await
+        Ok(self.config_service.list_all().await?)
     }
 
     /// List agents by team
     pub async fn list_by_team(&self, team_id: &str) -> Result<Vec<AgentConfigEntry>> {
-        self.config_service.list_in_team(team_id).await
+        Ok(self.config_service.list_in_team(team_id).await?)
     }
 
     /// Check if agent is registered
     pub async fn exists(&self, name: &str, team: Option<&str>) -> Result<bool> {
-        self.config_service.exists(name, team).await
+        Ok(self.config_service.exists(name, team).await?)
     }
 
     /// Execute agent statelessly
@@ -289,9 +289,9 @@ impl StatelessAgentManager {
         &self.data_dir
     }
 
-    /// Get config registry
+    /// Get config service
     #[must_use]
-    pub fn config_service(&self) -> &Arc<AgentConfigService> {
+    pub fn config_service(&self) -> &Arc<ConfigAuthorityImpl> {
         &self.config_service
     }
 

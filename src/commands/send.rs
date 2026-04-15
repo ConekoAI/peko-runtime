@@ -22,7 +22,7 @@
 use crate::channels::{Channel, CliChannel, CliMode};
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
-use crate::common::services::{AgentConfigService, AgentValidator};
+use crate::common::services::{AgentValidator, ConfigAuthorityImpl};
 use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
 use anyhow::Result;
 use clap::Args;
@@ -87,7 +87,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
 
     // Use StatelessAgentService directly (ADR-016: bypass MessageService)
     let path_resolver = paths.resolver.clone();
-    let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+    let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
     // EARLY VALIDATION: Check agent exists BEFORE creating session infrastructure
     // This prevents creating session directories for non-existent agents

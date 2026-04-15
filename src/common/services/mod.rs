@@ -3,7 +3,6 @@
 //! This module provides business logic services that can be used by both
 //! CLI commands and API routes, ensuring consistent behavior across interfaces.
 
-pub mod agent_config_service;
 pub mod agent_service;
 pub mod agent_validator;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
@@ -15,7 +14,6 @@ pub mod team_service;
 pub mod config_authority;
 pub use config_authority::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl, ConfigSource};
 
-pub use agent_config_service::AgentConfigService;
 pub use agent_service::AgentService;
 pub use agent_validator::AgentValidator;
 // ADR-016: message_service and session_resolver removed - use StatelessAgentService directly
@@ -39,7 +37,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct ServiceRegistry {
     agent: AgentService,
-    agent_config: AgentConfigService,
+    agent_config: ConfigAuthorityImpl,
     team: TeamService,
     team_management: Option<TeamManagementService>,
 }
@@ -51,7 +49,7 @@ impl ServiceRegistry {
     pub fn new(resolver: PathResolver) -> Self {
         Self {
             agent: AgentService::new(resolver.clone()),
-            agent_config: AgentConfigService::new(resolver.clone()),
+            agent_config: ConfigAuthorityImpl::new(resolver.clone()),
             team: TeamService::new(resolver),
             team_management: None,
         }
@@ -70,7 +68,7 @@ impl ServiceRegistry {
 
         Self {
             agent: AgentService::new(resolver.clone()),
-            agent_config: AgentConfigService::new(resolver.clone()),
+            agent_config: ConfigAuthorityImpl::new(resolver.clone()),
             team: config_service,
             team_management: Some(team_management),
         }
@@ -82,7 +80,7 @@ impl ServiceRegistry {
     }
 
     /// Get the agent configuration service
-    pub fn agent_config(&self) -> &AgentConfigService {
+    pub fn agent_config(&self) -> &ConfigAuthorityImpl {
         &self.agent_config
     }
 

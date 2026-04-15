@@ -416,7 +416,7 @@ mod tests {
         let response: SessionResponse = info.into();
 
         assert_eq!(response.id, "sess_123");
-        assert_eq!(response.instance_id, "myagent");
+        assert_eq!(response.agent_name, "myagent");
         assert_eq!(response.turn_count, 5);
         assert_eq!(response.title, Some("Test Session".to_string()));
     }

@@ -14,7 +14,7 @@
 
 use crate::agent::Agent;
 use crate::common::paths::PathResolver;
-use crate::common::services::AgentConfigService;
+use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::engine::AgenticEvent;
 use crate::providers::{ChatMessage, TokenUsage};
 use crate::session::manager::SessionManager;
@@ -245,7 +245,7 @@ pub struct ExecutionMetrics {
 /// Stateless agent service - cold-start execution
 pub struct StatelessAgentService {
     /// Agent configuration service
-    config_service: Arc<AgentConfigService>,
+    config_service: Arc<ConfigAuthorityImpl>,
     /// Default execution timeout
     default_timeout: Duration,
     /// Execution metrics
@@ -256,7 +256,7 @@ pub struct StatelessAgentService {
 
 /// Get team-aware session directory for an agent
 async fn get_agent_session_dir(
-    config_service: &AgentConfigService,
+    config_service: &ConfigAuthorityImpl,
     path_resolver: &PathResolver,
     agent_name: &str,
 ) -> Result<PathBuf> {
@@ -272,7 +272,7 @@ async fn get_agent_session_dir(
 impl StatelessAgentService {
     /// Create a new stateless agent service
     pub async fn new(
-        config_service: Arc<AgentConfigService>,
+        config_service: Arc<ConfigAuthorityImpl>,
         path_resolver: PathResolver,
     ) -> Result<Self> {
         let service = Self {
@@ -801,7 +801,6 @@ impl StatelessAgentService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::ConfigRegistry;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -832,7 +831,7 @@ mod tests {
             temp_dir.path().join("cache"),
         );
 
-        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+        let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
 
         let service = StatelessAgentService::new(config_service, path_resolver)
             .await
@@ -901,7 +900,7 @@ mod tests {
             temp_dir.path().join("cache"),
         );
 
-        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+        let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
         let service = StatelessAgentService::new(config_service, path_resolver)
             .await
             .unwrap();
@@ -922,7 +921,7 @@ mod tests {
             temp_dir.path().join("cache"),
         );
 
-        let config_service = Arc::new(AgentConfigService::new(path_resolver.clone()));
+        let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
         let service = StatelessAgentService::new(config_service, path_resolver)
             .await
             .unwrap();

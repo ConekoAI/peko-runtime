@@ -4,7 +4,7 @@
 //! This service provides early validation to prevent creating
 //! session infrastructure for non-existent agents.
 
-use crate::common::services::agent_config_service::{AgentConfigEntry, AgentConfigService};
+use crate::common::services::config_authority::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl};
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -14,12 +14,12 @@ use tracing::{debug, info};
 /// Provides centralized validation for agent operations.
 /// All validation should happen early to prevent side effects.
 pub struct AgentValidator {
-    config_service: Arc<AgentConfigService>,
+    config_service: Arc<ConfigAuthorityImpl>,
 }
 
 impl AgentValidator {
     /// Create a new agent validator
-    pub fn new(config_service: Arc<AgentConfigService>) -> Self {
+    pub fn new(config_service: Arc<ConfigAuthorityImpl>) -> Self {
         Self { config_service }
     }
 
@@ -142,7 +142,7 @@ mod tests {
             temp.path().join("cache"),
         );
 
-        let config_service = Arc::new(AgentConfigService::new(path_resolver));
+        let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver));
         let validator = AgentValidator::new(config_service.clone());
 
         // Create a test agent
@@ -227,7 +227,7 @@ mod tests {
             temp.path().join("cache"),
         );
 
-        let config_service = Arc::new(AgentConfigService::new(path_resolver));
+        let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver));
         let validator = AgentValidator::new(config_service);
 
         // Validate non-existent agent (should fail)

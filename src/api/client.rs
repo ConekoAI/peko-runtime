@@ -824,6 +824,10 @@ mod tests {
             created_at: "2026-03-17T10:00:00Z".to_string(),
             updated_at: "2026-03-17T10:05:00Z".to_string(),
             turn_count: 5,
+            message_count: 0,
+            context_window: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
             parent_session_id: Some("sess_parent".to_string()),
             title: Some("Test Session".to_string()),
         };
@@ -889,6 +893,10 @@ mod tests {
             created_at: "2026-03-17T10:00:00Z".to_string(),
             updated_at: "2026-03-17T10:00:00Z".to_string(),
             turn_count: 0,
+            message_count: 0,
+            context_window: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
             parent_session_id: Some("sess_parent".to_string()),
             title: None,
         };

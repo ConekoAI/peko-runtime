@@ -8,6 +8,7 @@ use crate::commands::agent::AgentConfigCommands;
 use crate::commands::GlobalPaths;
 use crate::common::config_path;
 use crate::common::identifiers::parse_agent_identifier_with_override;
+use crate::common::services::ConfigAuthority;
 use crate::common::types::agent::{
     AgentCreateRequest, AgentDeleteOptions, AgentExportOptions, AgentImportOptions,
     AgentInitRequest,

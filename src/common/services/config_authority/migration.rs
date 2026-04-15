@@ -39,7 +39,6 @@ pub async fn migrate_json_entry(
     resolver: &PathResolver,
     backup_json: bool,
 ) -> Result<Option<std::path::PathBuf>> {
-    use crate::agent::config_registry::AgentConfigEntry as JsonAgentConfigEntry;
     use tokio::io::AsyncReadExt;
 
     // Read JSON file
@@ -52,7 +51,15 @@ pub async fn migrate_json_entry(
         .await
         .with_context(|| format!("Failed to read JSON file: {}", json_path.display()))?;
 
-    // Parse JSON
+    // Parse JSON using a local struct to avoid dependency on deleted config_registry
+    #[derive(serde::Deserialize)]
+    struct JsonAgentConfigEntry {
+        name: String,
+        #[serde(default)]
+        team_id: Option<String>,
+        config: crate::types::agent::AgentConfig,
+    }
+
     let entry: JsonAgentConfigEntry = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse JSON: {}", json_path.display()))?;
 

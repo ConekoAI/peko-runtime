@@ -17,6 +17,7 @@
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
 use crate::api::types::{PaginatedResponse, PaginationParams};
+use crate::common::services::ConfigAuthority;
 use crate::common::types::agent::{AgentCreateRequest, AgentDeleteOptions, AgentUpdateRequest};
 use crate::observability::performance::PerformanceGuard;
 use axum::{

@@ -1,5 +1,4 @@
-//! Agent Management Tools (DEPRECATED)
-#![allow(deprecated)]
+//! Agent Management Tools
 //!
 //! Tools for agents to interact with other agents within their team.
 //! Implements CAPABILITY_INTERFACE.md §3.7, §3.8
@@ -29,11 +28,7 @@ pub enum ManagerCommand {
         include_cross_team: bool,
         respond_to: mpsc::Sender<Option<crate::agent::AgentInfo>>,
     },
-    /// Spawn a new agent
-    Spawn {
-        config: crate::types::agent::AgentConfig,
-        respond_to: mpsc::Sender<anyhow::Result<crate::agent::AgentHandle>>,
-    },
+
     /// Spawn a subagent session (session overlay architecture)
     SpawnSession {
         agent_did: String,
