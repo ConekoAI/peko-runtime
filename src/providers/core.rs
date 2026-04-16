@@ -288,6 +288,7 @@ impl Provider {
 
         let stream = self.client.post_stream(&path, &body).await?;
         let mut accumulated_text = String::new();
+        let mut sequence = 0usize;
 
         use futures::StreamExt;
         let mut parser = crate::providers::transport::sse::SseParser::parse_stream(stream);
@@ -297,13 +298,13 @@ impl Provider {
                 Ok(event) => match self.adapter.parse_sse_event(&event.data) {
                     Ok(Some(StreamEvent::TextDelta { delta, .. })) => {
                         accumulated_text.push_str(&delta);
-                        #[allow(deprecated)]
+                        sequence += 1;
                         let _ = event_tx
-                            .send(AgenticEvent::Assistant {
+                            .send(AgenticEvent::AssistantDelta {
                                 run_id: run_id.clone(),
                                 text: delta,
-                                is_delta: true,
-                                is_final: false,
+                                sequence,
+                                is_interstitial: false,
                             })
                             .await;
                     }
@@ -341,7 +342,7 @@ impl Provider {
             .send(AgenticEvent::AssistantText {
                 run_id: run_id.clone(),
                 text: accumulated_text,
-                sequence: 1,
+                sequence: sequence.saturating_add(1),
                 is_interstitial: false, // Final answer
             })
             .await;

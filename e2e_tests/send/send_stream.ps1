@@ -49,20 +49,24 @@ Write-Host "Created agent: $agentName" -ForegroundColor Green
 
 
 # send a message to the agent (creates first session)
-Write-Host "`nSending first message..." -ForegroundColor Cyan
+Write-Host "`nSending first message with streaming..." -ForegroundColor Cyan
 pekobot send $agentName "A ball is thrown horizontally at 10 m/s from a height of 20 m.
 Questions:
 
-How long does it take to hit the ground?
-How far horizontally does it travel?" 2>&1
+How long does it take to hit the ground?" 2>&1
 
-# Get session id
-$jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
-$sessionId = $jsonOutput.sessions[0].session_id
 
-# print the session jsonl
-Write-Host "`nSession JSONL:" -ForegroundColor Cyan
-cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl"
+
+Write-Host "`nFirst message sent. Now sending second message no streaming..." -ForegroundColor Cyan
+pekobot send $agentName "How far horizontally does it travel?" --no-stream 2>&1
+
+# # Get session id
+# $jsonOutput = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json
+# $sessionId = $jsonOutput.sessions[0].session_id
+
+# # print the session jsonl
+# Write-Host "`nSession JSONL:" -ForegroundColor Cyan
+# cat "$env:USERPROFILE/AppData/Roaming/pekobot/sessions/default/$agentName/$sessionId.jsonl"
 
 # Cleanup
 Write-Host "`n========================================" -ForegroundColor Cyan

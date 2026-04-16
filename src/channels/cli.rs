@@ -208,6 +208,9 @@ impl CliChannel {
                         output.success = false;
                         output.error = error.clone();
                         end_received = true;
+                        if let Some(ref err) = error {
+                            eprintln!("\n❌ Error: {err}");
+                        }
                     }
                     _ => {}
                 }
