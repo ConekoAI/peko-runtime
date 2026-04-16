@@ -10,7 +10,7 @@
 
 use crate::tools::traits::ToolResult;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as DeError, ser::SerializeMap, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,6 +26,9 @@ pub type AsyncTaskId = String;
 pub struct TaskFileRecord {
     pub task_id: AsyncTaskId,
     pub tool_name: String,
+    /// Receipt-like status for easy LLM recognition
+    #[serde(rename = "_async_status")]
+    pub async_status: String,
     pub status: String,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
@@ -36,6 +39,10 @@ pub struct TaskFileRecord {
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_requested: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_mode: Option<String>,
 }
 
 impl TaskFileRecord {
@@ -43,6 +50,7 @@ impl TaskFileRecord {
         Self {
             task_id,
             tool_name,
+            async_status: "queued".to_string(),
             status: "pending".to_string(),
             stdout: None,
             stderr: None,
@@ -51,6 +59,8 @@ impl TaskFileRecord {
             error: None,
             started_at: None,
             completed_at: None,
+            timeout_requested: None,
+            callback_mode: None,
         }
     }
 
@@ -61,12 +71,21 @@ impl TaskFileRecord {
 
     pub fn set_completed(&mut self, result: serde_json::Value) {
         self.status = "completed".to_string();
+        self.async_status = "completed".to_string();
         self.result = Some(result);
         self.completed_at = Some(chrono::Utc::now().to_rfc3339());
     }
 
     pub fn set_failed(&mut self, error: String) {
         self.status = "failed".to_string();
+        self.async_status = "failed".to_string();
+        self.error = Some(error);
+        self.completed_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+
+    pub fn set_timed_out(&mut self, error: String) {
+        self.status = "timed_out".to_string();
+        self.async_status = "timed_out".to_string();
         self.error = Some(error);
         self.completed_at = Some(chrono::Utc::now().to_rfc3339());
     }
@@ -129,13 +148,94 @@ impl TaskFileWriter {
 }
 
 /// Status of an async task
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AsyncTaskStatus {
     Pending,
     Running,
     Completed { result: ToolResult },
     Failed { error: String },
     Cancelled,
+    TimedOut { error: String },
+}
+
+impl Serialize for AsyncTaskStatus {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Pending => serializer.serialize_str("pending"),
+            Self::Running => serializer.serialize_str("running"),
+            Self::Completed { result } => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("status", "completed")?;
+                map.serialize_entry("result", result)?;
+                map.end()
+            }
+            Self::Failed { error } => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("status", "failed")?;
+                map.serialize_entry("error", error)?;
+                map.end()
+            }
+            Self::Cancelled => serializer.serialize_str("cancelled"),
+            Self::TimedOut { error } => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("status", "timed_out")?;
+                map.serialize_entry("error", error)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AsyncTaskStatus {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(s) => match s.as_str() {
+                "pending" => Ok(Self::Pending),
+                "running" => Ok(Self::Running),
+                "cancelled" => Ok(Self::Cancelled),
+                _ => Err(serde::de::Error::custom(format!("unknown status: {s}"))),
+            },
+            serde_json::Value::Object(mut map) => {
+                let status = map
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| serde::de::Error::custom("missing status field"))?;
+                match status {
+                    "completed" => {
+                        let result = map
+                            .remove("result")
+                            .ok_or_else(|| serde::de::Error::custom("missing result field"))?;
+                        let result: ToolResult = serde_json::from_value(result)
+                            .map_err(|e| serde::de::Error::custom(e.to_string()))?;
+                        Ok(Self::Completed { result })
+                    }
+                    "failed" => {
+                        let error = map
+                            .remove("error")
+                            .and_then(|v| v.as_str().map(String::from))
+                            .ok_or_else(|| serde::de::Error::custom("missing error field"))?;
+                        Ok(Self::Failed { error })
+                    }
+                    "timed_out" => {
+                        let error = map
+                            .remove("error")
+                            .and_then(|v| v.as_str().map(String::from))
+                            .ok_or_else(|| serde::de::Error::custom("missing error field"))?;
+                        Ok(Self::TimedOut { error })
+                    }
+                    _ => Err(serde::de::Error::custom(format!("unknown status: {status}"))),
+                }
+            }
+            _ => Err(serde::de::Error::custom("expected string or object")),
+        }
+    }
 }
 
 impl AsyncTaskStatus {
@@ -146,6 +246,7 @@ impl AsyncTaskStatus {
             AsyncTaskStatus::Completed { .. }
                 | AsyncTaskStatus::Failed { .. }
                 | AsyncTaskStatus::Cancelled
+                | AsyncTaskStatus::TimedOut { .. }
         )
     }
 }
@@ -548,6 +649,12 @@ impl AsyncTaskRegistry {
     #[must_use]
     pub fn check_status(&self, task_id: &AsyncTaskId) -> Option<AsyncTaskStatus> {
         self.tasks.get(task_id).map(|e| e.status.clone())
+    }
+
+    /// Check if any tasks are still non-terminal
+    #[must_use]
+    pub fn has_pending_tasks(&self) -> bool {
+        self.tasks.values().any(|e| !e.status.is_terminal())
     }
 
     /// Convert status to wait result
@@ -1052,7 +1159,9 @@ impl UnifiedAsyncExecutor {
 
         // Create initial task file record
         if let Some(ref writer) = self.task_file_writer {
-            let record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
+            let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
+            record.timeout_requested = Some(config.timeout_secs);
+            record.callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
             if let Err(e) = writer.write(&record).await {
                 tracing::warn!("Failed to write initial task file for {}: {}", task_id, e);
             }
@@ -1090,6 +1199,8 @@ impl UnifiedAsyncExecutor {
         let registry_clone = self.registry.clone();
         let task_id_clone = task_id.clone();
         let task_file_writer_clone = self.task_file_writer.clone();
+        let timeout_secs = config.timeout_secs;
+        let callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
 
         // Spawn the background execution
         tokio::spawn(async move {
@@ -1100,28 +1211,54 @@ impl UnifiedAsyncExecutor {
             }
             if let Some(ref writer) = task_file_writer_clone {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.timeout_requested = Some(timeout_secs);
+                record.callback_mode = callback_mode.clone();
                 record.set_running();
                 if let Err(e) = writer.write(&record).await {
                     tracing::warn!("Failed to write running task file for {}: {}", task_id_clone, e);
                 }
             }
 
-            // Execute the work
-            let result = execution_fn().await;
+            // Execute the work with timeout enforcement
+            let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+            let result = tokio::time::timeout(timeout_duration, execution_fn()).await;
+            let result = match result {
+                Ok(Ok(async_result)) => Ok(async_result),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(anyhow::anyhow!("Task timed out after {}s", timeout_secs)),
+            };
+
+            // Check if task was cancelled before updating
+            let was_cancelled = {
+                let registry = registry_clone.read().await;
+                registry.get(&task_id_clone)
+                    .map(|e| matches!(e.status, AsyncTaskStatus::Cancelled))
+                    .unwrap_or(false)
+            };
+
+            if was_cancelled {
+                tracing::debug!("Task {} was cancelled, skipping result update", task_id_clone);
+                return;
+            }
 
             // Update registry with result
             let status = match &result {
                 Ok(_) => AsyncTaskStatus::Completed {
                     result: ToolResult::success(serde_json::json!({"completed": true})),
                 },
-                Err(e) => AsyncTaskStatus::Failed {
-                    error: e.to_string(),
-                },
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("timed out") || err_str.contains("Timed out") {
+                        AsyncTaskStatus::TimedOut { error: err_str }
+                    } else {
+                        AsyncTaskStatus::Failed { error: err_str }
+                    }
+                }
             };
 
             {
                 let mut registry = registry_clone.write().await;
-                registry.update_status(&task_id_clone, status);
+                registry.update_status(&task_id_clone, status.clone());
 
                 // Store the unified result
                 if let Ok(ref async_result) = result {
@@ -1134,6 +1271,8 @@ impl UnifiedAsyncExecutor {
             // Write final task file record
             if let Some(ref writer) = task_file_writer_clone {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.timeout_requested = Some(timeout_secs);
+                record.callback_mode = callback_mode.clone();
                 match result {
                     Ok(async_result) => {
                         match &async_result {
@@ -1145,7 +1284,12 @@ impl UnifiedAsyncExecutor {
                         record.set_completed(serde_json::to_value(&async_result).unwrap_or_default());
                     }
                     Err(e) => {
-                        record.set_failed(e.to_string());
+                        let err_str = e.to_string();
+                        if err_str.contains("timed out") || err_str.contains("Timed out") {
+                            record.set_timed_out(err_str);
+                        } else {
+                            record.set_failed(err_str);
+                        }
                     }
                 }
                 if let Err(e) = writer.write(&record).await {
@@ -1202,6 +1346,25 @@ impl UnifiedAsyncExecutor {
             }
         }
         Ok(false)
+    }
+
+    /// Wait for all tasks to reach a terminal state
+    pub async fn wait_for_all_tasks(&self, timeout: Duration) {
+        let start = tokio::time::Instant::now();
+        loop {
+            let has_pending = {
+                let registry = self.registry.read().await;
+                registry.has_pending_tasks()
+            };
+            if !has_pending {
+                break;
+            }
+            if start.elapsed() >= timeout {
+                tracing::warn!("Timeout waiting for async tasks to complete");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }
 

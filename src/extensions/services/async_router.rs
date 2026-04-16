@@ -89,9 +89,11 @@ impl AsyncReservedParams {
         let mut reserved = Self::default();
 
         if let Some(obj) = params.as_object_mut() {
-            // Extract _async
+            // Extract _async (accept boolean or string)
             if let Some(v) = obj.remove("_async") {
-                reserved.async_mode = v.as_bool().unwrap_or(false);
+                reserved.async_mode = v.as_bool()
+                    .or_else(|| v.as_str().map(|s| s.eq_ignore_ascii_case("true")))
+                    .unwrap_or(false);
             }
 
             // Extract _timeout (accept integer, float, or string)
@@ -109,9 +111,11 @@ impl AsyncReservedParams {
                 }
             }
 
-            // Extract _progress
+            // Extract _progress (accept boolean or string)
             if let Some(v) = obj.remove("_progress") {
-                reserved.progress = v.as_bool().unwrap_or(true);
+                reserved.progress = v.as_bool()
+                    .or_else(|| v.as_str().map(|s| s.eq_ignore_ascii_case("true")))
+                    .unwrap_or(true);
             }
 
             // Extract _priority
@@ -121,9 +125,11 @@ impl AsyncReservedParams {
                 }
             }
 
-            // Extract _retry
+            // Extract _retry (accept integer or string)
             if let Some(v) = obj.remove("_retry") {
-                reserved.retry_count = v.as_u64().unwrap_or(0) as u32;
+                reserved.retry_count = v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                    .unwrap_or(0) as u32;
             }
         }
 
@@ -390,6 +396,11 @@ impl AsyncExecutionRouter {
     #[must_use]
     pub fn async_executor(&self) -> &UnifiedAsyncExecutor {
         &self.async_executor
+    }
+
+    /// Wait for all async tasks to complete
+    pub async fn wait_for_all_tasks(&self, timeout: std::time::Duration) {
+        self.async_executor.wait_for_all_tasks(timeout).await;
     }
 }
 

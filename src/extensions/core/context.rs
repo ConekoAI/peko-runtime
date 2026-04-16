@@ -270,6 +270,11 @@ impl ExtensionServices {
         self.telemetry
             .record_hook_invocation(hook_id, point, duration_ms);
     }
+
+    /// Wait for all async tasks to complete
+    pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
+        self.async_router.wait_for_all_tasks(timeout).await;
+    }
 }
 
 impl Default for ExtensionServices {

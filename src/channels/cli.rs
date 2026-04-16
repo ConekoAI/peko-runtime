@@ -439,6 +439,12 @@ pub async fn send_single_message_with_session(
     // Process events from the channel
     let process_result = process_events(event_rx, &agent_name, Some(&session_ctx)).await;
 
+    // Wait for any background async tasks to complete before returning.
+    // This ensures task files are fully written and background work is not
+    // dropped when the CLI process exits.
+    let wait_timeout = std::time::Duration::from_secs(30);
+    agent.wait_for_async_tasks(wait_timeout).await;
+
     // Note: The engine (AgenticLoopV4) already adds both user and assistant messages
     // to the session during execution, so we don't need to add them manually here.
 

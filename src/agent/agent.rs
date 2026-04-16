@@ -571,6 +571,15 @@ impl Agent {
     ///
     /// Note: This method must be called within a `tokio::task::LocalSet`
     /// because Agent contains non-Send types.
+
+    /// Wait for background async tasks to complete
+    pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
+        self.extension_core
+            .services()
+            .wait_for_async_tasks(timeout)
+            .await;
+    }
+
     /// Get agent DID
     #[must_use]
     pub fn did(&self) -> &str {

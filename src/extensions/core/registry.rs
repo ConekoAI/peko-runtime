@@ -162,6 +162,11 @@ impl ExtensionCore {
         config.is_tool_enabled(tool_name)
     }
 
+    /// Get a reference to the extension services
+    pub fn services(&self) -> &Arc<ExtensionServices> {
+        &self.services
+    }
+
     /// Register a hook handler
     ///
     /// # Arguments
