@@ -15,6 +15,9 @@
 //! ).await?;
 //! ```
 
+use crate::agent::async_tool_framework::{
+    AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget, UnifiedAsyncExecutor,
+};
 use crate::extensions::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -148,18 +151,14 @@ impl AsyncReservedParams {
 ///
 /// Routes tool execution to either sync or async paths based on `_async` parameter.
 /// This is the unified router for ALL tool types in ADR-018a.
-///
-/// # Note on Async Execution
-///
-/// Full async execution (with task queueing and receipt-based results) is planned
-/// for a future iteration. For now, `_async=true` returns a placeholder indicating
-/// the parameter was recognized.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AsyncExecutionRouter {
     /// Default sync timeout
     default_sync_timeout: Duration,
     /// Default async timeout
     default_async_timeout: Duration,
+    /// Unified async executor for background task execution
+    async_executor: UnifiedAsyncExecutor,
 }
 
 impl Default for AsyncExecutionRouter {
@@ -170,20 +169,32 @@ impl Default for AsyncExecutionRouter {
 
 impl AsyncExecutionRouter {
     /// Create a new async execution router with default timeouts
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             default_sync_timeout: Duration::from_secs(120),
             default_async_timeout: Duration::from_secs(300),
+            async_executor: UnifiedAsyncExecutor::new(),
         }
     }
 
     /// Create with custom timeouts
-    #[must_use] 
+    #[must_use]
     pub fn with_timeouts(sync_secs: u64, async_secs: u64) -> Self {
         Self {
             default_sync_timeout: Duration::from_secs(sync_secs),
             default_async_timeout: Duration::from_secs(async_secs),
+            async_executor: UnifiedAsyncExecutor::new(),
+        }
+    }
+
+    /// Create with a shared async executor (for sharing registries across routers)
+    #[must_use]
+    pub fn with_executor(async_executor: UnifiedAsyncExecutor) -> Self {
+        Self {
+            default_sync_timeout: Duration::from_secs(120),
+            default_async_timeout: Duration::from_secs(300),
+            async_executor,
         }
     }
 
@@ -192,6 +203,7 @@ impl AsyncExecutionRouter {
     /// This is the primary routing method for ALL tool execution in ADR-018a.
     ///
     /// # Arguments
+    /// * `tool_name` - Name of the tool being executed
     /// * `params` - Tool parameters (will be mutated to extract reserved params)
     /// * `exec_service` - Tool execution service for sync path
     /// * `tool_context` - Tool context for execution
@@ -203,6 +215,7 @@ impl AsyncExecutionRouter {
     #[instrument(skip(self, params, exec_service, sync_executor), level = "debug")]
     pub async fn route<F, Fut>(
         &self,
+        tool_name: &str,
         params: &mut Value,
         exec_service: &ToolExecutionService,
         tool_context: &ToolExecutionContext,
@@ -223,9 +236,9 @@ impl AsyncExecutionRouter {
         );
 
         if reserved.async_mode {
-            // Async path - return placeholder for now
-            // Full async implementation will be added in follow-up
-            self.execute_async_placeholder(&reserved, params).await
+            // Async path: execute via UnifiedAsyncExecutor
+            self.execute_async(tool_name, params.clone(), tool_context, &reserved, sync_executor)
+                .await
         } else {
             // Sync path with timeout
             self.execute_sync(
@@ -281,51 +294,79 @@ impl AsyncExecutionRouter {
             .await
     }
 
-    /// Return a placeholder for async execution
-    ///
-    /// Full async execution with task queueing will be implemented in a follow-up.
-    /// For now, this returns a structured response indicating the async request
-    /// was recognized.
-    #[instrument(skip(self, reserved), level = "debug")]
-    async fn execute_async_placeholder(
+    /// Execute asynchronously via UnifiedAsyncExecutor
+    #[instrument(skip(self, params, sync_executor), level = "debug")]
+    async fn execute_async<F, Fut>(
         &self,
+        tool_name: &str,
+        params: Value,
+        tool_context: &ToolExecutionContext,
         reserved: &AsyncReservedParams,
-        params: &Value,
-    ) -> Result<Value> {
+        sync_executor: F,
+    ) -> Result<Value>
+    where
+        F: FnOnce(Value) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
+    {
         let timeout_secs = reserved.effective_timeout(true);
+        let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
+        let session_key = format!("{}_{}", tool_context.agent_id, tool_context.session_id);
+
+        let (delivery_mode, delivery_target) = match reserved.callback.as_str() {
+            "stream" => (AsyncResultDeliveryMode::Interrupt, DeliveryTarget::EventBroadcast),
+            "blocking" => (AsyncResultDeliveryMode::QueueWhenBusy, DeliveryTarget::DirectChannel),
+            _ => (AsyncResultDeliveryMode::QueueWhenBusy, DeliveryTarget::AsyncQueue),
+        };
+
+        let config = AsyncToolConfig {
+            delivery_mode,
+            delivery_target: Some(delivery_target),
+            timeout_secs,
+            cleanup_after_delivery: true,
+            label: Some(tool_name.to_string()),
+        };
 
         info!(
+            task_id = %task_id,
             timeout = timeout_secs,
             callback = %reserved.callback,
-            "Async execution placeholder - full implementation pending"
+            "Executing tool asynchronously via UnifiedAsyncExecutor"
         );
 
-        // Return a placeholder response
-        Ok(Value::Object({
-            let mut map = serde_json::Map::new();
-            map.insert(
-                "_async_status".to_string(),
-                Value::String("placeholder".to_string()),
-            );
-            map.insert(
-                "message".to_string(),
-                Value::String(
-                    "Async execution mode recognized but not yet fully implemented. \
-                     Tool executed synchronously."
-                        .to_string(),
-                ),
-            );
-            map.insert(
-                "timeout_requested".to_string(),
-                Value::Number(timeout_secs.into()),
-            );
-            map.insert(
-                "callback_mode".to_string(),
-                Value::String(reserved.callback.clone()),
-            );
-            map.insert("original_params".to_string(), params.clone());
-            map
+        let receipt = self
+            .async_executor
+            .execute(
+                task_id,
+                tool_name,
+                params.clone(),
+                session_key,
+                config,
+                move || async move {
+                    match sync_executor(params).await {
+                        Ok(result) => Ok(AsyncTaskResult::Generic { data: result }),
+                        Err(e) => Ok(AsyncTaskResult::Generic {
+                            data: serde_json::json!({"error": e.to_string()}),
+                        }),
+                    }
+                },
+            )
+            .await?;
+
+        // Return the receipt as JSON so the caller can poll for status
+        Ok(serde_json::json!({
+            "_async_status": "queued",
+            "task_id": receipt.task_id,
+            "status": receipt.status,
+            "check_status_tool": receipt.check_status_tool,
+            "timeout_requested": timeout_secs,
+            "callback_mode": reserved.callback,
         }))
+    }
+
+    /// Get a reference to the underlying async executor
+    #[must_use]
+    pub fn async_executor(&self) -> &UnifiedAsyncExecutor {
+        &self.async_executor
     }
 }
 
@@ -427,6 +468,7 @@ mod tests {
 
         let result = router
             .route(
+                "test_tool",
                 &mut params,
                 &exec_service,
                 &tool_context,
@@ -442,7 +484,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_router_async_placeholder() {
+    async fn test_router_async_path() {
         let router = AsyncExecutionRouter::new();
         let exec_service = ToolExecutionService::new();
         let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
@@ -452,17 +494,27 @@ mod tests {
 
         let result = router
             .route(
+                "test_tool",
                 &mut params,
                 &exec_service,
                 &tool_context,
                 &exec_config,
-                |_p| async move { Ok(json!({"result": "should_not_execute"})) },
+                |p| async move { Ok(json!({"result": "async_ok", "input": p})) },
             )
             .await;
 
         assert!(result.is_ok());
         let value = result.unwrap();
-        assert_eq!(value["_async_status"], "placeholder");
+        assert_eq!(value["_async_status"], "queued");
         assert_eq!(value["timeout_requested"], 60);
+        assert!(value["task_id"].as_str().unwrap().starts_with("test_tool:"));
+
+        // The task should complete shortly
+        let task_id = value["task_id"].as_str().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let status = router.async_executor().check_status(&task_id.to_string()).await;
+        assert!(status.is_some());
+        assert!(status.unwrap().is_terminal());
     }
 }

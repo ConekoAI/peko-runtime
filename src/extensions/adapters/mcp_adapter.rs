@@ -946,10 +946,12 @@ impl HookHandler for McpToolExecuteHandler {
         let manager = self.manager.clone();
         let server_name = self.server_name.clone();
         let actual_tool_owned = actual_tool.to_string();
+        let tool_name_for_router = actual_tool_owned.clone();
 
         // Route execution through AsyncExecutionRouter
         let result = async_router
             .route(
+                &tool_name_for_router,
                 &mut params_mut,
                 exec_service,
                 &tool_ctx,

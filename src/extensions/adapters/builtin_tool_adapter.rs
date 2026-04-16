@@ -146,10 +146,12 @@ impl HookHandler for BuiltinExecuteHandler {
 
         // Clone tool for the closure (needed for 'static bound)
         let tool = self.tool.clone();
+        let tool_name = tool.name().to_string();
 
         // Route execution through AsyncExecutionRouter
         let result = async_router
             .route(
+                &tool_name,
                 &mut params_mut,
                 exec_service,
                 &tool_ctx,

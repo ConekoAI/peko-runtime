@@ -25,6 +25,7 @@
 
 use crate::agent::async_tool_framework::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig, UnifiedAsyncExecutor,
+    WaitResult,
 };
 use crate::engine::{ToolExecutionContext, ToolExecutor};
 use crate::tools::{Tool, UnifiedAsyncTool};
@@ -242,10 +243,10 @@ impl AsyncToolExecutor {
             return Ok(receipt);
         }
 
-        // Fallback: wrap sync execution
+        // Fallback: wrap sync execution via UnifiedAsyncExecutor
         warn!(
             tool_name,
-            "Tool does not implement UnifiedAsyncTool, using sync fallback"
+            "Tool does not implement UnifiedAsyncTool, using unified sync fallback"
         );
         self.execute_sync_fallback(tool, params, context).await
     }
@@ -327,20 +328,12 @@ impl AsyncToolExecutor {
         task_id: &AsyncTaskId,
         timeout: Duration,
     ) -> Result<AsyncTaskStatus> {
-        let start = std::time::Instant::now();
-
-        loop {
-            let status = self.check_status(_tool_name, task_id).await?;
-
-            if status.is_terminal() {
-                return Ok(status);
-            }
-
-            if start.elapsed() >= timeout {
-                return Err(anyhow::anyhow!("Timeout waiting for task completion"));
-            }
-
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        match self.async_executor.wait_for_completion(task_id, timeout).await {
+            Ok(WaitResult::Completed { result }) => Ok(AsyncTaskStatus::Completed { result }),
+            Ok(WaitResult::Failed { error }) => Ok(AsyncTaskStatus::Failed { error }),
+            Ok(WaitResult::Cancelled) => Ok(AsyncTaskStatus::Cancelled),
+            Ok(WaitResult::Timeout) => Err(anyhow::anyhow!("Timeout waiting for task completion")),
+            Err(e) => Err(e),
         }
     }
 
@@ -364,7 +357,7 @@ impl AsyncToolExecutor {
         }
     }
 
-    /// Fallback: execute sync tool in background via async executor
+    /// Fallback: execute sync tool in background via UnifiedAsyncExecutor
     async fn execute_sync_fallback(
         &self,
         tool: Arc<dyn Tool>,
@@ -373,26 +366,30 @@ impl AsyncToolExecutor {
     ) -> Result<AsyncTaskReceipt> {
         let tool_name = tool.name().to_string();
         let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
+        let session_key = format!("{}_{}", context.agent_id, context.session_id);
+        let config = self.build_async_config(context);
 
         // Clone for the async block
         let sync_executor = self.sync_executor.clone();
         let ctx = context.clone();
 
-        // Spawn sync execution in background
-        let _handle =
-            tokio::spawn(
-                async move { sync_executor.execute_with_context(tool, params, &ctx).await },
-            );
-
-        // Note: In a full implementation, we'd register this handle
-        // with the executor for status tracking and cancellation
-
-        Ok(AsyncTaskReceipt {
-            task_id,
-            status: AsyncTaskStatus::Running,
-            estimated_duration_secs: None,
-            check_status_tool: format!("{tool_name}_status"),
-        })
+        self.async_executor
+            .execute(
+                task_id,
+                tool_name,
+                params.clone(),
+                session_key,
+                config,
+                move || async move {
+                    match sync_executor.execute_with_context(tool, params, &ctx).await {
+                        Ok(result) => Ok(crate::agent::async_tool_framework::AsyncTaskResult::Generic { data: result }),
+                        Err(e) => Ok(crate::agent::async_tool_framework::AsyncTaskResult::Generic {
+                            data: serde_json::json!({"error": e.to_string()}),
+                        }),
+                    }
+                },
+            )
+            .await
     }
 }
 

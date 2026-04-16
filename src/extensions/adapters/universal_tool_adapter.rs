@@ -601,6 +601,7 @@ impl HookHandler for UniversalToolExecuteHandler {
 
         let result = async_router
             .route(
+                &self.tool_name,
                 &mut params_mut,
                 exec_service,
                 &tool_ctx,
