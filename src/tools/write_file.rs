@@ -1,4 +1,4 @@
-//! WriteFile tool - Write or append to files
+//! `WriteFile` tool - Write or append to files
 //!
 //! Granular write access for agents. Creates parent directories automatically.
 
@@ -11,14 +11,14 @@ use tokio::io::AsyncWriteExt;
 
 use crate::tools::Tool;
 
-/// WriteFile tool arguments
+/// `WriteFile` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteFileArgs {
     /// Path to the file (relative to workspace or absolute)
     pub path: String,
     /// Content to write
     pub content: String,
-    /// Write mode: overwrite (default), append, create_new
+    /// Write mode: overwrite (default), append, `create_new`
     #[serde(default = "default_mode")]
     pub mode: String,
     /// Content encoding: utf8 (default) or base64
@@ -34,14 +34,14 @@ fn default_encoding() -> String {
     "utf8".to_string()
 }
 
-/// WriteFile tool - Write files with various modes
+/// `WriteFile` tool - Write files with various modes
 pub struct WriteFileTool {
     /// Default workspace directory (for relative paths)
     workspace_dir: Option<PathBuf>,
 }
 
 impl WriteFileTool {
-    /// Create a new WriteFile tool
+    /// Create a new `WriteFile` tool
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -80,7 +80,7 @@ impl WriteFileTool {
 
         // Decode content if base64 encoded
         let decoded_content = if encoding == "base64" {
-            base64_decode(content).map_err(|e| anyhow::anyhow!("Invalid base64: {}", e))?
+            base64_decode(content).map_err(|e| anyhow::anyhow!("Invalid base64: {e}"))?
         } else {
             content.as_bytes().to_vec()
         };
@@ -103,8 +103,7 @@ impl WriteFileTool {
             }
             other => {
                 return Err(anyhow::anyhow!(
-                    "Invalid mode: {}. Use overwrite, append, or create_new",
-                    other
+                    "Invalid mode: {other}. Use overwrite, append, or create_new"
                 ));
             }
         }
@@ -239,7 +238,7 @@ Write binary data:
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: WriteFileArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         self.write_file(&args.path, &args.content, &args.mode, &args.encoding)
             .await

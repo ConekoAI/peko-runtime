@@ -1,6 +1,6 @@
 //! Metadata Controller
 //!
-//! The MetadataController is the SOLE authority for session metadata operations.
+//! The `MetadataController` is the SOLE authority for session metadata operations.
 //! All metadata reads and writes must go through this controller to ensure:
 //! - Data consistency between index and JSONL
 //! - Single point of truth for metadata
@@ -19,7 +19,7 @@ use tracing::{debug, info, warn};
 /// Controller for all session metadata operations
 ///
 /// This is the SINGLE POINT OF TRUTH for session metadata.
-/// No other component should directly access SessionIndex.
+/// No other component should directly access `SessionIndex`.
 ///
 /// Internally uses `SessionEntry` for storage; `SessionMetadata` is used
 /// at API boundaries for backward compatibility.
@@ -27,8 +27,8 @@ pub struct MetadataController {
     index: SessionIndex,
     storage: SessionStorage,
     sessions_dir: PathBuf,
-    /// In-memory cache of metadata (session_id -> SessionEntry)
-    /// Using SessionEntry internally for consistency with SessionIndex
+    /// In-memory cache of metadata (`session_id` -> `SessionEntry`)
+    /// Using `SessionEntry` internally for consistency with `SessionIndex`
     cache: Arc<RwLock<HashMap<String, SessionEntry>>>,
 }
 
@@ -68,7 +68,7 @@ impl MetadataController {
     // Core CRUD Operations
     // ====================================================================================
 
-    /// Create new metadata entry from SessionMetadata
+    /// Create new metadata entry from `SessionMetadata`
     ///
     /// This is the ONLY way to create session metadata.
     /// Accepts `SessionMetadata` for backward compatibility but stores as `SessionEntry` internally.
@@ -90,7 +90,7 @@ impl MetadataController {
         Ok(())
     }
 
-    /// Create new metadata entry from SessionEntry (internal use)
+    /// Create new metadata entry from `SessionEntry` (internal use)
     ///
     /// This method accepts `SessionEntry` directly for internal operations.
     pub async fn create_entry(&mut self, entry: SessionEntry) -> Result<()> {
@@ -263,8 +263,7 @@ impl MetadataController {
             Some(e) => e,
             None => {
                 return Err(anyhow::anyhow!(
-                    "Cannot update counts for non-existent session {}",
-                    session_id
+                    "Cannot update counts for non-existent session {session_id}"
                 ));
             }
         };
@@ -282,7 +281,7 @@ impl MetadataController {
 
     /// Record token usage for a session
     ///
-    /// `context_window` is the total_tokens from the current assistant message.
+    /// `context_window` is the `total_tokens` from the current assistant message.
     /// `input_tokens` and `output_tokens` are the incremental tokens for this turn.
     pub async fn record_token_usage(
         &mut self,
@@ -300,8 +299,7 @@ impl MetadataController {
             Some(e) => e,
             None => {
                 return Err(anyhow::anyhow!(
-                    "Cannot record tokens for non-existent session {}",
-                    session_id
+                    "Cannot record tokens for non-existent session {session_id}"
                 ));
             }
         };
@@ -337,7 +335,7 @@ impl MetadataController {
 
     /// Sync token metrics from JSONL into entry (source of truth)
     ///
-    /// Updates the entry's context_window, total_input_tokens, and total_output_tokens
+    /// Updates the entry's `context_window`, `total_input_tokens`, and `total_output_tokens`
     /// based on the actual token usage data stored in the JSONL file.
     ///
     /// Returns `true` if the entry was modified, `false` otherwise.
@@ -505,7 +503,7 @@ impl MetadataController {
             .collect())
     }
 
-    /// List sessions for a specific peer (internal - returns SessionEntry)
+    /// List sessions for a specific peer (internal - returns `SessionEntry`)
     async fn list_entries_for_peer(
         &mut self,
         peer_key: &str,
@@ -550,7 +548,7 @@ impl MetadataController {
         Ok(entries.into_iter().map(|e| e.to_metadata()).collect())
     }
 
-    /// List sessions for a specific peer and return SessionInfo directly
+    /// List sessions for a specific peer and return `SessionInfo` directly
     ///
     /// This is a convenience method for the service layer that avoids double conversion.
     pub async fn list_session_info_for_peer(
@@ -574,17 +572,17 @@ impl MetadataController {
             .storage
             .load_events(session_id)
             .await
-            .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
+            .with_context(|| format!("Failed to load JSONL for session {session_id}"))?;
 
         Ok(events.iter().filter(|e| e.is_message()).count())
     }
 
     /// Get token usage metrics from JSONL (source of truth)
     ///
-    /// Returns (context_window, total_input_tokens, total_output_tokens):
-    /// - context_window: total_tokens from the last assistant message
-    /// - total_input_tokens: sum of input_tokens from all assistant messages
-    /// - total_output_tokens: sum of output_tokens from all assistant messages
+    /// Returns (`context_window`, `total_input_tokens`, `total_output_tokens)`:
+    /// - `context_window`: `total_tokens` from the last assistant message
+    /// - `total_input_tokens`: sum of `input_tokens` from all assistant messages
+    /// - `total_output_tokens`: sum of `output_tokens` from all assistant messages
     pub async fn get_token_metrics_from_jsonl(
         &self,
         session_id: &str,
@@ -593,7 +591,7 @@ impl MetadataController {
             .storage
             .load_events(session_id)
             .await
-            .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
+            .with_context(|| format!("Failed to load JSONL for session {session_id}"))?;
 
         let mut total_input = 0usize;
         let mut total_output = 0usize;
@@ -627,8 +625,7 @@ impl MetadataController {
             Some(e) => e,
             None => {
                 return Err(anyhow::anyhow!(
-                    "Cannot sync non-existent session {}",
-                    session_id
+                    "Cannot sync non-existent session {session_id}"
                 ));
             }
         };
@@ -667,14 +664,16 @@ impl MetadataController {
             .storage
             .load_events(session_id)
             .await
-            .with_context(|| format!("Failed to load JSONL for session {}", session_id))?;
+            .with_context(|| format!("Failed to load JSONL for session {session_id}"))?;
 
         // Count message events (message.v2 is the new format)
         let actual_count = events.iter().filter(|e| e.is_message()).count();
 
         let old_count = metadata.message_count;
 
-        if actual_count != old_count {
+        if actual_count == old_count {
+            Ok(ReconciliationResult::new(session_id))
+        } else {
             metadata.set_message_count(actual_count);
             let entry = metadata.clone().to_entry();
             self.index.insert(entry.clone()).await?;
@@ -687,8 +686,6 @@ impl MetadataController {
             Ok(ReconciliationResult::new(session_id)
                 .with_discrepancy("message_count", old_count, actual_count)
                 .reconciled(old_count, actual_count))
-        } else {
-            Ok(ReconciliationResult::new(session_id))
         }
     }
 
@@ -743,7 +740,9 @@ impl MetadataController {
 
             match self.sync_from_jsonl(&session_id).await {
                 Ok(new_count) => {
-                    if new_count != old_count {
+                    if new_count == old_count {
+                        results.push(ReconciliationResult::new(&session_id));
+                    } else {
                         info!(
                             "Synced session {}: {} -> {}",
                             session_id, old_count, new_count
@@ -753,8 +752,6 @@ impl MetadataController {
                                 .with_discrepancy("message_count", old_count, new_count)
                                 .reconciled(old_count, new_count),
                         );
-                    } else {
-                        results.push(ReconciliationResult::new(&session_id));
                     }
                 }
                 Err(e) => {
@@ -790,15 +787,15 @@ impl MetadataController {
     // Proxy Methods for SessionIndex (Phase 2b: Privatize SessionIndex)
     // ====================================================================================
 
-    /// Get a session entry by ID (proxy to SessionIndex)
+    /// Get a session entry by ID (proxy to `SessionIndex`)
     ///
-    /// This method provides direct access to the underlying SessionIndex
-    /// for cases where you need the raw SessionEntry.
+    /// This method provides direct access to the underlying `SessionIndex`
+    /// for cases where you need the raw `SessionEntry`.
     pub async fn get_entry_from_index(&mut self, session_id: &str) -> Result<Option<SessionEntry>> {
         self.index.get(session_id).await
     }
 
-    /// Set active session for peer (proxy to SessionIndex)
+    /// Set active session for peer (proxy to `SessionIndex`)
     ///
     /// Updates the peer routing to make the specified session active.
     pub async fn set_active_for_peer(&mut self, peer_key: &str, session_id: &str) -> Result<()> {
@@ -806,26 +803,26 @@ impl MetadataController {
         self.index.save().await
     }
 
-    /// Get active session for peer (proxy to SessionIndex)
+    /// Get active session for peer (proxy to `SessionIndex`)
     pub async fn get_active_for_peer(&mut self, peer_key: &str) -> Result<Option<SessionEntry>> {
         self.index.get_active_for_peer(peer_key).await
     }
 
-    /// Run maintenance on sessions (proxy to SessionIndex)
+    /// Run maintenance on sessions (proxy to `SessionIndex`)
     ///
     /// This prunes old sessions based on the maintenance configuration.
     pub async fn maintenance(&mut self, config: &MaintenanceConfig) -> Result<MaintenanceReport> {
         self.index.maintenance(config).await
     }
 
-    /// List all sessions directly from index (proxy to SessionIndex)
+    /// List all sessions directly from index (proxy to `SessionIndex`)
     ///
-    /// This bypasses the metadata cache and returns raw SessionEntry objects.
+    /// This bypasses the metadata cache and returns raw `SessionEntry` objects.
     pub async fn list_all_from_index(&mut self) -> Result<Vec<SessionEntry>> {
         self.index.list_all().await
     }
 
-    /// List sessions for agent directly from index (proxy to SessionIndex)
+    /// List sessions for agent directly from index (proxy to `SessionIndex`)
     pub async fn list_for_agent_from_index(
         &mut self,
         agent_name: &str,
@@ -833,24 +830,24 @@ impl MetadataController {
         self.index.list_for_agent(agent_name).await
     }
 
-    /// List sessions for a specific peer directly from index (proxy to SessionIndex)
+    /// List sessions for a specific peer directly from index (proxy to `SessionIndex`)
     ///
-    /// This returns SessionEntry objects directly without conversion to SessionMetadata.
+    /// This returns `SessionEntry` objects directly without conversion to `SessionMetadata`.
     pub async fn list_for_peer_from_index(&mut self, peer_key: &str) -> Result<Vec<SessionEntry>> {
         self.index.list_for_peer(peer_key).await
     }
 
-    /// Get active session ID for peer (proxy to SessionIndex)
+    /// Get active session ID for peer (proxy to `SessionIndex`)
     pub async fn get_active_session_id(&mut self, peer_key: &str) -> Result<Option<String>> {
         self.index.get_active_session_id(peer_key).await
     }
 
-    /// Create session for peer (proxy to SessionIndex)
+    /// Create session for peer (proxy to `SessionIndex`)
     pub async fn create_for_peer(&mut self, entry: SessionEntry, peer_key: &str) -> Result<()> {
         self.index.create_for_peer(entry, peer_key).await
     }
 
-    /// Save index changes (proxy to SessionIndex)
+    /// Save index changes (proxy to `SessionIndex`)
     pub async fn save_index(&mut self) -> Result<()> {
         self.index.save().await
     }

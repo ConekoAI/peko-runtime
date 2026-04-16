@@ -44,6 +44,7 @@ use std::path::PathBuf;
 /// (e.g., `~/.local/share/pekobot/tools` on Linux,
 ///  `~/Library/Application Support/pekobot/tools` on macOS,
 ///  `%APPDATA%/pekobot/tools` on Windows)
+#[must_use] 
 pub fn default_tools_dir() -> PathBuf {
     crate::common::paths::default_data_dir().join("tools")
 }

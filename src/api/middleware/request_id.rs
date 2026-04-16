@@ -25,9 +25,7 @@ pub async fn request_id_middleware(mut request: Request<Body>, next: Next) -> Re
     let request_id = request
         .headers()
         .get(REQUEST_ID_HEADER)
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+        .and_then(|h| h.to_str().ok()).map_or_else(|| Uuid::new_v4().to_string(), std::string::ToString::to_string);
 
     // Make request ID available to handlers
     request

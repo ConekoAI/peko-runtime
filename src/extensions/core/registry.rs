@@ -35,7 +35,7 @@ pub struct RegisteredHook {
     /// Whether currently enabled
     pub enabled: bool,
 
-    /// Tool metadata (only populated for ToolRegister hooks)
+    /// Tool metadata (only populated for `ToolRegister` hooks)
     pub tool_metadata: Option<ToolMetadata>,
 }
 
@@ -83,7 +83,7 @@ impl RegisteredHook {
 /// Information about a built-in extension
 ///
 /// Built-in extensions are compiled into the binary and register hooks
-/// with ExtensionCore under IDs like `builtin:tool:shell`.
+/// with `ExtensionCore` under IDs like `builtin:tool:shell`.
 #[derive(Debug, Clone)]
 pub struct BuiltinExtensionInfo {
     /// Full extension ID (e.g., "builtin:tool:shell")
@@ -104,7 +104,7 @@ pub struct BuiltinExtensionInfo {
 /// provides the invocation mechanism.
 #[derive(Debug)]
 pub struct ExtensionCore {
-    /// All registered hooks, keyed by HookId
+    /// All registered hooks, keyed by `HookId`
     hooks: RwLock<HashMap<HookId, RegisteredHook>>,
 
     /// Hooks indexed by hook point for faster lookup
@@ -125,6 +125,7 @@ pub struct ExtensionCore {
 
 impl ExtensionCore {
     /// Create a new Extension Core
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             hooks: RwLock::new(HashMap::new()),
@@ -181,7 +182,7 @@ impl ExtensionCore {
         let priority = handler.priority();
 
         let registration = RegisteredHook::new(
-            hook_id.clone(),
+            hook_id,
             extension_id.clone(),
             point.clone(),
             handler,
@@ -191,7 +192,7 @@ impl ExtensionCore {
         // Add to hooks map
         {
             let mut hooks = self.hooks.write().await;
-            hooks.insert(hook_id.clone(), registration.clone());
+            hooks.insert(hook_id, registration.clone());
         }
 
         // Add to point index
@@ -199,15 +200,14 @@ impl ExtensionCore {
             let mut by_point = self.hooks_by_point.write().await;
             let point_name = point.name();
             let entry = by_point.entry(point_name).or_insert_with(Vec::new);
-            entry.push(hook_id.clone());
+            entry.push(hook_id);
 
             // Sort by priority (higher first)
             let hooks = self.hooks.read().await;
             entry.sort_by_key(|id| {
                 hooks
                     .get(id)
-                    .map(|h| -h.priority) // Negative for descending order
-                    .unwrap_or(0)
+                    .map_or(0, |h| -h.priority)
             });
         }
 
@@ -348,7 +348,7 @@ impl ExtensionCore {
     ///
     /// Supports wildcard matching for tool execution hooks. If an exact match
     /// is not found, checks for wildcard patterns (e.g., "mcp:identity:*" matches
-    /// "mcp:identity:echo_identity").
+    /// "`mcp:identity:echo_identity`").
     pub async fn get_hooks_for_point(&self, point: &HookPoint) -> Vec<RegisteredHook> {
         let by_point = self.hooks_by_point.read().await;
         let hooks = self.hooks.read().await;
@@ -439,8 +439,7 @@ impl ExtensionCore {
             if !self.is_tool_enabled(tool_name).await {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
                 return HookResult::Error(anyhow::anyhow!(
-                    "Tool '{}' is currently disabled. Enable it in agent config to use it.",
-                    tool_name
+                    "Tool '{tool_name}' is currently disabled. Enable it in agent config to use it."
                 ));
             }
             trace!(tool_name = %tool_name, "Tool execution permitted");
@@ -458,7 +457,7 @@ impl ExtensionCore {
         let mut outputs = Vec::new();
 
         for handler in handlers {
-            let hook_id = handler.id.clone();
+            let hook_id = handler.id;
             let start = std::time::Instant::now();
 
             // Create context
@@ -516,7 +515,7 @@ impl ExtensionCore {
                 // Concatenate text outputs
                 let texts: Vec<String> = outputs
                     .into_iter()
-                    .filter_map(|o| o.as_text().map(|s| s.to_string()))
+                    .filter_map(|o| o.as_text().map(std::string::ToString::to_string))
                     .collect();
                 if texts.is_empty() {
                     None
@@ -588,7 +587,7 @@ impl ExtensionCore {
 
         // Create registration with the handler's actual hook point
         let registration = RegisteredHook::with_tool_metadata(
-            hook_id.clone(),
+            hook_id,
             extension_id.clone(),
             exec_point.clone(), // Use actual execution point, not ToolRegister
             handler.clone(),
@@ -599,7 +598,7 @@ impl ExtensionCore {
         // Add to hooks map
         {
             let mut hooks = self.hooks.write().await;
-            hooks.insert(hook_id.clone(), registration.clone());
+            hooks.insert(hook_id, registration.clone());
         }
 
         // Index by the handler's hook point for execution lookup
@@ -607,17 +606,17 @@ impl ExtensionCore {
             let mut by_point = self.hooks_by_point.write().await;
             let exec_point_name = exec_point.name();
             let entry = by_point.entry(exec_point_name).or_insert_with(Vec::new);
-            entry.push(hook_id.clone());
+            entry.push(hook_id);
 
             // Sort by priority (higher first)
             let hooks = self.hooks.read().await;
-            entry.sort_by_key(|id| hooks.get(id).map(|h| -h.priority).unwrap_or(0));
+            entry.sort_by_key(|id| hooks.get(id).map_or(0, |h| -h.priority));
         }
 
         // Add to tool index for O(1) lookup
         {
             let mut tool_index = self.tool_index.write().await;
-            tool_index.insert(tool_name.clone(), hook_id.clone());
+            tool_index.insert(tool_name.clone(), hook_id);
         }
 
         debug!(
@@ -657,7 +656,7 @@ impl ExtensionCore {
     /// The hook ID if found, None otherwise
     pub async fn get_tool_hook_id(&self, tool_name: &str) -> Option<HookId> {
         let tool_index = self.tool_index.read().await;
-        tool_index.get(tool_name).cloned()
+        tool_index.get(tool_name).copied()
     }
 
     /// List all registered tools
@@ -678,10 +677,10 @@ impl ExtensionCore {
             .collect()
     }
 
-    /// List all registered tools as ToolDefinitions (for LLM API)
+    /// List all registered tools as `ToolDefinitions` (for LLM API)
     ///
     /// # Returns
-    /// A list of ToolDefinition for all enabled tools
+    /// A list of `ToolDefinition` for all enabled tools
     pub async fn list_tool_definitions(&self) -> Vec<crate::providers::ToolDefinition> {
         self.list_tools()
             .await
@@ -724,7 +723,7 @@ impl Default for ExtensionCore {
     }
 }
 
-/// Global instance of ExtensionCore (optional convenience)
+/// Global instance of `ExtensionCore` (optional convenience)
 use std::sync::OnceLock;
 static GLOBAL_EXTENSION_CORE: OnceLock<Arc<ExtensionCore>> = OnceLock::new();
 
@@ -839,7 +838,7 @@ mod tests {
 
         match result {
             HookResult::PassThrough => (), // Expected
-            _ => panic!("Expected PassThrough, got {:?}", result),
+            _ => panic!("Expected PassThrough, got {result:?}"),
         }
     }
 
@@ -865,7 +864,7 @@ mod tests {
             HookResult::Continue(HookOutput::Text(text)) => {
                 assert_eq!(text, "test output");
             }
-            _ => panic!("Expected Continue with text, got {:?}", result),
+            _ => panic!("Expected Continue with text, got {result:?}"),
         }
     }
 
@@ -923,8 +922,7 @@ mod tests {
         match result {
             HookResult::PassThrough => (), // Expected when disabled
             _ => panic!(
-                "Expected PassThrough when globally disabled, got {:?}",
-                result
+                "Expected PassThrough when globally disabled, got {result:?}"
             ),
         }
     }
@@ -973,7 +971,7 @@ mod tests {
         let core = ExtensionCore::new();
 
         // Create a tool execution handler
-        let handler = Arc::new(MockHandler {
+        let _handler = Arc::new(MockHandler {
             point: HookPoint::ToolExecute {
                 tool_name: "test_tool".to_string(),
             },
@@ -1005,11 +1003,10 @@ mod tests {
                 let msg = e.to_string();
                 assert!(
                     msg.contains("disabled"),
-                    "Error should mention tool is disabled: {}",
-                    msg
+                    "Error should mention tool is disabled: {msg}"
                 );
             }
-            _ => panic!("Expected Error when tool is disabled, got {:?}", result),
+            _ => panic!("Expected Error when tool is disabled, got {result:?}"),
         }
     }
 
@@ -1062,7 +1059,7 @@ mod tests {
             HookResult::Continue(HookOutput::Json(json)) => {
                 assert_eq!(json["result"], "success");
             }
-            _ => panic!("Expected Continue with JSON result, got {:?}", result),
+            _ => panic!("Expected Continue with JSON result, got {result:?}"),
         }
     }
 
@@ -1097,7 +1094,7 @@ mod tests {
             HookResult::Continue(HookOutput::Text(text)) => {
                 assert_eq!(text, "registration info");
             }
-            _ => panic!("Expected Continue with text, got {:?}", result),
+            _ => panic!("Expected Continue with text, got {result:?}"),
         }
     }
 }

@@ -63,13 +63,14 @@ pub struct UniversalToolAdapter;
 
 impl UniversalToolAdapter {
     /// Create a new universal tool adapter
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
 
     /// Discover universal tools from a directory
     ///
-    /// REFACTORED: Previously called deprecated discover_universal_tools().
+    /// REFACTORED: Previously called deprecated `discover_universal_tools()`.
     /// Now implements its own directory scanning logic.
     pub async fn discover_tools(&self, path: &Path) -> Vec<DiscoveredUniversalTool> {
         let mut tools = Vec::new();
@@ -140,10 +141,10 @@ impl UniversalToolAdapter {
     ) -> Result<(ExtensionManifest, String)> {
         let content = tokio::fs::read_to_string(manifest_path)
             .await
-            .with_context(|| format!("Failed to read manifest {:?}", manifest_path))?;
+            .with_context(|| format!("Failed to read manifest {manifest_path:?}"))?;
 
         let tool_manifest: crate::tools::universal::Manifest = serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse manifest {:?}", manifest_path))?;
+            .with_context(|| format!("Failed to parse manifest {manifest_path:?}"))?;
 
         let mut manifest = ExtensionManifest::new(
             &tool_manifest.name,
@@ -169,7 +170,7 @@ impl UniversalToolAdapter {
         if !reserved_config.is_empty() {
             manifest.set(
                 "reserved_parameters",
-                serde_json::to_value(&reserved_config).unwrap_or_default(),
+                serde_json::to_value(reserved_config).unwrap_or_default(),
             );
         }
 
@@ -183,11 +184,11 @@ impl UniversalToolAdapter {
 
     /// Register a universal tool with the unified registry (ADR-018b)
     ///
-    /// This method registers a universal tool directly with ExtensionCore
+    /// This method registers a universal tool directly with `ExtensionCore`
     /// using the unified tool registry for single source of truth.
     ///
     /// # Arguments
-    /// * `core` - The ExtensionCore to register with
+    /// * `core` - The `ExtensionCore` to register with
     /// * `manifest` - The tool's extension manifest
     ///
     /// # Returns
@@ -198,14 +199,12 @@ impl UniversalToolAdapter {
         manifest: &ExtensionManifest,
     ) -> Result<()> {
         let tool_name = manifest.name.clone();
-        let ext_id = ExtensionId::new(format!("universal:{}", tool_name));
+        let ext_id = ExtensionId::new(format!("universal:{tool_name}"));
 
         // Extract description - prefer llm_description if available
         let description = manifest
             .get("llm_description")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| manifest.description.clone());
+            .and_then(|v| v.as_str()).map_or_else(|| manifest.description.clone(), std::string::ToString::to_string);
 
         // Extract parameters schema
         let parameters = manifest
@@ -288,7 +287,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
 
         // Parse as universal tool manifest (different structure from ExtensionManifest)
         let tool_manifest: crate::tools::universal::Manifest = serde_json::from_str(content)
-            .with_context(|| format!("Failed to parse universal tool manifest at {:?}", path))?;
+            .with_context(|| format!("Failed to parse universal tool manifest at {path:?}"))?;
 
         // Find the executable
         let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
@@ -324,7 +323,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
         if !reserved_config.is_empty() {
             manifest.set(
                 "reserved_parameters",
-                serde_json::to_value(&reserved_config).unwrap_or_default(),
+                serde_json::to_value(reserved_config).unwrap_or_default(),
             );
         }
 
@@ -463,9 +462,7 @@ impl HookHandlerFactory for UniversalToolPromptFactory {
         let llm_desc = self
             .manifest
             .get("llm_description")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| self.manifest.description.clone());
+            .and_then(|v| v.as_str()).map_or_else(|| self.manifest.description.clone(), std::string::ToString::to_string);
 
         Box::new(UniversalToolPromptHandler {
             tool_name: self.manifest.name.clone(),
@@ -688,7 +685,7 @@ impl HookHandler for UniversalToolExecuteAsyncHandler {
             }
             None => return HookResult::PassThrough,
             _ => {}
-        };
+        }
 
         debug!(
             tool_name = %self.tool_name,
@@ -757,7 +754,7 @@ impl HookHandler for UniversalToolCheckStatusHandler {
             }
             None => return HookResult::PassThrough,
             _ => {}
-        };
+        }
 
         debug!(
             tool_name = %self.tool_name,
@@ -813,7 +810,7 @@ impl HookHandler for UniversalToolCancelHandler {
             }
             None => return HookResult::PassThrough,
             _ => {}
-        };
+        }
 
         debug!(
             tool_name = %self.tool_name,
@@ -845,7 +842,7 @@ pub async fn load_tools_from_directory(path: &Path) -> Vec<DiscoveredUniversalTo
     adapter.discover_tools(path).await
 }
 
-/// Register universal tools with an ExtensionCore
+/// Register universal tools with an `ExtensionCore`
 pub async fn register_tools_with_core(
     core: &crate::extensions::ExtensionCore,
     tools: Vec<DiscoveredUniversalTool>,
@@ -871,9 +868,7 @@ pub async fn register_tools_with_core(
         let llm_desc = tool
             .manifest
             .get("llm_description")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| tool.manifest.description.clone());
+            .and_then(|v| v.as_str()).map_or_else(|| tool.manifest.description.clone(), std::string::ToString::to_string);
 
         let prompt_handler = Arc::new(UniversalToolPromptHandler {
             tool_name: tool.manifest.name.clone(),
@@ -1020,7 +1015,7 @@ mod tests {
         std::fs::write(&manifest_path, manifest.to_string()).unwrap();
 
         // Create a dummy executable (script)
-        let script_path = tool_dir.join(format!("{}.py", name));
+        let script_path = tool_dir.join(format!("{name}.py"));
         std::fs::write(&script_path, "#!/usr/bin/env python3\nprint('{}')").unwrap();
 
         #[cfg(unix)]
@@ -1081,7 +1076,7 @@ mod tests {
                 assert_eq!(tool_def.name, "test_tool");
                 assert_eq!(tool_def.description, "A test tool");
             }
-            _ => panic!("Expected Continue with Tool, got {:?}", result),
+            _ => panic!("Expected Continue with Tool, got {result:?}"),
         }
     }
 
@@ -1108,7 +1103,7 @@ mod tests {
                 assert!(text.contains("### test_tool"));
                 assert!(text.contains("Does something useful"));
             }
-            _ => panic!("Expected Continue with Text, got {:?}", result),
+            _ => panic!("Expected Continue with Text, got {result:?}"),
         }
     }
 

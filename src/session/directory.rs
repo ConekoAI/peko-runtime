@@ -18,11 +18,13 @@ pub struct SessionDirectory {
 
 impl SessionDirectory {
     /// Create directory manager (does NOT create filesystem directory)
+    #[must_use] 
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
 
-    /// Create from agent name and team using PathResolver
+    /// Create from agent name and team using `PathResolver`
+    #[must_use] 
     pub fn for_agent(agent_name: &str, team: Option<&str>) -> Self {
         let resolver = crate::common::paths::PathResolver::new();
         let path = resolver.agent_sessions_dir(agent_name, team);
@@ -39,31 +41,37 @@ impl SessionDirectory {
     }
 
     /// Get path without creating directory
+    #[must_use] 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Get path as PathBuf (cloned)
+    /// Get path as `PathBuf` (cloned)
+    #[must_use] 
     pub fn path_buf(&self) -> PathBuf {
         self.path.clone()
     }
 
     /// Check if directory exists
+    #[must_use] 
     pub fn exists(&self) -> bool {
         self.path.exists()
     }
 
     /// Get session file path
+    #[must_use] 
     pub fn session_file(&self, session_id: &str) -> PathBuf {
-        self.path.join(format!("{}.jsonl", session_id))
+        self.path.join(format!("{session_id}.jsonl"))
     }
 
     /// Get index file path
+    #[must_use] 
     pub fn index_file(&self) -> PathBuf {
         self.path.join("sessions.json")
     }
 
     /// Get peers file path
+    #[must_use] 
     pub fn peers_file(&self) -> PathBuf {
         self.path.join("peers.json")
     }

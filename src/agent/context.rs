@@ -132,8 +132,8 @@ mod tests {
     fn test_capability_index() {
         let mut idx = CapabilityIndex::new();
 
-        idx.register("did:1", &vec!["search".to_string(), "calc".to_string()]);
-        idx.register("did:2", &vec!["search".to_string()]);
+        idx.register("did:1", &["search".to_string(), "calc".to_string()]);
+        idx.register("did:2", &["search".to_string()]);
 
         let searchers = idx.find("search");
         assert_eq!(searchers.len(), 2);

@@ -1,7 +1,7 @@
-//! Integration between ExtensionAsyncAdapter and UnifiedAsyncTool trait
+//! Integration between `ExtensionAsyncAdapter` and `UnifiedAsyncTool` trait
 //!
 //! This module provides the bridge between the extension-based async system
-//! and the UnifiedAsyncTool trait for seamless async tool execution.
+//! and the `UnifiedAsyncTool` trait for seamless async tool execution.
 
 use crate::agent::async_tool_framework::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
@@ -12,9 +12,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Extension-based implementation of UnifiedAsyncTool
+/// Extension-based implementation of `UnifiedAsyncTool`
 ///
-/// This adapter wraps an ExtensionAsyncAdapter to implement the UnifiedAsyncTool trait,
+/// This adapter wraps an `ExtensionAsyncAdapter` to implement the `UnifiedAsyncTool` trait,
 /// allowing extension-based tools to be used interchangeably with native async tools.
 pub struct ExtensionAsyncTool {
     adapter: ExtensionAsyncAdapter,
@@ -40,6 +40,7 @@ impl ExtensionAsyncTool {
     }
 
     /// Get the underlying adapter
+    #[must_use] 
     pub fn adapter(&self) -> &ExtensionAsyncAdapter {
         &self.adapter
     }
@@ -134,6 +135,7 @@ pub struct AsyncExtensionToolFactory {
 
 impl AsyncExtensionToolFactory {
     /// Create a new factory
+    #[must_use] 
     pub fn new(adapter: ExtensionAsyncAdapter) -> Self {
         Self { adapter }
     }
@@ -146,7 +148,7 @@ impl AsyncExtensionToolFactory {
     /// * `parameters` - JSON schema for tool parameters
     ///
     /// # Returns
-    /// A boxed UnifiedAsyncTool that wraps the extension
+    /// A boxed `UnifiedAsyncTool` that wraps the extension
     pub fn create_tool(
         &self,
         tool_name: impl Into<String>,
@@ -166,6 +168,7 @@ pub struct AsyncToolRegistry {
 
 impl AsyncToolRegistry {
     /// Create a new empty registry
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             tools: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -197,7 +200,7 @@ impl AsyncToolRegistry {
     /// Check if a tool supports async execution
     pub fn supports_async(&self, name: &str) -> bool {
         let tools = self.tools.read().unwrap();
-        tools.get(name).map(|t| t.supports_async()).unwrap_or(false)
+        tools.get(name).is_some_and(|t| t.supports_async())
     }
 }
 
@@ -207,9 +210,9 @@ impl Default for AsyncToolRegistry {
     }
 }
 
-/// Extension trait for ExtensionAsyncAdapter to add UnifiedAsyncTool integration
+/// Extension trait for `ExtensionAsyncAdapter` to add `UnifiedAsyncTool` integration
 pub trait ExtensionAsyncAdapterExt {
-    /// Wrap this adapter as a UnifiedAsyncTool for the given tool
+    /// Wrap this adapter as a `UnifiedAsyncTool` for the given tool
     fn as_async_tool(
         &self,
         tool_name: impl Into<String>,

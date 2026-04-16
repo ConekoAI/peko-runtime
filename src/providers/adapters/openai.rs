@@ -1,16 +1,16 @@
-//! OpenAI API adapter
+//! `OpenAI` API adapter
 //!
-//! Handles conversion between unified types and OpenAI Chat Completions API format.
+//! Handles conversion between unified types and `OpenAI` Chat Completions API format.
 
 use super::{extract_text_content, role_to_string, ToolCallAccumulator};
 use crate::providers::transport::AuthConfig;
-use crate::providers::types::*;
+use crate::providers::types::{Message, MessageRole, ContentBlock, ToolDefinition, ChatOptions, ChatResponse, StopReason, TokenUsage, StreamEvent};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::debug;
 
-/// OpenAI API adapter
+/// `OpenAI` API adapter
 #[derive(Debug, Clone)]
 pub struct OpenAiAdapter {
     model: String,
@@ -20,7 +20,7 @@ pub struct OpenAiAdapter {
 }
 
 impl OpenAiAdapter {
-    /// Create a new OpenAI adapter
+    /// Create a new `OpenAI` adapter
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
@@ -35,7 +35,7 @@ impl OpenAiAdapter {
         self
     }
 
-    /// Convert unified messages to OpenAI format
+    /// Convert unified messages to `OpenAI` format
     fn convert_messages(&self, messages: &[Message]) -> Vec<OpenAiMessage> {
         messages
             .iter()
@@ -83,7 +83,7 @@ impl OpenAiAdapter {
             .collect()
     }
 
-    /// Convert tool definitions to OpenAI format
+    /// Convert tool definitions to `OpenAI` format
     fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<OpenAiTool> {
         tools
             .iter()
@@ -100,7 +100,7 @@ impl OpenAiAdapter {
 }
 
 impl super::ApiAdapter for OpenAiAdapter {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "openai"
     }
 
@@ -207,9 +207,9 @@ impl super::ApiAdapter for OpenAiAdapter {
             tool_calls,
             stop_reason,
             usage: TokenUsage {
-                input: completion.usage.prompt_tokens as u64,
-                output: completion.usage.completion_tokens as u64,
-                total: completion.usage.total_tokens as u64,
+                input: u64::from(completion.usage.prompt_tokens),
+                output: u64::from(completion.usage.completion_tokens),
+                total: u64::from(completion.usage.total_tokens),
             },
             provider: self.name().to_string(),
             model: self.model.clone(),
@@ -231,9 +231,9 @@ impl super::ApiAdapter for OpenAiAdapter {
         // Check for usage first (final chunk has usage but empty choices)
         if let Some(usage) = chunk.usage {
             return Ok(Some(StreamEvent::Usage {
-                input: usage.prompt_tokens as u64,
-                output: usage.completion_tokens as u64,
-                total: usage.total_tokens as u64,
+                input: u64::from(usage.prompt_tokens),
+                output: u64::from(usage.completion_tokens),
+                total: u64::from(usage.total_tokens),
             }));
         }
 
@@ -265,8 +265,7 @@ impl super::ApiAdapter for OpenAiAdapter {
                 // Check if this is a new tool call
                 let is_new_call = id
                     .as_ref()
-                    .map(|id_str| self.tool_call_accumulator.is_new_call(idx, id_str))
-                    .unwrap_or(false);
+                    .is_some_and(|id_str| self.tool_call_accumulator.is_new_call(idx, id_str));
 
                 // If this is the start of a new tool call, emit ToolCallStart first
                 if is_new_call {
@@ -524,7 +523,7 @@ mod tests {
                 assert_eq!(output, 5);
                 assert_eq!(total, 15);
             }
-            _ => panic!("Expected Usage event, got {:?}", event),
+            _ => panic!("Expected Usage event, got {event:?}"),
         }
     }
 }

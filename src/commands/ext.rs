@@ -45,7 +45,7 @@ pub enum ExtCommands {
     ///   pekobot ext enable shell --target default
     ///   pekobot ext enable shell --target myteam/my-agent
     Enable {
-        /// Extension ID or built-in capability name (e.g., shell, read_file)
+        /// Extension ID or built-in capability name (e.g., shell, `read_file`)
         id: String,
         /// Target team or team/agent for built-in capabilities
         #[arg(short, long, value_name = "TARGET")]
@@ -91,10 +91,10 @@ pub enum ExtCommands {
     ///
     /// Examples:
     ///   pekobot ext config my-extension --show
-    ///   pekobot ext config my-extension --global --set api_key=secret
+    ///   pekobot ext config my-extension --global --set `api_key=secret`
     ///   pekobot ext config my-extension --team myteam --set endpoint=https://api.example.com
     ///   pekobot ext config my-extension --agent myteam/myagent --set timeout=30
-    ///   pekobot ext config my-extension --unset api_key
+    ///   pekobot ext config my-extension --unset `api_key`
     Config {
         /// Extension ID
         id: String,
@@ -153,7 +153,7 @@ pub enum ExtCommands {
     },
 }
 
-/// Create an ExtensionManager with all default adapters registered
+/// Create an `ExtensionManager` with all default adapters registered
 async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionManager {
     use crate::extensions::adapters::{
         mcp_adapter::McpAdapter, skill_adapter::SkillAdapter,
@@ -256,17 +256,17 @@ async fn handle_install(
     println!("Installing extension from: {}", path.display());
 
     if let Some(ref t) = ext_type {
-        println!("   Type: {}", t);
+        println!("   Type: {t}");
     }
 
     match manager.install(&path).await {
         Ok(id) => {
             println!("Extension installed successfully");
-            println!("   ID: {}", id);
+            println!("   ID: {id}");
             Ok(())
         }
         Err(e) => {
-            eprintln!("Failed to install extension: {}", e);
+            eprintln!("Failed to install extension: {e}");
             Err(e)
         }
     }
@@ -275,7 +275,7 @@ async fn handle_install(
 /// Handle list command
 ///
 /// Shows both installed extensions and built-in extensions registered with
-/// ExtensionCore. Built-ins are compiled into the binary and always available.
+/// `ExtensionCore`. Built-ins are compiled into the binary and always available.
 async fn handle_list(
     manager: &ExtensionManager,
     _enabled_only: bool, // Kept for CLI compatibility, but ignored
@@ -321,21 +321,21 @@ async fn handle_list(
         return Ok(());
     }
 
-    println!("{:<24} {:<14} {:<18} {}", "ID", "TYPE", "NAME", "SOURCE");
+    println!("{:<24} {:<14} {:<18} SOURCE", "ID", "TYPE", "NAME");
     println!("{}", "-".repeat(72));
 
     for b in &filtered_builtins {
         let status = if b.enabled { "" } else { " [disabled]" };
         println!(
-            "{:<24} {:<14} {:<18} {}{}",
-            b.id, b.ext_type, b.name, "built-in", status
+            "{:<24} {:<14} {:<18} built-in{}",
+            b.id, b.ext_type, b.name, status
         );
     }
 
     for ext in &filtered_installed {
         println!(
-            "{:<24} {:<14} {:<18} {}",
-            ext.manifest.id, ext.extension_type, ext.manifest.name, "installed"
+            "{:<24} {:<14} {:<18} installed",
+            ext.manifest.id, ext.extension_type, ext.manifest.name
         );
     }
 
@@ -377,13 +377,13 @@ async fn handle_enable(
     let (tool_name, ext_type) = {
         let ext = manager
             .get_extension(&ext_id)
-            .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
         (ext.manifest.name.clone(), ext.extension_type.clone())
     };
 
     match manager.enable(&ext_id).await {
         Ok(()) => {
-            println!("Extension '{}' enabled", id);
+            println!("Extension '{id}' enabled");
 
             // Also add to agent tool whitelist for tools that need it (universal-tool and mcp)
             let needs_whitelist = ext_type == "universal-tool" || ext_type == "mcp";
@@ -391,7 +391,7 @@ async fn handle_enable(
                 let target = target.as_deref().unwrap_or("default");
                 // For MCP tools, use wildcard pattern to match all tools from this server
                 let whitelist_entry = if ext_type == "mcp" {
-                    format!("mcp:{}:*", tool_name)
+                    format!("mcp:{tool_name}:*")
                 } else {
                     tool_name.clone()
                 };
@@ -403,8 +403,7 @@ async fn handle_enable(
                     );
                 } else {
                     println!(
-                        "Added '{}' to agent '{}' tool whitelist",
-                        whitelist_entry, target
+                        "Added '{whitelist_entry}' to agent '{target}' tool whitelist"
                     );
                 }
             }
@@ -412,7 +411,7 @@ async fn handle_enable(
             Ok(())
         }
         Err(e) => {
-            eprintln!("Failed to enable extension '{}': {}", id, e);
+            eprintln!("Failed to enable extension '{id}': {e}");
             Err(e)
         }
     }
@@ -439,8 +438,7 @@ async fn add_tool_to_agent_whitelist(
     if let Some(agent_name) = agent {
         config_service.enable_tool_sync(&agent_name, &team, tool_name)?;
         println!(
-            "Added '{}' to agent '{}/{}' tool whitelist",
-            tool_name, team, agent_name
+            "Added '{tool_name}' to agent '{team}/{agent_name}' tool whitelist"
         );
         tracing::info!(
             "Added '{}' to agent '{}/{}' tool whitelist",
@@ -452,7 +450,7 @@ async fn add_tool_to_agent_whitelist(
         // Team-level: update all agents in the team
         let agents_dir = paths.resolver().agents_dir(Some(&team));
         if !agents_dir.exists() {
-            anyhow::bail!("Team '{}' not found (no agents directory)", team);
+            anyhow::bail!("Team '{team}' not found (no agents directory)");
         }
 
         let mut updated_count = 0;
@@ -477,8 +475,7 @@ async fn add_tool_to_agent_whitelist(
 
         if updated_count > 0 {
             println!(
-                "Added '{}' to {} agent(s) in team '{}' tool whitelist",
-                tool_name, updated_count, team
+                "Added '{tool_name}' to {updated_count} agent(s) in team '{team}' tool whitelist"
             );
             tracing::info!(
                 "Added '{}' to {} agent(s) in team '{}' tool whitelist",
@@ -519,8 +516,7 @@ async fn handle_enable_builtin(
     if let Some(agent_name) = agent {
         config_service.enable_tool_sync(&agent_name, &team, capability)?;
         println!(
-            "Enabled '{}' for agent '{}' in team '{}'",
-            capability, agent_name, team
+            "Enabled '{capability}' for agent '{agent_name}' in team '{team}'"
         );
     } else {
         // Team-level: update team extensions config
@@ -531,7 +527,7 @@ async fn handle_enable_builtin(
         config.enable(capability);
         config.save(&ext_config_path)?;
 
-        println!("Enabled '{}' for team '{}'", capability, team);
+        println!("Enabled '{capability}' for team '{team}'");
     }
 
     // Also enable ExtensionCore hooks for immediate effect
@@ -575,16 +571,16 @@ async fn handle_disable(
 
     // Check if extension exists
     if manager.get_extension(&ext_id).is_none() {
-        anyhow::bail!("Extension '{}' not found", id);
+        anyhow::bail!("Extension '{id}' not found");
     }
 
     match manager.disable(&ext_id).await {
         Ok(()) => {
-            println!("Extension '{}' disabled", id);
+            println!("Extension '{id}' disabled");
             Ok(())
         }
         Err(e) => {
-            eprintln!("Failed to disable extension '{}': {}", id, e);
+            eprintln!("Failed to disable extension '{id}': {e}");
             Err(e)
         }
     }
@@ -611,8 +607,7 @@ async fn handle_disable_builtin(
     if let Some(agent_name) = agent {
         config_service.disable_tool_sync(&agent_name, &team, capability)?;
         println!(
-            "Disabled '{}' for agent '{}' in team '{}'",
-            capability, agent_name, team
+            "Disabled '{capability}' for agent '{agent_name}' in team '{team}'"
         );
     } else {
         // Team-level: update team extensions config
@@ -623,7 +618,7 @@ async fn handle_disable_builtin(
         config.disable(capability);
         config.save(&ext_config_path)?;
 
-        println!("Disabled '{}' for team '{}'", capability, team);
+        println!("Disabled '{capability}' for team '{team}'");
     }
 
     // Also disable ExtensionCore hooks for immediate effect
@@ -650,18 +645,18 @@ async fn handle_uninstall(manager: &mut ExtensionManager, id: String) -> anyhow:
 
     // Check if extension exists
     if manager.get_extension(&ext_id).is_none() {
-        anyhow::bail!("Extension '{}' not found", id);
+        anyhow::bail!("Extension '{id}' not found");
     }
 
-    println!("Uninstalling extension '{}'...", id);
+    println!("Uninstalling extension '{id}'...");
 
     match manager.uninstall(&ext_id).await {
         Ok(()) => {
-            println!("Extension '{}' uninstalled", id);
+            println!("Extension '{id}' uninstalled");
             Ok(())
         }
         Err(e) => {
-            eprintln!("Failed to uninstall extension '{}': {}", id, e);
+            eprintln!("Failed to uninstall extension '{id}': {e}");
             Err(e)
         }
     }
@@ -673,7 +668,7 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
 
     let ext = manager
         .get_extension(&ext_id)
-        .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", id))?;
+        .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
 
     println!("Extension Details");
     println!();
@@ -687,8 +682,7 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
     println!();
     println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
     println!(
-        "Use 'pekobot ext enable {} --target <team>/<agent>' to enable for a specific agent.",
-        id
+        "Use 'pekobot ext enable {id} --target <team>/<agent>' to enable for a specific agent."
     );
 
     if !ext.hook_ids.is_empty() {
@@ -710,7 +704,7 @@ fn handle_bundle(manager: &ExtensionManager, name: String, ids: Vec<String>) -> 
     for id in &ids {
         let ext_id = ExtensionId::new(id);
         if manager.get_extension(&ext_id).is_none() {
-            anyhow::bail!("Extension '{}' not found", id);
+            anyhow::bail!("Extension '{id}' not found");
         }
         ext_ids.push(ext_id);
     }
@@ -731,7 +725,7 @@ fn handle_bundle(manager: &ExtensionManager, name: String, ids: Vec<String>) -> 
             Ok(())
         }
         Err(e) => {
-            eprintln!("Failed to create bundle: {}", e);
+            eprintln!("Failed to create bundle: {e}");
             Err(e)
         }
     }
@@ -833,13 +827,13 @@ async fn handle_config(
 ) -> anyhow::Result<()> {
     // Parse agent ID if provided
     let (team_id, agent_id) = match (&team, &agent) {
-        (Some(t), Some(a)) => (Some(t.as_str()), Some(format!("{}/{}", t, a))),
+        (Some(t), Some(a)) => (Some(t.as_str()), Some(format!("{t}/{a}"))),
         (None, Some(a)) => {
             if a.contains('/') {
                 let parts: Vec<&str> = a.split('/').collect();
                 (Some(parts[0]), Some(a.clone()))
             } else {
-                (Some("default"), Some(format!("default/{}", a)))
+                (Some("default"), Some(format!("default/{a}")))
             }
         }
         (Some(t), None) => (Some(t.as_str()), None),
@@ -847,8 +841,8 @@ async fn handle_config(
     };
 
     let scope_label = match (&team_id, &agent_id) {
-        (Some(_t), Some(a)) => format!("agent '{}'", a),
-        (Some(t), None) => format!("team '{}'", t),
+        (Some(_t), Some(a)) => format!("agent '{a}'"),
+        (Some(t), None) => format!("team '{t}'"),
         _ => "global".to_string(),
     };
 
@@ -858,8 +852,7 @@ async fn handle_config(
     // Handle --show (default if no other actions)
     if show || (set_values.is_empty() && unset_keys.is_empty()) {
         println!(
-            "Configuration for extension '{}' ({} scope):",
-            id, scope_label
+            "Configuration for extension '{id}' ({scope_label} scope):"
         );
         println!();
 
@@ -873,7 +866,7 @@ async fn handle_config(
             println!("  No configuration set at this scope.");
         } else {
             for (key, value) in target_config {
-                println!("  {} = {}", key, value);
+                println!("  {key} = {value}");
             }
         }
 
@@ -884,7 +877,7 @@ async fn handle_config(
             let mut inherited = false;
             for (key, value) in &config.global {
                 if !target_config.contains_key(key) {
-                    println!("  {} = {} (global)", key, value);
+                    println!("  {key} = {value} (global)");
                     inherited = true;
                 }
             }
@@ -900,7 +893,7 @@ async fn handle_config(
     for pair in &set_values {
         let parts: Vec<&str> = pair.splitn(2, '=').collect();
         if parts.len() != 2 {
-            anyhow::bail!("Invalid format '{}'. Use KEY=VALUE", pair);
+            anyhow::bail!("Invalid format '{pair}'. Use KEY=VALUE");
         }
         let key = parts[0].to_string();
         let value = parts[1];
@@ -911,8 +904,7 @@ async fn handle_config(
 
         config.set(team_id, agent_id.as_deref(), key.clone(), json_value);
         println!(
-            "Set {} = {} for extension '{}' at {} scope",
-            key, value, id, scope_label
+            "Set {key} = {value} for extension '{id}' at {scope_label} scope"
         );
     }
 
@@ -920,13 +912,11 @@ async fn handle_config(
     for key in &unset_keys {
         if config.unset(team_id, agent_id.as_deref(), key) {
             println!(
-                "Unset '{}' for extension '{}' at {} scope",
-                key, id, scope_label
+                "Unset '{key}' for extension '{id}' at {scope_label} scope"
             );
         } else {
             println!(
-                "Key '{}' not found for extension '{}' at {} scope",
-                key, id, scope_label
+                "Key '{key}' not found for extension '{id}' at {scope_label} scope"
             );
         }
     }
@@ -1151,18 +1141,18 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
     } else if errors.is_empty() {
         println!("⚠ Validation passed with warnings:");
         for warning in &warnings {
-            println!("  ⚠ {}", warning);
+            println!("  ⚠ {warning}");
         }
     } else {
         println!("✗ Validation failed with errors:");
         for error in &errors {
-            println!("  ✗ {}", error);
+            println!("  ✗ {error}");
         }
         if !warnings.is_empty() {
             println!();
             println!("Additional warnings:");
             for warning in &warnings {
-                println!("  ⚠ {}", warning);
+                println!("  ⚠ {warning}");
             }
         }
         anyhow::bail!("Extension validation failed");
@@ -1177,9 +1167,9 @@ async fn handle_debug(manager: &ExtensionManager, id: String) -> anyhow::Result<
 
     let ext = manager
         .get_extension(&ext_id)
-        .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", id))?;
+        .ok_or_else(|| anyhow::anyhow!("Extension '{id}' not found"))?;
 
-    println!("Debug Information for Extension: {}", id);
+    println!("Debug Information for Extension: {id}");
     println!("{}", "=".repeat(60));
     println!();
 
@@ -1210,14 +1200,14 @@ async fn handle_debug(manager: &ExtensionManager, id: String) -> anyhow::Result<
         for hook_id in &ext.hook_ids {
             if let Some(hook) = all_hooks.iter().find(|h| &h.id == hook_id) {
                 println!();
-                println!("  Hook ID:     {}", hook_id);
+                println!("  Hook ID:     {hook_id}");
                 println!("    Point:     {}", hook.point.name());
                 println!("    Category:  {}", hook.point.category());
                 println!("    Priority:  {}", hook.priority);
                 println!("    Enabled:   {}", hook.enabled);
             } else {
                 println!();
-                println!("  Hook ID:     {}", hook_id);
+                println!("  Hook ID:     {hook_id}");
                 println!("    (details unavailable - hook may be pending)");
             }
         }
@@ -1231,13 +1221,13 @@ async fn handle_debug(manager: &ExtensionManager, id: String) -> anyhow::Result<
     } else {
         for (key, value) in &ext.manifest.metadata {
             // Truncate long values
-            let value_str = format!("{}", value);
+            let value_str = format!("{value}");
             let display_value = if value_str.len() > 100 {
                 format!("{}... (truncated)", &value_str[..100])
             } else {
                 value_str
             };
-            println!("  {}: {}", key, display_value);
+            println!("  {key}: {display_value}");
         }
     }
     println!();

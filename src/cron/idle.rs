@@ -120,7 +120,7 @@ impl Default for IdleDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::sleep;
+    
 
     #[tokio::test]
     async fn test_record_and_check_activity() {

@@ -1,8 +1,8 @@
 //! Unified Agent Configuration Entry
 //!
-//! This module defines the canonical AgentConfigEntry type used throughout
+//! This module defines the canonical `AgentConfigEntry` type used throughout
 //! the agent configuration system. It replaces the duplicate definitions
-//! previously found in AgentConfigService and ConfigRegistry.
+//! previously found in `AgentConfigService` and `ConfigRegistry`.
 
 use crate::types::agent::AgentConfig;
 use chrono::{DateTime, Utc};
@@ -29,6 +29,7 @@ pub enum ConfigSource {
 
 impl ConfigSource {
     /// Get image reference (if from image)
+    #[must_use] 
     pub fn image_ref(&self) -> Option<&str> {
         match self {
             ConfigSource::Image { image_ref, .. } => Some(image_ref),
@@ -37,6 +38,7 @@ impl ConfigSource {
     }
 
     /// Get image digest (if from image)
+    #[must_use] 
     pub fn image_digest(&self) -> Option<&str> {
         match self {
             ConfigSource::Image { image_digest, .. } => Some(image_digest),
@@ -55,7 +57,7 @@ impl Default for ConfigSource {
 
 /// Unified agent configuration entry
 ///
-/// This is the canonical entry type used by ConfigAuthority for all
+/// This is the canonical entry type used by `ConfigAuthority` for all
 /// agent configuration operations. It combines configuration data with
 /// metadata such as source, team, and timestamps.
 ///
@@ -87,6 +89,7 @@ pub struct AgentConfigEntry {
 
 impl AgentConfigEntry {
     /// Get capabilities as a list of strings
+    #[must_use] 
     pub fn capabilities(&self) -> Vec<String> {
         self.config
             .capabilities
@@ -96,11 +99,13 @@ impl AgentConfigEntry {
     }
 
     /// Check if agent has a specific capability
+    #[must_use] 
     pub fn has_capability(&self, name: &str) -> bool {
         self.config.capabilities.iter().any(|c| c.name == name)
     }
 
     /// Get image reference (backward compatibility)
+    #[must_use] 
     pub fn image_ref(&self) -> &str {
         self.source
             .as_ref()
@@ -109,6 +114,7 @@ impl AgentConfigEntry {
     }
 
     /// Get image digest (backward compatibility)
+    #[must_use] 
     pub fn image_digest(&self) -> &str {
         self.source
             .as_ref()

@@ -1,9 +1,9 @@
-//! Stream orchestrator - transforms StreamEvents into AgenticEvents
+//! Stream orchestrator - transforms `StreamEvents` into `AgenticEvents`
 //!
 //! This is the core of the three-layer streaming pipeline:
-//! - Provider Layer: Parses raw SSE into StreamEvents
-//! - Orchestration Layer (this module): Transforms StreamEvents into AgenticEvents
-//! - Channel Layer: Renders AgenticEvents to platform-specific output
+//! - Provider Layer: Parses raw SSE into `StreamEvents`
+//! - Orchestration Layer (this module): Transforms `StreamEvents` into `AgenticEvents`
+//! - Channel Layer: Renders `AgenticEvents` to platform-specific output
 
 use crate::engine::{
     AgenticEvent, BlockChunker, ChunkerConfig, CoalesceConfig, LifecyclePhase, StreamBuffer,
@@ -12,20 +12,17 @@ use crate::providers::StreamEvent;
 
 /// Delivery mode for streaming
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum DeliveryMode {
     /// Emit every delta immediately (for CLI, TUI)
     Live,
     /// Coalesce into blocks (for Discord, HTTP)
+    #[default]
     Block,
     /// Buffer until complete (for non-streaming channels)
     FinalOnly,
 }
 
-impl Default for DeliveryMode {
-    fn default() -> Self {
-        DeliveryMode::Block
-    }
-}
 
 /// Orchestrator configuration
 #[derive(Debug, Clone)]
@@ -53,6 +50,7 @@ impl Default for OrchestratorConfig {
 
 impl OrchestratorConfig {
     /// Create configuration for live mode (CLI)
+    #[must_use] 
     pub fn live() -> Self {
         Self {
             delivery_mode: DeliveryMode::Live,
@@ -62,6 +60,7 @@ impl OrchestratorConfig {
     }
 
     /// Create configuration for block mode (Discord)
+    #[must_use] 
     pub fn block() -> Self {
         Self {
             delivery_mode: DeliveryMode::Block,
@@ -70,6 +69,7 @@ impl OrchestratorConfig {
     }
 
     /// Create configuration for final-only mode
+    #[must_use] 
     pub fn final_only() -> Self {
         Self {
             delivery_mode: DeliveryMode::FinalOnly,
@@ -93,7 +93,7 @@ enum OrchestratorState {
     Done,
 }
 
-/// Stream orchestrator - transforms StreamEvents into AgenticEvents
+/// Stream orchestrator - transforms `StreamEvents` into `AgenticEvents`
 ///
 /// Responsibilities:
 /// - Accumulate text deltas and emit chunked blocks
@@ -113,7 +113,7 @@ pub struct StreamOrchestrator {
     sequence: usize,
     /// Run ID
     run_id: String,
-    /// Accumulated final text (for FinalOnly mode)
+    /// Accumulated final text (for `FinalOnly` mode)
     final_buffer: String,
     /// Whether we've seen any tool calls (for interstitial detection)
     has_tool_calls: bool,
@@ -141,7 +141,7 @@ impl StreamOrchestrator {
         }
     }
 
-    /// Process a StreamEvent and return AgenticEvents to emit
+    /// Process a `StreamEvent` and return `AgenticEvents` to emit
     pub fn process(&mut self, event: StreamEvent) -> Vec<AgenticEvent> {
         match event {
             StreamEvent::Start { provider: _, model: _ } => {
@@ -382,6 +382,7 @@ impl StreamOrchestrator {
     }
 
     /// Get current state
+    #[must_use] 
     pub fn state(&self) -> &str {
         match self.state {
             OrchestratorState::Idle => "idle",
@@ -393,6 +394,7 @@ impl StreamOrchestrator {
     }
 
     /// Get buffer length
+    #[must_use] 
     pub fn buffer_len(&self) -> usize {
         self.buffer.buffer_len()
     }
@@ -401,7 +403,7 @@ impl StreamOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::StopReason;
+    
 
     #[test]
     fn test_orchestrator_live_mode() {

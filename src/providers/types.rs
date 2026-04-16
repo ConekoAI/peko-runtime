@@ -1,7 +1,7 @@
 //! Unified provider types - shared across all implementations
 //!
-//! This module re-exports types from providers::traits for convenience.
-//! The canonical types are defined in providers::traits to maintain
+//! This module re-exports types from `providers::traits` for convenience.
+//! The canonical types are defined in `providers::traits` to maintain
 //! compatibility with the existing codebase.
 
 // Re-export types from various modules

@@ -29,6 +29,7 @@ pub enum TriggerSource {
 
 impl TriggerSource {
     /// Get display name for the trigger source
+    #[must_use] 
     pub fn display_name(&self) -> &'static str {
         match self {
             TriggerSource::Cron { .. } => "cron",
@@ -39,6 +40,7 @@ impl TriggerSource {
     }
 
     /// Get payload data for the trigger
+    #[must_use] 
     pub fn payload(&self) -> serde_json::Value {
         match self {
             TriggerSource::Cron { schedule } => {
@@ -94,17 +96,19 @@ pub struct HookTrigger {
 
 impl HookTrigger {
     /// Create a new hook trigger
+    #[must_use] 
     pub fn new(hook: RegisteredHook, source: TriggerSource) -> Self {
         Self { hook, source }
     }
 
     /// Build the message to send to the agent
+    #[must_use] 
     pub fn build_message(&self) -> String {
         match &self.hook.action {
             HookAction::Run { message } => {
                 let source_info = match &self.source {
                     TriggerSource::Cron { schedule } => {
-                        format!("Cron schedule '{}' fired", schedule)
+                        format!("Cron schedule '{schedule}' fired")
                     }
                     TriggerSource::Webhook { path, payload, .. } => {
                         format!(
@@ -121,7 +125,7 @@ impl HookTrigger {
                         )
                     }
                     TriggerSource::FileWatch { path, change_type } => {
-                        format!("File {} detected at path: {}", change_type, path)
+                        format!("File {change_type} detected at path: {path}")
                     }
                 };
 
@@ -134,6 +138,7 @@ impl HookTrigger {
     }
 
     /// Build a session event for the trigger
+    #[must_use] 
     pub fn build_session_event(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "hook.trigger",
@@ -149,21 +154,25 @@ impl HookTrigger {
     }
 
     /// Get the target session type
+    #[must_use] 
     pub fn session_target(&self) -> SessionTarget {
         self.hook.session_target
     }
 
     /// Get hook ID
+    #[must_use] 
     pub fn hook_id(&self) -> &str {
         &self.hook.id
     }
 
     /// Get instance ID
+    #[must_use] 
     pub fn instance_id(&self) -> &str {
         &self.hook.instance_id
     }
 
     /// Check if hook is enabled
+    #[must_use] 
     pub fn is_enabled(&self) -> bool {
         self.hook.enabled
     }
@@ -181,6 +190,7 @@ pub struct HookTriggerProcessor {
 
 impl HookTriggerProcessor {
     /// Create a new trigger processor
+    #[must_use] 
     pub fn new() -> Self {
         Self {}
     }
@@ -260,7 +270,7 @@ impl HookTriggerProcessor {
         );
 
         // Return the active session ID if available
-        Ok(Some(format!("sess_active_{}", instance_id)))
+        Ok(Some(format!("sess_active_{instance_id}")))
     }
 }
 

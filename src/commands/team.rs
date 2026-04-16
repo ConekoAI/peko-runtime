@@ -3,7 +3,7 @@
 //! Provides CLI commands for managing teams - logical groupings of agents.
 //! Teams are stored as directories under ~/.pekobot/teams/{team}/agents/
 //!
-//! NOTE: All business logic is delegated to TeamService in common::services.
+//! NOTE: All business logic is delegated to `TeamService` in `common::services`.
 //! This module only handles CLI argument parsing and output formatting.
 
 use crate::commands::GlobalPaths;
@@ -135,7 +135,7 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
                     Ok(())
                 }
                 None => {
-                    anyhow::bail!("Team '{}' not found", name);
+                    anyhow::bail!("Team '{name}' not found");
                 }
             }
         }
@@ -144,13 +144,13 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             let team_info = match service.get_team(&name).await? {
                 Some(info) => info,
                 None => {
-                    anyhow::bail!("Team '{}' not found", name);
+                    anyhow::bail!("Team '{name}' not found");
                 }
             };
 
             // Confirm deletion
-            if !force {
-                if !confirm_team_deletion(&name, team_info.agent_count)? {
+            if !force
+                && !confirm_team_deletion(&name, team_info.agent_count)? {
                     if json {
                         println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
                     } else {
@@ -158,7 +158,6 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
                     }
                     return Ok(());
                 }
-            }
 
             let result = service.delete_team(&name).await?;
             render_team_deleted(&result, json);
@@ -174,13 +173,13 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             let team_info = match service.get_team(&old_name).await? {
                 Some(info) => info,
                 None => {
-                    anyhow::bail!("Team '{}' not found", old_name);
+                    anyhow::bail!("Team '{old_name}' not found");
                 }
             };
 
             // Confirm move
-            if !force {
-                if !confirm_team_move(&old_name, &new_name, team_info.agent_count)? {
+            if !force
+                && !confirm_team_move(&old_name, &new_name, team_info.agent_count)? {
                     if json {
                         println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
                     } else {
@@ -188,7 +187,6 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
                     }
                     return Ok(());
                 }
-            }
 
             let result = service.move_team(&old_name, &new_name).await?;
             render_team_moved(&result, json);
@@ -245,7 +243,7 @@ fn render_team_created(result: &TeamCreationResult, json: bool) {
         println!("✅ Created team '{}'", result.metadata.name);
         println!("   Path: {}", result.path.display());
         if let Some(desc) = &result.metadata.description {
-            println!("   Description: {}", desc);
+            println!("   Description: {desc}");
         }
         println!();
         println!("   You can now create agents in this team:");
@@ -285,7 +283,7 @@ fn render_team_list(teams: &[TeamInfo], long: bool, json: bool) {
                 println!("{} {}", icon, team.name);
                 if let Some(ref metadata) = team.metadata {
                     if let Some(ref desc) = metadata.description {
-                        println!("   Description: {}", desc);
+                        println!("   Description: {desc}");
                     }
                     println!("   Created: {}", format_timestamp(&metadata.created_at));
                 }
@@ -345,7 +343,7 @@ fn render_team_show(
         println!("📁 Team: {}", team.name);
         if let Some(ref metadata) = team.metadata {
             if let Some(ref desc) = metadata.description {
-                println!("   Description: {}", desc);
+                println!("   Description: {desc}");
             }
             println!("   Created: {}", format_timestamp(&metadata.created_at));
         }
@@ -361,9 +359,9 @@ fn render_team_show(
         } else {
             println!("   Agents ({}):", agents.len());
             for (agent_name, config) in agents {
-                println!("   📦 {}", agent_name);
+                println!("   📦 {agent_name}");
                 if let Some(ref desc) = config.description {
-                    println!("      {}", desc);
+                    println!("      {desc}");
                 }
                 println!("      Provider: {:?}", config.provider.provider_type);
             }
@@ -438,11 +436,10 @@ fn render_team_imported(result: &crate::common::types::team::TeamImportResult, j
 }
 
 fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
-    println!("⚠️  This will permanently delete team '{}'.", name);
+    println!("⚠️  This will permanently delete team '{name}'.");
     if agent_count > 0 {
         println!(
-            "   It contains {} agent(s) that will also be deleted.",
-            agent_count
+            "   It contains {agent_count} agent(s) that will also be deleted."
         );
     }
     println!("   This action cannot be undone.");
@@ -457,13 +454,11 @@ fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
 
 fn confirm_team_move(old_name: &str, new_name: &str, agent_count: usize) -> Result<bool> {
     println!(
-        "⚠️  This will rename team '{}' to '{}'.",
-        old_name, new_name
+        "⚠️  This will rename team '{old_name}' to '{new_name}'."
     );
     if agent_count > 0 {
         println!(
-            "   It contains {} agent(s) that will be moved.",
-            agent_count
+            "   It contains {agent_count} agent(s) that will be moved."
         );
     }
     print!("   Continue? [y/N] ");

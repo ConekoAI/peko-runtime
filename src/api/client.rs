@@ -64,6 +64,7 @@ pub enum ClientError {
 
 impl ClientError {
     /// Get the exit code for this error
+    #[must_use] 
     pub fn exit_code(&self) -> i32 {
         match self {
             ClientError::DaemonNotRunning { .. } => 1,
@@ -116,6 +117,7 @@ impl ApiClient {
     }
 
     /// Get the daemon address
+    #[must_use] 
     pub fn addr(&self) -> &str {
         &self.base_url
     }
@@ -169,7 +171,7 @@ impl ApiClient {
 
     /// Get an agent configuration by name
     pub async fn get_agent(&self, name: &str) -> Result<AgentConfigResponse, ClientError> {
-        let path = format!("/agents/{}", name);
+        let path = format!("/agents/{name}");
         self.get(&path).await
     }
 
@@ -180,7 +182,7 @@ impl ApiClient {
         image: Option<&str>,
         team_id: Option<&str>,
     ) -> Result<AgentConfigResponse, ClientError> {
-        let path = format!("/agents/{}", name);
+        let path = format!("/agents/{name}");
         let mut body = serde_json::Map::new();
         if let Some(img) = image {
             body.insert(
@@ -200,7 +202,7 @@ impl ApiClient {
 
     /// Unregister an agent
     pub async fn unregister_agent(&self, name: &str) -> Result<(), ClientError> {
-        let path = format!("/agents/{}", name);
+        let path = format!("/agents/{name}");
         let url = format!("{}{}", self.base_url, path);
 
         let response = self
@@ -224,7 +226,7 @@ impl ApiClient {
         message: &str,
         timeout_secs: Option<u64>,
     ) -> Result<ExecuteAgentResponse, ClientError> {
-        let path = format!("/agents/{}/execute", name);
+        let path = format!("/agents/{name}/execute");
         let body = serde_json::json!({
             "session_id": session_id,
             "message": message,
@@ -286,7 +288,7 @@ impl ApiClient {
         &self,
         instance_id: &str,
     ) -> Result<PaginatedSessionsResponse, ClientError> {
-        let path = format!("/agents/{}/sessions", instance_id);
+        let path = format!("/agents/{instance_id}/sessions");
         self.get(&path).await
     }
 
@@ -296,7 +298,7 @@ impl ApiClient {
         instance_id: &str,
         session_id: &str,
     ) -> Result<SessionResponse, ClientError> {
-        let path = format!("/agents/{}/sessions/{}", instance_id, session_id);
+        let path = format!("/agents/{instance_id}/sessions/{session_id}");
         self.get(&path).await
     }
 
@@ -308,7 +310,7 @@ impl ApiClient {
         include_tool_calls: bool,
         include_thinking: bool,
     ) -> Result<HistoryResponse, ClientError> {
-        let path = format!("/agents/{}/sessions/{}/history", instance_id, session_id);
+        let path = format!("/agents/{instance_id}/sessions/{session_id}/history");
         let query = vec![
             ("include_tool_calls", include_tool_calls.to_string()),
             ("include_thinking", include_thinking.to_string()),
@@ -323,7 +325,7 @@ impl ApiClient {
         session_id: &str,
         label: Option<&str>,
     ) -> Result<BranchResponse, ClientError> {
-        let path = format!("/agents/{}/sessions/{}/branch", instance_id, session_id);
+        let path = format!("/agents/{instance_id}/sessions/{session_id}/branch");
         let body = serde_json::json!({
             "label": label,
         });
@@ -336,7 +338,7 @@ impl ApiClient {
         instance_id: &str,
         session_id: &str,
     ) -> Result<(), ClientError> {
-        let path = format!("/agents/{}/sessions/{}", instance_id, session_id);
+        let path = format!("/agents/{instance_id}/sessions/{session_id}");
         let url = format!("{}{}", self.base_url, path);
 
         let response = self
@@ -369,13 +371,13 @@ impl ApiClient {
 
     /// Get a team by ID
     pub async fn get_team(&self, id: &str) -> Result<TeamResponse, ClientError> {
-        let path = format!("/teams/{}", id);
+        let path = format!("/teams/{id}");
         self.get(&path).await
     }
 
     /// Delete a team
     pub async fn delete_team(&self, id: &str) -> Result<(), ClientError> {
-        let path = format!("/teams/{}", id);
+        let path = format!("/teams/{id}");
         let url = format!("{}{}", self.base_url, path);
 
         let response = self
@@ -396,7 +398,7 @@ impl ApiClient {
         agent_name: &str,
         count: u32,
     ) -> Result<TeamResponse, ClientError> {
-        let path = format!("/teams/{}/scale", team_id);
+        let path = format!("/teams/{team_id}/scale");
         let body = serde_json::json!({
             "agent": agent_name,
             "count": count,
@@ -542,7 +544,7 @@ impl ApiClient {
 
         if status.is_success() {
             let body = response.json::<T>().await.map_err(|e| {
-                ClientError::InvalidResponse(format!("Failed to parse JSON: {}", e))
+                ClientError::InvalidResponse(format!("Failed to parse JSON: {e}"))
             })?;
             Ok(body)
         } else {
@@ -565,7 +567,7 @@ impl ApiClient {
             Err(_) => ClientError::Api {
                 status,
                 code: "unknown_error".to_string(),
-                message: format!("HTTP {}", status),
+                message: format!("HTTP {status}"),
                 request_id: "unknown".to_string(),
             },
         }
@@ -629,7 +631,7 @@ pub struct AgentConfigResponse {
     pub updated_at: Option<String>,
 }
 
-/// Paginated agents response (replaces PaginatedInstancesResponse)
+/// Paginated agents response (replaces `PaginatedInstancesResponse`)
 pub type PaginatedAgentsResponse = PaginatedResponse<AgentConfigResponse>;
 
 /// Tool call in execute response
@@ -759,7 +761,7 @@ mod tests {
         let err = ClientError::DaemonNotRunning {
             addr: "http://localhost:11435".to_string(),
         };
-        let msg = format!("{}", err);
+        let msg = format!("{err}");
         assert!(msg.contains("Daemon not running"));
         assert!(msg.contains("localhost:11435"));
     }

@@ -118,14 +118,14 @@ impl ApiServer {
     pub async fn run(self, shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> anyhow::Result<()> {
         let addr: SocketAddr = format!("{}:{}", self.config.host, self.config.port)
             .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid bind address: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid bind address: {e}"))?;
 
         let app = self.create_router();
 
         // Create TCP listener
         let listener = TcpListener::bind(&addr)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind to {}: {}", addr, e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to bind to {addr}: {e}"))?;
 
         let actual_addr = listener.local_addr()?;
         info!(
@@ -140,18 +140,20 @@ impl ApiServer {
                 info!("HTTP API server shutdown signal received");
             })
             .await
-            .map_err(|e| anyhow::anyhow!("Server error: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Server error: {e}"))?;
 
         info!("HTTP API server stopped");
         Ok(())
     }
 
     /// Get the server address
+    #[must_use] 
     pub fn address(&self) -> String {
         format!("{}:{}", self.config.host, self.config.port)
     }
 
     /// Get the application state
+    #[must_use] 
     pub fn state(&self) -> &AppState {
         &self.state
     }
@@ -213,10 +215,11 @@ impl ServerHandle {
     pub async fn wait(self) -> anyhow::Result<()> {
         self.handle
             .await
-            .map_err(|e| anyhow::anyhow!("Server task failed: {}", e))
+            .map_err(|e| anyhow::anyhow!("Server task failed: {e}"))
     }
 
     /// Get the server address
+    #[must_use] 
     pub fn address(&self) -> &str {
         &self.address
     }

@@ -27,7 +27,7 @@ use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-/// Image response object (API_CONTRACT §2.4)
+/// Image response object (`API_CONTRACT` §2.4)
 #[derive(Debug, Clone, Serialize)]
 pub struct ImageResponse {
     pub id: String,
@@ -201,7 +201,7 @@ async fn list_images(
     let manifests = registry
         .list_images()
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to list images: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to list images: {e}"), ""))?;
 
     let images: Vec<ImageResponse> = manifests
         .into_iter()
@@ -233,14 +233,14 @@ async fn get_image(
         };
 
         let digest = crate::image::manifest::ImageDigest::new(&digest_str)
-            .map_err(|e| ApiError::bad_request(format!("Invalid digest: {}", e), ""))?;
+            .map_err(|e| ApiError::bad_request(format!("Invalid digest: {e}"), ""))?;
 
         registry.get_manifest_by_digest(&digest).await
     } else {
         // Try as reference
         registry.get_manifest_by_ref(&id).await
     }
-    .map_err(|e| ApiError::internal(format!("Failed to get image: {}", e), ""))?;
+    .map_err(|e| ApiError::internal(format!("Failed to get image: {e}"), ""))?;
 
     match manifest {
         Some(m) => Ok(Json(ImageResponse::from(m))),
@@ -285,7 +285,7 @@ async fn build_image(
                     path: path.to_string_lossy().to_string(),
                 }),
                 BuildProgress::Layering { layer_type } => Some(BuildEvent::Layering {
-                    layer_type: format!("{:?}", layer_type).to_lowercase(),
+                    layer_type: format!("{layer_type:?}").to_lowercase(),
                 }),
                 BuildProgress::Complete { manifest } => Some(BuildEvent::Done {
                     image: ImageResponse::from(manifest),
@@ -312,7 +312,7 @@ async fn build_image(
             Ok(_) => {}
             Err(e) => {
                 let event = BuildEvent::Error {
-                    message: format!("Build failed: {}", e),
+                    message: format!("Build failed: {e}"),
                 };
                 let _ = tx
                     .send(Ok(axum::response::sse::Event::default()
@@ -361,7 +361,7 @@ async fn pull_image(
             Err(e) => {
                 let event = PullEvent::Error {
                     code: "pull_failed".to_string(),
-                    message: format!("Pull failed: {}", e),
+                    message: format!("Pull failed: {e}"),
                 };
                 let _ = tx
                     .send(Ok(axum::response::sse::Event::default()
@@ -397,21 +397,18 @@ async fn push_image(
             request.local_ref.clone()
         } else {
             // Try to resolve from tag
-            match local_registry.get_manifest_by_ref(&request.local_ref).await {
-                Ok(Some(manifest)) => manifest.digest,
-                _ => {
-                    let event = PushEvent::Error {
-                        code: "image_not_found".to_string(),
-                        message: format!("Local image not found: {}", request.local_ref),
-                    };
-                    let _ = tx
-                        .send(Ok(axum::response::sse::Event::default()
-                            .event("error")
-                            .json_data(event)
-                            .unwrap()))
-                        .await;
-                    return;
-                }
+            if let Ok(Some(manifest)) = local_registry.get_manifest_by_ref(&request.local_ref).await { manifest.digest } else {
+                let event = PushEvent::Error {
+                    code: "image_not_found".to_string(),
+                    message: format!("Local image not found: {}", request.local_ref),
+                };
+                let _ = tx
+                    .send(Ok(axum::response::sse::Event::default()
+                        .event("error")
+                        .json_data(event)
+                        .unwrap()))
+                    .await;
+                return;
             }
         };
 
@@ -454,7 +451,7 @@ async fn push_image(
             Err(e) => {
                 let event = PushEvent::Error {
                     code: "push_failed".to_string(),
-                    message: format!("Push failed: {}", e),
+                    message: format!("Push failed: {e}"),
                 };
                 let _ = tx
                     .send(Ok(axum::response::sse::Event::default()
@@ -485,13 +482,13 @@ async fn delete_image(
     };
 
     let digest = crate::image::manifest::ImageDigest::new(&digest_str)
-        .map_err(|e| ApiError::bad_request(format!("Invalid digest: {}", e), ""))?;
+        .map_err(|e| ApiError::bad_request(format!("Invalid digest: {e}"), ""))?;
 
     match registry.delete_image(&digest).await {
         Ok(true) => Ok(axum::http::StatusCode::NO_CONTENT),
         Ok(false) => Err(ApiError::not_found("image", id, "")),
         Err(e) => Err(ApiError::internal(
-            format!("Failed to delete image: {}", e),
+            format!("Failed to delete image: {e}"),
             "",
         )),
     }
@@ -530,7 +527,7 @@ mod tests {
     fn test_image_response_from_manifest() {
         let hex = "e".repeat(64);
         let manifest = ImageManifest::new("test", "1.0.0")
-            .with_digest(format!("sha256:{}", hex))
+            .with_digest(format!("sha256:{hex}"))
             .with_ref("test:v1.0");
 
         let response = ImageResponse::from(manifest);

@@ -529,7 +529,7 @@ mod tests {
                 messages.push(ChatMessage {
                     role: MessageRole::User,
                     content: vec![ContentBlock::Text {
-                        text: format!("User message {}", i),
+                        text: format!("User message {i}"),
                     }],
                     tool_calls: None,
                     tool_call_id: None,
@@ -539,8 +539,7 @@ mod tests {
                     role: MessageRole::Assistant,
                     content: vec![ContentBlock::Text {
                         text: format!(
-                            "Assistant response {} with some additional text to make it longer",
-                            i
+                            "Assistant response {i} with some additional text to make it longer"
                         ),
                     }],
                     tool_calls: None,
@@ -597,7 +596,7 @@ mod tests {
 
     #[test]
     fn test_cumulative_summary_tracking() {
-        let mut compactor = Compactor::with_previous_summary(
+        let compactor = Compactor::with_previous_summary(
             Compactor::with_config(CompactionConfig::default(), None),
             Some("Initial summary".to_string()),
         );

@@ -16,8 +16,10 @@ use crate::api::middleware::request_id::get_request_id;
 
 /// Log level for requests
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub enum LogLevel {
     /// Log all requests at info level
+    #[default]
     Info,
     /// Log errors at warn level, successes at debug
     Debug,
@@ -25,11 +27,6 @@ pub enum LogLevel {
     Error,
 }
 
-impl Default for LogLevel {
-    fn default() -> Self {
-        LogLevel::Info
-    }
-}
 
 /// Middleware that logs HTTP requests
 pub async fn logging_middleware(
@@ -86,9 +83,9 @@ pub async fn logging_middleware(
     response
 }
 
-/// Alternative logging middleware without ConnectInfo
+/// Alternative logging middleware without `ConnectInfo`
 ///
-/// Use this when you don't have the ConnectInfo layer
+/// Use this when you don't have the `ConnectInfo` layer
 pub async fn logging_middleware_no_remote_addr(
     request: Request<Body>,
     next: Next,

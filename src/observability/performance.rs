@@ -24,6 +24,7 @@ struct MetricsInner {
 
 impl PerformanceMetrics {
     /// Create a new metrics collector
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(MetricsInner::default())),
@@ -37,6 +38,7 @@ impl PerformanceMetrics {
     }
 
     /// Stop a named timer and record the duration
+    #[must_use] 
     pub fn stop_timer(&self, name: &str) -> Option<Duration> {
         let mut inner = self.inner.lock().unwrap();
         let start = inner.active_timers.remove(name)?;
@@ -90,34 +92,38 @@ impl PerformanceMetrics {
     }
 
     /// Get cold start statistics
+    #[must_use] 
     pub fn cold_start_stats(&self) -> Option<LatencyStats> {
         let inner = self.inner.lock().unwrap();
         LatencyStats::calculate(&inner.cold_start_times)
     }
 
     /// Get warm start statistics
+    #[must_use] 
     pub fn warm_start_stats(&self) -> Option<LatencyStats> {
         let inner = self.inner.lock().unwrap();
         LatencyStats::calculate(&inner.warm_start_times)
     }
 
     /// Get first token statistics
+    #[must_use] 
     pub fn first_token_stats(&self) -> Option<LatencyStats> {
         let inner = self.inner.lock().unwrap();
         LatencyStats::calculate(&inner.first_token_latencies)
     }
 
     /// Get tool latency statistics
+    #[must_use] 
     pub fn tool_latency_stats(&self, tool_name: &str) -> Option<LatencyStats> {
         let inner = self.inner.lock().unwrap();
         inner
             .tool_latencies
             .get(tool_name)
-            .map(|durations| LatencyStats::calculate(durations))
-            .flatten()
+            .and_then(|durations| LatencyStats::calculate(durations))
     }
 
     /// Get all tool names that have latency data
+    #[must_use] 
     pub fn recorded_tools(&self) -> Vec<String> {
         let inner = self.inner.lock().unwrap();
         inner.tool_latencies.keys().cloned().collect()
@@ -134,6 +140,7 @@ impl PerformanceMetrics {
     }
 
     /// Export metrics as JSON-serializable struct
+    #[must_use] 
     pub fn export(&self) -> MetricsExport {
         let inner = self.inner.lock().unwrap();
         MetricsExport {
@@ -169,6 +176,7 @@ pub struct LatencyStats {
 
 impl LatencyStats {
     /// Calculate statistics from a list of durations
+    #[must_use] 
     pub fn calculate(durations: &[Duration]) -> Option<Self> {
         if durations.is_empty() {
             return None;
@@ -197,6 +205,7 @@ impl LatencyStats {
     }
 
     /// Check if this latency meets a target requirement
+    #[must_use] 
     pub fn meets_target(&self, target_ms: f64) -> bool {
         self.p95_ms <= target_ms
     }
@@ -227,10 +236,9 @@ fn percentile(sorted_data: &[f64], p: f64) -> f64 {
 // Global Metrics Instance
 // ============================================================================
 
-use once_cell::sync::Lazy;
 
 /// Global performance metrics instance
-pub static GLOBAL_METRICS: Lazy<PerformanceMetrics> = Lazy::new(PerformanceMetrics::new);
+pub static GLOBAL_METRICS: std::sync::LazyLock<PerformanceMetrics> = std::sync::LazyLock::new(PerformanceMetrics::new);
 
 /// Convenience function to start a timer on the global metrics
 pub fn start_timer(name: &str) {
@@ -264,6 +272,7 @@ impl PerformanceGuard {
     }
 
     /// Get elapsed time without recording
+    #[must_use] 
     pub fn elapsed(&self) -> Duration {
         self.start.elapsed()
     }

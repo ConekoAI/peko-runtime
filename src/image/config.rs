@@ -1,6 +1,6 @@
 //! Agent Configuration (config.toml)
 //!
-//! Defines the structure of config.toml as per DATA_MODEL §2.
+//! Defines the structure of config.toml as per `DATA_MODEL` §2.
 //! This is the only required file in an agent image.
 
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ impl AgentConfig {
     /// Load config from a TOML file
     pub fn from_file(path: &std::path::Path) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read config.toml: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to read config.toml: {e}"))?;
         Self::from_toml(&contents)
     }
 
@@ -40,7 +40,7 @@ impl AgentConfig {
         Self::check_raw_toml_for_credentials(toml_str)?;
 
         let config: Self = toml::from_str(toml_str)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config.toml: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse config.toml: {e}"))?;
         config.validate()?;
         Ok(config)
     }
@@ -50,7 +50,7 @@ impl AgentConfig {
     fn check_raw_toml_for_credentials(toml_str: &str) -> anyhow::Result<()> {
         // Parse as generic TOML value to catch all fields including unknown ones
         let toml_value: toml::Value = toml::from_str(toml_str)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config for credential check: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to parse config for credential check: {e}"))?;
 
         // Patterns that indicate credentials (case-insensitive, checked against field names)
         let credential_patterns: &[&str] = &[
@@ -75,18 +75,18 @@ impl AgentConfig {
         fn scan_value(value: &toml::Value, path: &str, patterns: &[&str]) -> anyhow::Result<()> {
             match value {
                 toml::Value::Table(table) => {
-                    for (key, val) in table.iter() {
+                    for (key, val) in table {
                         let new_path = if path.is_empty() {
                             key.clone()
                         } else {
-                            format!("{}.{}", path, key)
+                            format!("{path}.{key}")
                         };
                         scan_value(val, &new_path, patterns)?;
                     }
                 }
                 toml::Value::Array(arr) => {
                     for (i, val) in arr.iter().enumerate() {
-                        scan_value(val, &format!("{}[{}]", path, i), patterns)?;
+                        scan_value(val, &format!("{path}[{i}]"), patterns)?;
                     }
                 }
                 toml::Value::String(s) => {
@@ -182,7 +182,7 @@ impl AgentConfig {
     /// Serialize to TOML string
     pub fn to_toml(&self) -> anyhow::Result<String> {
         toml::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))
+            .map_err(|e| anyhow::anyhow!("Failed to serialize config: {e}"))
     }
 
     /// Validate the configuration
@@ -206,7 +206,7 @@ impl AgentConfig {
         // Validate hooks
         for (i, hook) in self.hooks.iter().enumerate() {
             if let Err(e) = hook.validate() {
-                return Err(anyhow::anyhow!("Hook [{}] validation failed: {}", i, e));
+                return Err(anyhow::anyhow!("Hook [{i}] validation failed: {e}"));
             }
         }
 
@@ -215,7 +215,7 @@ impl AgentConfig {
         for hook in &self.hooks {
             if let HookType::Webhook { path, .. } = &hook.hook_type {
                 if !seen_paths.insert(path.as_str()) {
-                    return Err(anyhow::anyhow!("Duplicate webhook path: {}", path));
+                    return Err(anyhow::anyhow!("Duplicate webhook path: {path}"));
                 }
             }
         }
@@ -226,6 +226,7 @@ impl AgentConfig {
     }
 
     /// Merge with a base config (base first, then self overrides)
+    #[must_use] 
     pub fn merge_with_base(mut self, base: Self) -> Self {
         // Merge capabilities (append and deduplicate)
         let base_caps = base.capabilities;
@@ -252,6 +253,7 @@ impl AgentConfig {
     }
 
     /// Get tools list
+    #[must_use] 
     pub fn tools(&self) -> Vec<String> {
         self.capabilities
             .as_ref()
@@ -260,6 +262,7 @@ impl AgentConfig {
     }
 
     /// Get skills list
+    #[must_use] 
     pub fn skills(&self) -> Vec<String> {
         self.capabilities
             .as_ref()
@@ -268,6 +271,7 @@ impl AgentConfig {
     }
 
     /// Get mcps list
+    #[must_use] 
     pub fn mcps(&self) -> Vec<String> {
         self.capabilities
             .as_ref()
@@ -314,7 +318,7 @@ pub struct ProviderConfig {
     /// Inline system prompt (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    /// Base URL (for openai_compatible)
+    /// Base URL (for `openai_compatible`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
 }
@@ -339,7 +343,7 @@ impl Default for ProviderConfig {
 pub enum ProviderType {
     /// Anthropic Claude
     Anthropic,
-    /// OpenAI
+    /// `OpenAI`
     Openai,
     /// Local Ollama
     Ollama,
@@ -439,7 +443,7 @@ pub enum HookType {
     },
     /// Webhook endpoint
     Webhook {
-        /// Path suffix under /webhooks/{instance_id}/{token}
+        /// Path suffix under /`webhooks/{instance_id}/{token`}
         path: String,
         /// Optional shared secret token
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -469,8 +473,7 @@ impl Hook {
                 let parts: Vec<&str> = schedule.split_whitespace().collect();
                 if parts.len() != 5 {
                     return Err(anyhow::anyhow!(
-                        "Invalid cron schedule '{}'. Expected 5 fields (minute hour day month weekday)",
-                        schedule
+                        "Invalid cron schedule '{schedule}'. Expected 5 fields (minute hour day month weekday)"
                     ));
                 }
             }
@@ -709,20 +712,17 @@ secret_key = "sk-ant-api03-AbCdEfGh123456789XYZabcdefghijklmnopqrstuvwxyz"
             let config = result.unwrap();
             let toml_out = config.to_toml().unwrap();
             panic!(
-                "Expected error but config parsed successfully. TOML output:\n{}",
-                toml_out
+                "Expected error but config parsed successfully. TOML output:\n{toml_out}"
             );
         }
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("Security violation"),
-            "Expected security violation, got: {}",
-            err
+            "Expected security violation, got: {err}"
         );
         assert!(
             err.contains("secret_key"),
-            "Error should mention the field: {}",
-            err
+            "Error should mention the field: {err}"
         );
     }
 
@@ -743,8 +743,7 @@ api_key = "your_api_key_here"
         let result = AgentConfig::from_toml(toml_with_placeholder);
         assert!(
             result.is_ok(),
-            "Placeholders should be allowed: {:?}",
-            result
+            "Placeholders should be allowed: {result:?}"
         );
     }
 
@@ -765,8 +764,7 @@ api_key = "$ANTHROPIC_API_KEY"
         let result = AgentConfig::from_toml(toml_with_env);
         assert!(
             result.is_ok(),
-            "Environment variable references should be allowed: {:?}",
-            result
+            "Environment variable references should be allowed: {result:?}"
         );
     }
 
@@ -789,8 +787,7 @@ api_key = "sk-abcdefghijklmnop12345678901234567890ABCDEFGH"
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("Security violation"),
-            "Expected security violation, got: {}",
-            err
+            "Expected security violation, got: {err}"
         );
     }
 
@@ -811,8 +808,7 @@ token = "abc123"
         let result = AgentConfig::from_toml(toml_short);
         assert!(
             result.is_ok(),
-            "Short values should be allowed: {:?}",
-            result
+            "Short values should be allowed: {result:?}"
         );
     }
 }

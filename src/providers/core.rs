@@ -1,12 +1,12 @@
 //! Unified provider implementation
 //!
 //! This module provides a single provider implementation that works with
-//! any ApiAdapter. All provider-specific logic is delegated to the adapter.
+//! any `ApiAdapter`. All provider-specific logic is delegated to the adapter.
 
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
 use crate::providers::transport::HttpClient;
-use crate::providers::types::*;
+use crate::providers::types::{Message, MessageRole, ContentBlock, ChatOptions, ChatMessage, ToolDefinition, ChatResponse, StreamEvent, StopReason, TokenUsage};
 use crate::types::provider::ProviderConfig;
 use futures::StreamExt;
 use std::pin::Pin;
@@ -16,7 +16,7 @@ use tracing::{error, info};
 
 /// Unified provider
 ///
-/// Works with any ApiAdapter to provide LLM functionality.
+/// Works with any `ApiAdapter` to provide LLM functionality.
 /// All provider-specific formatting is handled by the adapter.
 pub struct Provider {
     client: HttpClient,
@@ -55,8 +55,7 @@ impl Provider {
 
         let model_name = config
             .default_model_config()
-            .map(|m| m.name.as_str())
-            .unwrap_or(adapter.default_model());
+            .map_or(adapter.default_model(), |m| m.name.as_str());
 
         info!(
             "{} provider initialized with model: {}",
@@ -72,11 +71,13 @@ impl Provider {
     }
 
     /// Provider name
+    #[must_use] 
     pub fn name(&self) -> &str {
         self.adapter.name()
     }
 
     /// Check if this provider supports native tool calling
+    #[must_use] 
     pub fn supports_native_tools(&self) -> bool {
         self.adapter.supports_native_tools()
     }
@@ -316,7 +317,7 @@ impl Provider {
                                 error: Some(message.clone()),
                             })
                             .await;
-                        return Err(anyhow::anyhow!("Stream error: {}", message));
+                        return Err(anyhow::anyhow!("Stream error: {message}"));
                     }
                     _ => {}
                 },
@@ -360,12 +361,10 @@ impl Provider {
     /// Get the model name (config or default)
     fn model(&self) -> String {
         self.config
-            .default_model_config()
-            .map(|m| m.name.clone())
-            .unwrap_or_else(|| self.adapter.default_model().to_string())
+            .default_model_config().map_or_else(|| self.adapter.default_model().to_string(), |m| m.name.clone())
     }
 
-    /// Convert legacy ChatMessage to new Message format
+    /// Convert legacy `ChatMessage` to new Message format
     fn convert_chat_messages(&self, messages: &[ChatMessage]) -> Vec<Message> {
         messages
             .iter()
@@ -436,7 +435,7 @@ impl Provider {
             .collect()
     }
 
-    /// Convert ToolDefinition
+    /// Convert `ToolDefinition`
     fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
         tools
             .iter()
@@ -448,7 +447,7 @@ impl Provider {
             .collect()
     }
 
-    /// Convert ChatResponse back to legacy format
+    /// Convert `ChatResponse` back to legacy format
     fn convert_response(&self, response: ChatResponse) -> ChatResponse {
         let content: Vec<crate::types::message::ContentBlock> = response
             .content

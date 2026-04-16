@@ -7,9 +7,9 @@
 //! # Architecture
 //!
 //! The async tool system has three layers:
-//! 1. **UnifiedAsyncTool trait** (this file) - Native async-capable tools implement this
-//! 2. **ExtensionAsyncAdapter** - Bridges ExtensionCore hooks with UnifiedAsyncExecutor
-//! 3. **UnifiedAsyncExecutor** - Manages task lifecycle and execution
+//! 1. **`UnifiedAsyncTool` trait** (this file) - Native async-capable tools implement this
+//! 2. **`ExtensionAsyncAdapter`** - Bridges `ExtensionCore` hooks with `UnifiedAsyncExecutor`
+//! 3. **`UnifiedAsyncExecutor`** - Manages task lifecycle and execution
 //!
 //! # Implementation Guide
 //!
@@ -44,7 +44,7 @@ use std::sync::Arc;
 ///
 /// This trait extends the base Tool trait with async-specific capabilities.
 /// Tools can implement this to provide native async support, or use the
-/// SyncToAsyncAdapter for automatic sync-to-async wrapping.
+/// `SyncToAsyncAdapter` for automatic sync-to-async wrapping.
 #[async_trait]
 pub trait UnifiedAsyncTool: Tool {
     /// Check if this tool supports async execution
@@ -57,7 +57,7 @@ pub trait UnifiedAsyncTool: Tool {
 
     /// Check if this tool supports status checking
     ///
-    /// Returns true if check_status is implemented and functional.
+    /// Returns true if `check_status` is implemented and functional.
     fn supports_status_check(&self) -> bool {
         false
     }
@@ -76,7 +76,7 @@ pub trait UnifiedAsyncTool: Tool {
     /// * `config` - Async execution configuration (timeout, callbacks, etc.)
     ///
     /// # Returns
-    /// Receipt containing task_id for tracking the async operation
+    /// Receipt containing `task_id` for tracking the async operation
     async fn execute_async(
         &self,
         params: Value,
@@ -86,7 +86,7 @@ pub trait UnifiedAsyncTool: Tool {
     /// Check the status of an async task
     ///
     /// # Arguments
-    /// * `task_id` - The task identifier returned by execute_async
+    /// * `task_id` - The task identifier returned by `execute_async`
     ///
     /// # Returns
     /// Current status of the task (Pending, Running, Completed, Failed, Cancelled)
@@ -95,7 +95,7 @@ pub trait UnifiedAsyncTool: Tool {
     /// Cancel an async task
     ///
     /// # Arguments
-    /// * `task_id` - The task identifier returned by execute_async
+    /// * `task_id` - The task identifier returned by `execute_async`
     ///
     /// # Returns
     /// true if cancellation was successful, false otherwise
@@ -104,7 +104,7 @@ pub trait UnifiedAsyncTool: Tool {
     /// Get the name of the tool to use for status checks
     ///
     /// This is used when the async execution spawns a different tool
-    /// for checking status. Default returns self.name().
+    /// for checking status. Default returns `self.name()`.
     fn status_check_tool_name(&self) -> String {
         self.name().to_string()
     }
@@ -120,7 +120,7 @@ pub trait UnifiedAsyncTool: Tool {
 
 /// Adapter that wraps a synchronous Tool to provide async compatibility
 ///
-/// This adapter uses the UnifiedAsyncExecutor to run sync tools in the background,
+/// This adapter uses the `UnifiedAsyncExecutor` to run sync tools in the background,
 /// providing async semantics without requiring the tool to implement native async support.
 pub struct SyncToAsyncAdapter<T: Tool> {
     inner: Arc<T>,
@@ -145,6 +145,7 @@ impl<T: Tool> SyncToAsyncAdapter<T> {
     }
 
     /// Get a reference to the inner tool
+    #[must_use] 
     pub fn inner(&self) -> &T {
         &self.inner
     }
@@ -267,10 +268,10 @@ impl<T: Tool + Send + Sync + 'static> UnifiedAsyncTool for SyncToAsyncAdapter<T>
 /// Trait object type for async-capable tools
 pub type BoxedAsyncTool = Box<dyn UnifiedAsyncTool + Send + Sync>;
 
-/// Convert a boxed Tool to a boxed UnifiedAsyncTool
+/// Convert a boxed Tool to a boxed `UnifiedAsyncTool`
 ///
-/// If the tool already implements UnifiedAsyncTool, returns it directly.
-/// Otherwise, wraps it in a SyncToAsyncAdapter.
+/// If the tool already implements `UnifiedAsyncTool`, returns it directly.
+/// Otherwise, wraps it in a `SyncToAsyncAdapter`.
 pub fn into_async_tool<T>(tool: T) -> BoxedAsyncTool
 where
     T: Tool + Send + Sync + 'static,

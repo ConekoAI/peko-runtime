@@ -4,7 +4,7 @@
 
 use super::{extract_text_content, ToolCallAccumulator};
 use crate::providers::transport::AuthConfig;
-use crate::providers::types::*;
+use crate::providers::types::{Message, MessageRole, ContentBlock, ToolDefinition, ChatOptions, ChatResponse, StopReason, TokenUsage, StreamEvent};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,7 +17,7 @@ pub struct AnthropicAdapter {
     model: String,
     base_url: String,
     extra_headers: Vec<(String, String)>,
-    /// Accumulates input tokens from message_start for usage tracking
+    /// Accumulates input tokens from `message_start` for usage tracking
     pending_input_tokens: Arc<Mutex<Option<u32>>>,
     /// Accumulates tool call parts during streaming
     tool_call_accumulator: ToolCallAccumulator,
@@ -52,7 +52,7 @@ impl AnthropicAdapter {
     /// Anthropic uses a different format:
     /// - System prompt is separate from messages
     /// - Messages only have "user" and "assistant" roles
-    /// - Tool results are sent as user messages with tool_result content
+    /// - Tool results are sent as user messages with `tool_result` content
     fn convert_messages(&self, messages: &[Message]) -> (Option<String>, Vec<AnthropicMessage>) {
         let mut system_prompt = None;
         let mut anthropic_messages = Vec::new();
@@ -172,7 +172,7 @@ impl AnthropicAdapter {
 }
 
 impl super::ApiAdapter for AnthropicAdapter {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "anthropic"
     }
 
@@ -274,9 +274,9 @@ impl super::ApiAdapter for AnthropicAdapter {
             tool_calls,
             stop_reason,
             usage: TokenUsage {
-                input: result.usage.input_tokens as u64,
-                output: result.usage.output_tokens as u64,
-                total: (result.usage.input_tokens + result.usage.output_tokens) as u64,
+                input: u64::from(result.usage.input_tokens),
+                output: u64::from(result.usage.output_tokens),
+                total: u64::from(result.usage.input_tokens + result.usage.output_tokens),
             },
             provider: self.name().to_string(),
             model: self.model.clone(),
@@ -397,9 +397,9 @@ impl super::ApiAdapter for AnthropicAdapter {
                     let input = self.pending_input_tokens.lock().unwrap().unwrap_or(0);
                     let output = delta_usage.output_tokens;
                     return Ok(Some(StreamEvent::Usage {
-                        input: input as u64,
-                        output: output as u64,
-                        total: (input + output) as u64,
+                        input: u64::from(input),
+                        output: u64::from(output),
+                        total: u64::from(input + output),
                     }));
                 }
                 if let Some(stop_reason) = event.stop_reason {
@@ -540,11 +540,11 @@ struct AnthropicSseEvent {
 struct AnthropicContentBlockInfo {
     #[serde(rename = "type")]
     block_type: String,
-    /// Tool call ID (for tool_use blocks)
+    /// Tool call ID (for `tool_use` blocks)
     id: Option<String>,
-    /// Tool name (for tool_use blocks)
+    /// Tool name (for `tool_use` blocks)
     name: Option<String>,
-    /// Tool input (for tool_use blocks)
+    /// Tool input (for `tool_use` blocks)
     input: Option<Value>,
 }
 
@@ -703,7 +703,7 @@ mod tests {
                 assert_eq!(output, 12);
                 assert_eq!(total, 37);
             }
-            _ => panic!("Expected Usage event, got {:?}", event),
+            _ => panic!("Expected Usage event, got {event:?}"),
         }
     }
 }

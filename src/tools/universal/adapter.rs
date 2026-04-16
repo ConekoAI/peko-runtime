@@ -35,7 +35,7 @@ impl UniversalToolAdapter {
 
         // Verify executable exists
         if !executable.exists() {
-            return Err(anyhow::anyhow!("Executable not found: {:?}", executable));
+            return Err(anyhow::anyhow!("Executable not found: {executable:?}"));
         }
 
         Ok(Self {
@@ -55,6 +55,7 @@ impl UniversalToolAdapter {
     }
 
     /// Get the underlying manifest
+    #[must_use] 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
@@ -74,7 +75,7 @@ impl UniversalToolAdapter {
             // Convert ExecutionContext to ToolContext for resolution
             let tool_ctx = crate::tools::AbortSignal::new()
                 .create_context(
-                    &context.run_id.clone().unwrap_or_default(),
+                    context.run_id.clone().unwrap_or_default(),
                     "tool",
                     &self.name,
                 )
@@ -123,7 +124,7 @@ impl UniversalToolAdapter {
 
     /// Execute with already-merged parameters (no validation/injection)
     ///
-    /// This is used by the Extension Framework when ToolExecutionService
+    /// This is used by the Extension Framework when `ToolExecutionService`
     /// has already handled parameter injection.
     pub async fn execute_raw(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         // Build execution context (minimal - params already merged by Extension Framework)
@@ -131,9 +132,7 @@ impl UniversalToolAdapter {
             session_id: "unknown".to_string(),
             agent_id: "unknown".to_string(),
             peer_id: None,
-            workspace: std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string()),
+            workspace: std::env::current_dir().map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
             run_id: None,
         };
 
@@ -182,37 +181,34 @@ impl UniversalToolAdapter {
         match response.result {
             ResponseResult::Result(value) => {
                 // Try to parse as ExecuteResult first (standard format)
-                match serde_json::from_value::<ExecuteResult>(value.clone()) {
-                    Ok(result) => {
-                        // If success but no data, the tool might be returning the result directly
-                        // in the same structure (e.g., {"success": true, "field": value})
-                        if result.success && result.data.is_none() {
-                            tracing::debug!(
-                                "ExecuteResult has no data, treating original as data payload"
-                            );
-                            Ok(ExecuteResult {
-                                success: true,
-                                data: Some(value),
-                                error: None,
-                                metadata: result.metadata,
-                            })
-                        } else {
-                            Ok(result)
-                        }
-                    }
-                    Err(_) => {
-                        // If that fails, treat the entire value as the data payload
-                        // This handles tools that return their result directly
+                if let Ok(result) = serde_json::from_value::<ExecuteResult>(value.clone()) {
+                    // If success but no data, the tool might be returning the result directly
+                    // in the same structure (e.g., {"success": true, "field": value})
+                    if result.success && result.data.is_none() {
                         tracing::debug!(
-                            "Response not in ExecuteResult format, treating as raw data"
+                            "ExecuteResult has no data, treating original as data payload"
                         );
                         Ok(ExecuteResult {
                             success: true,
                             data: Some(value),
                             error: None,
-                            metadata: None,
+                            metadata: result.metadata,
                         })
+                    } else {
+                        Ok(result)
                     }
+                } else {
+                    // If that fails, treat the entire value as the data payload
+                    // This handles tools that return their result directly
+                    tracing::debug!(
+                        "Response not in ExecuteResult format, treating as raw data"
+                    );
+                    Ok(ExecuteResult {
+                        success: true,
+                        data: Some(value),
+                        error: None,
+                        metadata: None,
+                    })
                 }
             }
             ResponseResult::Error(err) => Err(anyhow::anyhow!(
@@ -244,9 +240,7 @@ impl Tool for UniversalToolAdapter {
             session_id: "unknown".to_string(),
             agent_id: "unknown".to_string(),
             peer_id: None,
-            workspace: std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string()),
+            workspace: std::env::current_dir().map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
             run_id: None,
         };
 
@@ -307,6 +301,7 @@ pub struct UniversalToolBuilder {
 }
 
 impl UniversalToolBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             manifest: None,
@@ -315,6 +310,7 @@ impl UniversalToolBuilder {
         }
     }
 
+    #[must_use] 
     pub fn manifest(mut self, manifest: Manifest) -> Self {
         self.manifest = Some(manifest);
         self
@@ -331,6 +327,7 @@ impl UniversalToolBuilder {
         self
     }
 
+    #[must_use] 
     pub fn timeout(mut self, secs: u64) -> Self {
         self.timeout = Duration::from_secs(secs);
         self

@@ -23,6 +23,7 @@ pub struct TeamService {
 
 impl TeamService {
     /// Create a new team service with the given path resolver
+    #[must_use] 
     pub fn new(resolver: PathResolver) -> Self {
         Self { resolver }
     }
@@ -48,7 +49,7 @@ impl TeamService {
 
         // Check if team already exists
         if team_dir.exists() {
-            anyhow::bail!("Team '{}' already exists", name);
+            anyhow::bail!("Team '{name}' already exists");
         }
 
         // Create team directory structure
@@ -153,7 +154,7 @@ impl TeamService {
         let team_dir = self.resolver.team_dir(name);
 
         if !team_dir.exists() {
-            anyhow::bail!("Team '{}' not found", name);
+            anyhow::bail!("Team '{name}' not found");
         }
 
         list_agents_in_team(&team_dir).await
@@ -181,7 +182,7 @@ impl TeamService {
         let team_dir = self.resolver.team_dir(name);
 
         if !team_dir.exists() {
-            anyhow::bail!("Team '{}' not found", name);
+            anyhow::bail!("Team '{name}' not found");
         }
 
         let agent_count = count_agents_in_team(&team_dir).await;
@@ -223,12 +224,12 @@ impl TeamService {
 
         // Check source exists
         if !old_team_dir.exists() {
-            anyhow::bail!("Team '{}' not found", old_name);
+            anyhow::bail!("Team '{old_name}' not found");
         }
 
         // Check target doesn't exist (default team always exists conceptually)
         if new_name == "default" || new_team_dir.exists() {
-            anyhow::bail!("Team '{}' already exists", new_name);
+            anyhow::bail!("Team '{new_name}' already exists");
         }
 
         // Count agents before move
@@ -258,11 +259,13 @@ impl TeamService {
     }
 
     /// Check if a team exists
+    #[must_use] 
     pub fn team_exists(&self, name: &str) -> bool {
         self.resolver.team_dir(name).exists()
     }
 
     /// Get the path resolver
+    #[must_use] 
     pub fn resolver(&self) -> &PathResolver {
         &self.resolver
     }
@@ -279,13 +282,13 @@ impl TeamService {
         // Validate team exists
         let team_info = self.get_team(name).await?;
         if team_info.is_none() {
-            anyhow::bail!("Team '{}' not found", name);
+            anyhow::bail!("Team '{name}' not found");
         }
 
         // Get all agents in the team
         let agents = self.get_team_agents(name).await?;
         if agents.is_empty() {
-            anyhow::bail!("Team '{}' has no agents to export", name);
+            anyhow::bail!("Team '{name}' has no agents to export");
         }
 
         // Prepare agents for export
@@ -294,7 +297,7 @@ impl TeamService {
             // Generate a new identity for export
             let identity = Identity::new(agent_name, crate::identity::did::DIDScope::Local)
                 .await
-                .with_context(|| format!("Failed to create identity for agent: {}", agent_name))?;
+                .with_context(|| format!("Failed to create identity for agent: {agent_name}"))?;
 
             agent_exports.push((agent_name.clone(), config.clone(), identity));
         }
@@ -312,7 +315,7 @@ impl TeamService {
             include_sessions: !skip_sessions,
             include_workspace: !skip_workspace,
             include_mcp: !skip_mcp,
-            description: description.or_else(|| Some(format!("Exported team: {}", name))),
+            description: description.or_else(|| Some(format!("Exported team: {name}"))),
         };
 
         // Get base directory for workspace/sessions paths
@@ -321,7 +324,7 @@ impl TeamService {
         // Export the team
         let output_path = portable::export_team(name, None, &base_dir, agent_exports, export_opts)
             .await
-            .with_context(|| format!("Failed to export team '{}'", name))?;
+            .with_context(|| format!("Failed to export team '{name}'"))?;
 
         Ok(TeamExportResult {
             name: name.to_string(),
@@ -341,7 +344,7 @@ impl TeamService {
         let path = std::path::PathBuf::from(file_path);
 
         if !path.exists() {
-            anyhow::bail!("File not found: {}", file_path);
+            anyhow::bail!("File not found: {file_path}");
         }
 
         // Create the team if it doesn't exist
@@ -350,13 +353,12 @@ impl TeamService {
         if !self.team_exists(team_name) {
             self.create_team(
                 team_name,
-                Some(&format!("Imported team from {}", file_path)),
+                Some(&format!("Imported team from {file_path}")),
             )
             .await?;
         } else if !force {
             anyhow::bail!(
-                "Team '{}' already exists. Use --force to overwrite.",
-                team_name
+                "Team '{team_name}' already exists. Use --force to overwrite."
             );
         }
 
@@ -378,7 +380,7 @@ impl TeamService {
         // Import the team with correct base directory
         let result = portable::import_team_with_base_dir(&path, &config_dir, import_opts)
             .await
-            .with_context(|| format!("Failed to import team from '{}'", file_path))?;
+            .with_context(|| format!("Failed to import team from '{file_path}'"))?;
 
         Ok(TeamImportResult {
             name: result.name,
@@ -393,9 +395,9 @@ async fn load_team_metadata(team_dir: &PathBuf) -> Result<TeamMetadata> {
     let metadata_path = team_dir.join("team.toml");
     let content = tokio::fs::read_to_string(&metadata_path)
         .await
-        .with_context(|| format!("Failed to read team metadata from {:?}", metadata_path))?;
+        .with_context(|| format!("Failed to read team metadata from {metadata_path:?}"))?;
     let metadata: TeamMetadata = toml::from_str(&content)
-        .with_context(|| format!("Failed to parse team metadata from {:?}", metadata_path))?;
+        .with_context(|| format!("Failed to parse team metadata from {metadata_path:?}"))?;
     Ok(metadata)
 }
 
@@ -476,10 +478,10 @@ fn map_validation_error(_name: &str, e: ValidationError) -> anyhow::Error {
     match e {
         ValidationError::Empty => anyhow::anyhow!("Team name cannot be empty"),
         ValidationError::TooLong(max) => {
-            anyhow::anyhow!("Team name exceeds maximum length of {} characters", max)
+            anyhow::anyhow!("Team name exceeds maximum length of {max} characters")
         }
         ValidationError::Reserved(reserved) => {
-            anyhow::anyhow!("'{}' is a reserved name and cannot be used", reserved)
+            anyhow::anyhow!("'{reserved}' is a reserved name and cannot be used")
         }
         ValidationError::ContainsPathSeparators => {
             anyhow::anyhow!("Team name cannot contain path separators (/ or \\)")
@@ -488,7 +490,7 @@ fn map_validation_error(_name: &str, e: ValidationError) -> anyhow::Error {
             anyhow::anyhow!("Team name cannot start or end with a hyphen")
         }
         ValidationError::InvalidCharacter(ch) => {
-            anyhow::anyhow!("Team name contains invalid character: '{}'", ch)
+            anyhow::anyhow!("Team name contains invalid character: '{ch}'")
         }
     }
 }

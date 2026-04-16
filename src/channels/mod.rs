@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot;
 
-/// Event stream returned by StatelessAgentService
+/// Event stream returned by `StatelessAgentService`
 ///
 /// This is the unified interface between service and presentation layers.
 /// Channels consume this stream to produce appropriate output.
@@ -191,7 +191,7 @@ pub trait Channel: Send + Sync {
     /// - HTTP channels convert to SSE
     /// - WebSocket channels convert to WS messages
     ///
-    /// Default implementation collects events into ChannelOutput.
+    /// Default implementation collects events into `ChannelOutput`.
     async fn process_stream(&self, event_stream: EventStream) -> Result<ChannelOutput> {
         default_process_stream(event_stream).await
     }
@@ -232,9 +232,9 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
                 total_tokens,
                 ..
             } => {
-                output.usage.input = prompt_tokens as u64;
-                output.usage.output = completion_tokens as u64;
-                output.usage.total = total_tokens as u64;
+                output.usage.input = u64::from(prompt_tokens);
+                output.usage.output = u64::from(completion_tokens);
+                output.usage.total = u64::from(total_tokens);
             }
             AgenticEvent::Lifecycle { phase, error, .. } => {
                 match phase {

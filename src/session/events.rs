@@ -1,11 +1,11 @@
 //! Session Event Types
 //!
-//! Defines all event types per DATA_MODEL.md §5.3:
+//! Defines all event types per `DATA_MODEL.md` §5.3:
 //! - session.created, user.message, assistant.message, thinking
 //! - tool.call, tool.result, spawn.request, spawn.result
 //! - a2a.sent, a2a.received, hook.trigger, system, session.ended
 //!
-//! # Migration Note: MessageV2
+//! # Migration Note: `MessageV2`
 //!
 //! The `MessageV2` variant with `SessionMessage` is the unified format
 //! for all messages. Legacy formats have been removed in Phase 5.
@@ -18,7 +18,7 @@ pub use crate::session::message::{MessageSource, RoleMetadata, SessionMessage, T
 
 /// Event envelope - every line in JSONL shares this structure
 ///
-/// Note: The `type` field comes from the SessionEvent enum tag, not from here.
+/// Note: The `type` field comes from the `SessionEvent` enum tag, not from here.
 /// This avoids serialization conflicts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
@@ -30,6 +30,7 @@ pub struct EventEnvelope {
 
 impl EventEnvelope {
     /// Create a new event envelope with current timestamp
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             id: generate_event_id(),
@@ -231,10 +232,10 @@ pub struct HookTriggerEvent {
     pub envelope: EventEnvelope,
     /// Type of hook
     pub hook_type: HookType,
-    /// Schedule (for cron) or path (for webhook/file_watch)
+    /// Schedule (for cron) or path (for `webhook/file_watch`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule: Option<String>,
-    /// Payload data (decoded request body for webhooks, file info for file_watch)
+    /// Payload data (decoded request body for webhooks, file info for `file_watch`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<serde_json::Value>,
 }
@@ -244,7 +245,7 @@ pub struct HookTriggerEvent {
 pub struct SystemEvent {
     #[serde(flatten)]
     pub envelope: EventEnvelope,
-    /// Event name (e.g., "context_truncated", "session_resumed")
+    /// Event name (e.g., "`context_truncated`", "`session_resumed`")
     pub event: String,
     /// Event details
     pub detail: serde_json::Value,
@@ -274,7 +275,7 @@ pub enum SessionEndReason {
     UserClosed,
     /// Instance was stopped while session was active
     InstanceStopped,
-    /// Session exceeded session_timeout_seconds
+    /// Session exceeded `session_timeout_seconds`
     IdleTimeout,
     /// Hard token limit hit
     MaxTokensReached,
@@ -328,6 +329,7 @@ pub enum SessionEvent {
 
 impl SessionEvent {
     /// Get the event envelope
+    #[must_use] 
     pub fn envelope(&self) -> &EventEnvelope {
         match self {
             SessionEvent::SessionCreated(e) => &e.envelope,
@@ -346,6 +348,7 @@ impl SessionEvent {
     }
 
     /// Get the event type as string (from the enum variant)
+    #[must_use] 
     pub fn event_type(&self) -> &'static str {
         match self {
             SessionEvent::SessionCreated(_) => "session.created",
@@ -364,16 +367,19 @@ impl SessionEvent {
     }
 
     /// Check if this is a session.ended event
+    #[must_use] 
     pub fn is_session_ended(&self) -> bool {
         matches!(self, SessionEvent::SessionEnded(_))
     }
 
     /// Check if this is a message event
+    #[must_use] 
     pub fn is_message(&self) -> bool {
         matches!(self, SessionEvent::MessageV2(_))
     }
 
     /// Check if this is an assistant message
+    #[must_use] 
     pub fn is_assistant_message(&self) -> bool {
         match self {
             SessionEvent::MessageV2(m) => m.role() == crate::types::message::MessageRole::Assistant,
@@ -382,6 +388,7 @@ impl SessionEvent {
     }
 
     /// Get content from assistant message (for title generation)
+    #[must_use] 
     pub fn assistant_content(&self) -> Option<String> {
         match self {
             SessionEvent::MessageV2(m)
@@ -393,7 +400,8 @@ impl SessionEvent {
         }
     }
 
-    /// Get the SessionMessage if this is a message event
+    /// Get the `SessionMessage` if this is a message event
+    #[must_use] 
     pub fn as_message(&self) -> Option<SessionMessage> {
         match self {
             SessionEvent::MessageV2(m) => Some(m.clone()),
@@ -405,10 +413,11 @@ impl SessionEvent {
     // Display/View Methods
     // ====================================================================================
 
-    /// Get display type for CLI/API (replaces HistoryEvent type discrimination)
+    /// Get display type for CLI/API (replaces `HistoryEvent` type discrimination)
     ///
     /// Returns a stable string identifier for the event type, suitable for
     /// display in CLI tools and API responses.
+    #[must_use] 
     pub fn display_type(&self) -> &str {
         match self {
             SessionEvent::SessionCreated(_) => "session.created",
@@ -437,16 +446,19 @@ impl SessionEvent {
 // ====================================================================================
 
 /// Generate a unique event ID
+#[must_use] 
 pub fn generate_event_id() -> String {
     format!("evt_{}", uuid::Uuid::new_v4().simple())
 }
 
 /// Generate a unique message ID
+#[must_use] 
 pub fn generate_message_id() -> String {
     format!("msg_{}", uuid::Uuid::new_v4().simple())
 }
 
 /// Generate a unique tool call ID
+#[must_use] 
 pub fn generate_tool_call_id() -> String {
     format!("call_{}", uuid::Uuid::new_v4().simple())
 }

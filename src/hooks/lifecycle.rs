@@ -17,6 +17,7 @@ pub struct LifecycleEmitter {
 
 impl LifecycleEmitter {
     /// Create a new lifecycle emitter
+    #[must_use] 
     pub fn new(broadcaster: Arc<EventBroadcaster>) -> Self {
         Self { broadcaster }
     }

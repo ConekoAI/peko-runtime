@@ -1,4 +1,4 @@
-//! Async Tool Executor - Integration of UnifiedAsyncTool with Engine
+//! Async Tool Executor - Integration of `UnifiedAsyncTool` with Engine
 //!
 //! Provides async tool execution capabilities with:
 //! - Capability detection (auto-detect async support)
@@ -74,7 +74,7 @@ pub struct AsyncToolExecutor {
     async_executor: UnifiedAsyncExecutor,
     /// Capability cache for tools
     capability_cache: Arc<RwLock<HashMap<String, AsyncCapability>>>,
-    /// Progress callbacks by task_id
+    /// Progress callbacks by `task_id`
     progress_callbacks: Arc<RwLock<HashMap<String, Box<dyn Fn(ToolProgress) + Send + Sync>>>>,
     /// Default async configuration
     default_config: AsyncToolConfig,
@@ -91,6 +91,7 @@ impl std::fmt::Debug for AsyncToolExecutor {
 
 impl AsyncToolExecutor {
     /// Create a new async tool executor
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             sync_executor: ToolExecutor::new(),
@@ -102,6 +103,7 @@ impl AsyncToolExecutor {
     }
 
     /// Create with custom default timeout
+    #[must_use] 
     pub fn with_timeout(default_timeout: Duration) -> Self {
         Self {
             sync_executor: ToolExecutor::with_timeout(default_timeout),
@@ -116,6 +118,7 @@ impl AsyncToolExecutor {
     }
 
     /// Create with custom async executor (for sharing registries)
+    #[must_use] 
     pub fn with_async_executor(async_executor: UnifiedAsyncExecutor) -> Self {
         Self {
             sync_executor: ToolExecutor::new(),
@@ -127,6 +130,7 @@ impl AsyncToolExecutor {
     }
 
     /// Create with custom async executor and timeout
+    #[must_use] 
     pub fn with_async_executor_and_timeout(
         async_executor: UnifiedAsyncExecutor,
         default_timeout: Duration,
@@ -201,12 +205,12 @@ impl AsyncToolExecutor {
     /// Execute a tool asynchronously
     ///
     /// # Arguments
-    /// * `tool` - The tool to execute (must implement UnifiedAsyncTool)
+    /// * `tool` - The tool to execute (must implement `UnifiedAsyncTool`)
     /// * `params` - Tool parameters
     /// * `context` - Execution context
     ///
     /// # Returns
-    /// Receipt with task_id for tracking
+    /// Receipt with `task_id` for tracking
     #[instrument(skip(self, tool, params, context), fields(tool_name = %tool.name()))]
     pub async fn execute_async(
         &self,
@@ -227,7 +231,7 @@ impl AsyncToolExecutor {
             let receipt = async_tool
                 .execute_async(params, config)
                 .await
-                .with_context(|| format!("Async execution failed for tool '{}'", tool_name))?;
+                .with_context(|| format!("Async execution failed for tool '{tool_name}'"))?;
 
             info!(
                 tool_name,
@@ -255,7 +259,7 @@ impl AsyncToolExecutor {
     /// * `on_progress` - Callback for progress updates
     ///
     /// # Returns
-    /// Receipt with task_id for tracking
+    /// Receipt with `task_id` for tracking
     pub async fn execute_with_progress<F>(
         &self,
         tool: Arc<dyn Tool>,
@@ -289,13 +293,10 @@ impl AsyncToolExecutor {
         task_id: &AsyncTaskId,
     ) -> Result<AsyncTaskStatus> {
         // Query the unified executor
-        match self.async_executor.check_status(task_id).await {
-            Some(status) => Ok(status),
-            None => {
-                // Task not found in executor, might be completed
-                debug!(tool_name, task_id, "Task not found in executor");
-                Ok(AsyncTaskStatus::Pending)
-            }
+        if let Some(status) = self.async_executor.check_status(task_id).await { Ok(status) } else {
+            // Task not found in executor, might be completed
+            debug!(tool_name, task_id, "Task not found in executor");
+            Ok(AsyncTaskStatus::Pending)
         }
     }
 
@@ -344,6 +345,7 @@ impl AsyncToolExecutor {
     }
 
     /// Get default async configuration
+    #[must_use] 
     pub fn default_config(&self) -> &AsyncToolConfig {
         &self.default_config
     }
@@ -389,7 +391,7 @@ impl AsyncToolExecutor {
             task_id,
             status: AsyncTaskStatus::Running,
             estimated_duration_secs: None,
-            check_status_tool: format!("{}_status", tool_name),
+            check_status_tool: format!("{tool_name}_status"),
         })
     }
 }
@@ -421,6 +423,7 @@ pub struct AsyncToolExecutorFactory {
 
 impl AsyncToolExecutorFactory {
     /// Create a new factory
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             shared_executor: UnifiedAsyncExecutor::new(),
@@ -429,6 +432,7 @@ impl AsyncToolExecutorFactory {
     }
 
     /// Create with custom timeout
+    #[must_use] 
     pub fn with_timeout(default_timeout: Duration) -> Self {
         Self {
             shared_executor: UnifiedAsyncExecutor::new(),
@@ -437,6 +441,7 @@ impl AsyncToolExecutorFactory {
     }
 
     /// Create a new executor sharing the async executor
+    #[must_use] 
     pub fn create_executor(&self) -> AsyncToolExecutor {
         AsyncToolExecutor::with_async_executor_and_timeout(
             self.shared_executor.clone(),
@@ -454,7 +459,7 @@ impl Default for AsyncToolExecutorFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{Tool, ToolContext};
+    use crate::tools::Tool;
     use async_trait::async_trait;
     use serde_json::json;
 

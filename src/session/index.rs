@@ -1,12 +1,12 @@
 //! Unified Session Index (TDD-002)
 //!
 //! Two-file architecture:
-//! - sessions.json: Session metadata keyed by session_id (HashMap<String, SessionEntry>)
-//! - peers.json: Peer routing keyed by peer_key (HashMap<String, PeerInfo>)
+//! - sessions.json: Session metadata keyed by `session_id` (`HashMap`<String, `SessionEntry`>)
+//! - peers.json: Peer routing keyed by `peer_key` (`HashMap`<String, `PeerInfo`>)
 //!
 //! This provides:
-//! - O(1) lookup by session_id
-//! - O(1) lookup by peer_key (critical for message routing)
+//! - O(1) lookup by `session_id`
+//! - O(1) lookup by `peer_key` (critical for message routing)
 //! - No data duplication
 //! - Clean separation of concerns
 
@@ -35,7 +35,7 @@ pub struct SessionEntry {
     pub updated_at: u64,
     pub message_count: usize,
     pub turn_count: u32,
-    /// Current context window size (total_tokens from last assistant message)
+    /// Current context window size (`total_tokens` from last assistant message)
     pub context_window: usize,
     /// Cumulative input tokens across all assistant messages
     pub total_input_tokens: usize,
@@ -104,7 +104,7 @@ impl SessionEntry {
 
     /// Record token usage
     ///
-    /// `context_window` is the total_tokens from the current assistant message.
+    /// `context_window` is the `total_tokens` from the current assistant message.
     /// `input` and `output` are the incremental tokens for this turn.
     pub fn record_tokens(&mut self, context_window: usize, input: usize, output: usize) {
         self.context_window = context_window;
@@ -125,16 +125,18 @@ impl SessionEntry {
         self.touch();
     }
 
-    /// Convert to SessionMetadata for backward compatibility
+    /// Convert to `SessionMetadata` for backward compatibility
     ///
     /// This is the preferred conversion method when passing to API boundaries.
+    #[must_use] 
     pub fn to_metadata(&self) -> crate::session::metadata::SessionMetadata {
         crate::session::metadata::SessionMetadata::from_entry(self.clone())
     }
 
-    /// Convert to SessionInfo for service layer
+    /// Convert to `SessionInfo` for service layer
     ///
-    /// This is the preferred conversion method when passing to SessionService.
+    /// This is the preferred conversion method when passing to `SessionService`.
+    #[must_use] 
     pub fn to_info(&self) -> crate::common::services::session_service::SessionInfo {
         crate::common::services::session_service::SessionInfo::from(self.clone())
     }
@@ -170,7 +172,7 @@ impl PeerInfo {
     /// Switch to different session
     pub fn switch_to(&mut self, session_id: &str) -> Result<()> {
         if !self.session_ids.contains(&session_id.to_string()) {
-            return Err(anyhow::anyhow!("Session {} not found for peer", session_id));
+            return Err(anyhow::anyhow!("Session {session_id} not found for peer"));
         }
         self.active_session_id = session_id.to_string();
         Ok(())
@@ -186,7 +188,7 @@ impl PeerInfo {
 /// Peer index structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PeerIndex {
-    /// peer_key → peer info
+    /// `peer_key` → peer info
     pub peers: HashMap<String, PeerInfo>,
 }
 
@@ -454,7 +456,7 @@ impl SessionIndex {
         let peer_info = peers
             .peers
             .get_mut(peer_key)
-            .ok_or_else(|| anyhow::anyhow!("Peer {} not found", peer_key))?;
+            .ok_or_else(|| anyhow::anyhow!("Peer {peer_key} not found"))?;
 
         peer_info.switch_to(session_id)?;
         self.peers_modified = true;
@@ -656,7 +658,7 @@ impl SessionIndex {
         };
 
         let mut pruned = 0;
-        let total_sessions: usize;
+        
 
         for session_id in to_prune {
             // Remove from sessions
@@ -676,7 +678,7 @@ impl SessionIndex {
             self.peers_modified = true;
 
             // Delete transcript file
-            let transcript_path = self.dir.join(format!("{}.jsonl", session_id));
+            let transcript_path = self.dir.join(format!("{session_id}.jsonl"));
             if transcript_path.exists() {
                 let _ = fs::remove_file(&transcript_path).await;
             }
@@ -691,7 +693,7 @@ impl SessionIndex {
 
         // Get total count for report
         let sessions = self.load_sessions().await?;
-        total_sessions = sessions.len();
+        let total_sessions: usize = sessions.len();
 
         Ok(MaintenanceReport {
             pruned,

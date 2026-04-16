@@ -113,11 +113,11 @@ impl GrepTool {
     ) -> Result<serde_json::Value> {
         // Compile regex
         let regex = if case_insensitive {
-            Regex::new(&format!("(?i){}", pattern))
+            Regex::new(&format!("(?i){pattern}"))
         } else {
             Regex::new(pattern)
         }
-        .map_err(|e| anyhow::anyhow!("Invalid regex pattern: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Invalid regex pattern: {e}"))?;
 
         // Determine search path
         let search_path = path.map_or_else(
@@ -240,7 +240,7 @@ impl GrepTool {
                     let start = line_num.saturating_sub(context_before);
                     let context: Vec<String> = lines[start..line_num]
                         .iter()
-                        .map(|s| s.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect();
                     match_obj["context_before"] = context.into();
                 }
@@ -249,7 +249,7 @@ impl GrepTool {
                     let end = (line_num + context_after + 1).min(lines.len());
                     let context: Vec<String> = lines[line_num + 1..end]
                         .iter()
-                        .map(|s| s.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect();
                     match_obj["context_after"] = context.into();
                 }
@@ -350,7 +350,7 @@ impl GrepTool {
 
     /// Simple glob matching for file filtering
     fn simple_glob_match(name: &str, pattern: &str) -> bool {
-        GlobPattern::new(pattern).map_or(false, |p: GlobPattern| p.matches(name))
+        GlobPattern::new(pattern).is_ok_and(|p: GlobPattern| p.matches(name))
     }
 }
 
@@ -484,7 +484,7 @@ Find where a function is called:
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: GrepArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         self.grep(
             &args.pattern,
@@ -652,7 +652,7 @@ mod tests {
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
         // Create file with many matches
-        let content: String = (0..100).map(|i| format!("line{}\n", i)).collect();
+        let content: String = (0..100).map(|i| format!("line{i}\n")).collect();
         fs::write(temp_dir.path().join("test.txt"), content)
             .await
             .unwrap();

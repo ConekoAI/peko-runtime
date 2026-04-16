@@ -1,7 +1,7 @@
 //! Tool Execution Service
 //!
 //! Centralized service for tool execution with parameter injection, panic isolation,
-//! and timeout handling. Part of ExtensionCore's shared services.
+//! and timeout handling. Part of `ExtensionCore`'s shared services.
 //!
 //! This is the unified execution service used by ALL tool handlers (built-in, MCP, Universal).
 //! It provides consistent:
@@ -72,6 +72,7 @@ impl Default for ToolExecutionService {
 
 impl ToolExecutionService {
     /// Create a new tool execution service with default timeout
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             default_timeout: Duration::from_secs(120),
@@ -79,6 +80,7 @@ impl ToolExecutionService {
     }
 
     /// Create with custom default timeout
+    #[must_use] 
     pub fn with_timeout(default_timeout: Duration) -> Self {
         Self { default_timeout }
     }
@@ -164,7 +166,7 @@ impl ToolExecutionService {
                             "Unknown panic".to_string()
                         };
 
-                        Err(anyhow::anyhow!("Tool panicked: {}", panic_msg))
+                        Err(anyhow::anyhow!("Tool panicked: {panic_msg}"))
                     }
                 }
             }
@@ -184,8 +186,7 @@ impl ToolExecutionService {
                 }
             }
             Err(_) => Err(anyhow::anyhow!(
-                "Tool timed out after {:?}",
-                effective_timeout
+                "Tool timed out after {effective_timeout:?}"
             )),
         }
     }
@@ -260,9 +261,8 @@ impl ToolExecutionService {
             for name in reserved.names() {
                 if obj.contains_key(name) {
                     anyhow::bail!(
-                        "Parameter '{}' is reserved and cannot be provided by user. \
-                         It will be injected by the runtime.",
-                        name
+                        "Parameter '{name}' is reserved and cannot be provided by user. \
+                         It will be injected by the runtime."
                     );
                 }
             }
@@ -314,6 +314,7 @@ impl ToolExecutionService {
     ///
     /// # Returns
     /// Filtered schema without reserved parameters
+    #[must_use] 
     pub fn filter_schema_for_llm(&self, schema: &Value, reserved: &ReservedParamsConfig) -> Value {
         use crate::tools::shared::filter_reserved_params;
 
@@ -324,6 +325,7 @@ impl ToolExecutionService {
     /// Get exposed parameters (schema without reserved params)
     ///
     /// Convenience method that filters the schema for LLM visibility.
+    #[must_use] 
     pub fn get_exposed_schema(
         &self,
         full_schema: &Value,
@@ -344,6 +346,7 @@ pub struct ToolExecutionConfig {
 
 impl ToolExecutionConfig {
     /// Create new execution config
+    #[must_use] 
     pub fn new(reserved_params: ReservedParamsConfig, full_schema: Value) -> Self {
         Self {
             reserved_params,
@@ -352,6 +355,7 @@ impl ToolExecutionConfig {
     }
 
     /// Create config with empty reserved params
+    #[must_use] 
     pub fn with_schema(full_schema: Value) -> Self {
         Self {
             reserved_params: ReservedParamsConfig::new(),
@@ -360,6 +364,7 @@ impl ToolExecutionConfig {
     }
 
     /// Add reserved params to config (builder pattern)
+    #[must_use] 
     pub fn with_reserved_params(mut self, reserved: ReservedParamsConfig) -> Self {
         self.reserved_params = reserved;
         self
@@ -369,7 +374,7 @@ impl ToolExecutionConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::services::reserved_params::{ParamSource, ReservedParamsConfig};
+    use crate::extensions::services::reserved_params::ReservedParamsConfig;
     use serde_json::json;
 
     #[tokio::test]
@@ -403,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_validate_user_params_ok() {
-        let service = ToolExecutionService::new();
+        let _service = ToolExecutionService::new();
 
         let reserved = ReservedParamsConfig::new().with_runtime("agent_id", "agent_id");
 
@@ -414,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_validate_user_params_fails_on_reserved() {
-        let service = ToolExecutionService::new();
+        let _service = ToolExecutionService::new();
 
         let reserved = ReservedParamsConfig::new().with_runtime("agent_id", "agent_id");
 
@@ -427,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_inject_reserved_params() {
-        let service = ToolExecutionService::new();
+        let _service = ToolExecutionService::new();
 
         let reserved = ReservedParamsConfig::new()
             .with_static("static_param", "static_value")

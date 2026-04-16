@@ -55,7 +55,7 @@ pub enum AgenticEvent {
         error: Option<String>,
     },
 
-    /// Assistant text delta or block (DEPRECATED: use AssistantText instead)
+    /// Assistant text delta or block (DEPRECATED: use `AssistantText` instead)
     ///
     /// In streaming mode, text arrives as deltas.
     /// In block mode, text arrives as complete blocks.
@@ -208,7 +208,7 @@ pub enum AgenticEvent {
 
     /// Text streaming delta (for true streaming mode)
     ///
-    /// Unlike AssistantText (complete block), this is a raw delta
+    /// Unlike `AssistantText` (complete block), this is a raw delta
     /// that channels can render immediately or buffer.
     /// This is the primary event for token-by-token streaming.
     AssistantDelta {

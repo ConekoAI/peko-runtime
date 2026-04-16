@@ -61,7 +61,8 @@ pub struct AgentInfo {
 }
 
 impl AgentInfo {
-    /// Create a new AgentInfo with required fields
+    /// Create a new `AgentInfo` with required fields
+    #[must_use] 
     pub fn new(did: String, name: String, state: AgentState) -> Self {
         Self {
             did: did.clone(),
@@ -85,12 +86,14 @@ impl AgentInfo {
     }
 
     /// Set image reference
+    #[must_use] 
     pub fn with_image_ref(mut self, image_ref: String) -> Self {
         self.image_ref = Some(image_ref);
         self
     }
 
     /// Set team info
+    #[must_use] 
     pub fn with_team(mut self, team_id: String, role: String) -> Self {
         self.team_id = Some(team_id);
         self.role = Some(role);

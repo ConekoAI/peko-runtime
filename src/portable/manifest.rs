@@ -46,6 +46,7 @@ fn default_registry() -> String {
 
 /// MCP configuration section in manifest
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct McpManifestConfig {
     /// List of MCP servers
     #[serde(default, rename = "server")]
@@ -54,6 +55,7 @@ pub struct McpManifestConfig {
 
 /// Tool registry configuration section
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ToolRegistryConfig {
     /// Tools to fetch from registry on import
     #[serde(default)]
@@ -178,21 +180,7 @@ pub struct Signatures {
     pub algorithm: String,
 }
 
-impl Default for McpManifestConfig {
-    fn default() -> Self {
-        Self {
-            servers: Vec::new(),
-        }
-    }
-}
 
-impl Default for ToolRegistryConfig {
-    fn default() -> Self {
-        Self {
-            required: Vec::new(),
-        }
-    }
-}
 
 impl AgentManifest {
     /// Create a new manifest with default values

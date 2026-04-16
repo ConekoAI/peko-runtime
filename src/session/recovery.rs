@@ -113,7 +113,7 @@ impl SessionRecovery {
                 warn!("Failed to clean up temp files for {}: {}", session_id, e);
             } else {
                 // Check if tmp file existed and was cleaned
-                let tmp_path = dir.join(format!("{}.tmp", session_id));
+                let tmp_path = dir.join(format!("{session_id}.tmp"));
                 if !tmp_path.exists() {
                     report.temp_files_cleaned += 1;
                 }
@@ -145,7 +145,7 @@ impl SessionRecovery {
         }
 
         // Check if session has ended
-        let has_ended = events.iter().any(|e| e.is_session_ended());
+        let has_ended = events.iter().any(super::events::SessionEvent::is_session_ended);
 
         if !has_ended {
             // Session didn't end cleanly
@@ -276,8 +276,8 @@ impl RecoveryState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::events::{EventEnvelope, SessionCreatedEvent};
-    use chrono::Utc;
+    
+    
     use tempfile::TempDir;
 
     #[tokio::test]

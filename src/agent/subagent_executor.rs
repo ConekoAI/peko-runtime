@@ -175,6 +175,7 @@ impl SubagentExecutor {
     }
 
     /// Set the provider for LLM execution
+    #[must_use] 
     pub fn with_provider(mut self, provider: Arc<crate::providers::Provider>) -> Self {
         self.provider = Some(provider);
         self
@@ -349,7 +350,7 @@ impl SubagentExecutor {
 
                     // Execute with timeout
                     let result = if timeout > 0 {
-                        match tokio::time::timeout(
+                        if let Ok(r) = tokio::time::timeout(
                             tokio::time::Duration::from_secs(timeout),
                             execute_subagent_task(
                                 &agent_name,
@@ -361,18 +362,14 @@ impl SubagentExecutor {
                                 session_manager_clone,
                             ),
                         )
-                        .await
-                        {
-                            Ok(r) => r,
-                            Err(_) => {
-                                warn!(
-                                    "Subagent timed out: run_id={} timeout={}s",
-                                    run_id_clone, timeout
-                                );
-                                Err(anyhow::anyhow!(
-                                    "Subagent execution timed out after {timeout} seconds"
-                                ))
-                            }
+                        .await { r } else {
+                            warn!(
+                                "Subagent timed out: run_id={} timeout={}s",
+                                run_id_clone, timeout
+                            );
+                            Err(anyhow::anyhow!(
+                                "Subagent execution timed out after {timeout} seconds"
+                            ))
                         }
                     } else {
                         execute_subagent_task(
@@ -482,21 +479,20 @@ impl SubagentExecutor {
         let run = self
             .get_run(&run_id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("Run {} not found after completion", run_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Run {run_id} not found after completion"))?;
 
         match wait_result {
             Ok(WaitResult::Completed { .. }) => Ok(run),
-            Ok(WaitResult::Failed { error }) => Err(anyhow::anyhow!("Subagent failed: {}", error)),
+            Ok(WaitResult::Failed { error }) => Err(anyhow::anyhow!("Subagent failed: {error}")),
             Ok(WaitResult::Cancelled) => Err(anyhow::anyhow!("Subagent was cancelled")),
             Ok(WaitResult::Timeout) => {
                 // Cancel the run on timeout
                 self.cancel(&run_id).await.ok();
                 Err(anyhow::anyhow!(
-                    "Subagent execution timed out after {}s",
-                    timeout_secs
+                    "Subagent execution timed out after {timeout_secs}s"
                 ))
             }
-            Err(e) => Err(anyhow::anyhow!("Error waiting for subagent: {}", e)),
+            Err(e) => Err(anyhow::anyhow!("Error waiting for subagent: {e}")),
         }
     }
 

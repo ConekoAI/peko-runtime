@@ -1,7 +1,7 @@
-//! ConfigAuthority - Central Agent Configuration System
+//! `ConfigAuthority` - Central Agent Configuration System
 //!
 //! This module provides the single central authority for agent configuration
-//! management, replacing the previous dual-system (AgentConfigService + ConfigRegistry).
+//! management, replacing the previous dual-system (`AgentConfigService` + `ConfigRegistry`).
 //!
 //! ## Architecture
 //!

@@ -24,9 +24,9 @@ use std::sync::Arc;
 pub struct BuiltinRegistryConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
-    /// Enable granular filesystem tools (read_file, write_file, glob, grep, str_replace_file)
+    /// Enable granular filesystem tools (`read_file`, `write_file`, glob, grep, `str_replace_file`)
     pub enable_granular_fs: bool,
-    /// Enable write tools (write_file, str_replace_file)
+    /// Enable write tools (`write_file`, `str_replace_file`)
     pub enable_granular_write: bool,
     /// Enable shell tool
     pub enable_shell: bool,
@@ -60,15 +60,15 @@ impl Default for BuiltinRegistryConfig {
 
 /// Built-in tool registry
 ///
-/// Centralizes registration of all built-in tools with ExtensionCore.
+/// Centralizes registration of all built-in tools with `ExtensionCore`.
 pub struct BuiltinRegistry;
 
 impl BuiltinRegistry {
-    /// Register all enabled built-in tools with ExtensionCore
+    /// Register all enabled built-in tools with `ExtensionCore`
     ///
     /// This is the single entry point for registering built-in tools.
-    /// All tools are registered as hooks in ExtensionCore, making them
-    /// discoverable via ToolRegister hook and executable via ToolExecute hook.
+    /// All tools are registered as hooks in `ExtensionCore`, making them
+    /// discoverable via `ToolRegister` hook and executable via `ToolExecute` hook.
     pub async fn register(
         core: &ExtensionCore,
         config: &BuiltinRegistryConfig,
@@ -161,6 +161,7 @@ impl BuiltinRegistry {
     }
 
     /// Get list of all built-in tool names
+    #[must_use] 
     pub fn all_tool_names() -> Vec<&'static str> {
         vec![
             "shell",
@@ -177,6 +178,7 @@ impl BuiltinRegistry {
     }
 
     /// Check if a tool name is a built-in tool
+    #[must_use] 
     pub fn is_builtin(name: &str) -> bool {
         let name_lower = name.to_lowercase();
         Self::all_tool_names()

@@ -9,7 +9,7 @@ use crate::common::identifiers::{
 };
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
-use crate::common::types::agent::*;
+use crate::common::types::agent::{AgentSummary, AgentInfo, AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult, AgentRenameResult, AgentInitRequest, AgentInitResult, AgentUpdateRequest, AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult};
 use crate::identity::Identity;
 use crate::portable::{
     self, ExportOptions as PortableExportOptions, ImportOptions as PortableImportOptions,
@@ -128,6 +128,7 @@ fn build_default_agent_config(name: &str, provider: &str, model: Option<String>)
 
 impl AgentService {
     /// Create a new agent service with the given path resolver
+    #[must_use] 
     pub fn new(resolver: PathResolver) -> Self {
         let team_service = TeamService::new(resolver.clone());
         Self {
@@ -154,9 +155,7 @@ impl AgentService {
             }
 
             let team_name = team_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
+                .file_name().map_or_else(|| "unknown".to_string(), |n| n.to_string_lossy().to_string());
 
             // Apply team filter if specified
             if let Some(filter) = team_filter {
@@ -226,15 +225,12 @@ impl AgentService {
         let mut session_count = 0;
 
         if sessions_dir.exists() {
-            match tokio::fs::read_dir(&sessions_dir).await {
-                Ok(mut entries) => {
-                    while let Ok(Some(entry)) = entries.next_entry().await {
-                        if entry.path().extension().map_or(false, |e| e == "jsonl") {
-                            session_count += 1;
-                        }
+            if let Ok(mut entries) = tokio::fs::read_dir(&sessions_dir).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    if entry.path().extension().is_some_and(|e| e == "jsonl") {
+                        session_count += 1;
                     }
                 }
-                Err(_) => {}
             }
         }
 
@@ -265,7 +261,7 @@ impl AgentService {
             self.team_service
                 .create_team(team, None)
                 .await
-                .context(format!("Failed to auto-create team '{}'", team))?;
+                .context(format!("Failed to auto-create team '{team}'"))?;
         }
 
         let config_path = self.resolver.agent_config(agent_name, Some(team));
@@ -273,9 +269,7 @@ impl AgentService {
         // Check if agent already exists
         if config_path.exists() && !request.force {
             anyhow::bail!(
-                "Agent '{}' already exists in team '{}'. Use --force to overwrite or delete it first.",
-                agent_name,
-                team
+                "Agent '{agent_name}' already exists in team '{team}'. Use --force to overwrite or delete it first."
             );
         }
 
@@ -319,7 +313,7 @@ impl AgentService {
         let config_path = self.resolver.agent_config(agent_name, Some(team));
 
         if !config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+            anyhow::bail!("Agent '{agent_name}' not found in team '{team}'");
         }
 
         // Remove agent config directory
@@ -361,19 +355,17 @@ impl AgentService {
     ) -> Result<AgentRenameResult> {
         // Validate new agent name
         if let Err(e) = validate_agent_name(new_name) {
-            anyhow::bail!("Invalid new agent name '{}': {}", new_name, e);
+            anyhow::bail!("Invalid new agent name '{new_name}': {e}");
         }
 
         let (from_team, old_agent_name) =
-            parse_agent_identifier_with_override(old_name, team.as_deref())?;
-        let target_team = to_team.as_deref().unwrap_or(from_team);
+            parse_agent_identifier_with_override(old_name, team)?;
+        let target_team = to_team.unwrap_or(from_team);
 
         let old_config_path = self.resolver.agent_config(old_agent_name, Some(from_team));
         if !old_config_path.exists() {
             anyhow::bail!(
-                "Agent '{}' not found in team '{}'",
-                old_agent_name,
-                from_team
+                "Agent '{old_agent_name}' not found in team '{from_team}'"
             );
         }
 
@@ -381,9 +373,7 @@ impl AgentService {
         let target_team_dir = self.resolver.team_dir(target_team);
         if !target_team_dir.exists() {
             anyhow::bail!(
-                "Target team '{}' does not exist. Create it first with: pekobot team create {}",
-                target_team,
-                target_team
+                "Target team '{target_team}' does not exist. Create it first with: pekobot team create {target_team}"
             );
         }
 
@@ -391,9 +381,7 @@ impl AgentService {
         let new_config_path = self.resolver.agent_config(new_name, Some(target_team));
         if new_config_path.exists() {
             anyhow::bail!(
-                "Agent '{}' already exists in team '{}'",
-                new_name,
-                target_team
+                "Agent '{new_name}' already exists in team '{target_team}'"
             );
         }
 
@@ -521,7 +509,7 @@ impl AgentService {
         let config_path = self.resolver.agent_config(agent_name, Some(team));
 
         if !config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+            anyhow::bail!("Agent '{agent_name}' not found in team '{team}'");
         }
 
         // Load existing config
@@ -568,13 +556,13 @@ impl AgentService {
         let config_path = self.resolver.agent_config(agent_name, Some(team));
 
         if !config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+            anyhow::bail!("Agent '{agent_name}' not found in team '{team}'");
         }
 
         let output_path = opts
             .output_path
             .clone()
-            .unwrap_or_else(|| PathBuf::from(format!("{}_{}.agent", team, agent_name)));
+            .unwrap_or_else(|| PathBuf::from(format!("{team}_{agent_name}.agent")));
 
         // Load agent config
         let config_content = tokio::fs::read_to_string(&config_path).await?;
@@ -609,7 +597,7 @@ impl AgentService {
             include_mcp: true,
             include_tool_registry: true,
             rotate_keys: false,
-            description: Some(format!("Exported agent {} from team {}", agent_name, team)),
+            description: Some(format!("Exported agent {agent_name} from team {team}")),
             output_path: Some(output_path.to_string_lossy().to_string()),
             mcp_config_path,
             tools_dir: Some(tools_dir),
@@ -682,6 +670,7 @@ impl AgentService {
     }
 
     /// Check if an agent exists
+    #[must_use] 
     pub fn agent_exists(&self, name: &str, team: Option<&str>) -> bool {
         if let Ok((team, agent_name)) = parse_agent_identifier_with_override(name, team) {
             self.resolver.agent_config(agent_name, Some(team)).exists()
@@ -691,6 +680,7 @@ impl AgentService {
     }
 
     /// Get the path resolver
+    #[must_use] 
     pub fn resolver(&self) -> &PathResolver {
         &self.resolver
     }
@@ -707,13 +697,13 @@ impl AgentService {
         workspace_dir: &Path,
     ) -> Result<()> {
         // Create .gitignore
-        let gitignore_content = r#"# Pekobot agent - gitignore
+        let gitignore_content = r"# Pekobot agent - gitignore
 sessions/
 workspace/
 memories/
 cron.json
 *.log
-"#;
+";
         tokio::fs::write(agent_dir.join(".gitignore"), gitignore_content).await?;
 
         // Create empty directories for tools and skills (in agent_dir, not workspace)
@@ -736,13 +726,11 @@ fn map_agent_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
         ValidationError::Empty => anyhow::anyhow!("Agent name cannot be empty"),
         ValidationError::TooLong(max) => {
             anyhow::anyhow!(
-                "Agent name '{}' exceeds maximum length of {} characters",
-                name,
-                max
+                "Agent name '{name}' exceeds maximum length of {max} characters"
             )
         }
         ValidationError::Reserved(reserved) => {
-            anyhow::anyhow!("'{}' is a reserved name and cannot be used", reserved)
+            anyhow::anyhow!("'{reserved}' is a reserved name and cannot be used")
         }
         ValidationError::ContainsPathSeparators => {
             anyhow::anyhow!("Agent name cannot contain path separators (/ or \\)")
@@ -751,7 +739,7 @@ fn map_agent_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
             anyhow::anyhow!("Agent name cannot start or end with a hyphen")
         }
         ValidationError::InvalidCharacter(ch) => {
-            anyhow::anyhow!("Agent name contains invalid character: '{}'", ch)
+            anyhow::anyhow!("Agent name contains invalid character: '{ch}'")
         }
     }
 }

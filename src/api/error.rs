@@ -77,6 +77,7 @@ pub enum ApiError {
 
 impl ApiError {
     /// Get the error code for this error (machine-readable)
+    #[must_use] 
     pub fn code(&self) -> &'static str {
         match self {
             ApiError::Internal { .. } => "internal_error",
@@ -89,6 +90,7 @@ impl ApiError {
     }
 
     /// Get the HTTP status code for this error
+    #[must_use] 
     pub fn status_code(&self) -> StatusCode {
         match self {
             ApiError::Internal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
@@ -101,6 +103,7 @@ impl ApiError {
     }
 
     /// Get the request ID for this error
+    #[must_use] 
     pub fn request_id(&self) -> &str {
         match self {
             ApiError::Internal { request_id, .. } => request_id,
@@ -220,6 +223,7 @@ impl ApiError {
     }
 
     /// Add details to a bad request error
+    #[must_use] 
     pub fn with_details(self, details: serde_json::Value) -> Self {
         match self {
             Self::BadRequest {
@@ -248,11 +252,11 @@ impl IntoResponse for ApiError {
                 resource_type,
                 resource_id,
                 ..
-            } => format!("{} not found: {}", resource_type, resource_id),
+            } => format!("{resource_type} not found: {resource_id}"),
             ApiError::BadRequest { message, .. } => message.clone(),
             ApiError::ServiceUnavailable { .. } => "Service unavailable".to_string(),
             ApiError::MethodNotAllowed { method, .. } => {
-                format!("HTTP method {} not allowed", method)
+                format!("HTTP method {method} not allowed")
             }
             ApiError::Conflict { message, .. } => message.clone(),
         };

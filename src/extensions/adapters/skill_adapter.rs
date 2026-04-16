@@ -30,6 +30,7 @@ use crate::extensions::core::{
     HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
 use crate::extensions::types::{ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult};
+use crate::extensions::ExtensionServices;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -49,6 +50,7 @@ pub struct SkillAdapter;
 
 impl SkillAdapter {
     /// Create a new skill adapter
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
@@ -175,7 +177,7 @@ impl ExtensionTypeAdapter for SkillAdapter {
         // Use shared parsing utility
         let (skill_frontmatter, _): (SkillFrontmatter, _) =
             parsing::parse_yaml_frontmatter_typed(content)
-                .with_context(|| format!("Failed to parse SKILL.md frontmatter in {:?}", path))?;
+                .with_context(|| format!("Failed to parse SKILL.md frontmatter in {path:?}"))?;
 
         // Convert to ExtensionManifest
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -297,11 +299,12 @@ fn compact_skill_path(path: &Path) -> String {
 /// Read the full content of a skill file
 pub fn read_skill_content(skill_path: &Path) -> Result<String> {
     std::fs::read_to_string(skill_path)
-        .with_context(|| format!("Failed to read skill content from {:?}", skill_path))
+        .with_context(|| format!("Failed to read skill content from {skill_path:?}"))
 }
 
 /// Format skills for inclusion in system prompt
 /// Matches `OpenClaw`'s formatSkillsForPrompt
+#[must_use] 
 pub fn format_skills_for_prompt(skills: &[&DiscoveredSkill]) -> String {
     if skills.is_empty() {
         return String::new();
@@ -322,6 +325,7 @@ pub fn format_skills_for_prompt(skills: &[&DiscoveredSkill]) -> String {
 }
 
 /// Build the complete skills section for system prompt
+#[must_use] 
 pub fn build_skills_prompt(skills: &[&DiscoveredSkill]) -> String {
     let skills_block = format_skills_for_prompt(skills);
     if skills_block.is_empty() {
@@ -341,12 +345,13 @@ Constraints: never read more than one skill up front; only read after selecting.
 }
 
 /// Helper to load skills from directory using the adapter
+#[must_use] 
 pub fn load_skills_from_directory(path: &Path) -> Vec<DiscoveredSkill> {
     let adapter = SkillAdapter::new();
     adapter.discover_skills(path)
 }
 
-/// Register skills with an ExtensionCore
+/// Register skills with an `ExtensionCore`
 pub async fn register_skills_with_core(
     core: &crate::extensions::ExtensionCore,
     skills: Vec<DiscoveredSkill>,
@@ -395,9 +400,9 @@ mod tests {
         std::fs::create_dir(&skill_dir).unwrap();
 
         let content = format!(
-            r#"---
-name: {}
-description: {}
+            r"---
+name: {name}
+description: {description}
 tags: [test]
 author: Test Author
 ---
@@ -405,8 +410,7 @@ author: Test Author
 # Test Skill
 
 This is a test skill.
-"#,
-            name, description
+"
         );
 
         let skill_md = skill_dir.join("SKILL.md");
@@ -456,7 +460,7 @@ This is a test skill.
 
     #[test]
     fn test_parse_frontmatter() {
-        let content = r#"---
+        let content = r"---
 name: test-skill
 description: A test skill
 tags: [test, example]
@@ -466,7 +470,7 @@ author: Test Author
 # Test Skill
 
 This is the body content.
-"#;
+";
 
         let (frontmatter, body) = parsing::parse_yaml_frontmatter(content).unwrap();
         assert!(frontmatter.contains("name: test-skill"));
@@ -531,7 +535,7 @@ This is the body content.
         let path = home.join(".pekobot/skills/docker/SKILL.md");
 
         let compacted = compact_skill_path(&path);
-        assert!(compacted.starts_with("~"));
+        assert!(compacted.starts_with('~'));
     }
 
     #[tokio::test]
@@ -562,12 +566,11 @@ This is the body content.
                 assert!(text.contains("docker: Docker operations"));
                 // Path should be compacted to use ~ for home directory
                 assert!(
-                    text.contains("~") || text.contains(".pekobot"),
-                    "Expected compacted path, got: {}",
-                    text
+                    text.contains('~') || text.contains(".pekobot"),
+                    "Expected compacted path, got: {text}"
                 );
             }
-            _ => panic!("Expected Continue with Text, got {:?}", result),
+            _ => panic!("Expected Continue with Text, got {result:?}"),
         }
     }
 

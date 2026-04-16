@@ -213,9 +213,7 @@ impl TaskManager {
                     };
 
                     Err(anyhow::anyhow!(
-                        "Tool '{}' panicked: {}",
-                        tool_name,
-                        panic_msg
+                        "Tool '{tool_name}' panicked: {panic_msg}"
                     ))
                 }
             }
@@ -230,20 +228,16 @@ impl TaskManager {
                 if e.is_panic() {
                     error!("Task panicked during execution: {}", e);
                     Err(anyhow::anyhow!(
-                        "Tool '{}' task panicked",
-                        tool_name_for_error
+                        "Tool '{tool_name_for_error}' task panicked"
                     ))
                 } else {
                     Err(anyhow::anyhow!(
-                        "Tool '{}' task cancelled",
-                        tool_name_for_error
+                        "Tool '{tool_name_for_error}' task cancelled"
                     ))
                 }
             }
             Err(_) => Err(anyhow::anyhow!(
-                "Tool '{}' timed out after {:?}",
-                tool_name_for_error,
-                timeout
+                "Tool '{tool_name_for_error}' timed out after {timeout:?}"
             )),
         }
     }
@@ -432,7 +426,7 @@ mod tests {
 
         #[async_trait]
         impl Tool for PanicWithNumber {
-            fn name(&self) -> &str {
+            fn name(&self) -> &'static str {
                 "numeric_panicker"
             }
 

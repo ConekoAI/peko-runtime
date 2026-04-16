@@ -1,7 +1,7 @@
 //! Configuration cache wrapper
 //!
 //! Provides in-memory caching for agent configurations with thread-safe
-//! access via RwLock.
+//! access via `RwLock`.
 
 use super::entry::AgentConfigEntry;
 use std::collections::HashMap;
@@ -10,7 +10,7 @@ use tracing::debug;
 
 /// Thread-safe configuration cache
 ///
-/// Uses a HashMap keyed by `"{team}/{agent}"` format, wrapped in an async RwLock
+/// Uses a `HashMap` keyed by `"{team}/{agent}"` format, wrapped in an async `RwLock`
 /// to allow concurrent reads with exclusive writes.
 #[derive(Debug)]
 pub struct ConfigCache {
@@ -25,6 +25,7 @@ impl Default for ConfigCache {
 
 impl ConfigCache {
     /// Create a new empty cache
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
@@ -32,8 +33,9 @@ impl ConfigCache {
     }
 
     /// Generate cache key from team and agent name
+    #[must_use] 
     pub fn cache_key(team: &str, agent: &str) -> String {
-        format!("{}/{}", team, agent)
+        format!("{team}/{agent}")
     }
 
     /// Get an entry from cache
@@ -71,7 +73,7 @@ impl ConfigCache {
 
     /// Get all cached entries for a team
     pub async fn list_by_team(&self, team: &str) -> Vec<AgentConfigEntry> {
-        let _prefix = format!("{}/", team);
+        let _prefix = format!("{team}/");
         let cache = self.cache.read().await;
         cache.values().filter(|e| e.team == team).cloned().collect()
     }
@@ -148,7 +150,7 @@ mod tests {
         let cache = ConfigCache::new();
         for i in 0..3 {
             let entry = AgentConfigEntry {
-                name: format!("agent-{}", i),
+                name: format!("agent-{i}"),
                 team: "default".to_string(),
                 config: AgentConfig::default(),
                 config_path: PathBuf::from("/path/to/config.toml"),

@@ -117,8 +117,7 @@ impl TeamUnpackager {
         let team_dir = self.base_dir.join("teams").join(team_name.clone());
         if team_dir.exists() && !options.force {
             anyhow::bail!(
-                "Team '{}' already exists. Use --force to overwrite.",
-                team_name
+                "Team '{team_name}' already exists. Use --force to overwrite."
             );
         }
 
@@ -136,7 +135,7 @@ impl TeamUnpackager {
             let agent_result = self
                 .import_agent_files(&agent_name, &agent_data, &team_name, &options)
                 .await
-                .with_context(|| format!("Failed to import agent: {}", agent_name))?;
+                .with_context(|| format!("Failed to import agent: {agent_name}"))?;
 
             imported_agents.push(agent_result);
         }
@@ -234,7 +233,7 @@ impl TeamUnpackager {
         let result = unpackager
             .import_from_files(agent_files, agent_opts)
             .await
-            .with_context(|| format!("Failed to import agent: {}", name))?;
+            .with_context(|| format!("Failed to import agent: {name}"))?;
 
         Ok(AgentImportSummary {
             name: result.name,

@@ -37,6 +37,7 @@ pub struct TaskExecutionMetrics {
 
 impl TaskExecutionMetrics {
     /// Create new task metrics
+    #[must_use] 
     pub fn new(task_id: AsyncTaskId, tool_name: String, was_async: bool) -> Self {
         Self {
             task_id,
@@ -63,21 +64,25 @@ impl TaskExecutionMetrics {
     }
 
     /// Get duration (returns elapsed if not complete)
+    #[must_use] 
     pub fn duration(&self) -> Duration {
         self.duration.unwrap_or_else(|| self.start_time.elapsed())
     }
 
     /// Check if task succeeded
+    #[must_use] 
     pub fn succeeded(&self) -> bool {
         matches!(self.final_status, Some(AsyncTaskStatus::Completed { .. }))
     }
 
     /// Check if task failed
+    #[must_use] 
     pub fn failed(&self) -> bool {
         matches!(self.final_status, Some(AsyncTaskStatus::Failed { .. }))
     }
 
     /// Check if task was cancelled
+    #[must_use] 
     pub fn cancelled(&self) -> bool {
         matches!(self.final_status, Some(AsyncTaskStatus::Cancelled))
     }
@@ -163,6 +168,7 @@ pub struct AsyncToolMetricsCollector {
 
 impl AsyncToolMetricsCollector {
     /// Create a new metrics collector
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             active_tasks: Arc::new(RwLock::new(HashMap::new())),
@@ -173,6 +179,7 @@ impl AsyncToolMetricsCollector {
     }
 
     /// Create with custom max completed tasks
+    #[must_use] 
     pub fn with_max_completed_tasks(max: usize) -> Self {
         Self {
             active_tasks: Arc::new(RwLock::new(HashMap::new())),
@@ -285,7 +292,7 @@ impl AsyncToolMetricsCollector {
         let active_count = self.active_tasks.read().await.len();
 
         format!(
-            r#"Async Tool Execution Metrics
+            r"Async Tool Execution Metrics
 =============================
 
 Overall Statistics:
@@ -303,7 +310,7 @@ Average Durations:
 
 Tool Breakdown:
 {}
-"#,
+",
             aggregated.async_executions,
             aggregated.sync_executions,
             aggregated.successful_executions,

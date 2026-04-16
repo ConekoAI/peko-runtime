@@ -102,7 +102,7 @@ pub enum Commands {
     ///   pekobot send myagent "Hello"
     ///   pekobot send myagent --file prompt.txt
     ///   echo "Hello" | pekobot send myagent --stdin
-    ///   pekobot send myagent "Hello" --session sess_xxx
+    ///   pekobot send myagent "Hello" --session `sess_xxx`
     Send(send::SendArgs),
 
     /// Authentication and credential management
@@ -162,9 +162,9 @@ pub enum Commands {
 
 /// Global paths helper
 ///
-/// This struct wraps the common PathResolver to provide CLI-specific
+/// This struct wraps the common `PathResolver` to provide CLI-specific
 /// path resolution. It delegates all path operations to the underlying
-/// PathResolver for consistency with the API.
+/// `PathResolver` for consistency with the API.
 pub struct GlobalPaths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -280,7 +280,7 @@ impl GlobalPaths {
     /// Get agent workspace directory
     ///
     /// Returns the path to an agent's workspace directory.
-    /// Format: <data_dir>/workspaces/<team>/<agent>
+    /// Format: <`data_dir>/workspaces`/<team>/<agent>
     ///
     /// # Arguments
     /// * `agent` - The agent name

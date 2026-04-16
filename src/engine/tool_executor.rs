@@ -2,7 +2,7 @@
 //!
 //! Provides a single interface for executing all tool types with proper context injection.
 //! This ensures Universal Tools, MCP Tools, and built-in tools all receive the same
-//! runtime context (agent_id, session_id, etc.) for reserved parameter injection.
+//! runtime context (`agent_id`, `session_id`, etc.) for reserved parameter injection.
 
 use crate::tools::{Tool, ToolContext};
 use anyhow::Result;
@@ -14,7 +14,7 @@ use tracing::{error, info, instrument};
 /// Context passed to tool execution
 ///
 /// This contains runtime identity information that gets injected into tools
-/// via the ToolContext for reserved parameter support.
+/// via the `ToolContext` for reserved parameter support.
 #[derive(Debug, Clone)]
 pub struct ToolExecutionContext {
     /// Agent identifier
@@ -45,7 +45,7 @@ impl ToolExecutionContext {
         }
     }
 
-    /// Set peer_id
+    /// Set `peer_id`
     #[must_use]
     pub fn with_peer_id(mut self, peer_id: impl Into<String>) -> Self {
         self.peer_id = Some(peer_id.into());
@@ -59,9 +59,9 @@ impl ToolExecutionContext {
         self
     }
 
-    /// Convert to ToolContext for tool execution
+    /// Convert to `ToolContext` for tool execution
     ///
-    /// Creates a ToolContext with identity fields set for reserved parameter injection.
+    /// Creates a `ToolContext` with identity fields set for reserved parameter injection.
     pub fn to_tool_context(&self) -> ToolContext {
         tracing::debug!(
             "ToolExecutionContext::to_tool_context - agent_id={}, session_id={}, workspace={}",
@@ -82,7 +82,7 @@ impl ToolExecutionContext {
 
 /// Unified tool executor
 ///
-/// Replaces TaskManager and provides consistent context injection for all tools.
+/// Replaces `TaskManager` and provides consistent context injection for all tools.
 #[derive(Debug, Clone)]
 pub struct ToolExecutor {
     /// Default timeout for tool execution
@@ -91,6 +91,7 @@ pub struct ToolExecutor {
 
 impl ToolExecutor {
     /// Create a new tool executor with default settings
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             default_timeout: Duration::from_secs(120),
@@ -98,6 +99,7 @@ impl ToolExecutor {
     }
 
     /// Create with custom default timeout
+    #[must_use] 
     pub fn with_timeout(default_timeout: Duration) -> Self {
         Self { default_timeout }
     }
@@ -209,9 +211,7 @@ impl ToolExecutor {
                         };
 
                         Err(anyhow::anyhow!(
-                            "Tool '{}' panicked: {}",
-                            tool_name,
-                            panic_msg
+                            "Tool '{tool_name}' panicked: {panic_msg}"
                         ))
                     }
                 }

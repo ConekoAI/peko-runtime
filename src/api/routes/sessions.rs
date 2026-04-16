@@ -1,13 +1,13 @@
 //! Session Management API Routes
 //!
-//! Implements session endpoints per API_CONTRACT.md §5:
+//! Implements session endpoints per `API_CONTRACT.md` §5:
 //! - GET /agents/{id}/sessions - List sessions
-//! - GET /agents/{id}/sessions/{session_id} - Get session metadata
-//! - GET /agents/{id}/sessions/{session_id}/history - Get session history
-//! - POST /agents/{id}/sessions/{session_id}/branch - Branch session
-//! - DELETE /agents/{id}/sessions/{session_id} - Delete session
+//! - GET /`agents/{id}/sessions/{session_id`} - Get session metadata
+//! - GET /`agents/{id}/sessions/{session_id}/history` - Get session history
+//! - POST /`agents/{id}/sessions/{session_id}/branch` - Branch session
+//! - DELETE /`agents/{id}/sessions/{session_id`} - Delete session
 //!
-//! NOTE: This module now delegates to SessionService for unified handling
+//! NOTE: This module now delegates to `SessionService` for unified handling
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
@@ -181,7 +181,7 @@ impl From<HistoryEvent> for HistoryEventResponse {
                 id: String::new(),
                 event_type: "model.change".to_string(),
                 role: None,
-                content: Some(format!("{} / {}", provider, model_id)),
+                content: Some(format!("{provider} / {model_id}")),
                 tool: None,
                 args: None,
                 tool_call_id: None,
@@ -257,7 +257,7 @@ async fn list_sessions(
         .session_service()
         .list_sessions(&agent_name, None) // TODO: Extract team from agent_name or query param
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to list sessions: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to list sessions: {e}"), ""))?;
 
     // Convert to responses
     let responses: Vec<SessionResponse> = sessions.into_iter().map(Into::into).collect();
@@ -285,7 +285,7 @@ async fn get_session(
         .session_service()
         .get_session(&agent_name, None, &session_id)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to load session: {}", e), ""))?
+        .map_err(|e| ApiError::internal(format!("Failed to load session: {e}"), ""))?
         .ok_or_else(|| ApiError::not_found("session", session_id.clone(), ""))?;
 
     Ok(Json(session.into()))
@@ -315,7 +315,7 @@ async fn get_session_history(
         .session_service()
         .get_history(&agent_name, None, &session_id, query)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to load session history: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to load session history: {e}"), ""))?;
 
     // Convert HistoryEvent to HistoryEventResponse
     let items: Vec<HistoryEventResponse> = result.events.into_iter().map(Into::into).collect();
@@ -344,14 +344,14 @@ async fn branch_session(
         .session_service()
         .branch_session(&agent_name, None, &session_id, None)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to branch session: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to branch session: {e}"), ""))?;
 
     // Get the branched session info
     let new_session = state
         .session_service()
         .get_session(&agent_name, None, &branch_result.new_session_id)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to get branched session: {}", e), ""))?
+        .map_err(|e| ApiError::internal(format!("Failed to get branched session: {e}"), ""))?
         .ok_or_else(|| ApiError::internal("Branched session not found after creation", ""))?;
 
     Ok(Json(BranchResponse {
@@ -372,7 +372,7 @@ async fn delete_session(
         .session_service()
         .delete_session(&agent_name, None, &session_id)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to delete session: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to delete session: {e}"), ""))?;
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

@@ -4,7 +4,7 @@
 //! Gateway plugins provide external integrations like:
 //! - HTTP API gateways
 //! - WebSocket servers
-//! - Message queue connectors (Redis, RabbitMQ, Kafka)
+//! - Message queue connectors (Redis, `RabbitMQ`, Kafka)
 //! - Custom protocol handlers
 //!
 //! Gateway adapters are more complex than other adapters as they typically

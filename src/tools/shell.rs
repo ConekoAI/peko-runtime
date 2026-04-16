@@ -6,7 +6,7 @@
 //! - Security boundary is tool enablement (enabled = full access)
 //!
 //! Note: Async execution and timeout are handled by the framework-level
-//! ToolWrapper using `_async` and `_timeout` parameters.
+//! `ToolWrapper` using `_async` and `_timeout` parameters.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -161,8 +161,8 @@ impl Tool for ShellTool {
 Execute system shell commands. Full shell access including pipes, redirection, and environment variables.
 
 ## Platform Information
-- **OS**: {os}
-- **Shell**: {shell}
+- **OS**: {OS_DISPLAY}
+- **Shell**: {SHELL_DISPLAY}
 
 ## Security Note
 This tool has FULL SYSTEM ACCESS when enabled. It can:
@@ -208,13 +208,7 @@ Environment variables:
 For long-running commands, use the framework-level async parameter:
 ```json
 {{"command": "./long-build-script.sh", "_async": true, "_timeout": 300}}
-```"#,
-            os = OS_DISPLAY,
-            shell = SHELL_DISPLAY,
-            simple_cmd = simple_cmd,
-            pipe_cmd = pipe_cmd,
-            redirect_cmd = redirect_cmd,
-            env_cmd = env_cmd
+```"#
         )
     }
 
@@ -237,7 +231,7 @@ For long-running commands, use the framework-level async parameter:
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: ShellArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         self.execute_command(&args.command, args.cwd.as_deref())
             .await
@@ -266,7 +260,7 @@ mod tests {
         });
 
         let result = tool.execute(params).await;
-        assert!(result.is_ok(), "Failed: {:?}", result);
+        assert!(result.is_ok(), "Failed: {result:?}");
 
         let response = result.unwrap();
         assert!(response["success"].as_bool().unwrap());
@@ -306,7 +300,7 @@ mod tests {
         });
 
         let result = tool.execute(params).await;
-        assert!(result.is_ok(), "Failed: {:?}", result);
+        assert!(result.is_ok(), "Failed: {result:?}");
 
         let response = result.unwrap();
         assert!(response["success"].as_bool().unwrap());

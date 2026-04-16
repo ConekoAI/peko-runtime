@@ -9,7 +9,7 @@
 //! - Agent cold-starts on every request
 //! - Loads config from disk, executes, exits
 //!
-//! NOTE: This module uses the unified EventStream interface (ADR-015)
+//! NOTE: This module uses the unified `EventStream` interface (ADR-015)
 
 use crate::agent::stateless_service::MessageRequest;
 use crate::api::error::ApiError;
@@ -106,7 +106,7 @@ async fn chat_handler(
             .agent_service()
             .execute_message_streaming(msg_request)
             .await
-            .map_err(|e| ApiError::internal(format!("Failed to start stream: {}", e), ""))?;
+            .map_err(|e| ApiError::internal(format!("Failed to start stream: {e}"), ""))?;
 
         // Convert to SSE using adapter
         let (sse_stream, _handle) = event_stream_to_sse(event_stream);
@@ -119,7 +119,7 @@ async fn chat_handler(
     }
 }
 
-/// Process chat with blocking response using StatelessAgentService directly
+/// Process chat with blocking response using `StatelessAgentService` directly
 async fn process_chat_blocking(
     state: AppState,
     agent_name: String,
@@ -137,7 +137,7 @@ async fn process_chat_blocking(
         .agent_service()
         .execute_message(msg_request)
         .await
-        .map_err(|e| ApiError::internal(format!("Execution failed: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Execution failed: {e}"), ""))?;
 
     // Convert tool calls to summaries
     let tool_calls = if result.tool_calls.is_empty() {
@@ -184,7 +184,7 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
+    
     use uuid::Uuid;
 
     #[test]
@@ -221,7 +221,7 @@ mod tests {
         assert_ne!(id1, id2);
     }
 
-    /// Test MessageRequest builder from stateless_service (ADR-016)
+    /// Test `MessageRequest` builder from `stateless_service` (ADR-016)
     #[test]
     fn test_message_request_builder_for_api() {
         let request = MessageRequest::new("my-agent", "Hello")
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(request.timeout_secs, Some(60));
     }
 
-    /// Test MessageRequest defaults for API
+    /// Test `MessageRequest` defaults for API
     #[test]
     fn test_message_request_defaults_for_api() {
         let request = MessageRequest::new("my-agent", "Hello");
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(request.timeout_secs, None);
     }
 
-    /// Test that ChatRequest properly converts to MessageRequest
+    /// Test that `ChatRequest` properly converts to `MessageRequest`
     #[test]
     fn test_chat_request_to_message_request() {
         let chat_req = ChatRequest {
@@ -271,7 +271,7 @@ mod tests {
         assert!(!msg_request.new_session);
     }
 
-    /// Test ChatResponse structure
+    /// Test `ChatResponse` structure
     #[test]
     fn test_chat_response_structure() {
         let response = ChatResponse {
@@ -296,7 +296,7 @@ mod tests {
         assert_eq!(response.usage.total_tokens, 15);
     }
 
-    /// Test ToolCallSummary structure
+    /// Test `ToolCallSummary` structure
     #[test]
     fn test_tool_call_summary() {
         let tool_call = ToolCallSummary {

@@ -3,7 +3,7 @@
 //! SRP: This module ONLY handles message transport over stdio.
 //! No protocol parsing, no execution logic.
 //!
-//! This implementation now uses the shared ProcessTransport to avoid
+//! This implementation now uses the shared `ProcessTransport` to avoid
 //! duplication with MCP transport.
 
 use super::protocol::{Request, Response};
@@ -15,7 +15,7 @@ const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Transport handle for communicating with a tool process
 ///
-/// This is a thin wrapper around the shared ProcessTransport that
+/// This is a thin wrapper around the shared `ProcessTransport` that
 /// adds protocol-specific request/response handling.
 pub struct Transport {
     inner: crate::tools::shared::ProcessTransport,
@@ -26,7 +26,7 @@ impl Transport {
     /// Spawn a tool and create transport
     ///
     /// Automatically detects script files (.py, .js) and uses appropriate interpreter.
-    /// Uses the shared ProcessTransport for unified process management.
+    /// Uses the shared `ProcessTransport` for unified process management.
     pub async fn spawn(executable: impl AsRef<std::path::Path>) -> Result<Self> {
         let inner = crate::tools::shared::ProcessTransport::spawn_default(executable).await?;
 
@@ -37,6 +37,7 @@ impl Transport {
     }
 
     /// Set the request timeout
+    #[must_use] 
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.request_timeout = Duration::from_secs(secs);
         self
@@ -61,7 +62,7 @@ impl Transport {
 
         // Parse response
         let response: Response = serde_json::from_str(&response_json).map_err(|e| {
-            anyhow::anyhow!("Invalid JSON response: {} (error: {})", response_json, e)
+            anyhow::anyhow!("Invalid JSON response: {response_json} (error: {e})")
         })?;
 
         // Verify id matches
@@ -92,6 +93,7 @@ pub struct MockTransport {
 
 #[cfg(test)]
 impl MockTransport {
+    #[must_use] 
     pub fn new(responses: Vec<Response>) -> Self {
         Self {
             responses,

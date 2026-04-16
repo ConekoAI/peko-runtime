@@ -68,38 +68,35 @@ pub fn parse_agent_identifier(input: &str) -> Result<(Option<&str>, &str), Ident
         return Err(IdentifierError::NestedTeams(input.to_string()));
     }
 
-    match input.split_once('/') {
-        Some((team, agent)) => {
-            let team = team.trim();
-            let agent = agent.trim();
+    if let Some((team, agent)) = input.split_once('/') {
+        let team = team.trim();
+        let agent = agent.trim();
 
-            if team.is_empty() {
-                return Err(IdentifierError::EmptyTeam(input.to_string()));
-            }
-
-            if agent.is_empty() {
-                return Err(IdentifierError::EmptyAgent(input.to_string()));
-            }
-
-            // Validate team name
-            if let Err(e) = validate_team_name(team) {
-                return Err(IdentifierError::InvalidTeamName(e.to_string()));
-            }
-
-            // Validate agent name
-            if let Err(e) = validate_agent_name(agent) {
-                return Err(IdentifierError::InvalidAgentName(e.to_string()));
-            }
-
-            Ok((Some(team), agent))
+        if team.is_empty() {
+            return Err(IdentifierError::EmptyTeam(input.to_string()));
         }
-        None => {
-            // No team prefix, validate agent name
-            if let Err(e) = validate_agent_name(input) {
-                return Err(IdentifierError::InvalidAgentName(e.to_string()));
-            }
-            Ok((None, input))
+
+        if agent.is_empty() {
+            return Err(IdentifierError::EmptyAgent(input.to_string()));
         }
+
+        // Validate team name
+        if let Err(e) = validate_team_name(team) {
+            return Err(IdentifierError::InvalidTeamName(e.to_string()));
+        }
+
+        // Validate agent name
+        if let Err(e) = validate_agent_name(agent) {
+            return Err(IdentifierError::InvalidAgentName(e.to_string()));
+        }
+
+        Ok((Some(team), agent))
+    } else {
+        // No team prefix, validate agent name
+        if let Err(e) = validate_agent_name(input) {
+            return Err(IdentifierError::InvalidAgentName(e.to_string()));
+        }
+        Ok((None, input))
     }
 }
 
@@ -232,6 +229,7 @@ pub enum ValidationError {
 }
 
 /// Check if a string looks like a team/agent identifier (contains '/')
+#[must_use] 
 pub fn is_qualified_identifier(input: &str) -> bool {
     input.trim().contains('/') && input.trim().matches('/').count() == 1
 }

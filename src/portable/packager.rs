@@ -276,7 +276,7 @@ impl Packager {
                         let skill_name = path.file_name().unwrap().to_string_lossy();
                         self.export_skill_dir(
                             &path,
-                            &format!("skills/{}", skill_name),
+                            &format!("skills/{skill_name}"),
                             files,
                             manifest,
                         )
@@ -302,7 +302,7 @@ impl Packager {
         while let Some(entry) = entries.next_entry().await? {
             let src_path = entry.path();
             let file_name = entry.file_name().to_string_lossy().to_string();
-            let package_path = format!("{}/{}", package_prefix, file_name);
+            let package_path = format!("{package_prefix}/{file_name}");
 
             if src_path.is_dir() {
                 // Recurse into subdirectories
@@ -361,7 +361,7 @@ impl Packager {
         while let Some(entry) = entries.next_entry().await? {
             let src_path = entry.path();
             let file_name = entry.file_name().to_string_lossy().to_string();
-            let package_path = format!("{}/{}", package_prefix, file_name);
+            let package_path = format!("{package_prefix}/{file_name}");
 
             if src_path.is_dir() {
                 // Recurse into subdirectories
@@ -683,8 +683,8 @@ pub async fn export_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::Identity;
-    use crate::types::agent::AgentConfig;
+    
+    
 
     // Note: These tests would need a mock identity setup
     // For now, just test the options struct

@@ -1,13 +1,13 @@
 //! Team API Routes
 //!
-//! Implements API_CONTRACT.md §6:
+//! Implements `API_CONTRACT.md` §6:
 //! - GET /teams - List teams
 //! - POST /teams - Deploy team
 //! - GET /teams/{id} - Get team details
 //! - DELETE /teams/{id} - Stop and remove team
 //! - POST /teams/{id}/scale - Scale agent instances
 //!
-//! NOTE: This module now delegates to TeamManagementService for unified handling.
+//! NOTE: This module now delegates to `TeamManagementService` for unified handling.
 //! All business logic has been moved to the service layer.
 
 use crate::api::error::ApiError;
@@ -23,7 +23,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Team response object (API_CONTRACT §2.5)
+/// Team response object (`API_CONTRACT` §2.5)
 #[derive(Debug, Clone, Serialize)]
 pub struct TeamResponse {
     pub id: String,
@@ -208,7 +208,7 @@ async fn deploy_team(
         .team_service()
         .deploy_runtime(service_request, state_arc)
         .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to deploy team: {}", e)))?;
+        .map_err(|e| ApiError::internal_error(format!("Failed to deploy team: {e}")))?;
 
     Ok(Json(TeamResponse {
         id: result.id,
@@ -244,7 +244,7 @@ async fn stop_team(
         .team_service()
         .stop_runtime(&id)
         .await
-        .map_err(|e| ApiError::internal_error(format!("Failed to stop team: {}", e)))?;
+        .map_err(|e| ApiError::internal_error(format!("Failed to stop team: {e}")))?;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -271,7 +271,7 @@ async fn scale_team(
         .team_service()
         .scale_runtime(service_request, state_arc)
         .await
-        .map_err(|e| ApiError::invalid_request(format!("Failed to scale team: {}", e)))?;
+        .map_err(|e| ApiError::invalid_request(format!("Failed to scale team: {e}")))?;
 
     Ok(Json(ScaleTeamResponse::from(result)))
 }

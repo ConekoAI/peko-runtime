@@ -1,14 +1,14 @@
-//! Unified session message - wraps types::message::LlmMessage with session context
+//! Unified session message - wraps `types::message::LlmMessage` with session context
 //!
 //! This module provides a single, unified message type that replaces:
-//! - UserMessageEvent
-//! - AssistantMessageEvent
-//! - SystemMessageEvent
-//! - MessageEvent (legacy unified)
-//! - LlmMessageEvent (legacy LLM-native)
+//! - `UserMessageEvent`
+//! - `AssistantMessageEvent`
+//! - `SystemMessageEvent`
+//! - `MessageEvent` (legacy unified)
+//! - `LlmMessageEvent` (legacy LLM-native)
 //!
 //! The new `SessionMessage` type uses SRP-compliant `RoleMetadata` to separate
-//! role-specific concerns while reusing the existing `LlmMessage` from types::message.
+//! role-specific concerns while reusing the existing `LlmMessage` from `types::message`.
 
 use crate::session::events::EventEnvelope;
 use crate::types::message::{ContentBlock, LlmMessage, MessageRole};
@@ -19,8 +19,10 @@ use std::collections::HashMap;
 /// Source of a user message
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MessageSource {
     /// Typed by human
+    #[default]
     User,
     /// Injected by hook trigger
     Hook,
@@ -30,11 +32,6 @@ pub enum MessageSource {
     SpawnParent,
 }
 
-impl Default for MessageSource {
-    fn default() -> Self {
-        MessageSource::User
-    }
-}
 
 /// Token usage statistics
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -66,6 +63,7 @@ pub enum RoleMetadata {
 
 impl RoleMetadata {
     /// Get the message role for this metadata
+    #[must_use] 
     pub fn role(&self) -> MessageRole {
         match self {
             RoleMetadata::User { .. } => MessageRole::User,
@@ -78,10 +76,10 @@ impl RoleMetadata {
 
 /// Unified message event for session storage
 ///
-/// This replaces: UserMessageEvent, AssistantMessageEvent, SystemMessageEvent,
-/// MessageEvent, LlmMessageEvent
+/// This replaces: `UserMessageEvent`, `AssistantMessageEvent`, `SystemMessageEvent`,
+/// `MessageEvent`, `LlmMessageEvent`
 ///
-/// Uses SRP-compliant RoleMetadata to separate role-specific concerns.
+/// Uses SRP-compliant `RoleMetadata` to separate role-specific concerns.
 /// Note: The role field is stored in `message.role` to avoid duplication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMessage {
@@ -92,7 +90,7 @@ pub struct SessionMessage {
     pub message_id: String,
 
     /// The core message content (role, content, timestamp, metadata)
-    /// Note: role is stored here to avoid duplication with RoleMetadata
+    /// Note: role is stored here to avoid duplication with `RoleMetadata`
     #[serde(flatten)]
     pub message: LlmMessage,
 
@@ -198,11 +196,13 @@ impl SessionMessage {
     }
 
     /// Get the message role
+    #[must_use] 
     pub fn role(&self) -> MessageRole {
         self.message.role
     }
 
     /// Get text content (convenience)
+    #[must_use] 
     pub fn text_content(&self) -> String {
         self.message
             .content
@@ -222,6 +222,7 @@ impl SessionMessage {
     }
 
     /// Get message source (if user message)
+    #[must_use] 
     pub fn source(&self) -> Option<MessageSource> {
         match &self.role_metadata {
             RoleMetadata::User { source } => Some(*source),
@@ -230,6 +231,7 @@ impl SessionMessage {
     }
 
     /// Get provider (if assistant message)
+    #[must_use] 
     pub fn provider(&self) -> Option<&str> {
         match &self.role_metadata {
             RoleMetadata::Assistant { provider, .. } => Some(provider),
@@ -238,6 +240,7 @@ impl SessionMessage {
     }
 
     /// Get model (if assistant message)
+    #[must_use] 
     pub fn model(&self) -> Option<&str> {
         match &self.role_metadata {
             RoleMetadata::Assistant { model, .. } => Some(model),
@@ -246,6 +249,7 @@ impl SessionMessage {
     }
 
     /// Get token usage (if assistant message)
+    #[must_use] 
     pub fn usage(&self) -> Option<&TokenUsage> {
         match &self.role_metadata {
             RoleMetadata::Assistant { usage, .. } => Some(usage),
@@ -254,6 +258,7 @@ impl SessionMessage {
     }
 
     /// Get tool call ID (if tool message)
+    #[must_use] 
     pub fn tool_call_id(&self) -> Option<&str> {
         match &self.role_metadata {
             RoleMetadata::Tool { tool_call_id } => Some(tool_call_id),
@@ -261,7 +266,8 @@ impl SessionMessage {
         }
     }
 
-    /// Convert to ChatMessage for provider API
+    /// Convert to `ChatMessage` for provider API
+    #[must_use] 
     pub fn to_chat_message(&self) -> crate::providers::ChatMessage {
         crate::providers::ChatMessage {
             role: match self.role() {
@@ -343,7 +349,7 @@ mod tests {
     fn test_session_message_serde_roundtrip() {
         let msg = SessionMessage::user("Hello", MessageSource::User);
         let json = serde_json::to_string(&msg).unwrap();
-        println!("User message JSON: {}", json);
+        println!("User message JSON: {json}");
         let deserialized: SessionMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.role(), MessageRole::User);
         assert_eq!(deserialized.text_content(), "Hello");
@@ -353,11 +359,11 @@ mod tests {
     fn test_assistant_message_json_format() {
         let msg = SessionMessage::assistant_text("Hi there", "openai", "gpt-4");
         let json = serde_json::to_string_pretty(&msg).unwrap();
-        println!("Assistant message JSON:\n{}", json);
+        println!("Assistant message JSON:\n{json}");
 
         // Verify no duplicate "role" fields
         let role_count = json.matches("\"role\":").count();
-        println!("Number of 'role' fields: {}", role_count);
+        println!("Number of 'role' fields: {role_count}");
         assert_eq!(role_count, 1, "Should have exactly one 'role' field");
 
         // Verify it can be deserialized
@@ -373,11 +379,11 @@ mod tests {
         let msg = SessionMessage::user("Hello", MessageSource::User);
         let event = SessionEvent::MessageV2(msg);
         let json = serde_json::to_string_pretty(&event).unwrap();
-        println!("User SessionEvent::MessageV2 JSON:\n{}", json);
+        println!("User SessionEvent::MessageV2 JSON:\n{json}");
 
         // Verify no duplicate "role" fields
         let role_count = json.matches("\"role\":").count();
-        println!("Number of 'role' fields: {}", role_count);
+        println!("Number of 'role' fields: {role_count}");
         assert_eq!(role_count, 1, "Should have exactly one 'role' field");
 
         // Verify it can be deserialized

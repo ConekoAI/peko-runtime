@@ -1,6 +1,6 @@
 //! Image Manifest Types
 //!
-//! Defines the manifest structure for agent images as per DATA_MODEL §6.
+//! Defines the manifest structure for agent images as per `DATA_MODEL` §6.
 //! Manifests describe the layers that compose an image and are stored
 //! content-addressable by their SHA-256 digest.
 
@@ -71,18 +71,21 @@ impl ImageManifest {
     }
 
     /// Set the base image
+    #[must_use] 
     pub fn with_base(mut self, base: BaseInfo) -> Self {
         self.base = Some(base);
         self
     }
 
     /// Set capability dependencies
+    #[must_use] 
     pub fn with_capabilities(mut self, caps: CapabilityDeps) -> Self {
         self.capabilities = Some(caps);
         self
     }
 
     /// Calculate total size of all layers
+    #[must_use] 
     pub fn total_size_bytes(&self) -> u64 {
         self.layers.iter().map(|l| l.size_bytes).sum()
     }
@@ -90,15 +93,16 @@ impl ImageManifest {
     /// Serialize to JSON string
     pub fn to_json(&self) -> anyhow::Result<String> {
         serde_json::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize manifest: {}", e))
+            .map_err(|e| anyhow::anyhow!("Failed to serialize manifest: {e}"))
     }
 
     /// Deserialize from JSON string
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
-        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("Failed to parse manifest: {}", e))
+        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("Failed to parse manifest: {e}"))
     }
 
     /// Get layer by type
+    #[must_use] 
     pub fn get_layer(&self, layer_type: LayerType) -> Option<&Layer> {
         self.layers.iter().find(|l| l.layer_type == layer_type)
     }
@@ -141,24 +145,26 @@ impl Layer {
     }
 
     /// Set multiple paths
+    #[must_use] 
     pub fn with_paths(mut self, paths: Vec<String>) -> Self {
         self.paths = Some(paths);
         self
     }
 
     /// Get all paths as a Vec
+    #[must_use] 
     pub fn get_paths(&self) -> Vec<&str> {
         if let Some(ref p) = self.path {
             vec![p.as_str()]
         } else if let Some(ref ps) = self.paths {
-            ps.iter().map(|s| s.as_str()).collect()
+            ps.iter().map(std::string::String::as_str).collect()
         } else {
             Vec::new()
         }
     }
 }
 
-/// Layer types as per DATA_MODEL §6.2
+/// Layer types as per `DATA_MODEL` §6.2
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayerType {
@@ -180,6 +186,7 @@ pub enum LayerType {
 
 impl LayerType {
     /// Get the directory name for this layer type (if applicable)
+    #[must_use] 
     pub fn directory(&self) -> Option<&'static str> {
         match self {
             LayerType::Tools => Some("tools"),
@@ -191,6 +198,7 @@ impl LayerType {
     }
 
     /// Get the file name for this layer type (if single file)
+    #[must_use] 
     pub fn filename(&self) -> Option<&'static str> {
         match self {
             LayerType::Config => Some("config.toml"),
@@ -235,23 +243,27 @@ pub struct CapabilityDeps {
 
 impl CapabilityDeps {
     /// Create empty capability deps
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Add tools
+    #[must_use] 
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.tools = Some(tools);
         self
     }
 
     /// Add skills
+    #[must_use] 
     pub fn with_skills(mut self, skills: Vec<String>) -> Self {
         self.skills = Some(skills);
         self
     }
 
     /// Add mcps
+    #[must_use] 
     pub fn with_mcps(mut self, mcps: Vec<String>) -> Self {
         self.mcps = Some(mcps);
         self
@@ -270,7 +282,14 @@ impl ImageDigest {
         let mut digest = digest.into();
 
         // Ensure prefix
-        if !digest.starts_with("sha256:") {
+        if let Some(hex_part) = digest.strip_prefix("sha256:") {
+            // Validate the hex part
+            if hex_part.len() != 64 {
+                return Err(anyhow::anyhow!(
+                    "Invalid digest length: expected sha256: + 64 hex chars"
+                ));
+            }
+        } else {
             // Validate it's a valid hex string
             if digest.len() != 64 {
                 return Err(anyhow::anyhow!(
@@ -281,21 +300,14 @@ impl ImageDigest {
             if !digest.chars().all(|c| c.is_ascii_hexdigit()) {
                 return Err(anyhow::anyhow!("Invalid digest: not a valid hex string"));
             }
-            digest = format!("sha256:{}", digest);
-        } else {
-            // Validate the hex part
-            let hex_part = &digest[7..];
-            if hex_part.len() != 64 {
-                return Err(anyhow::anyhow!(
-                    "Invalid digest length: expected sha256: + 64 hex chars"
-                ));
-            }
+            digest = format!("sha256:{digest}");
         }
 
         Ok(Self { digest })
     }
 
     /// Create from raw bytes (computes the hash)
+    #[must_use] 
     pub fn from_bytes(data: &[u8]) -> Self {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -305,16 +317,19 @@ impl ImageDigest {
     }
 
     /// Get the full digest string (sha256:...)
+    #[must_use] 
     pub fn as_str(&self) -> &str {
         &self.digest
     }
 
     /// Get just the hex part (without sha256: prefix)
+    #[must_use] 
     pub fn hex(&self) -> &str {
         &self.digest[7..]
     }
 
     /// Get the directory name for storage (sha256-abc123...)
+    #[must_use] 
     pub fn dir_name(&self) -> String {
         self.digest.replace(':', "-")
     }
@@ -346,6 +361,7 @@ impl<'de> Deserialize<'de> for ImageDigest {
 }
 
 /// Compute SHA-256 digest of data
+#[must_use] 
 pub fn compute_digest(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -369,7 +385,7 @@ mod tests {
     #[test]
     fn test_image_digest_with_prefix() {
         let hex = "a".repeat(64);
-        let digest = ImageDigest::new(format!("sha256:{}", hex)).unwrap();
+        let digest = ImageDigest::new(format!("sha256:{hex}")).unwrap();
         assert_eq!(digest.hex(), hex);
     }
 

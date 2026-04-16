@@ -1,4 +1,4 @@
-//! ReadFile tool - Read file contents with optional line ranges
+//! `ReadFile` tool - Read file contents with optional line ranges
 //!
 //! Granular read-only file access for agents.
 
@@ -10,7 +10,7 @@ use tokio::fs;
 
 use crate::tools::Tool;
 
-/// ReadFile tool arguments
+/// `ReadFile` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadFileArgs {
     /// Path to the file (relative to workspace or absolute)
@@ -26,14 +26,14 @@ pub struct ReadFileArgs {
     pub encoding: Option<String>,
 }
 
-/// ReadFile tool - Read file contents with granular control
+/// `ReadFile` tool - Read file contents with granular control
 pub struct ReadFileTool {
     /// Default workspace directory (for relative paths)
     workspace_dir: Option<PathBuf>,
 }
 
 impl ReadFileTool {
-    /// Create a new ReadFile tool
+    /// Create a new `ReadFile` tool
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -111,8 +111,8 @@ impl ReadFileTool {
                 let lines: Vec<&str> = content_str.lines().collect();
                 let total = lines.len();
 
-                let start = line_offset.map(|o| o.saturating_sub(1)).unwrap_or(0);
-                let end = n_lines.map(|n| (start + n).min(total)).unwrap_or(total);
+                let start = line_offset.map_or(0, |o| o.saturating_sub(1));
+                let end = n_lines.map_or(total, |n| (start + n).min(total));
 
                 let selected: Vec<&str> = lines.get(start..end).unwrap_or(&[]).to_vec();
 
@@ -231,7 +231,7 @@ Read binary file:
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: ReadFileArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         self.read_file(
             &args.path,

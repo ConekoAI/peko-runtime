@@ -53,19 +53,14 @@ impl AgentValidator {
             agent_name, team
         );
 
-        match self.config_service.get(agent_name, team).await? {
-            Some(entry) => {
-                info!("Validated agent '{}' in team '{}'", entry.name, entry.team);
-                Ok(entry)
-            }
-            None => {
-                let team_str = team.unwrap_or("(any)");
-                Err(anyhow::anyhow!(
-                    "Agent '{}' not found in team '{}'",
-                    agent_name,
-                    team_str
-                ))
-            }
+        if let Some(entry) = self.config_service.get(agent_name, team).await? {
+            info!("Validated agent '{}' in team '{}'", entry.name, entry.team);
+            Ok(entry)
+        } else {
+            let team_str = team.unwrap_or("(any)");
+            Err(anyhow::anyhow!(
+                "Agent '{agent_name}' not found in team '{team_str}'"
+            ))
         }
     }
 
@@ -93,9 +88,7 @@ impl AgentValidator {
                 }
             }
             None => Err(anyhow::anyhow!(
-                "Agent '{}' not found in team '{}'",
-                agent_name,
-                team
+                "Agent '{agent_name}' not found in team '{team}'"
             )),
         }
     }

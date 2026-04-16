@@ -36,7 +36,8 @@ struct CredentialsStore {
 pub struct ConfigIo;
 
 impl ConfigIo {
-    /// Create a new ConfigIo instance
+    /// Create a new `ConfigIo` instance
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
@@ -115,14 +116,15 @@ impl Default for ConfigIo {
 /// 2. Environment variable
 ///
 /// This is the single canonical implementation, replacing duplicate
-/// versions previously found in AgentConfigService and AuthResolver.
+/// versions previously found in `AgentConfigService` and `AuthResolver`.
 #[derive(Debug, Clone)]
 pub struct ApiKeyResolver {
     config_dir: PathBuf,
 }
 
 impl ApiKeyResolver {
-    /// Create a new ApiKeyResolver
+    /// Create a new `ApiKeyResolver`
+    #[must_use] 
     pub fn new(config_dir: PathBuf) -> Self {
         Self { config_dir }
     }

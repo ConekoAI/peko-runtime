@@ -1,12 +1,12 @@
 //! Stateless Agent Service - Cold-start execution for stateless architecture
 //!
-//! This module provides the StatelessAgentService which replaces the AgentPool
+//! This module provides the `StatelessAgentService` which replaces the `AgentPool`
 //! in the stateless cold-start architecture. Instead of maintaining a pool of
 //! running agents, it cold-starts agents on-demand for each request.
 //!
 //! ## Architecture
 //!
-//! - Load configuration from ConfigRegistry (fast, in-memory)
+//! - Load configuration from `ConfigRegistry` (fast, in-memory)
 //! - Spawn new Agent instance per request
 //! - Execute and return result
 //! - Agent is dropped after execution (stateless)
@@ -32,7 +32,7 @@ use tracing::{debug, info, instrument, warn};
 /// Execution request for stateless agent
 #[derive(Debug, Clone)]
 pub struct ExecutionRequest {
-    /// Agent name (registered in ConfigRegistry)
+    /// Agent name (registered in `ConfigRegistry`)
     pub agent_name: String,
     /// Session ID for persistence
     pub session_id: String,
@@ -64,12 +64,14 @@ impl ExecutionRequest {
     }
 
     /// Set execution context
+    #[must_use] 
     pub fn with_context(mut self, context: ExecutionContext) -> Self {
         self.context = Some(context);
         self
     }
 
     /// Set timeout
+    #[must_use] 
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
         self
@@ -87,7 +89,7 @@ pub struct ExecutionContext {
 
 /// Message request for high-level message execution
 ///
-/// This type is used by execute_message() and execute_message_streaming()
+/// This type is used by `execute_message()` and `execute_message_streaming()`
 /// to provide a unified interface for message sending.
 #[derive(Debug, Clone)]
 pub struct MessageRequest {
@@ -140,18 +142,21 @@ impl MessageRequest {
     }
 
     /// Set session ID from Option (preserves None)
+    #[must_use] 
     pub fn with_session_opt(mut self, session_id: Option<String>) -> Self {
         self.session_id = session_id;
         self
     }
 
     /// Set new session flag
+    #[must_use] 
     pub fn with_new_session(mut self, new: bool) -> Self {
         self.new_session = new;
         self
     }
 
     /// Set timeout
+    #[must_use] 
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
         self
@@ -184,7 +189,7 @@ pub struct ToolCallRecord {
 
 /// Message sending result
 ///
-/// This is the high-level result type returned by execute_message()
+/// This is the high-level result type returned by `execute_message()`
 #[derive(Debug, Clone)]
 pub struct MessageResult {
     /// Response content
@@ -288,7 +293,7 @@ impl StatelessAgentService {
 
     /// Execute a message and return a blocking response
     ///
-    /// This is the high-level interface that replaces MessageService::send_message()
+    /// This is the high-level interface that replaces `MessageService::send_message()`
     /// It handles session resolution and executes the agent, returning the complete result.
     ///
     /// # Arguments
@@ -367,9 +372,9 @@ impl StatelessAgentService {
         }
     }
 
-    /// Execute a message and return an EventStream for streaming
+    /// Execute a message and return an `EventStream` for streaming
     ///
-    /// This is the high-level streaming interface that replaces MessageService::send_message_unified()
+    /// This is the high-level streaming interface that replaces `MessageService::send_message_unified()`
     /// It handles session resolution and executes the agent, returning a stream of events.
     ///
     /// # Arguments
@@ -444,8 +449,7 @@ impl StatelessAgentService {
         let start = Instant::now();
         let timeout_duration = request
             .timeout_secs
-            .map(Duration::from_secs)
-            .unwrap_or(self.default_timeout);
+            .map_or(self.default_timeout, Duration::from_secs);
 
         info!(
             "Starting cold execution for agent '{}' (timeout: {:?})",
@@ -469,8 +473,7 @@ impl StatelessAgentService {
             Err(_) => {
                 self.update_metrics(false, duration).await;
                 Err(anyhow::anyhow!(
-                    "Execution timeout after {:?}",
-                    timeout_duration
+                    "Execution timeout after {timeout_duration:?}"
                 ))
             }
         }
@@ -498,23 +501,20 @@ impl StatelessAgentService {
         );
 
         // Try to open existing session, create if not exists
-        let session = match session_manager.open_session(&request.session_id).await? {
-            Some(handle) => {
-                debug!("Opened existing session '{}'", request.session_id);
-                handle.base().clone()
-            }
-            None => {
-                debug!("Session '{}' not found, creating new", request.session_id);
-                let peer = Peer::User(request.user.clone());
-                let options = crate::session::SessionCreateOptions::new()
-                    .with_trigger("api")
-                    .with_session_id(&request.session_id);
-                let handle = session_manager
-                    .create_session(&request.agent_name, &peer, options)
-                    .await?;
+        let session = if let Some(handle) = session_manager.open_session(&request.session_id).await? {
+            debug!("Opened existing session '{}'", request.session_id);
+            handle.base().clone()
+        } else {
+            debug!("Session '{}' not found, creating new", request.session_id);
+            let peer = Peer::User(request.user.clone());
+            let options = crate::session::SessionCreateOptions::new()
+                .with_trigger("api")
+                .with_session_id(&request.session_id);
+            let handle = session_manager
+                .create_session(&request.agent_name, &peer, options)
+                .await?;
 
-                handle.base().clone()
-            }
+            handle.base().clone()
         };
 
         // 3. Load session history from the opened session
@@ -609,7 +609,7 @@ impl StatelessAgentService {
         })
     }
 
-    /// Execute streaming - returns EventStream with completion signal
+    /// Execute streaming - returns `EventStream` with completion signal
     ///
     /// This is the low-level streaming interface. For high-level usage,
     /// prefer `execute_message_streaming()` which handles session resolution.
@@ -638,29 +638,26 @@ impl StatelessAgentService {
             &request.user,
         );
 
-        let session = match session_manager.open_session(&request.session_id).await? {
-            Some(handle) => {
-                debug!(
-                    "Opened existing session '{}' for streaming",
-                    request.session_id
-                );
-                handle.base().clone()
-            }
-            None => {
-                debug!(
-                    "Session '{}' not found, creating new for streaming",
-                    request.session_id
-                );
-                let peer = Peer::User(request.user.clone());
-                let options = crate::session::SessionCreateOptions::new()
-                    .with_trigger("api")
-                    .with_session_id(&request.session_id);
-                let handle = session_manager
-                    .create_session(&request.agent_name, &peer, options)
-                    .await?;
+        let session = if let Some(handle) = session_manager.open_session(&request.session_id).await? {
+            debug!(
+                "Opened existing session '{}' for streaming",
+                request.session_id
+            );
+            handle.base().clone()
+        } else {
+            debug!(
+                "Session '{}' not found, creating new for streaming",
+                request.session_id
+            );
+            let peer = Peer::User(request.user.clone());
+            let options = crate::session::SessionCreateOptions::new()
+                .with_trigger("api")
+                .with_session_id(&request.session_id);
+            let handle = session_manager
+                .create_session(&request.agent_name, &peer, options)
+                .await?;
 
-                handle.base().clone()
-            }
+            handle.base().clone()
         };
 
         // Delegate to the internal method (which loads history itself)
@@ -670,7 +667,7 @@ impl StatelessAgentService {
     /// Execute streaming with an already-resolved session
     ///
     /// This is the internal implementation used by both `execute_streaming`
-    /// and `execute_message_streaming`. It uses tokio::spawn (not spawn_blocking)
+    /// and `execute_message_streaming`. It uses `tokio::spawn` (not `spawn_blocking`)
     /// for single-runtime execution and provides completion signals.
     #[instrument(skip(self, request, session), fields(agent = %request.agent_name))]
     async fn execute_streaming_with_session(
@@ -748,8 +745,8 @@ impl StatelessAgentService {
 
     /// Load session history from storage
     ///
-    /// Uses the session's native load_history to preserve full ContentBlock fidelity
-    /// (including ToolCall and ToolResult blocks), instead of the lossy normalized format.
+    /// Uses the session's native `load_history` to preserve full `ContentBlock` fidelity
+    /// (including `ToolCall` and `ToolResult` blocks), instead of the lossy normalized format.
     async fn load_session_history(
         &self,
         session: Arc<RwLock<crate::session::UnifiedSession>>,

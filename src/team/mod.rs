@@ -80,6 +80,7 @@ impl Team {
     }
 
     /// Get the default workspace path for a team
+    #[must_use] 
     pub fn default_workspace_path(name: &str) -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -89,6 +90,7 @@ impl Team {
     }
 
     /// Get the shared files path
+    #[must_use] 
     pub fn shared_files_path(&self) -> PathBuf {
         let relative_path = self.config.shared_files_path();
         if std::path::Path::new(&relative_path).is_absolute() {
@@ -99,11 +101,13 @@ impl Team {
     }
 
     /// Count total instances in the team
+    #[must_use] 
     pub fn total_instances(&self) -> usize {
-        self.agent_instances.values().map(|v| v.len()).sum()
+        self.agent_instances.values().map(std::vec::Vec::len).sum()
     }
 
     /// Get all instance IDs
+    #[must_use] 
     pub fn all_instance_ids(&self) -> Vec<String> {
         self.agent_instances
             .values()
@@ -124,6 +128,7 @@ pub struct TeamManager {
 
 impl TeamManager {
     /// Create a new team manager
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             teams: Arc::new(RwLock::new(HashMap::new())),
@@ -133,6 +138,7 @@ impl TeamManager {
     }
 
     /// Create with custom data directory
+    #[must_use] 
     pub fn with_data_dir(_data_dir: PathBuf) -> Self {
         Self::new()
     }
@@ -275,7 +281,7 @@ impl TeamManager {
             let mut teams = self.teams.write().await;
             match teams.remove(team_id) {
                 Some(t) => t,
-                None => anyhow::bail!("Team {} not found", team_id),
+                None => anyhow::bail!("Team {team_id} not found"),
             }
         };
 
@@ -323,10 +329,10 @@ impl TeamManager {
         let mut teams = self.teams.write().await;
         let team = teams
             .get_mut(team_id)
-            .ok_or_else(|| anyhow::anyhow!("Team {} not found", team_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Team {team_id} not found"))?;
 
         if team.status != TeamStatus::Running {
-            anyhow::bail!("Team {} is not running", team_id);
+            anyhow::bail!("Team {team_id} is not running");
         }
 
         // Find agent definition
@@ -335,14 +341,13 @@ impl TeamManager {
             .agents
             .iter()
             .find(|a| a.name == agent_name)
-            .ok_or_else(|| anyhow::anyhow!("Agent {} not found in team {}", agent_name, team_id))?
+            .ok_or_else(|| anyhow::anyhow!("Agent {agent_name} not found in team {team_id}"))?
             .clone();
 
         let current_instances = team
             .agent_instances
             .get(agent_name)
-            .map(|v| v.len() as u32)
-            .unwrap_or(0);
+            .map_or(0, |v| v.len() as u32);
 
         if new_count == current_instances {
             return Ok(ScaleResult {
@@ -362,7 +367,7 @@ impl TeamManager {
             // Scale up - add new instances
             let additional = new_count - current_instances;
             for i in (current_instances + 1)..=(current_instances + additional) {
-                let instance_name = format!("{}-{}", agent_name, i);
+                let instance_name = format!("{agent_name}-{i}");
                 let agent_workspace = team.workspace_path.join("agents").join(&instance_name);
                 std::fs::create_dir_all(&agent_workspace)?;
 
@@ -388,7 +393,7 @@ impl TeamManager {
             let instances = team
                 .agent_instances
                 .get_mut(agent_name)
-                .ok_or_else(|| anyhow::anyhow!("No instances for agent {}", agent_name))?;
+                .ok_or_else(|| anyhow::anyhow!("No instances for agent {agent_name}"))?;
 
             for _ in 0..to_remove {
                 if let Some(instance_id) = instances.pop() {

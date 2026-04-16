@@ -3,7 +3,7 @@
 //! This module provides an immutable value object for session metadata,
 //! ensuring controlled updates and clear data flow.
 //!
-//! All metadata mutations go through the MetadataController, which is the
+//! All metadata mutations go through the `MetadataController`, which is the
 //! sole authority for session metadata operations.
 
 use crate::session::index::SessionEntry;
@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Immutable session metadata
 ///
 /// This is a value object that represents a snapshot of session metadata.
-/// To modify metadata, create a new instance and pass it to MetadataController.
+/// To modify metadata, create a new instance and pass it to `MetadataController`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionMetadata {
     pub session_id: String,
@@ -21,7 +21,7 @@ pub struct SessionMetadata {
     pub updated_at: u64,
     pub message_count: usize,
     pub turn_count: u32,
-    /// Current context window size (total_tokens from last assistant message)
+    /// Current context window size (`total_tokens` from last assistant message)
     pub context_window: usize,
     /// Cumulative input tokens across all assistant messages
     pub total_input_tokens: usize,
@@ -81,7 +81,8 @@ impl SessionMetadata {
         meta
     }
 
-    /// Create from existing SessionEntry (index data)
+    /// Create from existing `SessionEntry` (index data)
+    #[must_use] 
     pub fn from_entry(entry: SessionEntry) -> Self {
         Self {
             session_id: entry.session_id,
@@ -102,7 +103,8 @@ impl SessionMetadata {
         }
     }
 
-    /// Convert to SessionEntry for index storage
+    /// Convert to `SessionEntry` for index storage
+    #[must_use] 
     pub fn to_entry(self) -> SessionEntry {
         SessionEntry {
             session_id: self.session_id,
@@ -133,7 +135,7 @@ impl SessionMetadata {
 
     /// Record token usage
     ///
-    /// `context_window` is the total_tokens from the current assistant message.
+    /// `context_window` is the `total_tokens` from the current assistant message.
     /// `input` and `output` are the incremental tokens for this turn.
     pub fn record_tokens(&mut self, context_window: usize, input: usize, output: usize) {
         self.context_window = context_window;
@@ -217,6 +219,7 @@ impl ReconciliationResult {
         self
     }
 
+    #[must_use] 
     pub fn reconciled(mut self, old_count: usize, new_count: usize) -> Self {
         self.was_reconciled = true;
         self.old_message_count = old_count;

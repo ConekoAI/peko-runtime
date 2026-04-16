@@ -65,9 +65,9 @@ where
 
     // Report start status
     let start_msg = if let Some(server) = server_name {
-        format!("Starting {} (via {})", tool_name, server)
+        format!("Starting {tool_name} (via {server})")
     } else {
-        format!("Starting {}", tool_name)
+        format!("Starting {tool_name}")
     };
     ctx.report_status(start_msg).await;
 
@@ -86,17 +86,17 @@ where
     match &result {
         Ok(_) => {
             let complete_msg = if let Some(server) = server_name {
-                format!("Completed {} (via {})", tool_name, server)
+                format!("Completed {tool_name} (via {server})")
             } else {
-                format!("Completed {}", tool_name)
+                format!("Completed {tool_name}")
             };
             ctx.report_status(complete_msg).await;
         }
         Err(e) => {
             let fail_msg = if let Some(server) = server_name {
-                format!("Failed {} (via {}): {}", tool_name, server, e)
+                format!("Failed {tool_name} (via {server}): {e}")
             } else {
-                format!("Failed {}: {}", tool_name, e)
+                format!("Failed {tool_name}: {e}")
             };
             ctx.report_status(fail_msg).await;
         }
@@ -106,17 +106,19 @@ where
 }
 
 /// Format a status message for tool execution
+#[must_use] 
 pub fn format_status(tool_name: &str, server_name: Option<&str>, status: &str) -> String {
     if let Some(server) = server_name {
-        format!("{} {} (via {})", status, tool_name, server)
+        format!("{status} {tool_name} (via {server})")
     } else {
-        format!("{} {}", status, tool_name)
+        format!("{status} {tool_name}")
     }
 }
 
 /// Estimate tool duration based on name heuristics
 ///
 /// This is a shared implementation used by both MCP and Universal tool proxies.
+#[must_use] 
 pub fn estimate_tool_duration(name: &str) -> u64 {
     let name_lower = name.to_lowercase();
 

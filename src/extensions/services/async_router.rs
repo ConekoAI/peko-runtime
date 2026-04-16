@@ -1,8 +1,8 @@
 //! Async Execution Router
 //!
 //! Routes tool execution based on the `_async` reserved parameter.
-//! This replaces ToolWrapper's async handling and makes it available
-//! to ALL tool types (built-in, MCP, Universal, General) through ExtensionCore.
+//! This replaces `ToolWrapper`'s async handling and makes it available
+//! to ALL tool types (built-in, MCP, Universal, General) through `ExtensionCore`.
 //!
 //! # Usage
 //!
@@ -125,17 +125,20 @@ impl AsyncReservedParams {
     }
 
     /// Get effective timeout (use reserved or default)
+    #[must_use] 
     pub fn effective_timeout(&self, is_async: bool) -> u64 {
         self.timeout_secs
             .unwrap_or(if is_async { 300 } else { 120 })
     }
 
     /// Validate callback mode
+    #[must_use] 
     pub fn is_valid_callback(&self) -> bool {
         matches!(self.callback.as_str(), "queue" | "stream" | "blocking")
     }
 
     /// Validate priority
+    #[must_use] 
     pub fn is_valid_priority(&self) -> bool {
         matches!(self.priority.as_str(), "low" | "normal" | "high")
     }
@@ -167,6 +170,7 @@ impl Default for AsyncExecutionRouter {
 
 impl AsyncExecutionRouter {
     /// Create a new async execution router with default timeouts
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             default_sync_timeout: Duration::from_secs(120),
@@ -175,6 +179,7 @@ impl AsyncExecutionRouter {
     }
 
     /// Create with custom timeouts
+    #[must_use] 
     pub fn with_timeouts(sync_secs: u64, async_secs: u64) -> Self {
         Self {
             default_sync_timeout: Duration::from_secs(sync_secs),

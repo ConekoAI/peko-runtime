@@ -4,7 +4,7 @@
 //! Results are announced back to the parent via the event system.
 //!
 //! Note: Async execution and timeout are handled by the framework-level
-//! ToolWrapper using `_async` and `_timeout` parameters.
+//! `ToolWrapper` using `_async` and `_timeout` parameters.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -353,7 +353,7 @@ For framework-level async control, use:
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // Parse parameters
         let args: AgentSpawnArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         let cleanup = args.cleanup.map_or(SpawnCleanupPolicy::Keep, |s| {
             match s.to_lowercase().as_str() {

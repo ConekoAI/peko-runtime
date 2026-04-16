@@ -231,9 +231,7 @@ impl Unpackager {
         let team = "default";
         let workspace_path = if options.import_workspace {
             Some(
-                dirs::data_dir()
-                    .map(|d| d.join("pekobot").join("workspaces").join(team).join(&name))
-                    .unwrap_or_else(|| self.base_dir.join("workspaces").join(&name)),
+                dirs::data_dir().map_or_else(|| self.base_dir.join("workspaces").join(&name), |d| d.join("pekobot").join("workspaces").join(team).join(&name)),
             )
         } else {
             None
@@ -241,9 +239,7 @@ impl Unpackager {
 
         let sessions_path = if options.import_sessions {
             Some(
-                dirs::data_dir()
-                    .map(|d| d.join("pekobot").join("sessions").join(team).join(&name))
-                    .unwrap_or_else(|| self.base_dir.join("sessions").join(&name)),
+                dirs::data_dir().map_or_else(|| self.base_dir.join("sessions").join(&name), |d| d.join("pekobot").join("sessions").join(team).join(&name)),
             )
         } else {
             None

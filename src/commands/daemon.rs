@@ -111,11 +111,11 @@ pub async fn handle_daemon(
                 // This is platform-specific; for now, use the existing daemon infrastructure
                 match spawn_background_daemon(paths, interval).await {
                     Ok(pid) => {
-                        println!("✅ Daemon started with PID: {}", pid);
+                        println!("✅ Daemon started with PID: {pid}");
                         println!("   Check status: pekobot daemon status");
                     }
                     Err(e) => {
-                        eprintln!("❌ Failed to start daemon: {}", e);
+                        eprintln!("❌ Failed to start daemon: {e}");
                         eprintln!("   Try running with --foreground for debugging");
                         return Err(e);
                     }
@@ -143,7 +143,7 @@ pub async fn handle_daemon(
                     Ok(())
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to stop daemon: {}", e);
+                    eprintln!("❌ Failed to stop daemon: {e}");
                     Err(e)
                 }
             }
@@ -155,7 +155,7 @@ pub async fn handle_daemon(
             // Stop if running
             if check_daemon_running().await {
                 if let Err(e) = stop_daemon(false).await {
-                    eprintln!("⚠️  Failed to stop daemon: {}", e);
+                    eprintln!("⚠️  Failed to stop daemon: {e}");
                     eprintln!("   Trying to start anyway...");
                 } else {
                     // Wait a moment for the port to be released
@@ -166,11 +166,11 @@ pub async fn handle_daemon(
             // Start again
             match spawn_background_daemon(paths, interval).await {
                 Ok(pid) => {
-                    println!("✅ Daemon restarted with PID: {}", pid);
+                    println!("✅ Daemon restarted with PID: {pid}");
                     Ok(())
                 }
                 Err(e) => {
-                    eprintln!("❌ Failed to restart daemon: {}", e);
+                    eprintln!("❌ Failed to restart daemon: {e}");
                     Err(e)
                 }
             }
@@ -200,102 +200,96 @@ async fn check_daemon_running() -> bool {
 
 /// Show daemon status
 async fn show_daemon_status(json: bool) -> anyhow::Result<()> {
-    let client = match ApiClient::new() {
-        Ok(c) => c,
-        Err(_) => {
-            if json {
-                println!("{{\"running\": false, \"error\": \"Failed to create API client\"}}");
-            } else {
-                println!("📊 Daemon Status:");
-                println!("  Status: ❌ Not running");
-                println!("  Start with: pekobot daemon start");
-            }
-            return Ok(());
+    let client = if let Ok(c) = ApiClient::new() { c } else {
+        if json {
+            println!("{{\"running\": false, \"error\": \"Failed to create API client\"}}");
+        } else {
+            println!("📊 Daemon Status:");
+            println!("  Status: ❌ Not running");
+            println!("  Start with: pekobot daemon start");
         }
+        return Ok(());
     };
 
     match client.health_check().await {
-        Ok(health) => match client.daemon_info().await {
-            Ok(info) => {
-                if json {
-                    let output = serde_json::json!({
-                        "running": true,
-                        "status": health.status,
-                        "version": health.version,
-                        "uptime_seconds": health.uptime_seconds,
-                        "instance_count": health.instance_count,
-                        "team_count": health.team_count,
-                        "api_version": info.api_version,
-                        "workspace": info.workspace,
-                        "port": info.port,
-                        "pid": info.pid,
-                        "platform": info.platform,
-                        "capabilities": info.capabilities,
-                    });
-                    println!("{}", serde_json::to_string_pretty(&output)?);
-                } else {
-                    println!("📊 Daemon Status:");
-                    println!("  Status: ✅ Running ({})", health.status);
-                    println!("  Version: {}", health.version);
-                    println!("  API Version: {}", info.api_version);
-                    println!("  Uptime: {}s", health.uptime_seconds);
-                    println!("  PID: {}", info.pid);
-                    println!("  Port: {}", info.port);
-                    println!("  Platform: {}", info.platform);
-                    println!("  Workspace: {}", info.workspace);
-                    println!("  Instances: {}", health.instance_count);
-                    println!("  Teams: {}", health.team_count);
-                    println!("  Capabilities:");
-                    println!(
-                        "    - Streaming: {}",
-                        if info.capabilities.streaming {
-                            "✅"
-                        } else {
-                            "❌"
-                        }
-                    );
-                    println!(
-                        "    - WebSocket: {}",
-                        if info.capabilities.websocket {
-                            "✅"
-                        } else {
-                            "❌"
-                        }
-                    );
-                    println!(
-                        "    - Teams: {}",
-                        if info.capabilities.teams {
-                            "✅"
-                        } else {
-                            "❌"
-                        }
-                    );
-                }
-                Ok(())
+        Ok(health) => if let Ok(info) = client.daemon_info().await {
+            if json {
+                let output = serde_json::json!({
+                    "running": true,
+                    "status": health.status,
+                    "version": health.version,
+                    "uptime_seconds": health.uptime_seconds,
+                    "instance_count": health.instance_count,
+                    "team_count": health.team_count,
+                    "api_version": info.api_version,
+                    "workspace": info.workspace,
+                    "port": info.port,
+                    "pid": info.pid,
+                    "platform": info.platform,
+                    "capabilities": info.capabilities,
+                });
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else {
+                println!("📊 Daemon Status:");
+                println!("  Status: ✅ Running ({})", health.status);
+                println!("  Version: {}", health.version);
+                println!("  API Version: {}", info.api_version);
+                println!("  Uptime: {}s", health.uptime_seconds);
+                println!("  PID: {}", info.pid);
+                println!("  Port: {}", info.port);
+                println!("  Platform: {}", info.platform);
+                println!("  Workspace: {}", info.workspace);
+                println!("  Instances: {}", health.instance_count);
+                println!("  Teams: {}", health.team_count);
+                println!("  Capabilities:");
+                println!(
+                    "    - Streaming: {}",
+                    if info.capabilities.streaming {
+                        "✅"
+                    } else {
+                        "❌"
+                    }
+                );
+                println!(
+                    "    - WebSocket: {}",
+                    if info.capabilities.websocket {
+                        "✅"
+                    } else {
+                        "❌"
+                    }
+                );
+                println!(
+                    "    - Teams: {}",
+                    if info.capabilities.teams {
+                        "✅"
+                    } else {
+                        "❌"
+                    }
+                );
             }
-            Err(_) => {
-                if json {
-                    println!("{{\"running\": true, \"status\": \"{status}\", \"version\": \"{version}\"}}",
-                            status = health.status,
-                            version = health.version);
-                } else {
-                    println!("📊 Daemon Status:");
-                    println!("  Status: ✅ Running ({})", health.status);
-                    println!("  Version: {}", health.version);
-                    println!("  Uptime: {}s", health.uptime_seconds);
-                    println!("  Instances: {}", health.instance_count);
-                    println!("  Teams: {}", health.team_count);
-                }
-                Ok(())
+            Ok(())
+        } else {
+            if json {
+                println!("{{\"running\": true, \"status\": \"{status}\", \"version\": \"{version}\"}}",
+                        status = health.status,
+                        version = health.version);
+            } else {
+                println!("📊 Daemon Status:");
+                println!("  Status: ✅ Running ({})", health.status);
+                println!("  Version: {}", health.version);
+                println!("  Uptime: {}s", health.uptime_seconds);
+                println!("  Instances: {}", health.instance_count);
+                println!("  Teams: {}", health.team_count);
             }
+            Ok(())
         },
         Err(e) => {
             if json {
-                println!("{{\"running\": false, \"error\": \"{}\"}}", e);
+                println!("{{\"running\": false, \"error\": \"{e}\"}}");
             } else {
                 println!("📊 Daemon Status:");
                 println!("  Status: ❌ Not responding");
-                println!("  Error: {}", e);
+                println!("  Error: {e}");
                 println!("  Start with: pekobot daemon start");
             }
             Ok(())
@@ -340,7 +334,7 @@ async fn stop_daemon(_force: bool) -> anyhow::Result<()> {
     {
         use std::process::Command;
         Command::new("taskkill")
-            .args(&["/F", "/PID", &pid.to_string()])
+            .args(["/F", "/PID", &pid.to_string()])
             .output()?;
     }
 
@@ -408,7 +402,7 @@ async fn spawn_background_daemon(paths: &GlobalPaths, interval: u64) -> anyhow::
 /// Get path to PID file
 fn get_pid_file_path() -> anyhow::Result<PathBuf> {
     let home = dirs::home_dir()
-        .or_else(|| dirs::data_dir())
+        .or_else(dirs::data_dir)
         .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     Ok(home.join(".pekobot").join("run").join("daemon.pid"))
 }

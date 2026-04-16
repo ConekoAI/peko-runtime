@@ -1,8 +1,8 @@
 //! Built-in Tool Adapter
 //!
-//! Registers native Tool trait implementations with ExtensionCore.
+//! Registers native Tool trait implementations with `ExtensionCore`.
 //!
-//! Unlike UniversalToolAdapter which spawns external processes,
+//! Unlike `UniversalToolAdapter` which spawns external processes,
 //! this adapter uses direct trait calls for minimal overhead.
 //!
 //! ## Usage
@@ -20,12 +20,12 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-/// Adapter for registering built-in tools with ExtensionCore
+/// Adapter for registering built-in tools with `ExtensionCore`
 #[derive(Debug)]
 pub struct BuiltinToolAdapter;
 
 impl BuiltinToolAdapter {
-    /// Register a built-in tool with the ExtensionCore
+    /// Register a built-in tool with the `ExtensionCore`
     ///
     /// Uses the unified tool registry (ADR-018b) for single source of truth.
     /// Registers:
@@ -34,7 +34,7 @@ impl BuiltinToolAdapter {
     /// - Prompt section handler for system prompt
     pub async fn register_tool(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
         let tool_name = tool.name().to_string();
-        let ext_id = ExtensionId::new(&format!("builtin:tool:{}", tool_name));
+        let ext_id = ExtensionId::new(format!("builtin:tool:{tool_name}"));
 
         // Create tool metadata for unified registry
         let metadata = ToolMetadata {
@@ -78,7 +78,7 @@ impl BuiltinToolAdapter {
 // Hook Handlers
 // ============================================================================
 
-/// Handler for ToolExecute hook - DIRECT execution
+/// Handler for `ToolExecute` hook - DIRECT execution
 pub struct BuiltinExecuteHandler {
     tool: Arc<dyn Tool>,
 }
@@ -182,7 +182,7 @@ impl HookHandler for BuiltinExecuteHandler {
     }
 }
 
-/// Handler for PromptSystemSection hook
+/// Handler for `PromptSystemSection` hook
 pub struct BuiltinPromptHandler {
     tool: Arc<dyn Tool>,
 }

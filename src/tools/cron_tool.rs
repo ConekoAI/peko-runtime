@@ -1,6 +1,6 @@
 //! Cron tool for agents - spec-compliant implementation
 //!
-//! Implements CAPABILITY_INTERFACE.md §3.13, §8
+//! Implements `CAPABILITY_INTERFACE.md` §3.13, §8
 //! - Sub-commands: at, every, cron, idle, event, list, cancel
 //! - Persistence to cron.json (atomic writes)
 //! - Missed job handling on restart
@@ -199,11 +199,13 @@ impl CronStorage {
     }
 
     /// Get job by ID
+    #[must_use] 
     pub fn get(&self, job_id: &str) -> Option<&CronJob> {
         self.jobs.get(job_id)
     }
 
     /// Get job by label
+    #[must_use] 
     pub fn get_by_label(&self, label: &str) -> Option<&CronJob> {
         self.jobs.values().find(|j| j.label == label)
     }
@@ -214,6 +216,7 @@ impl CronStorage {
     }
 
     /// List all jobs
+    #[must_use] 
     pub fn list(&self) -> Vec<&CronJob> {
         self.jobs.values().collect()
     }
@@ -269,7 +272,7 @@ impl CronTool {
 
         // Parse time
         let at_time = DateTime::parse_from_rfc3339(&time_str)
-            .map_err(|e| anyhow::anyhow!("Invalid time format (use RFC3339): {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid time format (use RFC3339): {e}"))?;
 
         let job = CronJob {
             job_id: format!("cron_{}", Uuid::new_v4().simple()),
@@ -311,12 +314,11 @@ impl CronTool {
         // Calculate next run
         let start_at = args
             .start_at
-            .map(|s| {
+            .and_then(|s| {
                 DateTime::parse_from_rfc3339(&s)
                     .ok()
                     .map(|dt| dt.with_timezone(&Utc))
-            })
-            .flatten();
+            });
 
         let next_run = start_at.unwrap_or_else(Utc::now);
 
@@ -359,7 +361,7 @@ impl CronTool {
 
         // Validate cron expression
         let _ = cron::Schedule::from_str(&schedule)
-            .map_err(|e| anyhow::anyhow!("Invalid cron expression: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
 
         // Calculate next run
         let schedule = cron::Schedule::from_str(&schedule).unwrap();
@@ -498,7 +500,7 @@ impl CronTool {
         } else if let Some(label) = args.cancel_label {
             storage
                 .get_by_label(&label)
-                .ok_or_else(|| anyhow::anyhow!("Job with label '{}' not found", label))?
+                .ok_or_else(|| anyhow::anyhow!("Job with label '{label}' not found"))?
                 .job_id
                 .clone()
         } else {
@@ -516,7 +518,7 @@ impl CronTool {
                 "job_id": job_id,
             }))
         } else {
-            Err(anyhow::anyhow!("Job {} not found", job_id))
+            Err(anyhow::anyhow!("Job {job_id} not found"))
         }
     }
 
@@ -647,12 +649,12 @@ impl Tool for CronTool {
             "list" => self.handle_list().await,
             "cancel" => {
                 let args: CronArgs = serde_json::from_value(params)
-                    .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
                 self.handle_cancel(args).await
             }
             _ => {
                 let args: CronArgs = serde_json::from_value(params)
-                    .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
                 let sub = SubCommand::from_str(&args.sub_command_str).ok_or_else(|| {
                     anyhow::anyhow!("Unknown sub_command: {}", args.sub_command_str)
                 })?;
@@ -751,7 +753,7 @@ mod tests {
             }))
             .await;
 
-        assert!(result.is_ok(), "cron command failed: {:?}", result);
+        assert!(result.is_ok(), "cron command failed: {result:?}");
         let response = result.unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "registered");
     }

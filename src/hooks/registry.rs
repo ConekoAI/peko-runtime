@@ -12,16 +12,17 @@ use tracing::{debug, info};
 pub struct HookRegistry {
     /// All registered hooks indexed by hook ID
     hooks: Arc<RwLock<HashMap<String, RegisteredHook>>>,
-    /// Index of webhook hooks by (instance_id, path)
+    /// Index of webhook hooks by (`instance_id`, path)
     webhooks: Arc<RwLock<HashMap<(String, String), String>>>,
     /// Index of event hooks by topic
     event_hooks: Arc<RwLock<HashMap<String, Vec<String>>>>,
-    /// Index of file watch hooks by (instance_id, path)
+    /// Index of file watch hooks by (`instance_id`, path)
     file_watches: Arc<RwLock<HashMap<(String, String), String>>>,
 }
 
 impl HookRegistry {
     /// Create a new empty hook registry
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             hooks: Arc::new(RwLock::new(HashMap::new())),
@@ -269,7 +270,7 @@ impl HookRegistry {
                 continue;
             }
 
-            let hook_id = format!("hook_{}_{}", instance_id, i);
+            let hook_id = format!("hook_{instance_id}_{i}");
             let hook_type = Self::convert_hook_type(&hook_config.hook_type)?;
             let session_target = SessionTarget::from_str(&hook_config.session);
 
@@ -339,7 +340,7 @@ impl Default for HookRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image::config::{Hook, HookType as ConfigHookType};
+    
 
     #[tokio::test]
     async fn test_register_and_get_webhook() {

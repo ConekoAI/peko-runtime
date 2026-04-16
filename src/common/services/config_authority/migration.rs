@@ -1,7 +1,7 @@
 //! JSON to TOML Migration Utilities
 //!
 //! Provides utilities for migrating agent configurations from the old
-//! JSON-based ConfigRegistry format to the new TOML format.
+//! JSON-based `ConfigRegistry` format to the new TOML format.
 
 use crate::common::paths::PathResolver;
 use anyhow::{Context, Result};
@@ -25,12 +25,12 @@ pub struct MigrationSummary {
 
 /// Migrate a JSON registry entry to TOML format
 ///
-/// Reads a JSON file from the old ConfigRegistry format and writes
+/// Reads a JSON file from the old `ConfigRegistry` format and writes
 /// the agent configuration to the canonical TOML location.
 ///
 /// # Arguments
 /// * `json_path` - Path to the JSON file
-/// * `resolver` - PathResolver for determining TOML destination
+/// * `resolver` - `PathResolver` for determining TOML destination
 /// * `backup_json` - If true, backup the JSON file after migration
 ///
 /// Returns the TOML path on success, None if TOML already exists.
@@ -130,7 +130,7 @@ pub async fn migrate_json_dir(
         let path = entry.path();
 
         // Only process .json files
-        if path.extension().map_or(false, |e| e == "json") {
+        if path.extension().is_some_and(|e| e == "json") {
             match migrate_json_entry(&path, resolver, backup_json).await {
                 Ok(Some(toml_path)) => {
                     summary.migrated += 1;
@@ -154,7 +154,7 @@ pub async fn migrate_json_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
+    
 
     #[tokio::test]
     async fn test_migration_summary_default() {

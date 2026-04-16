@@ -1,6 +1,6 @@
 //! Webhook API Routes
 //!
-//! Implements POST /webhooks/{instance_id}/{token} endpoint per API_CONTRACT §9
+//! Implements POST /`webhooks/{instance_id}/{token`} endpoint per `API_CONTRACT` §9
 
 use axum::{
     extract::{Path, State},
@@ -79,12 +79,9 @@ async fn handle_webhook(
         .iter()
         .find(|h| matches!(h.hook_type, crate::hooks::HookType::Webhook { .. }));
 
-    let hook = match webhook_hook {
-        Some(h) => h.clone(),
-        None => {
-            warn!("No webhook hook configured for instance {}", instance_id);
-            return Err(ApiError::not_found_simple("webhook_hook", &instance_id));
-        }
+    let hook = if let Some(h) = webhook_hook { h.clone() } else {
+        warn!("No webhook hook configured for instance {}", instance_id);
+        return Err(ApiError::not_found_simple("webhook_hook", &instance_id));
     };
 
     // Check if hook is enabled
@@ -164,7 +161,7 @@ async fn handle_webhook(
 }
 
 /// Handle webhook without token in path (for optional token scenario)
-/// This would be mounted at /webhooks/{instance_id} for webhooks without tokens
+/// This would be mounted at /`webhooks/{instance_id`} for webhooks without tokens
 #[allow(dead_code)]
 async fn handle_webhook_no_token(
     State(state): State<AppState>,
@@ -240,14 +237,14 @@ async fn handle_webhook_no_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::util::ServiceExt;
+    
+    
+    
 
     #[tokio::test]
     async fn test_webhook_router() {
         // This test just verifies the router is created correctly
-        let app = router();
+        let _app = router();
         // We can't easily test the full flow without setting up the AppState
         // In a real test, we'd create a mock AppState
     }

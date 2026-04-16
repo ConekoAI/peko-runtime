@@ -194,6 +194,7 @@ impl McpServerConfig {
     }
 
     /// Get the binary path for bundling (resolves relative paths)
+    #[must_use] 
     pub fn bundle_binary_path(&self) -> Option<PathBuf> {
         if !self.is_bundleable() {
             return None;
@@ -458,6 +459,7 @@ impl McpConfig {
     /// Get the default MCP config path (TOML format)
     ///
     /// Returns `~/.pekobot/mcp.toml` (or platform equivalent)
+    #[must_use] 
     pub fn default_config_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -468,6 +470,7 @@ impl McpConfig {
     /// Get the default MCP config path (JSON format)
     ///
     /// Returns `~/.pekobot/mcp.json` (or platform equivalent)
+    #[must_use] 
     pub fn default_json_config_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -484,9 +487,10 @@ impl McpConfig {
     /// 4. Default TOML path (for creation)
     ///
     /// Returns the path and detected format
+    #[must_use] 
     pub fn resolve_config_path(provided: Option<&PathBuf>) -> (PathBuf, ConfigFormat) {
         if let Some(path) = provided {
-            let format = if path.extension().map(|e| e == "json").unwrap_or(false) {
+            let format = if path.extension().is_some_and(|e| e == "json") {
                 ConfigFormat::Json
             } else {
                 ConfigFormat::Toml

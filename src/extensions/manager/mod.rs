@@ -28,7 +28,7 @@ pub struct ExtensionManager {
 /// An extension that has been loaded into the manager
 ///
 /// Note: Enable/disable state is NOT stored here. It is managed by the agent/team
-/// configuration (AgentConfig.tools.enabled whitelist). ExtensionManager handles
+/// configuration (AgentConfig.tools.enabled whitelist). `ExtensionManager` handles
 /// loading and lifecycle; access control is determined by configuration.
 #[derive(Debug, Clone)]
 pub struct LoadedExtension {
@@ -45,16 +45,19 @@ pub struct ExtensionStorage {
 }
 
 impl ExtensionStorage {
+    #[must_use] 
     pub fn new() -> Self {
         Self { storage_dir: None }
     }
 
+    #[must_use] 
     pub fn with_dir(storage_dir: PathBuf) -> Self {
         Self {
             storage_dir: Some(storage_dir),
         }
     }
 
+    #[must_use] 
     pub fn dir(&self) -> Option<&Path> {
         self.storage_dir.as_deref()
     }
@@ -69,7 +72,7 @@ impl ExtensionStorage {
 
         if target_dir.exists() {
             std::fs::remove_dir_all(&target_dir).with_context(|| {
-                format!("Failed to remove existing extension at {:?}", target_dir)
+                format!("Failed to remove existing extension at {target_dir:?}")
             })?;
         }
 
@@ -77,17 +80,16 @@ impl ExtensionStorage {
         if source.is_file() {
             // Create target directory and copy the file into it
             std::fs::create_dir_all(&target_dir)
-                .with_context(|| format!("Failed to create target directory {:?}", target_dir))?;
+                .with_context(|| format!("Failed to create target directory {target_dir:?}"))?;
             let file_name = source.file_name().context("Invalid source file name")?;
             let target_file = target_dir.join(file_name);
             std::fs::copy(source, &target_file).with_context(|| {
-                format!("Failed to copy file from {:?} to {:?}", source, target_file)
+                format!("Failed to copy file from {source:?} to {target_file:?}")
             })?;
         } else {
             copy_dir_recursive(source, &target_dir).with_context(|| {
                 format!(
-                    "Failed to copy extension from {:?} to {:?}",
-                    source, target_dir
+                    "Failed to copy extension from {source:?} to {target_dir:?}"
                 )
             })?;
         }
@@ -105,7 +107,7 @@ impl ExtensionStorage {
 
         if target_dir.exists() {
             std::fs::remove_dir_all(&target_dir)
-                .with_context(|| format!("Failed to remove extension at {:?}", target_dir))?;
+                .with_context(|| format!("Failed to remove extension at {target_dir:?}"))?;
         }
 
         Ok(())
@@ -161,6 +163,7 @@ pub struct BundleMetadata {
 }
 
 impl ExtensionManager {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             adapters: HashMap::new(),
@@ -181,6 +184,7 @@ impl ExtensionManager {
         }
     }
 
+    #[must_use] 
     pub fn with_storage(storage: ExtensionStorage) -> Self {
         Self {
             adapters: HashMap::new(),
@@ -191,15 +195,18 @@ impl ExtensionManager {
         }
     }
 
+    #[must_use] 
     pub fn with_storage_dir(mut self, storage_dir: PathBuf) -> Self {
         self.storage = ExtensionStorage::with_dir(storage_dir);
         self
     }
 
+    #[must_use] 
     pub fn core(&self) -> &ExtensionCore {
         &self.core
     }
 
+    #[must_use] 
     pub fn core_arc(&self) -> Arc<ExtensionCore> {
         self.core.clone()
     }
@@ -269,10 +276,10 @@ impl ExtensionManager {
                     } else if json_path.exists() {
                         json_path
                     } else {
-                        anyhow::bail!("Could not determine manifest path for {:?}", path)
+                        anyhow::bail!("Could not determine manifest path for {path:?}")
                     }
                 } else {
-                    anyhow::bail!("Could not determine manifest path for {:?}", path)
+                    anyhow::bail!("Could not determine manifest path for {path:?}")
                 }
             }
         };
@@ -391,12 +398,12 @@ impl ExtensionManager {
     ) -> Result<ExtensionManifest> {
         let content = tokio::fs::read_to_string(path)
             .await
-            .with_context(|| format!("Failed to read manifest at {:?}", path))?;
+            .with_context(|| format!("Failed to read manifest at {path:?}"))?;
 
         // Use the adapter's parse_manifest method to allow custom parsing
         adapter
             .parse_manifest(path, &content)
-            .with_context(|| format!("Failed to parse manifest at {:?}", path))
+            .with_context(|| format!("Failed to parse manifest at {path:?}"))
     }
 
     pub async fn load_all(&mut self) -> Result<LoadReport> {
@@ -487,12 +494,12 @@ impl ExtensionManager {
 
     pub async fn install(&mut self, path: &Path) -> Result<ExtensionId> {
         if !path.exists() {
-            anyhow::bail!("Extension path does not exist: {:?}", path);
+            anyhow::bail!("Extension path does not exist: {path:?}");
         }
 
         let ext_type = self
             .detect_extension_type_string(path)
-            .context(format!("No adapter found for extension at {:?}", path))?;
+            .context(format!("No adapter found for extension at {path:?}"))?;
 
         // Get the adapter and extract data we need
         let adapter = self.adapters.get(&ext_type).context("Adapter not found")?;
@@ -521,11 +528,10 @@ impl ExtensionManager {
                         .into_iter()
                         .find(|p| p.exists())
                         .context(format!(
-                            "Could not find manifest file in directory {:?}",
-                            path
+                            "Could not find manifest file in directory {path:?}"
                         ))?
                 } else {
-                    anyhow::bail!("Could not determine manifest path for {:?}", path)
+                    anyhow::bail!("Could not determine manifest path for {path:?}")
                 }
             }
         };
@@ -573,7 +579,7 @@ impl ExtensionManager {
         let loaded_ext = self
             .extensions
             .remove(id)
-            .context(format!("Extension '{}' not found", id))?;
+            .context(format!("Extension '{id}' not found"))?;
 
         // Unregister all hooks
         for hook_id in &loaded_ext.hook_ids {
@@ -612,7 +618,7 @@ impl ExtensionManager {
         let loaded_ext = self
             .extensions
             .get(id)
-            .context(format!("Extension '{}' not found", id))?;
+            .context(format!("Extension '{id}' not found"))?;
 
         for hook_id in &loaded_ext.hook_ids {
             self.core.enable_hook(hook_id).await?;
@@ -631,7 +637,7 @@ impl ExtensionManager {
         let loaded_ext = self
             .extensions
             .get(id)
-            .context(format!("Extension '{}' not found", id))?;
+            .context(format!("Extension '{id}' not found"))?;
 
         for hook_id in &loaded_ext.hook_ids {
             self.core.disable_hook(hook_id).await?;
@@ -642,10 +648,12 @@ impl ExtensionManager {
         Ok(())
     }
 
+    #[must_use] 
     pub fn list_extensions(&self) -> Vec<&LoadedExtension> {
         self.extensions.values().collect()
     }
 
+    #[must_use] 
     pub fn get_extension(&self, id: &ExtensionId) -> Option<&LoadedExtension> {
         self.extensions.get(id)
     }
@@ -659,7 +667,7 @@ impl ExtensionManager {
             let ext = self
                 .extensions
                 .get(&id)
-                .context(format!("Extension '{}' not found for bundling", id))?;
+                .context(format!("Extension '{id}' not found for bundling"))?;
             extensions.push(ext.manifest.clone());
 
             // Collect dependencies from metadata if present
@@ -705,7 +713,7 @@ impl ExtensionManager {
         // Check for conflicts
         for conflict in &bundle.metadata.conflicts {
             if self.extensions.contains_key(&ExtensionId::new(conflict)) {
-                anyhow::bail!("Bundle conflicts with installed extension: {}", conflict);
+                anyhow::bail!("Bundle conflicts with installed extension: {conflict}");
             }
         }
 
@@ -750,7 +758,7 @@ impl ExtensionManager {
     /// - Workspace custom tools (./tools/)
     /// - CAP catalog discovery
     ///
-    /// Unlike `load_all()`, this scans an arbitrary path, not just discovery_paths.
+    /// Unlike `load_all()`, this scans an arbitrary path, not just `discovery_paths`.
     pub async fn scan_directory(&self, path: &Path) -> Result<Vec<DiscoveredExtension>> {
         let mut discovered = Vec::new();
 
@@ -783,21 +791,18 @@ impl ExtensionManager {
                 );
 
                 // Get manifest path - for Custom formats, we need to determine it manually
-                let manifest_path = match format.manifest_path(&path) {
-                    Some(p) => p,
-                    None => {
-                        // For Custom formats, check common manifest file names
-                        let candidates = vec![
-                            path.join("config.toml"),
-                            path.join("config.json"),
-                            path.join("manifest.json"),
-                            path.join("manifest.toml"),
-                        ];
-                        candidates
-                            .into_iter()
-                            .find(|p| p.exists())
-                            .unwrap_or_else(|| path.join("config.toml"))
-                    }
+                let manifest_path = if let Some(p) = format.manifest_path(&path) { p } else {
+                    // For Custom formats, check common manifest file names
+                    let candidates = vec![
+                        path.join("config.toml"),
+                        path.join("config.json"),
+                        path.join("manifest.json"),
+                        path.join("manifest.toml"),
+                    ];
+                    candidates
+                        .into_iter()
+                        .find(|p| p.exists())
+                        .unwrap_or_else(|| path.join("config.toml"))
                 };
 
                 discovered.push(DiscoveredExtension {
@@ -880,18 +885,22 @@ impl Default for ExtensionManager {
 pub mod discovery_paths {
     use std::path::PathBuf;
 
+    #[must_use] 
     pub fn user_config() -> Option<PathBuf> {
         dirs::config_dir().map(|d| d.join("pekobot/extensions"))
     }
 
+    #[must_use] 
     pub fn user_data() -> Option<PathBuf> {
         dirs::data_dir().map(|d| d.join("pekobot/extensions"))
     }
 
+    #[must_use] 
     pub fn project_local() -> PathBuf {
         PathBuf::from(".pekobot/extensions")
     }
 
+    #[must_use] 
     pub fn system_wide() -> Option<PathBuf> {
         #[cfg(target_os = "linux")]
         {
@@ -909,6 +918,7 @@ pub mod discovery_paths {
         }
     }
 
+    #[must_use] 
     pub fn all() -> Vec<PathBuf> {
         let mut paths = Vec::new();
 

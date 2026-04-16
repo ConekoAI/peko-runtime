@@ -10,7 +10,7 @@ use uuid::Uuid;
 /// Format: `{parent_session_key}:subagent:{uuid}`
 /// Example: `agent:myagent:peer:user:alice:subagent:550e8400-e29b-41d4-a716-446655440000`
 ///
-/// The parent_session_key should be a peer-based session key (agent:{agent}:peer:{type}:{id})
+/// The `parent_session_key` should be a peer-based session key (agent:{agent}:peer:{type}:{id})
 #[must_use]
 pub fn generate_subagent_key(parent_session_key: &str) -> String {
     format!("{}:subagent:{}", parent_session_key, Uuid::new_v4())

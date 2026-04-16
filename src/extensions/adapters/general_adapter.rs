@@ -45,10 +45,10 @@
 //!
 //! ## Tool Lifecycle
 //! - `tool.register` - Register tools for native calling
-//! - `tool.execute` - Intercept tool execution (params: tool_name)
-//! - `tool.execute_async` - Async tool execution (params: tool_name)
-//! - `tool.check_status` - Check async task status (params: tool_name)
-//! - `tool.cancel` - Cancel async task (params: tool_name)
+//! - `tool.execute` - Intercept tool execution (params: `tool_name`)
+//! - `tool.execute_async` - Async tool execution (params: `tool_name`)
+//! - `tool.check_status` - Check async task status (params: `tool_name`)
+//! - `tool.cancel` - Cancel async task (params: `tool_name`)
 //! - `tool.result_transform` - Modify tool results
 //!
 //! ## Session Lifecycle
@@ -63,7 +63,7 @@
 //! - `io.message_post_receive` - Transform incoming messages
 //!
 //! ## Event Lifecycle
-//! - `event.subscribe` - Subscribe to system events (params: topic_pattern)
+//! - `event.subscribe` - Subscribe to system events (params: `topic_pattern`)
 //! - `event.emit` - Emit custom events
 //!
 //! ## Agent Lifecycle
@@ -95,6 +95,7 @@ pub struct GeneralExtensionAdapter;
 
 impl GeneralExtensionAdapter {
     /// Create a new general extension adapter
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
@@ -123,7 +124,7 @@ impl GeneralExtensionAdapter {
         Vec::new()
     }
 
-    /// Parse a single hook declaration into a HookPoint
+    /// Parse a single hook declaration into a `HookPoint`
     fn parse_hook_point(&self, decl: &HookDeclaration) -> Option<HookPoint> {
         match decl.point.as_str() {
             // Prompt lifecycle
@@ -132,8 +133,8 @@ impl GeneralExtensionAdapter {
                 let priority = decl
                     .params
                     .get("priority")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(GENERAL_HOOK_PRIORITY as i64) as i32;
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(i64::from(GENERAL_HOOK_PRIORITY)) as i32;
                 Some(HookPoint::PromptSystemSection { section, priority })
             }
             "prompt.pre_process" => Some(HookPoint::PromptPreProcess),
@@ -184,7 +185,7 @@ impl GeneralExtensionAdapter {
                 let iteration = decl
                     .params
                     .get("iteration")
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0) as usize;
                 Some(HookPoint::AgentIteration { iteration })
             }
@@ -282,7 +283,7 @@ pub struct HookDeclaration {
     /// Handler identifier (extension-specific)
     pub handler: String,
 
-    /// Hook-specific parameters (tool_name, section, priority, etc.)
+    /// Hook-specific parameters (`tool_name`, section, priority, etc.)
     #[serde(flatten, default)]
     pub params: HashMap<String, serde_json::Value>,
 }
@@ -463,17 +464,13 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
 /// Extract hook declarations from YAML
 fn extract_hooks_from_yaml(yaml: &serde_yaml::Value) -> Result<Vec<HookDeclaration>> {
     yaml.get("hooks")
-        .and_then(|h| serde_yaml::from_value(h.clone()).ok())
-        .map(Ok)
-        .unwrap_or_else(|| Ok(Vec::new()))
+        .and_then(|h| serde_yaml::from_value(h.clone()).ok()).map_or_else(|| Ok(Vec::new()), Ok)
 }
 
 /// Extract hook declarations from JSON
 fn extract_hooks_from_json(json: &serde_json::Value) -> Result<Vec<HookDeclaration>> {
     json.get("hooks")
-        .and_then(|h| serde_json::from_value(h.clone()).ok())
-        .map(Ok)
-        .unwrap_or_else(|| Ok(Vec::new()))
+        .and_then(|h| serde_json::from_value(h.clone()).ok()).map_or_else(|| Ok(Vec::new()), Ok)
 }
 
 /// Build manifest from JSON (general extension specific)
@@ -521,7 +518,7 @@ pub struct DiscoveredGeneralExtension {
     pub hooks: Vec<HookDeclaration>,
 }
 
-/// Register general extensions with an ExtensionCore
+/// Register general extensions with an `ExtensionCore`
 pub async fn register_general_extensions_with_core(
     core: &crate::extensions::ExtensionCore,
     extensions: Vec<DiscoveredGeneralExtension>,

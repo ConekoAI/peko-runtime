@@ -1,6 +1,6 @@
 //! File Watch Hook Integration
 //!
-//! Connects the file watcher system to the hook registry for file_watch hooks.
+//! Connects the file watcher system to the hook registry for `file_watch` hooks.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,7 +10,7 @@ use crate::hooks::{HookRegistry, HookTrigger, TriggerSource};
 
 /// File watch hook manager
 ///
-/// Bridges filesystem events to hook triggers for configured file_watch hooks.
+/// Bridges filesystem events to hook triggers for configured `file_watch` hooks.
 pub struct FileWatchHookManager {
     registry: std::sync::Arc<HookRegistry>,
     watch_configs: HashMap<String, WatchConfig>,
@@ -31,6 +31,7 @@ pub struct WatchConfig {
 
 impl FileWatchHookManager {
     /// Create a new file watch hook manager
+    #[must_use] 
     pub fn new(registry: std::sync::Arc<HookRegistry>) -> Self {
         Self {
             registry,
@@ -166,6 +167,7 @@ impl FileWatchHookManager {
     }
 
     /// Get active watch count
+    #[must_use] 
     pub fn watch_count(&self) -> usize {
         self.watch_configs.len()
     }

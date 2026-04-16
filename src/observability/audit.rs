@@ -157,7 +157,7 @@ mod tests {
                 .log(AuditEvent {
                     timestamp: chrono::Utc::now(),
                     component: "test".to_string(),
-                    event_type: format!("event_{}", i),
+                    event_type: format!("event_{i}"),
                     agent_did: None,
                     details: serde_json::json!({}),
                     severity: AuditSeverity::Info,
@@ -180,7 +180,7 @@ mod tests {
                 .log(AuditEvent {
                     timestamp: chrono::Utc::now(),
                     component: "test".to_string(),
-                    event_type: format!("event_{}", i),
+                    event_type: format!("event_{i}"),
                     agent_did: None,
                     details: serde_json::json!({}),
                     severity: AuditSeverity::Info,
@@ -323,13 +323,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_severity_levels() {
-        let severities = vec![
-            AuditSeverity::Debug,
+        let severities = [AuditSeverity::Debug,
             AuditSeverity::Info,
             AuditSeverity::Warning,
             AuditSeverity::Error,
-            AuditSeverity::Security,
-        ];
+            AuditSeverity::Security];
 
         let mut logger = AuditLogger::new();
         for (i, severity) in severities.iter().enumerate() {
@@ -337,7 +335,7 @@ mod tests {
                 .log(AuditEvent {
                     timestamp: chrono::Utc::now(),
                     component: "test".to_string(),
-                    event_type: format!("event_{}", i),
+                    event_type: format!("event_{i}"),
                     agent_did: None,
                     details: serde_json::json!({}),
                     severity: *severity,

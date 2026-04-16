@@ -2,8 +2,8 @@
 //!
 //! Provides unified team operations for both CLI and HTTP API.
 //!
-//! This service combines filesystem operations (TeamService) with runtime
-//! operations (TeamRuntimeManager) to provide a single, consistent interface
+//! This service combines filesystem operations (`TeamService`) with runtime
+//! operations (`TeamRuntimeManager`) to provide a single, consistent interface
 //! for all team-related operations.
 //!
 //! ## Architecture
@@ -16,7 +16,7 @@ use crate::api::state::AppState;
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
-use crate::common::types::team::*;
+use crate::common::types::team::{TeamCreationResult, TeamInfo, TeamDeletionResult, TeamDeployRequest, TeamDeployResult, TeamRuntimeInfo, TeamRuntimeStatus, TeamScaleRequest, TeamScaleResult, TeamConfigSource};
 use crate::team::config::TeamConfig;
 use crate::team::{TeamManager, TeamStatus};
 use anyhow::{Context, Result};
@@ -47,6 +47,7 @@ impl std::fmt::Debug for TeamManagementService {
 
 impl TeamManagementService {
     /// Create a new team management service
+    #[must_use] 
     pub fn new(
         config_service: TeamService,
         runtime_manager: Arc<TeamManager>,
@@ -113,6 +114,7 @@ impl TeamManagementService {
     }
 
     /// Check if a team exists
+    #[must_use] 
     pub fn team_exists(&self, name: &str) -> bool {
         self.config_service.team_exists(name)
     }
@@ -285,10 +287,10 @@ impl TeamManagementService {
         validate_team_name(name).map_err(|e| match e {
             ValidationError::Empty => anyhow::anyhow!("Team name cannot be empty"),
             ValidationError::TooLong(max) => {
-                anyhow::anyhow!("Team name exceeds maximum length of {} characters", max)
+                anyhow::anyhow!("Team name exceeds maximum length of {max} characters")
             }
             ValidationError::Reserved(reserved) => {
-                anyhow::anyhow!("'{}' is a reserved name and cannot be used", reserved)
+                anyhow::anyhow!("'{reserved}' is a reserved name and cannot be used")
             }
             ValidationError::ContainsPathSeparators => {
                 anyhow::anyhow!("Team name cannot contain path separators (/ or \\)")
@@ -297,12 +299,13 @@ impl TeamManagementService {
                 anyhow::anyhow!("Team name cannot start or end with a hyphen")
             }
             ValidationError::InvalidCharacter(ch) => {
-                anyhow::anyhow!("Team name contains invalid character: '{}'", ch)
+                anyhow::anyhow!("Team name contains invalid character: '{ch}'")
             }
         })
     }
 
     /// Get the path resolver
+    #[must_use] 
     pub fn resolver(&self) -> &PathResolver {
         &self.resolver
     }

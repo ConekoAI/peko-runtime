@@ -1,10 +1,10 @@
 //! OpenAI-compatible adapter
 //!
-//! For providers that use the OpenAI API format but with different base URLs.
-//! This is a thin wrapper around OpenAiAdapter that allows custom base URLs.
+//! For providers that use the `OpenAI` API format but with different base URLs.
+//! This is a thin wrapper around `OpenAiAdapter` that allows custom base URLs.
 
 use crate::providers::transport::AuthConfig;
-use crate::providers::types::*;
+use crate::providers::types::{Message, ToolDefinition, ChatOptions, ChatResponse, StreamEvent};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -12,7 +12,7 @@ use super::openai::OpenAiAdapter;
 
 /// OpenAI-compatible adapter
 ///
-/// Uses the OpenAI API format but with a custom base URL.
+/// Uses the `OpenAI` API format but with a custom base URL.
 /// Used by Groq, Together, Fireworks, Moonshot, and other OpenAI-compatible providers.
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleAdapter {
@@ -103,7 +103,7 @@ impl super::ApiAdapter for OpenAiCompatibleAdapter {
 
     fn parse_response(&self, response: Value) -> Result<ChatResponse> {
         let mut parsed = self.inner.parse_response(response)?;
-        parsed.provider = self.name.to_string();
+        parsed.provider = self.name.clone();
         Ok(parsed)
     }
 

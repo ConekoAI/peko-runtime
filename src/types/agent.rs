@@ -109,7 +109,7 @@ pub struct SystemFileConfig {
     pub files: Option<Vec<String>>,
 }
 
-/// Deprecated: Use SystemFileConfig instead
+/// Deprecated: Use `SystemFileConfig` instead
 pub type BootstrapFileConfig = SystemFileConfig;
 
 fn default_max_chars() -> usize {
@@ -199,6 +199,7 @@ impl Default for ToolSettings {
 /// Tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct ToolConfig {
     /// Enabled built-in tools (whitelist)
     /// If empty, all tools are available (backward compatibility)
@@ -209,7 +210,7 @@ pub struct ToolConfig {
     pub http: Option<HttpToolConfig>,
     /// Custom tool definitions
     pub custom: Option<HashMap<String, serde_json::Value>>,
-    /// Per-tool settings (snake_case keys like "str_replace_file", "write_file", etc.)
+    /// Per-tool settings (`snake_case` keys like "`str_replace_file`", "`write_file`", etc.)
     #[serde(default)]
     pub read_file: Option<ToolSettings>,
     #[serde(default)]
@@ -229,8 +230,9 @@ impl ToolConfig {
     /// - If whitelist is empty: NO tools allowed (secure by default)
     /// - Supports wildcard patterns like "mcp:identity:*" which matches full tool names
     ///
-    /// Tools must be referenced by their full names (e.g., "mcp:identity:echo_identity")
+    /// Tools must be referenced by their full names (e.g., "`mcp:identity:echo_identity`")
     /// for consistent identification across extension types.
+    #[must_use] 
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
         // Check if tool is in the whitelist (case-insensitive, supports wildcards)
         let in_whitelist = self.enabled.iter().any(|pattern| {
@@ -251,15 +253,15 @@ impl ToolConfig {
         // Get per-tool settings if they exist
         let per_tool_enabled = self
             .get_tool_settings(tool_name)
-            .map(|s| s.enabled)
-            .unwrap_or(true);
+            .is_none_or(|s| s.enabled);
 
         // Tool is enabled if it's in the whitelist AND not explicitly disabled via per-tool config
         // OR if it's explicitly enabled via per-tool config (even if not in whitelist)
         in_whitelist && per_tool_enabled
     }
 
-    /// Get per-tool settings for a specific tool (by snake_case name)
+    /// Get per-tool settings for a specific tool (by `snake_case` name)
+    #[must_use] 
     pub fn get_tool_settings(&self, tool_name: &str) -> Option<&ToolSettings> {
         match tool_name {
             "read_file" => self.read_file.as_ref(),
@@ -272,23 +274,6 @@ impl ToolConfig {
     }
 }
 
-impl Default for ToolConfig {
-    fn default() -> Self {
-        Self {
-            // Default: empty whitelist - tools must be explicitly enabled
-            // This ensures secure-by-default behavior
-            enabled: Vec::new(),
-            skills: Vec::new(),
-            http: None,
-            custom: None,
-            read_file: None,
-            write_file: None,
-            glob: None,
-            grep: None,
-            str_replace_file: None,
-        }
-    }
-}
 
 /// HTTP tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

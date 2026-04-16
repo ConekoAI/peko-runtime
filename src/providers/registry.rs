@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// Provider API types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiType {
-    /// OpenAI Chat Completions API (most common)
+    /// `OpenAI` Chat Completions API (most common)
     OpenAICompletions,
     /// Anthropic Messages API
     AnthropicMessages,
@@ -304,7 +304,7 @@ pub fn create_provider(config: ProviderConfig) -> Result<Arc<Provider>> {
     // Look up metadata
     let metadata = registry
         .get(provider_name)
-        .with_context(|| format!("Unknown provider: {}", provider_name))?;
+        .with_context(|| format!("Unknown provider: {provider_name}"))?;
 
     // Get API key
     let api_key = config
@@ -321,18 +321,16 @@ pub fn create_provider(config: ProviderConfig) -> Result<Arc<Provider>> {
 
     // Get base URL (config overrides default)
     let base_url = config.base_url.clone().unwrap_or_else(|| {
-        if !metadata.base_url.is_empty() {
-            metadata.base_url.to_string()
-        } else {
+        if metadata.base_url.is_empty() {
             String::new()
+        } else {
+            metadata.base_url.to_string()
         }
     });
 
     // Get model from config or use default
     let model = config
-        .default_model_config()
-        .map(|m| m.name.clone())
-        .unwrap_or_else(|| metadata.default_model.to_string());
+        .default_model_config().map_or_else(|| metadata.default_model.to_string(), |m| m.name.clone());
 
     create_provider_with_adapter(metadata, api_key, base_url, model, config)
 }
@@ -356,9 +354,7 @@ fn create_openai_compatible_provider(config: &ProviderConfig) -> Result<Arc<Prov
         .context("Base URL required for OpenAI-compatible provider")?;
 
     let model = config
-        .default_model_config()
-        .map(|m| m.name.clone())
-        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+        .default_model_config().map_or_else(|| "gpt-4o-mini".to_string(), |m| m.name.clone());
 
     // Create a generic OpenAI-compatible adapter
     let adapter = AnyAdapter::OpenAiCompatible(OpenAiCompatibleAdapter::new(
@@ -405,7 +401,7 @@ pub fn create_provider_by_name(name: &str) -> Result<Arc<Provider>> {
     let registry = ProviderRegistry::new();
     let metadata = registry
         .get(name)
-        .with_context(|| format!("Unknown provider: {}", name))?;
+        .with_context(|| format!("Unknown provider: {name}"))?;
 
     // Determine ProviderType from metadata
     let provider_type = match metadata.api_type {

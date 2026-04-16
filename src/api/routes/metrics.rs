@@ -129,12 +129,12 @@ async fn get_performance_metrics(
     };
 
     // Check if all targets are met
-    let all_targets_met = cold_start.as_ref().map_or(true, |m| m.meets_target)
-        && warm_start.as_ref().map_or(true, |m| m.meets_target)
-        && first_token.as_ref().map_or(true, |m| m.meets_target)
+    let all_targets_met = cold_start.as_ref().is_none_or(|m| m.meets_target)
+        && warm_start.as_ref().is_none_or(|m| m.meets_target)
+        && first_token.as_ref().is_none_or(|m| m.meets_target)
         && tools
             .as_ref()
-            .map_or(true, |t| t.tools.iter().all(|tool| tool.meets_target));
+            .is_none_or(|t| t.tools.iter().all(|tool| tool.meets_target));
 
     Ok(Json(PerformanceMetricsResponse {
         all_targets_met,

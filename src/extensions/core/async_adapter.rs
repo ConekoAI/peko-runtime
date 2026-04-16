@@ -1,6 +1,6 @@
 //! Extension Async Adapter
 //!
-//! Bridges ExtensionCore async hooks to the UnifiedAsyncExecutor framework.
+//! Bridges `ExtensionCore` async hooks to the `UnifiedAsyncExecutor` framework.
 //!
 //! This adapter enables extensions (MCP, Universal Tools, etc.) to participate
 //! in the async tool execution ecosystem with the same capabilities as built-in tools:
@@ -55,7 +55,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-/// Bridges ExtensionCore hooks to UnifiedAsyncExecutor
+/// Bridges `ExtensionCore` hooks to `UnifiedAsyncExecutor`
 ///
 /// This adapter provides a unified interface for async tool execution that works
 /// with both extensions that implement async hooks and those that don't.
@@ -106,7 +106,8 @@ impl ExtensionAsyncAdapter {
         }
     }
 
-    /// Get the underlying ExtensionCore
+    /// Get the underlying `ExtensionCore`
+    #[must_use] 
     pub fn core(&self) -> &Arc<ExtensionCore> {
         &self.core
     }
@@ -119,7 +120,7 @@ impl ExtensionAsyncAdapter {
     /// * `session_key` - Session key for result routing
     ///
     /// # Returns
-    /// Receipt with task_id and status information
+    /// Receipt with `task_id` and status information
     pub async fn execute_async(
         &self,
         tool_name: &str,
@@ -148,7 +149,7 @@ impl ExtensionAsyncAdapter {
         self.fallback_async(tool_name, params, session_key).await
     }
 
-    /// Try native async execution via ToolExecuteAsync hook
+    /// Try native async execution via `ToolExecuteAsync` hook
     async fn try_native_async(
         &self,
         tool_name: &str,
@@ -182,10 +183,9 @@ impl ExtensionAsyncAdapter {
                 })
             }
             HookResult::PassThrough => Err(anyhow!(
-                "No async handler registered for tool {}",
-                tool_name
+                "No async handler registered for tool {tool_name}"
             )),
-            HookResult::Error(e) => Err(anyhow!("Async execution error: {}", e)),
+            HookResult::Error(e) => Err(anyhow!("Async execution error: {e}")),
             _ => Err(anyhow!("Unexpected hook result for async execution")),
         }
     }
@@ -234,7 +234,7 @@ impl ExtensionAsyncAdapter {
                                 data: json!({"result": text}),
                             })
                         }
-                        HookResult::Error(e) => Err(anyhow!("Tool execution failed: {}", e)),
+                        HookResult::Error(e) => Err(anyhow!("Tool execution failed: {e}")),
                         _ => Err(anyhow!("Unexpected result from sync tool execution")),
                     }
                 },
@@ -284,7 +284,7 @@ impl ExtensionAsyncAdapter {
         self.executor
             .check_status(&task_id.to_string())
             .await
-            .ok_or_else(|| anyhow!("Task not found: {}", task_id))
+            .ok_or_else(|| anyhow!("Task not found: {task_id}"))
     }
 
     /// Cancel an async task
@@ -346,6 +346,7 @@ impl ExtensionAsyncAdapter {
     }
 
     /// Get a reference to the underlying executor
+    #[must_use] 
     pub fn executor(&self) -> &UnifiedAsyncExecutor {
         &self.executor
     }
@@ -427,7 +428,7 @@ mod tests {
                 if tool_name == self.tool_name.as_str() {
                     let receipt = AsyncReceipt::new(
                         format!("task_{}", Uuid::new_v4().simple()),
-                        format!("{}_status", tool_name),
+                        format!("{tool_name}_status"),
                     )
                     .with_duration(60);
 
@@ -447,7 +448,7 @@ mod tests {
         let core = Arc::new(ExtensionCore::new());
         let adapter = ExtensionAsyncAdapter::new(core);
 
-        assert!(adapter.supports_native_async("unknown_tool").await == false);
+        assert!(!(adapter.supports_native_async("unknown_tool").await));
     }
 
     #[tokio::test]

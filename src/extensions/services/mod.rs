@@ -51,6 +51,7 @@ pub struct Services {
 
 impl Services {
     /// Create new services container
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             reserved_params: Arc::new(reserved_params::ReservedParamsService::new()),
@@ -60,31 +61,37 @@ impl Services {
     }
 
     /// Get the reserved parameters service
+    #[must_use] 
     pub fn reserved_params(&self) -> &reserved_params::ReservedParamsService {
         &self.reserved_params
     }
 
     /// Get the tool execution service
+    #[must_use] 
     pub fn tool_execution(&self) -> &tool_execution::ToolExecutionService {
         &self.tool_execution
     }
 
     /// Get arc to reserved params service
+    #[must_use] 
     pub fn reserved_params_arc(&self) -> Arc<reserved_params::ReservedParamsService> {
         self.reserved_params.clone()
     }
 
     /// Get arc to tool execution service
+    #[must_use] 
     pub fn tool_execution_arc(&self) -> Arc<tool_execution::ToolExecutionService> {
         self.tool_execution.clone()
     }
 
     /// Get the async execution router
+    #[must_use] 
     pub fn async_router(&self) -> &async_router::AsyncExecutionRouter {
         &self.async_router
     }
 
     /// Get arc to async execution router
+    #[must_use] 
     pub fn async_router_arc(&self) -> Arc<async_router::AsyncExecutionRouter> {
         self.async_router.clone()
     }

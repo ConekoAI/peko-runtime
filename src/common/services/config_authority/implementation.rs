@@ -1,6 +1,6 @@
-//! ConfigAuthority implementation
+//! `ConfigAuthority` implementation
 //!
-//! The main implementation of the ConfigAuthority trait.
+//! The main implementation of the `ConfigAuthority` trait.
 
 use super::authority_trait::{ConfigAuthority, ConfigError, ConfigResult};
 use super::cache::ConfigCache;
@@ -13,7 +13,7 @@ use chrono::Utc;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
-/// Main implementation of ConfigAuthority
+/// Main implementation of `ConfigAuthority`
 ///
 /// This is the single canonical implementation for agent configuration management.
 /// It coordinates between:
@@ -35,7 +35,8 @@ impl std::fmt::Display for ConfigAuthorityImpl {
 }
 
 impl ConfigAuthorityImpl {
-    /// Create a new ConfigAuthorityImpl
+    /// Create a new `ConfigAuthorityImpl`
+    #[must_use] 
     pub fn new(path_resolver: PathResolver) -> Self {
         let config_dir = path_resolver.config_dir().to_path_buf();
         Self {
@@ -179,7 +180,7 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         self.io
             .save_toml(&config_path, config)
             .await
-            .map_err(|e| ConfigError::Other(format!("Failed to save config: {}", e)))?;
+            .map_err(|e| ConfigError::Other(format!("Failed to save config: {e}")))?;
 
         info!(
             "Saved agent '{}' config to team '{}' at {}",
@@ -304,7 +305,7 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         self.io
             .delete(&config_path)
             .await
-            .map_err(|e| ConfigError::Other(format!("Failed to delete config: {}", e)))?;
+            .map_err(|e| ConfigError::Other(format!("Failed to delete config: {e}")))?;
 
         info!("Deleted agent '{}' config from team '{}'", agent_name, team);
         Ok(true)
@@ -338,7 +339,7 @@ impl ConfigAuthorityImpl {
     ) -> anyhow::Result<()> {
         let config_path = self.config_path(agent_name, Some(team));
         if !config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+            anyhow::bail!("Agent '{agent_name}' not found in team '{team}'");
         }
 
         let content = std::fs::read_to_string(&config_path)?;
@@ -367,7 +368,7 @@ impl ConfigAuthorityImpl {
     ) -> anyhow::Result<()> {
         let config_path = self.config_path(agent_name, Some(team));
         if !config_path.exists() {
-            anyhow::bail!("Agent '{}' not found in team '{}'", agent_name, team);
+            anyhow::bail!("Agent '{agent_name}' not found in team '{team}'");
         }
 
         let content = std::fs::read_to_string(&config_path)?;
@@ -465,7 +466,7 @@ mod tests {
         for i in 0..3 {
             let config = AgentConfig::default();
             authority
-                .save(&format!("agent-{}", i), "default", &config)
+                .save(&format!("agent-{i}"), "default", &config)
                 .await
                 .unwrap();
         }

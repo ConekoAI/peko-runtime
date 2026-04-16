@@ -83,7 +83,7 @@ pub mod registry;
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::extensions::types::{ExtensionId, HookId, HookInput, HookOutput, HookResult};
+    use crate::extensions::types::{ExtensionId, HookInput, HookOutput, HookResult};
     use std::sync::Arc;
 
     /// Integration test handler that tracks invocations
@@ -284,7 +284,7 @@ mod integration_tests {
             HookResult::Error(e) => {
                 assert!(e.to_string().contains("Test error"));
             }
-            _ => panic!("Expected Error result, got {:?}", result),
+            _ => panic!("Expected Error result, got {result:?}"),
         }
     }
 
@@ -320,7 +320,7 @@ mod integration_tests {
             HookResult::Replace(HookOutput::Text(text)) => {
                 assert_eq!(text, "replaced");
             }
-            _ => panic!("Expected Replace result, got {:?}", result),
+            _ => panic!("Expected Replace result, got {result:?}"),
         }
     }
 
@@ -380,7 +380,7 @@ mod integration_tests {
 
         match result {
             HookResult::Handled => (), // Expected
-            _ => panic!("Expected Handled result, got {:?}", result),
+            _ => panic!("Expected Handled result, got {result:?}"),
         }
 
         // Second handler should NOT be invoked because first returned Handled

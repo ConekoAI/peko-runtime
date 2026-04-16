@@ -1,14 +1,14 @@
 //! Configuration path manipulation utilities
 //!
-//! Provides dot-notation get/set operations on AgentConfig via JSON intermediate
+//! Provides dot-notation get/set operations on `AgentConfig` via JSON intermediate
 //! representation, enabling generic CLI commands like:
 //!   pekobot agent config get my-agent tools.enabled
-//!   pekobot agent config set my-agent tools.enabled '["shell","read_file"]'
+//!   pekobot agent config set my-agent tools.enabled '["`shell","read_file`"]'
 
 use crate::types::agent::AgentConfig;
 use anyhow::{Context, Result};
 
-/// Get a value from AgentConfig by dot-separated path.
+/// Get a value from `AgentConfig` by dot-separated path.
 ///
 /// Returns a cloned `serde_json::Value` so callers can format it as needed
 /// (plain text for CLI, embedded JSON for `--json` output).
@@ -23,13 +23,11 @@ pub fn get_config_value(config: &AgentConfig, path: &str) -> Result<serde_json::
     for segment in path.split('.') {
         current = match current {
             serde_json::Value::Object(map) => map.get(segment).ok_or_else(|| {
-                anyhow::anyhow!("Config key '{}' not found in path '{}'", segment, path)
+                anyhow::anyhow!("Config key '{segment}' not found in path '{path}'")
             })?,
             _ => {
                 return Err(anyhow::anyhow!(
-                    "Cannot traverse into non-object at '{}' in path '{}'",
-                    segment,
-                    path
+                    "Cannot traverse into non-object at '{segment}' in path '{path}'"
                 ))
             }
         };
@@ -38,7 +36,7 @@ pub fn get_config_value(config: &AgentConfig, path: &str) -> Result<serde_json::
     Ok(current.clone())
 }
 
-/// Set a value on AgentConfig by dot-separated path.
+/// Set a value on `AgentConfig` by dot-separated path.
 ///
 /// The value string is parsed as JSON when possible (arrays, objects, numbers,
 /// booleans, quoted strings). Otherwise it falls back to a plain string.
@@ -57,26 +55,23 @@ pub fn set_config_value(config: &mut AgentConfig, path: &str, value_str: &str) -
             if let serde_json::Value::Object(map) = current {
                 map.insert(segment.to_string(), new_value.clone());
             } else {
-                anyhow::bail!("Cannot set value on non-object at '{}'", segment);
+                anyhow::bail!("Cannot set value on non-object at '{segment}'");
+            }
+        } else if let serde_json::Value::Object(map) = current {
+            current = map
+                .entry(segment.to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if matches!(current, serde_json::Value::Null) {
+                *current = serde_json::json!({});
             }
         } else {
-            if let serde_json::Value::Object(map) = current {
-                current = map
-                    .entry(segment.to_string())
-                    .or_insert_with(|| serde_json::json!({}));
-                if matches!(current, serde_json::Value::Null) {
-                    *current = serde_json::json!({});
-                }
-            } else {
-                anyhow::bail!("Cannot traverse into non-object at '{}'", segment);
-            }
+            anyhow::bail!("Cannot traverse into non-object at '{segment}'");
         }
     }
 
     *config = serde_json::from_value(json_value).with_context(|| {
         format!(
-            "Invalid value for path '{}': '{}' cannot be converted to the expected type",
-            path, value_str
+            "Invalid value for path '{path}': '{value_str}' cannot be converted to the expected type"
         )
     })?;
 
@@ -100,7 +95,7 @@ fn parse_value(value_str: &str) -> Result<serde_json::Value> {
 
     if looks_like_json {
         let parsed: serde_json::Value = serde_json::from_str(value_str)
-            .with_context(|| format!("Invalid JSON value: '{}'", value_str))?;
+            .with_context(|| format!("Invalid JSON value: '{value_str}'"))?;
         return Ok(parsed);
     }
     Ok(serde_json::Value::String(value_str.to_string()))

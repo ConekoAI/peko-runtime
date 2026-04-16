@@ -93,7 +93,7 @@ impl SystemPromptBuilder {
 
     /// Set tool definitions from unified registry (ADR-019 Phase 3)
     ///
-    /// This allows building prompts with ToolDefinition instead of Arc<dyn Tool>,
+    /// This allows building prompts with `ToolDefinition` instead of Arc<dyn Tool>,
     /// enabling dynamic tool updates without session restart.
     pub fn with_tool_definitions(mut self, definitions: Vec<ToolDefinition>) -> Self {
         self.tool_definitions = definitions;
@@ -261,8 +261,8 @@ impl SystemPromptBuilder {
 
     /// Build the Skills section via Extension Core hooks
     ///
-    /// Uses the ExtensionCore hook system to inject skills content from registered
-    /// skill extensions. This replaces the legacy SkillsRegistry approach.
+    /// Uses the `ExtensionCore` hook system to inject skills content from registered
+    /// skill extensions. This replaces the legacy `SkillsRegistry` approach.
     fn build_skills_section(&self) -> String {
         use crate::extensions::{HookInput, HookPoint};
 
@@ -294,9 +294,8 @@ Before replying: scan <available_skills> <description> entries.
 Constraints: never read more than one skill up front; only read after selecting.
 
 <available_skills>
-{}
-</available_skills>",
-                            skills_text
+{skills_text}
+</available_skills>"
                         );
                     }
                     _ => {}
@@ -387,7 +386,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Create a template with placeholders
-        let template = r#"## Your Role
+        let template = r"## Your Role
 You are {{agent_name}}.
 
 {{tools}}
@@ -395,7 +394,7 @@ You are {{agent_name}}.
 ## Safety
 Be safe.
 
-{{runtime}}"#;
+{{runtime}}";
         std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("test-agent")
@@ -486,10 +485,10 @@ Be safe.
     #[test]
     fn test_placeholder_replacement_inline() {
         let tmp = TempDir::new().unwrap();
-        let template = r#"Agent: {{agent_name}}
+        let template = r"Agent: {{agent_name}}
 Workspace: {{workspace}}
 Channel: {{channel}}
-Level: {{thinking_level}}"#;
+Level: {{thinking_level}}";
         std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("my-agent")
@@ -550,12 +549,12 @@ Level: {{thinking_level}}"#;
     fn test_minimal_mode_basic() {
         let tmp = TempDir::new().unwrap();
         // Template without conditional sections that minimal mode would skip
-        let template = r#"## Your Role
+        let template = r"## Your Role
 You are {{agent_name}}.
 
 {{tools}}
 
-{{runtime}}"#;
+{{runtime}}";
         std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         let builder = SystemPromptBuilder::new("test-agent")

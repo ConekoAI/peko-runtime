@@ -82,6 +82,7 @@ impl HttpClient {
     }
 
     /// Set retry policy for this client
+    #[must_use] 
     pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = Some(policy);
         self
@@ -100,7 +101,7 @@ impl HttpClient {
         // Add authentication
         match &self.auth {
             AuthConfig::Bearer { token } => {
-                request = request.header("Authorization", format!("Bearer {}", token));
+                request = request.header("Authorization", format!("Bearer {token}"));
             }
             AuthConfig::Header { name, value } => {
                 request = request.header(name, value);
@@ -137,7 +138,7 @@ impl HttpClient {
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
                 debug!("HTTP error {}: {}", status, error_text);
-                return Err(anyhow::anyhow!("HTTP error {}: {}", status, error_text));
+                return Err(anyhow::anyhow!("HTTP error {status}: {error_text}"));
             }
 
             let result: R = response.json().await?;
@@ -146,7 +147,7 @@ impl HttpClient {
 
         match &self.retry_policy {
             Some(policy) => {
-                RetryExecutor::execute(policy, &format!("POST {}", path), operation).await
+                RetryExecutor::execute(policy, &format!("POST {path}"), operation).await
             }
             None => operation().await,
         }
@@ -176,7 +177,7 @@ impl HttpClient {
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
                 debug!("HTTP error {}: {}", status, error_text);
-                return Err(anyhow::anyhow!("HTTP error {}: {}", status, error_text));
+                return Err(anyhow::anyhow!("HTTP error {status}: {error_text}"));
             }
 
             Ok(response)
@@ -185,7 +186,7 @@ impl HttpClient {
         // Retry the initial request if configured
         let response = match &self.retry_policy {
             Some(policy) => {
-                RetryExecutor::execute(policy, &format!("POST {}", path), operation).await?
+                RetryExecutor::execute(policy, &format!("POST {path}"), operation).await?
             }
             None => operation().await?,
         };
@@ -193,7 +194,7 @@ impl HttpClient {
         // Convert the byte stream to a stream of anyhow::Result<Bytes>
         let stream = response.bytes_stream().map(|result| match result {
             Ok(bytes) => Ok(bytes),
-            Err(e) => Err(anyhow::anyhow!("Stream error: {}", e)),
+            Err(e) => Err(anyhow::anyhow!("Stream error: {e}")),
         });
 
         Ok(stream)
@@ -212,7 +213,7 @@ impl HttpClient {
             if !status.is_success() {
                 let error_text = response.text().await.unwrap_or_default();
                 debug!("HTTP error {}: {}", status, error_text);
-                return Err(anyhow::anyhow!("HTTP error {}: {}", status, error_text));
+                return Err(anyhow::anyhow!("HTTP error {status}: {error_text}"));
             }
 
             let result: R = response.json().await?;
@@ -221,7 +222,7 @@ impl HttpClient {
 
         match &self.retry_policy {
             Some(policy) => {
-                RetryExecutor::execute(policy, &format!("GET {}", path), operation).await
+                RetryExecutor::execute(policy, &format!("GET {path}"), operation).await
             }
             None => operation().await,
         }

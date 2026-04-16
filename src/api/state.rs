@@ -134,12 +134,8 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         let workspace_path: PathBuf = workspace_path.into();
         let data_dir = workspace_path.clone();
-        let config_dir = dirs::home_dir()
-            .map(|d| d.join(".pekobot"))
-            .unwrap_or_else(|| PathBuf::from(".").join(".pekobot"));
-        let cache_dir = dirs::cache_dir()
-            .map(|d| d.join("pekobot"))
-            .unwrap_or_else(|| data_dir.join("cache"));
+        let config_dir = dirs::home_dir().map_or_else(|| PathBuf::from(".").join(".pekobot"), |d| d.join(".pekobot"));
+        let cache_dir = dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("pekobot"));
         let team_manager = Arc::new(TeamManager::new());
 
         Self::build(
@@ -164,9 +160,7 @@ impl AppState {
         data_dir: PathBuf,
     ) -> anyhow::Result<Self> {
         let workspace_path: PathBuf = workspace_path.into();
-        let cache_dir = dirs::cache_dir()
-            .map(|d| d.join("pekobot"))
-            .unwrap_or_else(|| data_dir.join("cache"));
+        let cache_dir = dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("pekobot"));
         let config_dir = data_dir.join("config");
         let team_manager = Arc::new(TeamManager::with_data_dir(data_dir.clone()));
 
@@ -205,7 +199,7 @@ impl AppState {
         let agent_service = Arc::new(
             StatelessAgentService::new(config_service.clone(), path_resolver)
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to create agent service: {}", e))?,
+                .map_err(|e| anyhow::anyhow!("Failed to create agent service: {e}"))?,
         );
 
         let lifecycle = Arc::new(LifecycleManager::new());
@@ -246,6 +240,7 @@ impl AppState {
     }
 
     /// Get the current uptime in seconds
+    #[must_use] 
     pub fn uptime_seconds(&self) -> u64 {
         SystemTime::now()
             .duration_since(self.started_at)
@@ -300,16 +295,19 @@ impl AppState {
     }
 
     /// Get the hook registry
+    #[must_use] 
     pub fn hook_registry(&self) -> Arc<HookRegistry> {
         self.hook_registry.clone()
     }
 
     /// Get the event broadcaster
+    #[must_use] 
     pub fn event_broadcaster(&self) -> Arc<EventBroadcaster> {
         self.event_broadcaster.clone()
     }
 
     /// Get the observability hub
+    #[must_use] 
     pub fn observability(&self) -> Arc<Observability> {
         self.observability.clone()
     }
@@ -334,31 +332,37 @@ impl AppState {
     }
 
     /// Get the agent configuration service
+    #[must_use] 
     pub fn config_service(&self) -> &Arc<ConfigAuthorityImpl> {
         &self.config_service
     }
 
     /// Get the agent service
+    #[must_use] 
     pub fn agent_service(&self) -> &Arc<StatelessAgentService> {
         &self.agent_service
     }
 
     /// Get the lifecycle manager
+    #[must_use] 
     pub fn lifecycle(&self) -> &Arc<LifecycleManager> {
         &self.lifecycle
     }
 
     /// Get the session service
+    #[must_use] 
     pub fn session_service(&self) -> &Arc<SessionService> {
         &self.session_service
     }
 
     /// Get the team management service (unified)
+    #[must_use] 
     pub fn team_service(&self) -> &Arc<TeamManagementService> {
         &self.team_service
     }
 
     /// Get the agent management service (unified)
+    #[must_use] 
     pub fn agent_mgmt_service(&self) -> &Arc<AgentService> {
         &self.agent_mgmt_service
     }

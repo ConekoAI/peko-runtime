@@ -359,7 +359,7 @@ impl McpManager {
     ///
     /// This allows MCP tools to be used seamlessly with Pekobot's agent system.
     /// The tools are wrapped in `McpToolProxy` or `InjectableMcpToolProxy` (if the
-    /// server has reserved_parameters configured) which implement the Tool trait.
+    /// server has `reserved_parameters` configured) which implement the Tool trait.
     ///
     /// # Returns
     /// A vector of Arc<dyn Tool> containing all MCP tools from running servers

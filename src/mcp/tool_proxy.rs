@@ -17,10 +17,10 @@ use tracing::{debug, trace};
 
 /// An MCP tool wrapped as a Pekobot Tool
 ///
-/// Uses full names with mcp: prefix (e.g., "mcp:identity:echo_identity")
+/// Uses full names with mcp: prefix (e.g., "`mcp:identity:echo_identity`")
 /// for consistent identification across whitelist, hooks, and execution.
 pub struct McpToolProxy {
-    /// Full tool name: mcp:{server_name}:{tool_name}
+    /// Full tool name: `mcp:{server_name}:{tool_name`}
     name: String,
     /// The server this tool belongs to
     server_name: String,
@@ -264,7 +264,7 @@ pub async fn create_tool_proxy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::config::{McpConfig, McpServerConfig};
+    use crate::mcp::config::McpConfig;
 
     #[test]
     fn test_tool_proxy_creation() {

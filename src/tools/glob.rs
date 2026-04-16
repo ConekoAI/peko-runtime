@@ -96,7 +96,7 @@ impl GlobTool {
             let root_part = if prefix.is_empty() {
                 base_dir.clone()
             } else {
-                let prefix_path = PathBuf::from(prefix.trim_end_matches(|c| c == '/' || c == '\\'));
+                let prefix_path = PathBuf::from(prefix.trim_end_matches(['/', '\\']));
                 base_dir.join(prefix_path)
             };
 
@@ -104,7 +104,7 @@ impl GlobTool {
             let match_pattern = if rest.is_empty() || rest == "/" || rest == "\\" {
                 "**".to_string()
             } else {
-                format!("**{}", rest)
+                format!("**{rest}")
             };
 
             (root_part, match_pattern)
@@ -122,9 +122,7 @@ impl GlobTool {
                 })
                 .unwrap_or_else(|| PathBuf::from("."));
             let file_name = pattern_path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "*".to_string());
+                .file_name().map_or_else(|| "*".to_string(), |s| s.to_string_lossy().to_string());
             (base_dir.join(parent), file_name)
         };
 
@@ -285,7 +283,7 @@ impl GlobTool {
 
     /// Simple glob matching using the glob crate
     fn simple_glob_match(name: &str, pattern: &str) -> bool {
-        GlobPattern::new(pattern).map_or(false, |p: GlobPattern| p.matches(name))
+        GlobPattern::new(pattern).is_ok_and(|p: GlobPattern| p.matches(name))
     }
 }
 
@@ -390,7 +388,7 @@ Find test files:
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: GlobArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         self.glob(
             &args.pattern,
@@ -516,7 +514,7 @@ mod tests {
 
         // Create many files
         for i in 0..10 {
-            fs::write(temp_dir.path().join(format!("file{}.txt", i)), "")
+            fs::write(temp_dir.path().join(format!("file{i}.txt")), "")
                 .await
                 .unwrap();
         }

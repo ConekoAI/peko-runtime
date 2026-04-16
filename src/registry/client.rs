@@ -133,12 +133,11 @@ impl RegistryClient {
         let manifest = self
             .fetch_manifest(&reg_ref, source, &auth)
             .await
-            .map_err(|e| {
+            .inspect_err(|e| {
                 progress(ProgressEvent::Error {
                     code: "manifest_fetch_failed".to_string(),
                     message: e.to_string(),
                 });
-                e
             })?;
 
         // Pull each layer
@@ -528,15 +527,7 @@ impl RegistryClient {
 
 /// Sanitize a tag for use as a filename
 fn sanitize_tag(tag: &str) -> String {
-    tag.replace('/', "_")
-        .replace(':', "_")
-        .replace('\\', "_")
-        .replace('<', "_")
-        .replace('>', "_")
-        .replace('|', "_")
-        .replace('*', "_")
-        .replace('?', "_")
-        .replace('"', "_")
+    tag.replace(['/', ':', '\\', '<', '>', '|', '*', '?', '"'], "_")
 }
 
 #[cfg(test)]
@@ -603,7 +594,7 @@ mod tests {
 
         // Test Done
         let hex = "a".repeat(64);
-        let manifest = ImageManifest::new("test", "1.0.0").with_digest(format!("sha256:{}", hex));
+        let manifest = ImageManifest::new("test", "1.0.0").with_digest(format!("sha256:{hex}"));
         let event = ProgressEvent::Done { manifest };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("done"));

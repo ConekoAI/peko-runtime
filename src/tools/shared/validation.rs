@@ -26,23 +26,21 @@ impl std::fmt::Display for ValidationError {
             ValidationError::ReservedParamLeak { param, location } => {
                 write!(
                     f,
-                    "Security violation: reserved parameter '{}' found in {}. \
-                     Reserved parameters must be injected at runtime, not provided by LLM.",
-                    param, location
+                    "Security violation: reserved parameter '{param}' found in {location}. \
+                     Reserved parameters must be injected at runtime, not provided by LLM."
                 )
             }
             ValidationError::InvalidUserParam { param, reason } => {
-                write!(f, "Invalid parameter '{}': {}", param, reason)
+                write!(f, "Invalid parameter '{param}': {reason}")
             }
             ValidationError::SchemaTypeMismatch { expected, actual } => {
                 write!(
                     f,
-                    "Schema type mismatch: expected '{}', got '{}'",
-                    expected, actual
+                    "Schema type mismatch: expected '{expected}', got '{actual}'"
                 )
             }
             ValidationError::MissingRequiredParam { param } => {
-                write!(f, "Missing required parameter: '{}'", param)
+                write!(f, "Missing required parameter: '{param}'")
             }
         }
     }
@@ -54,7 +52,7 @@ impl std::error::Error for ValidationError {}
 ///
 /// # Security Note
 /// This prevents LLMs from providing values for parameters that should be
-/// injected at runtime (like agent_id, session_id).
+/// injected at runtime (like `agent_id`, `session_id`).
 pub fn validate_no_reserved_in_user_params(
     user_params: &Value,
     reserved: &HashSet<String>,
@@ -71,9 +69,8 @@ pub fn validate_no_reserved_in_user_params(
             return Err(ValidationError::InvalidUserParam {
                 param: key.clone(),
                 reason: format!(
-                    "Parameter '{}' is reserved and should not be provided by user. \
-                     It will be injected at runtime.",
-                    key
+                    "Parameter '{key}' is reserved and should not be provided by user. \
+                     It will be injected at runtime."
                 ),
             });
         }
@@ -94,7 +91,7 @@ pub fn validate_no_reserved_params_leak(
     // Check properties
     if let Some(properties) = exposed_schema.get("properties") {
         if let Some(props_obj) = properties.as_object() {
-            for key in reserved.iter() {
+            for key in reserved {
                 if props_obj.contains_key(key) {
                     return Err(ValidationError::ReservedParamLeak {
                         param: key.clone(),
@@ -171,7 +168,7 @@ pub fn validate_required_params(params: &Value, schema: &Value) -> Result<(), Va
 
 /// Validate tool result format
 ///
-/// Ensures the result follows the expected ExecuteResult format or
+/// Ensures the result follows the expected `ExecuteResult` format or
 /// is a valid plain object.
 pub fn validate_tool_result(result: &Value) -> Result<ToolResultFormat, ValidationError> {
     // Check if it follows ExecuteResult format
@@ -190,16 +187,15 @@ pub fn validate_tool_result(result: &Value) -> Result<ToolResultFormat, Validati
                 return Ok(ToolResultFormat::ExecuteResult {
                     has_data: obj.contains_key("data"),
                 });
-            } else {
-                // Error result should have error field
-                if !obj.contains_key("error") {
-                    return Err(ValidationError::InvalidUserParam {
-                        param: "error".to_string(),
-                        reason: "Error result must contain 'error' field".to_string(),
-                    });
-                }
-                return Ok(ToolResultFormat::ExecuteResult { has_data: false });
             }
+            // Error result should have error field
+            if !obj.contains_key("error") {
+                return Err(ValidationError::InvalidUserParam {
+                    param: "error".to_string(),
+                    reason: "Error result must contain 'error' field".to_string(),
+                });
+            }
+            return Ok(ToolResultFormat::ExecuteResult { has_data: false });
         }
     }
 
@@ -210,7 +206,7 @@ pub fn validate_tool_result(result: &Value) -> Result<ToolResultFormat, Validati
 /// Represents the format of a tool result
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ToolResultFormat {
-    /// Standard ExecuteResult format with success/data/error fields
+    /// Standard `ExecuteResult` format with success/data/error fields
     ExecuteResult { has_data: bool },
     /// Plain object result (treated as data payload)
     PlainObject,
@@ -224,6 +220,7 @@ pub struct ValidationReport {
 }
 
 impl ValidationReport {
+    #[must_use] 
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
     }
@@ -244,6 +241,7 @@ pub struct ValidationBuilder {
 }
 
 impl ValidationBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             reserved: HashSet::new(),
@@ -251,11 +249,13 @@ impl ValidationBuilder {
         }
     }
 
+    #[must_use] 
     pub fn with_reserved(mut self, params: &[String]) -> Self {
         self.reserved = params.iter().cloned().collect();
         self
     }
 
+    #[must_use] 
     pub fn with_schema(mut self, schema: Value) -> Self {
         self.schema = Some(schema);
         self

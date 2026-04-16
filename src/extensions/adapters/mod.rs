@@ -12,7 +12,7 @@
 //! - `parse_yaml_frontmatter()` - Extract YAML frontmatter from markdown
 //! - `parse_yaml_frontmatter_typed<T>()` - Parse and deserialize frontmatter
 //! - `extract_extension_fields()` - Get common id/name/version/description fields
-//! - `build_manifest_from_yaml()` - Construct ExtensionManifest from YAML
+//! - `build_manifest_from_yaml()` - Construct `ExtensionManifest` from YAML
 //! - `discover_extensions()` - Generic extension discovery helper
 //!
 //! # Available Adapters
@@ -164,7 +164,7 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     /// * `content` - Content of the manifest file
     ///
     /// # Returns
-    /// Parsed ExtensionManifest
+    /// Parsed `ExtensionManifest`
     fn parse_manifest(
         &self,
         path: &std::path::Path,
@@ -177,9 +177,9 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
                 parse_yaml_frontmatter_markdown(path, content)
             }
             ManifestFormat::Json { .. } => serde_json::from_str(content)
-                .with_context(|| format!("Failed to parse JSON manifest at {:?}", path)),
+                .with_context(|| format!("Failed to parse JSON manifest at {path:?}")),
             ManifestFormat::Toml { .. } => toml::from_str(content)
-                .with_context(|| format!("Failed to parse TOML manifest at {:?}", path)),
+                .with_context(|| format!("Failed to parse TOML manifest at {path:?}")),
             ManifestFormat::Custom { .. } => {
                 anyhow::bail!("Custom manifest formats must implement parse_manifest")
             }
@@ -189,8 +189,8 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
 
 /// Parse YAML frontmatter from a markdown file
 ///
-/// This is the default implementation used by the ExtensionTypeAdapter trait.
-/// It expects the YAML to be directly deserializable into ExtensionManifest.
+/// This is the default implementation used by the `ExtensionTypeAdapter` trait.
+/// It expects the YAML to be directly deserializable into `ExtensionManifest`.
 fn parse_yaml_frontmatter_markdown(
     path: &std::path::Path,
     content: &str,
@@ -223,7 +223,7 @@ fn parse_yaml_frontmatter_markdown(
     let frontmatter = frontmatter_lines.join("\n");
 
     let mut manifest: crate::extensions::ExtensionManifest = serde_yaml::from_str(&frontmatter)
-        .with_context(|| format!("Failed to parse YAML frontmatter in {:?}", path))?;
+        .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
 
     manifest.path = path
         .parent()
@@ -297,7 +297,7 @@ pub mod parsing {
     /// Parse YAML frontmatter and deserialize into a type
     ///
     /// # Type Parameters
-    /// * `T` - The type to deserialize into (must implement DeserializeOwned)
+    /// * `T` - The type to deserialize into (must implement `DeserializeOwned`)
     ///
     /// # Arguments
     /// * `content` - The full markdown content with YAML frontmatter
@@ -326,9 +326,9 @@ pub mod parsing {
     ) -> Result<(T, String)> {
         let content = tokio::fs::read_to_string(path)
             .await
-            .with_context(|| format!("Failed to read file: {:?}", path))?;
+            .with_context(|| format!("Failed to read file: {path:?}"))?;
         parse_yaml_frontmatter_typed(&content)
-            .with_context(|| format!("Failed to parse frontmatter in: {:?}", path))
+            .with_context(|| format!("Failed to parse frontmatter in: {path:?}"))
     }
 
     /// Parse a TOML file into a type
@@ -341,8 +341,8 @@ pub mod parsing {
     pub async fn parse_toml_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
         let content = tokio::fs::read_to_string(path)
             .await
-            .with_context(|| format!("Failed to read TOML file: {:?}", path))?;
-        toml::from_str(&content).with_context(|| format!("Failed to parse TOML file: {:?}", path))
+            .with_context(|| format!("Failed to read TOML file: {path:?}"))?;
+        toml::from_str(&content).with_context(|| format!("Failed to parse TOML file: {path:?}"))
     }
 
     /// Parse a JSON file into a type
@@ -355,9 +355,9 @@ pub mod parsing {
     pub async fn parse_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
         let content = tokio::fs::read_to_string(path)
             .await
-            .with_context(|| format!("Failed to read JSON file: {:?}", path))?;
+            .with_context(|| format!("Failed to read JSON file: {path:?}"))?;
         serde_json::from_str(&content)
-            .with_context(|| format!("Failed to parse JSON file: {:?}", path))
+            .with_context(|| format!("Failed to parse JSON file: {path:?}"))
     }
 
     /// Extract a required string field from YAML value
@@ -372,8 +372,8 @@ pub mod parsing {
     pub fn require_string_field(yaml: &serde_yaml::Value, field: &str) -> Result<String> {
         yaml.get(field)
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .with_context(|| format!("Missing or invalid required field: {}", field))
+            .map(std::string::ToString::to_string)
+            .with_context(|| format!("Missing or invalid required field: {field}"))
     }
 
     /// Extract an optional string field from YAML value
@@ -382,6 +382,7 @@ pub mod parsing {
     /// * `yaml` - The YAML value object
     /// * `field` - Field name to extract
     /// * `default` - Default value if field is missing
+    #[must_use] 
     pub fn optional_string_field(yaml: &serde_yaml::Value, field: &str, default: &str) -> String {
         yaml.get(field)
             .and_then(|v| v.as_str())
@@ -411,7 +412,7 @@ pub mod parsing {
         Ok((id, name, version, description))
     }
 
-    /// Same as extract_extension_fields but for TOML
+    /// Same as `extract_extension_fields` but for TOML
     pub fn extract_extension_fields_toml(
         toml: &toml::Value,
     ) -> Result<(String, String, String, String)> {
@@ -441,9 +442,9 @@ pub mod parsing {
         ))
     }
 
-    /// Convert a serde_yaml::Value to serde_json::Value
+    /// Convert a `serde_yaml::Value` to `serde_json::Value`
     ///
-    /// Useful for storing YAML metadata in ExtensionManifest
+    /// Useful for storing YAML metadata in `ExtensionManifest`
     pub fn yaml_to_json(yaml: serde_yaml::Value) -> serde_json::Value {
         match yaml {
             serde_yaml::Value::Null => serde_json::Value::Null,
@@ -472,7 +473,7 @@ pub mod parsing {
         }
     }
 
-    /// Build an ExtensionManifest from parsed YAML fields
+    /// Build an `ExtensionManifest` from parsed YAML fields
     ///
     /// # Arguments
     /// * `yaml` - The parsed YAML value containing extension metadata
@@ -512,7 +513,7 @@ pub mod parsing {
         Ok(manifest)
     }
 
-    /// Build an ExtensionManifest from parsed TOML fields
+    /// Build an `ExtensionManifest` from parsed TOML fields
     pub fn build_manifest_from_toml(
         toml: &toml::Value,
         extension_type: &str,
@@ -570,7 +571,7 @@ pub mod parsing {
 
         let mut entries = tokio::fs::read_dir(dir)
             .await
-            .with_context(|| format!("Failed to read directory: {:?}", dir))?;
+            .with_context(|| format!("Failed to read directory: {dir:?}"))?;
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -589,6 +590,7 @@ pub mod parsing {
     }
 
     /// Check if a directory contains a file
+    #[must_use] 
     pub fn has_file(dir: &Path, filename: &str) -> bool {
         dir.join(filename).exists()
     }
@@ -597,7 +599,7 @@ pub mod parsing {
     pub async fn read_yaml_frontmatter_file(path: &Path) -> Result<(serde_yaml::Value, String)> {
         let content = tokio::fs::read_to_string(path)
             .await
-            .with_context(|| format!("Failed to read file: {:?}", path))?;
+            .with_context(|| format!("Failed to read file: {path:?}"))?;
         let (frontmatter, body) = parse_yaml_frontmatter(&content)?;
         let yaml: serde_yaml::Value =
             serde_yaml::from_str(&frontmatter).context("Failed to parse YAML frontmatter")?;
@@ -608,7 +610,7 @@ pub mod parsing {
     pub async fn read_toml_file(path: &Path) -> Result<toml::Value> {
         let content = tokio::fs::read_to_string(path)
             .await
-            .with_context(|| format!("Failed to read file: {:?}", path))?;
+            .with_context(|| format!("Failed to read file: {path:?}"))?;
         toml::from_str(&content).context("Failed to parse TOML")
     }
 
@@ -627,9 +629,9 @@ pub mod parsing {
     pub async fn find_executable(tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
         // Try common patterns first
         let candidates = [
-            tool_path.join(format!("{}.py", tool_name)),
-            tool_path.join(format!("{}.js", tool_name)),
-            tool_path.join(format!("{}.sh", tool_name)),
+            tool_path.join(format!("{tool_name}.py")),
+            tool_path.join(format!("{tool_name}.js")),
+            tool_path.join(format!("{tool_name}.sh")),
             tool_path.join(tool_name),
         ];
 
@@ -655,15 +657,16 @@ pub mod parsing {
         None
     }
 
-    /// Synchronous version of find_executable
+    /// Synchronous version of `find_executable`
     ///
-    /// Used in contexts where async is not available (e.g., parse_manifest trait method).
+    /// Used in contexts where async is not available (e.g., `parse_manifest` trait method).
+    #[must_use] 
     pub fn find_executable_sync(tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
         // Try common patterns first
         let candidates = [
-            tool_path.join(format!("{}.py", tool_name)),
-            tool_path.join(format!("{}.js", tool_name)),
-            tool_path.join(format!("{}.sh", tool_name)),
+            tool_path.join(format!("{tool_name}.py")),
+            tool_path.join(format!("{tool_name}.js")),
+            tool_path.join(format!("{tool_name}.sh")),
             tool_path.join(tool_name),
         ];
 
@@ -726,6 +729,7 @@ pub enum ManifestFormat {
 
 impl ManifestFormat {
     /// Detect if a path contains a manifest of this format
+    #[must_use] 
     pub fn detect(&self, path: &std::path::Path) -> bool {
         match self {
             Self::YamlFrontmatterMarkdown { file_name, .. } => path.join(file_name).exists(),
@@ -736,6 +740,7 @@ impl ManifestFormat {
     }
 
     /// Get the manifest file path
+    #[must_use] 
     pub fn manifest_path(&self, base_path: &std::path::Path) -> Option<std::path::PathBuf> {
         match self {
             Self::YamlFrontmatterMarkdown { file_name, .. }
@@ -762,6 +767,7 @@ pub enum ExtensionState {
 
 impl ExtensionState {
     /// Check if state is empty
+    #[must_use] 
     pub fn is_unit(&self) -> bool {
         matches!(self, Self::Unit)
     }
@@ -783,6 +789,7 @@ pub struct BuiltInAdapters;
 
 impl BuiltInAdapters {
     /// Create a new built-in adapter provider
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
@@ -790,10 +797,11 @@ impl BuiltInAdapters {
     /// Get all built-in adapters
     ///
     /// Returns all registered extension type adapters:
-    /// - SkillAdapter: For SKILL.md based extensions
-    /// - UniversalToolAdapter: For universal tool protocol extensions
-    /// - McpAdapter: For MCP server extensions
-    /// - GatewayAdapter: For gateway plugin extensions (includes I/O channels)
+    /// - `SkillAdapter`: For SKILL.md based extensions
+    /// - `UniversalToolAdapter`: For universal tool protocol extensions
+    /// - `McpAdapter`: For MCP server extensions
+    /// - `GatewayAdapter`: For gateway plugin extensions (includes I/O channels)
+    #[must_use] 
     pub fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>> {
         vec![
             Box::new(SkillAdapter::new()),

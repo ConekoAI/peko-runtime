@@ -1,12 +1,12 @@
 //! Sessions Send Tool - A2A messaging with cross-team blocking
 //!
-//! Implements CAPABILITY_INTERFACE.md §3.9
+//! Implements `CAPABILITY_INTERFACE.md` §3.9
 //! - Cross-team blocking: rejects if target session belongs to team peer
 //! - Intended for human-to-agent and tooling-to-agent communication
 //! - Agent-to-agent within team must use event bus (A2A)
 //!
 //! Note: Async execution and timeout are handled by the framework-level
-//! ToolWrapper using `_async` and `_timeout` parameters.
+//! `ToolWrapper` using `_async` and `_timeout` parameters.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -42,7 +42,7 @@ pub struct SessionsSendResult {
     pub queued: Option<bool>,
 }
 
-/// Error codes for sessions_send
+/// Error codes for `sessions_send`
 #[derive(Debug, Clone)]
 pub enum SessionsSendError {
     CrossAgentSendForbidden,
@@ -79,7 +79,7 @@ pub struct SessionsSendTool {
 }
 
 impl SessionsSendTool {
-    /// Create a new sessions_send tool
+    /// Create a new `sessions_send` tool
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -127,7 +127,7 @@ impl SessionsSendTool {
     /// Check if target session belongs to a team peer (cross-team blocking)
     ///
     /// Returns Err if the target is in the same team but different agent
-    /// (agents must use A2A bus, not sessions_send, for team communication)
+    /// (agents must use A2A bus, not `sessions_send`, for team communication)
     async fn check_cross_team_permission(&self, target_session_id: &str) -> Result<()> {
         // If we're not in a team, no restriction
         let _team_id = match &self.team_id {
@@ -169,7 +169,7 @@ impl SessionsSendTool {
     fn extract_agent_id_from_session(&self, session_id: &str) -> Option<String> {
         // Session ID format: agent:{agent_id}:session:{uuid}
         // or: agent:{agent_id}:spawn:{parent}:{uuid}
-        session_id.split(':').nth(1).map(|s| s.to_string())
+        session_id.split(':').nth(1).map(std::string::ToString::to_string)
     }
 
     /// Execute send
@@ -267,7 +267,7 @@ For long-running message handling, use the framework-level async parameter:
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: SessionsSendArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         self.execute_send(args.session_id, args.message).await
     }

@@ -22,6 +22,7 @@ pub struct InMemoryBus {
 
 impl InMemoryBus {
     /// Create a new in-memory bus
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             agents: Arc::new(RwLock::new(HashMap::new())),
@@ -50,7 +51,7 @@ impl InMemoryBus {
                 drop(agents);
 
                 match inbox.send(message) {
-                    Ok(_) => DeliveryResult::Delivered,
+                    Ok(()) => DeliveryResult::Delivered,
                     Err(_) => {
                         // Channel closed, agent disconnected
                         DeliveryResult::AgentNotFound(agent_id.clone())

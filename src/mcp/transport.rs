@@ -760,7 +760,7 @@ struct SseEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::types::{JsonRpcRequest, RequestId};
+    use crate::mcp::types::JsonRpcRequest;
 
     #[tokio::test]
     async fn test_in_memory_transport() {
@@ -806,7 +806,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_in_memory_transport_close() {
-        let (transport1, transport2) = InMemoryTransport::pair();
+        let (transport1, _transport2) = InMemoryTransport::pair();
 
         // Close transport1
         transport1.close().await.unwrap();

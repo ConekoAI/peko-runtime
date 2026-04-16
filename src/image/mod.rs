@@ -61,7 +61,7 @@ impl ImageRef {
         }
 
         // Check for path prefix
-        if s.starts_with("./") || s.starts_with("/") || s.starts_with("..") {
+        if s.starts_with("./") || s.starts_with('/') || s.starts_with("..") {
             return Ok(Self::Path(PathBuf::from(s)));
         }
 
@@ -90,10 +90,11 @@ impl ImageRef {
     }
 
     /// Get the display string for this reference
+    #[must_use] 
     pub fn display(&self) -> String {
         match self {
-            Self::RegistryRef { host, path, tag } => format!("{}/{}:{}", host, path, tag),
-            Self::LocalTag { name, tag } => format!("{}:{}", name, tag),
+            Self::RegistryRef { host, path, tag } => format!("{host}/{path}:{tag}"),
+            Self::LocalTag { name, tag } => format!("{name}:{tag}"),
             Self::Digest(d) => d.to_string(),
             Self::Path(p) => p.display().to_string(),
         }
@@ -119,6 +120,7 @@ impl ImageId {
     }
 
     /// Get the string representation
+    #[must_use] 
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -138,7 +140,7 @@ mod tests {
     fn test_image_ref_parse_digest() {
         // Generate exactly 64 hex chars for the digest
         let hex = format!("{}{}", "a".repeat(60), "1234");
-        let digest = format!("sha256:{}", hex);
+        let digest = format!("sha256:{hex}");
         let r = ImageRef::parse(&digest).unwrap();
         match r {
             ImageRef::Digest(d) => assert_eq!(d.as_str(), digest),

@@ -28,6 +28,7 @@ pub struct ExecutionRecord {
 
 impl ExecutionRecord {
     /// Get duration since execution started
+    #[must_use] 
     pub fn duration(&self) -> std::time::Duration {
         self.started_at.elapsed()
     }
@@ -171,28 +172,25 @@ impl LifecycleManager {
             active.remove(execution_id)
         };
 
-        match record {
-            Some(rec) => {
-                let mut by_agent = self.by_agent.write().await;
-                by_agent.remove(&rec.agent_name);
+        if let Some(rec) = record {
+            let mut by_agent = self.by_agent.write().await;
+            by_agent.remove(&rec.agent_name);
 
-                warn!(
-                    execution_id = %execution_id,
-                    agent = %rec.agent_name,
-                    reason = %reason,
-                    duration_ms = %rec.started_at.elapsed().as_millis(),
-                    "Cancelled execution"
-                );
+            warn!(
+                execution_id = %execution_id,
+                agent = %rec.agent_name,
+                reason = %reason,
+                duration_ms = %rec.started_at.elapsed().as_millis(),
+                "Cancelled execution"
+            );
 
-                Ok(true)
-            }
-            None => {
-                debug!(
-                    execution_id = %execution_id,
-                    "Attempted to cancel non-existent execution"
-                );
-                Ok(false)
-            }
+            Ok(true)
+        } else {
+            debug!(
+                execution_id = %execution_id,
+                "Attempted to cancel non-existent execution"
+            );
+            Ok(false)
         }
     }
 

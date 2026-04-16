@@ -137,6 +137,7 @@ impl ErrorResponse {
     }
 
     /// Add details to the error response
+    #[must_use] 
     pub fn with_details(mut self, details: serde_json::Value) -> Self {
         self.error.details = Some(details);
         self
@@ -147,11 +148,11 @@ impl ErrorResponse {
 // Session Types
 // =============================================================================
 
-/// Session response object (API_CONTRACT §2.3)
+/// Session response object (`API_CONTRACT` §2.3)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionResponse {
     pub id: String,
-    /// Agent name (replaces instance_id in stateless model)
+    /// Agent name (replaces `instance_id` in stateless model)
     #[serde(rename = "agent_name")]
     pub agent_name: String,
     pub created_at: String,
@@ -159,7 +160,7 @@ pub struct SessionResponse {
     pub turn_count: u32,
     #[serde(default)]
     pub message_count: usize,
-    /// Current context window size (total_tokens from last assistant message)
+    /// Current context window size (`total_tokens` from last assistant message)
     #[serde(default)]
     pub context_window: usize,
     /// Cumulative input tokens across all assistant messages
@@ -174,7 +175,7 @@ pub struct SessionResponse {
     pub title: Option<String>,
 }
 
-/// History event response (API_CONTRACT §5.3)
+/// History event response (`API_CONTRACT` §5.3)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEventResponse {
     pub id: String,
@@ -234,11 +235,13 @@ pub struct PaginationParams {
 
 impl PaginationParams {
     /// Get the offset value
+    #[must_use] 
     pub fn offset(&self) -> usize {
         self.offset
     }
 
     /// Get the limit value (capped at 100)
+    #[must_use] 
     pub fn limit(&self) -> usize {
         self.limit.min(100)
     }
@@ -262,6 +265,7 @@ pub struct PaginatedResponse<T> {
 
 impl<T> PaginatedResponse<T> {
     /// Create a new paginated response
+    #[must_use] 
     pub fn new(items: Vec<T>, has_more: bool) -> Self {
         Self {
             items,

@@ -58,16 +58,19 @@ pub struct MigrationReport {
 
 impl MigrationReport {
     /// Create a new empty migration report
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Check if the migration was completely successful
+    #[must_use] 
     pub fn is_success(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Get the total number of successfully migrated items
+    #[must_use] 
     pub fn total_migrated(&self) -> usize {
         self.skills_migrated.len() + self.mcp_servers_migrated.len() + self.tools_migrated.len()
     }
@@ -129,6 +132,7 @@ fn default_migration_version() -> String {
 /// Get the path to the migration state file
 ///
 /// Returns: `<data_dir>/extensions/migration-state.json`
+#[must_use] 
 pub fn migration_state_path() -> PathBuf {
     default_data_dir()
         .join("extensions")
@@ -141,7 +145,7 @@ async fn ensure_extensions_dir() -> Result<()> {
     if !ext_dir.exists() {
         tokio::fs::create_dir_all(&ext_dir)
             .await
-            .with_context(|| format!("Failed to create extensions directory: {:?}", ext_dir))?;
+            .with_context(|| format!("Failed to create extensions directory: {ext_dir:?}"))?;
     }
     Ok(())
 }
@@ -159,10 +163,10 @@ pub async fn is_migration_completed() -> Result<bool> {
 
     let content = tokio::fs::read_to_string(&state_path)
         .await
-        .with_context(|| format!("Failed to read migration state from {:?}", state_path))?;
+        .with_context(|| format!("Failed to read migration state from {state_path:?}"))?;
 
     let state: MigrationState = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse migration state from {:?}", state_path))?;
+        .with_context(|| format!("Failed to parse migration state from {state_path:?}"))?;
 
     Ok(state.migration_completed)
 }
@@ -179,10 +183,10 @@ pub async fn is_item_migrated(item_id: &str) -> Result<bool> {
 
     let content = tokio::fs::read_to_string(&state_path)
         .await
-        .with_context(|| format!("Failed to read migration state from {:?}", state_path))?;
+        .with_context(|| format!("Failed to read migration state from {state_path:?}"))?;
 
     let state: MigrationState = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse migration state from {:?}", state_path))?;
+        .with_context(|| format!("Failed to parse migration state from {state_path:?}"))?;
 
     Ok(state.migrated_items.get(item_id).copied().unwrap_or(false))
 }
@@ -199,7 +203,7 @@ pub async fn set_migration_completed() -> Result<()> {
     let mut state = if state_path.exists() {
         let content = tokio::fs::read_to_string(&state_path)
             .await
-            .with_context(|| format!("Failed to read migration state from {:?}", state_path))?;
+            .with_context(|| format!("Failed to read migration state from {state_path:?}"))?;
         serde_json::from_str(&content).unwrap_or_default()
     } else {
         MigrationState::default()
@@ -213,7 +217,7 @@ pub async fn set_migration_completed() -> Result<()> {
 
     tokio::fs::write(&state_path, content)
         .await
-        .with_context(|| format!("Failed to write migration state to {:?}", state_path))?;
+        .with_context(|| format!("Failed to write migration state to {state_path:?}"))?;
 
     info!("Migration state marked as completed");
     Ok(())
@@ -231,7 +235,7 @@ pub async fn set_item_migrated(item_id: &str) -> Result<()> {
     let mut state = if state_path.exists() {
         let content = tokio::fs::read_to_string(&state_path)
             .await
-            .with_context(|| format!("Failed to read migration state from {:?}", state_path))?;
+            .with_context(|| format!("Failed to read migration state from {state_path:?}"))?;
         serde_json::from_str(&content).unwrap_or_default()
     } else {
         MigrationState::default()
@@ -244,7 +248,7 @@ pub async fn set_item_migrated(item_id: &str) -> Result<()> {
 
     tokio::fs::write(&state_path, content)
         .await
-        .with_context(|| format!("Failed to write migration state to {:?}", state_path))?;
+        .with_context(|| format!("Failed to write migration state to {state_path:?}"))?;
 
     debug!("Marked item '{}' as migrated", item_id);
     Ok(())
@@ -259,7 +263,7 @@ pub async fn reset_migration_state() -> Result<()> {
     if state_path.exists() {
         tokio::fs::remove_file(&state_path)
             .await
-            .with_context(|| format!("Failed to remove migration state file: {:?}", state_path))?;
+            .with_context(|| format!("Failed to remove migration state file: {state_path:?}"))?;
         info!("Migration state reset");
     }
 
@@ -300,9 +304,7 @@ pub struct LegacyUniversalTool {
 /// Scans `~/.pekobot/skills/` for directories containing `SKILL.md` files.
 /// Returns a list of legacy skills found.
 pub async fn discover_legacy_skills() -> Result<Vec<LegacySkill>> {
-    let skills_dir = dirs::home_dir()
-        .map(|d| d.join(".pekobot").join("skills"))
-        .unwrap_or_else(|| PathBuf::from(".pekobot").join("skills"));
+    let skills_dir = dirs::home_dir().map_or_else(|| PathBuf::from(".pekobot").join("skills"), |d| d.join(".pekobot").join("skills"));
 
     let mut skills = Vec::new();
 
@@ -315,7 +317,7 @@ pub async fn discover_legacy_skills() -> Result<Vec<LegacySkill>> {
 
     let mut entries = tokio::fs::read_dir(&skills_dir)
         .await
-        .with_context(|| format!("Failed to read skills directory: {:?}", skills_dir))?;
+        .with_context(|| format!("Failed to read skills directory: {skills_dir:?}"))?;
 
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
@@ -376,7 +378,7 @@ async fn parse_skill_md(path: &Path) -> Result<(String, String, Vec<String>, Opt
 
     let (meta, _): (SkillFrontmatter, _) = parsing::parse_yaml_frontmatter_file(path)
         .await
-        .with_context(|| format!("Failed to parse SKILL.md at {:?}", path))?;
+        .with_context(|| format!("Failed to parse SKILL.md at {path:?}"))?;
 
     if meta.name.is_empty() {
         anyhow::bail!("Skill name cannot be empty");
@@ -393,9 +395,7 @@ async fn parse_skill_md(path: &Path) -> Result<(String, String, Vec<String>, Opt
 /// Reads the MCP configuration file at `~/.pekobot/mcp.toml` and returns
 /// a list of configured MCP servers.
 pub async fn discover_legacy_mcp_servers() -> Result<Vec<LegacyMcpServer>> {
-    let mcp_toml = dirs::home_dir()
-        .map(|d| d.join(".pekobot").join("mcp.toml"))
-        .unwrap_or_else(|| PathBuf::from(".pekobot").join("mcp.toml"));
+    let mcp_toml = dirs::home_dir().map_or_else(|| PathBuf::from(".pekobot").join("mcp.toml"), |d| d.join(".pekobot").join("mcp.toml"));
 
     let mut servers = Vec::new();
 
@@ -408,10 +408,10 @@ pub async fn discover_legacy_mcp_servers() -> Result<Vec<LegacyMcpServer>> {
 
     let content = tokio::fs::read_to_string(&mcp_toml)
         .await
-        .with_context(|| format!("Failed to read MCP config from {:?}", mcp_toml))?;
+        .with_context(|| format!("Failed to read MCP config from {mcp_toml:?}"))?;
 
     let config: crate::mcp::config::McpConfig = toml::from_str(&content)
-        .with_context(|| format!("Failed to parse MCP config from {:?}", mcp_toml))?;
+        .with_context(|| format!("Failed to parse MCP config from {mcp_toml:?}"))?;
 
     for server_config in config.servers {
         let name = server_config.name.clone();
@@ -431,9 +431,7 @@ pub async fn discover_legacy_mcp_servers() -> Result<Vec<LegacyMcpServer>> {
 /// Scans `~/.pekobot/tools/` for directories containing `manifest.json` files.
 /// Returns a list of legacy universal tools found.
 pub async fn discover_legacy_universal_tools() -> Result<Vec<LegacyUniversalTool>> {
-    let tools_dir = dirs::home_dir()
-        .map(|d| d.join(".pekobot").join("tools"))
-        .unwrap_or_else(|| PathBuf::from(".pekobot").join("tools"));
+    let tools_dir = dirs::home_dir().map_or_else(|| PathBuf::from(".pekobot").join("tools"), |d| d.join(".pekobot").join("tools"));
 
     let mut tools = Vec::new();
 
@@ -446,7 +444,7 @@ pub async fn discover_legacy_universal_tools() -> Result<Vec<LegacyUniversalTool
 
     let mut entries = tokio::fs::read_dir(&tools_dir)
         .await
-        .with_context(|| format!("Failed to read tools directory: {:?}", tools_dir))?;
+        .with_context(|| format!("Failed to read tools directory: {tools_dir:?}"))?;
 
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
@@ -499,7 +497,7 @@ pub async fn discover_legacy_universal_tools() -> Result<Vec<LegacyUniversalTool
 async fn parse_tool_manifest(path: &Path) -> Result<String> {
     let content = tokio::fs::read_to_string(path)
         .await
-        .with_context(|| format!("Failed to read manifest at {:?}", path))?;
+        .with_context(|| format!("Failed to read manifest at {path:?}"))?;
 
     #[derive(serde::Deserialize)]
     struct ToolManifest {
@@ -507,7 +505,7 @@ async fn parse_tool_manifest(path: &Path) -> Result<String> {
     }
 
     let manifest: ToolManifest = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse manifest JSON at {:?}", path))?;
+        .with_context(|| format!("Failed to parse manifest JSON at {path:?}"))?;
 
     if manifest.name.is_empty() {
         anyhow::bail!("Tool name cannot be empty");
@@ -596,7 +594,7 @@ async fn create_mcp_extension_dir(server: &LegacyMcpServer) -> Result<PathBuf> {
 
     tokio::fs::create_dir_all(&temp_dir)
         .await
-        .with_context(|| format!("Failed to create temp directory: {:?}", temp_dir))?;
+        .with_context(|| format!("Failed to create temp directory: {temp_dir:?}"))?;
 
     // Create extension manifest
     let manifest = serde_json::json!({
@@ -622,13 +620,13 @@ async fn create_mcp_extension_dir(server: &LegacyMcpServer) -> Result<PathBuf> {
     let manifest_path = temp_dir.join("manifest.json");
     tokio::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
         .await
-        .with_context(|| format!("Failed to write manifest to {:?}", manifest_path))?;
+        .with_context(|| format!("Failed to write manifest to {manifest_path:?}"))?;
 
     // Create a marker file for the MCP configuration source
     let config_marker = temp_dir.join(".mcp-source");
     tokio::fs::write(&config_marker, "migrated from mcp.toml")
         .await
-        .with_context(|| format!("Failed to write config marker to {:?}", config_marker))?;
+        .with_context(|| format!("Failed to write config marker to {config_marker:?}"))?;
 
     Ok(temp_dir)
 }
@@ -675,12 +673,12 @@ async fn migrate_universal_tool(
 /// This is the main entry point for extension migration. It:
 /// 1. Checks if migration has already been completed (idempotent)
 /// 2. Discovers all legacy extensions (skills, MCP servers, tools)
-/// 3. Migrates each one using the ExtensionManager
+/// 3. Migrates each one using the `ExtensionManager`
 /// 4. Sets the migration flag when complete
 /// 5. Returns a report of what was migrated
 ///
 /// # Arguments
-/// * `manager` - The ExtensionManager to use for installing migrated extensions
+/// * `manager` - The `ExtensionManager` to use for installing migrated extensions
 ///
 /// # Returns
 /// * `MigrationReport` - A report of what was migrated and any errors that occurred
@@ -809,6 +807,7 @@ pub async fn migrate_legacy_extensions(manager: &mut ExtensionManager) -> Result
 ///
 /// Extended version that allows for more control over the migration process.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct MigrationOptions {
     /// Force migration even if already completed
     pub force: bool,
@@ -818,15 +817,6 @@ pub struct MigrationOptions {
     pub skip_items: Vec<String>,
 }
 
-impl Default for MigrationOptions {
-    fn default() -> Self {
-        Self {
-            force: false,
-            types: None,
-            skip_items: Vec::new(),
-        }
-    }
-}
 
 /// Types of extensions that can be migrated
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -985,7 +975,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let skill_file = temp_dir.path().join("SKILL.md");
 
-        let content = r#"---
+        let content = r"---
 name: test-skill
 description: A test skill
 tags: [test, example]
@@ -995,7 +985,7 @@ author: Test Author
 # Test Skill
 
 This is the skill content.
-"#;
+";
 
         tokio::fs::write(&skill_file, content).await.unwrap();
 

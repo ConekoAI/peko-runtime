@@ -37,6 +37,7 @@ pub struct HookId(pub uuid::Uuid);
 
 impl HookId {
     /// Generate a new unique hook ID
+    #[must_use] 
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4())
     }
@@ -102,6 +103,7 @@ impl ExtensionManifest {
     }
 
     /// Get a metadata value
+    #[must_use] 
     pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
         self.metadata.get(key)
     }
@@ -140,19 +142,21 @@ impl AsyncReceipt {
     }
 
     /// Set estimated duration
+    #[must_use] 
     pub fn with_duration(mut self, seconds: u64) -> Self {
         self.estimated_duration_secs = Some(seconds);
         self
     }
 
     /// Set metadata
+    #[must_use] 
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = Some(metadata);
         self
     }
 }
 
-/// Status of an async task (re-exported from async_tool_framework for convenience)
+/// Status of an async task (re-exported from `async_tool_framework` for convenience)
 pub use crate::agent::async_tool_framework::AsyncTaskStatus;
 
 /// Result of a hook handler invocation
@@ -176,8 +180,10 @@ pub enum HookResult {
 
 /// Output from a hook handler
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum HookOutput {
     /// No output
+    #[default]
     Unit,
 
     /// Text fragment (for prompt sections)
@@ -198,10 +204,10 @@ pub enum HookOutput {
     /// Multiple outputs
     Vec(Vec<HookOutput>),
 
-    /// Async execution receipt (returned by ToolExecuteAsync)
+    /// Async execution receipt (returned by `ToolExecuteAsync`)
     Receipt(AsyncReceipt),
 
-    /// Task status (returned by ToolCheckStatus)
+    /// Task status (returned by `ToolCheckStatus`)
     TaskStatus(AsyncTaskStatus),
 
     /// Boolean result (for operations like cancel)
@@ -210,6 +216,7 @@ pub enum HookOutput {
 
 impl HookOutput {
     /// Create empty output
+    #[must_use] 
     pub fn unit() -> Self {
         Self::Unit
     }
@@ -225,11 +232,13 @@ impl HookOutput {
     }
 
     /// Combine multiple outputs
+    #[must_use] 
     pub fn combine(outputs: Vec<HookOutput>) -> Self {
         Self::Vec(outputs)
     }
 
     /// Convert to text if possible
+    #[must_use] 
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text(s) => Some(s),
@@ -238,6 +247,7 @@ impl HookOutput {
     }
 
     /// Convert to JSON if possible
+    #[must_use] 
     pub fn as_json(&self) -> Option<&serde_json::Value> {
         match self {
             Self::Json(v) => Some(v),
@@ -246,6 +256,7 @@ impl HookOutput {
     }
 
     /// Convert to receipt if possible
+    #[must_use] 
     pub fn as_receipt(&self) -> Option<&AsyncReceipt> {
         match self {
             Self::Receipt(r) => Some(r),
@@ -254,6 +265,7 @@ impl HookOutput {
     }
 
     /// Convert to task status if possible
+    #[must_use] 
     pub fn as_task_status(&self) -> Option<&AsyncTaskStatus> {
         match self {
             Self::TaskStatus(s) => Some(s),
@@ -262,6 +274,7 @@ impl HookOutput {
     }
 
     /// Convert to bool if possible
+    #[must_use] 
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(b) => Some(*b),
@@ -270,31 +283,31 @@ impl HookOutput {
     }
 
     /// Create a receipt output
+    #[must_use] 
     pub fn receipt(receipt: AsyncReceipt) -> Self {
         Self::Receipt(receipt)
     }
 
     /// Create a task status output
+    #[must_use] 
     pub fn task_status(status: AsyncTaskStatus) -> Self {
         Self::TaskStatus(status)
     }
 
     /// Create a boolean output
+    #[must_use] 
     pub fn bool(value: bool) -> Self {
         Self::Bool(value)
     }
 }
 
-impl Default for HookOutput {
-    fn default() -> Self {
-        Self::Unit
-    }
-}
 
 /// Input to a hook handler
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum HookInput {
     /// No input
+    #[default]
     Unit,
 
     /// Prompt build state
@@ -328,11 +341,6 @@ pub enum HookInput {
     Json(serde_json::Value),
 }
 
-impl Default for HookInput {
-    fn default() -> Self {
-        Self::Unit
-    }
-}
 
 /// State during prompt building
 #[derive(Debug, Clone)]
@@ -366,8 +374,9 @@ impl PromptBuildState {
     }
 
     /// Get a section's current content
+    #[must_use] 
     pub fn section(&self, name: &str) -> Option<&str> {
-        self.sections.get(name).map(|s| s.as_str())
+        self.sections.get(name).map(std::string::String::as_str)
     }
 
     /// Set a section's content
@@ -385,6 +394,7 @@ pub struct ToolRegistryAccess {
 
 impl ToolRegistryAccess {
     /// Create new registry access
+    #[must_use] 
     pub fn new(tools: Vec<crate::providers::ToolDefinition>) -> Self {
         Self { tools }
     }
@@ -429,6 +439,7 @@ pub struct MessageEnvelope {
 
 impl MessageEnvelope {
     /// Create a new message envelope
+    #[must_use] 
     pub fn new(content: crate::types::message::ContentBlock) -> Self {
         Self {
             content,
@@ -482,14 +493,15 @@ pub enum ToolSource {
 
 impl ToolSource {
     /// Get a human-readable description of the source
+    #[must_use] 
     pub fn description(&self) -> String {
         match self {
             ToolSource::BuiltIn => "built-in".to_string(),
-            ToolSource::Mcp { server } => format!("MCP server: {}", server),
+            ToolSource::Mcp { server } => format!("MCP server: {server}"),
             ToolSource::Universal { extension_id } => {
-                format!("universal extension: {}", extension_id)
+                format!("universal extension: {extension_id}")
             }
-            ToolSource::General { extension_id } => format!("extension: {}", extension_id),
+            ToolSource::General { extension_id } => format!("extension: {extension_id}"),
         }
     }
 }
@@ -528,6 +540,7 @@ impl ToolMetadata {
     }
 
     /// Set reserved params configuration
+    #[must_use] 
     pub fn with_reserved_params(
         mut self,
         config: crate::extensions::services::reserved_params::ReservedParamsConfig,
@@ -536,7 +549,8 @@ impl ToolMetadata {
         self
     }
 
-    /// Convert to ToolDefinition for LLM API
+    /// Convert to `ToolDefinition` for LLM API
+    #[must_use] 
     pub fn to_tool_definition(&self) -> crate::providers::ToolDefinition {
         crate::providers::ToolDefinition {
             name: self.name.clone(),

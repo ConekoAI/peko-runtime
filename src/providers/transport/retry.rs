@@ -35,7 +35,8 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// Create a policy from max_retries and base_delay_ms (for ProviderConfig compatibility)
+    /// Create a policy from `max_retries` and `base_delay_ms` (for `ProviderConfig` compatibility)
+    #[must_use] 
     pub fn from_config(max_retries: u32, base_delay_ms: u64) -> Option<Self> {
         if max_retries == 0 {
             return None;
@@ -48,6 +49,7 @@ impl RetryPolicy {
     }
 
     /// Calculate delay for a specific attempt (0-indexed)
+    #[must_use] 
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
         let multiplier = self.backoff_multiplier.powi(attempt as i32);
         let delay = self.base_delay.mul_f64(multiplier);
@@ -55,6 +57,7 @@ impl RetryPolicy {
     }
 
     /// Check if a status code should trigger a retry
+    #[must_use] 
     pub fn is_retryable_status(&self, status: u16) -> bool {
         self.retryable_status_codes.contains(&status)
     }
@@ -76,9 +79,9 @@ impl RetryableError for anyhow::Error {
         // Check for explicit status codes in error message
         // Format: "HTTP error 429: ..." or "429 Too Many Requests"
         for code in [429u16, 500, 502, 503, 504, 529] {
-            if msg.contains(&format!(" {}", code))
-                || msg.contains(&format!("HTTP error {}", code))
-                || msg.contains(&format!("status {}", code))
+            if msg.contains(&format!(" {code}"))
+                || msg.contains(&format!("HTTP error {code}"))
+                || msg.contains(&format!("status {code}"))
             {
                 return true;
             }
@@ -101,9 +104,9 @@ impl RetryableError for anyhow::Error {
 
         // Try to extract status code from common error patterns
         for code in [429u16, 500, 502, 503, 504, 408, 504] {
-            if msg.contains(&format!(" {}", code))
-                || msg.contains(&format!("HTTP error {}", code))
-                || msg.contains(&format!("status {}", code))
+            if msg.contains(&format!(" {code}"))
+                || msg.contains(&format!("HTTP error {code}"))
+                || msg.contains(&format!("status {code}"))
             {
                 return Some(code);
             }
@@ -159,7 +162,7 @@ impl RetryExecutor {
                     let delay = policy.delay_for_attempt(attempt);
                     let status_info = e
                         .http_status()
-                        .map(|s| format!(" (HTTP {})", s))
+                        .map(|s| format!(" (HTTP {s})"))
                         .unwrap_or_default();
 
                     // Log retry attempts at info level, warn only on final failure

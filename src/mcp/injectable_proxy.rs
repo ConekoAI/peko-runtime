@@ -1,7 +1,7 @@
 //! Injectable MCP Tool Proxy
 //!
-//! Wraps McpToolProxy with reserved parameter injection support.
-//! This allows MCP tools to receive runtime context (agent_id, session_id, etc.)
+//! Wraps `McpToolProxy` with reserved parameter injection support.
+//! This allows MCP tools to receive runtime context (`agent_id`, `session_id`, etc.)
 //! that is hidden from the LLM but injected by the Pekobot runtime.
 //!
 //! # Example Configuration
@@ -29,7 +29,7 @@ use tracing::{debug, trace};
 
 /// An MCP tool proxy with reserved parameter injection
 ///
-/// This wraps an McpToolProxy and adds the ability to inject reserved parameters
+/// This wraps an `McpToolProxy` and adds the ability to inject reserved parameters
 /// from runtime context into tool calls. The reserved parameters are hidden from
 /// the LLM (not shown in the tool schema) but are injected at execution time.
 pub struct InjectableMcpToolProxy {
@@ -138,8 +138,7 @@ impl InjectableMcpToolProxy {
         // Ensure params is an object
         if !params.is_object() {
             return Err(anyhow::anyhow!(
-                "Tool arguments must be an object, got: {}",
-                params
+                "Tool arguments must be an object, got: {params}"
             ));
         }
 

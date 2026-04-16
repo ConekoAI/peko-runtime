@@ -1,7 +1,7 @@
 //! Stateless Agent Manager - Configuration and execution management
 //!
-//! This module provides the StatelessAgentManager which replaces the legacy
-//! AgentManager in the stateless cold-start architecture. Instead of managing
+//! This module provides the `StatelessAgentManager` which replaces the legacy
+//! `AgentManager` in the stateless cold-start architecture. Instead of managing
 //! a pool of running agents, it manages agent configurations and executes
 //! agents statelessly on-demand.
 
@@ -65,13 +65,9 @@ impl StatelessAgentManager {
             .join("pekobot");
 
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            dirs::home_dir()
-                .map(|d| d.join(".pekobot"))
-                .unwrap_or_else(|| PathBuf::from(".").join(".pekobot")),
+            dirs::home_dir().map_or_else(|| PathBuf::from(".").join(".pekobot"), |d| d.join(".pekobot")),
             data_dir.clone(),
-            dirs::cache_dir()
-                .map(|d| d.join("pekobot"))
-                .unwrap_or_else(|| data_dir.join("cache")),
+            dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("pekobot")),
         );
 
         let manager = Self::build(data_dir, events_tx, path_resolver).await?;
@@ -132,9 +128,9 @@ impl StatelessAgentManager {
 
     /// Register an agent from an image
     ///
-    /// Note: Image-based registration requires ConfigRegistry for config extraction.
+    /// Note: Image-based registration requires `ConfigRegistry` for config extraction.
     /// For now, this is a placeholder that creates a default config.
-    /// Use ConfigAuthorityImpl directly for non-image registration.
+    /// Use `ConfigAuthorityImpl` directly for non-image registration.
     ///
     /// # Arguments
     /// * `name` - Unique name for the agent

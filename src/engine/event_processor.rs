@@ -1,4 +1,4 @@
-//! Event processor for converting AgenticEvents to channel actions
+//! Event processor for converting `AgenticEvents` to channel actions
 //!
 //! This module provides a reusable, interface-agnostic way to process
 //! agentic events and convert them to presentation-agnostic actions.
@@ -27,7 +27,7 @@ pub enum ChannelAction {
     EndTurn,
 }
 
-/// Processes AgenticEvents and produces ChannelActions
+/// Processes `AgenticEvents` and produces `ChannelActions`
 ///
 /// This struct maintains state across events to produce the correct
 /// sequence of actions. It handles:
@@ -200,9 +200,9 @@ impl EventProcessor {
         actions
     }
 
-    /// Process streaming delta event (AssistantDelta)
+    /// Process streaming delta event (`AssistantDelta`)
     ///
-    /// Unlike AssistantText, deltas are incremental and should be printed
+    /// Unlike `AssistantText`, deltas are incremental and should be printed
     /// without newlines to enable real-time streaming display.
     fn process_assistant_delta(
         &mut self,
@@ -229,7 +229,7 @@ impl EventProcessor {
         self.state.last_was_interstitial = is_interstitial;
     }
 
-    /// Process new-style AssistantText event
+    /// Process new-style `AssistantText` event
     fn process_assistant_text(
         &mut self,
         text: &str,
@@ -352,7 +352,7 @@ impl Default for EventProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::LifecyclePhase;
+    
 
     fn make_assistant_text(text: &str, sequence: usize, is_interstitial: bool) -> AgenticEvent {
         AgenticEvent::AssistantText {

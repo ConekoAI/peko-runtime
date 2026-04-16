@@ -1,7 +1,7 @@
 //! Unified Context Resolver
 //!
 //! Provides a single source of truth for resolving runtime context fields
-//! (agent_id, session_id, etc.) from ToolContext or ExecutionContext.
+//! (`agent_id`, `session_id`, etc.) from `ToolContext` or `ExecutionContext`.
 //!
 //! This eliminates duplication between Universal Tools and MCP implementations.
 
@@ -22,12 +22,12 @@ pub trait ContextSource {
     fn get_run_id(&self) -> Option<String>;
 }
 
-/// ToolContext adapter for ContextSource
+/// `ToolContext` adapter for `ContextSource`
 pub struct ToolContextAdapter<'a> {
     ctx: &'a crate::tools::ToolContext,
 }
 
-impl<'a> std::fmt::Debug for ToolContextAdapter<'a> {
+impl std::fmt::Debug for ToolContextAdapter<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContextAdapter")
             .field("agent_id", &self.ctx.agent_id)
@@ -37,12 +37,13 @@ impl<'a> std::fmt::Debug for ToolContextAdapter<'a> {
 }
 
 impl<'a> ToolContextAdapter<'a> {
+    #[must_use] 
     pub fn new(ctx: &'a crate::tools::ToolContext) -> Self {
         Self { ctx }
     }
 }
 
-impl<'a> ContextSource for ToolContextAdapter<'a> {
+impl ContextSource for ToolContextAdapter<'_> {
     fn get_session_id(&self) -> Option<String> {
         self.ctx.session_id.clone()
     }
@@ -64,7 +65,7 @@ impl<'a> ContextSource for ToolContextAdapter<'a> {
     }
 }
 
-/// ExecutionContext adapter for ContextSource
+/// `ExecutionContext` adapter for `ContextSource`
 pub struct ExecutionContextAdapter {
     ctx: crate::tools::universal::protocol::ExecutionContext,
 }
@@ -79,6 +80,7 @@ impl std::fmt::Debug for ExecutionContextAdapter {
 }
 
 impl ExecutionContextAdapter {
+    #[must_use] 
     pub fn new(ctx: crate::tools::universal::protocol::ExecutionContext) -> Self {
         Self { ctx }
     }
@@ -123,24 +125,19 @@ impl ContextResolver {
         match field {
             "session_id" => source
                 .get_session_id()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+                .map_or(Value::Null, Value::String),
             "agent_id" => source
                 .get_agent_id()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+                .map_or(Value::Null, Value::String),
             "peer_id" => source
                 .get_peer_id()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+                .map_or(Value::Null, Value::String),
             "workspace" => source
                 .get_workspace()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+                .map_or(Value::Null, Value::String),
             "run_id" => source
                 .get_run_id()
-                .map(Value::String)
-                .unwrap_or(Value::Null),
+                .map_or(Value::Null, Value::String),
             _ => {
                 tracing::warn!("Unknown context field requested: {}", field);
                 Value::Null
@@ -149,6 +146,7 @@ impl ContextResolver {
     }
 
     /// Get all available field names
+    #[must_use] 
     pub fn available_fields() -> &'static [&'static str] {
         &["session_id", "agent_id", "peer_id", "workspace", "run_id"]
     }

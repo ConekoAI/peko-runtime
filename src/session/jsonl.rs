@@ -1,6 +1,6 @@
 //! Pekobot Session JSONL Format with Atomic Writes
 //!
-//! Implements durable JSONL sessions per DATA_MODEL.md §5:
+//! Implements durable JSONL sessions per `DATA_MODEL.md` §5:
 //! - Atomic writes: events written to `.tmp` then renamed
 //! - Automatic cleanup of partial `.tmp` files on load
 //! - Support for Pekobot event format (13 event types)
@@ -111,7 +111,7 @@ impl SessionStorage {
         Ok(())
     }
 
-    /// Initialize a new session file with a SessionCreated event
+    /// Initialize a new session file with a `SessionCreated` event
     pub async fn create_session(&self, session_id: &str, cwd: Option<String>) -> Result<()> {
         use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
 
@@ -348,9 +348,9 @@ impl SessionStorage {
         Ok(entries)
     }
 
-    /// Convert Event Format to NormalizedEntry
+    /// Convert Event Format to `NormalizedEntry`
     fn normalize_event(event: SessionEvent) -> Option<NormalizedEntry> {
-        use crate::session::events::SessionEvent::*;
+        use crate::session::events::SessionEvent::{SessionCreated, ToolResult};
         use crate::types::message::MessageRole;
 
         // Try unified message conversion first
@@ -371,8 +371,8 @@ impl SessionStorage {
                     id: message_id,
                     content: text,
                     timestamp,
-                    input_tokens: msg.usage().map(|u| u.input_tokens).unwrap_or(0),
-                    output_tokens: msg.usage().map(|u| u.output_tokens).unwrap_or(0),
+                    input_tokens: msg.usage().map_or(0, |u| u.input_tokens),
+                    output_tokens: msg.usage().map_or(0, |u| u.output_tokens),
                 }),
                 MessageRole::System => Some(NormalizedEntry::SystemMessage {
                     content: text,
@@ -452,6 +452,7 @@ impl SessionStorage {
     }
 
     /// Get index file path for a session
+    #[must_use] 
     pub fn index_path(&self, session_id: &str) -> PathBuf {
         self.storage_dir.join(format!("{session_id}.index.json"))
     }
@@ -504,8 +505,7 @@ impl SessionStorage {
 
         if !source_path.exists() {
             return Err(anyhow::anyhow!(
-                "Source session {} does not exist",
-                source_id
+                "Source session {source_id} does not exist"
             ));
         }
 

@@ -3,12 +3,12 @@
 //! This module provides centralized tool creation with proper configuration
 //! from the agent config or environment.
 //!
-//! Note: Heavy tools (web_search, fetch, http, browser, memory) have been
+//! Note: Heavy tools (`web_search`, fetch, http, browser, memory) have been
 //! migrated to standalone MCP servers. Use MCP configuration to enable them.
 //!
 //! # Tool Loading Strategy (Resolution Order)
 //!
-//! Per CAPABILITY_INTERFACE.md §9.1, tools are resolved in this order:
+//! Per `CAPABILITY_INTERFACE.md` §9.1, tools are resolved in this order:
 //!
 //! 1. **Built-in tools** - Compiled into the runtime, checked first
 //! 2. **Custom tools** - From agent's `tools/` directory
@@ -122,10 +122,10 @@ pub struct ToolFactoryConfig {
     /// Workspace directory (default for relative paths)
     pub workspace_dir: PathBuf,
     /// Enable granular filesystem tools
-    /// When true, enables ReadFile, Glob, Grep, WriteFile, StrReplaceFile
+    /// When true, enables `ReadFile`, Glob, Grep, `WriteFile`, `StrReplaceFile`
     pub enable_granular_fs: bool,
-    /// Enable granular write tools (WriteFile, StrReplaceFile)
-    /// Only effective when enable_granular_fs is true
+    /// Enable granular write tools (`WriteFile`, `StrReplaceFile`)
+    /// Only effective when `enable_granular_fs` is true
     /// Defaults to true for full functionality, set to false for read-only
     pub enable_granular_write: bool,
     /// Enable shell tool (replaces process tool)
@@ -179,6 +179,7 @@ impl ToolFactoryConfig {
     ///
     /// Use this for restricted environments where only basic file reading
     /// and shell operations are needed.
+    #[must_use] 
     pub fn minimal(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
@@ -196,6 +197,7 @@ impl ToolFactoryConfig {
     ///
     /// Use this for code editing tasks where targeted file modifications
     /// are preferred over full file rewrites.
+    #[must_use] 
     pub fn coding(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
@@ -210,6 +212,7 @@ impl ToolFactoryConfig {
     /// Create a full configuration (all built-in tools)
     ///
     /// This enables all built-in tools except MCP.
+    #[must_use] 
     pub fn full(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
@@ -222,6 +225,7 @@ impl ToolFactoryConfig {
 
 impl McpFactoryConfig {
     /// Create a disabled MCP configuration
+    #[must_use] 
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -398,7 +402,7 @@ impl ToolFactory {
     }
 
     /// Create full toolset (core tools only, sync version)
-    /// Respects disabled_tools
+    /// Respects `disabled_tools`
     ///
     /// DEPRECATED: Use `create_tools` with `ToolFactoryConfig::full()` instead.
     #[deprecated(

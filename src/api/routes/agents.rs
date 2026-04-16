@@ -11,7 +11,7 @@
 //! Note: No instance lifecycle endpoints (start/stop/status) in stateless model.
 //! Agents are cold-started per request.
 //!
-//! NOTE: This module now delegates to AgentService for unified handling.
+//! NOTE: This module now delegates to `AgentService` for unified handling.
 //! All business logic has been moved to the service layer.
 
 use crate::api::error::ApiError;
@@ -69,9 +69,7 @@ impl From<crate::common::services::AgentConfigEntry> for AgentConfigResponse {
             team_id: Some(entry.team),
             capabilities,
             registered_at: entry
-                .registered_at
-                .map(|d| d.to_rfc3339())
-                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                .registered_at.map_or_else(|| chrono::Utc::now().to_rfc3339(), |d| d.to_rfc3339()),
             updated_at: entry.updated_at.map(|d| d.to_rfc3339()),
         }
     }
@@ -226,7 +224,7 @@ async fn list_agents(
         .agent_mgmt_service()
         .list_agents(None)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to list agents: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to list agents: {e}"), ""))?;
 
     let items: Vec<AgentConfigResponse> = agents
         .into_iter()
@@ -265,14 +263,14 @@ async fn register_agent(
         .agent_mgmt_service()
         .create_agent(service_request)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to create agent: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to create agent: {e}"), ""))?;
 
     // Get the registered entry for response
     let entry = state
         .config_service()
         .get(&result.name, None)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to get agent: {}", e), ""))?
+        .map_err(|e| ApiError::internal(format!("Failed to get agent: {e}"), ""))?
         .ok_or_else(|| {
             ApiError::internal(
                 "Agent creation succeeded but entry not found".to_string(),
@@ -297,7 +295,7 @@ async fn get_agent(
         .agent_mgmt_service()
         .get_agent(&name, None)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to get agent: {}", e), ""))?
+        .map_err(|e| ApiError::internal(format!("Failed to get agent: {e}"), ""))?
         .ok_or_else(|| ApiError::not_found("agent", name.clone(), ""))?;
 
     Ok(Json(AgentConfigResponse::from(agent)))
@@ -311,7 +309,7 @@ async fn unregister_agent(
     // Check if agent is currently executing
     if state.lifecycle().is_executing(&name).await {
         return Err(ApiError::conflict(
-            format!("Agent '{}' is currently executing", name),
+            format!("Agent '{name}' is currently executing"),
             "Wait for execution to complete or cancel it",
         ));
     }
@@ -321,7 +319,7 @@ async fn unregister_agent(
         .agent_mgmt_service()
         .delete_agent(&name, None, AgentDeleteOptions::default())
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to unregister agent: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to unregister agent: {e}"), ""))?;
 
     info!("Unregistered agent '{}'", name);
 
@@ -342,7 +340,7 @@ async fn execute_agent(
         .config_service()
         .exists(&name, None)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to check agent existence: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to check agent existence: {e}"), ""))?;
     if !exists {
         return Err(ApiError::not_found("agent", name.clone(), ""));
     }
@@ -369,7 +367,7 @@ async fn execute_agent(
         .agent_service()
         .execute(exec_request)
         .await
-        .map_err(|e| ApiError::internal(format!("Execution failed: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Execution failed: {e}"), ""))?;
 
     // Convert tool calls to response format
     let tool_calls: Vec<ToolCallResponse> = result
@@ -407,7 +405,7 @@ async fn get_agent_metrics(
         .config_service()
         .exists(&name, None)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to check agent existence: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to check agent existence: {e}"), ""))?;
     if !exists {
         return Err(ApiError::not_found("agent", name.clone(), ""));
     }
@@ -439,7 +437,7 @@ async fn update_agent(
     // Check if agent is currently executing
     if state.lifecycle().is_executing(&name).await {
         return Err(ApiError::conflict(
-            format!("Agent '{}' is currently executing", name),
+            format!("Agent '{name}' is currently executing"),
             "Wait for execution to complete",
         ));
     }
@@ -455,7 +453,7 @@ async fn update_agent(
         .agent_mgmt_service()
         .update_agent(&name, None, update)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to update agent: {}", e), ""))?;
+        .map_err(|e| ApiError::internal(format!("Failed to update agent: {e}"), ""))?;
 
     info!("Updated agent '{}' configuration", name);
 
@@ -482,6 +480,18 @@ pub fn router() -> Router<AppState> {
         )
         .route("/agents/:name/execute", post(execute_agent))
         .route("/agents/:name/metrics", get(get_agent_metrics))
+}
+
+// Helper trait for optional values
+trait AgentCreateRequestExt {
+    fn with_model_opt(self, model: Option<String>) -> Self;
+}
+
+impl AgentCreateRequestExt for AgentCreateRequest {
+    fn with_model_opt(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -513,17 +523,5 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("test-agent"));
         assert!(json.contains("sha256:abc123"));
-    }
-}
-
-// Helper trait for optional values
-trait AgentCreateRequestExt {
-    fn with_model_opt(self, model: Option<String>) -> Self;
-}
-
-impl AgentCreateRequestExt for AgentCreateRequest {
-    fn with_model_opt(mut self, model: Option<String>) -> Self {
-        self.model = model;
-        self
     }
 }

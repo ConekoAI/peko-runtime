@@ -1,7 +1,7 @@
 //! Image Registry
 //!
 //! Content-addressable storage for images and layers.
-//! Implements the registry layout from UNIFIED_ARCH §2.3
+//! Implements the registry layout from `UNIFIED_ARCH` §2.3
 
 use super::manifest::{ImageDigest, ImageManifest};
 use super::ImageRef;
@@ -52,6 +52,7 @@ pub struct ImageRegistry {
 
 impl ImageRegistry {
     /// Create a new registry
+    #[must_use] 
     pub fn new(config: RegistryConfig) -> Self {
         Self {
             config,
@@ -141,16 +142,16 @@ impl ImageRegistry {
         Ok(None)
     }
 
-    /// Get a manifest from an ImageRef
+    /// Get a manifest from an `ImageRef`
     pub async fn resolve(&self, image_ref: &ImageRef) -> anyhow::Result<Option<ImageManifest>> {
         match image_ref {
             ImageRef::Digest(digest) => self.get_manifest_by_digest(digest).await,
             ImageRef::LocalTag { name, tag } => {
-                let reference = format!("{}:{}", name, tag);
+                let reference = format!("{name}:{tag}");
                 self.get_manifest_by_ref(&reference).await
             }
             ImageRef::RegistryRef { host, path, tag } => {
-                let reference = format!("{}/{}:{}", host, path, tag);
+                let reference = format!("{host}/{path}:{tag}");
                 self.get_manifest_by_ref(&reference).await
             }
             ImageRef::Path(_p) => {
@@ -187,6 +188,7 @@ impl ImageRegistry {
     }
 
     /// Check if a layer exists
+    #[must_use] 
     pub fn has_layer(&self, digest: &ImageDigest) -> bool {
         self.layer_path(digest).exists()
     }
@@ -349,15 +351,7 @@ impl ImageRegistry {
 /// Sanitize a tag for use as a filename
 fn sanitize_tag(tag: &str) -> String {
     // Replace characters that are invalid in filenames
-    tag.replace('/', "_")
-        .replace(':', "_")
-        .replace('\\', "_")
-        .replace('<', "_")
-        .replace('>', "_")
-        .replace('|', "_")
-        .replace('*', "_")
-        .replace('?', "_")
-        .replace('"', "_")
+    tag.replace(['/', ':', '\\', '<', '>', '|', '*', '?', '"'], "_")
 }
 
 /// Unsanitize a tag from filename
@@ -366,7 +360,7 @@ fn unsanitize_tag(filename: &str) -> String {
     // This is a best-effort reverse
     if let Some(pos) = filename.find('_') {
         let mut result = filename.to_string();
-        result.replace_range(pos..pos + 1, ":");
+        result.replace_range(pos..=pos, ":");
         result
     } else {
         filename.to_string()
@@ -400,7 +394,7 @@ mod tests {
 
         let hex = "a".repeat(64);
         let manifest = ImageManifest::new("test", "1.0.0")
-            .with_digest(format!("sha256:{}", hex))
+            .with_digest(format!("sha256:{hex}"))
             .with_ref("test:v1.0");
 
         let digest = registry.store_manifest(&manifest).await.unwrap();
@@ -424,7 +418,7 @@ mod tests {
 
         let hex = "b".repeat(64);
         let manifest = ImageManifest::new("test", "1.0.0")
-            .with_digest(format!("sha256:{}", hex))
+            .with_digest(format!("sha256:{hex}"))
             .with_ref("test:v1.0");
 
         registry.store_manifest(&manifest).await.unwrap();
@@ -448,9 +442,9 @@ mod tests {
         let hex1 = "c".repeat(64);
         let hex2 = "d".repeat(64);
         let manifest1 =
-            ImageManifest::new("agent1", "1.0.0").with_digest(format!("sha256:{}", hex1));
+            ImageManifest::new("agent1", "1.0.0").with_digest(format!("sha256:{hex1}"));
         let manifest2 =
-            ImageManifest::new("agent2", "2.0.0").with_digest(format!("sha256:{}", hex2));
+            ImageManifest::new("agent2", "2.0.0").with_digest(format!("sha256:{hex2}"));
 
         registry.store_manifest(&manifest1).await.unwrap();
         registry.store_manifest(&manifest2).await.unwrap();

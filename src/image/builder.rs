@@ -55,6 +55,7 @@ impl BuildOptions {
     }
 
     /// Set the base image
+    #[must_use] 
     pub fn with_base(mut self, base: ImageRef) -> Self {
         self.base = Some(base);
         self
@@ -68,6 +69,7 @@ pub struct ImageBuilder {
 
 impl ImageBuilder {
     /// Create a new image builder
+    #[must_use] 
     pub fn new(options: BuildOptions) -> Self {
         Self { options }
     }
@@ -131,7 +133,7 @@ impl ImageBuilder {
         });
         if let Some(layer) = self
             .create_directory_layer(source_path, LayerType::Markdown, &layers_dir, |path| {
-                path.extension().map(|e| e == "md").unwrap_or(false)
+                path.extension().is_some_and(|e| e == "md")
                     && path.parent() == Some(source_path)
             })
             .await?
@@ -320,7 +322,7 @@ impl ImageBuilder {
             Layer::new(digest.as_str(), layer_type, size_bytes).with_paths(
                 paths
                     .into_iter()
-                    .map(|p| format!("{}/{}", dir_name, p))
+                    .map(|p| format!("{dir_name}/{p}"))
                     .collect(),
             ),
         ))

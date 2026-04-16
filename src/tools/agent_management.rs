@@ -1,7 +1,7 @@
 //! Agent Management Tools
 //!
 //! Tools for agents to interact with other agents within their team.
-//! Implements CAPABILITY_INTERFACE.md §3.7, §3.8
+//! Implements `CAPABILITY_INTERFACE.md` §3.7, §3.8
 //! - Team-scoped: returns only instances within the current team
 //! - Cross-team access requires explicit grant
 
@@ -131,7 +131,7 @@ impl AgentsListTool {
     }
 }
 
-/// Arguments for agents_list
+/// Arguments for `agents_list`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentsListArgs {
     /// Filter by status
@@ -172,7 +172,7 @@ impl Tool for AgentsListTool {
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let args: AgentsListArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         let (tx, mut rx) = mpsc::channel(1);
         self.command_tx
@@ -182,7 +182,7 @@ impl Tool for AgentsListTool {
                 respond_to: tx,
             })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
 
         let agents: Vec<crate::agent::AgentInfo> = rx
             .recv()
@@ -217,8 +217,7 @@ impl Tool for AgentsListTool {
             entries.retain(|e| {
                 e.role
                     .as_ref()
-                    .map(|r| r.to_lowercase() == role_filter.to_lowercase())
-                    .unwrap_or(false)
+                    .is_some_and(|r| r.to_lowercase() == role_filter.to_lowercase())
             });
         }
 
@@ -251,7 +250,7 @@ impl AgentInfoTool {
     }
 }
 
-/// Arguments for agent_info
+/// Arguments for `agent_info`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfoArgs {
     pub instance_id: String,
@@ -284,7 +283,7 @@ impl Tool for AgentInfoTool {
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         let args: AgentInfoArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         let (tx, mut rx) = mpsc::channel(1);
         self.command_tx
@@ -295,7 +294,7 @@ impl Tool for AgentInfoTool {
                 respond_to: tx,
             })
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send command: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send command: {e}"))?;
 
         let agent_opt: Option<crate::agent::AgentInfo> = rx
             .recv()

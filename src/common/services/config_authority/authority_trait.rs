@@ -1,4 +1,4 @@
-//! ConfigAuthority trait definition
+//! `ConfigAuthority` trait definition
 //!
 //! Defines the async trait for agent configuration management.
 //! This trait provides a clean interface for testing and dependency injection.

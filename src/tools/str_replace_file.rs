@@ -1,4 +1,4 @@
-//! StrReplaceFile tool - Targeted string replacement in files
+//! `StrReplaceFile` tool - Targeted string replacement in files
 //!
 //! Granular file modification with exact matching. Safer than full file rewrites.
 
@@ -20,7 +20,7 @@ pub struct Replacement {
     pub new: String,
 }
 
-/// StrReplaceFile tool arguments
+/// `StrReplaceFile` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StrReplaceFileArgs {
     /// Path to the file
@@ -91,14 +91,14 @@ pub struct ReplacementResult {
     pub error: Option<String>,
 }
 
-/// StrReplaceFile tool - Targeted string replacement
+/// `StrReplaceFile` tool - Targeted string replacement
 pub struct StrReplaceFileTool {
     /// Default workspace directory (for relative paths)
     workspace_dir: Option<PathBuf>,
 }
 
 impl StrReplaceFileTool {
-    /// Create a new StrReplaceFile tool
+    /// Create a new `StrReplaceFile` tool
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -175,8 +175,7 @@ impl StrReplaceFileTool {
                     occurrences: 0,
                     success: false,
                     error: Some(format!(
-                        "Duplicate 'old' string at index {} (first seen at index {})",
-                        i, first_idx
+                        "Duplicate 'old' string at index {i} (first seen at index {first_idx})"
                     )),
                 });
                 continue;
@@ -207,8 +206,7 @@ impl StrReplaceFileTool {
                     occurrences,
                     success: false,
                     error: Some(format!(
-                        "String found {} times (must be unique). Use a more specific 'old' string.",
-                        occurrences
+                        "String found {occurrences} times (must be unique). Use a more specific 'old' string."
                     )),
                 });
                 continue;
@@ -246,8 +244,7 @@ impl StrReplaceFileTool {
                 .join("\n");
 
             return Err(anyhow::anyhow!(
-                "Some replacements failed (file not modified):\n{}",
-                error_msg
+                "Some replacements failed (file not modified):\n{error_msg}"
             ));
         }
 
@@ -400,7 +397,7 @@ Multiple replacements (each 'old' must be unique):
 
     async fn execute(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         let args: StrReplaceFileArgs = serde_json::from_value(params)
-            .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
         let replacements = args.edit.into_vec();
         self.replace_in_file(&args.path, replacements).await

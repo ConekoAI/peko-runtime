@@ -71,7 +71,7 @@ pub enum ProviderType {
     Moonshot,
     /// Kimi (Kimi Code API)
     Kimi,
-    /// MiniMax (Anthropic-compatible API)
+    /// `MiniMax` (Anthropic-compatible API)
     Minimax,
 }
 

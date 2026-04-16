@@ -164,12 +164,12 @@ impl AgentInput {
                 message_type,
                 ..
             } => {
-                format!("[A2A {:?} from {}] {}", message_type, from_agent, content)
+                format!("[A2A {message_type:?} from {from_agent}] {content}")
             }
         }
     }
 
-    /// Convert to a ChatMessage for the LLM
+    /// Convert to a `ChatMessage` for the LLM
     #[must_use]
     pub fn to_chat_message(&self) -> ChatMessage {
         let content = self.content_string();
@@ -418,7 +418,7 @@ mod tests {
         let json = serde_json::to_string(&input).unwrap();
         // The variant is A2AMessage which with snake_case becomes "a2_a_message"
         // (serde treats numbers as word boundaries)
-        assert!(json.contains("a2_a_message"), "JSON: {}", json);
+        assert!(json.contains("a2_a_message"), "JSON: {json}");
         assert!(json.contains("agent_a"));
         assert!(json.contains("direct"));
     }

@@ -33,18 +33,18 @@ pub struct Agent {
     subagent_executor: Arc<SubagentExecutor>,
     /// Dynamic session key provider for `agent_spawn` tool
     session_key_provider: Arc<DynamicSessionKeyProvider>,
-    /// Current session ID for session_status tool lookups
+    /// Current session ID for `session_status` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Extension core for skill loading and hook integration
     extension_core: Arc<ExtensionCore>,
 }
 
 impl Agent {
-    /// Initialize built-in tools and register them with ExtensionCore.
+    /// Initialize built-in tools and register them with `ExtensionCore`.
     ///
     /// This asynchronous version loads Universal Tools from extensions directory
-    /// and registers only built-in tools with ExtensionCore. Extension tools
-    /// (Universal and MCP) are already registered via ExtensionManager hooks.
+    /// and registers only built-in tools with `ExtensionCore`. Extension tools
+    /// (Universal and MCP) are already registered via `ExtensionManager` hooks.
     async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::session_introspection::AgentSessionRegistry;
         use crate::tools::{
@@ -134,7 +134,7 @@ impl Agent {
                             loaded_ids.len(),
                             loaded_ids
                                 .iter()
-                                .map(|id| id.to_string())
+                                .map(std::string::ToString::to_string)
                                 .collect::<Vec<_>>()
                         );
                     }
@@ -462,7 +462,7 @@ impl Agent {
 
     /// Execute with streaming support using the provided session.
     ///
-    /// The session must be provided by the caller (typically via SessionManager).
+    /// The session must be provided by the caller (typically via `SessionManager`).
     /// This ensures session lifecycle is managed centrally.
     ///
     /// This version takes a sender callback for event streaming, avoiding channel
@@ -513,7 +513,7 @@ impl Agent {
         }
     }
 
-    /// Prepare agent for execution by initializing built-in tools and invoking AgentInit hooks.
+    /// Prepare agent for execution by initializing built-in tools and invoking `AgentInit` hooks.
     async fn prepare_execution(&self) -> anyhow::Result<()> {
         if let Err(e) = self.init_builtins_async().await {
             return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));

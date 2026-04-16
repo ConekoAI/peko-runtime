@@ -39,6 +39,7 @@ use std::collections::HashSet;
 /// let filtered = filter_reserved_params(&schema, &reserved);
 /// // filtered no longer contains agent_id
 /// ```
+#[must_use] 
 pub fn filter_reserved_params(schema: &Value, reserved: &HashSet<String>) -> Value {
     if reserved.is_empty() {
         return schema.clone();
@@ -49,7 +50,7 @@ pub fn filter_reserved_params(schema: &Value, reserved: &HashSet<String>) -> Val
     // Remove reserved params from properties
     if let Some(properties) = filtered.get_mut("properties") {
         if let Some(props_obj) = properties.as_object_mut() {
-            for key in reserved.iter() {
+            for key in reserved {
                 props_obj.remove(key);
             }
         }
@@ -58,7 +59,7 @@ pub fn filter_reserved_params(schema: &Value, reserved: &HashSet<String>) -> Val
     // Remove reserved params from required array
     if let Some(required) = filtered.get_mut("required") {
         if let Some(req_array) = required.as_array_mut() {
-            req_array.retain(|v| v.as_str().map_or(true, |s| !reserved.contains(s)));
+            req_array.retain(|v| v.as_str().is_none_or(|s| !reserved.contains(s)));
         }
     }
 
@@ -68,6 +69,7 @@ pub fn filter_reserved_params(schema: &Value, reserved: &HashSet<String>) -> Val
 /// Filter reserved parameters from a JSON schema using a slice
 ///
 /// Convenience wrapper for `filter_reserved_params` that accepts a slice.
+#[must_use] 
 pub fn filter_reserved_params_slice(schema: &Value, reserved: &[String]) -> Value {
     let set: HashSet<String> = reserved.iter().cloned().collect();
     filter_reserved_params(schema, &set)
@@ -107,13 +109,12 @@ impl std::fmt::Display for SchemaFilterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SchemaFilterError::InvalidSchemaType(t) => {
-                write!(f, "Schema must be type 'object', got '{}'", t)
+                write!(f, "Schema must be type 'object', got '{t}'")
             }
             SchemaFilterError::ReservedParamLeak(param) => {
                 write!(
                     f,
-                    "Security error: reserved parameter '{}' leaked to LLM schema",
-                    param
+                    "Security error: reserved parameter '{param}' leaked to LLM schema"
                 )
             }
         }
@@ -128,7 +129,7 @@ impl std::error::Error for SchemaFilterError {}
 fn validate_no_leak(filtered: &Value, reserved: &HashSet<String>) -> Result<(), SchemaFilterError> {
     if let Some(properties) = filtered.get("properties") {
         if let Some(props_obj) = properties.as_object() {
-            for key in reserved.iter() {
+            for key in reserved {
                 if props_obj.contains_key(key) {
                     return Err(SchemaFilterError::ReservedParamLeak(key.clone()));
                 }
@@ -150,6 +151,7 @@ fn validate_no_leak(filtered: &Value, reserved: &HashSet<String>) -> Result<(), 
 }
 
 /// Get the list of parameter names from a schema
+#[must_use] 
 pub fn get_parameter_names(schema: &Value) -> Vec<String> {
     schema
         .get("properties")
@@ -159,6 +161,7 @@ pub fn get_parameter_names(schema: &Value) -> Vec<String> {
 }
 
 /// Check if a schema contains any reserved parameters
+#[must_use] 
 pub fn contains_reserved_params(schema: &Value, reserved: &HashSet<String>) -> bool {
     if let Some(properties) = schema.get("properties") {
         if let Some(props_obj) = properties.as_object() {

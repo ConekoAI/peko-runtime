@@ -1,6 +1,6 @@
 //! Agent Command Handlers
 //!
-//! NOTE: All business logic is delegated to AgentService in common::services.
+//! NOTE: All business logic is delegated to `AgentService` in `common::services`.
 //! This module only handles CLI-specific concerns like output formatting and
 //! user interaction.
 
@@ -73,7 +73,7 @@ pub async fn handle_agent_list(paths: &GlobalPaths, long: bool, json: bool) -> a
 
         for team_name in team_names {
             let team_agents = teams.get(&team_name).unwrap();
-            println!("\n  📁 Team: {}", team_name);
+            println!("\n  📁 Team: {team_name}");
 
             for agent in team_agents {
                 if long {
@@ -81,7 +81,7 @@ pub async fn handle_agent_list(paths: &GlobalPaths, long: bool, json: bool) -> a
                     println!("       Provider: {:?}", agent.config.provider.provider_type);
                     println!("       Model: {}", agent.config.provider.default_model);
                     if let Some(desc) = &agent.config.description {
-                        println!("       Description: {}", desc);
+                        println!("       Description: {desc}");
                     }
                 } else {
                     println!("    📦 {}", agent.name);
@@ -106,7 +106,7 @@ pub async fn handle_agent_show(
     let agent = service
         .get_agent(agent_name, Some(team))
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found in team '{}'", agent_name, team))?;
+        .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found in team '{team}'"))?;
 
     if json {
         let output = serde_json::json!({
@@ -124,7 +124,7 @@ pub async fn handle_agent_show(
         println!("   Model: {}", agent.config.provider.default_model);
         println!("   Sessions: {}", agent.session_count);
         if let Some(desc) = &agent.config.description {
-            println!("   Description: {}", desc);
+            println!("   Description: {desc}");
         }
     }
 
@@ -245,7 +245,7 @@ pub async fn handle_agent_export(
     let service = paths.services().agent();
 
     let opts = AgentExportOptions {
-        output_path: output.map(|p| p.into()),
+        output_path: output.map(std::convert::Into::into),
     };
 
     let result = service.export_agent(&name, team.as_deref(), opts).await?;
@@ -285,7 +285,7 @@ pub async fn handle_agent_inspect(file: String, json: bool) -> anyhow::Result<()
     use crate::portable::get_package_info;
 
     if !std::path::Path::new(&file).exists() {
-        eprintln!("❌ File not found: {}", file);
+        eprintln!("❌ File not found: {file}");
         return Ok(());
     }
 
@@ -364,7 +364,7 @@ pub async fn handle_agent_init(
         println!("   workspace/     - Working directory");
         println!();
         println!("🚀 Run the agent:");
-        println!("   pekobot send {}/{} \"Hello\"", "default", result.name);
+        println!("   pekobot send default/{} \"Hello\"", result.name);
     }
 
     Ok(())
@@ -402,7 +402,7 @@ async fn handle_agent_config_get(
     let agent = service
         .get_agent(agent_name, Some(team))
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found in team '{}'", agent_name, team))?;
+        .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found in team '{team}'"))?;
 
     let value = config_path::get_config_value(&agent.config, &key)?;
 
@@ -437,7 +437,7 @@ async fn handle_agent_config_set(
     let mut entry = config_service
         .get(agent_name, Some(team))
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Agent '{}' not found in team '{}'", agent_name, team))?;
+        .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found in team '{team}'"))?;
 
     config_path::set_config_value(&mut entry.config, &key, &value)?;
     config_service.save(agent_name, team, &entry.config).await?;
@@ -453,7 +453,7 @@ async fn handle_agent_config_set(
             })
         );
     } else {
-        println!("✅ Set '{}' for agent '{}/{}'", key, team, agent_name);
+        println!("✅ Set '{key}' for agent '{team}/{agent_name}'");
     }
 
     Ok(())

@@ -13,7 +13,7 @@
 //!   pekobot send myagent "What is the weather?"
 //!   pekobot send myteam/myagent "Hello"
 //!   pekobot send myagent --team myteam "Hello"
-//!   pekobot send myagent "Hello" --session sess_xxx
+//!   pekobot send myagent "Hello" --session `sess_xxx`
 //!   pekobot send myagent --new "Start fresh"
 //!   pekobot send myagent "Hello" --no-stream        # Wait for full response before output
 //!   echo "Hello" | pekobot send myagent --stdin
@@ -128,7 +128,7 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
             println!("{}", output.final_text);
         } else {
             if let Some(ref error) = output.error {
-                eprintln!("\n❌ Error: {}", error);
+                eprintln!("\n❌ Error: {error}");
             }
             anyhow::bail!(
                 "Agent execution failed{}",
@@ -156,7 +156,7 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
         match std::fs::read_to_string(file_path) {
             Ok(content) => Ok(content),
             Err(e) => {
-                anyhow::bail!("Failed to read message file '{}': {}", file_path, e);
+                anyhow::bail!("Failed to read message file '{file_path}': {e}");
             }
         }
     } else if let Some(ref message) = args.message {

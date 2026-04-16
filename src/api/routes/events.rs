@@ -1,6 +1,6 @@
 //! System Events WebSocket API
 //!
-//! Implements ws://localhost:11435/events per API_CONTRACT §8
+//! Implements <ws://localhost:11435/events> per `API_CONTRACT` §8
 
 use axum::{
     extract::{
@@ -88,7 +88,7 @@ async fn handle_events_socket(mut socket: WebSocket, state: AppState) {
             match serde_json::from_str::<SubscribeMessage>(&text) {
                 Ok(subscribe_msg) => {
                     if subscribe_msg.msg_type == "subscribe" {
-                        filter = subscribe_msg.filters.map(|f| f.into());
+                        filter = subscribe_msg.filters.map(std::convert::Into::into);
                         info!("Client subscribed to events with filter: {:?}", filter);
 
                         // Send acknowledgment
@@ -185,7 +185,7 @@ async fn handle_events_socket(mut socket: WebSocket, state: AppState) {
                         // Handle additional subscribe messages (filter updates)
                         if let Ok(subscribe_msg) = serde_json::from_str::<SubscribeMessage>(&text) {
                             if subscribe_msg.msg_type == "subscribe" {
-                                filter = subscribe_msg.filters.map(|f| f.into());
+                                filter = subscribe_msg.filters.map(std::convert::Into::into);
                                 info!("Client updated subscription filter: {:?}", filter);
                             }
                         }

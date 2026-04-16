@@ -86,10 +86,11 @@ impl ErrorObject {
     }
 
     /// Method not found (-32601)
+    #[must_use] 
     pub fn method_not_found(method: &str) -> Self {
         Self {
             code: -32601,
-            message: format!("Method '{}' not found", method),
+            message: format!("Method '{method}' not found"),
             data: Some(Value::String(method.to_string())),
         }
     }
@@ -191,7 +192,7 @@ fn generate_id() -> String {
     now.hash(&mut hasher);
     let hash = hasher.finish();
 
-    format!("{:x}", hash)[..12].to_string()
+    format!("{hash:x}")[..12].to_string()
 }
 
 #[cfg(test)]

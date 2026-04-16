@@ -51,12 +51,11 @@ impl std::fmt::Display for LockError {
             } => {
                 write!(
                     f,
-                    "Timeout acquiring lock '{}' after {:?}",
-                    lock_name, duration
+                    "Timeout acquiring lock '{lock_name}' after {duration:?}"
                 )
             }
             LockError::Poisoned { lock_name } => {
-                write!(f, "Lock '{}' was poisoned (holder panicked)", lock_name)
+                write!(f, "Lock '{lock_name}' was poisoned (holder panicked)")
             }
         }
     }
@@ -64,22 +63,23 @@ impl std::fmt::Display for LockError {
 
 impl std::error::Error for LockError {}
 
-/// Convert LockError to anyhow::Error
+/// Convert `LockError` to `anyhow::Error`
 ///
 /// Note: This is provided as a helper function rather than a From impl
 /// to avoid conflicting with anyhow's blanket impl.
+#[must_use] 
 pub fn into_anyhow(err: LockError) -> anyhow::Error {
     anyhow::anyhow!(err.to_string())
 }
 
 /// Acquire write lock with timeout
 ///
-/// Attempts to acquire a write lock on the given RwLock, waiting up to
+/// Attempts to acquire a write lock on the given `RwLock`, waiting up to
 /// the specified timeout duration. Returns an error if the timeout is
 /// exceeded.
 ///
 /// # Arguments
-/// * `lock` - The RwLock to acquire
+/// * `lock` - The `RwLock` to acquire
 /// * `timeout_duration` - Maximum time to wait for the lock
 /// * `lock_name` - Name of the lock for diagnostic error messages
 ///
@@ -106,12 +106,12 @@ pub async fn try_write_lock<'a, T>(
 
 /// Acquire read lock with timeout
 ///
-/// Attempts to acquire a read lock on the given RwLock, waiting up to
+/// Attempts to acquire a read lock on the given `RwLock`, waiting up to
 /// the specified timeout duration. Returns an error if the timeout is
 /// exceeded.
 ///
 /// # Arguments
-/// * `lock` - The RwLock to acquire
+/// * `lock` - The `RwLock` to acquire
 /// * `timeout_duration` - Maximum time to wait for the lock
 /// * `lock_name` - Name of the lock for diagnostic error messages
 ///

@@ -1,7 +1,7 @@
 //! Stream buffer for throttling and coalescing events
 //!
-//! Similar to OpenClaw's DraftStreamLoop but generalized
-//! for AgenticEvents instead of text strings.
+//! Similar to `OpenClaw`'s `DraftStreamLoop` but generalized
+//! for `AgenticEvents` instead of text strings.
 
 use crate::engine::AgenticEvent;
 use std::time::{Duration, Instant};
@@ -32,12 +32,12 @@ impl Default for CoalesceConfig {
 
 /// Stream buffer for throttling and coalescing events
 ///
-/// Buffers AssistantDelta events and emits them based on:
-/// - Size thresholds (min_chars, max_chars)
+/// Buffers `AssistantDelta` events and emits them based on:
+/// - Size thresholds (`min_chars`, `max_chars`)
 /// - Idle timeout
 ///
-/// Similar to OpenClaw's DraftStreamLoop but generalized
-/// for AgenticEvents.
+/// Similar to `OpenClaw`'s `DraftStreamLoop` but generalized
+/// for `AgenticEvents`.
 pub struct StreamBuffer {
     /// Pending events waiting to be emitted
     pending: Vec<AgenticEvent>,
@@ -71,7 +71,7 @@ impl StreamBuffer {
 
     /// Push an event into the buffer
     ///
-    /// Only AssistantDelta events are buffered and coalesced.
+    /// Only `AssistantDelta` events are buffered and coalesced.
     /// Other events are passed through immediately.
     pub fn push(&mut self, event: AgenticEvent) -> Vec<AgenticEvent> {
         match &event {
@@ -185,11 +185,13 @@ impl StreamBuffer {
     }
 
     /// Get current buffer size in characters
+    #[must_use] 
     pub fn buffer_len(&self) -> usize {
         self.text_buffer.len()
     }
 
     /// Check if buffer is empty
+    #[must_use] 
     pub fn is_empty(&self) -> bool {
         self.text_buffer.is_empty() && self.pending.is_empty()
     }

@@ -63,7 +63,7 @@ impl AgenticLoopV4 {
     /// # Arguments
     /// * `agent` - The agent configuration
     /// * `provider` - The LLM provider to use
-    /// * `extension_core` - The ExtensionCore for skill loading and hook integration
+    /// * `extension_core` - The `ExtensionCore` for skill loading and hook integration
     pub fn new(
         agent: Arc<Agent>,
         provider: Arc<crate::providers::Provider>,
@@ -135,8 +135,7 @@ impl AgenticLoopV4 {
             // Check if history already has a system message at the start
             let has_system = h
                 .first()
-                .map(|m| matches!(m.role, MessageRole::System))
-                .unwrap_or(false);
+                .is_some_and(|m| matches!(m.role, MessageRole::System));
             if has_system {
                 h
             } else {
@@ -242,8 +241,7 @@ impl AgenticLoopV4 {
             // Check if history already has a system message at the start
             let has_system = h
                 .first()
-                .map(|m| matches!(m.role, MessageRole::System))
-                .unwrap_or(false);
+                .is_some_and(|m| matches!(m.role, MessageRole::System));
             if has_system {
                 h
             } else {
@@ -307,7 +305,7 @@ impl AgenticLoopV4 {
             .await
     }
 
-    /// Original run method - creates new session via SessionManager
+    /// Original run method - creates new session via `SessionManager`
     pub async fn run(
         &self,
         prompt: &str,
@@ -724,7 +722,7 @@ impl AgenticLoopV4 {
 
                         // Check if tool is registered in ExtensionCore
                         let tool_in_extension =
-                            self.extension_core.get_tool_metadata(&name).await.is_some();
+                            self.extension_core.get_tool_metadata(name).await.is_some();
 
                         let tool_result = if tool_in_extension {
                             // Route through ExtensionCore for unified execution with panic isolation
@@ -764,7 +762,7 @@ impl AgenticLoopV4 {
                                         name,
                                         std::mem::discriminant(&other)
                                     );
-                                    format!("Error: Unexpected output type from tool")
+                                    "Error: Unexpected output type from tool".to_string()
                                 }
                                 HookResult::PassThrough => {
                                     // No handler registered - tool not found in extensions
@@ -777,14 +775,14 @@ impl AgenticLoopV4 {
                                 }
                                 HookResult::Handled => {
                                     warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                    format!("Error: Tool execution was consumed by handler")
+                                    "Error: Tool execution was consumed by handler".to_string()
                                 }
                                 HookResult::Replace(output) => {
                                     warn!(
                                         "Hook result for tool '{}' was Replace: {:?}",
                                         name, output
                                     );
-                                    format!("Error: Tool execution was replaced")
+                                    "Error: Tool execution was replaced".to_string()
                                 }
                             }
                         } else {
@@ -887,7 +885,7 @@ impl AgenticLoopV4 {
         }
     }
 
-    /// Build tool definitions dynamically from ExtensionCore (ADR-019 Phase 2)
+    /// Build tool definitions dynamically from `ExtensionCore` (ADR-019 Phase 2)
     ///
     /// This queries the unified tool registry for currently enabled tools,
     /// allowing tool changes to take effect without session restart.
@@ -1025,8 +1023,7 @@ impl AgenticLoopV4 {
             // Check if history already has a system message at the start
             let has_system = h
                 .first()
-                .map(|m| matches!(m.role, MessageRole::System))
-                .unwrap_or(false);
+                .is_some_and(|m| matches!(m.role, MessageRole::System));
             if has_system {
                 h
             } else {
@@ -1400,7 +1397,7 @@ impl AgenticLoopV4 {
 
                         // Check if tool is registered in ExtensionCore
                         let tool_in_extension =
-                            self.extension_core.get_tool_metadata(&name).await.is_some();
+                            self.extension_core.get_tool_metadata(name).await.is_some();
 
                         let tool_result = if tool_in_extension {
                             // Route through ExtensionCore for unified execution with panic isolation
@@ -1441,18 +1438,15 @@ impl AgenticLoopV4 {
                                         HookOutput::Text(t) => Some(t.clone()),
                                         _ => None,
                                     });
-                                    match result {
-                                        Some(r) => {
-                                            info!("Tool '{}' executed successfully via ExtensionCore (from {} outputs)", name, outputs.len());
-                                            r
-                                        }
-                                        None => {
-                                            warn!(
-                                                "Tool '{}' returned Vec with no Json/Text: {:?}",
-                                                name, outputs
-                                            );
-                                            format!("Error: Unexpected Vec output from tool")
-                                        }
+                                    if let Some(r) = result {
+                                        info!("Tool '{}' executed successfully via ExtensionCore (from {} outputs)", name, outputs.len());
+                                        r
+                                    } else {
+                                        warn!(
+                                            "Tool '{}' returned Vec with no Json/Text: {:?}",
+                                            name, outputs
+                                        );
+                                        "Error: Unexpected Vec output from tool".to_string()
                                     }
                                 }
                                 HookResult::Continue(other) => {
@@ -1461,7 +1455,7 @@ impl AgenticLoopV4 {
                                         name,
                                         std::mem::discriminant(&other)
                                     );
-                                    format!("Error: Unexpected output type from tool")
+                                    "Error: Unexpected output type from tool".to_string()
                                 }
                                 HookResult::PassThrough => {
                                     // No handler registered - tool not found in extensions
@@ -1474,14 +1468,14 @@ impl AgenticLoopV4 {
                                 }
                                 HookResult::Handled => {
                                     warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                    format!("Error: Tool execution was consumed by handler")
+                                    "Error: Tool execution was consumed by handler".to_string()
                                 }
                                 HookResult::Replace(output) => {
                                     warn!(
                                         "Hook result for tool '{}' was Replace: {:?}",
                                         name, output
                                     );
-                                    format!("Error: Tool execution was replaced")
+                                    "Error: Tool execution was replaced".to_string()
                                 }
                             }
                         } else {
@@ -1568,7 +1562,7 @@ impl AgenticLoopV4 {
 /// Build system prompt from agent and tools using `SystemPromptBuilder`
 /// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.) and skills
 ///
-/// Skills are loaded via the ExtensionCore using the SkillAdapter.
+/// Skills are loaded via the `ExtensionCore` using the `SkillAdapter`.
 fn build_system_prompt(
     agent: &Agent,
     extension_core: &Arc<crate::extensions::ExtensionCore>,
@@ -1610,8 +1604,7 @@ fn build_system_prompt(
         .config
         .tools
         .as_ref()
-        .map(|t| &t.skills)
-        .unwrap_or(&vec![])
+        .map_or(&vec![], |t| &t.skills)
         .clone();
 
     // Load and register skills with ExtensionCore (asynchronous block)
@@ -1638,14 +1631,14 @@ fn build_system_prompt(
         .build()
 }
 
-/// Load enabled skills for an agent from the skills directory using ExtensionCore
+/// Load enabled skills for an agent from the skills directory using `ExtensionCore`
 ///
 /// This function discovers skills from the filesystem and registers them with the
-/// ExtensionCore. Skills are then injected into the system prompt via the
+/// `ExtensionCore`. Skills are then injected into the system prompt via the
 /// `PromptSystemSection { section: "skills" }` hook point.
 ///
 /// # Returns
-/// The number of skills successfully registered with the ExtensionCore.
+/// The number of skills successfully registered with the `ExtensionCore`.
 fn load_and_register_skills_sync(
     agent_name: &str,
     enabled_skills: &[String],
@@ -1698,24 +1691,21 @@ fn load_and_register_skills_sync(
     let count = skills_to_register.len();
 
     // Create a new runtime for the async registration
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // We're in an async context, spawn a blocking task
-            let _ = handle
-                .block_on(async { register_skills_with_core(&core, skills_to_register).await });
-        }
-        Err(_) => {
-            // No runtime available, create a new one for this operation
-            let rt = match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::warn!("Failed to create runtime for skill registration: {}", e);
-                    return 0;
-                }
-            };
-            let _ =
-                rt.block_on(async { register_skills_with_core(&core, skills_to_register).await });
-        }
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        // We're in an async context, spawn a blocking task
+        let _ = handle
+            .block_on(async { register_skills_with_core(&core, skills_to_register).await });
+    } else {
+        // No runtime available, create a new one for this operation
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                tracing::warn!("Failed to create runtime for skill registration: {}", e);
+                return 0;
+            }
+        };
+        let _ =
+            rt.block_on(async { register_skills_with_core(&core, skills_to_register).await });
     }
 
     tracing::info!(
@@ -1807,5 +1797,5 @@ fn parse_content_block(value: &serde_json::Value) -> Option<ContentBlock> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 }

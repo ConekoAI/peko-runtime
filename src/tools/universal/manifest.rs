@@ -81,6 +81,7 @@ impl Manifest {
     ///
     /// This filters out reserved parameters so they are not visible to the LLM,
     /// preventing confusion and security issues.
+    #[must_use] 
     pub fn exposed_parameters(&self) -> Value {
         use crate::tools::shared::filter_reserved_params;
         use std::collections::HashSet;
@@ -91,16 +92,19 @@ impl Manifest {
     }
 
     /// Get reserved parameter names
+    #[must_use] 
     pub fn reserved_param_names(&self) -> Vec<&String> {
         self.reserved_parameters.names().collect()
     }
 
     /// Check if a parameter is reserved
+    #[must_use] 
     pub fn is_reserved(&self, name: &str) -> bool {
         self.reserved_parameters.contains(name)
     }
 
     /// Get the LLM-facing description
+    #[must_use] 
     pub fn llm_description(&self) -> String {
         self.llm_description
             .clone()

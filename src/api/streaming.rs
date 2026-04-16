@@ -104,7 +104,7 @@ impl IntoResponse for SseStream {
             };
 
             let data = serde_json::to_string(&event).unwrap_or_default();
-            let sse_line = format!("event: {}\ndata: {}\n\n", event_type, data);
+            let sse_line = format!("event: {event_type}\ndata: {data}\n\n");
 
             Ok::<_, Infallible>(axum::body::Bytes::from(sse_line))
         });
@@ -119,6 +119,7 @@ impl IntoResponse for SseStream {
 }
 
 /// Convert an engine event to an SSE event
+#[must_use] 
 pub fn engine_event_to_sse(
     event: &crate::engine::AgenticEvent,
     _run_id: &str,
@@ -173,11 +174,12 @@ pub fn engine_event_to_sse(
     }
 }
 
-/// Convert an EventStream to an SSE response stream
+/// Convert an `EventStream` to an SSE response stream
 ///
-/// This adapter bridges the unified EventStream (ADR-015) to SSE format
+/// This adapter bridges the unified `EventStream` (ADR-015) to SSE format
 /// used by the HTTP API. It spawns a task to forward events and properly
 /// awaits the completion signal to ensure session persistence.
+#[must_use] 
 pub fn event_stream_to_sse(
     event_stream: crate::channels::EventStream,
 ) -> (SseStream, tokio::task::JoinHandle<anyhow::Result<()>>) {
@@ -238,9 +240,9 @@ pub fn event_stream_to_sse(
                     total_tokens,
                     ..
                 } => {
-                    usage.input_tokens = *prompt_tokens as u64;
-                    usage.output_tokens = *completion_tokens as u64;
-                    usage.total_tokens = *total_tokens as u64;
+                    usage.input_tokens = u64::from(*prompt_tokens);
+                    usage.output_tokens = u64::from(*completion_tokens);
+                    usage.total_tokens = u64::from(*total_tokens);
                 }
                 _ => {}
             }

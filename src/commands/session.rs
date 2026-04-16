@@ -53,18 +53,18 @@ async fn get_active_session_for_cli(
 ///
 ///   # Show active session details with history (offline)
 ///   pekobot session show myagent --history
-///   pekobot session show myagent --session-id sess_xxx --history
-///   pekobot session show myteam/myagent --session-id sess_xxx --history
+///   pekobot session show myagent --session-id `sess_xxx` --history
+///   pekobot session show myteam/myagent --session-id `sess_xxx` --history
 ///
 ///   # Create a branch from the active session (offline)
 ///   pekobot session branch myagent --label "experiment"
-///   pekobot session branch myagent --session-id sess_xxx --label "experiment"
+///   pekobot session branch myagent --session-id `sess_xxx` --label "experiment"
 ///
 ///   # Remove a session (offline)
-///   pekobot session remove myagent sess_xxx
+///   pekobot session remove myagent `sess_xxx`
 ///
 ///   # Switch active session (offline, updates preference)
-///   pekobot session switch myagent sess_xxx
+///   pekobot session switch myagent `sess_xxx`
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum SessionCommands {
@@ -168,17 +168,15 @@ pub async fn handle_session(
                 None => match get_active_session_for_cli(paths, agent_name, team).await? {
                     Some(id) => {
                         if !json {
-                            println!("📋 Using active session: {}", id);
+                            println!("📋 Using active session: {id}");
                         }
                         id
                     }
                     None => {
                         return Err(anyhow::anyhow!(
-                            "No active session for agent '{}'. \
-                                 Run 'pekobot session list {}' to see available sessions, \
-                                 or specify a session ID explicitly.",
-                            agent_name,
-                            agent
+                            "No active session for agent '{agent_name}'. \
+                                 Run 'pekobot session list {agent}' to see available sessions, \
+                                 or specify a session ID explicitly."
                         ));
                     }
                 },
@@ -198,17 +196,15 @@ pub async fn handle_session(
                 None => match get_active_session_for_cli(paths, agent_name, team).await? {
                     Some(id) => {
                         if !json {
-                            println!("🌿 Branching from active session: {}", id);
+                            println!("🌿 Branching from active session: {id}");
                         }
                         id
                     }
                     None => {
                         return Err(anyhow::anyhow!(
-                            "No active session for agent '{}'. \
-                                 Run 'pekobot session list {}' to see available sessions, \
-                                 or specify a session ID explicitly.",
-                            agent_name,
-                            agent
+                            "No active session for agent '{agent_name}'. \
+                                 Run 'pekobot session list {agent}' to see available sessions, \
+                                 or specify a session ID explicitly."
                         ));
                     }
                 },
@@ -256,7 +252,7 @@ struct AgentLocation {
 
 /// Locate an agent's sessions directory
 ///
-/// Uses PathResolver to get the correct sessions directory.
+/// Uses `PathResolver` to get the correct sessions directory.
 /// Structure: `{data_dir}/sessions/{team}/{agent}/`
 fn locate_agent(paths: &GlobalPaths, name: &str, team: &str) -> Option<AgentLocation> {
     let sessions_dir = paths.resolver().agent_sessions_dir(name, Some(team));
@@ -290,7 +286,7 @@ async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<SessionEn
     let mut controller = MetadataController::new(sessions_dir);
     // Sync from JSONL to ensure message counts are accurate
     let metadata_list = controller.list_metadata(true).await?;
-    Ok(metadata_list.into_iter().map(|m| m.to_entry()).collect())
+    Ok(metadata_list.into_iter().map(super::super::session::metadata::SessionMetadata::to_entry).collect())
 }
 
 // ================================================================================
@@ -310,12 +306,10 @@ async fn list_sessions(
             println!("[]");
         } else {
             println!(
-                "📭 Agent '{}' not found in team '{}' or has no sessions.",
-                agent, team
+                "📭 Agent '{agent}' not found in team '{team}' or has no sessions."
             );
             println!(
-                "   Create the agent first with: pekobot agent create {}/{}",
-                team, agent
+                "   Create the agent first with: pekobot agent create {team}/{agent}"
             );
         }
         return Ok(());
@@ -338,7 +332,7 @@ async fn list_sessions(
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if sessions.is_empty() {
-        println!("📭 No sessions found for '{}'.", agent);
+        println!("📭 No sessions found for '{agent}'.");
         println!("   Start chatting with the agent to create sessions.");
     } else {
         println!(
@@ -348,7 +342,7 @@ async fn list_sessions(
             sessions.len()
         );
         if let Some(ref active) = active_session_id {
-            println!("   Active session: {}", active);
+            println!("   Active session: {active}");
         }
         println!();
 
@@ -362,7 +356,7 @@ async fn list_sessions(
             let status_icon = if is_active { "⭐ " } else { "   " };
 
             println!("{} {}", status_icon, session.session_id);
-            println!("     Title: {}", title);
+            println!("     Title: {title}");
             println!(
                 "     Messages: {} | Window: {} | In: {} | Out: {}",
                 session.message_count,
@@ -370,10 +364,10 @@ async fn list_sessions(
                 session.total_input_tokens,
                 session.total_output_tokens
             );
-            println!("     Created: {} | Updated: {}", created, updated);
+            println!("     Created: {created} | Updated: {updated}");
 
             if let Some(ref parent) = session.parent_session_id {
-                println!("     Branched from: {}", parent);
+                println!("     Branched from: {parent}");
             }
             println!();
         }
@@ -393,9 +387,7 @@ async fn show_session(
 ) -> anyhow::Result<()> {
     let Some(loc) = locate_agent(paths, agent, team) else {
         return Err(anyhow::anyhow!(
-            "Agent '{}' not found in team '{}'",
-            agent,
-            team
+            "Agent '{agent}' not found in team '{team}'"
         ));
     };
 
@@ -403,9 +395,7 @@ async fn show_session(
     let mut controller = MetadataController::new(&loc.sessions_dir);
     let Some(metadata) = controller.get_metadata(session_id, true).await? else {
         return Err(anyhow::anyhow!(
-            "Session '{}' not found for agent '{}'",
-            session_id,
-            agent
+            "Session '{session_id}' not found for agent '{agent}'"
         ));
     };
     let entry = metadata.to_entry();
@@ -427,11 +417,11 @@ async fn show_session(
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("📊 Session Details");
-        println!("   Team: {}", team);
-        println!("   Agent: {}", agent);
+        println!("   Team: {team}");
+        println!("   Agent: {agent}");
         println!("   Session ID: {}", entry.session_id);
         if let Some(ref title) = entry.title {
-            println!("   Title: {}", title);
+            println!("   Title: {title}");
         }
 
         if !entry.trigger.is_empty() {
@@ -448,7 +438,7 @@ async fn show_session(
         println!("   Updated: {}", format_timestamp_ms(entry.updated_at));
 
         if let Some(ref parent) = entry.parent_session_id {
-            println!("   Parent Session: {}", parent);
+            println!("   Parent Session: {parent}");
         }
 
         if let Some(events) = history_events {
@@ -500,7 +490,7 @@ enum HistoryDisplayEntry {
 
 /// Load session history using shared backend service
 ///
-/// Uses SessionService for consistent parsing with API layer.
+/// Uses `SessionService` for consistent parsing with API layer.
 /// Presentation layer converts service DTOs to CLI display format.
 async fn load_session_history(
     paths: &GlobalPaths,
@@ -523,7 +513,7 @@ async fn load_session_history(
     Ok(display_entries)
 }
 
-/// Convert service HistoryEvent to CLI display format
+/// Convert service `HistoryEvent` to CLI display format
 ///
 /// This is presentation layer logic - different channels (CLI, API, Web)
 /// can format the same backend data differently.
@@ -554,7 +544,7 @@ fn history_event_to_display(event: HistoryEvent) -> Option<HistoryDisplayEntry> 
             tool_name, args, ..
         } => {
             // Display tool calls with their arguments
-            let content = format!("{}", args);
+            let content = format!("{args}");
             Some(HistoryDisplayEntry::ToolResult { tool_name, content })
         }
         HistoryEvent::Thinking { content } => Some(HistoryDisplayEntry::Message {
@@ -585,44 +575,44 @@ fn print_history_event(index: usize, event: &HistoryDisplayEntry) {
             let time_str = format_timestamp(timestamp);
             match role.as_str() {
                 "system" => {
-                    println!("  [{}] ⚙️  System ({}):", index, time_str);
+                    println!("  [{index}] ⚙️  System ({time_str}):");
                     println!("      {}", truncate(content, 200));
                 }
                 "user" => {
-                    println!("  [{}] 👤 User ({}):", index, time_str);
+                    println!("  [{index}] 👤 User ({time_str}):");
                     println!("      {}", truncate(content, 200));
                 }
                 "assistant" => {
-                    println!("  [{}] 🤖 Assistant ({}):", index, time_str);
+                    println!("  [{index}] 🤖 Assistant ({time_str}):");
                     println!("      {}", truncate(content, 200));
                 }
                 "tool" => {
-                    println!("  [{}] 🔧 Tool ({}):", index, time_str);
+                    println!("  [{index}] 🔧 Tool ({time_str}):");
                     println!("      {}", truncate(content, 200));
                 }
                 _ => {
-                    println!("  [{}] {} ({}):", index, role, time_str);
+                    println!("  [{index}] {role} ({time_str}):");
                     println!("      {}", truncate(content, 200));
                 }
             }
         }
         HistoryDisplayEntry::ToolResult { tool_name, content } => {
-            println!("  [{}] ✅ Tool Result:", index);
-            println!("      Tool: {}", tool_name);
+            println!("  [{index}] ✅ Tool Result:");
+            println!("      Tool: {tool_name}");
             if !content.is_empty() {
                 println!("      Output: {}", truncate(content, 150));
             }
         }
         HistoryDisplayEntry::ModelChange { provider, model_id } => {
-            println!("  [{}] 🔄 Model Change:", index);
-            println!("      Provider: {}, Model: {}", provider, model_id);
+            println!("  [{index}] 🔄 Model Change:");
+            println!("      Provider: {provider}, Model: {model_id}");
         }
         HistoryDisplayEntry::Compaction { summary } => {
-            println!("  [{}] 📦 Compaction:", index);
+            println!("  [{index}] 📦 Compaction:");
             println!("      {}", truncate(summary, 150));
         }
         HistoryDisplayEntry::Custom { custom_type } => {
-            println!("  [{}] 📎 Custom ({})", index, custom_type);
+            println!("  [{index}] 📎 Custom ({custom_type})");
         }
     }
 }
@@ -647,9 +637,7 @@ async fn branch_session(
         .await
         .map_err(|_| {
             anyhow::anyhow!(
-                "Parent session '{}' not found for agent '{}'",
-                session_id,
-                agent
+                "Parent session '{session_id}' not found for agent '{agent}'"
             )
         })?;
 
@@ -665,17 +653,16 @@ async fn branch_session(
     if json {
         println!("{}", serde_json::to_string_pretty(&entry)?);
     } else {
-        println!("✅ Branched session '{}'", session_id);
-        println!("   New Session ID: {}", new_session_id);
-        println!("   Parent Session: {}", session_id);
+        println!("✅ Branched session '{session_id}'");
+        println!("   New Session ID: {new_session_id}");
+        println!("   Parent Session: {session_id}");
         if let Some(ref lbl) = label {
-            println!("   Label: {}", lbl);
+            println!("   Label: {lbl}");
         }
         println!();
         println!("   The branched session contains a copy of the parent's history.");
         println!(
-            "   Switch to it with: pekobot session switch {}/{} {}",
-            team, agent, new_session_id
+            "   Switch to it with: pekobot session switch {team}/{agent} {new_session_id}"
         );
     }
 
@@ -693,9 +680,7 @@ async fn delete_session(
 ) -> anyhow::Result<()> {
     let Some(loc) = locate_agent(paths, agent, team) else {
         return Err(anyhow::anyhow!(
-            "Agent '{}' not found in team '{}'",
-            agent,
-            team
+            "Agent '{agent}' not found in team '{team}'"
         ));
     };
 
@@ -703,27 +688,22 @@ async fn delete_session(
     let mut controller = crate::session::MetadataController::new(&loc.sessions_dir);
 
     // Check if session exists and get metadata for confirmation
-    let metadata = match controller.get_metadata_fast(session_id).await? {
-        Some(m) => Some(m),
-        None => {
-            // Check if JSONL file exists without metadata (orphaned)
-            let jsonl_path = loc.sessions_dir.join(format!("{}.jsonl", session_id));
-            if !jsonl_path.exists() {
-                return Err(anyhow::anyhow!(
-                    "Session '{}' not found for agent '{}'",
-                    session_id,
-                    agent
-                ));
-            }
-            None
+    let metadata = if let Some(m) = controller.get_metadata_fast(session_id).await? { Some(m) } else {
+        // Check if JSONL file exists without metadata (orphaned)
+        let jsonl_path = loc.sessions_dir.join(format!("{session_id}.jsonl"));
+        if !jsonl_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Session '{session_id}' not found for agent '{agent}'"
+            ));
         }
+        None
     };
 
     if !force {
-        println!("⚠️  This will permanently delete session '{}'.", session_id);
+        println!("⚠️  This will permanently delete session '{session_id}'.");
         if let Some(ref meta) = metadata {
             if let Some(ref title) = meta.title {
-                println!("   Title: {}", title);
+                println!("   Title: {title}");
             }
             println!("   Messages: {}", meta.message_count);
         }
@@ -749,9 +729,9 @@ async fn delete_session(
         } else {
             vec![]
         };
-        println!("{{\"success\": true, \"deleted\": {:?}}}", deleted_items);
+        println!("{{\"success\": true, \"deleted\": {deleted_items:?}}}");
     } else {
-        println!("✅ Deleted session '{}'", session_id);
+        println!("✅ Deleted session '{session_id}'");
         if deleted {
             println!("   Removed: jsonl, index");
         }
@@ -779,7 +759,7 @@ async fn switch_session(
     let _ = manager
         .get_session_metadata(session_id)
         .await
-        .map_err(|_| anyhow::anyhow!("Session '{}' not found for agent '{}'", session_id, agent))?;
+        .map_err(|_| anyhow::anyhow!("Session '{session_id}' not found for agent '{agent}'"))?;
 
     // Switch the active session for the specified user peer
     let peer = Peer::User(user.to_string());
@@ -787,13 +767,11 @@ async fn switch_session(
 
     if json {
         println!(
-            "{{\"success\": true, \"session_id\": \"{}\", \"agent\": \"{}\", \"team\": \"{}\"}}",
-            session_id, agent, team
+            "{{\"success\": true, \"session_id\": \"{session_id}\", \"agent\": \"{agent}\", \"team\": \"{team}\"}}"
         );
     } else {
         println!(
-            "✅ Switched active session for '{}/{}' to '{}'",
-            team, agent, session_id
+            "✅ Switched active session for '{team}/{agent}' to '{session_id}'"
         );
         println!();
         println!("   Future 'pekobot send' commands will use this session.");

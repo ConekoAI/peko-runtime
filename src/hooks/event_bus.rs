@@ -15,7 +15,7 @@ use crate::team::bus::{A2aMessage, EventBus};
 /// Subscribes to event bus topics and triggers hooks when messages arrive.
 pub struct EventBusHookIntegration {
     registry: Arc<HookRegistry>,
-    /// Active subscriptions: topic -> (hook_id, filter)
+    /// Active subscriptions: topic -> (`hook_id`, filter)
     subscriptions: Arc<RwLock<HashMap<String, Vec<Subscription>>>>,
 }
 
@@ -32,6 +32,7 @@ pub struct Subscription {
 
 impl EventBusHookIntegration {
     /// Create new event bus hook integration
+    #[must_use] 
     pub fn new(registry: Arc<HookRegistry>) -> Self {
         Self {
             registry,
@@ -108,7 +109,7 @@ impl EventBusHookIntegration {
             None => {
                 // For Direct/Task messages, use a synthetic topic based on target
                 if let Some(ref to) = message.to {
-                    format!("agent.{}", to)
+                    format!("agent.{to}")
                 } else {
                     return results;
                 }
@@ -191,7 +192,7 @@ impl EventBusHookIntegration {
     /// Get subscription count
     pub async fn subscription_count(&self) -> usize {
         let subscriptions = self.subscriptions.read().await;
-        subscriptions.values().map(|v| v.len()).sum()
+        subscriptions.values().map(std::vec::Vec::len).sum()
     }
 
     /// Get topics being watched
@@ -223,7 +224,7 @@ mod tests {
         id: &str,
         instance_id: &str,
         topic: &str,
-        filter: Option<serde_json::Value>,
+        _filter: Option<serde_json::Value>,
     ) -> RegisteredHook {
         RegisteredHook {
             id: id.to_string(),

@@ -7,14 +7,14 @@
 //!
 //! 1. **Single Source of Truth**: One implementation manages all session data
 //! 2. **Atomic Updates**: All index updates happen together in one operation
-//! 3. **Clear Ownership**: SessionManager is the SOLE authority for session lifecycle
+//! 3. **Clear Ownership**: `SessionManager` is the SOLE authority for session lifecycle
 //! 4. **Backward Compatible**: Works with existing session files
 //!
-//! ## Important: SessionManager is the ONLY Way
+//! ## Important: `SessionManager` is the ONLY Way
 //!
 //! As of Phase 3 refactor, **all session creation and opening MUST go through
-//! `SessionManager`**. UnifiedSession is now an internal implementation detail.
-//! External code should use `SessionHandle` obtained from SessionManager.
+//! `SessionManager`**. `UnifiedSession` is now an internal implementation detail.
+//! External code should use `SessionHandle` obtained from `SessionManager`.
 
 use crate::engine::ToolCall;
 use crate::providers::ChatMessage;
@@ -33,12 +33,12 @@ use chrono::Utc;
 // ====================================================================================
 use crate::session::NormalizedEntry;
 
-/// Convert a SessionEvent to a ChatMessage
+/// Convert a `SessionEvent` to a `ChatMessage`
 ///
 /// This function handles the conversion from internal event format to
-/// provider-agnostic ChatMessage format.
+/// provider-agnostic `ChatMessage` format.
 ///
-/// Uses the unified `as_message()` method to support both the new MessageV2
+/// Uses the unified `as_message()` method to support both the new `MessageV2`
 /// format and all legacy formats seamlessly.
 pub(crate) fn event_to_chat_message(event: &SessionEvent) -> Option<ChatMessage> {
     // Use unified conversion for all message types (handles MessageV2 and legacy)
@@ -50,7 +50,7 @@ pub(crate) fn event_to_chat_message(event: &SessionEvent) -> Option<ChatMessage>
     None
 }
 
-/// Convert a slice of NormalizedEntry to context text
+/// Convert a slice of `NormalizedEntry` to context text
 ///
 /// This function extracts text content from normalized entries for LLM context.
 pub(crate) fn entries_to_context_text(entries: &[NormalizedEntry]) -> String {
@@ -92,8 +92,8 @@ pub(crate) fn entries_to_context_text(entries: &[NormalizedEntry]) -> String {
 /// All session operations should go through `SessionManager` which provides
 /// `SessionHandle` for external use.
 ///
-/// UnifiedSession manages the JSONL file storage for conversation history.
-/// It is created and opened only by SessionManager.
+/// `UnifiedSession` manages the JSONL file storage for conversation history.
+/// It is created and opened only by `SessionManager`.
 #[derive(Debug)]
 pub struct UnifiedSession {
     /// Session ID (UUID format)
@@ -110,7 +110,7 @@ pub struct UnifiedSession {
     last_message_id: Option<String>,
     /// Message count
     pub message_count: usize,
-    /// Current context window size (total_tokens from last assistant message)
+    /// Current context window size (`total_tokens` from last assistant message)
     pub context_window: usize,
     /// Cumulative input tokens across all assistant messages
     pub total_input_tokens: usize,
@@ -127,7 +127,7 @@ impl UnifiedSession {
     // Creation
     // ============================================================
 
-    /// Create a UnifiedSession from components (used by SessionManager after JSONL creation)
+    /// Create a `UnifiedSession` from components (used by `SessionManager` after JSONL creation)
     ///
     /// This is a low-level constructor. Prefer using `open_by_id` for opening existing sessions.
     pub(crate) fn from_components(
@@ -159,10 +159,10 @@ impl UnifiedSession {
 
     /// Open an existing unified session by ID
     ///
-    /// This is the ONLY way to open a UnifiedSession. It requires the session ID
-    /// which must be obtained from MetadataController via SessionManager.
+    /// This is the ONLY way to open a `UnifiedSession`. It requires the session ID
+    /// which must be obtained from `MetadataController` via `SessionManager`.
     ///
-    /// NOTE: All session opening must go through SessionManager::open_session().
+    /// NOTE: All session opening must go through `SessionManager::open_session()`.
     ///
     /// This bypasses the peer lookup and opens the session file directly.
     /// JSONL is the source of truth for message count and content.
@@ -172,7 +172,7 @@ impl UnifiedSession {
     /// * `session_id` - The session ID
     /// * `sessions_dir` - The sessions directory
     /// * `peer` - Optional peer info. If provided, restores session identity from this peer.
-    ///            If None, defaults to Peer::User("default")
+    ///            If None, defaults to `Peer::User("default`")
     pub async fn open_by_id(
         agent_name: &str,
         session_id: &str,
@@ -206,7 +206,7 @@ impl UnifiedSession {
     // Helper Methods
     // ============================================================
 
-    /// Build a UnifiedSession from normalized entries (supports both new and legacy formats)
+    /// Build a `UnifiedSession` from normalized entries (supports both new and legacy formats)
     /// JSONL is the source of truth for message count.
     async fn from_entries(
         session_id: String,
@@ -257,9 +257,9 @@ impl UnifiedSession {
     // Metadata Operations
     // ============================================================
 
-    /// Record token usage (in-memory only, persists to index via MetadataController)
+    /// Record token usage (in-memory only, persists to index via `MetadataController`)
     ///
-    /// `context_window` is the total_tokens from the current assistant message.
+    /// `context_window` is the `total_tokens` from the current assistant message.
     /// `input` and `output` are the incremental tokens for this turn.
     pub fn record_usage(&mut self, context_window: usize, input: usize, output: usize) {
         self.context_window = context_window;
@@ -267,7 +267,7 @@ impl UnifiedSession {
         self.total_output_tokens += output;
     }
 
-    /// Set the current model (in-memory only, persists to index via MetadataController)
+    /// Set the current model (in-memory only, persists to index via `MetadataController`)
     pub fn set_model(&mut self, provider: &str, model: &str) {
         self.current_provider = Some(provider.to_string());
         self.current_model = Some(model.to_string());
@@ -298,7 +298,7 @@ impl UnifiedSession {
 
     /// Add a system message
     ///
-    /// Stores the message in LLM-native format (LlmMessageEvent with role="system")
+    /// Stores the message in LLM-native format (`LlmMessageEvent` with role="system")
     /// for consistent session storage.
     pub async fn add_system(&mut self, content: impl Into<String>) -> Result<()> {
         // Use native format for unified storage
@@ -316,7 +316,7 @@ impl UnifiedSession {
 
     /// Add a user message
     ///
-    /// Stores the message in LLM-native format (LlmMessageEvent) with full
+    /// Stores the message in LLM-native format (`LlmMessageEvent`) with full
     /// content block fidelity for accurate session resumption.
     pub async fn add_user(&mut self, content: impl Into<String>) -> Result<()> {
         // Use native format for unified storage
@@ -334,7 +334,7 @@ impl UnifiedSession {
 
     /// Add an assistant message with optional tool calls
     ///
-    /// Stores the message in LLM-native format (LlmMessageEvent) with full
+    /// Stores the message in LLM-native format (`LlmMessageEvent`) with full
     /// content block fidelity, preserving tool calls for accurate session resumption.
     pub async fn add_assistant(
         &mut self,
@@ -374,13 +374,13 @@ impl UnifiedSession {
             .await
     }
 
-    /// Add an assistant message with tool calls (with ContentBlock tool calls)
+    /// Add an assistant message with tool calls (with `ContentBlock` tool calls)
     ///
     /// Writes as Event Format (assistant.message) for consistency with the Pekobot
-    /// session specification (DATA_MODEL.md §5.3).
+    /// session specification (`DATA_MODEL.md` §5.3).
     /// Add a tool result
     ///
-    /// Stores the tool result in LLM-native format (LlmMessageEvent with role="tool")
+    /// Stores the tool result in LLM-native format (`LlmMessageEvent` with role="tool")
     /// for consistent session storage and accurate resumption.
     pub async fn add_tool_result(
         &mut self,
@@ -395,7 +395,7 @@ impl UnifiedSession {
 
     /// Add a thinking block (streaming reasoning)
     ///
-    /// Stores the thinking content in LLM-native format (LlmMessageEvent with
+    /// Stores the thinking content in LLM-native format (`LlmMessageEvent` with
     /// thinking block) for consistent session storage.
     pub async fn add_thinking(
         &mut self,
@@ -426,10 +426,10 @@ impl UnifiedSession {
     /// Add an LLM-native message with full content block fidelity
     ///
     /// This is the core implementation used by all other add_* methods.
-    /// It stores messages in the new unified format (SessionEvent::MessageV2) which
-    /// uses SessionMessage with RoleMetadata for clean, SRP-compliant storage.
+    /// It stores messages in the new unified format (`SessionEvent::MessageV2`) which
+    /// uses `SessionMessage` with `RoleMetadata` for clean, SRP-compliant storage.
     ///
-    /// This replaces the legacy LlmMessageEvent format with the new unified format
+    /// This replaces the legacy `LlmMessageEvent` format with the new unified format
     /// that supports all message types through a single, extensible structure.
     ///
     /// # Arguments
@@ -490,15 +490,14 @@ impl UnifiedSession {
             "assistant" => {
                 let token_usage = usage
                     .as_ref()
-                    .map(|u| crate::session::message::TokenUsage {
-                        input_tokens: u.input as u32,
-                        output_tokens: u.output as u32,
-                        total_tokens: (u.input + u.output) as u32,
-                    })
-                    .unwrap_or(crate::session::message::TokenUsage {
+                    .map_or(crate::session::message::TokenUsage {
                         input_tokens: 0,
                         output_tokens: 0,
                         total_tokens: 0,
+                    }, |u| crate::session::message::TokenUsage {
+                        input_tokens: u.input as u32,
+                        output_tokens: u.output as u32,
+                        total_tokens: (u.input + u.output) as u32,
                     });
 
                 SessionMessage::assistant_with_blocks(
@@ -621,11 +620,11 @@ impl UnifiedSession {
     ///
     /// Returns messages with full content block fidelity, preserving tool calls,
     /// thinking blocks, and other structured content. This method supports both
-    /// the new LLM-native format (LlmMessageEvent) and legacy formats for
+    /// the new LLM-native format (`LlmMessageEvent`) and legacy formats for
     /// backward compatibility.
     ///
     /// # Returns
-    /// Vector of ChatMessage with complete ContentBlock information
+    /// Vector of `ChatMessage` with complete `ContentBlock` information
     pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
         // Delegate to native loader for unified handling
         self.load_history_native().await
@@ -634,12 +633,12 @@ impl UnifiedSession {
     /// Load conversation history (internal implementation)
     ///
     /// Core implementation that handles all event formats and converts to
-    /// ChatMessage with full ContentBlock fidelity.
+    /// `ChatMessage` with full `ContentBlock` fidelity.
     async fn load_history_native(&self) -> Result<Vec<ChatMessage>> {
         let events = self.storage.load_events(&self.id).await?;
         let messages: Vec<ChatMessage> = events
             .iter()
-            .filter_map(|event| event_to_chat_message(event))
+            .filter_map(event_to_chat_message)
             .collect();
 
         Ok(messages)
@@ -880,7 +879,7 @@ mod tests {
     #[test]
     fn test_entries_to_context_text_with_tool_result() {
         use crate::session::NormalizedEntry;
-        use chrono::Utc;
+        
 
         let entries = vec![NormalizedEntry::ToolResult {
             tool_call_id: "1".to_string(),
@@ -900,7 +899,7 @@ mod tests {
 
         let entries = vec![NormalizedEntry::UserMessage {
             id: "1".to_string(),
-            content: "".to_string(),
+            content: String::new(),
             timestamp: Utc::now(),
             source: crate::session::events::MessageSource::User,
         }];
@@ -1004,7 +1003,7 @@ mod tests {
         {
             assert_eq!(tool_call_id, "tool_abc");
             assert_eq!(name, "read_file");
-            assert_eq!(*is_error, false);
+            assert!(!(*is_error));
             assert_eq!(
                 content,
                 &vec![ContentBlock::Text {

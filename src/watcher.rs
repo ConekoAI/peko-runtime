@@ -127,8 +127,7 @@ impl FileWatcher {
                 error!("Failed to create file watcher: {}", e);
                 let _ = event_tx
                     .send(WatchEvent::Error(format!(
-                        "Failed to create watcher: {}",
-                        e
+                        "Failed to create watcher: {e}"
                     )))
                     .await;
                 return Err(e);
@@ -342,7 +341,7 @@ mod tests {
     #[test]
     fn test_watch_event_debug() {
         let event = WatchEvent::Changed(PathBuf::from("/test.txt"));
-        let debug = format!("{:?}", event);
+        let debug = format!("{event:?}");
         assert!(debug.contains("Changed"));
         assert!(debug.contains("/test.txt"));
     }
@@ -389,6 +388,6 @@ mod tests {
 
         // Clean up
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
-        let _ = watch_handle.stop().await;
+        let () = watch_handle.stop().await;
     }
 }

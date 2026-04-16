@@ -1,7 +1,7 @@
 //! WebSocket Chat API Routes
 //!
-//! Implements WebSocket endpoint per API_CONTRACT.md §4.3:
-//! - ws://localhost:11435/agents/{id}/ws - Bidirectional streaming chat
+//! Implements WebSocket endpoint per `API_CONTRACT.md` §4.3:
+//! - <ws://localhost:11435/agents/{id}/ws> - Bidirectional streaming chat
 
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
@@ -165,7 +165,7 @@ async fn handle_websocket(mut socket: axum::extract::ws::WebSocket, instance_id:
                             &mut socket,
                             WsServerMessage::Error {
                                 code: "parse_error".to_string(),
-                                message: format!("Invalid message format: {}", e),
+                                message: format!("Invalid message format: {e}"),
                                 request_id: None,
                             },
                         )
@@ -229,7 +229,7 @@ async fn handle_client_message(
             send_message(
                 socket,
                 WsServerMessage::Delta {
-                    text: format!("Echo: {}", content),
+                    text: format!("Echo: {content}"),
                 },
             )
             .await?;

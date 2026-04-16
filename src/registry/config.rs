@@ -1,7 +1,7 @@
 //! Registry Configuration
 //!
 //! Defines registry sources and authentication configuration
-//! as per DATA_MODEL §3 (runtime.toml registry section).
+//! as per `DATA_MODEL` §3 (runtime.toml registry section).
 
 use serde::{Deserialize, Serialize};
 
@@ -67,7 +67,7 @@ fn default_registry() -> String {
 /// A registry source configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistrySource {
-    /// Registry URL (e.g., "pekohub.com" or "https://registry.example.com")
+    /// Registry URL (e.g., "pekohub.com" or "<https://registry.example.com>")
     pub url: String,
     /// Priority order (lower = checked first)
     #[serde(default)]
@@ -262,10 +262,10 @@ auth = { type = "token", env = "REGISTRY_TOKEN" }
 
     #[test]
     fn test_parse_runtime_toml_without_registry() {
-        let toml = r#"
+        let toml = r"
 [daemon]
 port = 11435
-"#;
+";
         let config = parse_runtime_toml(toml);
         assert_eq!(config.default, "pekohub.com"); // Default value
     }
@@ -417,7 +417,7 @@ password_env = "REG_PASS"
                 assert_eq!(user_env, "REG_USER");
                 assert_eq!(password_env, "REG_PASS");
             }
-            other => panic!("Expected Basic auth, got {:?}", other),
+            other => panic!("Expected Basic auth, got {other:?}"),
         }
     }
 

@@ -155,7 +155,7 @@ impl SessionContext {
 
     /// Record token usage
     ///
-    /// `context_window` is the total_tokens from the current assistant message.
+    /// `context_window` is the `total_tokens` from the current assistant message.
     /// `input_tokens` and `output_tokens` are the incremental tokens for this turn.
     pub async fn record_usage(
         &self,

@@ -7,12 +7,13 @@
 //! moved to the TUI (pekobot-tui) and Web UI.
 //!
 //! Per ADR-015, this channel supports both blocking and streaming modes
-//! through the unified EventStream interface.
+//! through the unified `EventStream` interface.
 
 use super::{Channel, ChannelOutput, EventStream, StreamingConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::io::Write;
+use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::session::context::SessionContext;
@@ -54,12 +55,14 @@ impl CliChannel {
     }
 
     /// Set the operating mode (blocking or streaming)
+    #[must_use] 
     pub fn with_mode(mut self, mode: CliMode) -> Self {
         self.mode = mode;
         self
     }
 
     /// Get the current mode
+    #[must_use] 
     pub fn mode(&self) -> CliMode {
         self.mode
     }
@@ -109,7 +112,7 @@ impl Channel for CliChannel {
 }
 
 impl CliChannel {
-    /// Blocking mode: Collect events into ChannelOutput
+    /// Blocking mode: Collect events into `ChannelOutput`
     ///
     /// Uses the shared default implementation and adds CLI-specific formatting.
     async fn process_stream_blocking(&self, event_stream: EventStream) -> Result<ChannelOutput> {
@@ -158,11 +161,11 @@ impl CliChannel {
                         std::io::stdout().flush().unwrap();
                     }
                     ChannelAction::Println(text) => {
-                        if !text.is_empty() {
+                        if text.is_empty() {
+                            println!();
+                        } else {
                             println!("{text}");
                             final_answer = text;
-                        } else {
-                            println!();
                         }
                         has_started_line = false;
                     }
@@ -186,9 +189,9 @@ impl CliChannel {
                 ..
             } = &event
             {
-                output.usage.input = *prompt_tokens as u64;
-                output.usage.output = *completion_tokens as u64;
-                output.usage.total = *total_tokens as u64;
+                output.usage.input = u64::from(*prompt_tokens);
+                output.usage.output = u64::from(*completion_tokens);
+                output.usage.total = u64::from(*total_tokens);
             }
 
             // Handle lifecycle
@@ -237,7 +240,7 @@ impl CliChannel {
 
 /// Process events and return final answer
 ///
-/// Unified event handling for streaming output using EventProcessor.
+/// Unified event handling for streaming output using `EventProcessor`.
 /// All output uses the same format: {`agent_name}`: {content}
 pub async fn process_events(
     mut event_rx: tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>,
@@ -290,11 +293,11 @@ pub async fn process_events(
                     std::io::stdout().flush().unwrap();
                 }
                 ChannelAction::Println(text) => {
-                    if !text.is_empty() {
+                    if text.is_empty() {
+                        println!();
+                    } else {
                         println!("{text}");
                         final_answer = text;
-                    } else {
-                        println!();
                     }
                     has_started_line = false;
                 }
@@ -432,10 +435,10 @@ pub async fn send_single_message_with_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channels::{ChannelOutput, EventStream};
+    use crate::channels::EventStream;
     use crate::engine::{AgenticEvent, LifecyclePhase};
 
-    /// Test that CliChannel creation works
+    /// Test that `CliChannel` creation works
     #[test]
     fn test_cli_channel_creation() {
         let channel = CliChannel::new("test-agent");
@@ -508,8 +511,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(
             elapsed < Duration::from_millis(200),
-            "Should complete in under 200ms without grace period, took {:?}",
-            elapsed
+            "Should complete in under 200ms without grace period, took {elapsed:?}"
         );
 
         let output = result.unwrap();

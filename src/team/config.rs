@@ -1,6 +1,6 @@
 //! Team configuration parser (team.toml)
 //!
-//! Implements DATA_MODEL.md §4 - Team Definition
+//! Implements `DATA_MODEL.md` §4 - Team Definition
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -105,7 +105,7 @@ pub enum BusBackend {
     InMemory,
     /// Redis Streams backend
     Redis,
-    /// NATS JetStream backend
+    /// NATS `JetStream` backend
     Nats,
 }
 
@@ -270,11 +270,13 @@ impl TeamConfig {
     }
 
     /// Get the default shared files path for this team
+    #[must_use] 
     pub fn default_shared_files_path(&self) -> String {
         format!(".pekobot/teams/{}/shared/files", self.identity.name)
     }
 
     /// Get the shared files path (custom or default)
+    #[must_use] 
     pub fn shared_files_path(&self) -> String {
         self.shared
             .as_ref()
@@ -284,20 +286,21 @@ impl TeamConfig {
     }
 
     /// Check if shared files are enabled
+    #[must_use] 
     pub fn shared_files_enabled(&self) -> bool {
         self.shared
             .as_ref()
             .and_then(|s| s.files.as_ref())
-            .map(|f| f.enabled)
-            .unwrap_or(true)
+            .is_none_or(|f| f.enabled)
     }
 
     /// Get the bus backend configuration
+    #[must_use] 
     pub fn bus_config(&self) -> BusConfig {
         self.shared
             .as_ref()
             .and_then(|s| s.bus.clone())
-            .unwrap_or_else(|| BusConfig {
+            .unwrap_or(BusConfig {
                 backend: BusBackend::InMemory,
                 url: None,
             })

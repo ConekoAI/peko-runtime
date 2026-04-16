@@ -15,19 +15,19 @@ pub enum Placeholder {
     Runtime,
     /// Sandbox status - {{sandbox}}
     Sandbox,
-    /// Model aliases - {{model_aliases}}
+    /// Model aliases - {{`model_aliases`}}
     ModelAliases,
-    /// Self-update section - {{self_update}}
+    /// Self-update section - {{`self_update`}}
     SelfUpdate,
     /// Timezone - {{timezone}}
     Timezone,
-    /// Agent name inline - {{agent_name}}
+    /// Agent name inline - {{`agent_name`}}
     AgentName,
     /// Workspace path inline - {{workspace}}
     Workspace,
     /// Channel inline - {{channel}}
     Channel,
-    /// Thinking level inline - {{thinking_level}}
+    /// Thinking level inline - {{`thinking_level`}}
     ThinkingLevel,
 }
 

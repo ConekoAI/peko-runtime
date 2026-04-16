@@ -118,12 +118,14 @@ pub mod extension_types {
     pub const CUSTOM_PREFIX: &str = "custom:";
 
     /// Check if a type is valid
+    #[must_use] 
     pub fn is_valid_type(ext_type: &str) -> bool {
         matches!(ext_type, SKILL | MCP | UNIVERSAL_TOOL | GATEWAY)
             || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types
+    #[must_use] 
     pub fn standard_types() -> Vec<&'static str> {
         vec![SKILL, MCP, UNIVERSAL_TOOL, GATEWAY]
     }

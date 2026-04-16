@@ -52,6 +52,7 @@ impl Default for ProcessConfig {
 
 impl ProcessConfig {
     /// Create a new config with defaults
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -69,12 +70,14 @@ impl ProcessConfig {
     }
 
     /// Enable/disable stderr logging
+    #[must_use] 
     pub fn log_stderr(mut self, enabled: bool) -> Self {
         self.log_stderr = enabled;
         self
     }
 
     /// Set kill timeout
+    #[must_use] 
     pub fn kill_timeout(mut self, secs: u64) -> Self {
         self.kill_timeout = Duration::from_secs(secs);
         self
@@ -93,6 +96,7 @@ pub struct ResolvedCommand {
 }
 
 /// Detect the appropriate interpreter for script files
+#[must_use] 
 pub fn resolve_command(executable: &Path, auto_interpreter: bool) -> ResolvedCommand {
     if !auto_interpreter {
         return ResolvedCommand {
@@ -330,7 +334,7 @@ impl ProcessTransport {
                 debug!("Process[{}] already exited", pid);
                 Ok(())
             }
-            Err(e) => Err(anyhow::anyhow!("Failed to kill process[{}]: {}", pid, e)),
+            Err(e) => Err(anyhow::anyhow!("Failed to kill process[{pid}]: {e}")),
         }
     }
 
@@ -352,6 +356,7 @@ pub struct ProcessTransportBuilder {
 
 impl ProcessTransportBuilder {
     /// Create a new builder
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             config: ProcessConfig::default(),
@@ -371,18 +376,21 @@ impl ProcessTransportBuilder {
     }
 
     /// Enable/disable stderr logging
+    #[must_use] 
     pub fn log_stderr(mut self, enabled: bool) -> Self {
         self.config.log_stderr = enabled;
         self
     }
 
     /// Set kill timeout
+    #[must_use] 
     pub fn kill_timeout(mut self, secs: u64) -> Self {
         self.config.kill_timeout = Duration::from_secs(secs);
         self
     }
 
     /// Enable/disable auto interpreter detection
+    #[must_use] 
     pub fn auto_interpreter(mut self, enabled: bool) -> Self {
         self.config.auto_interpreter = enabled;
         self

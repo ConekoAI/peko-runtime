@@ -53,7 +53,7 @@ pub struct AsyncTaskReceipt {
 
 /// Unified result type for all async operations
 ///
-/// This enum normalizes results from different async tools (shell, agent_spawn, agent_invoke)
+/// This enum normalizes results from different async tools (shell, `agent_spawn`, `agent_invoke`)
 /// into a single format that can be handled uniformly by the delivery infrastructure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AsyncTaskResult {
@@ -73,8 +73,8 @@ pub enum AsyncTaskResult {
     /// Session-to-session message (A2A unified)
     ///
     /// Used for agent-to-agent messaging through the same queue mechanism
-    /// as subagent_spawn. This enables bidirectional A2A with consistent
-    /// delivery modes (steer, collect, interrupt, queue_when_busy).
+    /// as `subagent_spawn`. This enables bidirectional A2A with consistent
+    /// delivery modes (steer, collect, interrupt, `queue_when_busy`).
     SessionMessage {
         /// Source session key
         from_session: String,
@@ -95,8 +95,10 @@ pub enum AsyncTaskResult {
 
 /// Message types for session-to-session communication (A2A)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SessionMessageType {
     /// Initial request to another agent
+    #[default]
     Request,
     /// Response to a request
     Response,
@@ -108,11 +110,6 @@ pub enum SessionMessageType {
     Error,
 }
 
-impl Default for SessionMessageType {
-    fn default() -> Self {
-        Self::Request
-    }
-}
 
 impl AsyncTaskResult {
     /// Format the result for display/announcement to users
@@ -125,15 +122,14 @@ impl AsyncTaskResult {
                 exit_code,
             } => {
                 format!(
-                    "## Process Result\n\n**Command:** {}\n**Exit Code:** {}\n\n**Stdout:**\n```\n{}\n```\n\n**Stderr:**\n```\n{}\n```",
-                    tool_name, exit_code, stdout, stderr
+                    "## Process Result\n\n**Command:** {tool_name}\n**Exit Code:** {exit_code}\n\n**Stdout:**\n```\n{stdout}\n```\n\n**Stderr:**\n```\n{stderr}\n```"
                 )
             }
             Self::Subagent { output, error, .. } => {
                 let label_part = if tool_name == "agent_spawn" {
                     "Subagent".to_string()
                 } else {
-                    format!("Subagent [{}]", tool_name)
+                    format!("Subagent [{tool_name}]")
                 };
 
                 let status_emoji = if error.is_some() { "❌" } else { "✅" };
@@ -142,7 +138,7 @@ impl AsyncTaskResult {
                     .or(output.as_deref())
                     .unwrap_or("(no content)");
 
-                format!("## {} Result {}\n\n{}", label_part, status_emoji, content)
+                format!("## {label_part} Result {status_emoji}\n\n{content}")
             }
 
             Self::SessionMessage {
@@ -162,8 +158,7 @@ impl AsyncTaskResult {
                 };
 
                 format!(
-                    "## {} A2A Message {}\n\n**From:** `{}`\n**To:** `{}`\n**Conversation:** `{}`\n\n{}",
-                    type_label, emoji, from_session, to_session, conversation_id, content
+                    "## {type_label} A2A Message {emoji}\n\n**From:** `{from_session}`\n**To:** `{to_session}`\n**Conversation:** `{conversation_id}`\n\n{content}"
                 )
             }
             Self::Generic { data } => {
@@ -180,14 +175,14 @@ impl AsyncTaskResult {
     #[must_use]
     pub fn summary(&self) -> String {
         match self {
-            Self::Process { exit_code, .. } => format!("shell: exit_code={}", exit_code),
+            Self::Process { exit_code, .. } => format!("shell: exit_code={exit_code}"),
             Self::Subagent { output, error, .. } => {
                 if error.is_some() {
                     "subagent: failed".to_string()
                 } else {
                     format!(
                         "subagent: {} chars output",
-                        output.as_ref().map(|s| s.len()).unwrap_or(0)
+                        output.as_ref().map_or(0, std::string::String::len)
                     )
                 }
             }
@@ -296,7 +291,7 @@ impl AsyncTaskEntry {
         }
     }
 
-    /// Set the unified result and update formatted_result cache
+    /// Set the unified result and update `formatted_result` cache
     pub fn set_result(&mut self, result: AsyncTaskResult) {
         self.formatted_result = Some(result.format_for_announcement(&self.tool_name));
         self.result = Some(result);
@@ -424,7 +419,7 @@ impl AsyncTaskRegistry {
                     return Ok(self.status_to_wait_result(&entry.status));
                 }
             } else {
-                return Err(anyhow::anyhow!("Task {} not found in registry", task_id));
+                return Err(anyhow::anyhow!("Task {task_id} not found in registry"));
             }
 
             // Check timeout
@@ -473,7 +468,7 @@ impl AsyncTaskRegistry {
             entry.set_completion_channel(tx);
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Task {} not found in registry", task_id))
+            Err(anyhow::anyhow!("Task {task_id} not found in registry"))
         }
     }
 
@@ -565,22 +560,19 @@ impl AsyncTaskEventBus {
 /// Defines where and how the result should be delivered
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DeliveryTarget {
     /// Deliver to session via announcement (adds message to parent session)
     SessionAnnouncement,
     /// Deliver to async result queue
+    #[default]
     AsyncQueue,
-    /// Deliver via EventSubscriber broadcast
+    /// Deliver via `EventSubscriber` broadcast
     EventBroadcast,
     /// Deliver via direct channel (for sync waiting)
     DirectChannel,
 }
 
-impl Default for DeliveryTarget {
-    fn default() -> Self {
-        DeliveryTarget::AsyncQueue
-    }
-}
 
 /// Trait for result delivery mechanisms
 ///
@@ -599,7 +591,7 @@ pub trait ResultDelivery: Send + Sync {
 
     /// Clone this delivery mechanism into a Box
     ///
-    /// Required because ResultDelivery is a trait object and needs
+    /// Required because `ResultDelivery` is a trait object and needs
     /// to be cloneable for use in spawned tasks.
     fn clone_box(&self) -> Box<dyn ResultDelivery>;
 }
@@ -612,8 +604,8 @@ impl Clone for Box<dyn ResultDelivery> {
 
 /// Queue-based delivery mechanism
 ///
-/// Delivers results via the AsyncResultQueueManager for later retrieval.
-/// Used by shell tool and agent_spawn in queue mode.
+/// Delivers results via the `AsyncResultQueueManager` for later retrieval.
+/// Used by shell tool and `agent_spawn` in queue mode.
 #[derive(Debug, Clone)]
 pub struct QueueDelivery {
     queue_manager: SharedAsyncResultQueueManager,
@@ -878,6 +870,7 @@ impl UnifiedAsyncExecutor {
     }
 
     /// Set the default delivery target
+    #[must_use] 
     pub fn with_default_delivery(mut self, target: DeliveryTarget) -> Self {
         self.default_delivery = target;
         self
@@ -906,7 +899,7 @@ impl UnifiedAsyncExecutor {
     /// * `execution_fn` - The actual async work to execute
     ///
     /// # Returns
-    /// Receipt with task_id and initial status
+    /// Receipt with `task_id` and initial status
     pub async fn execute<F, Fut>(
         &self,
         task_id: AsyncTaskId,
@@ -1276,7 +1269,7 @@ mod tests {
         match timeout_result {
             Ok(Ok(WaitResult::Timeout)) => {}
             Err(_) => {} // tokio timeout also acceptable
-            other => panic!("Expected timeout, got: {:?}", other),
+            other => panic!("Expected timeout, got: {other:?}"),
         }
 
         // Now complete the task
@@ -1296,7 +1289,7 @@ mod tests {
             WaitResult::Completed { result } => {
                 assert!(result.success);
             }
-            _ => panic!("Expected completed result, got: {:?}", result),
+            _ => panic!("Expected completed result, got: {result:?}"),
         }
     }
 
@@ -1331,7 +1324,7 @@ mod tests {
             WaitResult::Failed { error } => {
                 assert_eq!(error, "Something went wrong");
             }
-            _ => panic!("Expected failed result, got: {:?}", result),
+            _ => panic!("Expected failed result, got: {result:?}"),
         }
     }
 
@@ -1423,7 +1416,7 @@ mod tests {
     fn test_async_task_result_shell() {
         let result = AsyncTaskResult::Process {
             stdout: "Hello World".to_string(),
-            stderr: "".to_string(),
+            stderr: String::new(),
             exit_code: 0,
         };
 
@@ -1495,7 +1488,7 @@ mod tests {
 
         let result = AsyncTaskResult::Process {
             stdout: "output".to_string(),
-            stderr: "".to_string(),
+            stderr: String::new(),
             exit_code: 0,
         };
 
@@ -1527,7 +1520,7 @@ mod tests {
 
         entry.set_result(AsyncTaskResult::Process {
             stdout: "Hello".to_string(),
-            stderr: "".to_string(),
+            stderr: String::new(),
             exit_code: 0,
         });
 
@@ -1631,7 +1624,7 @@ mod tests {
         let _queue_manager = executor.queue_manager();
 
         // Debug should work
-        let debug_str = format!("{:?}", executor);
+        let debug_str = format!("{executor:?}");
         assert!(debug_str.contains("UnifiedAsyncExecutor"));
     }
 
@@ -1640,7 +1633,7 @@ mod tests {
         let executor =
             UnifiedAsyncExecutor::new().with_default_delivery(DeliveryTarget::SessionAnnouncement);
 
-        let debug_str = format!("{:?}", executor);
+        let debug_str = format!("{executor:?}");
         assert!(debug_str.contains("SessionAnnouncement"));
     }
 
@@ -1767,7 +1760,7 @@ mod tests {
                 || async {
                     Ok(AsyncTaskResult::Process {
                         stdout: "hello".to_string(),
-                        stderr: "".to_string(),
+                        stderr: String::new(),
                         exit_code: 0,
                     })
                 },

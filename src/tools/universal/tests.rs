@@ -9,7 +9,7 @@ use tempfile::TempDir;
 
 /// Create a mock Python tool for testing
 async fn create_mock_python_tool(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-    let script_path = dir.join(format!("{}.py", name));
+    let script_path = dir.join(format!("{name}.py"));
 
     let script = r#"#!/usr/bin/env python3
 import sys

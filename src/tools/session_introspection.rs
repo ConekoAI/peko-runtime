@@ -363,7 +363,7 @@ impl Tool for SessionStatusTool {
     }
 }
 
-/// Session registry backed by the real SessionManager.
+/// Session registry backed by the real `SessionManager`.
 pub struct AgentSessionRegistry {
     session_manager: std::sync::Arc<tokio::sync::RwLock<crate::session::SessionManager>>,
     current_session_id: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,

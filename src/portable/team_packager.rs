@@ -89,7 +89,7 @@ impl TeamPackager {
             let agent_files = self
                 .export_agent_files(name, config, identity, &options)
                 .await
-                .with_context(|| format!("Failed to export agent: {}", name))?;
+                .with_context(|| format!("Failed to export agent: {name}"))?;
             agent_packages.push((name.clone(), config.clone(), identity.clone(), agent_files));
         }
 
@@ -153,7 +153,7 @@ impl TeamPackager {
         let (files, _manifest) = packager
             .collect_files(agent_opts)
             .await
-            .with_context(|| format!("Failed to collect files for agent: {}", name))?;
+            .with_context(|| format!("Failed to collect files for agent: {name}"))?;
 
         Ok(files)
     }
@@ -201,7 +201,7 @@ impl TeamPackager {
         // Add each agent as a subdirectory
         for (name, _config, _identity, files) in agent_packages {
             for (file_path, content) in files {
-                let tar_path = format!("agents/{}/{}", name, file_path);
+                let tar_path = format!("agents/{name}/{file_path}");
 
                 let mut header = tar::Header::new_gnu();
                 header.set_path(&tar_path)?;
@@ -210,7 +210,7 @@ impl TeamPackager {
                 header.set_cksum();
 
                 tar.append(&header, content.as_slice())
-                    .with_context(|| format!("Failed to add file: {}", tar_path))?;
+                    .with_context(|| format!("Failed to add file: {tar_path}"))?;
             }
         }
 

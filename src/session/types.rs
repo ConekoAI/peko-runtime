@@ -255,10 +255,10 @@ mod tests {
     #[test]
     fn test_peer_display() {
         let user = Peer::User("alice".to_string());
-        assert_eq!(format!("{}", user), "user:alice");
+        assert_eq!(format!("{user}"), "user:alice");
 
         let agent = Peer::Agent("helper".to_string());
-        assert_eq!(format!("{}", agent), "agent:helper");
+        assert_eq!(format!("{agent}"), "agent:helper");
     }
 
     #[test]

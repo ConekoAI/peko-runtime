@@ -22,7 +22,7 @@ pub struct SessionInfo {
     pub updated_at: u64,
     pub turn_count: u32,
     pub message_count: usize,
-    /// Current context window size (total_tokens from last assistant message)
+    /// Current context window size (`total_tokens` from last assistant message)
     pub context_window: usize,
     /// Cumulative input tokens across all assistant messages
     pub total_input_tokens: usize,
@@ -96,6 +96,7 @@ pub struct HistoryQuery {
 }
 
 impl HistoryQuery {
+    #[must_use] 
     pub fn default() -> Self {
         Self {
             include_tool_calls: true,
@@ -146,6 +147,7 @@ pub struct SessionService {
 
 impl SessionService {
     /// Create a new session service
+    #[must_use] 
     pub fn new(path_resolver: PathResolver) -> Self {
         Self { path_resolver }
     }
@@ -166,13 +168,13 @@ impl SessionService {
         let entries = controller
             .list_all_from_index()
             .await
-            .with_context(|| format!("Failed to list sessions for agent '{}'", agent_name))?;
+            .with_context(|| format!("Failed to list sessions for agent '{agent_name}'"))?;
 
         // Filter to only sessions for this agent and convert
         let sessions: Vec<SessionInfo> = entries
             .into_iter()
             .filter(|e| e.agent_name == agent_name)
-            .map(|e| e.into())
+            .map(std::convert::Into::into)
             .collect();
 
         debug!(
@@ -201,9 +203,9 @@ impl SessionService {
         let entry = controller
             .get_entry_from_index(session_id)
             .await
-            .with_context(|| format!("Failed to get session '{}'", session_id))?;
+            .with_context(|| format!("Failed to get session '{session_id}'"))?;
 
-        Ok(entry.map(|e| e.into()))
+        Ok(entry.map(std::convert::Into::into))
     }
 
     /// Get session history
@@ -219,14 +221,14 @@ impl SessionService {
 
         // Verify session exists
         if !storage.session_exists(session_id).await {
-            anyhow::bail!("Session '{}' not found", session_id);
+            anyhow::bail!("Session '{session_id}' not found");
         }
 
         // Load events
         let events = storage
             .load_events(session_id)
             .await
-            .with_context(|| format!("Failed to load events for session '{}'", session_id))?;
+            .with_context(|| format!("Failed to load events for session '{session_id}'"))?;
 
         // Convert and filter
         let mut history_events: Vec<HistoryEvent> = events
@@ -283,9 +285,7 @@ impl SessionService {
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "Parent session '{}' not found for agent '{}'",
-                    parent_session_id,
-                    agent_name
+                    "Parent session '{parent_session_id}' not found for agent '{agent_name}'"
                 )
             })?;
 
@@ -323,9 +323,7 @@ impl SessionService {
         // Check if session exists
         if !storage.session_exists(session_id).await {
             anyhow::bail!(
-                "Session '{}' not found for agent '{}'",
-                session_id,
-                agent_name
+                "Session '{session_id}' not found for agent '{agent_name}'"
             );
         }
 
@@ -333,7 +331,7 @@ impl SessionService {
         storage
             .delete_session(session_id)
             .await
-            .with_context(|| format!("Failed to delete session '{}'", session_id))?;
+            .with_context(|| format!("Failed to delete session '{session_id}'"))?;
 
         // CRITICAL: Remove from index so it doesn't appear in listings
         let mut controller = MetadataController::new(&sessions_dir);
@@ -425,16 +423,15 @@ impl SessionService {
         Ok(sessions_dir)
     }
 
-    /// Convert SessionEvent to HistoryEvent
+    /// Convert `SessionEvent` to `HistoryEvent`
     fn convert_event(&self, event: &SessionEvent, query: &HistoryQuery) -> Option<HistoryEvent> {
         let event_type = event.event_type();
 
         // Filter based on query params
-        if !query.include_tool_calls {
-            if event_type == "tool.call" || event_type == "tool.result" {
+        if !query.include_tool_calls
+            && (event_type == "tool.call" || event_type == "tool.result") {
                 return None;
             }
-        }
 
         if !query.include_thinking && event_type == "thinking" {
             return None;

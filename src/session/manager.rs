@@ -36,8 +36,8 @@
 //!
 //! # Single Point of Truth
 //!
-//! The SessionManager is the SOLE authority for session lifecycle operations.
-//! The MetadataController is the SOLE authority for session metadata.
+//! The `SessionManager` is the SOLE authority for session lifecycle operations.
+//! The `MetadataController` is the SOLE authority for session metadata.
 //! All session listings are verified for consistency.
 
 use super::context::SessionContext;
@@ -199,7 +199,7 @@ impl HybridSession {
 /// Opaque handle to a managed session
 ///
 /// External code uses this handle to interact with sessions.
-/// All metadata operations go through a shared MetadataController to ensure
+/// All metadata operations go through a shared `MetadataController` to ensure
 /// consistency and avoid circular references.
 #[derive(Debug, Clone)]
 pub struct SessionHandle {
@@ -207,7 +207,7 @@ pub struct SessionHandle {
     base: Arc<RwLock<UnifiedSession>>,
     overlay: Option<OverlayRef>,
     /// Shared metadata controller for metadata operations
-    /// This avoids the circular reference from holding SessionManager
+    /// This avoids the circular reference from holding `SessionManager`
     metadata: Arc<RwLock<MetadataController>>,
 }
 
@@ -246,7 +246,7 @@ impl SessionHandle {
 
     /// Add a user message to the session
     ///
-    /// Note: Metadata updates are handled by MetadataController at turn boundary
+    /// Note: Metadata updates are handled by `MetadataController` at turn boundary
     pub async fn add_user(&self, content: impl Into<String>) -> Result<()> {
         let mut base = self.base.write().await;
         base.add_user(content).await
@@ -254,7 +254,7 @@ impl SessionHandle {
 
     /// Add an assistant message to the session
     ///
-    /// Note: Metadata updates are handled by MetadataController at turn boundary
+    /// Note: Metadata updates are handled by `MetadataController` at turn boundary
     pub async fn add_assistant(
         &self,
         content: impl Into<String>,
@@ -299,7 +299,7 @@ impl SessionHandle {
 
     /// Record token usage (via shared controller)
     ///
-    /// `context_window` is the total_tokens from the current assistant message.
+    /// `context_window` is the `total_tokens` from the current assistant message.
     /// `input` and `output` are the incremental tokens for this turn.
     pub async fn record_usage(
         &self,
@@ -347,6 +347,7 @@ pub struct SessionCreateOptions {
 }
 
 impl SessionCreateOptions {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -409,8 +410,8 @@ pub struct ResolvedSession {
 ///
 /// # Single Point of Truth
 ///
-/// The SessionManager is the SOLE authority for session LIFECYCLE operations.
-/// The MetadataController is the SOLE authority for session metadata.
+/// The `SessionManager` is the SOLE authority for session LIFECYCLE operations.
+/// The `MetadataController` is the SOLE authority for session metadata.
 /// All session resolution goes through this manager.
 #[derive(Debug)]
 pub struct SessionManager {
@@ -421,7 +422,7 @@ pub struct SessionManager {
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
     spawn_overlays: HashMap<String, Arc<RwLock<SpawnOverlay>>>,
     /// Metadata controller (single point of truth for metadata)
-    /// Wrapped in Arc<RwLock<>> for sharing with SessionHandles
+    /// Wrapped in Arc<`RwLock`<>> for sharing with `SessionHandles`
     metadata_controller: Arc<RwLock<MetadataController>>,
     /// Session index for peer routing
     index: Option<SessionIndex>,
@@ -456,9 +457,9 @@ impl SessionManager {
         }
     }
 
-    /// Initialize with session index for an agent using PathResolver
+    /// Initialize with session index for an agent using `PathResolver`
     ///
-    /// This is the PREFERRED way to initialize SessionManager as it ensures
+    /// This is the PREFERRED way to initialize `SessionManager` as it ensures
     /// consistent path resolution across all components.
     pub async fn with_path_resolver(
         mut self,
@@ -482,9 +483,9 @@ impl SessionManager {
         Ok(self)
     }
 
-    /// Create a SessionManager for CLI operations (offline)
+    /// Create a `SessionManager` for CLI operations (offline)
     ///
-    /// This is the PRIMARY factory method for creating a SessionManager.
+    /// This is the PRIMARY factory method for creating a `SessionManager`.
     /// It ensures proper team-aware path resolution and consistent behavior.
     ///
     /// # Arguments
@@ -502,6 +503,7 @@ impl SessionManager {
     ///     "alice"
     /// );
     /// ```
+    #[must_use] 
     pub fn for_cli(
         path_resolver: PathResolver,
         agent_name: &str,
@@ -553,6 +555,7 @@ impl SessionManager {
     }
 
     /// Get the path resolver if available
+    #[must_use] 
     pub fn path_resolver(&self) -> Option<&PathResolver> {
         self.path_resolver.as_ref()
     }
@@ -576,9 +579,9 @@ impl SessionManager {
     /// Resolve a session for an agent - SINGLE POINT OF TRUTH
     ///
     /// This method centralizes all session resolution logic:
-    /// - Auto-resumes active session when no session_id provided
+    /// - Auto-resumes active session when no `session_id` provided
     /// - Creates new session when explicitly requested or no active session exists
-    /// - Resumes specific session when session_id is provided
+    /// - Resumes specific session when `session_id` is provided
     ///
     /// # Arguments
     /// * `agent_name` - Name of the agent
@@ -756,7 +759,7 @@ impl SessionManager {
         let handle = self
             .open_session(session_id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Session '{}' not found", session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Session '{session_id}' not found"))?;
 
         // Get the base session from the handle
         let base = handle.base().clone();
@@ -821,7 +824,7 @@ impl SessionManager {
 
         // 2. Create metadata
         let mut metadata =
-            SessionMetadata::new(&session_id, agent, format!("{}.jsonl", session_id));
+            SessionMetadata::new(&session_id, agent, format!("{session_id}.jsonl"));
         if let Some(parent_id) = options.parent_session_id {
             metadata.parent_session_id = Some(parent_id);
         }
@@ -842,7 +845,7 @@ impl SessionManager {
             let entry = SessionEntry::with_peer(
                 session_id.clone(),
                 agent.to_string(),
-                format!("{}.jsonl", session_id),
+                format!("{session_id}.jsonl"),
                 peer.peer_type(),
                 peer.id(),
             );
@@ -956,7 +959,7 @@ impl SessionManager {
 
         match controller.get_metadata(session_id, false).await? {
             Some(m) => Ok(m),
-            None => Err(anyhow::anyhow!("Session {} not found", session_id)),
+            None => Err(anyhow::anyhow!("Session {session_id} not found")),
         }
     }
 
@@ -1054,7 +1057,7 @@ impl SessionManager {
             .await
             .get_metadata_fast(parent_session_id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Parent session '{}' not found", parent_session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("Parent session '{parent_session_id}' not found"))?;
 
         // Generate new session ID
         let new_session_id = uuid::Uuid::new_v4().to_string();
@@ -1067,13 +1070,13 @@ impl SessionManager {
 
         // Create metadata for new session
         let mut new_metadata =
-            SessionMetadata::new(&new_session_id, &agent, format!("{}.jsonl", new_session_id));
+            SessionMetadata::new(&new_session_id, &agent, format!("{new_session_id}.jsonl"));
         new_metadata.parent_session_id = Some(parent_session_id.to_string());
         new_metadata.title = label.or_else(|| {
             parent_metadata
                 .title
                 .as_ref()
-                .map(|t| format!("Branch: {}", t))
+                .map(|t| format!("Branch: {t}"))
         });
         new_metadata.trigger = "branch".to_string();
         new_metadata.message_count = parent_metadata.message_count;
@@ -1119,7 +1122,7 @@ impl SessionManager {
 
     /// List all sessions for a peer (legacy)
     ///
-    /// NOTE: This returns SessionEntry for backward compatibility.
+    /// NOTE: This returns `SessionEntry` for backward compatibility.
     /// Consider using `list_sessions()` for new code.
     pub async fn list_sessions_for_peer(&mut self, peer: &Peer) -> Result<Vec<SessionEntry>> {
         let agent = self
@@ -1191,7 +1194,7 @@ impl SessionManager {
                 } else {
                     // Create new session through metadata controller
                     let new_id = uuid::Uuid::new_v4().to_string();
-                    let transcript_file = format!("{}.jsonl", new_id);
+                    let transcript_file = format!("{new_id}.jsonl");
                     let entry = SessionEntry::with_peer(
                         new_id.clone(),
                         agent.to_string(),
@@ -1645,7 +1648,7 @@ impl SessionManager {
 
     /// Ensure a session exists for A2A messaging
     ///
-    /// Similar to resolve_agent_session but guarantees the session is created
+    /// Similar to `resolve_agent_session` but guarantees the session is created
     /// and initialized in the session manager.
     pub async fn ensure_agent_session(
         &mut self,
@@ -1671,6 +1674,7 @@ impl SessionManager {
     }
 
     /// List all active sessions for an agent
+    #[must_use] 
     pub fn list_agent_sessions(&self, agent_id: &str) -> Vec<String> {
         let mut sessions = Vec::new();
 
@@ -1678,7 +1682,7 @@ impl SessionManager {
             if session_agent == agent_id {
                 // This is blocking, but we're just reading the key
                 // In production, might want to make this async
-                sessions.push(format!("agent:{}:base:{:?}", agent_id, session));
+                sessions.push(format!("agent:{agent_id}:base:{session:?}"));
             }
         }
 
@@ -1737,6 +1741,7 @@ impl SessionManager {
     }
 
     /// Check if an agent has any active sessions
+    #[must_use] 
     pub fn agent_has_sessions(&self, agent_id: &str) -> bool {
         self.base_sessions
             .keys()
@@ -1744,6 +1749,7 @@ impl SessionManager {
     }
 
     /// Get the number of active sessions for an agent
+    #[must_use] 
     pub fn agent_session_count(&self, agent_id: &str) -> usize {
         self.base_sessions
             .keys()
@@ -1759,7 +1765,7 @@ impl SessionManager {
         let _sessions_dir = self
             .sessions_dir
             .clone()
-            .unwrap_or_else(|| std::env::temp_dir());
+            .unwrap_or_else(std::env::temp_dir);
         Self {
             base_sessions: self.base_sessions.clone(),
             channel_overlays: self.channel_overlays.clone(),
@@ -1978,7 +1984,7 @@ mod tests {
             let base = discord.base.read().await;
             base.load_history().await.unwrap()
         };
-        assert!(history.len() >= 1); // At least the message we added
+        assert!(!history.is_empty()); // At least the message we added
     }
 
     #[tokio::test]
@@ -2309,7 +2315,7 @@ mod tests {
         let session_id = handle.session_id();
 
         // Verify JSONL file exists
-        let jsonl_path = temp.path().join(format!("{}.jsonl", session_id));
+        let jsonl_path = temp.path().join(format!("{session_id}.jsonl"));
         assert!(jsonl_path.exists(), "JSONL file should exist");
 
         // Verify metadata exists in index
@@ -2358,7 +2364,7 @@ mod tests {
         );
 
         // Verify JSONL is also deleted
-        let jsonl_path = temp.path().join(format!("{}.jsonl", session_id));
+        let jsonl_path = temp.path().join(format!("{session_id}.jsonl"));
         assert!(!jsonl_path.exists(), "JSONL file should be deleted");
     }
 
