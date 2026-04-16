@@ -13,12 +13,120 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 
 /// Unique identifier for an async task
 pub type AsyncTaskId = String;
+
+/// On-disk record for polling async task status (Option 3: minimal file-based polling)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskFileRecord {
+    pub task_id: AsyncTaskId,
+    pub tool_name: String,
+    pub status: String,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub exit_code: Option<i32>,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+}
+
+impl TaskFileRecord {
+    pub fn new(task_id: AsyncTaskId, tool_name: String) -> Self {
+        Self {
+            task_id,
+            tool_name,
+            status: "pending".to_string(),
+            stdout: None,
+            stderr: None,
+            exit_code: None,
+            result: None,
+            error: None,
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    pub fn set_running(&mut self) {
+        self.status = "running".to_string();
+        self.started_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+
+    pub fn set_completed(&mut self, result: serde_json::Value) {
+        self.status = "completed".to_string();
+        self.result = Some(result);
+        self.completed_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+
+    pub fn set_failed(&mut self, error: String) {
+        self.status = "failed".to_string();
+        self.error = Some(error);
+        self.completed_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+
+    pub fn set_process_output(&mut self, stdout: String, stderr: String, exit_code: i32) {
+        self.stdout = Some(stdout);
+        self.stderr = Some(stderr);
+        self.exit_code = Some(exit_code);
+    }
+}
+
+/// Writes task file records to disk for agent polling
+#[derive(Debug, Clone)]
+pub struct TaskFileWriter {
+    base_dir: PathBuf,
+}
+
+impl TaskFileWriter {
+    pub fn new(base_dir: PathBuf) -> Self {
+        Self { base_dir }
+    }
+
+    pub fn task_file_path(&self, task_id: &str) -> PathBuf {
+        let safe_id = task_id.replace(':', "_").replace('/', "_");
+        self.base_dir.join(format!("{safe_id}.json"))
+    }
+
+    pub async fn write(&self, record: &TaskFileRecord) -> Result<()> {
+        let path = self.task_file_path(&record.task_id);
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let json = serde_json::to_string_pretty(record)?;
+        tokio::fs::write(&path, json).await?;
+        Ok(())
+    }
+
+    pub async fn read(&self, task_id: &str) -> Result<TaskFileRecord> {
+        let path = self.task_file_path(task_id);
+        let content = tokio::fs::read_to_string(&path).await?;
+        let record = serde_json::from_str(&content)?;
+        Ok(record)
+    }
+
+    pub async fn cleanup_old(&self, max_age: Duration) -> Result<usize> {
+        let mut count = 0;
+        let mut entries = tokio::fs::read_dir(&self.base_dir).await?;
+        let cutoff = std::time::SystemTime::now() - max_age;
+        while let Some(entry) = entries.next_entry().await? {
+            let metadata = entry.metadata().await?;
+            if let Ok(modified) = metadata.modified() {
+                if modified < cutoff {
+                    tokio::fs::remove_file(entry.path()).await.ok();
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
+}
 
 /// Status of an async task
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,7 +156,8 @@ pub struct AsyncTaskReceipt {
     pub task_id: AsyncTaskId,
     pub status: AsyncTaskStatus,
     pub estimated_duration_secs: Option<u64>,
-    pub check_status_tool: String, // Tool name to check status
+    /// Path to the task file on disk for polling (Option 3: minimal file-based polling)
+    pub task_file: Option<std::path::PathBuf>,
 }
 
 /// Unified result type for all async operations
@@ -818,30 +927,36 @@ pub trait AsyncTool: Send + Sync {
 ///
 /// This provides a single entry point for executing async tasks with:
 /// - Task registration and tracking
-/// - Pluggable delivery mechanisms
+/// - Task file writing for agent polling (Option 3)
 /// - Automatic status updates
 /// - Result formatting and caching
 #[derive(Clone)]
 pub struct UnifiedAsyncExecutor {
     /// Task registry for tracking all async operations
     registry: SharedAsyncTaskRegistry,
-    /// Queue manager for queue-based delivery
+    /// Queue manager for queue-based delivery (deprecated, kept for compatibility)
     queue_manager: SharedAsyncResultQueueManager,
     /// Registered delivery mechanisms by target type
     deliveries: Arc<RwLock<HashMap<DeliveryTarget, Box<dyn ResultDelivery>>>>,
     /// Default delivery target
     default_delivery: DeliveryTarget,
+    /// Task file writer for disk-based polling
+    task_file_writer: Option<TaskFileWriter>,
 }
 
 impl UnifiedAsyncExecutor {
     /// Create a new unified async executor
     #[must_use]
     pub fn new() -> Self {
+        let task_file_writer = crate::common::paths::default_data_dir()
+            .join("async_tasks")
+            .into();
         Self {
             registry: Arc::new(RwLock::new(AsyncTaskRegistry::new())),
             queue_manager: Arc::new(RwLock::new(AsyncResultQueueManager::new())),
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
+            task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
         }
     }
 
@@ -851,11 +966,15 @@ impl UnifiedAsyncExecutor {
         registry: SharedAsyncTaskRegistry,
         queue_manager: SharedAsyncResultQueueManager,
     ) -> Self {
+        let task_file_writer = crate::common::paths::default_data_dir()
+            .join("async_tasks")
+            .into();
         Self {
             registry,
             queue_manager,
             deliveries: Arc::new(RwLock::new(HashMap::new())),
             default_delivery: DeliveryTarget::AsyncQueue,
+            task_file_writer: Some(TaskFileWriter::new(task_file_writer)),
         }
     }
 
@@ -874,6 +993,18 @@ impl UnifiedAsyncExecutor {
     pub fn with_default_delivery(mut self, target: DeliveryTarget) -> Self {
         self.default_delivery = target;
         self
+    }
+
+    /// Set a custom task file writer
+    pub fn with_task_file_writer(mut self, writer: TaskFileWriter) -> Self {
+        self.task_file_writer = Some(writer);
+        self
+    }
+
+    /// Get the task file writer
+    #[must_use]
+    pub fn task_file_writer(&self) -> Option<&TaskFileWriter> {
+        self.task_file_writer.as_ref()
     }
 
     /// Get a reference to the task registry
@@ -916,6 +1047,17 @@ impl UnifiedAsyncExecutor {
         let tool_name = tool_name.into();
         let parent_session_key = parent_session_key.into();
 
+        // Determine task file path
+        let task_file = self.task_file_writer.as_ref().map(|w| w.task_file_path(&task_id));
+
+        // Create initial task file record
+        if let Some(ref writer) = self.task_file_writer {
+            let record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
+            if let Err(e) = writer.write(&record).await {
+                tracing::warn!("Failed to write initial task file for {}: {}", task_id, e);
+            }
+        }
+
         // Create task entry
         let entry = AsyncTaskEntry::new(
             task_id.clone(),
@@ -947,6 +1089,7 @@ impl UnifiedAsyncExecutor {
         // Clone what we need for the spawned task
         let registry_clone = self.registry.clone();
         let task_id_clone = task_id.clone();
+        let task_file_writer_clone = self.task_file_writer.clone();
 
         // Spawn the background execution
         tokio::spawn(async move {
@@ -954,6 +1097,13 @@ impl UnifiedAsyncExecutor {
             {
                 let mut registry = registry_clone.write().await;
                 registry.update_status(&task_id_clone, AsyncTaskStatus::Running);
+            }
+            if let Some(ref writer) = task_file_writer_clone {
+                let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.set_running();
+                if let Err(e) = writer.write(&record).await {
+                    tracing::warn!("Failed to write running task file for {}: {}", task_id_clone, e);
+                }
             }
 
             // Execute the work
@@ -974,17 +1124,39 @@ impl UnifiedAsyncExecutor {
                 registry.update_status(&task_id_clone, status);
 
                 // Store the unified result
-                if let Ok(async_result) = result {
+                if let Ok(ref async_result) = result {
                     if let Some(entry) = registry.get_mut(&task_id_clone) {
-                        entry.set_result(async_result);
+                        entry.set_result(async_result.clone());
                     }
                 }
             }
 
-            // Deliver the result
+            // Write final task file record
+            if let Some(ref writer) = task_file_writer_clone {
+                let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                match result {
+                    Ok(async_result) => {
+                        match &async_result {
+                            AsyncTaskResult::Process { stdout, stderr, exit_code } => {
+                                record.set_process_output(stdout.clone(), stderr.clone(), *exit_code);
+                            }
+                            _ => {}
+                        }
+                        record.set_completed(serde_json::to_value(&async_result).unwrap_or_default());
+                    }
+                    Err(e) => {
+                        record.set_failed(e.to_string());
+                    }
+                }
+                if let Err(e) = writer.write(&record).await {
+                    tracing::warn!("Failed to write final task file for {}: {}", task_id_clone, e);
+                }
+            }
+
+            // Deliver the result (legacy queue path, may be no-op in Option 3)
             if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
                 if let Err(e) = delivery.deliver(entry).await {
-                    tracing::error!("Failed to deliver result for task {}: {}", task_id_clone, e);
+                    tracing::debug!("Delivery result for task {}: {}", task_id_clone, e);
                 }
             }
         });
@@ -994,7 +1166,7 @@ impl UnifiedAsyncExecutor {
             task_id: task_id.clone(),
             status: AsyncTaskStatus::Pending,
             estimated_duration_secs: None,
-            check_status_tool: "async_task_status".to_string(),
+            task_file,
         })
     }
 
@@ -1043,6 +1215,7 @@ impl std::fmt::Debug for UnifiedAsyncExecutor {
                 &"<HashMap<DeliveryTarget, Box<dyn ResultDelivery>>>",
             )
             .field("default_delivery", &self.default_delivery)
+            .field("task_file_writer", &self.task_file_writer)
             .finish()
     }
 }

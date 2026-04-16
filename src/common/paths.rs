@@ -286,6 +286,14 @@ impl PathResolver {
         self.data_dir.join("tools")
     }
 
+    /// Get the async tasks directory
+    ///
+    /// Path: `{data_dir}/async_tasks`
+    #[must_use]
+    pub fn async_tasks_dir(&self) -> PathBuf {
+        self.data_dir.join("async_tasks")
+    }
+
     // ====================================================================================
     // Utility Methods
     // ====================================================================================

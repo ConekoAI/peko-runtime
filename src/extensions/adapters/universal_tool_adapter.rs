@@ -700,7 +700,7 @@ impl HookHandler for UniversalToolExecuteAsyncHandler {
         let receipt = AsyncReceipt {
             task_id: task_id.clone(),
             estimated_duration_secs: None,
-            check_status_tool: self.tool_name.clone(),
+            task_file: None,
             metadata: Some(serde_json::json!({
                 "tool_name": self.tool_name,
                 "executable": self.executable.to_string_lossy(),

@@ -506,7 +506,7 @@ mod tests {
                 task_id: "test_task".to_string(),
                 status: AsyncTaskStatus::Running,
                 estimated_duration_secs: Some(10),
-                check_status_tool: "test_status".to_string(),
+                task_file: None,
             })
         }
 

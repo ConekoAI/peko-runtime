@@ -1097,7 +1097,7 @@ impl HookHandler for McpToolExecuteAsyncHandler {
         let receipt = AsyncReceipt {
             task_id: task_id.clone(),
             estimated_duration_secs: None,
-            check_status_tool: format!("{MCP_TOOL_PREFIX}:{server_name}"),
+            task_file: None,
             metadata: Some(serde_json::json!({
                 "server": server_name,
                 "tool": actual_tool,

@@ -179,7 +179,7 @@ impl ExtensionAsyncAdapter {
                     task_id: receipt.task_id,
                     status: AsyncTaskStatus::Pending,
                     estimated_duration_secs: receipt.estimated_duration_secs,
-                    check_status_tool: receipt.check_status_tool,
+                    task_file: receipt.task_file,
                 })
             }
             HookResult::PassThrough => Err(anyhow!(
@@ -365,7 +365,7 @@ impl ExtensionAsyncAdapter {
                 supports_native_async: true,
                 supports_status_check: true,
                 supports_cancel: true,
-                status_tool_name: Some(receipt.check_status_tool.clone()),
+                status_tool_name: None,
             },
         );
 
@@ -428,7 +428,6 @@ mod tests {
                 if tool_name == self.tool_name.as_str() {
                     let receipt = AsyncReceipt::new(
                         format!("task_{}", Uuid::new_v4().simple()),
-                        format!("{tool_name}_status"),
                     )
                     .with_duration(60);
 
@@ -476,7 +475,7 @@ mod tests {
             .unwrap();
 
         assert!(receipt.task_id.starts_with("task_"));
-        assert_eq!(receipt.check_status_tool, "test_tool_status");
+        assert!(receipt.task_file.is_none());
         assert_eq!(receipt.estimated_duration_secs, Some(60));
         assert!(matches!(receipt.status, AsyncTaskStatus::Pending));
     }

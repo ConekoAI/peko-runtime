@@ -123,8 +123,8 @@ pub struct AsyncReceipt {
     /// Estimated duration in seconds (for progress estimation)
     pub estimated_duration_secs: Option<u64>,
 
-    /// Name of tool to call for status checks
-    pub check_status_tool: String,
+    /// Path to the task file on disk for polling (Option 3: minimal file-based polling)
+    pub task_file: Option<std::path::PathBuf>,
 
     /// Optional metadata
     pub metadata: Option<serde_json::Value>,
@@ -132,11 +132,11 @@ pub struct AsyncReceipt {
 
 impl AsyncReceipt {
     /// Create a new async receipt
-    pub fn new(task_id: impl Into<String>, check_status_tool: impl Into<String>) -> Self {
+    pub fn new(task_id: impl Into<String>) -> Self {
         Self {
             task_id: task_id.into(),
             estimated_duration_secs: None,
-            check_status_tool: check_status_tool.into(),
+            task_file: None,
             metadata: None,
         }
     }
