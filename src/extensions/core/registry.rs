@@ -162,9 +162,9 @@ impl ExtensionCore {
         config.is_tool_enabled(tool_name)
     }
 
-    /// Get a reference to the extension services
-    pub fn services(&self) -> &Arc<ExtensionServices> {
-        &self.services
+    /// Wait for background async tasks to complete
+    pub async fn wait_for_async_tasks(&self, timeout: std::time::Duration) {
+        self.services.wait_for_async_tasks(timeout).await;
     }
 
     /// Register a hook handler

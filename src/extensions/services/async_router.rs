@@ -91,9 +91,7 @@ impl AsyncReservedParams {
         if let Some(obj) = params.as_object_mut() {
             // Extract _async (accept boolean or string)
             if let Some(v) = obj.remove("_async") {
-                reserved.async_mode = v.as_bool()
-                    .or_else(|| v.as_str().map(|s| s.eq_ignore_ascii_case("true")))
-                    .unwrap_or(false);
+                reserved.async_mode = Self::parse_bool(&v).unwrap_or(false);
             }
 
             // Extract _timeout (accept integer, float, or string)
@@ -113,9 +111,7 @@ impl AsyncReservedParams {
 
             // Extract _progress (accept boolean or string)
             if let Some(v) = obj.remove("_progress") {
-                reserved.progress = v.as_bool()
-                    .or_else(|| v.as_str().map(|s| s.eq_ignore_ascii_case("true")))
-                    .unwrap_or(true);
+                reserved.progress = Self::parse_bool(&v).unwrap_or(true);
             }
 
             // Extract _priority
@@ -134,6 +130,18 @@ impl AsyncReservedParams {
         }
 
         reserved
+    }
+
+    /// Parse a JSON value as a boolean, accepting both native booleans
+    /// and common string representations.
+    fn parse_bool(v: &Value) -> Option<bool> {
+        v.as_bool().or_else(|| {
+            v.as_str().and_then(|s| match s.to_lowercase().as_str() {
+                "true" | "yes" | "1" => Some(true),
+                "false" | "no" | "0" => Some(false),
+                _ => None,
+            })
+        })
     }
 
     /// Get effective timeout (use reserved or default)
