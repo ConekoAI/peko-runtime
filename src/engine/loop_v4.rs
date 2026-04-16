@@ -1190,7 +1190,7 @@ impl AgenticLoopV4 {
             {
                 Ok(stream) => stream,
                 Err(e) => {
-                    warn!("Failed to start stream: {}", e);
+                    debug!("Failed to start stream: {}", e);
                     on_event(AgenticEvent::Lifecycle {
                         run_id: run_id.clone(),
                         phase: LifecyclePhase::Error,

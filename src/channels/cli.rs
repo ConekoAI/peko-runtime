@@ -119,6 +119,13 @@ impl CliChannel {
         // Get the base output from the shared default implementation
         let mut output = crate::channels::default_process_stream(event_stream).await?;
 
+        // Print error if the stream failed (blocking mode doesn't print inline)
+        if !output.success {
+            if let Some(ref err) = output.error {
+                eprintln!("\n❌ Error: {err}");
+            }
+        }
+
         // Add CLI-specific formatting: agent name prefix
         if !output.final_text.is_empty() {
             output.final_text = format!("{}: {}", self.name, output.final_text);
@@ -225,7 +232,11 @@ impl CliChannel {
                     // Session persistence complete
                 }
                 Ok(Ok(Err(e))) => {
-                    warn!("Session persistence failed: {}", e);
+                    // Only log if the stream itself didn't already report an error.
+                    // Stream errors are communicated via LifecyclePhase::Error events.
+                    if output.success {
+                        warn!("Session persistence failed: {}", e);
+                    }
                 }
                 Ok(Err(_)) => {
                     warn!("Completion sender dropped without signal");

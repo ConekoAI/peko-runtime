@@ -262,8 +262,11 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
                 // Session persistence complete
             }
             Ok(Ok(Err(e))) => {
-                // Log the error but don't fail - the execution itself succeeded
-                tracing::warn!("Session persistence failed: {}", e);
+                // Only log if the stream itself didn't already report an error.
+                // Stream errors are communicated via LifecyclePhase::Error events.
+                if output.success {
+                    tracing::warn!("Session persistence failed: {}", e);
+                }
             }
             Ok(Err(_recv_error)) => {
                 // Sender dropped without sending - this is ok if execution completed

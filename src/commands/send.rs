@@ -129,9 +129,6 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         }
         // In streaming mode (default), the channel already printed tokens as they arrived
     } else {
-        if let Some(ref error) = output.error {
-            eprintln!("\n❌ Error: {error}");
-        }
         anyhow::bail!(
             "Agent execution failed{}",
             output

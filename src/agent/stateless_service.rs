@@ -704,29 +704,16 @@ impl StatelessAgentService {
             };
 
             // Execute and collect result
-            let result = agent
+            let _result = agent
                 .execute_streaming_with_session(&prompt, session, Some(history.clone()), on_event)
                 .await;
 
             // At this point, all session writes have completed because
             // add_assistant/add_tool_result are synchronous
 
-            // Signal completion
-            let completion_result = match result {
-                Ok(exec_result) => {
-                    if exec_result.success {
-                        Ok(())
-                    } else {
-                        Err(anyhow::anyhow!(
-                            "Execution failed: {:?}",
-                            exec_result.final_answer
-                        ))
-                    }
-                }
-                Err(e) => Err(e),
-            };
-
-            let _ = completion_tx.send(completion_result);
+            // Signal completion: background work is done and session is in a consistent state.
+            // Stream execution status is already communicated via events.
+            let _ = completion_tx.send(Ok(()));
             // event_tx is dropped here, signaling end of stream
         });
 

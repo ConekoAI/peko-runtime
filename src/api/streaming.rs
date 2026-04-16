@@ -193,6 +193,7 @@ pub fn event_stream_to_sse(
         let turn_count = 0u32;
         let mut usage = TokenUsage::default();
         let mut end_received = false;
+        let mut stream_errored = false;
 
         while let Some(event) = event_rx.recv().await {
             // Convert and send SSE events
@@ -233,6 +234,7 @@ pub fn event_stream_to_sse(
                         })
                         .await;
                     end_received = true;
+                    stream_errored = true;
                 }
                 crate::engine::AgenticEvent::Usage {
                     prompt_tokens,
@@ -253,7 +255,14 @@ pub fn event_stream_to_sse(
         if end_received {
             match tokio::time::timeout(std::time::Duration::from_secs(30), completion).await {
                 Ok(Ok(Ok(()))) => Ok(()),
-                Ok(Ok(Err(e))) => Err(e),
+                Ok(Ok(Err(e))) => {
+                    // Only propagate completion errors if the stream itself didn't already error.
+                    if stream_errored {
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                }
                 Ok(Err(_recv_error)) => {
                     tracing::warn!("Completion sender dropped without signal");
                     Ok(())
