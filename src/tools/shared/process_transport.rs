@@ -18,7 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, trace, warn};
 
 /// Default timeout for graceful process shutdown
 const DEFAULT_KILL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -102,7 +102,10 @@ pub fn resolve_command(executable: &Path, auto_interpreter: bool) -> ResolvedCom
         };
     }
 
-    let extension = executable.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let extension = executable
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
 
     match extension {
         "py" => {
@@ -173,19 +176,11 @@ impl ProcessTransport {
             .spawn()
             .with_context(|| format!("Failed to spawn: {:?}", cmd_info.original))?;
 
-        let pid = child
-            .id()
-            .context("Failed to get process ID")?;
+        let pid = child.id().context("Failed to get process ID")?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .context("Failed to open stdin")?;
+        let stdin = child.stdin.take().context("Failed to open stdin")?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .context("Failed to open stdout")?;
+        let stdout = child.stdout.take().context("Failed to open stdout")?;
 
         // Spawn stderr logging task if enabled
         if config.log_stderr {

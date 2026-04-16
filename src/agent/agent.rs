@@ -2,9 +2,9 @@
 
 use crate::agent::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
-use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
-use crate::extensions::core::{ExtensionCore, global_core, init_global_core};
 use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
+use crate::extensions::core::{global_core, init_global_core, ExtensionCore};
+use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::context::{SessionContext, SessionRouter};
 use crate::session::manager::SessionManager;
 use crate::session::types::{ChannelType, Peer};
@@ -46,16 +46,21 @@ impl Agent {
     /// and registers only built-in tools with ExtensionCore. Extension tools
     /// (Universal and MCP) are already registered via ExtensionManager hooks.
     async fn init_builtins_async(&self) -> anyhow::Result<()> {
+        use crate::tools::session_introspection::AgentSessionRegistry;
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, GlobTool, GrepTool,
-            ReadFileTool, SessionStatusTool, ShellTool, SessionsSendTool,
-            StrReplaceFileTool, Tool, WriteFileTool,
+            ReadFileTool, SessionStatusTool, SessionsSendTool, ShellTool, StrReplaceFileTool, Tool,
+            WriteFileTool,
         };
-        use crate::tools::session_introspection::AgentSessionRegistry;
 
         // Create core tools (granular filesystem tools are now preferred over FileSystemTool)
         // Initialize granular tools with workspace if configured
-        let workspace = self.config.workspace.as_ref().unwrap_or(&std::path::PathBuf::from(".")).clone();
+        let workspace = self
+            .config
+            .workspace
+            .as_ref()
+            .unwrap_or(&std::path::PathBuf::from("."))
+            .clone();
         let mut tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(ShellTool::new().with_workspace(workspace.clone())),
             // Granular filesystem tools - initialized with workspace if available
@@ -88,10 +93,10 @@ impl Agent {
         )));
 
         // Add sessions_send tool for A2A messaging
-        tools.push(Arc::new(
-            SessionsSendTool::new()
-                .with_session_context(format!("agent:{}", self.config.name), &self.config.name)
-        ));
+        tools.push(Arc::new(SessionsSendTool::new().with_session_context(
+            format!("agent:{}", self.config.name),
+            &self.config.name,
+        )));
 
         // Filter based on agent config whitelist
         if let Some(ref tool_config) = self.config.tools {
@@ -127,7 +132,10 @@ impl Agent {
                         tracing::info!(
                             "✅ Loaded {} extensions: {:?}",
                             loaded_ids.len(),
-                            loaded_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>()
+                            loaded_ids
+                                .iter()
+                                .map(|id| id.to_string())
+                                .collect::<Vec<_>>()
                         );
                     }
                 }
@@ -147,14 +155,26 @@ impl Agent {
         // Extension tools (Universal and MCP) are already registered via ExtensionManager hooks
         // This prevents double registration (DRY violation fix)
         for tool in &tools {
-            if let Err(e) = BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await {
-                tracing::warn!("Failed to register built-in tool '{}' with ExtensionCore: {}", tool.name(), e);
+            if let Err(e) =
+                BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await
+            {
+                tracing::warn!(
+                    "Failed to register built-in tool '{}' with ExtensionCore: {}",
+                    tool.name(),
+                    e
+                );
             } else {
-                tracing::debug!("Registered built-in tool '{}' with ExtensionCore", tool.name());
+                tracing::debug!(
+                    "Registered built-in tool '{}' with ExtensionCore",
+                    tool.name()
+                );
             }
         }
-        
-        tracing::info!("Registered {} built-in tools with ExtensionCore", tools.len());
+
+        tracing::info!(
+            "Registered {} built-in tools with ExtensionCore",
+            tools.len()
+        );
 
         Ok(())
     }
@@ -299,17 +319,18 @@ impl Agent {
             let supports_native = provider.supports_native_tools();
             info!(
                 "Executing with {} tool calling",
-                if supports_native { "native" } else { "text-based" }
+                if supports_native {
+                    "native"
+                } else {
+                    "text-based"
+                }
             );
 
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
-            let loop_ = AgenticLoopV4::new(
-                agent_arc,
-                provider_arc,
-                Arc::clone(&self.extension_core),
-            );
+            let loop_ =
+                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core));
 
             match loop_.run(prompt, on_event).await {
                 Ok(result) => Ok(result),
@@ -362,17 +383,18 @@ impl Agent {
             let supports_native = provider.supports_native_tools();
             info!(
                 "Executing with session and {} tool calling",
-                if supports_native { "native" } else { "text-based" }
+                if supports_native {
+                    "native"
+                } else {
+                    "text-based"
+                }
             );
 
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
-            let loop_ = AgenticLoopV4::new(
-                agent_arc,
-                provider_arc,
-                Arc::clone(&self.extension_core),
-            );
+            let loop_ =
+                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core));
 
             match loop_
                 .run_with_resume(prompt, on_event, session, history)
@@ -416,15 +438,11 @@ impl Agent {
             let event_tx_clone = event_tx.clone();
 
             let extension_core = self.extension_core.clone();
-            
+
             tokio::task::spawn_local(async move {
                 use crate::engine::loop_v4::AgenticLoopV4;
 
-                let loop_ = AgenticLoopV4::new(
-                    agent_arc,
-                    provider_arc.clone(),
-                    extension_core,
-                );
+                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc.clone(), extension_core);
 
                 let _result = loop_
                     .run(&prompt, move |event| {
@@ -479,23 +497,14 @@ impl Agent {
 
             use crate::engine::loop_v4::AgenticLoopV4;
 
-            let loop_ = AgenticLoopV4::new(
-                agent_arc,
-                provider_arc,
-                Arc::clone(&self.extension_core),
-            );
+            let loop_ =
+                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core));
 
             // Use streaming config with Live delivery mode for real-time output
             let streaming_config = crate::engine::OrchestratorConfig::live();
 
             let result = loop_
-                .run_streaming_with_resume(
-                    prompt,
-                    on_event,
-                    session,
-                    history,
-                    streaming_config,
-                )
+                .run_streaming_with_resume(prompt, on_event, session, history, streaming_config)
                 .await;
 
             result
@@ -510,11 +519,17 @@ impl Agent {
             return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
         }
 
-        let init_result = self.extension_core.invoke_hook(
-            crate::extensions::core::HookPoint::AgentInit,
-            crate::extensions::types::HookInput::Unit,
-        ).await;
-        tracing::info!("AgentInit hook result: {:?}", std::mem::discriminant(&init_result));
+        let init_result = self
+            .extension_core
+            .invoke_hook(
+                crate::extensions::core::HookPoint::AgentInit,
+                crate::extensions::types::HookInput::Unit,
+            )
+            .await;
+        tracing::info!(
+            "AgentInit hook result: {:?}",
+            std::mem::discriminant(&init_result)
+        );
 
         Ok(())
     }
@@ -640,7 +655,9 @@ impl Agent {
         use crate::session::manager::SessionCreateOptions;
         let mut manager = self.session_manager.write().await;
         let options = SessionCreateOptions::new().with_trigger("user");
-        let handle = manager.create_session(&self.config.name, peer, options).await?;
+        let handle = manager
+            .create_session(&self.config.name, peer, options)
+            .await?;
         let session_id = handle.session_id().to_string();
         info!("Created new session {} for peer {:?}", session_id, peer);
         Ok(session_id)
@@ -826,7 +843,9 @@ impl Agent {
         Ok(identity)
     }
 
-    async fn init_provider(config: &AgentConfig) -> Result<Option<Arc<crate::providers::Provider>>> {
+    async fn init_provider(
+        config: &AgentConfig,
+    ) -> Result<Option<Arc<crate::providers::Provider>>> {
         use crate::providers::registry::create_provider;
         use crate::types::provider::ProviderType;
 

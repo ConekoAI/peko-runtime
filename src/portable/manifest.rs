@@ -180,13 +180,17 @@ pub struct Signatures {
 
 impl Default for McpManifestConfig {
     fn default() -> Self {
-        Self { servers: Vec::new() }
+        Self {
+            servers: Vec::new(),
+        }
     }
 }
 
 impl Default for ToolRegistryConfig {
     fn default() -> Self {
-        Self { required: Vec::new() }
+        Self {
+            required: Vec::new(),
+        }
     }
 }
 

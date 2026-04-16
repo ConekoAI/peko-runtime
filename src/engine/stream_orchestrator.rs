@@ -7,7 +7,6 @@
 
 use crate::engine::{
     AgenticEvent, BlockChunker, ChunkerConfig, CoalesceConfig, LifecyclePhase, StreamBuffer,
-    ToolCallStreamParser,
 };
 use crate::providers::StreamEvent;
 
@@ -145,7 +144,7 @@ impl StreamOrchestrator {
     /// Process a StreamEvent and return AgenticEvents to emit
     pub fn process(&mut self, event: StreamEvent) -> Vec<AgenticEvent> {
         match event {
-            StreamEvent::Start { provider, model } => {
+            StreamEvent::Start { provider: _, model: _ } => {
                 self.state = OrchestratorState::Text;
                 vec![AgenticEvent::Lifecycle {
                     run_id: self.run_id.clone(),
@@ -153,40 +152,40 @@ impl StreamOrchestrator {
                     error: None,
                 }]
             }
-            StreamEvent::TextStart { content_index } => {
+            StreamEvent::TextStart { content_index: _ } => {
                 self.state = OrchestratorState::Text;
                 vec![]
             }
             StreamEvent::TextDelta {
-                content_index,
+                content_index: _,
                 delta,
             } => {
                 self.state = OrchestratorState::Text;
                 self.handle_text_delta(delta)
             }
             StreamEvent::TextEnd {
-                content_index,
+                content_index: _,
                 content,
             } => {
                 // Text content complete - ensure chunker is flushed
                 self.handle_text_end(content)
             }
-            StreamEvent::ThinkingStart { content_index } => {
+            StreamEvent::ThinkingStart { content_index: _ } => {
                 self.state = OrchestratorState::Thinking;
                 vec![]
             }
             StreamEvent::ThinkingDelta {
-                content_index,
+                content_index: _,
                 delta,
             } => {
                 self.state = OrchestratorState::Thinking;
                 self.handle_thinking_delta(delta)
             }
             StreamEvent::ThinkingEnd {
-                content_index,
+                content_index: _,
                 content,
             } => self.handle_thinking_end(content),
-            StreamEvent::ToolCallStart { content_index } => {
+            StreamEvent::ToolCallStart { content_index: _ } => {
                 self.has_tool_calls = true;
                 self.state = OrchestratorState::ToolCall;
                 vec![]
@@ -347,7 +346,7 @@ impl StreamOrchestrator {
     }
 
     /// Handle tool call delta
-    fn handle_tool_delta(&mut self, index: usize, delta: String) -> Vec<AgenticEvent> {
+    fn handle_tool_delta(&mut self, _index: usize, _delta: String) -> Vec<AgenticEvent> {
         // For now, just accumulate in the parser
         // In a full implementation, we'd track partial tool calls
         vec![]

@@ -64,24 +64,17 @@ impl TaskExecutionMetrics {
 
     /// Get duration (returns elapsed if not complete)
     pub fn duration(&self) -> Duration {
-        self.duration
-            .unwrap_or_else(|| self.start_time.elapsed())
+        self.duration.unwrap_or_else(|| self.start_time.elapsed())
     }
 
     /// Check if task succeeded
     pub fn succeeded(&self) -> bool {
-        matches!(
-            self.final_status,
-            Some(AsyncTaskStatus::Completed { .. })
-        )
+        matches!(self.final_status, Some(AsyncTaskStatus::Completed { .. }))
     }
 
     /// Check if task failed
     pub fn failed(&self) -> bool {
-        matches!(
-            self.final_status,
-            Some(AsyncTaskStatus::Failed { .. })
-        )
+        matches!(self.final_status, Some(AsyncTaskStatus::Failed { .. }))
     }
 
     /// Check if task was cancelled
@@ -193,10 +186,10 @@ impl AsyncToolMetricsCollector {
     pub async fn start_task(&self, task_id: AsyncTaskId, tool_name: String, was_async: bool) {
         let tool_name_for_log = tool_name.clone();
         let metrics = TaskExecutionMetrics::new(task_id.clone(), tool_name, was_async);
-        
+
         let mut active = self.active_tasks.write().await;
         active.insert(task_id.clone(), metrics);
-        
+
         debug!(
             task_id = %task_id,
             tool_name = %tool_name_for_log,
@@ -208,7 +201,7 @@ impl AsyncToolMetricsCollector {
     /// Record task completion
     pub async fn complete_task(&self, task_id: &AsyncTaskId, status: AsyncTaskStatus) {
         let task_id_for_log = task_id.clone();
-        
+
         // Move from active to completed
         let mut active = self.active_tasks.write().await;
         if let Some(mut metrics) = active.remove(task_id) {
@@ -217,11 +210,11 @@ impl AsyncToolMetricsCollector {
             let was_async = metrics.was_async;
             let tool_name = metrics.tool_name.clone();
             let success = metrics.succeeded();
-            
+
             // Store completed metrics
             let mut completed = self.completed_tasks.write().await;
             completed.push(metrics);
-            
+
             // Trim if needed
             if completed.len() > self.max_completed_tasks {
                 completed.remove(0);
@@ -230,8 +223,9 @@ impl AsyncToolMetricsCollector {
             drop(active);
 
             // Update aggregated metrics
-            self.update_aggregated(&tool_name, was_async, duration, success, status).await;
-            
+            self.update_aggregated(&tool_name, was_async, duration, success, status)
+                .await;
+
             info!(
                 task_id = %task_id_for_log,
                 tool_name = %tool_name,
@@ -289,7 +283,7 @@ impl AsyncToolMetricsCollector {
     pub async fn generate_report(&self) -> String {
         let aggregated = self.aggregated.read().await;
         let active_count = self.active_tasks.read().await.len();
-        
+
         format!(
             r#"Async Tool Execution Metrics
 =============================
@@ -340,12 +334,12 @@ Tool Breakdown:
             aggregated.async_executions += 1;
             // Update running average
             let count = aggregated.async_executions as f64;
-            aggregated.avg_async_duration_ms = 
+            aggregated.avg_async_duration_ms =
                 (aggregated.avg_async_duration_ms * (count - 1.0) + duration_ms) / count;
         } else {
             aggregated.sync_executions += 1;
             let count = aggregated.sync_executions as f64;
-            aggregated.avg_sync_duration_ms = 
+            aggregated.avg_sync_duration_ms =
                 (aggregated.avg_sync_duration_ms * (count - 1.0) + duration_ms) / count;
         }
 
@@ -367,7 +361,7 @@ Tool Breakdown:
                 tool_name: tool_name.to_string(),
                 ..Default::default()
             });
-        
+
         tool_metrics.record_execution(was_async, duration, success);
     }
 
@@ -408,14 +402,21 @@ mod tests {
     #[tokio::test]
     async fn test_task_tracking() {
         let collector = AsyncToolMetricsCollector::new();
-        
-        collector.start_task("task1".to_string(), "test_tool".to_string(), true).await;
+
+        collector
+            .start_task("task1".to_string(), "test_tool".to_string(), true)
+            .await;
         assert_eq!(collector.active_task_count().await, 1);
-        
-        collector.complete_task(&"task1".to_string(), AsyncTaskStatus::Completed {
-            result: crate::tools::ToolResult::success(serde_json::json!({"ok": true})),
-        }).await;
-        
+
+        collector
+            .complete_task(
+                &"task1".to_string(),
+                AsyncTaskStatus::Completed {
+                    result: crate::tools::ToolResult::success(serde_json::json!({"ok": true})),
+                },
+            )
+            .await;
+
         assert_eq!(collector.active_task_count().await, 0);
         assert_eq!(collector.completed_task_count().await, 1);
     }
@@ -423,12 +424,19 @@ mod tests {
     #[tokio::test]
     async fn test_aggregated_metrics() {
         let collector = AsyncToolMetricsCollector::new();
-        
-        collector.start_task("task1".to_string(), "tool_a".to_string(), true).await;
-        collector.complete_task(&"task1".to_string(), AsyncTaskStatus::Completed {
-            result: crate::tools::ToolResult::success(serde_json::json!({})),
-        }).await;
-        
+
+        collector
+            .start_task("task1".to_string(), "tool_a".to_string(), true)
+            .await;
+        collector
+            .complete_task(
+                &"task1".to_string(),
+                AsyncTaskStatus::Completed {
+                    result: crate::tools::ToolResult::success(serde_json::json!({})),
+                },
+            )
+            .await;
+
         let metrics = collector.get_aggregated().await;
         assert_eq!(metrics.async_executions, 1);
         assert_eq!(metrics.successful_executions, 1);
@@ -437,12 +445,19 @@ mod tests {
     #[tokio::test]
     async fn test_report_generation() {
         let collector = AsyncToolMetricsCollector::new();
-        
-        collector.start_task("task1".to_string(), "test_tool".to_string(), true).await;
-        collector.complete_task(&"task1".to_string(), AsyncTaskStatus::Completed {
-            result: crate::tools::ToolResult::success(serde_json::json!({})),
-        }).await;
-        
+
+        collector
+            .start_task("task1".to_string(), "test_tool".to_string(), true)
+            .await;
+        collector
+            .complete_task(
+                &"task1".to_string(),
+                AsyncTaskStatus::Completed {
+                    result: crate::tools::ToolResult::success(serde_json::json!({})),
+                },
+            )
+            .await;
+
         let report = collector.generate_report().await;
         assert!(report.contains("Async Tool Execution Metrics"));
         assert!(report.contains("test_tool"));

@@ -4,16 +4,15 @@
 //! This ensures Universal Tools, MCP Tools, and built-in tools all receive the same
 //! runtime context (agent_id, session_id, etc.) for reserved parameter injection.
 
-use crate::tools::{Tool, ToolContext, ToolError};
-use crate::engine::AgenticEvent;
+use crate::tools::{Tool, ToolContext};
 use anyhow::Result;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, instrument};
 
 /// Context passed to tool execution
-/// 
+///
 /// This contains runtime identity information that gets injected into tools
 /// via the ToolContext for reserved parameter support.
 #[derive(Debug, Clone)]
@@ -61,16 +60,18 @@ impl ToolExecutionContext {
     }
 
     /// Convert to ToolContext for tool execution
-    /// 
+    ///
     /// Creates a ToolContext with identity fields set for reserved parameter injection.
     pub fn to_tool_context(&self) -> ToolContext {
         tracing::debug!(
             "ToolExecutionContext::to_tool_context - agent_id={}, session_id={}, workspace={}",
-            self.agent_id, self.session_id, self.workspace
+            self.agent_id,
+            self.session_id,
+            self.workspace
         );
         // Create abort signal for this tool execution
         let abort_signal = crate::tools::AbortSignal::new();
-        
+
         abort_signal
             .create_context(&self.run_id, "tool_exec", "tool")
             .with_agent_id(&self.agent_id)
@@ -80,7 +81,7 @@ impl ToolExecutionContext {
 }
 
 /// Unified tool executor
-/// 
+///
 /// Replaces TaskManager and provides consistent context injection for all tools.
 #[derive(Debug, Clone)]
 pub struct ToolExecutor {
@@ -102,15 +103,15 @@ impl ToolExecutor {
     }
 
     /// Execute a tool with context injection
-    /// 
+    ///
     /// This is the primary method for tool execution. It ensures all tools
     /// receive proper runtime context for reserved parameter injection.
-    /// 
+    ///
     /// # Arguments
     /// * `tool` - The tool to execute
     /// * `params` - Parameters from the LLM
     /// * `context` - Runtime context with agent/session identity
-    /// 
+    ///
     /// # Returns
     /// Tool result or error
     #[instrument(skip(self, tool, params, context), fields(tool_name = %tool.name()))]
@@ -134,7 +135,9 @@ impl ToolExecutor {
         let tool_context = context.to_tool_context();
         tracing::info!(
             "ToolExecutor - Created ToolContext: agent_id={:?}, session_id={:?}, workspace={:?}",
-            tool_context.agent_id, tool_context.session_id, tool_context.workspace
+            tool_context.agent_id,
+            tool_context.session_id,
+            tool_context.workspace
         );
 
         // Execute with panic isolation
@@ -166,7 +169,7 @@ impl ToolExecutor {
     }
 
     /// Execute with panic isolation
-    /// 
+    ///
     /// Catches panics during tool execution and converts them to errors.
     /// This ensures that a buggy tool doesn't crash the entire agent.
     async fn execute_with_panic_isolation(
@@ -182,7 +185,7 @@ impl ToolExecutor {
             let tool = Arc::clone(&tool);
             let params = params.clone();
             let tool_context = tool_context.clone();
-            
+
             move || {
                 // Use AssertUnwindSafe because we're catching the panic anyway
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -223,15 +226,9 @@ impl ToolExecutor {
             Ok(Err(e)) => {
                 if e.is_panic() {
                     error!("Task panicked during execution: {}", e);
-                    Err(anyhow::anyhow!(
-                        "Tool '{}' task panicked",
-                        tool.name()
-                    ))
+                    Err(anyhow::anyhow!("Tool '{}' task panicked", tool.name()))
                 } else {
-                    Err(anyhow::anyhow!(
-                        "Tool '{}' task cancelled",
-                        tool.name()
-                    ))
+                    Err(anyhow::anyhow!("Tool '{}' task cancelled", tool.name()))
                 }
             }
             Err(_) => Err(anyhow::anyhow!(
@@ -243,7 +240,7 @@ impl ToolExecutor {
     }
 
     /// Legacy execute method (without context)
-    /// 
+    ///
     /// For backward compatibility. Tools will receive default/empty context.
     /// Prefer `execute_with_context` for new code.
     pub async fn execute(
@@ -253,7 +250,7 @@ impl ToolExecutor {
     ) -> Result<serde_json::Value> {
         let context = ToolExecutionContext::new(
             "unknown", // agent_id
-            "unknown", // session_id  
+            "unknown", // session_id
             "unknown", // run_id
         );
         self.execute_with_context(tool, params, &context).await
@@ -318,13 +315,11 @@ mod tests {
     #[tokio::test]
     async fn test_executor_with_context() {
         let executor = ToolExecutor::new();
-        let tool = Arc::new(MockTool { name: "test".to_string() });
+        let tool = Arc::new(MockTool {
+            name: "test".to_string(),
+        });
 
-        let context = ToolExecutionContext::new(
-            "agent_123",
-            "session_456", 
-            "run_789"
-        );
+        let context = ToolExecutionContext::new("agent_123", "session_456", "run_789");
 
         let params = json!({"input": "test"});
         let result = executor
@@ -340,7 +335,9 @@ mod tests {
     #[tokio::test]
     async fn test_executor_legacy_execute() {
         let executor = ToolExecutor::new();
-        let tool = Arc::new(MockTool { name: "legacy".to_string() });
+        let tool = Arc::new(MockTool {
+            name: "legacy".to_string(),
+        });
 
         let params = json!({"input": "test"});
         let result = executor.execute(tool, params).await.unwrap();

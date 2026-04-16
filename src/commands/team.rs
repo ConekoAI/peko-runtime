@@ -202,7 +202,15 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             exclude_workspace,
             exclude_mcp,
         } => {
-            let result = service.export_team(&name, output, !include_sessions, exclude_workspace, exclude_mcp).await?;
+            let result = service
+                .export_team(
+                    &name,
+                    output,
+                    !include_sessions,
+                    exclude_workspace,
+                    exclude_mcp,
+                )
+                .await?;
             render_team_exported(&result, json);
             Ok(())
         }
@@ -213,7 +221,9 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             force,
             no_rotate_keys,
         } => {
-            let result = service.import_team(&file, name, force, !no_rotate_keys).await?;
+            let result = service
+                .import_team(&file, name, force, !no_rotate_keys)
+                .await?;
             render_team_imported(&result, json);
             Ok(())
         }
@@ -464,5 +474,3 @@ fn confirm_team_move(old_name: &str, new_name: &str, agent_count: usize) -> Resu
 
     Ok(input.trim().eq_ignore_ascii_case("y"))
 }
-
-

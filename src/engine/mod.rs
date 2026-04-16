@@ -25,12 +25,12 @@ pub use execution::{ExecutionMode, TaskExecutor, TaskId, TaskStatus, TaskSummary
 pub use input::{A2AMessageType, AgentInput, HookType, InputContext};
 pub use loop_v4::{AgenticLoopV4, AgenticResult as AgenticResultV4, ToolCall};
 // SimpleSession now unified - use crate::session::UnifiedSession
+pub use async_tool_executor::{AsyncCapability, AsyncToolExecutor, ToolProgress};
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};
 pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};
-pub use async_tool_executor::{AsyncCapability, AsyncToolExecutor, ToolProgress};
 pub use task_manager::{TaskManager, TaskManagerConfig, TaskManagerStats};
-pub use tool_executor::{ToolExecutor, ToolExecutionContext};
+pub use tool_executor::{ToolExecutionContext, ToolExecutor};
 pub use tool_stream::{
     parse_tool_calls_from_text, StreamingToolCall, ToolCallParseError, ToolCallStreamParser,
 };

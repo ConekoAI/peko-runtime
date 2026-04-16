@@ -26,23 +26,30 @@
 //! - `PromptSystemSection { section: "tools" }` - Adds tool descriptions to prompt
 //! - `ToolExecute { tool_name }` - Handles tool execution
 
+use crate::agent::async_tool_framework::AsyncTaskStatus;
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
-    ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
-    ToolExecutionConfig, ToolMetadata, ToolSource, // NEW
+    ExtensionCore,
+    HookBinding,
+    HookContext,
+    HookHandler,
+    HookHandlerFactory,
+    HookPoint,
+    ToolExecutionConfig,
+    ToolMetadata,
+    ToolSource, // NEW
 };
-use crate::extensions::services::ReservedParamsConfig; // NEW
+ // NEW
 use crate::extensions::types::{
     AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
-use crate::agent::async_tool_framework::AsyncTaskStatus;
 use crate::tools::Tool;
-use uuid::Uuid;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info, trace, warn};
+use uuid::Uuid;
 
 /// Universal tool extension type identifier
 pub const UNIVERSAL_TOOL_EXTENSION_TYPE: &str = "universal-tool";
@@ -103,7 +110,10 @@ impl UniversalToolAdapter {
             }
 
             // Parse manifest to get tool info
-            match self.parse_tool_manifest_with_discovery(&manifest_path).await {
+            match self
+                .parse_tool_manifest_with_discovery(&manifest_path)
+                .await
+            {
                 Ok((manifest, tool_name)) => {
                     // Find executable
                     if let Some(executable) = self.find_executable(&tool_path, &tool_name).await {
@@ -141,7 +151,10 @@ impl UniversalToolAdapter {
             &tool_manifest.name,
             &tool_manifest.description,
             "1.0.0",
-            manifest_path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            manifest_path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf(),
         );
 
         // Store additional metadata
@@ -211,8 +224,8 @@ impl UniversalToolAdapter {
             name: tool_name.clone(),
             description,
             parameters,
-            source: ToolSource::Universal { 
-                extension_id: ext_id.0.clone() 
+            source: ToolSource::Universal {
+                extension_id: ext_id.0.clone(),
             },
             reserved_params,
         };
@@ -280,7 +293,12 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
         // Find the executable
         let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
         let executable = super::parsing::find_executable_sync(tool_path, &tool_manifest.name)
-            .with_context(|| format!("Failed to find executable for tool '{}' in {:?}", tool_manifest.name, tool_path))?;
+            .with_context(|| {
+                format!(
+                    "Failed to find executable for tool '{}' in {:?}",
+                    tool_manifest.name, tool_path
+                )
+            })?;
 
         // Build ExtensionManifest from tool manifest
         let mut manifest = ExtensionManifest::new(
@@ -296,11 +314,11 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
         manifest.set("executable", executable.to_string_lossy().to_string());
         manifest.set("manifest_path", path.to_string_lossy().to_string());
         manifest.set("parameters", tool_manifest.parameters.clone());
-        
+
         if let Some(llm_desc) = tool_manifest.llm_description {
             manifest.set("llm_description", llm_desc);
         }
-        
+
         // Store reserved parameters
         let reserved_config = &tool_manifest.reserved_parameters;
         if !reserved_config.is_empty() {
@@ -409,7 +427,7 @@ struct UniversalToolRegistrationHandler {
 
 #[async_trait]
 impl HookHandler for UniversalToolRegistrationHandler {
-    async fn handle(&self, ctx: HookContext) -> HookResult {
+    async fn handle(&self, _ctx: HookContext) -> HookResult {
         // Create a ToolDefinition for registration
         let tool_def = crate::providers::ToolDefinition {
             name: self.tool_name.clone(),
@@ -507,14 +525,14 @@ impl HookHandlerFactory for UniversalToolExecuteFactory {
             .and_then(|v| v.as_str())
             .map(PathBuf::from)
             .unwrap_or_default();
-        
+
         // Extract reserved parameters from manifest
         let _reserved_params: crate::extensions::services::ReservedParamsConfig = self
             .manifest
             .get("reserved_parameters")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
-        
+
         // Extract full parameter schema
         let full_schema = self
             .manifest
@@ -570,12 +588,13 @@ impl HookHandler for UniversalToolExecuteHandler {
         // Use AsyncExecutionRouter for unified execution with panic isolation and timeout
         let async_router = ctx.services.async_router();
         let exec_service = ctx.services.tool_execution();
-        
+
         let tool_ctx = crate::extensions::services::async_router::ToolExecutionContext::new(
             "agent",
             "session",
             ctx.invocation_id.clone(),
-        ).with_workspace(".");
+        )
+        .with_workspace(".");
 
         let exec_config = ToolExecutionConfig::with_schema(self.full_schema.clone());
 
@@ -596,7 +615,7 @@ impl HookHandler for UniversalToolExecuteHandler {
                         &executable,
                     )
                     .await?;
-                    
+
                     // Execute with the merged parameters (injection already done)
                     adapter.execute_raw(merged_params).await
                 },
@@ -875,16 +894,18 @@ pub async fn register_tools_with_core(
 
         // Register execution handler
         // Extract reserved parameters from manifest
-        let _reserved_params: crate::extensions::services::ReservedParamsConfig = tool.manifest
+        let _reserved_params: crate::extensions::services::ReservedParamsConfig = tool
+            .manifest
             .get("reserved_parameters")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
-        
-        let full_schema = tool.manifest
+
+        let full_schema = tool
+            .manifest
             .get("parameters")
             .cloned()
             .unwrap_or_else(|| serde_json::json!({"type": "object"}));
-        
+
         let _ = _reserved_params;
         let exec_handler = Arc::new(UniversalToolExecuteHandler {
             tool_name: tool.manifest.name.clone(),

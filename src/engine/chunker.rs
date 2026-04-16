@@ -372,7 +372,7 @@ mod tests {
                 break_preference: BreakPreference::Whitespace,
                 emit_partial: true,
             },
-            50,  // min_coalesce - higher than test text
+            50, // min_coalesce - higher than test text
         );
 
         // Feed small chunks (total ~31 chars, below 50 threshold)

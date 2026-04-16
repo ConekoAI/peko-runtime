@@ -51,13 +51,15 @@ mod serde_replacement {
     {
         // Try to deserialize as Vec<Replacement> first
         let value: serde_json::Value = Deserialize::deserialize(deserializer)?;
-        
+
         if let Ok(replacements) = serde_json::from_value::<Vec<Replacement>>(value.clone()) {
             Ok(ReplacementArg::Multiple(replacements))
         } else if let Ok(replacement) = serde_json::from_value::<Replacement>(value) {
             Ok(ReplacementArg::Single(replacement))
         } else {
-            Err(serde::de::Error::custom("expected replacement or array of replacements"))
+            Err(serde::de::Error::custom(
+                "expected replacement or array of replacements",
+            ))
         }
     }
 }
@@ -233,11 +235,13 @@ impl StrReplaceFileTool {
             let failed: Vec<&ReplacementResult> = results.iter().filter(|r| !r.success).collect();
             let error_msg = failed
                 .iter()
-                .map(|r| format!(
-                    "Replacement failed: '{}' - {}",
-                    truncate_str(&r.old, 30),
-                    r.error.as_ref().unwrap()
-                ))
+                .map(|r| {
+                    format!(
+                        "Replacement failed: '{}' - {}",
+                        truncate_str(&r.old, 30),
+                        r.error.as_ref().unwrap()
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
 
@@ -419,7 +423,9 @@ mod tests {
         let tool = StrReplaceFileTool::new().with_workspace(temp_dir.path());
 
         // Create test file
-        fs::write(temp_dir.path().join("test.txt"), "Hello, World!").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "Hello, World!")
+            .await
+            .unwrap();
 
         let params = json!({
             "path": "test.txt",
@@ -433,7 +439,9 @@ mod tests {
         assert_eq!(result["total_replacements"], 1);
         assert_eq!(result["success"], true);
 
-        let content = fs::read_to_string(temp_dir.path().join("test.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("test.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "Hello, Rust!");
     }
 
@@ -443,7 +451,9 @@ mod tests {
         let tool = StrReplaceFileTool::new().with_workspace(temp_dir.path());
 
         // Create test file
-        fs::write(temp_dir.path().join("test.txt"), "A\nB\nC").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "A\nB\nC")
+            .await
+            .unwrap();
 
         let params = json!({
             "path": "test.txt",
@@ -457,7 +467,9 @@ mod tests {
 
         assert_eq!(result["total_replacements"], 3);
 
-        let content = fs::read_to_string(temp_dir.path().join("test.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("test.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "X\nY\nZ");
     }
 
@@ -466,7 +478,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = StrReplaceFileTool::new().with_workspace(temp_dir.path());
 
-        fs::write(temp_dir.path().join("test.txt"), "Hello, World!").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "Hello, World!")
+            .await
+            .unwrap();
 
         let params = json!({
             "path": "test.txt",
@@ -481,7 +495,9 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("String not found"));
 
         // Verify file was not modified
-        let content = fs::read_to_string(temp_dir.path().join("test.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("test.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "Hello, World!");
     }
 
@@ -490,7 +506,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = StrReplaceFileTool::new().with_workspace(temp_dir.path());
 
-        fs::write(temp_dir.path().join("test.txt"), "A B C").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "A B C")
+            .await
+            .unwrap();
 
         // Try to use the same 'old' twice in one batch
         let params = json!({
@@ -506,7 +524,9 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("Duplicate"));
 
         // Verify file was not modified
-        let content = fs::read_to_string(temp_dir.path().join("test.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("test.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "A B C");
     }
 
@@ -516,7 +536,9 @@ mod tests {
         let tool = StrReplaceFileTool::new().with_workspace(temp_dir.path());
 
         // Create file with duplicate content
-        fs::write(temp_dir.path().join("test.txt"), "foo foo foo").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "foo foo foo")
+            .await
+            .unwrap();
 
         let params = json!({
             "path": "test.txt",
@@ -531,7 +553,9 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("3 times"));
 
         // Verify file was not modified
-        let content = fs::read_to_string(temp_dir.path().join("test.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("test.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "foo foo foo");
     }
 
@@ -540,7 +564,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = StrReplaceFileTool::new().with_workspace(temp_dir.path());
 
-        fs::write(temp_dir.path().join("test.txt"), "line1\nline2\nline3").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "line1\nline2\nline3")
+            .await
+            .unwrap();
 
         let params = json!({
             "path": "test.txt",
@@ -553,7 +579,9 @@ mod tests {
 
         assert_eq!(result["total_replacements"], 1);
 
-        let content = fs::read_to_string(temp_dir.path().join("test.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("test.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "replaced\nline3");
     }
 
@@ -580,7 +608,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = StrReplaceFileTool::new().with_workspace(temp_dir.path());
 
-        fs::write(temp_dir.path().join("test.txt"), "Hello, World!").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "Hello, World!")
+            .await
+            .unwrap();
 
         let params = json!({
             "path": "test.txt",
@@ -592,10 +622,15 @@ mod tests {
         let result = tool.execute(params).await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Empty 'old' string"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Empty 'old' string"));
 
         // Verify file was not modified
-        let content = fs::read_to_string(temp_dir.path().join("test.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("test.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "Hello, World!");
     }
 }

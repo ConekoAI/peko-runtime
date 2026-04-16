@@ -6,7 +6,9 @@ use clap::Subcommand;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-use crate::types::config::{ExternalSource, FileWatchConfig, PekobotConfig, SourceDetection, WebhookRouteConfig};
+use crate::types::config::{
+    ExternalSource, FileWatchConfig, PekobotConfig, SourceDetection, WebhookRouteConfig,
+};
 
 /// Orchestration management commands
 #[derive(Subcommand)]

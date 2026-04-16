@@ -22,9 +22,8 @@ use crate::providers::TokenUsage as ProviderTokenUsage;
 use crate::session::events::{
     generate_event_id, generate_message_id, EventEnvelope, SessionEvent, ToolCallBlock,
 };
-use crate::session::message::SessionMessage;
-use crate::session::index::SessionEntry;
 use crate::session::jsonl::SessionStorage;
+use crate::session::message::SessionMessage;
 use crate::session::types::Peer;
 use crate::types::ContentBlock;
 use anyhow::Result;
@@ -259,7 +258,7 @@ impl UnifiedSession {
     // ============================================================
 
     /// Record token usage (in-memory only, persists to index via MetadataController)
-    /// 
+    ///
     /// `context_window` is the total_tokens from the current assistant message.
     /// `input` and `output` are the incremental tokens for this turn.
     pub fn record_usage(&mut self, context_window: usize, input: usize, output: usize) {
@@ -346,16 +345,17 @@ impl UnifiedSession {
         let content_str = content.into();
 
         // Convert ToolCall to ToolCallBlock
-        let tool_call_blocks: Option<Vec<crate::session::events::ToolCallBlock>> = tool_calls.map(|calls| {
-            calls
-                .into_iter()
-                .map(|call| ToolCallBlock {
-                    id: format!("tc_{}", uuid::Uuid::new_v4().to_string().replace('-', "")),
-                    name: call.name,
-                    arguments: call.parameters,
-                })
-                .collect()
-        });
+        let tool_call_blocks: Option<Vec<crate::session::events::ToolCallBlock>> =
+            tool_calls.map(|calls| {
+                calls
+                    .into_iter()
+                    .map(|call| ToolCallBlock {
+                        id: format!("tc_{}", uuid::Uuid::new_v4().to_string().replace('-', "")),
+                        name: call.name,
+                        arguments: call.parameters,
+                    })
+                    .collect()
+            });
 
         // Build content blocks: text + tool calls
         let mut content_blocks = vec![ContentBlock::Text { text: content_str }];
@@ -488,17 +488,25 @@ impl UnifiedSession {
                 },
             },
             "assistant" => {
-                let token_usage = usage.as_ref().map(|u| crate::session::message::TokenUsage {
-                    input_tokens: u.input as u32,
-                    output_tokens: u.output as u32,
-                    total_tokens: (u.input + u.output) as u32,
-                }).unwrap_or(crate::session::message::TokenUsage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    total_tokens: 0,
-                });
+                let token_usage = usage
+                    .as_ref()
+                    .map(|u| crate::session::message::TokenUsage {
+                        input_tokens: u.input as u32,
+                        output_tokens: u.output as u32,
+                        total_tokens: (u.input + u.output) as u32,
+                    })
+                    .unwrap_or(crate::session::message::TokenUsage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        total_tokens: 0,
+                    });
 
-                SessionMessage::assistant_with_blocks(final_content_blocks, provider, model, token_usage)
+                SessionMessage::assistant_with_blocks(
+                    final_content_blocks,
+                    provider,
+                    model,
+                    token_usage,
+                )
             }
             "system" => SessionMessage::system(
                 final_content_blocks
@@ -517,7 +525,12 @@ impl UnifiedSession {
 
                 for block in &final_content_blocks {
                     match block {
-                        ContentBlock::ToolResult { tool_call_id: id, name, content, .. } => {
+                        ContentBlock::ToolResult {
+                            tool_call_id: id,
+                            name,
+                            content,
+                            ..
+                        } => {
                             tool_call_id = id.clone();
                             tool_name = name.clone();
                             // Extract text from nested content
@@ -779,7 +792,8 @@ mod tests {
         use crate::providers::MessageRole;
         use crate::session::SessionMessage;
 
-        let event = SessionEvent::MessageV2(SessionMessage::assistant_text("Hello!", "openai", "gpt-4"));
+        let event =
+            SessionEvent::MessageV2(SessionMessage::assistant_text("Hello!", "openai", "gpt-4"));
 
         let msg = event_to_chat_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::Assistant);
@@ -791,7 +805,10 @@ mod tests {
         use crate::providers::MessageRole;
         use crate::session::SessionMessage;
 
-        let event = SessionEvent::MessageV2(SessionMessage::user("Hi there", crate::session::events::MessageSource::User));
+        let event = SessionEvent::MessageV2(SessionMessage::user(
+            "Hi there",
+            crate::session::events::MessageSource::User,
+        ));
 
         let msg = event_to_chat_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::User);
@@ -906,31 +923,40 @@ mod tests {
         storage.create_session(session_id, None).await.unwrap();
 
         // Open it as a UnifiedSession
-        let mut session = UnifiedSession::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
-            .await
-            .unwrap();
+        let mut session =
+            UnifiedSession::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
 
         // Add assistant message with text + tool call
-        session.add_assistant_with_blocks(
-            vec![
-                ContentBlock::Text { text: "I'll read the file.".to_string() },
-                ContentBlock::ToolCall {
+        session
+            .add_assistant_with_blocks(
+                vec![
+                    ContentBlock::Text {
+                        text: "I'll read the file.".to_string(),
+                    },
+                    ContentBlock::ToolCall {
+                        id: "tool_abc".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: serde_json::json!({"path": "test.txt"}),
+                    },
+                ],
+                Some(vec![crate::session::events::ToolCallBlock {
                     id: "tool_abc".to_string(),
                     name: "read_file".to_string(),
                     arguments: serde_json::json!({"path": "test.txt"}),
-                },
-            ],
-            Some(vec![crate::session::events::ToolCallBlock {
-                id: "tool_abc".to_string(),
-                name: "read_file".to_string(),
-                arguments: serde_json::json!({"path": "test.txt"}),
-            }]),
-            None,
-            None,
-        ).await.unwrap();
+                }]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
 
         // Add tool result
-        session.add_tool_result("tool_abc", "read_file", "Hello World").await.unwrap();
+        session
+            .add_tool_result("tool_abc", "read_file", "Hello World")
+            .await
+            .unwrap();
 
         // Load history
         let history = session.load_history().await.unwrap();
@@ -940,11 +966,26 @@ mod tests {
 
         // Check assistant message preserves tool call
         let assistant = &history[0];
-        assert!(matches!(assistant.role, crate::providers::MessageRole::Assistant));
-        assert_eq!(assistant.content.len(), 2, "Assistant should have text + tool call");
+        assert!(matches!(
+            assistant.role,
+            crate::providers::MessageRole::Assistant
+        ));
+        assert_eq!(
+            assistant.content.len(),
+            2,
+            "Assistant should have text + tool call"
+        );
         assert!(matches!(assistant.content[0], ContentBlock::Text { .. }));
-        assert!(matches!(assistant.content[1], ContentBlock::ToolCall { .. }));
-        if let ContentBlock::ToolCall { id, name, arguments } = &assistant.content[1] {
+        assert!(matches!(
+            assistant.content[1],
+            ContentBlock::ToolCall { .. }
+        ));
+        if let ContentBlock::ToolCall {
+            id,
+            name,
+            arguments,
+        } = &assistant.content[1]
+        {
             assert_eq!(id, "tool_abc");
             assert_eq!(name, "read_file");
             assert_eq!(arguments, &serde_json::json!({"path": "test.txt"}));
@@ -954,11 +995,22 @@ mod tests {
         let tool = &history[1];
         assert!(matches!(tool.role, crate::providers::MessageRole::Tool));
         assert_eq!(tool.content.len(), 1);
-        if let ContentBlock::ToolResult { tool_call_id, name, content, is_error } = &tool.content[0] {
+        if let ContentBlock::ToolResult {
+            tool_call_id,
+            name,
+            content,
+            is_error,
+        } = &tool.content[0]
+        {
             assert_eq!(tool_call_id, "tool_abc");
             assert_eq!(name, "read_file");
             assert_eq!(*is_error, false);
-            assert_eq!(content, &vec![ContentBlock::Text { text: "Hello World".to_string() }]);
+            assert_eq!(
+                content,
+                &vec![ContentBlock::Text {
+                    text: "Hello World".to_string()
+                }]
+            );
         }
     }
 }

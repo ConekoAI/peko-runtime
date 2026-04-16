@@ -5,9 +5,9 @@
 
 use crate::common::paths::PathResolver;
 use crate::session::events::SessionEvent;
-use crate::session::SessionEntry;
 use crate::session::metadata_controller::MetadataController;
 use crate::session::sync::SyncSessionStorage;
+use crate::session::SessionEntry;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -274,7 +274,8 @@ impl SessionService {
         label: Option<String>,
     ) -> Result<BranchResult> {
         // Use SessionManager for branching
-        let mut manager = SessionManager::for_cli(self.path_resolver.clone(), agent_name, team, "default");
+        let mut manager =
+            SessionManager::for_cli(self.path_resolver.clone(), agent_name, team, "default");
 
         // Verify parent exists
         let _parent_metadata = manager
@@ -451,7 +452,8 @@ impl SessionService {
                         crate::types::message::MessageRole::Assistant => "assistant",
                         crate::types::message::MessageRole::System => "system",
                         crate::types::message::MessageRole::Tool => "tool",
-                    }.to_string(),
+                    }
+                    .to_string(),
                     content: msg.text_content(),
                     timestamp: msg.envelope.ts.to_rfc3339(),
                 }

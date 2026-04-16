@@ -69,9 +69,7 @@ impl MigrationReport {
 
     /// Get the total number of successfully migrated items
     pub fn total_migrated(&self) -> usize {
-        self.skills_migrated.len()
-            + self.mcp_servers_migrated.len()
-            + self.tools_migrated.len()
+        self.skills_migrated.len() + self.mcp_servers_migrated.len() + self.tools_migrated.len()
     }
 
     /// Add a successfully migrated skill
@@ -210,8 +208,8 @@ pub async fn set_migration_completed() -> Result<()> {
     state.migration_completed = true;
     state.completed_at = Some(chrono::Utc::now().to_rfc3339());
 
-    let content = serde_json::to_string_pretty(&state)
-        .context("Failed to serialize migration state")?;
+    let content =
+        serde_json::to_string_pretty(&state).context("Failed to serialize migration state")?;
 
     tokio::fs::write(&state_path, content)
         .await
@@ -241,8 +239,8 @@ pub async fn set_item_migrated(item_id: &str) -> Result<()> {
 
     state.migrated_items.insert(item_id.to_string(), true);
 
-    let content = serde_json::to_string_pretty(&state)
-        .context("Failed to serialize migration state")?;
+    let content =
+        serde_json::to_string_pretty(&state).context("Failed to serialize migration state")?;
 
     tokio::fs::write(&state_path, content)
         .await
@@ -363,9 +361,7 @@ pub async fn discover_legacy_skills() -> Result<Vec<LegacySkill>> {
 }
 
 /// Parse a SKILL.md file to extract metadata from YAML frontmatter
-async fn parse_skill_md(
-    path: &Path,
-) -> Result<(String, String, Vec<String>, Option<String>)> {
+async fn parse_skill_md(path: &Path) -> Result<(String, String, Vec<String>, Option<String>)> {
     use serde::Deserialize;
 
     #[derive(Deserialize)]
@@ -378,7 +374,8 @@ async fn parse_skill_md(
         author: Option<String>,
     }
 
-    let (meta, _): (SkillFrontmatter, _) = parsing::parse_yaml_frontmatter_file(path).await
+    let (meta, _): (SkillFrontmatter, _) = parsing::parse_yaml_frontmatter_file(path)
+        .await
         .with_context(|| format!("Failed to parse SKILL.md at {:?}", path))?;
 
     if meta.name.is_empty() {
@@ -475,7 +472,10 @@ pub async fn discover_legacy_universal_tools() -> Result<Vec<LegacyUniversalTool
         // Parse manifest to get the actual tool name
         match parse_tool_manifest(&manifest_path).await {
             Ok(tool_name) => {
-                debug!("Discovered legacy universal tool: {} at {:?}", tool_name, path);
+                debug!(
+                    "Discovered legacy universal tool: {} at {:?}",
+                    tool_name, path
+                );
                 tools.push(LegacyUniversalTool {
                     name: tool_name,
                     path: path.clone(),
@@ -483,7 +483,10 @@ pub async fn discover_legacy_universal_tools() -> Result<Vec<LegacyUniversalTool
                 });
             }
             Err(e) => {
-                warn!("Failed to parse tool manifest at {:?}: {}", manifest_path, e);
+                warn!(
+                    "Failed to parse tool manifest at {:?}: {}",
+                    manifest_path, e
+                );
             }
         }
     }
@@ -518,10 +521,7 @@ async fn parse_tool_manifest(path: &Path) -> Result<String> {
 // =============================================================================
 
 /// Migrate a single legacy skill to Extension 2.0 format
-async fn migrate_skill(
-    manager: &mut ExtensionManager,
-    skill: &LegacySkill,
-) -> Result<String> {
+async fn migrate_skill(manager: &mut ExtensionManager, skill: &LegacySkill) -> Result<String> {
     let item_id = format!("skill:{}", skill.name);
 
     // Check if already migrated
@@ -542,7 +542,10 @@ async fn migrate_skill(
     // Mark as migrated
     set_item_migrated(&item_id).await?;
 
-    info!("Successfully migrated skill '{}' as extension '{}'", skill.name, extension_id);
+    info!(
+        "Successfully migrated skill '{}' as extension '{}'",
+        skill.name, extension_id
+    );
     Ok(skill.name.clone())
 }
 
@@ -575,7 +578,10 @@ async fn migrate_mcp_server(
     // Clean up temp directory
     let _ = tokio::fs::remove_dir_all(&temp_dir).await;
 
-    info!("Successfully migrated MCP server '{}' as extension '{}'", server.name, extension_id);
+    info!(
+        "Successfully migrated MCP server '{}' as extension '{}'",
+        server.name, extension_id
+    );
     Ok(server.name.clone())
 }
 
@@ -640,7 +646,10 @@ async fn migrate_universal_tool(
         return Ok(tool.name.clone());
     }
 
-    info!("Migrating universal tool '{}' from {:?}", tool.name, tool.path);
+    info!(
+        "Migrating universal tool '{}' from {:?}",
+        tool.name, tool.path
+    );
 
     let extension_id = manager
         .install(&tool.path)
@@ -650,7 +659,10 @@ async fn migrate_universal_tool(
     // Mark as migrated
     set_item_migrated(&item_id).await?;
 
-    info!("Successfully migrated universal tool '{}' as extension '{}'", tool.name, extension_id);
+    info!(
+        "Successfully migrated universal tool '{}' as extension '{}'",
+        tool.name, extension_id
+    );
     Ok(tool.name.clone())
 }
 
@@ -999,7 +1011,9 @@ This is the skill content.
         let temp_dir = tempfile::tempdir().unwrap();
         let skill_file = temp_dir.path().join("SKILL.md");
 
-        tokio::fs::write(&skill_file, "# Just markdown\nNo frontmatter.").await.unwrap();
+        tokio::fs::write(&skill_file, "# Just markdown\nNo frontmatter.")
+            .await
+            .unwrap();
 
         assert!(parse_skill_md(&skill_file).await.is_err());
     }
@@ -1021,7 +1035,9 @@ This is the skill content.
         let temp_dir = tempfile::tempdir().unwrap();
         let manifest_file = temp_dir.path().join("manifest.json");
 
-        tokio::fs::write(&manifest_file, "not valid json").await.unwrap();
+        tokio::fs::write(&manifest_file, "not valid json")
+            .await
+            .unwrap();
 
         assert!(parse_tool_manifest(&manifest_file).await.is_err());
     }

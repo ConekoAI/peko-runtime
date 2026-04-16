@@ -298,10 +298,15 @@ impl SessionHandle {
     }
 
     /// Record token usage (via shared controller)
-    /// 
+    ///
     /// `context_window` is the total_tokens from the current assistant message.
     /// `input` and `output` are the incremental tokens for this turn.
-    pub async fn record_usage(&self, context_window: usize, input: usize, output: usize) -> Result<()> {
+    pub async fn record_usage(
+        &self,
+        context_window: usize,
+        input: usize,
+        output: usize,
+    ) -> Result<()> {
         let mut controller = self.metadata.write().await;
         controller
             .record_token_usage(&self.session_id, context_window, input, output)
@@ -653,11 +658,15 @@ impl SessionManager {
 
         // Check peer routing via metadata controller (single lookup)
         let active_session_id = if self.index.is_some() {
-            self.metadata_controller.write().await.get_active_session_id(&peer_key).await?
+            self.metadata_controller
+                .write()
+                .await
+                .get_active_session_id(&peer_key)
+                .await?
         } else {
             None
         };
-        
+
         if let Some(session_id) = active_session_id {
             info!(
                 "Found active session '{}' for peer_key '{}'",
@@ -787,9 +796,10 @@ impl SessionManager {
             .clone();
 
         // Use provided session ID or generate a new one
-        let session_id = options.session_id.clone().unwrap_or_else(|| {
-            uuid::Uuid::new_v4().to_string()
-        });
+        let session_id = options
+            .session_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let session_key = derive_base_session_key(agent, peer);
 
         // 1. Create JSONL file directly using SessionStorage
@@ -799,7 +809,7 @@ impl SessionManager {
             .ok()
             .map(|p| p.to_string_lossy().to_string());
         storage.create_session(&session_id, cwd).await?;
-        
+
         // 2. Create UnifiedSession from components
         let session = UnifiedSession::from_components(
             session_id.clone(),
@@ -836,7 +846,11 @@ impl SessionManager {
                 peer.peer_type(),
                 peer.id(),
             );
-            self.metadata_controller.write().await.create_for_peer(entry, &session_key).await?;
+            self.metadata_controller
+                .write()
+                .await
+                .create_for_peer(entry, &session_key)
+                .await?;
             self.metadata_controller.write().await.save_index().await?;
         }
 
@@ -879,7 +893,13 @@ impl SessionManager {
 
         // 2. Try to get peer info from index via metadata controller
         let peer = if self.index.is_some() {
-            if let Ok(Some(entry)) = self.metadata_controller.write().await.get_entry_from_index(session_id).await {
+            if let Ok(Some(entry)) = self
+                .metadata_controller
+                .write()
+                .await
+                .get_entry_from_index(session_id)
+                .await
+            {
                 // Restore peer from entry
                 match (entry.peer_type.as_deref(), entry.peer_id) {
                     (Some("agent"), Some(id)) => Peer::Agent(id),
@@ -1086,7 +1106,11 @@ impl SessionManager {
             .ok_or_else(|| anyhow::anyhow!("Agent name not set"))?;
 
         let peer_key = derive_base_session_key(agent, peer);
-        self.metadata_controller.write().await.set_active_for_peer(&peer_key, session_id).await?;
+        self.metadata_controller
+            .write()
+            .await
+            .set_active_for_peer(&peer_key, session_id)
+            .await?;
         self.metadata_controller.write().await.save_index().await?;
 
         info!("Switched {} to session {}", peer_key, session_id);
@@ -1109,7 +1133,11 @@ impl SessionManager {
         }
 
         let peer_key = derive_base_session_key(&agent, peer);
-        self.metadata_controller.write().await.list_for_peer_from_index(&peer_key).await
+        self.metadata_controller
+            .write()
+            .await
+            .list_for_peer_from_index(&peer_key)
+            .await
     }
 
     /// Get active session ID for a peer
@@ -1125,7 +1153,11 @@ impl SessionManager {
         }
 
         let peer_key = derive_base_session_key(&agent, peer);
-        self.metadata_controller.write().await.get_active_session_id(&peer_key).await
+        self.metadata_controller
+            .write()
+            .await
+            .get_active_session_id(&peer_key)
+            .await
     }
 
     /// Get or create a base session for a peer
@@ -1190,7 +1222,7 @@ impl SessionManager {
                     .ok()
                     .map(|p| p.to_string_lossy().to_string());
                 storage.create_session(&session_id, cwd).await?;
-                
+
                 // Create UnifiedSession from components
                 UnifiedSession::from_components(
                     session_id.clone(),
@@ -1724,7 +1756,7 @@ impl SessionManager {
     fn clone_manager(&self) -> Self {
         // Create a new manager with same state
         // Shares the metadata controller Arc for cache consistency
-        let sessions_dir = self
+        let _sessions_dir = self
             .sessions_dir
             .clone()
             .unwrap_or_else(|| std::env::temp_dir());
@@ -2320,7 +2352,10 @@ mod tests {
 
         // Verify it's gone from metadata
         let metadata_result = manager.get_session_metadata(&session_id).await;
-        assert!(metadata_result.is_err(), "Session metadata should be deleted");
+        assert!(
+            metadata_result.is_err(),
+            "Session metadata should be deleted"
+        );
 
         // Verify JSONL is also deleted
         let jsonl_path = temp.path().join(format!("{}.jsonl", session_id));

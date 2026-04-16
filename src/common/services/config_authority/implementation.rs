@@ -2,16 +2,15 @@
 //!
 //! The main implementation of the ConfigAuthority trait.
 
+use super::authority_trait::{ConfigAuthority, ConfigError, ConfigResult};
 use super::cache::ConfigCache;
 use super::entry::{AgentConfigEntry, ConfigSource};
 use super::io::{ApiKeyResolver, ConfigIo};
-use super::authority_trait::{ConfigAuthority, ConfigError, ConfigResult};
 use crate::common::paths::PathResolver;
 use crate::types::agent::AgentConfig;
 use async_trait::async_trait;
 use chrono::Utc;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 /// Main implementation of ConfigAuthority
@@ -140,7 +139,11 @@ impl ConfigAuthority for ConfigAuthorityImpl {
 
         // Load from disk
         let mut config = self.io.load_toml(&config_path).await.map_err(|e| {
-            ConfigError::Other(format!("Failed to load config from {}: {}", config_path.display(), e))
+            ConfigError::Other(format!(
+                "Failed to load config from {}: {}",
+                config_path.display(),
+                e
+            ))
         })?;
 
         // Resolve API key if not set in config
@@ -298,9 +301,10 @@ impl ConfigAuthority for ConfigAuthorityImpl {
         self.cache.remove(team, agent_name).await;
 
         // Delete file
-        self.io.delete(&config_path).await.map_err(|e| {
-            ConfigError::Other(format!("Failed to delete config: {}", e))
-        })?;
+        self.io
+            .delete(&config_path)
+            .await
+            .map_err(|e| ConfigError::Other(format!("Failed to delete config: {}", e)))?;
 
         info!("Deleted agent '{}' config from team '{}'", agent_name, team);
         Ok(true)
@@ -341,7 +345,11 @@ impl ConfigAuthorityImpl {
         let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
 
         let tools = config.tools.get_or_insert_with(Default::default);
-        if !tools.enabled.iter().any(|e| e.eq_ignore_ascii_case(tool_name)) {
+        if !tools
+            .enabled
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(tool_name))
+        {
             tools.enabled.push(tool_name.to_string());
         }
 
@@ -407,7 +415,10 @@ mod tests {
         let config = AgentConfig::default();
 
         // Save
-        let path = authority.save("test-agent", "default", &config).await.unwrap();
+        let path = authority
+            .save("test-agent", "default", &config)
+            .await
+            .unwrap();
         assert!(path.exists());
 
         // Retrieve
@@ -437,10 +448,7 @@ mod tests {
             .save("existing", "default", &config)
             .await
             .unwrap();
-        assert!(authority
-            .exists("existing", Some("default"))
-            .await
-            .unwrap());
+        assert!(authority.exists("existing", Some("default")).await.unwrap());
     }
 
     #[tokio::test]

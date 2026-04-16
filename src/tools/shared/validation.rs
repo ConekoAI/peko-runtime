@@ -35,7 +35,11 @@ impl std::fmt::Display for ValidationError {
                 write!(f, "Invalid parameter '{}': {}", param, reason)
             }
             ValidationError::SchemaTypeMismatch { expected, actual } => {
-                write!(f, "Schema type mismatch: expected '{}', got '{}'", expected, actual)
+                write!(
+                    f,
+                    "Schema type mismatch: expected '{}', got '{}'",
+                    expected, actual
+                )
             }
             ValidationError::MissingRequiredParam { param } => {
                 write!(f, "Missing required parameter: '{}'", param)
@@ -144,14 +148,13 @@ pub fn validate_no_reserved_params_leak(
 }
 
 /// Validate that all required parameters are present
-pub fn validate_required_params(
-    params: &Value,
-    schema: &Value,
-) -> Result<(), ValidationError> {
-    let obj = params.as_object().ok_or_else(|| ValidationError::SchemaTypeMismatch {
-        expected: "object".to_string(),
-        actual: params.to_string(),
-    })?;
+pub fn validate_required_params(params: &Value, schema: &Value) -> Result<(), ValidationError> {
+    let obj = params
+        .as_object()
+        .ok_or_else(|| ValidationError::SchemaTypeMismatch {
+            expected: "object".to_string(),
+            actual: params.to_string(),
+        })?;
 
     if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
         for req in required.iter().filter_map(|v| v.as_str()) {
@@ -174,14 +177,19 @@ pub fn validate_tool_result(result: &Value) -> Result<ToolResultFormat, Validati
     // Check if it follows ExecuteResult format
     if let Some(obj) = result.as_object() {
         if obj.contains_key("success") {
-            let success = obj["success"].as_bool().ok_or_else(|| ValidationError::InvalidUserParam {
-                param: "success".to_string(),
-                reason: "Must be a boolean".to_string(),
-            })?;
+            let success =
+                obj["success"]
+                    .as_bool()
+                    .ok_or_else(|| ValidationError::InvalidUserParam {
+                        param: "success".to_string(),
+                        reason: "Must be a boolean".to_string(),
+                    })?;
 
             if success {
                 // Success result should have data field or be treated as data itself
-                return Ok(ToolResultFormat::ExecuteResult { has_data: obj.contains_key("data") });
+                return Ok(ToolResultFormat::ExecuteResult {
+                    has_data: obj.contains_key("data"),
+                });
             } else {
                 // Error result should have error field
                 if !obj.contains_key("error") {
@@ -255,11 +263,11 @@ impl ValidationBuilder {
 
     pub fn validate_user_params(&self, params: &Value) -> Result<(), ValidationError> {
         validate_no_reserved_in_user_params(params, &self.reserved)?;
-        
+
         if let Some(ref schema) = self.schema {
             validate_required_params(params, schema)?;
         }
-        
+
         Ok(())
     }
 
@@ -290,7 +298,7 @@ mod tests {
     fn test_validate_no_reserved_in_user_params_ok() {
         let params = json!({"query": "test", "count": 5});
         let reserved = test_reserved();
-        
+
         assert!(validate_no_reserved_in_user_params(&params, &reserved).is_ok());
     }
 
@@ -298,7 +306,7 @@ mod tests {
     fn test_validate_no_reserved_in_user_params_fail() {
         let params = json!({"query": "test", "agent_id": "hacked"});
         let reserved = test_reserved();
-        
+
         let result = validate_no_reserved_in_user_params(&params, &reserved);
         assert!(result.is_err());
         assert!(matches!(
@@ -317,7 +325,7 @@ mod tests {
             "required": ["query"]
         });
         let reserved = test_reserved();
-        
+
         assert!(validate_no_reserved_params_leak(&schema, &reserved).is_ok());
     }
 
@@ -331,7 +339,7 @@ mod tests {
             }
         });
         let reserved = test_reserved();
-        
+
         let result = validate_no_reserved_params_leak(&schema, &reserved);
         assert!(result.is_err());
         assert!(matches!(
@@ -350,7 +358,7 @@ mod tests {
             "required": ["query", "session_id"]  // Leaked!
         });
         let reserved = test_reserved();
-        
+
         let result = validate_no_reserved_params_leak(&schema, &reserved);
         assert!(result.is_err());
         assert!(matches!(
@@ -366,7 +374,7 @@ mod tests {
             "type": "object",
             "required": ["query"]
         });
-        
+
         assert!(validate_required_params(&params, &schema).is_ok());
     }
 
@@ -377,7 +385,7 @@ mod tests {
             "type": "object",
             "required": ["query"]
         });
-        
+
         let result = validate_required_params(&params, &schema);
         assert!(result.is_err());
         assert!(matches!(
@@ -392,7 +400,7 @@ mod tests {
             "success": true,
             "data": {"value": 42}
         });
-        
+
         let format = validate_tool_result(&result).unwrap();
         assert!(matches!(
             format,
@@ -406,7 +414,7 @@ mod tests {
             "success": false,
             "error": "Something went wrong"
         });
-        
+
         let format = validate_tool_result(&result).unwrap();
         assert!(matches!(
             format,
@@ -417,7 +425,7 @@ mod tests {
     #[test]
     fn test_validate_tool_result_plain_object() {
         let result = json!({"value": 42, "message": "hello"});
-        
+
         let format = validate_tool_result(&result).unwrap();
         assert_eq!(format, ToolResultFormat::PlainObject);
     }
@@ -428,7 +436,7 @@ mod tests {
             "success": false
             // Missing "error" field
         });
-        
+
         let result = validate_tool_result(&result);
         assert!(result.is_err());
     }
@@ -460,7 +468,7 @@ mod tests {
             ]
         });
         let reserved = test_reserved();
-        
+
         let result = validate_no_reserved_params_leak(&schema, &reserved);
         assert!(result.is_err());
     }

@@ -269,10 +269,7 @@ pub async fn handle_agent_import(
 ) -> anyhow::Result<()> {
     let service = paths.services().agent();
 
-    let opts = AgentImportOptions {
-        name,
-        team,
-    };
+    let opts = AgentImportOptions { name, team };
 
     let result = service.import_agent(file_path.as_ref(), opts).await?;
 
@@ -383,9 +380,12 @@ pub async fn handle_agent_config(
         AgentConfigCommands::Get { name, key, team } => {
             handle_agent_config_get(paths, name, team, key, json).await
         }
-        AgentConfigCommands::Set { name, key, value, team } => {
-            handle_agent_config_set(paths, name, team, key, value, json).await
-        }
+        AgentConfigCommands::Set {
+            name,
+            key,
+            value,
+            team,
+        } => handle_agent_config_set(paths, name, team, key, value, json).await,
     }
 }
 

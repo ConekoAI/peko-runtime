@@ -18,12 +18,9 @@
 //! ```
 
 use crate::extensions::services::ReservedParamsConfig;
-use crate::mcp::{
-    tool_proxy::McpToolProxy,
-    types::Tool as McpTool,
-};
-use crate::tools::{Tool, ToolContext};
+use crate::mcp::{tool_proxy::McpToolProxy, types::Tool as McpTool};
 use crate::tools::shared::proxy_utils::execute_with_context_handling;
+use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
@@ -124,7 +121,7 @@ impl InjectableMcpToolProxy {
     fn filter_schema(schema: &Value, reserved: &ReservedParamsConfig) -> Value {
         use crate::tools::shared::filter_reserved_params;
         use std::collections::HashSet;
-        
+
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();
         filter_reserved_params(schema, &reserved_set)
     }
@@ -133,11 +130,7 @@ impl InjectableMcpToolProxy {
     ///
     /// Takes the LLM-provided arguments and merges in the reserved parameters
     /// from the runtime context.
-    fn inject_params(
-        &self,
-        mut params: Value,
-        ctx: Option<&ToolContext>,
-    ) -> anyhow::Result<Value> {
+    fn inject_params(&self, mut params: Value, ctx: Option<&ToolContext>) -> anyhow::Result<Value> {
         if self.reserved_params.is_empty() {
             return Ok(params);
         }
@@ -154,7 +147,12 @@ impl InjectableMcpToolProxy {
 
         // Inject each reserved parameter
         for name in self.reserved_params.names() {
-            let value = self.reserved_params.resolve(ctx).get(name).cloned().unwrap_or(Value::Null);
+            let value = self
+                .reserved_params
+                .resolve(ctx)
+                .get(name)
+                .cloned()
+                .unwrap_or(Value::Null);
             trace!("Injecting reserved param '{}' = {:?}", name, value);
             obj.insert(name.clone(), value);
         }
@@ -215,16 +213,11 @@ impl Tool for InjectableMcpToolProxy {
         // We pass a closure that captures self and calls our do_execute method
         let tool_name = self.name().to_string();
         let server_name = self.server_name().to_string();
-        
-        execute_with_context_handling(
-            ctx,
-            &tool_name,
-            Some(&server_name),
-            || async move {
-                // Inject reserved parameters and execute
-                self.do_execute(params, Some(ctx)).await
-            },
-        )
+
+        execute_with_context_handling(ctx, &tool_name, Some(&server_name), || async move {
+            // Inject reserved parameters and execute
+            self.do_execute(params, Some(ctx)).await
+        })
         .await
     }
 
@@ -242,7 +235,10 @@ impl std::fmt::Debug for InjectableMcpToolProxy {
         f.debug_struct("InjectableMcpToolProxy")
             .field("server_name", &self.server_name())
             .field("tool_name", &self.name())
-            .field("reserved_params", &self.reserved_params.names().collect::<Vec<_>>())
+            .field(
+                "reserved_params",
+                &self.reserved_params.names().collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -318,7 +314,7 @@ mod tests {
             .with_static("static_val", "hardcoded");
 
         let resolved = config.resolve(Some(&ctx));
-        
+
         assert_eq!(resolved.get("agent_id"), Some(&json!("agent_456")));
         assert_eq!(resolved.get("session_id"), Some(&json!("sess_123")));
         assert_eq!(resolved.get("peer_id"), Some(&json!("peer_789")));
@@ -330,9 +326,9 @@ mod tests {
         let config = ReservedParamsConfig::new()
             .with_runtime("agent_id", "agent_id")
             .with_static("static_val", "hardcoded");
-        
+
         let resolved = config.resolve(None);
-        
+
         // Without context, runtime params resolve to null
         assert_eq!(resolved.get("agent_id"), Some(&json!(null)));
         // Static params still resolve

@@ -20,7 +20,7 @@ pub mod validation;
 
 pub use context_resolver::ContextResolver;
 pub use process_transport::{ProcessConfig, ProcessTransport, ProcessTransportBuilder};
-pub use proxy_utils::{execute_with_context_handling, estimate_tool_duration, format_status};
+pub use proxy_utils::{estimate_tool_duration, execute_with_context_handling, format_status};
 // Reserved params re-exported from extensions::services
 pub use crate::extensions::services::ParamSource as ReservedParamSource;
 pub use schema_filter::filter_reserved_params;

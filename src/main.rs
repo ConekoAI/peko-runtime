@@ -1,8 +1,8 @@
 use clap::Parser;
 use clap_complete::generate;
 use pekobot::commands::{
-    agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, send,
-    session, system, team, update, Cli, Commands, GlobalPaths,
+    agent, auth, config, cron, daemon, ext, init_logging, orchestration, provider, send, session,
+    system, team, update, Cli, Commands, GlobalPaths,
 };
 use pekobot::types::config::PekobotConfig;
 
@@ -53,30 +53,30 @@ async fn main() {
 }
 
 /// Run auto-migration for legacy extensions (Phase 8)
-/// 
+///
 /// This function checks if legacy extensions need to be migrated to the new
 /// Extension 2.0 system and performs the migration if needed.
-/// 
-/// This also initializes the global ExtensionCore, making it available to 
+///
+/// This also initializes the global ExtensionCore, making it available to
 /// agents via the Extension Framework.
-async fn run_extension_migration(paths: &GlobalPaths) -> anyhow::Result<()> {
-    use pekobot::extensions::manager::{ExtensionManager, ExtensionStorage};
+async fn run_extension_migration(_paths: &GlobalPaths) -> anyhow::Result<()> {
+    use pekobot::extensions::core::{init_global_core, ExtensionCore};
+    use pekobot::extensions::manager::ExtensionManager;
     use pekobot::extensions::migration::migrate_legacy_extensions;
-    use pekobot::extensions::core::{ExtensionCore, init_global_core};
     use std::sync::Arc;
-    
+
     // Create or get the global extension core
     // This is used by ToolFactory to discover extension tools
     let core = Arc::new(ExtensionCore::new());
     init_global_core(core.clone());
     tracing::debug!("Initialized global ExtensionCore");
-    
+
     // Create extension manager with the global core
     let mut manager = ExtensionManager::with_core(core.clone());
-    
+
     // Run migration
     let report = migrate_legacy_extensions(&mut manager).await?;
-    
+
     // Log results if anything was migrated
     let total = report.total_migrated();
     if total > 0 {
@@ -88,12 +88,12 @@ async fn run_extension_migration(paths: &GlobalPaths) -> anyhow::Result<()> {
             report.tools_migrated.len()
         );
     }
-    
+
     // Log any errors
     for (item, error) in &report.errors {
         tracing::warn!("Failed to migrate {}: {}", item, error);
     }
-    
+
     Ok(())
 }
 

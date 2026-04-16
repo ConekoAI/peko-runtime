@@ -12,10 +12,10 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot;
 
 /// Event stream returned by StatelessAgentService
-/// 
+///
 /// This is the unified interface between service and presentation layers.
 /// Channels consume this stream to produce appropriate output.
-/// 
+///
 /// The `completion` field provides a signal that ensures all session
 /// persistence operations complete before the stream is considered done.
 #[derive(Debug)]
@@ -23,10 +23,10 @@ pub struct EventStream {
     /// Receiver for agentic events
     pub receiver: Receiver<crate::engine::AgenticEvent>,
     /// Completion signal - resolves when all session writes are complete
-    /// 
+    ///
     /// This eliminates the race condition where the consumer receives the End
     /// event before session persistence finishes.
-    pub completion: oneshot::Receiver<anyhow::Result<()>>, 
+    pub completion: oneshot::Receiver<anyhow::Result<()>>,
     /// Session ID for this execution
     pub session_id: String,
     /// Whether this is a new session
@@ -34,7 +34,7 @@ pub struct EventStream {
 }
 
 /// Output from channel processing
-/// 
+///
 /// Contains the final result after processing all events.
 /// Used by blocking channels to return collected output.
 #[derive(Debug, Clone)]
@@ -192,10 +192,7 @@ pub trait Channel: Send + Sync {
     /// - WebSocket channels convert to WS messages
     ///
     /// Default implementation collects events into ChannelOutput.
-    async fn process_stream(
-        &self,
-        event_stream: EventStream,
-    ) -> Result<ChannelOutput> {
+    async fn process_stream(&self, event_stream: EventStream) -> Result<ChannelOutput> {
         default_process_stream(event_stream).await
     }
 }
@@ -204,7 +201,7 @@ pub trait Channel: Send + Sync {
 ///
 /// This is a helper function that channels can use to get the default
 /// behavior without duplicating the implementation.
-/// 
+///
 /// This implementation awaits the completion signal to ensure session
 /// persistence completes before returning, eliminating race conditions.
 pub async fn default_process_stream(event_stream: EventStream) -> Result<ChannelOutput> {
@@ -212,7 +209,7 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
 
     let mut output = ChannelOutput::new(&event_stream.session_id);
     output.is_new_session = event_stream.is_new_session;
-    
+
     let mut event_rx = event_stream.receiver;
     let completion = event_stream.completion;
     let mut end_received = false;
@@ -260,10 +257,7 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
     // Receiver closed - NOW wait for completion signal
     // This ensures session persistence is complete
     if end_received {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            completion
-        ).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), completion).await {
             Ok(Ok(Ok(()))) => {
                 // Session persistence complete
             }

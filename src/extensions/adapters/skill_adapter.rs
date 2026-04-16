@@ -27,13 +27,12 @@
 use crate::extensions::adapters::parsing;
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
-    ExtensionServices, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
+    HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
 };
 use crate::extensions::types::{ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -174,8 +173,9 @@ impl ExtensionTypeAdapter for SkillAdapter {
         content: &str,
     ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
         // Use shared parsing utility
-        let (skill_frontmatter, _): (SkillFrontmatter, _) = parsing::parse_yaml_frontmatter_typed(content)
-            .with_context(|| format!("Failed to parse SKILL.md frontmatter in {:?}", path))?;
+        let (skill_frontmatter, _): (SkillFrontmatter, _) =
+            parsing::parse_yaml_frontmatter_typed(content)
+                .with_context(|| format!("Failed to parse SKILL.md frontmatter in {:?}", path))?;
 
         // Convert to ExtensionManifest
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -539,7 +539,7 @@ This is the body content.
         // Use actual home directory for cross-platform compatibility
         let home = dirs::home_dir().expect("Should have home dir");
         let skill_path = home.join(".pekobot/skills/docker/SKILL.md");
-        
+
         let handler = SkillPromptHandler {
             skill_name: "docker".to_string(),
             description: "Docker operations".to_string(),
@@ -561,8 +561,11 @@ This is the body content.
             HookResult::Continue(HookOutput::Text(text)) => {
                 assert!(text.contains("docker: Docker operations"));
                 // Path should be compacted to use ~ for home directory
-                assert!(text.contains("~") || text.contains(".pekobot"), 
-                    "Expected compacted path, got: {}", text);
+                assert!(
+                    text.contains("~") || text.contains(".pekobot"),
+                    "Expected compacted path, got: {}",
+                    text
+                );
             }
             _ => panic!("Expected Continue with Text, got {:?}", result),
         }

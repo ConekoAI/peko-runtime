@@ -91,7 +91,7 @@ impl GlobTool {
             let parts: Vec<&str> = pattern.split("**").collect();
             let prefix = parts[0];
             let rest = if parts.len() > 1 { parts[1] } else { "" };
-            
+
             // Get the directory part before **
             let root_part = if prefix.is_empty() {
                 base_dir.clone()
@@ -99,22 +99,30 @@ impl GlobTool {
                 let prefix_path = PathBuf::from(prefix.trim_end_matches(|c| c == '/' || c == '\\'));
                 base_dir.join(prefix_path)
             };
-            
+
             // The pattern to match is ** followed by the rest
             let match_pattern = if rest.is_empty() || rest == "/" || rest == "\\" {
                 "**".to_string()
             } else {
                 format!("**{}", rest)
             };
-            
+
             (root_part, match_pattern)
         } else {
             // Simple pattern without **
             let pattern_path = PathBuf::from(pattern);
-            let parent = pattern_path.parent()
-                .map(|p| if p.as_os_str().is_empty() { PathBuf::from(".") } else { p.to_path_buf() })
+            let parent = pattern_path
+                .parent()
+                .map(|p| {
+                    if p.as_os_str().is_empty() {
+                        PathBuf::from(".")
+                    } else {
+                        p.to_path_buf()
+                    }
+                })
                 .unwrap_or_else(|| PathBuf::from("."));
-            let file_name = pattern_path.file_name()
+            let file_name = pattern_path
+                .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "*".to_string());
             (base_dir.join(parent), file_name)
@@ -141,10 +149,16 @@ impl GlobTool {
             limit,
             &mut entries,
             &mut matched,
-        ).await?;
+        )
+        .await?;
 
         // Sort entries by path for consistent output
-        entries.sort_by(|a, b| a["path"].as_str().unwrap_or("").cmp(b["path"].as_str().unwrap_or("")));
+        entries.sort_by(|a, b| {
+            a["path"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["path"].as_str().unwrap_or(""))
+        });
 
         let truncated = matched > limit;
 
@@ -230,7 +244,8 @@ impl GlobTool {
                                 limit,
                                 entries,
                                 matched,
-                            )).await?;
+                            ))
+                            .await?;
                         }
                     } else {
                         entries.push(entry_json);
@@ -248,7 +263,8 @@ impl GlobTool {
                         limit,
                         entries,
                         matched,
-                    )).await?;
+                    ))
+                    .await?;
                 }
             }
         }
@@ -335,7 +351,7 @@ Find test files:
 ```json
 {"pattern": "**/test_*.py"}
 ```"#
-        .to_string()
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -409,17 +425,24 @@ mod tests {
         let tool = GlobTool::new().with_workspace(temp_dir.path());
 
         // Create test files
-        fs::write(temp_dir.path().join("file1.rs"), "").await.unwrap();
-        fs::write(temp_dir.path().join("file2.rs"), "").await.unwrap();
-        fs::write(temp_dir.path().join("file.txt"), "").await.unwrap();
+        fs::write(temp_dir.path().join("file1.rs"), "")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("file2.rs"), "")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("file.txt"), "")
+            .await
+            .unwrap();
 
         let params = json!({"pattern": "*.rs"});
         let result = tool.execute(params).await.unwrap();
 
         let entries = result["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
-        
-        let names: Vec<&str> = entries.iter()
+
+        let names: Vec<&str> = entries
+            .iter()
             .map(|e| e["name"].as_str().unwrap())
             .collect();
         assert!(names.contains(&"file1.rs"));
@@ -432,10 +455,18 @@ mod tests {
         let tool = GlobTool::new().with_workspace(temp_dir.path());
 
         // Create nested files
-        fs::create_dir_all(temp_dir.path().join("src/components")).await.unwrap();
-        fs::write(temp_dir.path().join("src/main.rs"), "").await.unwrap();
-        fs::write(temp_dir.path().join("src/lib.rs"), "").await.unwrap();
-        fs::write(temp_dir.path().join("src/components/mod.rs"), "").await.unwrap();
+        fs::create_dir_all(temp_dir.path().join("src/components"))
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("src/main.rs"), "")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("src/lib.rs"), "")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("src/components/mod.rs"), "")
+            .await
+            .unwrap();
 
         let params = json!({"pattern": "src/**/*.rs"});
         let result = tool.execute(params).await.unwrap();
@@ -450,15 +481,19 @@ mod tests {
         let tool = GlobTool::new().with_workspace(temp_dir.path());
 
         // Create hidden and normal files
-        fs::write(temp_dir.path().join("visible.txt"), "").await.unwrap();
+        fs::write(temp_dir.path().join("visible.txt"), "")
+            .await
+            .unwrap();
         #[cfg(unix)]
-        fs::write(temp_dir.path().join(".hidden"), "").await.unwrap();
+        fs::write(temp_dir.path().join(".hidden"), "")
+            .await
+            .unwrap();
 
         // Without include_hidden
         let params = json!({"pattern": "*"});
         let result = tool.execute(params).await.unwrap();
         let entries = result["entries"].as_array().unwrap();
-        
+
         // On Unix: 1 file (excluding .hidden), on Windows: depends
         if cfg!(unix) {
             assert_eq!(entries.len(), 1);
@@ -481,7 +516,9 @@ mod tests {
 
         // Create many files
         for i in 0..10 {
-            fs::write(temp_dir.path().join(format!("file{}.txt", i)), "").await.unwrap();
+            fs::write(temp_dir.path().join(format!("file{}.txt", i)), "")
+                .await
+                .unwrap();
         }
 
         let params = json!({"pattern": "*.txt", "limit": 5});

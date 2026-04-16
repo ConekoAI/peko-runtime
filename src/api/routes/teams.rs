@@ -285,7 +285,6 @@ mod base64 {
         encoder.write_all(input.as_bytes()).unwrap();
         encoder.into_inner()
     }
-
 }
 
 #[cfg(test)]

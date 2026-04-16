@@ -4,7 +4,6 @@
 //! Team capabilities provide defaults that agents inherit if they don't override.
 
 use crate::common::paths::PathResolver;
-use crate::types::agent::ToolSettings;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -84,7 +83,11 @@ impl TeamCapabilityConfig {
             return false;
         }
         // Empty enabled list = no team-level restrictions
-        self.enabled.is_empty() || self.enabled.iter().any(|c| c.eq_ignore_ascii_case(cap_name))
+        self.enabled.is_empty()
+            || self
+                .enabled
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(cap_name))
     }
 }
 

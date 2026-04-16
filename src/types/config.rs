@@ -318,14 +318,9 @@ pub enum SourceDetection {
         value_prefix: Option<String>,
     },
     /// Match by payload field path
-    PayloadField {
-        path: String,
-        value: Option<String>,
-    },
+    PayloadField { path: String, value: Option<String> },
     /// Match by User-Agent substring
-    UserAgent {
-        contains: String,
-    },
+    UserAgent { contains: String },
 }
 
 /// External ingress configuration

@@ -81,7 +81,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// General extension type identifier
 pub const GENERAL_EXTENSION_TYPE: &str = "general";
@@ -112,9 +112,11 @@ impl GeneralExtensionAdapter {
         }
 
         // Try parsing from raw config
-        if let Ok(config) = serde_json::from_value::<GeneralExtensionConfig>(
-            serde_json::json!(manifest.metadata.clone()),
-        ) {
+        if let Ok(config) =
+            serde_json::from_value::<GeneralExtensionConfig>(serde_json::json!(manifest
+                .metadata
+                .clone()))
+        {
             return config.hooks;
         }
 
@@ -126,11 +128,7 @@ impl GeneralExtensionAdapter {
         match decl.point.as_str() {
             // Prompt lifecycle
             "prompt.system_section" => {
-                let section = decl
-                    .params
-                    .get("section")?
-                    .as_str()?
-                    .to_string();
+                let section = decl.params.get("section")?.as_str()?.to_string();
                 let priority = decl
                     .params
                     .get("priority")
@@ -144,35 +142,19 @@ impl GeneralExtensionAdapter {
             // Tool lifecycle
             "tool.register" => Some(HookPoint::ToolRegister),
             "tool.execute" => {
-                let tool_name = decl
-                    .params
-                    .get("tool_name")?
-                    .as_str()?
-                    .to_string();
+                let tool_name = decl.params.get("tool_name")?.as_str()?.to_string();
                 Some(HookPoint::ToolExecute { tool_name })
             }
             "tool.execute_async" => {
-                let tool_name = decl
-                    .params
-                    .get("tool_name")?
-                    .as_str()?
-                    .to_string();
+                let tool_name = decl.params.get("tool_name")?.as_str()?.to_string();
                 Some(HookPoint::ToolExecuteAsync { tool_name })
             }
             "tool.check_status" => {
-                let tool_name = decl
-                    .params
-                    .get("tool_name")?
-                    .as_str()?
-                    .to_string();
+                let tool_name = decl.params.get("tool_name")?.as_str()?.to_string();
                 Some(HookPoint::ToolCheckStatus { tool_name })
             }
             "tool.cancel" => {
-                let tool_name = decl
-                    .params
-                    .get("tool_name")?
-                    .as_str()?
-                    .to_string();
+                let tool_name = decl.params.get("tool_name")?.as_str()?.to_string();
                 Some(HookPoint::ToolCancel { tool_name })
             }
             "tool.result_transform" => Some(HookPoint::ToolResultTransform),
@@ -190,11 +172,7 @@ impl GeneralExtensionAdapter {
 
             // Event lifecycle
             "event.subscribe" => {
-                let topic_pattern = decl
-                    .params
-                    .get("topic_pattern")?
-                    .as_str()?
-                    .to_string();
+                let topic_pattern = decl.params.get("topic_pattern")?.as_str()?.to_string();
                 Some(HookPoint::EventSubscribe { topic_pattern })
             }
             "event.emit" => Some(HookPoint::EventEmit),
@@ -367,7 +345,9 @@ impl HookHandler for GeneralHandler {
         // By default, pass through - extensions should implement custom logic
         // by providing their own handler implementations
         match ctx.input {
-            HookInput::Message(envelope) => HookResult::Continue(HookOutput::Message(envelope.content)),
+            HookInput::Message(envelope) => {
+                HookResult::Continue(HookOutput::Message(envelope.content))
+            }
             HookInput::Json(json) => HookResult::Continue(HookOutput::Json(json)),
             HookInput::ToolRegistry(access) => {
                 HookResult::Continue(HookOutput::Json(serde_json::json!({
@@ -375,9 +355,10 @@ impl HookHandler for GeneralHandler {
                 })))
             }
             HookInput::SystemEvent(event) => HookResult::Continue(HookOutput::Event(event)),
-            HookInput::PromptBuild(_) => HookResult::Continue(HookOutput::Text(
-                format!("General extension {} handler {}", self.extension_id.0, self.handler_name)
-            )),
+            HookInput::PromptBuild(_) => HookResult::Continue(HookOutput::Text(format!(
+                "General extension {} handler {}",
+                self.extension_id.0, self.handler_name
+            ))),
             _ => HookResult::PassThrough,
         }
     }
@@ -402,7 +383,10 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
     let mut discovered = Vec::new();
 
     if !dir.exists() {
-        debug!("General extensions directory does not exist: {}", dir.display());
+        debug!(
+            "General extensions directory does not exist: {}",
+            dir.display()
+        );
         return Ok(discovered);
     }
 
@@ -423,7 +407,11 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
                 Ok((yaml, _)) => {
                     match extract_hooks_from_yaml(&yaml) {
                         Ok(hooks) => {
-                            match parsing::build_manifest_from_yaml(&yaml, GENERAL_EXTENSION_TYPE, &path) {
+                            match parsing::build_manifest_from_yaml(
+                                &yaml,
+                                GENERAL_EXTENSION_TYPE,
+                                &path,
+                            ) {
                                 Ok(mut manifest) => {
                                     // Store hooks in manifest metadata
                                     if let Ok(hooks_json) = serde_json::to_value(&hooks) {
@@ -438,7 +426,11 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
                         Err(e) => warn!("Failed to extract hooks: {}", e),
                     }
                 }
-                Err(e) => warn!("Failed to read manifest at {}: {}", manifest_path.display(), e),
+                Err(e) => warn!(
+                    "Failed to read manifest at {}: {}",
+                    manifest_path.display(),
+                    e
+                ),
             }
         }
 
@@ -446,20 +438,20 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
         let manifest_path = path.join("manifest.json");
         if manifest_path.exists() {
             match parsing::parse_json_file::<serde_json::Value>(&manifest_path).await {
-                Ok(json) => {
-                    match extract_hooks_from_json(&json) {
-                        Ok(hooks) => {
-                            match build_manifest_from_json(&json, &path) {
-                                Ok(manifest) => {
-                                    discovered.push(DiscoveredGeneralExtension { manifest, hooks });
-                                }
-                                Err(e) => warn!("Failed to build manifest: {}", e),
-                            }
+                Ok(json) => match extract_hooks_from_json(&json) {
+                    Ok(hooks) => match build_manifest_from_json(&json, &path) {
+                        Ok(manifest) => {
+                            discovered.push(DiscoveredGeneralExtension { manifest, hooks });
                         }
-                        Err(e) => warn!("Failed to extract hooks: {}", e),
-                    }
-                }
-                Err(e) => warn!("Failed to read manifest at {}: {}", manifest_path.display(), e),
+                        Err(e) => warn!("Failed to build manifest: {}", e),
+                    },
+                    Err(e) => warn!("Failed to extract hooks: {}", e),
+                },
+                Err(e) => warn!(
+                    "Failed to read manifest at {}: {}",
+                    manifest_path.display(),
+                    e
+                ),
             }
         }
     }
@@ -494,11 +486,23 @@ fn build_manifest_from_json(json: &serde_json::Value, path: &Path) -> Result<Ext
         .get("name")
         .and_then(|v| v.as_str())
         .with_context(|| "Missing required field: name")?;
-    let version = json.get("version").and_then(|v| v.as_str()).unwrap_or("1.0.0");
-    let description = json.get("description").and_then(|v| v.as_str()).unwrap_or("");
+    let version = json
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("1.0.0");
+    let description = json
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
-    let mut manifest =
-        ExtensionManifest::new(id, GENERAL_EXTENSION_TYPE, name, description, version, path.to_path_buf());
+    let mut manifest = ExtensionManifest::new(
+        id,
+        GENERAL_EXTENSION_TYPE,
+        name,
+        description,
+        version,
+        path.to_path_buf(),
+    );
 
     // Store hooks in manifest
     if let Some(hooks) = json.get("hooks") {
@@ -536,13 +540,22 @@ pub async fn register_general_extensions_with_core(
             let handler = binding.handler_factory.create(ext.manifest.clone());
             let handler_arc: Arc<dyn crate::extensions::core::HookHandler> = Arc::from(handler);
 
-            if let Err(e) = core.register_hook(binding.point, handler_arc, &extension_id).await {
-                warn!("Failed to register hook for extension {}: {}", extension_id, e);
+            if let Err(e) = core
+                .register_hook(binding.point, handler_arc, &extension_id)
+                .await
+            {
+                warn!(
+                    "Failed to register hook for extension {}: {}",
+                    extension_id, e
+                );
             }
         }
 
         registered += 1;
-        info!("Registered general extension '{}' with {} hooks", extension_id, hook_count);
+        info!(
+            "Registered general extension '{}' with {} hooks",
+            extension_id, hook_count
+        );
     }
 
     Ok(registered)
@@ -567,7 +580,10 @@ mod tests {
         let adapter = GeneralExtensionAdapter::new();
         let format = adapter.manifest_format();
 
-        assert!(matches!(format, super::super::ManifestFormat::YamlFrontmatterMarkdown { .. }));
+        assert!(matches!(
+            format,
+            super::super::ManifestFormat::YamlFrontmatterMarkdown { .. }
+        ));
     }
 
     #[test]
@@ -586,7 +602,9 @@ mod tests {
 
         let hook_point = adapter.parse_hook_point(&decl);
         assert!(hook_point.is_some());
-        assert!(matches!(hook_point.unwrap(), HookPoint::PromptSystemSection { section, priority } if section == "test" && priority == 50));
+        assert!(
+            matches!(hook_point.unwrap(), HookPoint::PromptSystemSection { section, priority } if section == "test" && priority == 50)
+        );
     }
 
     #[test]
@@ -604,7 +622,9 @@ mod tests {
 
         let hook_point = adapter.parse_hook_point(&decl);
         assert!(hook_point.is_some());
-        assert!(matches!(hook_point.unwrap(), HookPoint::ToolExecute { tool_name } if tool_name == "my_tool"));
+        assert!(
+            matches!(hook_point.unwrap(), HookPoint::ToolExecute { tool_name } if tool_name == "my_tool")
+        );
     }
 
     #[test]
@@ -622,7 +642,9 @@ mod tests {
 
         let hook_point = adapter.parse_hook_point(&decl);
         assert!(hook_point.is_some());
-        assert!(matches!(hook_point.unwrap(), HookPoint::EventSubscribe { topic_pattern } if topic_pattern == "instance.*"));
+        assert!(
+            matches!(hook_point.unwrap(), HookPoint::EventSubscribe { topic_pattern } if topic_pattern == "instance.*")
+        );
     }
 
     #[test]
@@ -694,7 +716,9 @@ hooks:
             .unwrap();
 
         let core = crate::extensions::ExtensionCore::new();
-        let count = load_and_register_general_extensions(&core, temp.path()).await.unwrap();
+        let count = load_and_register_general_extensions(&core, temp.path())
+            .await
+            .unwrap();
 
         assert_eq!(count, 1);
         assert_eq!(core.hook_count().await, 1);

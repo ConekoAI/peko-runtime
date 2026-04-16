@@ -24,12 +24,12 @@ pub struct Transport {
 
 impl Transport {
     /// Spawn a tool and create transport
-    /// 
+    ///
     /// Automatically detects script files (.py, .js) and uses appropriate interpreter.
     /// Uses the shared ProcessTransport for unified process management.
     pub async fn spawn(executable: impl AsRef<std::path::Path>) -> Result<Self> {
         let inner = crate::tools::shared::ProcessTransport::spawn_default(executable).await?;
-        
+
         Ok(Self {
             inner,
             request_timeout: Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS),
@@ -55,16 +55,14 @@ impl Transport {
         self.inner.send_line(&req_json).await?;
 
         // Read response with timeout
-        let response_json = timeout(
-            Duration::from_secs(timeout_secs),
-            self.inner.read_line(),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Tool request timed out"))??;
+        let response_json = timeout(Duration::from_secs(timeout_secs), self.inner.read_line())
+            .await
+            .map_err(|_| anyhow::anyhow!("Tool request timed out"))??;
 
         // Parse response
-        let response: Response = serde_json::from_str(&response_json)
-            .map_err(|e| anyhow::anyhow!("Invalid JSON response: {} (error: {})", response_json, e))?;
+        let response: Response = serde_json::from_str(&response_json).map_err(|e| {
+            anyhow::anyhow!("Invalid JSON response: {} (error: {})", response_json, e)
+        })?;
 
         // Verify id matches
         if response.id != req.id {
@@ -95,7 +93,10 @@ pub struct MockTransport {
 #[cfg(test)]
 impl MockTransport {
     pub fn new(responses: Vec<Response>) -> Self {
-        Self { responses, current: 0 }
+        Self {
+            responses,
+            current: 0,
+        }
     }
 
     pub async fn request(&mut self, _req: &Request) -> Result<Response> {
@@ -110,8 +111,8 @@ impl MockTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::protocol::{ErrorObject, ResponseResult};
+    use super::*;
 
     #[tokio::test]
     async fn test_mock_transport() {

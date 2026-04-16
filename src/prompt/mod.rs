@@ -10,4 +10,3 @@ pub mod builder;
 pub mod placeholder;
 
 pub use builder::{PromptMode, SystemPromptBuilder};
-pub use placeholder::{Placeholder, replace_placeholders};

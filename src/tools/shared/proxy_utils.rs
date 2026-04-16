@@ -38,7 +38,7 @@ pub struct ContextExecutionResult {
 ///     ctx,
 ///     "my_tool",
 ///     Some("mcp-server"),
-///     || async { 
+///     || async {
 ///         // Actual execution logic
 ///         Ok(json!({"result": "success"}))
 ///     }

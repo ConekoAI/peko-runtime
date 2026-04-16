@@ -7,13 +7,12 @@
 
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::{ExecutionRequest, ExecutionResult, StatelessAgentService};
-use crate::common::services::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl};
 use crate::common::paths::PathResolver;
-use crate::image::registry::{ImageRegistry, RegistryConfig};
+use crate::common::services::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// Events emitted by the stateless agent manager

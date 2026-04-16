@@ -19,7 +19,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 // Extension Core imports for skill loading and tool execution
-use crate::extensions::adapters::skill_adapter::{SkillAdapter, register_skills_with_core};
+use crate::extensions::adapters::skill_adapter::{register_skills_with_core, SkillAdapter};
 use crate::extensions::core::HookPointBuilder;
 use crate::extensions::{HookInput, HookOutput, HookResult};
 
@@ -59,7 +59,7 @@ pub struct AgenticLoopV4 {
 
 impl AgenticLoopV4 {
     /// Create a new v4 agentic loop
-    /// 
+    ///
     /// # Arguments
     /// * `agent` - The agent configuration
     /// * `provider` - The LLM provider to use
@@ -303,7 +303,8 @@ impl AgenticLoopV4 {
         }
 
         // Continue with the streaming run logic
-        self.run_streaming_loop(messages, session, on_event, run_id, streaming_config).await
+        self.run_streaming_loop(messages, session, on_event, run_id, streaming_config)
+            .await
     }
 
     /// Original run method - creates new session via SessionManager
@@ -338,7 +339,7 @@ impl AgenticLoopV4 {
         run_id: String,
     ) -> Result<AgenticResult> {
         // Get session_id once at start
-        let session_id = {
+        let _session_id = {
             let s = session.read().await;
             s.id.clone()
         };
@@ -347,7 +348,7 @@ impl AgenticLoopV4 {
         {
             let provider_name = self.agent.config.provider.provider_type.to_string();
             let model_name = &self.agent.config.provider.default_model;
-            
+
             let mut s = session.write().await;
             s.set_model(&provider_name, model_name);
         }
@@ -383,11 +384,11 @@ impl AgenticLoopV4 {
         loop {
             iteration += 1;
             info!("Agent loop: iteration {}", iteration);
-            
+
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
             // This allows tool changes to take effect without session restart
             let tool_defs = self.build_tool_definitions().await;
-            
+
             // ADR-019 Phase 3: Rebuild system prompt dynamically
             // Update the first message (system prompt) with fresh content
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
@@ -554,7 +555,11 @@ impl AgenticLoopV4 {
 
             let response = if self.provider.supports_native_tools() {
                 // Use native tool calling
-                info!("Calling chat_with_tools with {} messages and {} tool definitions", messages.len(), tool_defs.len());
+                info!(
+                    "Calling chat_with_tools with {} messages and {} tool definitions",
+                    messages.len(),
+                    tool_defs.len()
+                );
                 self.provider
                     .chat_with_tools(&messages, &tool_defs, &options)
                     .await?
@@ -563,9 +568,13 @@ impl AgenticLoopV4 {
                 info!("Using fallback chat (provider doesn't support native tools)");
                 self.fallback_chat_with_tools(&messages, "").await?
             };
-            
-            info!("Received response: stop_reason={:?}, content_blocks={}, tool_calls={}", 
-                  response.stop_reason, response.content.len(), response.tool_calls.len());
+
+            info!(
+                "Received response: stop_reason={:?}, content_blocks={}, tool_calls={}",
+                response.stop_reason,
+                response.content.len(),
+                response.tool_calls.len()
+            );
 
             // Accumulate usage
             total_usage.input += response.usage.input;
@@ -712,55 +721,75 @@ impl AgenticLoopV4 {
 
                         // Execute tool via ExtensionCore for unified execution (ADR-018a)
                         let start_time = std::time::Instant::now();
-                        
+
                         // Check if tool is registered in ExtensionCore
-                        let tool_in_extension = self.extension_core.get_tool_metadata(&name).await.is_some();
-                        
-                        let tool_result =
-                            if tool_in_extension {
-                                // Route through ExtensionCore for unified execution with panic isolation
-                                let hook_point = HookPointBuilder::tool_execute(name);
-                                let hook_input = HookInput::ToolCall {
-                                    tool_name: name.clone(),
-                                    params: arguments.clone(),
-                                };
-                                
-                                let hook_result = self.extension_core.invoke_hook(hook_point, hook_input).await;
-                                info!("Hook result for tool '{}': {:?}", name, std::mem::discriminant(&hook_result));
-                                match hook_result {
-                                    HookResult::Continue(HookOutput::Json(result)) => {
-                                        info!("Tool '{}' executed successfully via ExtensionCore: {}", name, result);
-                                        result.to_string()
-                                    }
-                                    HookResult::Continue(HookOutput::Text(result)) => {
-                                        info!("Tool '{}' executed successfully via ExtensionCore (text)", name);
-                                        result
-                                    }
-                                    HookResult::Continue(other) => {
-                                        warn!("Tool '{}' returned non-Json/Text output: {:?}", name, std::mem::discriminant(&other));
-                                        format!("Error: Unexpected output type from tool")
-                                    }
-                                    HookResult::PassThrough => {
-                                        // No handler registered - tool not found in extensions
-                                        warn!("Tool '{}' not handled by ExtensionCore", name);
-                                        format!("Tool '{name}' not available")
-                                    }
-                                    HookResult::Error(e) => {
-                                        info!("Tool '{}' failed via ExtensionCore: {}", name, e);
-                                        format!("Error: {e}")
-                                    }
-                                    HookResult::Handled => {
-                                        warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                        format!("Error: Tool execution was consumed by handler")
-                                    }
-                                    HookResult::Replace(output) => {
-                                        warn!("Hook result for tool '{}' was Replace: {:?}", name, output);
-                                        format!("Error: Tool execution was replaced")
-                                    }
-                                }
-                            } else {
-                                format!("Tool '{name}' not found")
+                        let tool_in_extension =
+                            self.extension_core.get_tool_metadata(&name).await.is_some();
+
+                        let tool_result = if tool_in_extension {
+                            // Route through ExtensionCore for unified execution with panic isolation
+                            let hook_point = HookPointBuilder::tool_execute(name);
+                            let hook_input = HookInput::ToolCall {
+                                tool_name: name.clone(),
+                                params: arguments.clone(),
                             };
+
+                            let hook_result = self
+                                .extension_core
+                                .invoke_hook(hook_point, hook_input)
+                                .await;
+                            info!(
+                                "Hook result for tool '{}': {:?}",
+                                name,
+                                std::mem::discriminant(&hook_result)
+                            );
+                            match hook_result {
+                                HookResult::Continue(HookOutput::Json(result)) => {
+                                    info!(
+                                        "Tool '{}' executed successfully via ExtensionCore: {}",
+                                        name, result
+                                    );
+                                    result.to_string()
+                                }
+                                HookResult::Continue(HookOutput::Text(result)) => {
+                                    info!(
+                                        "Tool '{}' executed successfully via ExtensionCore (text)",
+                                        name
+                                    );
+                                    result
+                                }
+                                HookResult::Continue(other) => {
+                                    warn!(
+                                        "Tool '{}' returned non-Json/Text output: {:?}",
+                                        name,
+                                        std::mem::discriminant(&other)
+                                    );
+                                    format!("Error: Unexpected output type from tool")
+                                }
+                                HookResult::PassThrough => {
+                                    // No handler registered - tool not found in extensions
+                                    warn!("Tool '{}' not handled by ExtensionCore", name);
+                                    format!("Tool '{name}' not available")
+                                }
+                                HookResult::Error(e) => {
+                                    info!("Tool '{}' failed via ExtensionCore: {}", name, e);
+                                    format!("Error: {e}")
+                                }
+                                HookResult::Handled => {
+                                    warn!("Hook result for tool '{}' was Handled (consumed)", name);
+                                    format!("Error: Tool execution was consumed by handler")
+                                }
+                                HookResult::Replace(output) => {
+                                    warn!(
+                                        "Hook result for tool '{}' was Replace: {:?}",
+                                        name, output
+                                    );
+                                    format!("Error: Tool execution was replaced")
+                                }
+                            }
+                        } else {
+                            format!("Tool '{name}' not found")
+                        };
 
                         let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -820,7 +849,8 @@ impl AgenticLoopV4 {
             // Add final answer to session
             {
                 let mut s = session.write().await;
-                s.add_assistant(&final_text, None, Some(response.usage.clone())).await?;
+                s.add_assistant(&final_text, None, Some(response.usage.clone()))
+                    .await?;
             }
 
             // Emit final assistant event
@@ -858,23 +888,23 @@ impl AgenticLoopV4 {
     }
 
     /// Build tool definitions dynamically from ExtensionCore (ADR-019 Phase 2)
-    /// 
+    ///
     /// This queries the unified tool registry for currently enabled tools,
     /// allowing tool changes to take effect without session restart.
     async fn build_tool_definitions(&self) -> Vec<ToolDefinition> {
         let defs = self.extension_core.list_tool_definitions().await;
-        
+
         info!(
             "Dynamically built {} tool definitions from ExtensionCore: {:?}",
             defs.len(),
             defs.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
-        
+
         defs
     }
-    
+
     /// Build system prompt dynamically (ADR-019 Phase 3)
-    /// 
+    ///
     /// Rebuilds the system prompt from current state, allowing:
     /// - SYSTEM.md changes to be reflected immediately
     /// - Tool list updates in prompt
@@ -882,14 +912,15 @@ impl AgenticLoopV4 {
     async fn build_system_prompt_fresh(&self) -> String {
         // Get current tool definitions from ExtensionCore
         let tool_defs = self.extension_core.list_tool_definitions().await;
-        
+
         // Use configured workspace if specified
-        let workspace_dir = self.agent
+        let workspace_dir = self
+            .agent
             .config
             .workspace
             .clone()
             .unwrap_or_else(|| PathBuf::from("."));
-        
+
         SystemPromptBuilder::new(self.agent.name())
             .with_mode(PromptMode::Full)
             .with_workspace(&workspace_dir)
@@ -1071,7 +1102,7 @@ impl AgenticLoopV4 {
         use futures::StreamExt;
 
         // Get session_id once at start
-        let session_id = {
+        let _session_id = {
             let s = session.read().await;
             s.id.clone()
         };
@@ -1080,7 +1111,7 @@ impl AgenticLoopV4 {
         {
             let provider_name = self.agent.config.provider.provider_type.to_string();
             let model_name = &self.agent.config.provider.default_model;
-            
+
             let mut s = session.write().await;
             s.set_model(&provider_name, model_name);
         }
@@ -1092,10 +1123,10 @@ impl AgenticLoopV4 {
             iteration += 1;
             let mut iteration_usage = crate::providers::TokenUsage::default();
             info!("Streaming agent loop: iteration {}", iteration);
-            
+
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
             let tool_defs = self.build_tool_definitions().await;
-            
+
             // ADR-019 Phase 3: Rebuild system prompt dynamically
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
                 let fresh_prompt = self.build_system_prompt_fresh().await;
@@ -1150,7 +1181,11 @@ impl AgenticLoopV4 {
                 crate::engine::StreamOrchestrator::new(&run_id, streaming_config.clone());
 
             // Get streaming response
-            info!("Calling stream_with_tools with {} messages and {} tool definitions", messages.len(), tool_defs.len());
+            info!(
+                "Calling stream_with_tools with {} messages and {} tool definitions",
+                messages.len(),
+                tool_defs.len()
+            );
             let mut stream = match self
                 .provider
                 .stream_with_tools(&messages, &tool_defs, &options)
@@ -1167,7 +1202,7 @@ impl AgenticLoopV4 {
                     return Err(e);
                 }
             };
-            
+
             info!("Stream started, processing events...");
 
             // Process stream events
@@ -1183,7 +1218,10 @@ impl AgenticLoopV4 {
                         stream_event_count += 1;
                         match result {
                             Ok(stream_event) => {
-                                debug!("Received stream event #{}: {:?}", stream_event_count, stream_event);
+                                debug!(
+                                    "Received stream event #{}: {:?}",
+                                    stream_event_count, stream_event
+                                );
                                 // Process through orchestrator
                                 let agentic_events = orchestrator.process(stream_event.clone());
                                 for event in agentic_events {
@@ -1207,7 +1245,10 @@ impl AgenticLoopV4 {
 
                                 // Track tool calls and stop reason from stream events
                                 match stream_event {
-                                    crate::providers::StreamEvent::ToolCallEnd { tool_call, .. } => {
+                                    crate::providers::StreamEvent::ToolCallEnd {
+                                        tool_call,
+                                        ..
+                                    } => {
                                         tool_calls.push(tool_call);
                                     }
                                     crate::providers::StreamEvent::Done {
@@ -1216,7 +1257,11 @@ impl AgenticLoopV4 {
                                         stop_reason = reason;
                                     }
                                     // NEW: Handle usage events
-                                    crate::providers::StreamEvent::Usage { input, output, total } => {
+                                    crate::providers::StreamEvent::Usage {
+                                        input,
+                                        output,
+                                        total,
+                                    } => {
                                         iteration_usage.input += input;
                                         iteration_usage.output += output;
                                         iteration_usage.total += total;
@@ -1243,9 +1288,14 @@ impl AgenticLoopV4 {
             for event in final_events {
                 on_event(event);
             }
-            
-            info!("Stream complete: {} events, text_len={}, tool_calls={}, stop_reason={:?}", 
-                  stream_event_count, accumulated_text.len(), tool_calls.len(), stop_reason);
+
+            info!(
+                "Stream complete: {} events, text_len={}, tool_calls={}, stop_reason={:?}",
+                stream_event_count,
+                accumulated_text.len(),
+                tool_calls.len(),
+                stop_reason
+            );
 
             // Accumulate this iteration's usage
             total_usage.input += iteration_usage.input;
@@ -1347,72 +1397,96 @@ impl AgenticLoopV4 {
 
                         // Execute tool via ExtensionCore for unified execution (ADR-018a)
                         let start_time = std::time::Instant::now();
-                        
+
                         // Check if tool is registered in ExtensionCore
-                        let tool_in_extension = self.extension_core.get_tool_metadata(&name).await.is_some();
-                        
-                        let tool_result =
-                            if tool_in_extension {
-                                // Route through ExtensionCore for unified execution with panic isolation
-                                let hook_point = HookPointBuilder::tool_execute(name);
-                                let hook_input = HookInput::ToolCall {
-                                    tool_name: name.clone(),
-                                    params: arguments.clone(),
-                                };
-                                
-                                match self.extension_core.invoke_hook(hook_point, hook_input).await {
-                                    HookResult::Continue(HookOutput::Json(result)) => {
-                                        info!("Tool '{}' executed successfully via ExtensionCore", name);
-                                        result.to_string()
-                                    }
-                                    HookResult::Continue(HookOutput::Text(result)) => {
-                                        info!("Tool '{}' executed successfully via ExtensionCore", name);
-                                        result
-                                    }
-                                    HookResult::Continue(HookOutput::Vec(outputs)) => {
-                                        // Multiple outputs from different handlers - find first useful one
-                                        info!("Tool '{}' returned Vec with {} outputs", name, outputs.len());
-                                        let result = outputs.iter().find_map(|o| match o {
-                                            HookOutput::Json(v) => Some(v.to_string()),
-                                            HookOutput::Text(t) => Some(t.clone()),
-                                            _ => None,
-                                        });
-                                        match result {
-                                            Some(r) => {
-                                                info!("Tool '{}' executed successfully via ExtensionCore (from {} outputs)", name, outputs.len());
-                                                r
-                                            }
-                                            None => {
-                                                warn!("Tool '{}' returned Vec with no Json/Text: {:?}", name, outputs);
-                                                format!("Error: Unexpected Vec output from tool")
-                                            }
+                        let tool_in_extension =
+                            self.extension_core.get_tool_metadata(&name).await.is_some();
+
+                        let tool_result = if tool_in_extension {
+                            // Route through ExtensionCore for unified execution with panic isolation
+                            let hook_point = HookPointBuilder::tool_execute(name);
+                            let hook_input = HookInput::ToolCall {
+                                tool_name: name.clone(),
+                                params: arguments.clone(),
+                            };
+
+                            match self
+                                .extension_core
+                                .invoke_hook(hook_point, hook_input)
+                                .await
+                            {
+                                HookResult::Continue(HookOutput::Json(result)) => {
+                                    info!(
+                                        "Tool '{}' executed successfully via ExtensionCore",
+                                        name
+                                    );
+                                    result.to_string()
+                                }
+                                HookResult::Continue(HookOutput::Text(result)) => {
+                                    info!(
+                                        "Tool '{}' executed successfully via ExtensionCore",
+                                        name
+                                    );
+                                    result
+                                }
+                                HookResult::Continue(HookOutput::Vec(outputs)) => {
+                                    // Multiple outputs from different handlers - find first useful one
+                                    info!(
+                                        "Tool '{}' returned Vec with {} outputs",
+                                        name,
+                                        outputs.len()
+                                    );
+                                    let result = outputs.iter().find_map(|o| match o {
+                                        HookOutput::Json(v) => Some(v.to_string()),
+                                        HookOutput::Text(t) => Some(t.clone()),
+                                        _ => None,
+                                    });
+                                    match result {
+                                        Some(r) => {
+                                            info!("Tool '{}' executed successfully via ExtensionCore (from {} outputs)", name, outputs.len());
+                                            r
+                                        }
+                                        None => {
+                                            warn!(
+                                                "Tool '{}' returned Vec with no Json/Text: {:?}",
+                                                name, outputs
+                                            );
+                                            format!("Error: Unexpected Vec output from tool")
                                         }
                                     }
-                                    HookResult::Continue(other) => {
-                                        warn!("Tool '{}' returned non-Json/Text output: {:?}", name, std::mem::discriminant(&other));
-                                        format!("Error: Unexpected output type from tool")
-                                    }
-                                    HookResult::PassThrough => {
-                                        // No handler registered - tool not found in extensions
-                                        warn!("Tool '{}' not handled by ExtensionCore", name);
-                                        format!("Tool '{name}' not available")
-                                    }
-                                    HookResult::Error(e) => {
-                                        info!("Tool '{}' failed via ExtensionCore: {}", name, e);
-                                        format!("Error: {e}")
-                                    }
-                                    HookResult::Handled => {
-                                        warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                        format!("Error: Tool execution was consumed by handler")
-                                    }
-                                    HookResult::Replace(output) => {
-                                        warn!("Hook result for tool '{}' was Replace: {:?}", name, output);
-                                        format!("Error: Tool execution was replaced")
-                                    }
                                 }
-                            } else {
-                                format!("Tool '{name}' not found")
-                            };
+                                HookResult::Continue(other) => {
+                                    warn!(
+                                        "Tool '{}' returned non-Json/Text output: {:?}",
+                                        name,
+                                        std::mem::discriminant(&other)
+                                    );
+                                    format!("Error: Unexpected output type from tool")
+                                }
+                                HookResult::PassThrough => {
+                                    // No handler registered - tool not found in extensions
+                                    warn!("Tool '{}' not handled by ExtensionCore", name);
+                                    format!("Tool '{name}' not available")
+                                }
+                                HookResult::Error(e) => {
+                                    info!("Tool '{}' failed via ExtensionCore: {}", name, e);
+                                    format!("Error: {e}")
+                                }
+                                HookResult::Handled => {
+                                    warn!("Hook result for tool '{}' was Handled (consumed)", name);
+                                    format!("Error: Tool execution was consumed by handler")
+                                }
+                                HookResult::Replace(output) => {
+                                    warn!(
+                                        "Hook result for tool '{}' was Replace: {:?}",
+                                        name, output
+                                    );
+                                    format!("Error: Tool execution was replaced")
+                                }
+                            }
+                        } else {
+                            format!("Tool '{name}' not found")
+                        };
 
                         let duration_ms = start_time.elapsed().as_millis() as u64;
 
@@ -1457,7 +1531,8 @@ impl AgenticLoopV4 {
             // Add final answer to session
             {
                 let mut s = session.write().await;
-                s.add_assistant(&accumulated_text, None, Some(iteration_usage.clone())).await?;
+                s.add_assistant(&accumulated_text, None, Some(iteration_usage.clone()))
+                    .await?;
             }
 
             // Note: We don't emit AssistantText here because the content has already
@@ -1492,13 +1567,16 @@ impl AgenticLoopV4 {
 
 /// Build system prompt from agent and tools using `SystemPromptBuilder`
 /// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.) and skills
-/// 
+///
 /// Skills are loaded via the ExtensionCore using the SkillAdapter.
 fn build_system_prompt(
     agent: &Agent,
     extension_core: &Arc<crate::extensions::ExtensionCore>,
 ) -> String {
-    info!("Building initial system prompt for agent '{}'", agent.name());
+    info!(
+        "Building initial system prompt for agent '{}'",
+        agent.name()
+    );
 
     // Use configured workspace if specified, otherwise use default with team
     let workspace_dir = agent
@@ -1537,7 +1615,12 @@ fn build_system_prompt(
         .clone();
 
     // Load and register skills with ExtensionCore (asynchronous block)
-    let _skills_loaded = load_and_register_skills_sync(agent.name(), &enabled_skills, &path_resolver, extension_core);
+    let _skills_loaded = load_and_register_skills_sync(
+        agent.name(),
+        &enabled_skills,
+        &path_resolver,
+        extension_core,
+    );
 
     // Extract custom bootstrap files from agent config if specified
     let bootstrap_files = agent
@@ -1556,26 +1639,30 @@ fn build_system_prompt(
 }
 
 /// Load enabled skills for an agent from the skills directory using ExtensionCore
-/// 
+///
 /// This function discovers skills from the filesystem and registers them with the
 /// ExtensionCore. Skills are then injected into the system prompt via the
 /// `PromptSystemSection { section: "skills" }` hook point.
-/// 
+///
 /// # Returns
 /// The number of skills successfully registered with the ExtensionCore.
 fn load_and_register_skills_sync(
-    agent_name: &str, 
-    enabled_skills: &[String], 
+    agent_name: &str,
+    enabled_skills: &[String],
     path_resolver: &crate::common::paths::PathResolver,
     extension_core: &Arc<crate::extensions::ExtensionCore>,
 ) -> usize {
-    use std::thread;
     
+
     // Use PathResolver for consistent path resolution
     let skills_dir = path_resolver.skills_dir();
 
     tracing::debug!("Loading skills from: {:?}", skills_dir);
-    tracing::debug!("Enabled skills for agent {}: {:?}", agent_name, enabled_skills);
+    tracing::debug!(
+        "Enabled skills for agent {}: {:?}",
+        agent_name,
+        enabled_skills
+    );
 
     if !skills_dir.exists() {
         tracing::debug!("Skills directory does not exist: {:?}", skills_dir);
@@ -1585,14 +1672,16 @@ fn load_and_register_skills_sync(
     // Discover skills using the SkillAdapter (synchronous)
     let adapter = SkillAdapter::new();
     let all_skills = adapter.discover_skills(&skills_dir);
-    
+
     tracing::debug!("Discovered {} skills from directory", all_skills.len());
 
     // Filter to only enabled skills
     let skills_to_register: Vec<_> = all_skills
         .into_iter()
         .filter(|s| {
-            let is_enabled = enabled_skills.iter().any(|e| e.eq_ignore_ascii_case(&s.manifest.name));
+            let is_enabled = enabled_skills
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(&s.manifest.name));
             tracing::debug!("Skill '{}' enabled: {}", s.manifest.name, is_enabled);
             is_enabled
         })
@@ -1607,14 +1696,13 @@ fn load_and_register_skills_sync(
     // We need to spawn a blocking task since we're in a sync context
     let core = Arc::clone(extension_core);
     let count = skills_to_register.len();
-    
+
     // Create a new runtime for the async registration
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => {
             // We're in an async context, spawn a blocking task
-            let _ = handle.block_on(async {
-                register_skills_with_core(&core, skills_to_register).await
-            });
+            let _ = handle
+                .block_on(async { register_skills_with_core(&core, skills_to_register).await });
         }
         Err(_) => {
             // No runtime available, create a new one for this operation
@@ -1625,13 +1713,16 @@ fn load_and_register_skills_sync(
                     return 0;
                 }
             };
-            let _ = rt.block_on(async {
-                register_skills_with_core(&core, skills_to_register).await
-            });
+            let _ =
+                rt.block_on(async { register_skills_with_core(&core, skills_to_register).await });
         }
     }
 
-    tracing::info!("Registered {} enabled skills for agent {}", count, agent_name);
+    tracing::info!(
+        "Registered {} enabled skills for agent {}",
+        count,
+        agent_name
+    );
     count
 }
 
@@ -1717,6 +1808,4 @@ fn parse_content_block(value: &serde_json::Value) -> Option<ContentBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-
 }

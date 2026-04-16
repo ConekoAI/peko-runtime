@@ -45,7 +45,10 @@ pub enum LockError {
 impl std::fmt::Display for LockError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LockError::Timeout { lock_name, duration } => {
+            LockError::Timeout {
+                lock_name,
+                duration,
+            } => {
                 write!(
                     f,
                     "Timeout acquiring lock '{}' after {:?}",

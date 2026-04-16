@@ -4,7 +4,9 @@
 //! This service provides early validation to prevent creating
 //! session infrastructure for non-existent agents.
 
-use crate::common::services::config_authority::{AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl};
+use crate::common::services::config_authority::{
+    AgentConfigEntry, ConfigAuthority, ConfigAuthorityImpl,
+};
 use anyhow::Result;
 use std::sync::Arc;
 use tracing::{debug, info};

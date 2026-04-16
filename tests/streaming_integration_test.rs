@@ -6,7 +6,7 @@
 //! - Channel Layer: Render AgenticEvents to platform output
 
 use pekobot::engine::{
-    AgenticEvent, DeliveryMode, LifecyclePhase, OrchestratorConfig, StreamBuffer,
+    AgenticEvent, LifecyclePhase, OrchestratorConfig, StreamBuffer,
     StreamOrchestrator,
 };
 use pekobot::providers::StreamEvent;

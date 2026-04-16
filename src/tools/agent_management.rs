@@ -150,7 +150,8 @@ impl Tool for AgentsListTool {
 
     fn description(&self) -> String {
         "List agent instances that can be targeted via agent_spawn or sessions_send. \
-         Returns only instances within the current team (or empty list for standalone agents).".to_string()
+         Returns only instances within the current team (or empty list for standalone agents)."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -264,7 +265,8 @@ impl Tool for AgentInfoTool {
 
     fn description(&self) -> String {
         "Query detailed information about a specific agent instance. \
-         Only returns info for agents in the same team.".to_string()
+         Only returns info for agents in the same team."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

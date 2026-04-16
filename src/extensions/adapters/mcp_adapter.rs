@@ -26,24 +26,30 @@
 //! - `AgentInit` - Starts the MCP server connection
 //! - `AgentShutdown` - Stops the MCP server connection
 
+use crate::agent::async_tool_framework::AsyncTaskStatus;
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
-    ExtensionCore, HookBinding, HookContext, HookHandler, HookHandlerFactory, HookPoint,
-    ToolExecutionConfig, ToolMetadata, ToolSource, // NEW
+    ExtensionCore,
+    HookBinding,
+    HookContext,
+    HookHandler,
+    HookHandlerFactory,
+    HookPoint,
+    ToolExecutionConfig,
+    ToolMetadata,
+    ToolSource, // NEW
 };
 use crate::extensions::services::ReservedParamsConfig; // NEW
 use crate::extensions::types::{
     AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
-use crate::agent::async_tool_framework::AsyncTaskStatus;
-use uuid::Uuid;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 /// MCP extension type identifier
 pub const MCP_EXTENSION_TYPE: &str = "mcp";
@@ -88,7 +94,7 @@ impl McpAdapter {
     }
 
     /// Create a new MCP adapter with the global shared manager
-    /// 
+    ///
     /// This ensures all MCP adapters share the same manager instance,
     /// so server configs loaded by one adapter are visible to all others.
     pub fn with_default_manager() -> Self {
@@ -189,15 +195,16 @@ impl McpAdapter {
             .with_context(|| format!("Failed to read config {:?}", path))?;
 
         // Try TOML first, then JSON
-        let server_configs: Vec<crate::mcp::McpServerConfig> = if path.extension().map(|e| e == "toml").unwrap_or(false) {
-            let config: crate::mcp::McpConfig = toml::from_str(&content)
-                .with_context(|| format!("Failed to parse TOML config {:?}", path))?;
-            config.servers
-        } else {
-            let config: crate::mcp::McpConfig = serde_json::from_str(&content)
-                .with_context(|| format!("Failed to parse JSON config {:?}", path))?;
-            config.servers
-        };
+        let server_configs: Vec<crate::mcp::McpServerConfig> =
+            if path.extension().map(|e| e == "toml").unwrap_or(false) {
+                let config: crate::mcp::McpConfig = toml::from_str(&content)
+                    .with_context(|| format!("Failed to parse TOML config {:?}", path))?;
+                config.servers
+            } else {
+                let config: crate::mcp::McpConfig = serde_json::from_str(&content)
+                    .with_context(|| format!("Failed to parse JSON config {:?}", path))?;
+                config.servers
+            };
 
         // For simplicity, we take the first server config
         // In practice, a config file might have multiple servers
@@ -233,18 +240,21 @@ impl McpAdapter {
             .with_context(|| format!("Failed to read config {:?}", path))?;
 
         // Try TOML first, then JSON
-        let server_configs: Vec<crate::mcp::McpServerConfig> = if path.extension().map(|e| e == "toml").unwrap_or(false) {
-            let config: crate::mcp::McpConfig = toml::from_str(&content)
-                .with_context(|| format!("Failed to parse TOML config {:?}", path))?;
-            config.servers
-        } else {
-            let config: crate::mcp::McpConfig = serde_json::from_str(&content)
-                .with_context(|| format!("Failed to parse JSON config {:?}", path))?;
-            config.servers
-        };
+        let server_configs: Vec<crate::mcp::McpServerConfig> =
+            if path.extension().map(|e| e == "toml").unwrap_or(false) {
+                let config: crate::mcp::McpConfig = toml::from_str(&content)
+                    .with_context(|| format!("Failed to parse TOML config {:?}", path))?;
+                config.servers
+            } else {
+                let config: crate::mcp::McpConfig = serde_json::from_str(&content)
+                    .with_context(|| format!("Failed to parse JSON config {:?}", path))?;
+                config.servers
+            };
 
         // Take the first server config
-        server_configs.into_iter().next()
+        server_configs
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("No server configurations found in config file"))
     }
 
@@ -254,14 +264,14 @@ impl McpAdapter {
     }
 
     /// Ensure server config is loaded into the MCP manager
-    /// 
+    ///
     /// Loads the server config from the given path and adds it to the manager
     /// if not already present.
     pub async fn ensure_server_config(&self, config_path: &str) -> Result<()> {
         let path = Path::new(config_path);
         let mut server_config = Self::load_server_config(path).await?;
         let server_name = server_config.name.clone();
-        
+
         // Set the working directory to the config file's directory
         // This ensures relative paths in args (like "mcp_server.py") work correctly
         if server_config.cwd.is_none() {
@@ -270,19 +280,19 @@ impl McpAdapter {
                 info!(server_name = %server_name, cwd = %cwd.display(), "Set MCP server working directory");
             }
         }
-        
+
         // Check if server already exists
         let manager = self.manager.read().await;
         let exists = manager.get_server_state(&server_name).await.is_ok();
         drop(manager);
-        
+
         if !exists {
             // Add server config to manager
             let manager = self.manager.read().await;
             manager.add_server_config(server_config).await?;
             info!(server_name = %server_name, "Added MCP server config to manager");
         }
-        
+
         Ok(())
     }
 
@@ -303,20 +313,21 @@ impl McpAdapter {
         server_name: &str,
     ) -> Result<usize> {
         let manager = self.manager.read().await;
-        
+
         // Get tools from all MCP servers and filter by server name
         let all_tools = manager.list_all_tools().await;
-        let tools: Vec<_> = all_tools.into_iter()
+        let tools: Vec<_> = all_tools
+            .into_iter()
             .filter(|(srv, _)| srv == server_name)
             .map(|(_, tool)| tool)
             .collect();
-        
+
         let ext_id = ExtensionId::new(format!("mcp:{}", server_name));
         let mut registered_count = 0;
-        
+
         for tool in tools {
             let tool_name = format!("{}:{}:{}", MCP_TOOL_PREFIX, server_name, tool.name);
-            
+
             // Create tool metadata
             let metadata = ToolMetadata {
                 name: tool_name.clone(),
@@ -326,17 +337,19 @@ impl McpAdapter {
                     tool.description
                 },
                 parameters: tool.input_schema,
-                source: ToolSource::Mcp { server: server_name.to_string() },
+                source: ToolSource::Mcp {
+                    server: server_name.to_string(),
+                },
                 reserved_params: ReservedParamsConfig::new(), // MCP tools can configure this
             };
-            
+
             // Create execution handler with specific tool name
             let exec_handler = Arc::new(McpToolExecuteHandler {
                 manager: self.manager.clone(),
                 server_name: server_name.to_string(),
                 tool_name: Some(tool.name),
             });
-            
+
             // Register with unified registry
             match core.register_tool(metadata, exec_handler, &ext_id).await {
                 Ok(_) => {
@@ -349,13 +362,13 @@ impl McpAdapter {
                 }
             }
         }
-        
+
         info!(
             server_name = %server_name,
             registered = registered_count,
             "Registered MCP server tools"
         );
-        
+
         Ok(registered_count)
     }
 
@@ -374,18 +387,19 @@ impl McpAdapter {
         server_name: &str,
     ) -> Result<Vec<Arc<dyn crate::tools::Tool>>> {
         let manager = self.manager.read().await;
-        
+
         // Get tools from all MCP servers and filter by server name
         let all_tools = manager.list_all_tools().await;
-        let server_tools: Vec<_> = all_tools.into_iter()
+        let server_tools: Vec<_> = all_tools
+            .into_iter()
             .filter(|(srv, _)| srv == server_name)
             .map(|(_, tool)| tool)
             .collect();
-        
+
         drop(manager);
-        
+
         let mut tool_instances: Vec<Arc<dyn crate::tools::Tool>> = Vec::new();
-        
+
         for tool in server_tools {
             // Create a proxy that implements the Tool trait
             let proxy = crate::mcp::tool_proxy::McpToolProxy::new(
@@ -395,13 +409,13 @@ impl McpAdapter {
             );
             tool_instances.push(Arc::new(proxy));
         }
-        
+
         info!(
             server_name = %server_name,
             tool_count = tool_instances.len(),
             "Created MCP tool instances"
         );
-        
+
         Ok(tool_instances)
     }
 }
@@ -424,7 +438,11 @@ impl ExtensionTypeAdapter for McpAdapter {
         ManifestFormat::Custom {
             detector: |path| {
                 // Direct file path (e.g., path/to/config.toml)
-                if path.extension().map(|e| e == "toml" || e == "json").unwrap_or(false) {
+                if path
+                    .extension()
+                    .map(|e| e == "toml" || e == "json")
+                    .unwrap_or(false)
+                {
                     return path.exists();
                 }
                 // Directory containing config.toml or config.json
@@ -440,18 +458,21 @@ impl ExtensionTypeAdapter for McpAdapter {
     ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
         // For MCP, parse the server config synchronously
         // The content is already read by the caller, so we parse it directly
-        let server_configs: Vec<crate::mcp::McpServerConfig> = if path.extension().map(|e| e == "toml").unwrap_or(false) {
-            let config: crate::mcp::McpConfig = toml::from_str(content)
-                .with_context(|| format!("Failed to parse TOML config {:?}", path))?;
-            config.servers
-        } else {
-            let config: crate::mcp::McpConfig = serde_json::from_str(content)
-                .with_context(|| format!("Failed to parse JSON config {:?}", path))?;
-            config.servers
-        };
+        let server_configs: Vec<crate::mcp::McpServerConfig> =
+            if path.extension().map(|e| e == "toml").unwrap_or(false) {
+                let config: crate::mcp::McpConfig = toml::from_str(content)
+                    .with_context(|| format!("Failed to parse TOML config {:?}", path))?;
+                config.servers
+            } else {
+                let config: crate::mcp::McpConfig = serde_json::from_str(content)
+                    .with_context(|| format!("Failed to parse JSON config {:?}", path))?;
+                config.servers
+            };
 
         // Take the first server config
-        let server_config = server_configs.into_iter().next()
+        let server_config = server_configs
+            .into_iter()
+            .next()
             .context("No server configurations found in config file")?;
 
         // Build ExtensionManifest from server config
@@ -468,10 +489,13 @@ impl ExtensionTypeAdapter for McpAdapter {
         manifest.set("config_path", path.to_string_lossy().to_string());
         manifest.set("transport", format!("{:?}", server_config.transport));
         manifest.set("command", server_config.command.unwrap_or_default());
-        
+
         // Store reserved parameters if not empty
         if !server_config.reserved_parameters.is_empty() {
-            manifest.set("reserved_parameters", serde_json::to_value(&server_config.reserved_parameters)?);
+            manifest.set(
+                "reserved_parameters",
+                serde_json::to_value(&server_config.reserved_parameters)?,
+            );
         }
 
         Ok(manifest)
@@ -547,9 +571,9 @@ impl ExtensionTypeAdapter for McpAdapter {
         // Start the MCP server and return state
         let server_name = manifest.name.clone();
         let manager = self.manager.read().await;
-        
+
         info!(server_name = %server_name, "Initializing MCP server");
-        
+
         // Try to start the server
         match manager.start_server(&server_name).await {
             Ok(()) => {
@@ -632,7 +656,7 @@ impl std::fmt::Debug for McpServerInitHandler {
 impl HookHandler for McpServerInitHandler {
     async fn handle(&self, _ctx: HookContext) -> HookResult {
         debug!(server_name = %self.server_name, "Initializing MCP server on agent init");
-        
+
         // Ensure server config is loaded
         let server_config = match McpAdapter::load_server_config(&self.config_path).await {
             Ok(config) => config,
@@ -641,12 +665,12 @@ impl HookHandler for McpServerInitHandler {
                 return HookResult::Continue(HookOutput::Unit);
             }
         };
-        
+
         // Check if server already exists in manager
         let manager = self.manager.read().await;
         let exists = manager.get_server_state(&self.server_name).await.is_ok();
         drop(manager);
-        
+
         if !exists {
             // Add server config to manager
             let manager = self.manager.read().await;
@@ -656,7 +680,7 @@ impl HookHandler for McpServerInitHandler {
             }
             info!(server_name = %self.server_name, "Added MCP server config to manager");
         }
-        
+
         // Start the server if not running
         let manager = self.manager.read().await;
         let was_running = match manager.get_server_state(&self.server_name).await {
@@ -664,7 +688,7 @@ impl HookHandler for McpServerInitHandler {
             _ => false,
         };
         drop(manager);
-        
+
         let server_started = if !was_running {
             let manager = self.manager.write().await;
             match manager.start_server(&self.server_name).await {
@@ -680,12 +704,15 @@ impl HookHandler for McpServerInitHandler {
         } else {
             true
         };
-        
+
         // Register tools with unified registry after server is running
         if server_started {
             if let Some(core) = crate::extensions::core::global_core() {
                 let adapter = McpAdapter::new(self.manager.clone());
-                match adapter.register_server_tools(&core, &self.server_name).await {
+                match adapter
+                    .register_server_tools(&core, &self.server_name)
+                    .await
+                {
                     Ok(count) => {
                         info!(server_name = %self.server_name, count = count, "Registered MCP tools with unified registry");
                     }
@@ -697,7 +724,7 @@ impl HookHandler for McpServerInitHandler {
                 warn!("No global ExtensionCore available for MCP tool registration");
             }
         }
-        
+
         HookResult::Continue(HookOutput::Unit)
     }
 
@@ -759,7 +786,7 @@ impl std::fmt::Debug for McpServerShutdownHandler {
 impl HookHandler for McpServerShutdownHandler {
     async fn handle(&self, _ctx: HookContext) -> HookResult {
         debug!(server_name = %self.server_name, "Shutting down MCP server");
-        
+
         let manager = self.manager.write().await;
         match manager.stop_server(&self.server_name).await {
             Ok(()) => {
@@ -852,7 +879,8 @@ impl HookHandler for McpToolExecuteHandler {
         let actual_tool = match &self.tool_name {
             Some(name) => {
                 // Verify the requested tool matches this handler's specific tool
-                let expected_full_name = format!("{}:{}:{}", MCP_TOOL_PREFIX, self.server_name, name);
+                let expected_full_name =
+                    format!("{}:{}:{}", MCP_TOOL_PREFIX, self.server_name, name);
                 if tool_name != expected_full_name {
                     return HookResult::PassThrough;
                 }
@@ -871,49 +899,52 @@ impl HookHandler for McpToolExecuteHandler {
 
         // ADR-018a: Use AsyncExecutionRouter for unified execution
         // This provides _async routing, panic isolation, and timeout
-        
+
         // Get server configuration for reserved parameters
         let server_config = {
             let manager = self.manager.read().await;
             manager.get_server_config(&self.server_name).await
         };
-        
+
         // Get reserved params config from server config
         let reserved_params = server_config
             .as_ref()
             .map(|c| c.reserved_parameters.clone())
             .unwrap_or_default();
-        
+
         // Use basic object schema (MCP doesn't expose full JSON schema for validation)
         let tool_schema = serde_json::json!({"type": "object"});
-        
+
         // Build execution config
         let exec_config = ToolExecutionConfig::new(reserved_params, tool_schema);
-        
+
         // Get services from context
         let exec_service = ctx.services.tool_execution();
         let async_router = ctx.services.async_router();
-        
+
         // Build execution context
         let tool_ctx = match ctx.as_tool_context() {
             Some(tc) => crate::extensions::services::ToolExecutionContext::new(
                 tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                tc.session_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.session_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 tc.run_id.clone(),
-            ).with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
+            )
+            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
             None => crate::extensions::services::ToolExecutionContext::new(
-                "unknown", "unknown", "unknown"
+                "unknown", "unknown", "unknown",
             ),
         };
-        
+
         // Clone params for mutation (AsyncExecutionRouter extracts _async, etc.)
         let mut params_mut = params.clone();
-        
+
         // Clone manager and server/tool names for the closure
         let manager = self.manager.clone();
         let server_name = self.server_name.clone();
         let actual_tool_owned = actual_tool.to_string();
-        
+
         // Route execution through AsyncExecutionRouter
         let result = async_router
             .route(
@@ -954,9 +985,7 @@ impl HookHandler for McpToolExecuteHandler {
             .await;
 
         match result {
-            Ok(json_result) => {
-                HookResult::Continue(HookOutput::Json(json_result))
-            }
+            Ok(json_result) => HookResult::Continue(HookOutput::Json(json_result)),
             Err(e) => {
                 error!(server_name = %self.server_name, tool_name = %actual_tool, error = %e, "MCP tool execution failed");
                 HookResult::Error(anyhow::anyhow!("MCP tool error: {}", e))
@@ -1053,13 +1082,13 @@ impl HookHandler for McpToolExecuteAsyncHandler {
 
         // For MCP, we execute synchronously but wrap in async receipt
         // The actual async nature comes from the unified executor spawning
-        let manager = self.manager.clone();
+        let _manager = self.manager.clone();
         let server_name = self.server_name.clone();
         let actual_tool = actual_tool.to_string();
-        
+
         // Generate task ID for tracking
         let task_id = format!("mcp:{}:{}:{}", server_name, actual_tool, Uuid::new_v4());
-        
+
         // Create receipt for async execution
         let receipt = AsyncReceipt {
             task_id: task_id.clone(),
@@ -1465,4 +1494,3 @@ auto_start = true
         assert_eq!(handler.server_name, "test");
     }
 }
-

@@ -6,35 +6,35 @@
 use crate::extensions::core::context::{ExtensionServices, HookContext};
 use crate::extensions::core::hook_points::HookPoint;
 use crate::extensions::types::{
-    ExtensionId, HookId, HookInput, HookOutput, HookPriority, HookResult, ToolMetadata, ToolSource,
+    ExtensionId, HookId, HookInput, HookOutput, HookPriority, HookResult, ToolMetadata,
 };
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, error, instrument, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 
 /// A registered hook handler
 #[derive(Debug, Clone)]
 pub struct RegisteredHook {
     /// Unique registration ID
     pub id: HookId,
-    
+
     /// Extension that owns this hook
     pub extension_id: ExtensionId,
-    
+
     /// The hook point
     pub point: HookPoint,
-    
+
     /// The handler implementation
     pub handler: Arc<dyn super::context::HookHandler>,
-    
+
     /// Priority (higher = earlier execution)
     pub priority: HookPriority,
-    
+
     /// Whether currently enabled
     pub enabled: bool,
-    
+
     /// Tool metadata (only populated for ToolRegister hooks)
     pub tool_metadata: Option<ToolMetadata>,
 }
@@ -58,7 +58,7 @@ impl RegisteredHook {
             tool_metadata: None,
         }
     }
-    
+
     /// Create a new registered hook with tool metadata
     pub fn with_tool_metadata(
         id: HookId,
@@ -106,19 +106,19 @@ pub struct BuiltinExtensionInfo {
 pub struct ExtensionCore {
     /// All registered hooks, keyed by HookId
     hooks: RwLock<HashMap<HookId, RegisteredHook>>,
-    
+
     /// Hooks indexed by hook point for faster lookup
     hooks_by_point: RwLock<HashMap<String, Vec<HookId>>>,
-    
+
     /// Tool index: maps tool name to hook ID for O(1) lookup
     tool_index: RwLock<HashMap<String, HookId>>,
-    
+
     /// Extension services shared across all handlers
     services: Arc<ExtensionServices>,
-    
+
     /// Global enable/disable flag
     globally_enabled: RwLock<bool>,
-    
+
     /// Tool configuration (whitelist, per-tool settings)
     tool_config: RwLock<crate::types::agent::ToolConfig>,
 }
@@ -135,7 +135,7 @@ impl ExtensionCore {
             tool_config: RwLock::new(crate::types::agent::ToolConfig::default()),
         }
     }
-    
+
     /// Create a new Extension Core with custom services
     pub fn with_services(services: Arc<ExtensionServices>) -> Self {
         Self {
@@ -147,20 +147,20 @@ impl ExtensionCore {
             tool_config: RwLock::new(crate::types::agent::ToolConfig::default()),
         }
     }
-    
+
     /// Set the tool configuration (whitelist, etc.)
     pub async fn set_tool_config(&self, config: crate::types::agent::ToolConfig) {
         let mut tool_config = self.tool_config.write().await;
         *tool_config = config;
         debug!("Updated tool configuration");
     }
-    
+
     /// Check if a tool is enabled according to whitelist
     pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
         let config = self.tool_config.read().await;
         config.is_tool_enabled(tool_name)
     }
-    
+
     /// Register a hook handler
     ///
     /// # Arguments
@@ -179,7 +179,7 @@ impl ExtensionCore {
     ) -> Result<RegisteredHook> {
         let hook_id = HookId::new();
         let priority = handler.priority();
-        
+
         let registration = RegisteredHook::new(
             hook_id.clone(),
             extension_id.clone(),
@@ -187,20 +187,20 @@ impl ExtensionCore {
             handler,
             priority,
         );
-        
+
         // Add to hooks map
         {
             let mut hooks = self.hooks.write().await;
             hooks.insert(hook_id.clone(), registration.clone());
         }
-        
+
         // Add to point index
         {
             let mut by_point = self.hooks_by_point.write().await;
             let point_name = point.name();
             let entry = by_point.entry(point_name).or_insert_with(Vec::new);
             entry.push(hook_id.clone());
-            
+
             // Sort by priority (higher first)
             let hooks = self.hooks.read().await;
             entry.sort_by_key(|id| {
@@ -210,17 +210,17 @@ impl ExtensionCore {
                     .unwrap_or(0)
             });
         }
-        
+
         debug!(
             hook_id = %hook_id,
             point = %point,
             priority = priority,
             "Registered hook handler"
         );
-        
+
         Ok(registration)
     }
-    
+
     /// Unregister a hook handler
     ///
     /// # Arguments
@@ -230,11 +230,9 @@ impl ExtensionCore {
         // Remove from hooks map
         let point_name = {
             let mut hooks = self.hooks.write().await;
-            hooks
-                .remove(hook_id)
-                .map(|h| h.point.name())
+            hooks.remove(hook_id).map(|h| h.point.name())
         };
-        
+
         // Remove from point index
         if let Some(point_name) = point_name {
             let mut by_point = self.hooks_by_point.write().await;
@@ -245,11 +243,11 @@ impl ExtensionCore {
                 }
             }
         }
-        
+
         debug!(hook_id = %hook_id, "Unregistered hook handler");
         Ok(())
     }
-    
+
     /// Enable a hook handler
     #[instrument(skip(self), fields(hook_id = %hook_id))]
     pub async fn enable_hook(&self, hook_id: &HookId) -> Result<()> {
@@ -262,7 +260,7 @@ impl ExtensionCore {
         }
         Ok(())
     }
-    
+
     /// Disable a hook handler
     #[instrument(skip(self), fields(hook_id = %hook_id))]
     pub async fn disable_hook(&self, hook_id: &HookId) -> Result<()> {
@@ -275,24 +273,21 @@ impl ExtensionCore {
         }
         Ok(())
     }
-    
+
     /// Globally enable/disable all hooks
     pub async fn set_globally_enabled(&self, enabled: bool) {
         let mut globally_enabled = self.globally_enabled.write().await;
         *globally_enabled = enabled;
         debug!(enabled = enabled, "Set global hook enable state");
     }
-    
+
     /// Check if hooks are globally enabled
     pub async fn is_globally_enabled(&self) -> bool {
         *self.globally_enabled.read().await
     }
-    
+
     /// Get all hooks for a specific extension
-    pub async fn get_hooks_for_extension(
-        &self,
-        extension_id: &ExtensionId,
-    ) -> Vec<RegisteredHook> {
+    pub async fn get_hooks_for_extension(&self, extension_id: &ExtensionId) -> Vec<RegisteredHook> {
         let hooks = self.hooks.read().await;
         hooks
             .values()
@@ -300,13 +295,13 @@ impl ExtensionCore {
             .cloned()
             .collect()
     }
-    
+
     /// Get all registered hooks
     pub async fn get_all_hooks(&self) -> Vec<RegisteredHook> {
         let hooks = self.hooks.read().await;
         hooks.values().cloned().collect()
     }
-    
+
     /// List all built-in extensions registered with this core
     ///
     /// Built-in extensions have IDs in the form `builtin:{type}:{name}`.
@@ -315,14 +310,14 @@ impl ExtensionCore {
     pub async fn list_builtin_extensions(&self) -> Vec<BuiltinExtensionInfo> {
         let hooks = self.hooks.read().await;
         let mut groups: HashMap<String, Vec<&RegisteredHook>> = HashMap::new();
-        
+
         for hook in hooks.values() {
             let ext_id = &hook.extension_id.0;
             if ext_id.starts_with("builtin:") {
                 groups.entry(ext_id.clone()).or_default().push(hook);
             }
         }
-        
+
         let mut results = Vec::new();
         for (ext_id, hooks) in groups {
             // Parse builtin:{type}:{name}
@@ -331,13 +326,10 @@ impl ExtensionCore {
                 let ext_type = parts[1].to_string();
                 let name = parts[2].to_string();
                 let enabled = hooks.iter().any(|h| h.enabled);
-                let mut capabilities: Vec<String> = hooks
-                    .iter()
-                    .map(|h| h.point.name())
-                    .collect();
+                let mut capabilities: Vec<String> = hooks.iter().map(|h| h.point.name()).collect();
                 capabilities.sort_unstable();
                 capabilities.dedup();
-                
+
                 results.push(BuiltinExtensionInfo {
                     id: ext_id,
                     ext_type,
@@ -347,13 +339,13 @@ impl ExtensionCore {
                 });
             }
         }
-        
+
         results.sort_by(|a, b| a.ext_type.cmp(&b.ext_type).then(a.name.cmp(&b.name)));
         results
     }
-    
+
     /// Get hooks for a specific hook point
-    /// 
+    ///
     /// Supports wildcard matching for tool execution hooks. If an exact match
     /// is not found, checks for wildcard patterns (e.g., "mcp:identity:*" matches
     /// "mcp:identity:echo_identity").
@@ -361,48 +353,56 @@ impl ExtensionCore {
         let by_point = self.hooks_by_point.read().await;
         let hooks = self.hooks.read().await;
         let point_name = point.name();
-        
+
         // First try exact match
         if let Some(ids) = by_point.get(&point_name) {
-            return ids.iter()
+            return ids
+                .iter()
                 .filter_map(|id| hooks.get(id).cloned())
                 .filter(|h| h.enabled)
                 .collect();
         }
-        
+
         // For tool execution hooks, try wildcard matching
         // e.g., "tool.execute.mcp:identity:echo_identity" should match "tool.execute.mcp:identity:*"
-        if let HookPoint::ToolExecute { tool_name } | HookPoint::ToolExecuteAsync { tool_name } |
-           HookPoint::ToolCheckStatus { tool_name } | HookPoint::ToolCancel { tool_name } = point {
+        if let HookPoint::ToolExecute { tool_name }
+        | HookPoint::ToolExecuteAsync { tool_name }
+        | HookPoint::ToolCheckStatus { tool_name }
+        | HookPoint::ToolCancel { tool_name } = point
+        {
             for (registered_name, ids) in by_point.iter() {
                 // Check if this is a tool execution hook with a wildcard pattern
                 if let Some(prefix) = registered_name.strip_prefix("tool.execute.") {
-                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len()-1]) {
-                        return ids.iter()
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
+                        return ids
+                            .iter()
                             .filter_map(|id| hooks.get(id).cloned())
                             .filter(|h| h.enabled)
                             .collect();
                     }
                 }
                 if let Some(prefix) = registered_name.strip_prefix("tool.execute_async.") {
-                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len()-1]) {
-                        return ids.iter()
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
+                        return ids
+                            .iter()
                             .filter_map(|id| hooks.get(id).cloned())
                             .filter(|h| h.enabled)
                             .collect();
                     }
                 }
                 if let Some(prefix) = registered_name.strip_prefix("tool.check_status.") {
-                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len()-1]) {
-                        return ids.iter()
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
+                        return ids
+                            .iter()
                             .filter_map(|id| hooks.get(id).cloned())
                             .filter(|h| h.enabled)
                             .collect();
                     }
                 }
                 if let Some(prefix) = registered_name.strip_prefix("tool.cancel.") {
-                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len()-1]) {
-                        return ids.iter()
+                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
+                        return ids
+                            .iter()
                             .filter_map(|id| hooks.get(id).cloned())
                             .filter(|h| h.enabled)
                             .collect();
@@ -410,10 +410,10 @@ impl ExtensionCore {
                 }
             }
         }
-        
+
         Vec::new()
     }
-    
+
     /// Invoke hooks for a specific point
     ///
     /// This calls all registered and enabled handlers for the given hook point
@@ -426,62 +426,53 @@ impl ExtensionCore {
     /// # Returns
     /// Combined output from all handlers
     #[instrument(skip(self, input), fields(point = %point))]
-    pub async fn invoke_hook(
-        &self,
-        point: HookPoint,
-        input: HookInput,
-    ) -> HookResult {
+    pub async fn invoke_hook(&self, point: HookPoint, input: HookInput) -> HookResult {
         // Check global enable
         if !self.is_globally_enabled().await {
             trace!("Hooks globally disabled, returning PassThrough");
             return HookResult::PassThrough;
         }
-        
+
         // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
         // This ensures ALL tools (built-in, MCP, Universal) are checked consistently
         if let HookPoint::ToolExecute { ref tool_name } = point {
             if !self.is_tool_enabled(tool_name).await {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
-                return HookResult::Error(
-                    anyhow::anyhow!(
-                        "Tool '{}' is currently disabled. Enable it in agent config to use it.",
-                        tool_name
-                    )
-                );
+                return HookResult::Error(anyhow::anyhow!(
+                    "Tool '{}' is currently disabled. Enable it in agent config to use it.",
+                    tool_name
+                ));
             }
             trace!(tool_name = %tool_name, "Tool execution permitted");
         }
-        
+
         let handlers = self.get_hooks_for_point(&point).await;
-        
+
         if handlers.is_empty() {
             trace!("No handlers registered for hook point");
             return HookResult::PassThrough;
         }
-        
+
         trace!(handler_count = handlers.len(), "Invoking hooks");
-        
+
         let mut outputs = Vec::new();
-        
+
         for handler in handlers {
             let hook_id = handler.id.clone();
             let start = std::time::Instant::now();
-            
+
             // Create context
-            let ctx = HookContext::new(
-                point.clone(),
-                input.clone(),
-                self.services.clone(),
-            );
-            
+            let ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
+
             // Invoke handler
             trace!(handler_id = %hook_id, "Calling handler");
             let result = handler.handler.handle(ctx).await;
-            
+
             // Record telemetry
             let duration_ms = start.elapsed().as_millis() as u64;
-            self.services.record_invocation(&hook_id, &point, duration_ms);
-            
+            self.services
+                .record_invocation(&hook_id, &point, duration_ms);
+
             // Process result
             match result {
                 HookResult::Continue(output) => {
@@ -505,7 +496,7 @@ impl ExtensionCore {
                 }
             }
         }
-        
+
         // Combine outputs
         if outputs.is_empty() {
             HookResult::PassThrough
@@ -515,13 +506,9 @@ impl ExtensionCore {
             HookResult::Continue(HookOutput::combine(outputs))
         }
     }
-    
+
     /// Invoke hooks and return text output (convenience for prompt hooks)
-    pub async fn invoke_hook_text(
-        &self,
-        point: HookPoint,
-        input: HookInput,
-    ) -> Option<String> {
+    pub async fn invoke_hook_text(&self, point: HookPoint, input: HookInput) -> Option<String> {
         match self.invoke_hook(point, input).await {
             HookResult::Continue(HookOutput::Text(text)) => Some(text),
             HookResult::Replace(HookOutput::Text(text)) => Some(text),
@@ -540,7 +527,7 @@ impl ExtensionCore {
             _ => None,
         }
     }
-    
+
     /// Invoke hooks and return JSON output (convenience for data hooks)
     pub async fn invoke_hook_json(
         &self,
@@ -553,19 +540,19 @@ impl ExtensionCore {
             _ => None,
         }
     }
-    
+
     /// Get the number of registered hooks
     pub async fn hook_count(&self) -> usize {
         self.hooks.read().await.len()
     }
-    
+
     /// Get the number of registered hooks for a specific point
     pub async fn hook_count_for_point(&self, point: &HookPoint) -> usize {
         self.get_hooks_for_point(point).await.len()
     }
-    
+
     // ==================== UNIFIED TOOL REGISTRY (ADR-018b) ====================
-    
+
     /// Register a tool with the unified registry
     ///
     /// This method registers both the tool metadata and its execution handler.
@@ -586,58 +573,53 @@ impl ExtensionCore {
         extension_id: &ExtensionId,
     ) -> Result<RegisteredHook> {
         let tool_name = metadata.name.clone();
-        
+
         // ADR-019: Allow re-registration for dynamic enable/disable
         // If tool already registered, unregister it first (idempotent)
         if self.get_tool_metadata(&tool_name).await.is_some() {
             let _ = self.unregister_tool(&tool_name).await;
         }
-        
+
         let hook_id = HookId::new();
         let priority = handler.priority();
-        
+
         // Get the handler's actual hook point (should be ToolExecute)
         let exec_point = handler.hook_point();
-        
+
         // Create registration with the handler's actual hook point
         let registration = RegisteredHook::with_tool_metadata(
             hook_id.clone(),
             extension_id.clone(),
-            exec_point.clone(),  // Use actual execution point, not ToolRegister
+            exec_point.clone(), // Use actual execution point, not ToolRegister
             handler.clone(),
             priority,
             metadata,
         );
-        
+
         // Add to hooks map
         {
             let mut hooks = self.hooks.write().await;
             hooks.insert(hook_id.clone(), registration.clone());
         }
-        
+
         // Index by the handler's hook point for execution lookup
         {
             let mut by_point = self.hooks_by_point.write().await;
             let exec_point_name = exec_point.name();
             let entry = by_point.entry(exec_point_name).or_insert_with(Vec::new);
             entry.push(hook_id.clone());
-            
+
             // Sort by priority (higher first)
             let hooks = self.hooks.read().await;
-            entry.sort_by_key(|id| {
-                hooks
-                    .get(id)
-                    .map(|h| -h.priority)
-                    .unwrap_or(0)
-            });
+            entry.sort_by_key(|id| hooks.get(id).map(|h| -h.priority).unwrap_or(0));
         }
-        
+
         // Add to tool index for O(1) lookup
         {
             let mut tool_index = self.tool_index.write().await;
             tool_index.insert(tool_name.clone(), hook_id.clone());
         }
-        
+
         debug!(
             hook_id = %hook_id,
             tool_name = %tool_name,
@@ -645,10 +627,10 @@ impl ExtensionCore {
             exec_point = %exec_point,
             "Registered tool"
         );
-        
+
         Ok(registration)
     }
-    
+
     /// Get tool metadata by name (O(1) lookup)
     ///
     /// # Arguments
@@ -659,12 +641,13 @@ impl ExtensionCore {
     pub async fn get_tool_metadata(&self, tool_name: &str) -> Option<ToolMetadata> {
         let tool_index = self.tool_index.read().await;
         let hooks = self.hooks.read().await;
-        
-        tool_index.get(tool_name)
+
+        tool_index
+            .get(tool_name)
             .and_then(|hook_id| hooks.get(hook_id))
             .and_then(|hook| hook.tool_metadata.clone())
     }
-    
+
     /// Get the hook ID for a tool by name
     ///
     /// # Arguments
@@ -676,7 +659,7 @@ impl ExtensionCore {
         let tool_index = self.tool_index.read().await;
         tool_index.get(tool_name).cloned()
     }
-    
+
     /// List all registered tools
     ///
     /// # Returns
@@ -685,26 +668,28 @@ impl ExtensionCore {
         let tool_index = self.tool_index.read().await;
         let hooks = self.hooks.read().await;
         let config = self.tool_config.read().await;
-        
-        tool_index.values()
+
+        tool_index
+            .values()
             .filter_map(|hook_id| hooks.get(hook_id))
             .filter(|hook| hook.enabled)
             .filter_map(|hook| hook.tool_metadata.clone())
             .filter(|metadata| config.is_tool_enabled(&metadata.name))
             .collect()
     }
-    
+
     /// List all registered tools as ToolDefinitions (for LLM API)
     ///
     /// # Returns
     /// A list of ToolDefinition for all enabled tools
     pub async fn list_tool_definitions(&self) -> Vec<crate::providers::ToolDefinition> {
-        self.list_tools().await
+        self.list_tools()
+            .await
             .into_iter()
             .map(|metadata| metadata.to_tool_definition())
             .collect()
     }
-    
+
     /// Unregister a tool by name
     ///
     /// # Arguments
@@ -715,7 +700,7 @@ impl ExtensionCore {
             let mut tool_index = self.tool_index.write().await;
             tool_index.remove(tool_name)
         };
-        
+
         if let Some(hook_id) = hook_id {
             // Also unregister from hooks
             self.unregister_hook(&hook_id).await?;
@@ -723,10 +708,10 @@ impl ExtensionCore {
         } else {
             warn!(tool_name = %tool_name, "Attempted to unregister unknown tool");
         }
-        
+
         Ok(())
     }
-    
+
     /// Get the number of registered tools
     pub async fn tool_count(&self) -> usize {
         self.tool_index.read().await.len()
@@ -758,14 +743,14 @@ mod tests {
     use super::*;
     use crate::extensions::core::context::HookHandler;
     use crate::extensions::types::HookOutput;
-    
+
     /// Mock handler for testing
     #[derive(Debug)]
     struct MockHandler {
         point: HookPoint,
         output: HookResult,
     }
-    
+
     #[async_trait::async_trait]
     impl HookHandler for MockHandler {
         async fn handle(&self, _ctx: HookContext) -> HookResult {
@@ -777,91 +762,105 @@ mod tests {
                 HookResult::Error(e) => HookResult::Error(anyhow::anyhow!(e.to_string())),
             }
         }
-        
+
         fn hook_point(&self) -> HookPoint {
             self.point.clone()
         }
     }
-    
+
     #[tokio::test]
     async fn test_register_and_unregister() {
         let core = ExtensionCore::new();
-        
+
         let handler = Arc::new(MockHandler {
             point: HookPoint::ToolRegister,
             output: HookResult::PassThrough,
         });
-        
+
         let ext_id = ExtensionId::new("test");
-        let reg = core.register_hook(HookPoint::ToolRegister, handler, &ext_id).await.unwrap();
-        
+        let reg = core
+            .register_hook(HookPoint::ToolRegister, handler, &ext_id)
+            .await
+            .unwrap();
+
         assert_eq!(core.hook_count().await, 1);
-        
+
         core.unregister_hook(&reg.id).await.unwrap();
         assert_eq!(core.hook_count().await, 0);
     }
-    
+
     #[tokio::test]
     async fn test_enable_disable() {
         let core = ExtensionCore::new();
-        
+
         let handler = Arc::new(MockHandler {
             point: HookPoint::ToolRegister,
             output: HookResult::PassThrough,
         });
-        
+
         let ext_id = ExtensionId::new("test");
-        let reg = core.register_hook(HookPoint::ToolRegister, handler, &ext_id).await.unwrap();
-        
+        let reg = core
+            .register_hook(HookPoint::ToolRegister, handler, &ext_id)
+            .await
+            .unwrap();
+
         // Initially enabled
         let hooks = core.get_hooks_for_point(&HookPoint::ToolRegister).await;
         assert_eq!(hooks.len(), 1);
-        
+
         // Disable
         core.disable_hook(&reg.id).await.unwrap();
         let hooks = core.get_hooks_for_point(&HookPoint::ToolRegister).await;
         assert_eq!(hooks.len(), 0);
-        
+
         // Enable
         core.enable_hook(&reg.id).await.unwrap();
         let hooks = core.get_hooks_for_point(&HookPoint::ToolRegister).await;
         assert_eq!(hooks.len(), 1);
     }
-    
+
     #[tokio::test]
     async fn test_invoke_hook_passthrough() {
         let core = ExtensionCore::new();
-        
+
         let handler = Arc::new(MockHandler {
             point: HookPoint::ToolRegister,
             output: HookResult::PassThrough,
         });
-        
+
         let ext_id = ExtensionId::new("test");
-        core.register_hook(HookPoint::ToolRegister, handler, &ext_id).await.unwrap();
-        
-        let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
-        
+        core.register_hook(HookPoint::ToolRegister, handler, &ext_id)
+            .await
+            .unwrap();
+
+        let result = core
+            .invoke_hook(HookPoint::ToolRegister, HookInput::Unit)
+            .await;
+
         match result {
             HookResult::PassThrough => (), // Expected
             _ => panic!("Expected PassThrough, got {:?}", result),
         }
     }
-    
+
     #[tokio::test]
     async fn test_invoke_hook_with_output() {
         let core = ExtensionCore::new();
-        
+
         let handler = Arc::new(MockHandler {
             point: HookPoint::ToolRegister,
             output: HookResult::Continue(HookOutput::text("test output")),
         });
-        
+
         let ext_id = ExtensionId::new("test");
-        core.register_hook(HookPoint::ToolRegister, handler, &ext_id).await.unwrap();
-        
-        let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
-        
+        core.register_hook(HookPoint::ToolRegister, handler, &ext_id)
+            .await
+            .unwrap();
+
+        let result = core
+            .invoke_hook(HookPoint::ToolRegister, HookInput::Unit)
+            .await;
+
         match result {
             HookResult::Continue(HookOutput::Text(text)) => {
                 assert_eq!(text, "test output");
@@ -869,60 +868,71 @@ mod tests {
             _ => panic!("Expected Continue with text, got {:?}", result),
         }
     }
-    
+
     #[tokio::test]
     async fn test_priority_ordering() {
         let core = ExtensionCore::new();
-        
+
         // Create handlers with different priorities
         // Note: MockHandler doesn't support custom priority, so we test ordering
         // by registration sequence (they get default priority 100)
-        
+
         let handler1 = Arc::new(MockHandler {
             point: HookPoint::ToolRegister,
             output: HookResult::Continue(HookOutput::text("first")),
         });
-        
+
         let handler2 = Arc::new(MockHandler {
             point: HookPoint::ToolRegister,
             output: HookResult::Continue(HookOutput::text("second")),
         });
-        
+
         let ext_id = ExtensionId::new("test");
-        core.register_hook(HookPoint::ToolRegister, handler1, &ext_id).await.unwrap();
-        core.register_hook(HookPoint::ToolRegister, handler2, &ext_id).await.unwrap();
-        
+        core.register_hook(HookPoint::ToolRegister, handler1, &ext_id)
+            .await
+            .unwrap();
+        core.register_hook(HookPoint::ToolRegister, handler2, &ext_id)
+            .await
+            .unwrap();
+
         let hooks = core.get_hooks_for_point(&HookPoint::ToolRegister).await;
         assert_eq!(hooks.len(), 2);
     }
-    
+
     #[tokio::test]
     async fn test_globally_disabled() {
         let core = ExtensionCore::new();
-        
+
         let handler = Arc::new(MockHandler {
             point: HookPoint::ToolRegister,
             output: HookResult::Continue(HookOutput::text("should not see")),
         });
-        
+
         let ext_id = ExtensionId::new("test");
-        core.register_hook(HookPoint::ToolRegister, handler, &ext_id).await.unwrap();
-        
+        core.register_hook(HookPoint::ToolRegister, handler, &ext_id)
+            .await
+            .unwrap();
+
         // Disable globally
         core.set_globally_enabled(false).await;
-        
-        let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
-        
+
+        let result = core
+            .invoke_hook(HookPoint::ToolRegister, HookInput::Unit)
+            .await;
+
         match result {
             HookResult::PassThrough => (), // Expected when disabled
-            _ => panic!("Expected PassThrough when globally disabled, got {:?}", result),
+            _ => panic!(
+                "Expected PassThrough when globally disabled, got {:?}",
+                result
+            ),
         }
     }
-    
+
     #[tokio::test]
     async fn test_invoke_hook_text() {
         let core = ExtensionCore::new();
-        
+
         let handler = Arc::new(MockHandler {
             point: HookPoint::PromptSystemSection {
                 section: "test".to_string(),
@@ -930,7 +940,7 @@ mod tests {
             },
             output: HookResult::Continue(HookOutput::text("prompt text")),
         });
-        
+
         let ext_id = ExtensionId::new("test");
         core.register_hook(
             HookPoint::PromptSystemSection {
@@ -939,83 +949,115 @@ mod tests {
             },
             handler,
             &ext_id,
-        ).await.unwrap();
-        
-        let text = core.invoke_hook_text(
-            HookPoint::PromptSystemSection {
-                section: "test".to_string(),
-                priority: 100,
-            },
-            HookInput::Unit,
-        ).await;
-        
+        )
+        .await
+        .unwrap();
+
+        let text = core
+            .invoke_hook_text(
+                HookPoint::PromptSystemSection {
+                    section: "test".to_string(),
+                    priority: 100,
+                },
+                HookInput::Unit,
+            )
+            .await;
+
         assert_eq!(text, Some("prompt text".to_string()));
     }
-    
+
     // ==================== ADR-019: Tool Permission Check Tests ====================
-    
+
     #[tokio::test]
     async fn test_tool_execute_blocked_when_disabled() {
         let core = ExtensionCore::new();
-        
+
         // Create a tool execution handler
         let handler = Arc::new(MockHandler {
-            point: HookPoint::ToolExecute { tool_name: "test_tool".to_string() },
+            point: HookPoint::ToolExecute {
+                tool_name: "test_tool".to_string(),
+            },
             output: HookResult::Continue(HookOutput::text("executed")),
         });
-        
+
         // Register the tool with empty whitelist (all tools disabled)
         let tool_config = crate::types::agent::ToolConfig {
             enabled: vec![], // Empty whitelist = all tools disabled
             ..Default::default()
         };
         core.set_tool_config(tool_config).await;
-        
+
         // Try to execute the tool - should be blocked
-        let result = core.invoke_hook(
-            HookPoint::ToolExecute { tool_name: "test_tool".to_string() },
-            HookInput::ToolCall { tool_name: "test_tool".to_string(), params: serde_json::json!({}) },
-        ).await;
-        
+        let result = core
+            .invoke_hook(
+                HookPoint::ToolExecute {
+                    tool_name: "test_tool".to_string(),
+                },
+                HookInput::ToolCall {
+                    tool_name: "test_tool".to_string(),
+                    params: serde_json::json!({}),
+                },
+            )
+            .await;
+
         match result {
             HookResult::Error(e) => {
                 let msg = e.to_string();
-                assert!(msg.contains("disabled"), "Error should mention tool is disabled: {}", msg);
+                assert!(
+                    msg.contains("disabled"),
+                    "Error should mention tool is disabled: {}",
+                    msg
+                );
             }
             _ => panic!("Expected Error when tool is disabled, got {:?}", result),
         }
     }
-    
+
     #[tokio::test]
     async fn test_tool_execute_permitted_when_enabled() {
         let core = ExtensionCore::new();
-        
+
         // Create and register a tool execution handler
         let handler = Arc::new(MockHandler {
-            point: HookPoint::ToolExecute { tool_name: "enabled_tool".to_string() },
-            output: HookResult::Continue(HookOutput::Json(serde_json::json!({"result": "success"}))),
+            point: HookPoint::ToolExecute {
+                tool_name: "enabled_tool".to_string(),
+            },
+            output: HookResult::Continue(HookOutput::Json(
+                serde_json::json!({"result": "success"}),
+            )),
         });
-        
+
         let ext_id = ExtensionId::new("test");
         core.register_hook(
-            HookPoint::ToolExecute { tool_name: "enabled_tool".to_string() },
+            HookPoint::ToolExecute {
+                tool_name: "enabled_tool".to_string(),
+            },
             handler,
             &ext_id,
-        ).await.unwrap();
-        
+        )
+        .await
+        .unwrap();
+
         // Configure whitelist to enable the tool
         let tool_config = crate::types::agent::ToolConfig {
             enabled: vec!["enabled_tool".to_string()],
             ..Default::default()
         };
         core.set_tool_config(tool_config).await;
-        
+
         // Execute the tool - should succeed
-        let result = core.invoke_hook(
-            HookPoint::ToolExecute { tool_name: "enabled_tool".to_string() },
-            HookInput::ToolCall { tool_name: "enabled_tool".to_string(), params: serde_json::json!({}) },
-        ).await;
-        
+        let result = core
+            .invoke_hook(
+                HookPoint::ToolExecute {
+                    tool_name: "enabled_tool".to_string(),
+                },
+                HookInput::ToolCall {
+                    tool_name: "enabled_tool".to_string(),
+                    params: serde_json::json!({}),
+                },
+            )
+            .await;
+
         match result {
             HookResult::Continue(HookOutput::Json(json)) => {
                 assert_eq!(json["result"], "success");
@@ -1023,30 +1065,34 @@ mod tests {
             _ => panic!("Expected Continue with JSON result, got {:?}", result),
         }
     }
-    
+
     #[tokio::test]
     async fn test_non_tool_hooks_not_affected_by_tool_config() {
         let core = ExtensionCore::new();
-        
+
         // Create a non-tool handler
         let handler = Arc::new(MockHandler {
             point: HookPoint::ToolRegister,
             output: HookResult::Continue(HookOutput::text("registration info")),
         });
-        
+
         let ext_id = ExtensionId::new("test");
-        core.register_hook(HookPoint::ToolRegister, handler, &ext_id).await.unwrap();
-        
+        core.register_hook(HookPoint::ToolRegister, handler, &ext_id)
+            .await
+            .unwrap();
+
         // Set empty whitelist (would block tools, but shouldn't affect ToolRegister)
         let tool_config = crate::types::agent::ToolConfig {
             enabled: vec![],
             ..Default::default()
         };
         core.set_tool_config(tool_config).await;
-        
+
         // ToolRegister hook should work normally
-        let result = core.invoke_hook(HookPoint::ToolRegister, HookInput::Unit).await;
-        
+        let result = core
+            .invoke_hook(HookPoint::ToolRegister, HookInput::Unit)
+            .await;
+
         match result {
             HookResult::Continue(HookOutput::Text(text)) => {
                 assert_eq!(text, "registration info");

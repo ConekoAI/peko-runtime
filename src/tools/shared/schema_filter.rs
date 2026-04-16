@@ -58,10 +58,7 @@ pub fn filter_reserved_params(schema: &Value, reserved: &HashSet<String>) -> Val
     // Remove reserved params from required array
     if let Some(required) = filtered.get_mut("required") {
         if let Some(req_array) = required.as_array_mut() {
-            req_array.retain(|v| {
-                v.as_str()
-                    .map_or(true, |s| !reserved.contains(s))
-            });
+            req_array.retain(|v| v.as_str().map_or(true, |s| !reserved.contains(s)));
         }
     }
 

@@ -2,9 +2,9 @@
 //!
 //! Exports teams to `.team` files (tar.gz archives containing multiple agents)
 
-use crate::portable::{Packager, ExportOptions as AgentExportOptions};
-use crate::types::agent::AgentConfig;
 use crate::identity::Identity;
+use crate::portable::{ExportOptions as AgentExportOptions, Packager};
+use crate::types::agent::AgentConfig;
 use anyhow::Context;
 use std::collections::HashMap;
 use std::path::Path;
@@ -84,15 +84,19 @@ impl TeamPackager {
     pub async fn export(&self, options: TeamExportOptions) -> anyhow::Result<std::path::PathBuf> {
         // Export each agent to get their files
         let mut agent_packages: Vec<AgentExportData> = Vec::new();
-        
+
         for (name, config, identity) in &self.agents {
-            let agent_files = self.export_agent_files(name, config, identity, &options).await
+            let agent_files = self
+                .export_agent_files(name, config, identity, &options)
+                .await
                 .with_context(|| format!("Failed to export agent: {}", name))?;
             agent_packages.push((name.clone(), config.clone(), identity.clone(), agent_files));
         }
 
         // Create the team package
-        let output_path = self.create_team_archive(&agent_packages, &options).await
+        let output_path = self
+            .create_team_archive(&agent_packages, &options)
+            .await
             .context("Failed to create team archive")?;
 
         Ok(output_path)
@@ -130,15 +134,25 @@ impl TeamPackager {
             packager
         };
 
-        let workspace_dir = self.base_dir.join("workspaces").join(&self.team_name).join(name);
-        let sessions_dir = self.base_dir.join("sessions").join(&self.team_name).join(name);
+        let workspace_dir = self
+            .base_dir
+            .join("workspaces")
+            .join(&self.team_name)
+            .join(name);
+        let sessions_dir = self
+            .base_dir
+            .join("sessions")
+            .join(&self.team_name)
+            .join(name);
 
         let packager = packager
             .with_workspace_dir(&workspace_dir)
             .with_sessions_dir(&sessions_dir);
 
         // Collect files without creating archive
-        let (files, _manifest) = packager.collect_files(agent_opts).await
+        let (files, _manifest) = packager
+            .collect_files(agent_opts)
+            .await
             .with_context(|| format!("Failed to collect files for agent: {}", name))?;
 
         Ok(files)
@@ -160,8 +174,9 @@ impl TeamPackager {
         // Ensure parent directory exists
         if let Some(parent) = output_path.parent() {
             if !parent.exists() {
-                tokio::fs::create_dir_all(parent).await
-                    .with_context(|| format!("Failed to create output directory: {}", parent.display()))?;
+                tokio::fs::create_dir_all(parent).await.with_context(|| {
+                    format!("Failed to create output directory: {}", parent.display())
+                })?;
             }
         }
 
@@ -173,9 +188,9 @@ impl TeamPackager {
 
         // Add team manifest
         let team_manifest = self.create_team_manifest(agent_packages.len(), options);
-        let manifest_toml = toml::to_string_pretty(&team_manifest)
-            .context("Failed to serialize team manifest")?;
-        
+        let manifest_toml =
+            toml::to_string_pretty(&team_manifest).context("Failed to serialize team manifest")?;
+
         let mut header = tar::Header::new_gnu();
         header.set_path("team/manifest.toml")?;
         header.set_size(manifest_toml.len() as u64);
@@ -187,13 +202,13 @@ impl TeamPackager {
         for (name, _config, _identity, files) in agent_packages {
             for (file_path, content) in files {
                 let tar_path = format!("agents/{}/{}", name, file_path);
-                
+
                 let mut header = tar::Header::new_gnu();
                 header.set_path(&tar_path)?;
                 header.set_size(content.len() as u64);
                 header.set_mode(0o644);
                 header.set_cksum();
-                
+
                 tar.append(&header, content.as_slice())
                     .with_context(|| format!("Failed to add file: {}", tar_path))?;
             }
@@ -206,11 +221,18 @@ impl TeamPackager {
     }
 
     /// Create team manifest
-    fn create_team_manifest(&self, agent_count: usize, options: &TeamExportOptions) -> TeamManifest {
+    fn create_team_manifest(
+        &self,
+        agent_count: usize,
+        options: &TeamExportOptions,
+    ) -> TeamManifest {
         TeamManifest {
             team: TeamInfo {
                 name: self.team_name.clone(),
-                description: options.description.clone().or(self.team_description.clone()),
+                description: options
+                    .description
+                    .clone()
+                    .or(self.team_description.clone()),
                 version: "1.0.0".to_string(),
                 agent_count,
             },
@@ -295,10 +317,10 @@ pub async fn export_team(
     options: TeamExportOptions,
 ) -> anyhow::Result<std::path::PathBuf> {
     let mut packager = TeamPackager::new(team_name, team_description, base_dir);
-    
+
     for (name, config, identity) in agents {
         packager.add_agent(name, config, identity);
     }
-    
+
     packager.export(options).await
 }

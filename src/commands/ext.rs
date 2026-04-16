@@ -8,7 +8,7 @@
 //! - Configure extensions (global, team, agent levels)
 
 use crate::commands::GlobalPaths;
-use crate::extensions::adapters::{ExtensionTypeAdapter, general_adapter};
+use crate::extensions::adapters::{general_adapter, ExtensionTypeAdapter};
 use crate::extensions::manager::{ExtensionManager, ExtensionStorage, LoadedExtension};
 use crate::extensions::types::ExtensionId;
 use clap::Subcommand;
@@ -172,11 +172,14 @@ async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> Exte
 
     // Register built-in tools so they appear in ExtensionCore queries (e.g. ext list)
     if let Err(e) = BuiltinRegistry::register(&core, &BuiltinRegistryConfig::default()).await {
-        tracing::warn!("Failed to register built-in tools with ExtensionCore: {}", e);
+        tracing::warn!(
+            "Failed to register built-in tools with ExtensionCore: {}",
+            e
+        );
     }
 
     let mut manager = ExtensionManager::with_core(core);
-    
+
     if let Some(storage) = storage {
         manager = manager.with_storage_dir(storage.dir().unwrap().to_path_buf());
     }
@@ -194,9 +197,7 @@ async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> Exte
 /// Handle extension subcommands
 pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> anyhow::Result<()> {
     match command {
-        ExtCommands::Validate { path, verbose } => {
-            handle_validate(path, verbose).await
-        }
+        ExtCommands::Validate { path, verbose } => handle_validate(path, verbose).await,
         ExtCommands::Debug { id } => {
             // Create storage in the data directory
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
@@ -214,7 +215,9 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
             manager.load_all().await?;
 
             match command {
-                ExtCommands::Install { path, r#type } => handle_install(&mut manager, path, r#type).await,
+                ExtCommands::Install { path, r#type } => {
+                    handle_install(&mut manager, path, r#type).await
+                }
                 ExtCommands::List {
                     enabled_only,
                     r#type,
@@ -270,12 +273,12 @@ async fn handle_install(
 }
 
 /// Handle list command
-/// 
+///
 /// Shows both installed extensions and built-in extensions registered with
 /// ExtensionCore. Built-ins are compiled into the binary and always available.
 async fn handle_list(
     manager: &ExtensionManager,
-    _enabled_only: bool,  // Kept for CLI compatibility, but ignored
+    _enabled_only: bool, // Kept for CLI compatibility, but ignored
     ext_type: Option<String>,
 ) -> anyhow::Result<()> {
     let extensions = manager.list_extensions();
@@ -337,7 +340,10 @@ async fn handle_list(
     }
 
     println!();
-    println!("Total: {} extension(s)", filtered_installed.len() + filtered_builtins.len());
+    println!(
+        "Total: {} extension(s)",
+        filtered_installed.len() + filtered_builtins.len()
+    );
     if !filtered_builtins.is_empty() {
         println!("Note: Built-in extensions are compiled into the binary.");
         println!("      Installed extensions are loaded from disk.");
@@ -369,7 +375,8 @@ async fn handle_enable(
 
     // Check if extension exists and get data we need
     let (tool_name, ext_type) = {
-        let ext = manager.get_extension(&ext_id)
+        let ext = manager
+            .get_extension(&ext_id)
             .ok_or_else(|| anyhow::anyhow!("Extension '{}' not found", id))?;
         (ext.manifest.name.clone(), ext.extension_type.clone())
     };
@@ -377,7 +384,7 @@ async fn handle_enable(
     match manager.enable(&ext_id).await {
         Ok(()) => {
             println!("Extension '{}' enabled", id);
-            
+
             // Also add to agent tool whitelist for tools that need it (universal-tool and mcp)
             let needs_whitelist = ext_type == "universal-tool" || ext_type == "mcp";
             if needs_whitelist {
@@ -389,12 +396,19 @@ async fn handle_enable(
                     tool_name.clone()
                 };
                 if let Err(e) = add_tool_to_agent_whitelist(paths, &whitelist_entry, target).await {
-                    tracing::warn!("Failed to add tool '{}' to agent whitelist: {}", whitelist_entry, e);
+                    tracing::warn!(
+                        "Failed to add tool '{}' to agent whitelist: {}",
+                        whitelist_entry,
+                        e
+                    );
                 } else {
-                    println!("Added '{}' to agent '{}' tool whitelist", whitelist_entry, target);
+                    println!(
+                        "Added '{}' to agent '{}' tool whitelist",
+                        whitelist_entry, target
+                    );
                 }
             }
-            
+
             Ok(())
         }
         Err(e) => {
@@ -424,39 +438,63 @@ async fn add_tool_to_agent_whitelist(
 
     if let Some(agent_name) = agent {
         config_service.enable_tool_sync(&agent_name, &team, tool_name)?;
-        println!("Added '{}' to agent '{}/{}' tool whitelist", tool_name, team, agent_name);
-        tracing::info!("Added '{}' to agent '{}/{}' tool whitelist", tool_name, team, agent_name);
+        println!(
+            "Added '{}' to agent '{}/{}' tool whitelist",
+            tool_name, team, agent_name
+        );
+        tracing::info!(
+            "Added '{}' to agent '{}/{}' tool whitelist",
+            tool_name,
+            team,
+            agent_name
+        );
     } else {
         // Team-level: update all agents in the team
         let agents_dir = paths.resolver().agents_dir(Some(&team));
         if !agents_dir.exists() {
             anyhow::bail!("Team '{}' not found (no agents directory)", team);
         }
-        
+
         let mut updated_count = 0;
-        
+
         // Find all agents in the team
         for entry in std::fs::read_dir(&agents_dir)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() {
                 continue;
             }
-            
+
             let agent_name = entry.file_name().to_string_lossy().to_string();
-            if paths.resolver().agent_config(&agent_name, Some(&team)).exists() {
+            if paths
+                .resolver()
+                .agent_config(&agent_name, Some(&team))
+                .exists()
+            {
                 config_service.enable_tool_sync(&agent_name, &team, tool_name)?;
                 updated_count += 1;
             }
         }
-        
+
         if updated_count > 0 {
-            println!("Added '{}' to {} agent(s) in team '{}' tool whitelist", tool_name, updated_count, team);
-            tracing::info!("Added '{}' to {} agent(s) in team '{}' tool whitelist", tool_name, updated_count, team);
+            println!(
+                "Added '{}' to {} agent(s) in team '{}' tool whitelist",
+                tool_name, updated_count, team
+            );
+            tracing::info!(
+                "Added '{}' to {} agent(s) in team '{}' tool whitelist",
+                tool_name,
+                updated_count,
+                team
+            );
         } else {
-            tracing::warn!("No agents found in team '{}' to add tool '{}' to", team, tool_name);
+            tracing::warn!(
+                "No agents found in team '{}' to add tool '{}' to",
+                team,
+                tool_name
+            );
         }
     }
-    
+
     Ok(())
 }
 
@@ -480,16 +518,19 @@ async fn handle_enable_builtin(
 
     if let Some(agent_name) = agent {
         config_service.enable_tool_sync(&agent_name, &team, capability)?;
-        println!("Enabled '{}' for agent '{}' in team '{}'", capability, agent_name, team);
+        println!(
+            "Enabled '{}' for agent '{}' in team '{}'",
+            capability, agent_name, team
+        );
     } else {
         // Team-level: update team extensions config
         let team_dir = paths.data_dir.join("teams").join(&team);
         let ext_config_path = team_dir.join("extensions.toml");
-        
+
         let mut config = crate::common::types::TeamExtConfig::load(&ext_config_path)?;
         config.enable(capability);
         config.save(&ext_config_path)?;
-        
+
         println!("Enabled '{}' for team '{}'", capability, team);
     }
 
@@ -569,16 +610,19 @@ async fn handle_disable_builtin(
 
     if let Some(agent_name) = agent {
         config_service.disable_tool_sync(&agent_name, &team, capability)?;
-        println!("Disabled '{}' for agent '{}' in team '{}'", capability, agent_name, team);
+        println!(
+            "Disabled '{}' for agent '{}' in team '{}'",
+            capability, agent_name, team
+        );
     } else {
         // Team-level: update team extensions config
         let team_dir = paths.data_dir.join("teams").join(&team);
         let ext_config_path = team_dir.join("extensions.toml");
-        
+
         let mut config = crate::common::types::TeamExtConfig::load(&ext_config_path)?;
         config.disable(capability);
         config.save(&ext_config_path)?;
-        
+
         println!("Disabled '{}' for team '{}'", capability, team);
     }
 
@@ -642,7 +686,10 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
     println!("Path:        {}", ext.path.display());
     println!();
     println!("Note: Tool access is controlled per-agent via 'tools.enabled' in agent config.");
-    println!("Use 'pekobot ext enable {} --target <team>/<agent>' to enable for a specific agent.", id);
+    println!(
+        "Use 'pekobot ext enable {} --target <team>/<agent>' to enable for a specific agent.",
+        id
+    );
 
     if !ext.hook_ids.is_empty() {
         println!();
@@ -653,11 +700,7 @@ fn handle_info(manager: &ExtensionManager, id: String) -> anyhow::Result<()> {
 }
 
 /// Handle bundle command
-fn handle_bundle(
-    manager: &ExtensionManager,
-    name: String,
-    ids: Vec<String>,
-) -> anyhow::Result<()> {
+fn handle_bundle(manager: &ExtensionManager, name: String, ids: Vec<String>) -> anyhow::Result<()> {
     if ids.is_empty() {
         anyhow::bail!("At least one extension ID is required to create a bundle");
     }
@@ -672,7 +715,11 @@ fn handle_bundle(
         ext_ids.push(ext_id);
     }
 
-    println!("Creating bundle '{}' with {} extension(s)...", name, ids.len());
+    println!(
+        "Creating bundle '{}' with {} extension(s)...",
+        name,
+        ids.len()
+    );
 
     match manager.create_bundle(ext_ids, &name) {
         Ok(bundle) => {
@@ -696,11 +743,11 @@ struct ExtensionConfig {
     /// Global settings (apply to all agents/teams)
     #[serde(default)]
     global: HashMap<String, serde_json::Value>,
-    
+
     /// Per-team settings
     #[serde(default)]
     teams: HashMap<String, HashMap<String, serde_json::Value>>,
-    
+
     /// Per-agent settings (format: "team/agent")
     #[serde(default)]
     agents: HashMap<String, HashMap<String, serde_json::Value>>,
@@ -708,9 +755,12 @@ struct ExtensionConfig {
 
 impl ExtensionConfig {
     fn config_path(data_dir: &std::path::Path, extension_id: &str) -> PathBuf {
-        data_dir.join("extensions").join(extension_id).join("config.toml")
+        data_dir
+            .join("extensions")
+            .join(extension_id)
+            .join("config.toml")
     }
-    
+
     fn load(data_dir: &std::path::Path, extension_id: &str) -> anyhow::Result<Self> {
         let path = Self::config_path(data_dir, extension_id);
         if !path.exists() {
@@ -720,7 +770,7 @@ impl ExtensionConfig {
         let config: Self = toml::from_str(&content)?;
         Ok(config)
     }
-    
+
     fn save(&self, data_dir: &std::path::Path, extension_id: &str) -> anyhow::Result<()> {
         let path = Self::config_path(data_dir, extension_id);
         if let Some(parent) = path.parent() {
@@ -730,21 +780,25 @@ impl ExtensionConfig {
         std::fs::write(&path, content)?;
         Ok(())
     }
-    
-    fn set(&mut self, team: Option<&str>, agent: Option<&str>, key: String, value: serde_json::Value) {
+
+    fn set(
+        &mut self,
+        team: Option<&str>,
+        agent: Option<&str>,
+        key: String,
+        value: serde_json::Value,
+    ) {
         let target = match (team, agent) {
             (Some(_), Some(_)) => {
                 let agent_id = agent.unwrap().to_string();
                 self.agents.entry(agent_id).or_default()
             }
-            (Some(team_id), None) => {
-                self.teams.entry(team_id.to_string()).or_default()
-            }
+            (Some(team_id), None) => self.teams.entry(team_id.to_string()).or_default(),
             _ => &mut self.global,
         };
         target.insert(key, value);
     }
-    
+
     fn unset(&mut self, team: Option<&str>, agent: Option<&str>, key: &str) -> bool {
         match (team, agent) {
             (Some(_), Some(_)) => {
@@ -791,27 +845,30 @@ async fn handle_config(
         (Some(t), None) => (Some(t.as_str()), None),
         _ => (None, None),
     };
-    
+
     let scope_label = match (&team_id, &agent_id) {
-        (Some(t), Some(a)) => format!("agent '{}'", a),
+        (Some(_t), Some(a)) => format!("agent '{}'", a),
         (Some(t), None) => format!("team '{}'", t),
         _ => "global".to_string(),
     };
-    
+
     // Load or create config
     let mut config = ExtensionConfig::load(&paths.data_dir, &id)?;
-    
+
     // Handle --show (default if no other actions)
     if show || (set_values.is_empty() && unset_keys.is_empty()) {
-        println!("Configuration for extension '{}' ({} scope):", id, scope_label);
+        println!(
+            "Configuration for extension '{}' ({} scope):",
+            id, scope_label
+        );
         println!();
-        
+
         let target_config: &HashMap<String, serde_json::Value> = match (&team_id, &agent_id) {
             (Some(_), Some(a)) => config.agents.get(a).unwrap_or(&config.global),
             (Some(t), None) => config.teams.get(&t.to_string()).unwrap_or(&config.global),
             _ => &config.global,
         };
-        
+
         if target_config.is_empty() {
             println!("  No configuration set at this scope.");
         } else {
@@ -819,7 +876,7 @@ async fn handle_config(
                 println!("  {} = {}", key, value);
             }
         }
-        
+
         // Also show inherited values
         if team_id.is_some() || agent_id.is_some() {
             println!();
@@ -835,10 +892,10 @@ async fn handle_config(
                 println!("  (none)");
             }
         }
-        
+
         return Ok(());
     }
-    
+
     // Handle --set
     for pair in &set_values {
         let parts: Vec<&str> = pair.splitn(2, '=').collect();
@@ -847,37 +904,44 @@ async fn handle_config(
         }
         let key = parts[0].to_string();
         let value = parts[1];
-        
+
         // Try to parse as JSON, fallback to string
         let json_value = serde_json::from_str(value)
             .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
-        
+
         config.set(team_id, agent_id.as_deref(), key.clone(), json_value);
-        println!("Set {} = {} for extension '{}' at {} scope", key, value, id, scope_label);
+        println!(
+            "Set {} = {} for extension '{}' at {} scope",
+            key, value, id, scope_label
+        );
     }
-    
+
     // Handle --unset
     for key in &unset_keys {
         if config.unset(team_id, agent_id.as_deref(), key) {
-            println!("Unset '{}' for extension '{}' at {} scope", key, id, scope_label);
+            println!(
+                "Unset '{}' for extension '{}' at {} scope",
+                key, id, scope_label
+            );
         } else {
-            println!("Key '{}' not found for extension '{}' at {} scope", key, id, scope_label);
+            println!(
+                "Key '{}' not found for extension '{}' at {} scope",
+                key, id, scope_label
+            );
         }
     }
-    
+
     // Save config
     config.save(&paths.data_dir, &id)?;
-    
+
     Ok(())
 }
 
 /// Handle validate command
 async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
     use crate::extensions::adapters::{
-        skill_adapter::SkillAdapter,
-        universal_tool_adapter::UniversalToolAdapter,
-        mcp_adapter::McpAdapter,
-        general_adapter::GeneralExtensionAdapter,
+        general_adapter::GeneralExtensionAdapter, mcp_adapter::McpAdapter,
+        skill_adapter::SkillAdapter, universal_tool_adapter::UniversalToolAdapter,
     };
 
     println!("Validating extension at: {}", path.display());
@@ -899,22 +963,28 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
         if verbose {
             println!("✓ Detected as: skill extension (SKILL.md)");
         }
-        
+
         let skills = skill_adapter.discover_skills(&path);
         if skills.is_empty() {
             errors.push("No valid skills found in directory".to_string());
         } else {
             if verbose {
                 for skill in &skills {
-                    println!("  ✓ Skill: {} - {}", skill.manifest.name, skill.manifest.description);
+                    println!(
+                        "  ✓ Skill: {} - {}",
+                        skill.manifest.name, skill.manifest.description
+                    );
                 }
             }
-            
+
             // Validate hook resolution
             for skill in &skills {
                 let bindings = skill_adapter.resolve_hooks(&skill.manifest);
                 if bindings.is_empty() {
-                    warnings.push(format!("Skill '{}' has no hook bindings", skill.manifest.name));
+                    warnings.push(format!(
+                        "Skill '{}' has no hook bindings",
+                        skill.manifest.name
+                    ));
                 } else if verbose {
                     println!("  ✓ Resolved {} hook(s)", bindings.len());
                 }
@@ -929,22 +999,28 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
         if verbose {
             println!("✓ Detected as: universal tool extension (manifest.json)");
         }
-        
+
         let tools = universal_adapter.discover_tools(&path).await;
         if tools.is_empty() {
             errors.push("No valid tools found in directory".to_string());
         } else {
             if verbose {
                 for tool in &tools {
-                    println!("  ✓ Tool: {} - {}", tool.manifest.name, tool.manifest.description);
+                    println!(
+                        "  ✓ Tool: {} - {}",
+                        tool.manifest.name, tool.manifest.description
+                    );
                 }
             }
-            
+
             // Validate hook resolution
             for tool in &tools {
                 let bindings = universal_adapter.resolve_hooks(&tool.manifest);
                 if bindings.is_empty() {
-                    warnings.push(format!("Tool '{}' has no hook bindings", tool.manifest.name));
+                    warnings.push(format!(
+                        "Tool '{}' has no hook bindings",
+                        tool.manifest.name
+                    ));
                 } else if verbose {
                     println!("  ✓ Resolved {} hook(s)", bindings.len());
                 }
@@ -959,7 +1035,7 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
         if verbose {
             println!("✓ Detected as: MCP server extension");
         }
-        
+
         let servers = mcp_adapter.discover_servers(&path).await;
         if servers.is_empty() {
             errors.push("No valid MCP servers found in directory".to_string());
@@ -969,12 +1045,15 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
                     println!("  ✓ Server: {}", server.manifest.name);
                 }
             }
-            
+
             // Validate hook resolution
             for server in &servers {
                 let bindings = mcp_adapter.resolve_hooks(&server.manifest);
                 if bindings.is_empty() {
-                    warnings.push(format!("Server '{}' has no hook bindings", server.manifest.name));
+                    warnings.push(format!(
+                        "Server '{}' has no hook bindings",
+                        server.manifest.name
+                    ));
                 } else if verbose {
                     println!("  ✓ Resolved {} hook(s)", bindings.len());
                 }
@@ -989,31 +1068,47 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
         if verbose {
             println!("✓ Detected as: general extension");
         }
-        
+
         let extensions = general_adapter::discover_general_extensions(&path).await?;
         if extensions.is_empty() {
             errors.push("No valid general extensions found in directory".to_string());
         } else {
             for ext in &extensions {
                 if verbose {
-                    println!("  ✓ Extension: {} - {}", ext.manifest.name, ext.manifest.description);
+                    println!(
+                        "  ✓ Extension: {} - {}",
+                        ext.manifest.name, ext.manifest.description
+                    );
                     println!("    Hooks declared: {}", ext.hooks.len());
                 }
-                
+
                 // Validate each hook declaration
                 for hook in &ext.hooks {
                     // Check if the hook point is valid
                     let valid_points = [
-                        "prompt.system_section", "prompt.pre_process", "prompt.post_process",
-                        "tool.register", "tool.execute", "tool.execute_async",
-                        "tool.check_status", "tool.cancel", "tool.result_transform",
-                        "session.state_change", "session.compaction", "session.context_build",
-                        "io.channel_input", "io.channel_output", 
-                        "io.message_pre_send", "io.message_post_receive",
-                        "event.subscribe", "event.emit",
-                        "agent.init", "agent.shutdown", "agent.iteration",
+                        "prompt.system_section",
+                        "prompt.pre_process",
+                        "prompt.post_process",
+                        "tool.register",
+                        "tool.execute",
+                        "tool.execute_async",
+                        "tool.check_status",
+                        "tool.cancel",
+                        "tool.result_transform",
+                        "session.state_change",
+                        "session.compaction",
+                        "session.context_build",
+                        "io.channel_input",
+                        "io.channel_output",
+                        "io.message_pre_send",
+                        "io.message_post_receive",
+                        "event.subscribe",
+                        "event.emit",
+                        "agent.init",
+                        "agent.shutdown",
+                        "agent.iteration",
                     ];
-                    
+
                     if !valid_points.contains(&hook.point.as_str()) {
                         warnings.push(format!(
                             "Extension '{}' has unknown hook point: {}",
@@ -1023,11 +1118,14 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
                         println!("    ✓ Hook: {} -> {}", hook.point, hook.handler);
                     }
                 }
-                
+
                 // Validate hook resolution
                 let bindings = general_adapter.resolve_hooks(&ext.manifest);
                 if bindings.is_empty() {
-                    warnings.push(format!("Extension '{}' has no valid hook bindings", ext.manifest.name));
+                    warnings.push(format!(
+                        "Extension '{}' has no valid hook bindings",
+                        ext.manifest.name
+                    ));
                 } else if verbose {
                     println!("  ✓ Resolved {} hook binding(s)", bindings.len());
                 }
@@ -1104,11 +1202,11 @@ async fn handle_debug(manager: &ExtensionManager, id: String) -> anyhow::Result<
         println!("  (no hooks registered)");
     } else {
         println!("  Total hooks: {}", ext.hook_ids.len());
-        
+
         // Get hook details from core
         let core = manager.core();
         let all_hooks = core.get_all_hooks().await;
-        
+
         for hook_id in &ext.hook_ids {
             if let Some(hook) = all_hooks.iter().find(|h| &h.id == hook_id) {
                 println!();

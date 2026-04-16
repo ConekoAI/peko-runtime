@@ -6,8 +6,8 @@
 //! - Enable/disable control
 //! - Bundling and packaging
 
-use crate::extensions::adapters::{ExtensionTypeAdapter, ExtensionState};
-use crate::extensions::core::{ExtensionCore, HookPoint};
+use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter};
+use crate::extensions::core::ExtensionCore;
 use crate::extensions::types::{ExtensionId, ExtensionManifest, HookId};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -26,7 +26,7 @@ pub struct ExtensionManager {
 }
 
 /// An extension that has been loaded into the manager
-/// 
+///
 /// Note: Enable/disable state is NOT stored here. It is managed by the agent/team
 /// configuration (AgentConfig.tools.enabled whitelist). ExtensionManager handles
 /// loading and lifecycle; access control is determined by configuration.
@@ -68,8 +68,9 @@ impl ExtensionStorage {
         let target_dir = storage_dir.join(&extension_id.0);
 
         if target_dir.exists() {
-            std::fs::remove_dir_all(&target_dir)
-                .with_context(|| format!("Failed to remove existing extension at {:?}", target_dir))?;
+            std::fs::remove_dir_all(&target_dir).with_context(|| {
+                format!("Failed to remove existing extension at {:?}", target_dir)
+            })?;
         }
 
         // Handle single file (e.g., MCP config.toml) vs directory
@@ -77,14 +78,18 @@ impl ExtensionStorage {
             // Create target directory and copy the file into it
             std::fs::create_dir_all(&target_dir)
                 .with_context(|| format!("Failed to create target directory {:?}", target_dir))?;
-            let file_name = source.file_name()
-                .context("Invalid source file name")?;
+            let file_name = source.file_name().context("Invalid source file name")?;
             let target_file = target_dir.join(file_name);
-            std::fs::copy(source, &target_file)
-                .with_context(|| format!("Failed to copy file from {:?} to {:?}", source, target_file))?;
+            std::fs::copy(source, &target_file).with_context(|| {
+                format!("Failed to copy file from {:?} to {:?}", source, target_file)
+            })?;
         } else {
-            copy_dir_recursive(source, &target_dir)
-                .with_context(|| format!("Failed to copy extension from {:?} to {:?}", source, target_dir))?;
+            copy_dir_recursive(source, &target_dir).with_context(|| {
+                format!(
+                    "Failed to copy extension from {:?} to {:?}",
+                    source, target_dir
+                )
+            })?;
         }
 
         Ok(target_dir)
@@ -206,13 +211,25 @@ impl ExtensionManager {
     }
 
     fn detect_extension_type(&self, path: &Path) -> Option<&dyn ExtensionTypeAdapter> {
-        tracing::debug!("detect_extension_type: checking {} with {} adapters", path.display(), self.adapters.len());
+        tracing::debug!(
+            "detect_extension_type: checking {} with {} adapters",
+            path.display(),
+            self.adapters.len()
+        );
         for adapter in self.adapters.values() {
             let format = adapter.manifest_format();
             let detected = format.detect(path);
-            tracing::debug!("  Adapter '{}': detected = {}", adapter.extension_type(), detected);
+            tracing::debug!(
+                "  Adapter '{}': detected = {}",
+                adapter.extension_type(),
+                detected
+            );
             if detected {
-                debug!("Detected extension type '{}' at {:?}", adapter.extension_type(), path);
+                debug!(
+                    "Detected extension type '{}' at {:?}",
+                    adapter.extension_type(),
+                    path
+                );
                 return Some(adapter.as_ref());
             }
         }
@@ -235,7 +252,7 @@ impl ExtensionManager {
         adapter: &dyn ExtensionTypeAdapter,
     ) -> Result<(ExtensionId, Vec<HookId>, ExtensionManifest)> {
         let format = adapter.manifest_format();
-        
+
         // For custom formats, the path itself may be the manifest file
         // or a directory containing the manifest file
         let manifest_path = match format.manifest_path(path) {
@@ -293,42 +310,69 @@ impl ExtensionManager {
         if ext_type == "universal-tool" {
             use crate::extensions::adapters::universal_tool_adapter::UniversalToolAdapter;
             let adapter = UniversalToolAdapter::new();
-            info!("Registering universal tool '{}' with unified registry...", extension_id);
+            info!(
+                "Registering universal tool '{}' with unified registry...",
+                extension_id
+            );
             if let Err(e) = adapter.register_tool(&self.core, &manifest).await {
-                warn!("Failed to register universal tool '{}' with unified registry: {}", extension_id, e);
+                warn!(
+                    "Failed to register universal tool '{}' with unified registry: {}",
+                    extension_id, e
+                );
             } else {
-                info!("Successfully registered universal tool '{}' with unified registry", extension_id);
+                info!(
+                    "Successfully registered universal tool '{}' with unified registry",
+                    extension_id
+                );
                 // Verify registration
                 let count = self.core.tool_count().await;
                 info!("Unified registry now has {} tools", count);
             }
         }
-        
+
         // For MCP servers, ensure config is loaded and register tools with unified registry
         if ext_type == "mcp" {
             use crate::extensions::adapters::mcp_adapter::McpAdapter;
-            
+
             // Get config path from manifest and ensure server config is loaded
             if let Some(config_path) = manifest.get("config_path").and_then(|v| v.as_str()) {
                 // Use MCP adapter with global shared manager
                 let adapter = McpAdapter::with_default_manager();
-                
+
                 // First, ensure the server config is loaded into the MCP manager
                 if let Err(e) = adapter.ensure_server_config(config_path).await {
-                    warn!("Failed to load MCP server config for '{}': {}", extension_id, e);
+                    warn!(
+                        "Failed to load MCP server config for '{}': {}",
+                        extension_id, e
+                    );
                 } else {
-                    info!("Registering MCP server '{}' tools with unified registry...", extension_id);
-                    if let Err(e) = adapter.register_server_tools(&self.core, &manifest.name).await {
-                        warn!("Failed to register MCP server '{}' tools with unified registry: {}", extension_id, e);
+                    info!(
+                        "Registering MCP server '{}' tools with unified registry...",
+                        extension_id
+                    );
+                    if let Err(e) = adapter
+                        .register_server_tools(&self.core, &manifest.name)
+                        .await
+                    {
+                        warn!(
+                            "Failed to register MCP server '{}' tools with unified registry: {}",
+                            extension_id, e
+                        );
                     } else {
-                        info!("Successfully registered MCP server '{}' tools with unified registry", extension_id);
+                        info!(
+                            "Successfully registered MCP server '{}' tools with unified registry",
+                            extension_id
+                        );
                         // Verify registration
                         let count = self.core.tool_count().await;
                         info!("Unified registry now has {} tools", count);
                     }
                 }
             } else {
-                warn!("MCP extension '{}' missing config_path in manifest", extension_id);
+                warn!(
+                    "MCP extension '{}' missing config_path in manifest",
+                    extension_id
+                );
             }
         }
 
@@ -345,11 +389,13 @@ impl ExtensionManager {
         path: &Path,
         adapter: &dyn ExtensionTypeAdapter,
     ) -> Result<ExtensionManifest> {
-        let content = tokio::fs::read_to_string(path).await
+        let content = tokio::fs::read_to_string(path)
+            .await
             .with_context(|| format!("Failed to read manifest at {:?}", path))?;
 
         // Use the adapter's parse_manifest method to allow custom parsing
-        adapter.parse_manifest(path, &content)
+        adapter
+            .parse_manifest(path, &content)
             .with_context(|| format!("Failed to parse manifest at {:?}", path))
     }
 
@@ -416,16 +462,16 @@ impl ExtensionManager {
         let ext_type = self
             .detect_extension_type_string(path)
             .context("No adapter found for extension")?;
-        
+
         // Get the extension type string first, then look up the adapter
-        let adapter = self.adapters.get(&ext_type)
-            .context("Adapter not found")?;
-        
+        let adapter = self.adapters.get(&ext_type).context("Adapter not found")?;
+
         // Clone needed data before calling load_extension_internal
         let ext_type = adapter.extension_type().to_string();
         let adapter_ref: &dyn ExtensionTypeAdapter = adapter.as_ref();
 
-        let (extension_id, hook_ids, manifest) = self.load_extension_internal(path, adapter_ref).await?;
+        let (extension_id, hook_ids, manifest) =
+            self.load_extension_internal(path, adapter_ref).await?;
 
         let loaded_ext = LoadedExtension {
             manifest,
@@ -447,16 +493,15 @@ impl ExtensionManager {
         let ext_type = self
             .detect_extension_type_string(path)
             .context(format!("No adapter found for extension at {:?}", path))?;
-        
+
         // Get the adapter and extract data we need
-        let adapter = self.adapters.get(&ext_type)
-            .context("Adapter not found")?;
-        
+        let adapter = self.adapters.get(&ext_type).context("Adapter not found")?;
+
         // Clone data we need from the adapter
         let adapter_ref = adapter.as_ref();
         let ext_type_name = adapter_ref.extension_type().to_string();
         let format = adapter_ref.manifest_format();
-        
+
         // For custom formats, the path itself may be the manifest file
         let manifest_path = match format.manifest_path(path) {
             Some(p) => p,
@@ -472,15 +517,19 @@ impl ExtensionManager {
                         path.join("manifest.json"),
                         path.join("manifest.toml"),
                     ];
-                    candidates.into_iter()
+                    candidates
+                        .into_iter()
                         .find(|p| p.exists())
-                        .context(format!("Could not find manifest file in directory {:?}", path))?
+                        .context(format!(
+                            "Could not find manifest file in directory {:?}",
+                            path
+                        ))?
                 } else {
                     anyhow::bail!("Could not determine manifest path for {:?}", path)
                 }
             }
         };
-        
+
         // Parse manifest before any mutable borrow
         let manifest = self.parse_manifest(&manifest_path, adapter_ref).await?;
         let extension_id = manifest.id.clone();
@@ -493,17 +542,17 @@ impl ExtensionManager {
         };
 
         // Get adapter again for load_extension_internal
-        let adapter = self.adapters.get(&ext_type)
-            .context("Adapter not found")?;
+        let adapter = self.adapters.get(&ext_type).context("Adapter not found")?;
         let adapter_ref = adapter.as_ref();
 
         // Load the extension
         let (installed_id, hook_ids, _) = if self.storage.dir().is_some() {
-            self.load_extension_internal(&target_path, adapter_ref).await?
+            self.load_extension_internal(&target_path, adapter_ref)
+                .await?
         } else {
             self.load_extension_internal(path, adapter_ref).await?
         };
-        
+
         assert_eq!(installed_id, extension_id);
 
         let loaded_ext = LoadedExtension {
@@ -529,7 +578,10 @@ impl ExtensionManager {
         // Unregister all hooks
         for hook_id in &loaded_ext.hook_ids {
             if let Err(e) = self.core.unregister_hook(hook_id).await {
-                warn!("Failed to unregister hook {} for extension {}: {}", hook_id, id, e);
+                warn!(
+                    "Failed to unregister hook {} for extension {}: {}",
+                    hook_id, id, e
+                );
             }
         }
 
@@ -553,7 +605,7 @@ impl ExtensionManager {
     }
 
     /// Enable hooks for an extension at runtime.
-    /// 
+    ///
     /// Note: This only affects hook registration state, not tool access.
     /// Tool access is controlled by AgentConfig.tools.enabled whitelist.
     pub async fn enable(&mut self, id: &ExtensionId) -> Result<()> {
@@ -572,7 +624,7 @@ impl ExtensionManager {
     }
 
     /// Disable hooks for an extension at runtime.
-    /// 
+    ///
     /// Note: This only affects hook registration state, not tool access.
     /// Tool access is controlled by AgentConfig.tools.enabled whitelist.
     pub async fn disable(&mut self, id: &ExtensionId) -> Result<()> {
@@ -713,19 +765,23 @@ impl ExtensionManager {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            
+
             if !path.is_dir() {
                 tracing::trace!("Skipping non-directory: {}", name);
                 continue;
             }
 
             tracing::debug!("Checking directory: {}", name);
-            
+
             // Try to detect extension type using registered adapters
             if let Some(adapter) = self.detect_extension_type(&path) {
                 let format = adapter.manifest_format();
-                tracing::info!("Detected extension type '{}' in {}", adapter.extension_type(), name);
-                
+                tracing::info!(
+                    "Detected extension type '{}' in {}",
+                    adapter.extension_type(),
+                    name
+                );
+
                 // Get manifest path - for Custom formats, we need to determine it manually
                 let manifest_path = match format.manifest_path(&path) {
                     Some(p) => p,
@@ -737,12 +793,13 @@ impl ExtensionManager {
                             path.join("manifest.json"),
                             path.join("manifest.toml"),
                         ];
-                        candidates.into_iter()
+                        candidates
+                            .into_iter()
                             .find(|p| p.exists())
                             .unwrap_or_else(|| path.join("config.toml"))
                     }
                 };
-                
+
                 discovered.push(DiscoveredExtension {
                     path,
                     manifest_path,
@@ -775,10 +832,10 @@ impl ExtensionManager {
                 .adapters
                 .get(&discovered_ext.extension_type)
                 .context("Adapter not found for extension type")?;
-            
-            let manifest = adapter
-                .parse_manifest(&discovered_ext.manifest_path, &manifest_content)?;
-            
+
+            let manifest =
+                adapter.parse_manifest(&discovered_ext.manifest_path, &manifest_content)?;
+
             if self.extensions.contains_key(&manifest.id) {
                 debug!("Extension '{}' already loaded, skipping", manifest.id);
                 continue;
@@ -790,7 +847,10 @@ impl ExtensionManager {
                     loaded_ids.push(id);
                 }
                 Err(e) => {
-                    warn!("Failed to load extension from {:?}: {}", discovered_ext.path, e);
+                    warn!(
+                        "Failed to load extension from {:?}: {}",
+                        discovered_ext.path, e
+                    );
                 }
             }
         }
@@ -839,7 +899,9 @@ pub mod discovery_paths {
         }
         #[cfg(target_os = "macos")]
         {
-            Some(PathBuf::from("/Library/Application Support/pekobot/extensions"))
+            Some(PathBuf::from(
+                "/Library/Application Support/pekobot/extensions",
+            ))
         }
         #[cfg(target_os = "windows")]
         {

@@ -103,7 +103,7 @@ impl SessionEntry {
     }
 
     /// Record token usage
-    /// 
+    ///
     /// `context_window` is the total_tokens from the current assistant message.
     /// `input` and `output` are the incremental tokens for this turn.
     pub fn record_tokens(&mut self, context_window: usize, input: usize, output: usize) {
@@ -126,14 +126,14 @@ impl SessionEntry {
     }
 
     /// Convert to SessionMetadata for backward compatibility
-    /// 
+    ///
     /// This is the preferred conversion method when passing to API boundaries.
     pub fn to_metadata(&self) -> crate::session::metadata::SessionMetadata {
         crate::session::metadata::SessionMetadata::from_entry(self.clone())
     }
 
     /// Convert to SessionInfo for service layer
-    /// 
+    ///
     /// This is the preferred conversion method when passing to SessionService.
     pub fn to_info(&self) -> crate::common::services::session_service::SessionInfo {
         crate::common::services::session_service::SessionInfo::from(self.clone())

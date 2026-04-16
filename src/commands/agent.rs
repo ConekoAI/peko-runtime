@@ -25,8 +25,6 @@ mod handlers;
 #[derive(Subcommand)]
 #[command(disable_version_flag = true)]
 pub enum AgentCommands {
-
-
     /// List all configured agents
     List {
         /// Show detailed information
@@ -202,11 +200,9 @@ pub async fn handle_agent(
             team,
             to_team,
         } => handlers::handle_agent_move(paths, old_name, new_name, team, to_team, json).await,
-        AgentCommands::Export {
-            name,
-            team,
-            output,
-        } => handlers::handle_agent_export(paths, name, team, output).await,
+        AgentCommands::Export { name, team, output } => {
+            handlers::handle_agent_export(paths, name, team, output).await
+        }
         AgentCommands::Import { file, name, team } => {
             handlers::handle_agent_import(paths, file, name, team).await
         }

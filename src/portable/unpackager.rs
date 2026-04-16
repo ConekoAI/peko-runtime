@@ -3,8 +3,8 @@
 //! Extracts and imports .agent files into the local Pekobot runtime
 #![allow(dead_code)]
 
-use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::extensions::services::ReservedParamsConfig;
+use crate::identity::{storage::KeyStorage, Identity, KeyPairExport};
 use crate::mcp::config::{McpConfig, McpServerConfig, TransportType};
 use crate::portable::{
     crypto::{decrypt_with_passphrase, deserialize_encrypted},
@@ -66,9 +66,9 @@ impl Default for ImportOptions {
             passphrase: None,
             rotate_keys: false,
 
-            import_sessions: true,     // Default: import if present
-            import_workspace: true,    // Default: import if present
-            import_mcp: true,          // Import MCP servers by default
+            import_sessions: true,              // Default: import if present
+            import_workspace: true,             // Default: import if present
+            import_mcp: true,                   // Import MCP servers by default
             install_tools_from_registry: false, // Off by default (requires network)
             skip_validation: false,
             force: false,
@@ -157,7 +157,7 @@ impl Unpackager {
     pub async fn import(&self, options: ImportOptions) -> anyhow::Result<ImportResult> {
         // Extract package
         let files = self.extract_package().await?;
-        
+
         // Process the import with extracted files
         self.import_from_files(files, options).await
     }
@@ -233,17 +233,17 @@ impl Unpackager {
             Some(
                 dirs::data_dir()
                     .map(|d| d.join("pekobot").join("workspaces").join(team).join(&name))
-                    .unwrap_or_else(|| self.base_dir.join("workspaces").join(&name))
+                    .unwrap_or_else(|| self.base_dir.join("workspaces").join(&name)),
             )
         } else {
             None
         };
-        
+
         let sessions_path = if options.import_sessions {
             Some(
                 dirs::data_dir()
                     .map(|d| d.join("pekobot").join("sessions").join(team).join(&name))
-                    .unwrap_or_else(|| self.base_dir.join("sessions").join(&name))
+                    .unwrap_or_else(|| self.base_dir.join("sessions").join(&name)),
             )
         } else {
             None
@@ -401,14 +401,23 @@ impl Unpackager {
     }
 
     /// Import workspace files
-    async fn import_workspace(&self, files: &HashMap<String, Vec<u8>>, agent_name: &str) -> anyhow::Result<()> {
+    async fn import_workspace(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        agent_name: &str,
+    ) -> anyhow::Result<()> {
         // Determine team (default to "default" if not specified)
         let team = "default"; // Could be extracted from config
-        
+
         let workspace_dir = dirs::data_dir()
-            .map(|d| d.join("pekobot").join("workspaces").join(team).join(agent_name))
+            .map(|d| {
+                d.join("pekobot")
+                    .join("workspaces")
+                    .join(team)
+                    .join(agent_name)
+            })
             .unwrap_or_else(|| self.base_dir.join("workspaces").join(agent_name));
-            
+
         tokio::fs::create_dir_all(&workspace_dir).await?;
 
         for (path, content) in files {
@@ -428,14 +437,23 @@ impl Unpackager {
     }
 
     /// Import session history
-    async fn import_sessions(&self, files: &HashMap<String, Vec<u8>>, agent_name: &str) -> anyhow::Result<()> {
+    async fn import_sessions(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+        agent_name: &str,
+    ) -> anyhow::Result<()> {
         // Determine team (default to "default")
         let team = "default";
-        
+
         let sessions_dir = dirs::data_dir()
-            .map(|d| d.join("pekobot").join("sessions").join(team).join(agent_name))
+            .map(|d| {
+                d.join("pekobot")
+                    .join("sessions")
+                    .join(team)
+                    .join(agent_name)
+            })
             .unwrap_or_else(|| self.base_dir.join("sessions").join(agent_name));
-            
+
         tokio::fs::create_dir_all(&sessions_dir).await?;
 
         for (path, content) in files {
@@ -490,12 +508,9 @@ impl Unpackager {
 
         let mut results = Vec::new();
         for server_entry in &manifest.mcp.servers {
-            let result = self.import_single_mcp_server(
-                server_entry,
-                files,
-                &mcp_tools_dir,
-                &mut mcp_config,
-            ).await?;
+            let result = self
+                .import_single_mcp_server(server_entry, files, &mcp_tools_dir, &mut mcp_config)
+                .await?;
             results.push(result);
         }
 
@@ -527,7 +542,7 @@ impl Unpackager {
         mcp_config: &mut McpConfig,
     ) -> anyhow::Result<McpInstallResult> {
         let server_dir = mcp_tools_dir.join(&entry.name);
-        
+
         // Extract binary if bundled
         let (binary_path, from_bundle) = if entry.bundled {
             self.extract_mcp_binary(entry, files, &server_dir).await?
@@ -536,7 +551,8 @@ impl Unpackager {
         };
 
         // Create and add server config
-        let server_config = self.create_mcp_server_config(entry, &server_dir, &binary_path, from_bundle);
+        let server_config =
+            self.create_mcp_server_config(entry, &server_dir, &binary_path, from_bundle);
         mcp_config.remove_server(&entry.name);
         mcp_config.add_server(server_config);
 
@@ -557,22 +573,30 @@ impl Unpackager {
         let Some(ref bundle_path) = entry.bundle_path else {
             return Ok((None, false));
         };
-        
+
         let Some(binary_data) = files.get(bundle_path) else {
-            tracing::warn!("Bundled MCP server '{}' missing binary data at {}", entry.name, bundle_path);
+            tracing::warn!(
+                "Bundled MCP server '{}' missing binary data at {}",
+                entry.name,
+                bundle_path
+            );
             return Ok((None, false));
         };
 
         tokio::fs::create_dir_all(server_dir).await?;
-        
+
         let bin_path = server_dir.join("bin");
         tokio::fs::write(&bin_path, binary_data).await?;
-        
+
         #[cfg(unix)]
         Self::set_executable_permissions(&bin_path).await?;
-        
-        tracing::info!("Extracted bundled MCP server '{}' to {:?}", entry.name, bin_path);
-        
+
+        tracing::info!(
+            "Extracted bundled MCP server '{}' to {:?}",
+            entry.name,
+            bin_path
+        );
+
         Ok((Some(bin_path), true))
     }
 
@@ -595,7 +619,9 @@ impl Unpackager {
         from_bundle: bool,
     ) -> McpServerConfig {
         let command = if from_bundle {
-            binary_path.as_ref().map(|p| p.to_string_lossy().to_string())
+            binary_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
         } else {
             entry.command.clone()
         };
@@ -606,7 +632,11 @@ impl Unpackager {
             command,
             args: entry.args.clone(),
             env: entry.env.clone(),
-            cwd: if from_bundle { Some(server_dir.to_path_buf()) } else { None },
+            cwd: if from_bundle {
+                Some(server_dir.to_path_buf())
+            } else {
+                None
+            },
             endpoint: None,
             auto_start: true,
             health_check_interval_secs: 30,

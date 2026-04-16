@@ -4,7 +4,6 @@
 //! - `ConfigIo`: TOML file read/write operations with atomic writes
 //! - `ApiKeyResolver`: Single implementation for API key resolution
 
-use crate::common::paths::PathResolver;
 use crate::types::agent::AgentConfig;
 use crate::types::provider::ProviderType;
 use anyhow::{Context, Result};
@@ -231,7 +230,10 @@ mod tests {
     #[test]
     fn test_credentials_path() {
         let resolver = ApiKeyResolver::new(PathBuf::from("/config"));
-        assert_eq!(resolver.credentials_path(), PathBuf::from("/config/credentials.json"));
+        assert_eq!(
+            resolver.credentials_path(),
+            PathBuf::from("/config/credentials.json")
+        );
     }
 
     #[test]

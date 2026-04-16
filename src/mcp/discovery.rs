@@ -162,7 +162,7 @@ pub async fn discover_servers() -> anyhow::Result<Vec<DiscoveredServer>> {
 }
 
 /// Discover MCP servers and return their names with config paths
-/// 
+///
 /// Returns a vector of tuples containing (server_name, config_path) for migration purposes.
 pub async fn discover_mcp_servers() -> Vec<(String, PathBuf)> {
     let config_path = mcp_config_path();

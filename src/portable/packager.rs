@@ -123,7 +123,8 @@ impl Packager {
         let (files, _manifest) = self.collect_files(options.clone()).await?;
 
         // Create archive
-        let output_path = self.create_archive(&files, &options)
+        let output_path = self
+            .create_archive(&files, &options)
             .await
             .context("Failed to create archive")?;
 
@@ -132,7 +133,10 @@ impl Packager {
 
     /// Collect all files for the package without creating archive
     /// Returns the files map and the manifest (for team packaging)
-    pub async fn collect_files(&self, options: ExportOptions) -> anyhow::Result<(HashMap<String, Vec<u8>>, AgentManifest)> {
+    pub async fn collect_files(
+        &self,
+        options: ExportOptions,
+    ) -> anyhow::Result<(HashMap<String, Vec<u8>>, AgentManifest)> {
         let mut manifest = AgentManifest::new(
             &self.config.name,
             "1.0.0", // Package version
@@ -199,8 +203,7 @@ impl Packager {
             .context("Failed to sign manifest")?;
 
         // 11. Add manifest to files
-        let manifest_toml = manifest.to_toml()
-            .context("Failed to serialize manifest")?;
+        let manifest_toml = manifest.to_toml().context("Failed to serialize manifest")?;
         files.insert("manifest.toml".to_string(), manifest_toml.into_bytes());
 
         Ok((files, manifest))
@@ -219,7 +222,10 @@ impl Packager {
         manifest.add_file("identity/did.json", &files["identity/did.json"]);
 
         // Export keys directly from the identity (we already have them in memory)
-        let keypair = self.identity.keypair.as_ref()
+        let keypair = self
+            .identity
+            .keypair
+            .as_ref()
             .context("Identity has no keypair")?;
         let key_export = keypair.export();
         let key_data = serde_json::to_vec(&key_export)?;
@@ -268,7 +274,13 @@ impl Packager {
                     // Skills are directories containing SKILL.md
                     if path.is_dir() {
                         let skill_name = path.file_name().unwrap().to_string_lossy();
-                        self.export_skill_dir(&path, &format!("skills/{}", skill_name), files, manifest).await?;
+                        self.export_skill_dir(
+                            &path,
+                            &format!("skills/{}", skill_name),
+                            files,
+                            manifest,
+                        )
+                        .await?;
                     }
                 }
             }
@@ -314,7 +326,8 @@ impl Packager {
     ) -> anyhow::Result<()> {
         if let Some(workspace_dir) = &self.workspace_dir {
             if workspace_dir.exists() {
-                self.export_dir_recursive(workspace_dir, "workspace", files, manifest).await?;
+                self.export_dir_recursive(workspace_dir, "workspace", files, manifest)
+                    .await?;
             }
         }
         Ok(())
@@ -328,7 +341,8 @@ impl Packager {
     ) -> anyhow::Result<()> {
         if let Some(sessions_dir) = &self.sessions_dir {
             if sessions_dir.exists() {
-                self.export_dir_recursive(sessions_dir, "sessions", files, manifest).await?;
+                self.export_dir_recursive(sessions_dir, "sessions", files, manifest)
+                    .await?;
             }
         }
         Ok(())
@@ -351,7 +365,8 @@ impl Packager {
 
             if src_path.is_dir() {
                 // Recurse into subdirectories
-                Box::pin(self.export_dir_recursive(&src_path, &package_path, files, manifest)).await?;
+                Box::pin(self.export_dir_recursive(&src_path, &package_path, files, manifest))
+                    .await?;
             } else {
                 // Read and add file
                 let content = tokio::fs::read(&src_path).await?;
@@ -404,7 +419,8 @@ impl Packager {
             };
 
             if server.is_bundleable() {
-                self.try_bundle_mcp_binary(server, files, manifest, &mut entry).await;
+                self.try_bundle_mcp_binary(server, files, manifest, &mut entry)
+                    .await;
             }
 
             manifest.add_mcp_server(entry);
@@ -431,7 +447,10 @@ impl Packager {
         entry: &mut McpManifestEntry,
     ) {
         let Some(binary_path) = server.bundle_binary_path() else {
-            tracing::warn!("MCP server '{}' has bundle=true but command path could not be resolved", server.name);
+            tracing::warn!(
+                "MCP server '{}' has bundle=true but command path could not be resolved",
+                server.name
+            );
             return;
         };
 
@@ -445,15 +464,15 @@ impl Packager {
         }
 
         let bundle_path = format!("mcp/{}/bin", server.name);
-        
+
         match tokio::fs::read(&binary_path).await {
             Ok(binary_data) => {
                 manifest.add_file(&bundle_path, &binary_data);
                 files.insert(bundle_path.clone(), binary_data);
-                
+
                 entry.bundled = true;
                 entry.bundle_path = Some(bundle_path);
-                
+
                 tracing::info!(
                     "Bundled MCP server '{}' binary from {:?}",
                     server.name,
@@ -481,21 +500,24 @@ impl Packager {
         if let Some(ref tools_dir) = options.tools_dir {
             if tools_dir.exists() {
                 let mut entries = tokio::fs::read_dir(tools_dir).await?;
-                
+
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
                     if path.is_dir() {
-                        let tool_name = path.file_name()
+                        let tool_name = path
+                            .file_name()
                             .unwrap_or_default()
                             .to_string_lossy()
                             .to_string();
-                        
+
                         // Look for manifest.json to get version
                         let manifest_path = path.join("manifest.json");
                         let version = if manifest_path.exists() {
                             match tokio::fs::read_to_string(&manifest_path).await {
                                 Ok(content) => {
-                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                                    if let Ok(json) =
+                                        serde_json::from_str::<serde_json::Value>(&content)
+                                    {
                                         json.get("version")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("*")
@@ -509,28 +531,33 @@ impl Packager {
                         } else {
                             "*".to_string()
                         };
-                        
+
                         let tool_name_for_log = tool_name.clone();
                         manifest.add_tool_registry_ref(ToolRegistryRef {
                             name: tool_name,
                             version,
                             source: "default".to_string(),
                         });
-                        
+
                         tracing::debug!("Added tool registry ref: {}", tool_name_for_log);
                     }
                 }
             }
         }
-        
+
         // Also add references from config.tools.enabled (whitelisted tools)
         if let Some(ref tools) = self.config.tools {
             for tool_name in &tools.enabled {
                 // Skip if already added from tools_dir discovery
-                if manifest.tool_registry.required.iter().any(|r| r.name == *tool_name) {
+                if manifest
+                    .tool_registry
+                    .required
+                    .iter()
+                    .any(|r| r.name == *tool_name)
+                {
                     continue;
                 }
-                
+
                 manifest.add_tool_registry_ref(ToolRegistryRef {
                     name: tool_name.clone(),
                     version: "*".to_string(),
@@ -556,7 +583,10 @@ impl Packager {
         let manifest_toml = manifest_for_signing.to_toml()?;
 
         // Sign with agent's DID key (from memory, not storage)
-        let keypair = self.identity.keypair.as_ref()
+        let keypair = self
+            .identity
+            .keypair
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Identity has no keypair"))?;
 
         let signature = keypair.sign(manifest_toml.as_bytes());
@@ -586,8 +616,9 @@ impl Packager {
         // Ensure parent directory exists
         if let Some(parent) = output_path.parent() {
             if !parent.exists() {
-                tokio::fs::create_dir_all(parent).await
-                    .with_context(|| format!("Failed to create output directory: {}", parent.display()))?;
+                tokio::fs::create_dir_all(parent).await.with_context(|| {
+                    format!("Failed to create output directory: {}", parent.display())
+                })?;
             }
         }
 
@@ -662,9 +693,9 @@ mod tests {
     fn test_export_options_default() {
         let opts = ExportOptions::default();
         assert!(!opts.encrypt);
-        assert!(!opts.include_sessions);   // Default: false (large)
-        assert!(opts.include_workspace);   // Default: true (essential)
-        assert!(opts.include_mcp);         // Default: true
+        assert!(!opts.include_sessions); // Default: false (large)
+        assert!(opts.include_workspace); // Default: true (essential)
+        assert!(opts.include_mcp); // Default: true
         assert!(opts.include_tool_registry); // Default: true
         assert!(!opts.rotate_keys);
     }

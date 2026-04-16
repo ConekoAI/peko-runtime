@@ -25,12 +25,15 @@ mod tests;
 
 pub use adapter::{UniversalToolAdapter, UniversalToolBuilder};
 pub use manifest::{Manifest, ParamSource, ProtocolConfig, ReservedParamsConfig};
-pub use protocol::{ErrorObject, ExecutionContext, ExecuteParams, ExecuteResult, Request, Response, ResponseResult, DescribeResult, PROTOCOL_VERSION};
+pub use protocol::{
+    DescribeResult, ErrorObject, ExecuteParams, ExecuteResult, ExecutionContext, Request, Response,
+    ResponseResult, PROTOCOL_VERSION,
+};
 
 // Re-export Extension Architecture integration (Phase 3)
 pub use crate::extensions::adapters::universal_tool_adapter::{
+    load_and_register_tools, load_tools_from_directory, register_tools_with_core,
     DiscoveredUniversalTool, UniversalToolAdapter as ExtensionUniversalToolAdapter,
-    load_tools_from_directory, register_tools_with_core, load_and_register_tools,
 };
 
 use std::path::PathBuf;

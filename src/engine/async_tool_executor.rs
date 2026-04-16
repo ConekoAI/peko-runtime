@@ -171,7 +171,7 @@ impl AsyncToolExecutor {
     ///
     /// # Returns
     /// Detected async capabilities
-    /// 
+    ///
     /// # Note
     /// This is a simplified implementation. In practice, you'd use a registry
     /// that stores tools with their capabilities, or use a marker trait pattern.
@@ -307,7 +307,7 @@ impl AsyncToolExecutor {
     ///
     /// # Returns
     /// true if cancellation was successful
-    pub async fn cancel(&self, tool_name: &str, task_id: &AsyncTaskId) -> Result<bool> {
+    pub async fn cancel(&self, _tool_name: &str, task_id: &AsyncTaskId) -> Result<bool> {
         self.async_executor.cancel(task_id).await
     }
 
@@ -377,9 +377,10 @@ impl AsyncToolExecutor {
         let ctx = context.clone();
 
         // Spawn sync execution in background
-        let handle = tokio::spawn(async move {
-            sync_executor.execute_with_context(tool, params, &ctx).await
-        });
+        let _handle =
+            tokio::spawn(
+                async move { sync_executor.execute_with_context(tool, params, &ctx).await },
+            );
 
         // Note: In a full implementation, we'd register this handle
         // with the executor for status tracking and cancellation
@@ -391,7 +392,6 @@ impl AsyncToolExecutor {
             check_status_tool: format!("{}_status", tool_name),
         })
     }
-
 }
 
 impl Default for AsyncToolExecutor {

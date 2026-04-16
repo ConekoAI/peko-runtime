@@ -12,8 +12,8 @@
 //! ```
 
 use crate::extensions::core::{ExtensionCore, HookContext, HookHandler, HookPoint};
-use crate::extensions::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
 use crate::extensions::services::ReservedParamsConfig;
+use crate::extensions::types::{ExtensionId, HookOutput, ToolMetadata, ToolSource};
 use crate::extensions::HookResult;
 use crate::tools::Tool;
 use anyhow::Result;
@@ -118,33 +118,35 @@ impl HookHandler for BuiltinExecuteHandler {
         // - Panic isolation via ToolExecutionService
         // - Timeout enforcement
         // - Consistent context injection
-        
+
         let exec_service = ctx.services.tool_execution();
         let async_router = ctx.services.async_router();
-        
+
         // Build execution context from hook state or use defaults
         let tool_ctx = match ctx.as_tool_context() {
             Some(tc) => crate::extensions::services::ToolExecutionContext::new(
                 tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                tc.session_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.session_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 tc.run_id.clone(),
-            ).with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
+            )
+            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
             None => crate::extensions::services::ToolExecutionContext::new(
-                "unknown", "unknown", "unknown"
+                "unknown", "unknown", "unknown",
             ),
         };
-        
+
         // Create execution config (built-in tools have no reserved params)
-        let exec_config = crate::extensions::services::ToolExecutionConfig::with_schema(
-            self.tool.parameters()
-        );
-        
+        let exec_config =
+            crate::extensions::services::ToolExecutionConfig::with_schema(self.tool.parameters());
+
         // Clone params for mutation (AsyncExecutionRouter extracts _async, etc.)
         let mut params_mut = params.clone();
-        
+
         // Clone tool for the closure (needed for 'static bound)
         let tool = self.tool.clone();
-        
+
         // Route execution through AsyncExecutionRouter
         let result = async_router
             .route(
@@ -158,7 +160,7 @@ impl HookHandler for BuiltinExecuteHandler {
                 },
             )
             .await;
-        
+
         match result {
             Ok(value) => HookResult::Continue(HookOutput::Json(value)),
             Err(e) => HookResult::Error(e),
@@ -234,10 +236,12 @@ mod tests {
     struct MockTool {
         name: String,
     }
-    
+
     impl std::fmt::Debug for MockTool {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("MockTool").field("name", &self.name).finish()
+            f.debug_struct("MockTool")
+                .field("name", &self.name)
+                .finish()
         }
     }
 

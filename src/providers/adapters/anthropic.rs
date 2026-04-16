@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Anthropic API adapter
 #[derive(Debug, Clone)]
@@ -255,10 +255,16 @@ impl super::ApiAdapter for AnthropicAdapter {
                         arguments: input,
                     });
                 }
-                AnthropicResponseBlock::Thinking { thinking, signature } => {
+                AnthropicResponseBlock::Thinking {
+                    thinking,
+                    signature,
+                } => {
                     // Store thinking blocks but don't include in regular content
                     // They will be handled separately via Thinking events
-                    content.push(ContentBlock::Thinking { text: thinking, signature });
+                    content.push(ContentBlock::Thinking {
+                        text: thinking,
+                        signature,
+                    });
                 }
             }
         }
@@ -313,7 +319,10 @@ impl super::ApiAdapter for AnthropicAdapter {
                                     }
                                 });
                                 let _ = self.tool_call_accumulator.accumulate(
-                                    idx, Some(id), Some(name), input_str
+                                    idx,
+                                    Some(id),
+                                    Some(name),
+                                    input_str,
                                 );
                             }
                             Ok(Some(StreamEvent::ToolCallStart { content_index: idx }))
@@ -342,7 +351,10 @@ impl super::ApiAdapter for AnthropicAdapter {
                                 // Accumulate arguments and check if complete
                                 let partial_clone = partial.clone();
                                 if let Some(complete_tool) = self.tool_call_accumulator.accumulate(
-                                    idx, None, None, Some(partial)
+                                    idx,
+                                    None,
+                                    None,
+                                    Some(partial),
                                 ) {
                                     return Ok(Some(StreamEvent::ToolCallEnd {
                                         content_index: idx,
@@ -539,7 +551,7 @@ struct AnthropicContentBlockInfo {
 #[derive(Debug, Deserialize)]
 struct AnthropicDelta {
     #[serde(rename = "type")]
-    delta_type: Option<String>,  // Made optional - message_delta events don't have this
+    delta_type: Option<String>, // Made optional - message_delta events don't have this
     text: Option<String>,
     #[serde(rename = "partial_json")]
     partial_json: Option<String>,
@@ -658,11 +670,15 @@ mod tests {
     fn test_message_start_usage_extraction() {
         let adapter = AnthropicAdapter::new("claude-3-sonnet");
         // message_start event with usage info
-        let data = r#"{"type":"message_start","message":{"usage":{"input_tokens":25,"output_tokens":0}}}"#;
+        let data =
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":25,"output_tokens":0}}}"#;
 
         let event = adapter.parse_sse_event(data).unwrap();
         // Should return Start event
-        assert!(matches!(event, Some(crate::providers::StreamEvent::Start { .. })));
+        assert!(matches!(
+            event,
+            Some(crate::providers::StreamEvent::Start { .. })
+        ));
         // Input tokens should be stored
         assert_eq!(*adapter.pending_input_tokens.lock().unwrap(), Some(25));
     }
@@ -678,7 +694,11 @@ mod tests {
 
         let event = adapter.parse_sse_event(data).unwrap();
         match event {
-            Some(crate::providers::StreamEvent::Usage { input, output, total }) => {
+            Some(crate::providers::StreamEvent::Usage {
+                input,
+                output,
+                total,
+            }) => {
                 assert_eq!(input, 25);
                 assert_eq!(output, 12);
                 assert_eq!(total, 37);

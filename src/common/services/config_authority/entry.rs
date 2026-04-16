@@ -102,11 +102,17 @@ impl AgentConfigEntry {
 
     /// Get image reference (backward compatibility)
     pub fn image_ref(&self) -> &str {
-        self.source.as_ref().and_then(|s| s.image_ref()).unwrap_or("direct")
+        self.source
+            .as_ref()
+            .and_then(|s| s.image_ref())
+            .unwrap_or("direct")
     }
 
     /// Get image digest (backward compatibility)
     pub fn image_digest(&self) -> &str {
-        self.source.as_ref().and_then(|s| s.image_digest()).unwrap_or("direct")
+        self.source
+            .as_ref()
+            .and_then(|s| s.image_digest())
+            .unwrap_or("direct")
     }
 }

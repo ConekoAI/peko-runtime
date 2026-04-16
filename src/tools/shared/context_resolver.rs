@@ -121,11 +121,26 @@ impl ContextResolver {
     /// - `Value::Null` if the field is not set or unknown
     pub fn resolve_field(source: &dyn ContextSource, field: &str) -> Value {
         match field {
-            "session_id" => source.get_session_id().map(Value::String).unwrap_or(Value::Null),
-            "agent_id" => source.get_agent_id().map(Value::String).unwrap_or(Value::Null),
-            "peer_id" => source.get_peer_id().map(Value::String).unwrap_or(Value::Null),
-            "workspace" => source.get_workspace().map(Value::String).unwrap_or(Value::Null),
-            "run_id" => source.get_run_id().map(Value::String).unwrap_or(Value::Null),
+            "session_id" => source
+                .get_session_id()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+            "agent_id" => source
+                .get_agent_id()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+            "peer_id" => source
+                .get_peer_id()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+            "workspace" => source
+                .get_workspace()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+            "run_id" => source
+                .get_run_id()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
             _ => {
                 tracing::warn!("Unknown context field requested: {}", field);
                 Value::Null

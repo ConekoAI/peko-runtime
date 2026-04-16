@@ -147,7 +147,9 @@ mod tests {
     #[test]
     fn test_is_subagent_key() {
         assert!(is_subagent_key("agent:myagent:subagent:uuid"));
-        assert!(is_subagent_key("agent:myagent:peer:user:alice:subagent:uuid"));
+        assert!(is_subagent_key(
+            "agent:myagent:peer:user:alice:subagent:uuid"
+        ));
         assert!(!is_subagent_key("agent:myagent:peer:user:alice"));
         assert!(!is_subagent_key("some:other:key"));
     }

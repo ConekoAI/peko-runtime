@@ -212,8 +212,8 @@ mod tests {
     #[test]
     fn test_set_invalid_type_fails() {
         let mut config = AgentConfig::default();
-        let err = set_config_value(&mut config, "default_timeout_seconds", "not-a-number")
-            .unwrap_err();
+        let err =
+            set_config_value(&mut config, "default_timeout_seconds", "not-a-number").unwrap_err();
         assert!(err.to_string().contains("Invalid value"));
     }
 

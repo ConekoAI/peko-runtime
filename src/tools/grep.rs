@@ -121,7 +121,11 @@ impl GrepTool {
 
         // Determine search path
         let search_path = path.map_or_else(
-            || self.workspace_dir.clone().unwrap_or_else(|| PathBuf::from(".")),
+            || {
+                self.workspace_dir
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("."))
+            },
             |p| self.resolve_path(p),
         );
 
@@ -519,9 +523,12 @@ mod tests {
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
         // Create test file
-        fs::write(temp_dir.path().join("test.txt"), "Hello, World!\nHello, Rust!\nGoodbye!")
-            .await
-            .unwrap();
+        fs::write(
+            temp_dir.path().join("test.txt"),
+            "Hello, World!\nHello, Rust!\nGoodbye!",
+        )
+        .await
+        .unwrap();
 
         let params = json!({
             "pattern": "Hello",
@@ -542,9 +549,15 @@ mod tests {
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
         // Create test files
-        fs::write(temp_dir.path().join("file1.rs"), "fn main() {}").await.unwrap();
-        fs::write(temp_dir.path().join("file2.rs"), "fn helper() {}").await.unwrap();
-        fs::write(temp_dir.path().join("file.txt"), "fn not searched").await.unwrap();
+        fs::write(temp_dir.path().join("file1.rs"), "fn main() {}")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("file2.rs"), "fn helper() {}")
+            .await
+            .unwrap();
+        fs::write(temp_dir.path().join("file.txt"), "fn not searched")
+            .await
+            .unwrap();
 
         let params = json!({
             "pattern": "fn ",
@@ -563,7 +576,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
-        fs::write(temp_dir.path().join("test.txt"), "HELLO\nhello\nHello").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "HELLO\nhello\nHello")
+            .await
+            .unwrap();
 
         // Case sensitive (default)
         let params = json!({
@@ -588,9 +603,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
-        fs::write(temp_dir.path().join("test.txt"), "line1\nline2\nline3\nline4\nline5")
-            .await
-            .unwrap();
+        fs::write(
+            temp_dir.path().join("test.txt"),
+            "line1\nline2\nline3\nline4\nline5",
+        )
+        .await
+        .unwrap();
 
         let params = json!({
             "pattern": "line3",
@@ -611,7 +629,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let tool = GrepTool::new().with_workspace(temp_dir.path());
 
-        fs::write(temp_dir.path().join("test.txt"), "fn foo()\nfn bar()\nstruct Baz").await.unwrap();
+        fs::write(
+            temp_dir.path().join("test.txt"),
+            "fn foo()\nfn bar()\nstruct Baz",
+        )
+        .await
+        .unwrap();
 
         let params = json!({
             "pattern": "^fn ",
@@ -630,7 +653,9 @@ mod tests {
 
         // Create file with many matches
         let content: String = (0..100).map(|i| format!("line{}\n", i)).collect();
-        fs::write(temp_dir.path().join("test.txt"), content).await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), content)
+            .await
+            .unwrap();
 
         let params = json!({
             "pattern": "line",

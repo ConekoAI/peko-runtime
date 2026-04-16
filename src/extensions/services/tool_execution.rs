@@ -122,7 +122,8 @@ impl ToolExecutionService {
         );
 
         // Step 3: Execute with panic isolation and timeout
-        self.execute_with_panic_isolation(merged, timeout, executor).await
+        self.execute_with_panic_isolation(merged, timeout, executor)
+            .await
     }
 
     /// Execute with panic isolation and timeout
@@ -149,9 +150,7 @@ impl ToolExecutionService {
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     // Create a runtime for the async tool execution
                     let rt = tokio::runtime::Handle::current();
-                    rt.block_on(async move {
-                        executor(params).await
-                    })
+                    rt.block_on(async move { executor(params).await })
                 }));
 
                 match result {
@@ -165,10 +164,7 @@ impl ToolExecutionService {
                             "Unknown panic".to_string()
                         };
 
-                        Err(anyhow::anyhow!(
-                            "Tool panicked: {}",
-                            panic_msg
-                        ))
+                        Err(anyhow::anyhow!("Tool panicked: {}", panic_msg))
                     }
                 }
             }
@@ -255,10 +251,7 @@ impl ToolExecutionService {
     ///
     /// # Returns
     /// Ok if valid, Err if user tried to provide a reserved param
-    pub fn validate_user_params(
-        params: &Value,
-        reserved: &ReservedParamsConfig,
-    ) -> Result<()> {
+    pub fn validate_user_params(params: &Value, reserved: &ReservedParamsConfig) -> Result<()> {
         if reserved.is_empty() {
             return Ok(());
         }
@@ -321,11 +314,7 @@ impl ToolExecutionService {
     ///
     /// # Returns
     /// Filtered schema without reserved parameters
-    pub fn filter_schema_for_llm(
-        &self,
-        schema: &Value,
-        reserved: &ReservedParamsConfig,
-    ) -> Value {
+    pub fn filter_schema_for_llm(&self, schema: &Value, reserved: &ReservedParamsConfig) -> Value {
         use crate::tools::shared::filter_reserved_params;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();
@@ -459,7 +448,8 @@ mod tests {
         let user_params = json!({"param": "value"});
         let reserved = ReservedParamsConfig::new();
 
-        let merged = ToolExecutionService::inject_reserved_params(user_params.clone(), &reserved, None);
+        let merged =
+            ToolExecutionService::inject_reserved_params(user_params.clone(), &reserved, None);
 
         assert_eq!(merged, user_params);
     }

@@ -94,7 +94,7 @@ impl HttpClient {
         } else {
             format!("{}{}", self.base_url, path)
         };
-        
+
         let mut request = self.inner.request(method, &url);
 
         // Add authentication

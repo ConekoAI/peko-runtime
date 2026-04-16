@@ -79,30 +79,16 @@ pub use core::{
 
 // Re-export types
 pub use types::{
-    AsyncReceipt,
-    ExtensionId,
-    ExtensionManifest,
-    HookId,
-    HookInput,
-    HookOutput,
-    HookPriority,
-    HookResult,
-    MessageEnvelope,
-    PromptBuildState,
-    SessionSnapshot,
-    ToolMetadata,
-    ToolRegistryAccess,
-    ToolSource,
-    DEFAULT_HOOK_PRIORITY,
-    FALLBACK_HOOK_PRIORITY,
-    SYSTEM_HOOK_PRIORITY,
-    USER_HOOK_PRIORITY,
+    AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookInput, HookOutput, HookPriority,
+    HookResult, MessageEnvelope, PromptBuildState, SessionSnapshot, ToolMetadata,
+    ToolRegistryAccess, ToolSource, DEFAULT_HOOK_PRIORITY, FALLBACK_HOOK_PRIORITY,
+    SYSTEM_HOOK_PRIORITY, USER_HOOK_PRIORITY,
 };
 
 // Re-export services
 pub use services::{
-    ParamSource, ReservedParamsConfig, ReservedParamsService, Services as ExtensionServicesContainer,
-    ToolExecutionConfig, ToolExecutionService,
+    ParamSource, ReservedParamsConfig, ReservedParamsService,
+    Services as ExtensionServicesContainer, ToolExecutionConfig, ToolExecutionService,
 };
 
 // Submodules
@@ -133,9 +119,8 @@ pub mod extension_types {
 
     /// Check if a type is valid
     pub fn is_valid_type(ext_type: &str) -> bool {
-        matches!(
-            ext_type,
-            SKILL | MCP | UNIVERSAL_TOOL | GATEWAY        ) || ext_type.starts_with(CUSTOM_PREFIX)
+        matches!(ext_type, SKILL | MCP | UNIVERSAL_TOOL | GATEWAY)
+            || ext_type.starts_with(CUSTOM_PREFIX)
     }
 
     /// Get all standard extension types

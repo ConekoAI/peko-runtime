@@ -41,14 +41,11 @@
 //! ```
 
 use crate::agent::async_tool_framework::{
-    AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, UnifiedAsyncExecutor, WaitResult,
+    AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, UnifiedAsyncExecutor,
+    WaitResult,
 };
-use crate::extensions::core::{
-    ExtensionCore, HookPointBuilder,
-};
-use crate::extensions::types::{
-    AsyncReceipt, HookInput, HookOutput, HookResult,
-};
+use crate::extensions::core::{ExtensionCore, HookPointBuilder};
+use crate::extensions::types::{AsyncReceipt, HookInput, HookOutput, HookResult};
 use anyhow::{anyhow, Result};
 
 use serde_json::{json, Value};
@@ -134,7 +131,10 @@ impl ExtensionAsyncAdapter {
         debug!(tool_name, session_key, "Executing tool asynchronously");
 
         // 1. Try native async hook first
-        match self.try_native_async(tool_name, &params, &session_key).await {
+        match self
+            .try_native_async(tool_name, &params, &session_key)
+            .await
+        {
             Ok(receipt) => {
                 info!(tool_name, task_id = %receipt.task_id, "Native async execution started");
                 return Ok(receipt);
@@ -181,9 +181,10 @@ impl ExtensionAsyncAdapter {
                     check_status_tool: receipt.check_status_tool,
                 })
             }
-            HookResult::PassThrough => {
-                Err(anyhow!("No async handler registered for tool {}", tool_name))
-            }
+            HookResult::PassThrough => Err(anyhow!(
+                "No async handler registered for tool {}",
+                tool_name
+            )),
             HookResult::Error(e) => Err(anyhow!("Async execution error: {}", e)),
             _ => Err(anyhow!("Unexpected hook result for async execution")),
         }
@@ -251,11 +252,7 @@ impl ExtensionAsyncAdapter {
     ///
     /// # Returns
     /// Current status of the task
-    pub async fn check_status(
-        &self,
-        tool_name: &str,
-        task_id: &str,
-    ) -> Result<AsyncTaskStatus> {
+    pub async fn check_status(&self, tool_name: &str, task_id: &str) -> Result<AsyncTaskStatus> {
         // 1. Try native status check hook
         let hook_point = HookPointBuilder::tool_check_status(tool_name);
 
@@ -343,7 +340,9 @@ impl ExtensionAsyncAdapter {
         task_id: &str,
         timeout: std::time::Duration,
     ) -> Result<WaitResult> {
-        self.executor.wait_for_completion(&task_id.to_string(), timeout).await
+        self.executor
+            .wait_for_completion(&task_id.to_string(), timeout)
+            .await
     }
 
     /// Get a reference to the underlying executor
@@ -390,10 +389,7 @@ impl ExtensionAsyncAdapter {
 
         // Probe by invoking the hook
         let hook_point = HookPointBuilder::tool_execute_async(tool_name);
-        let result = self
-            .core
-            .invoke_hook(hook_point, HookInput::Unit)
-            .await;
+        let result = self.core.invoke_hook(hook_point, HookInput::Unit).await;
 
         // Check if any handler is registered (not PassThrough)
         !matches!(result, HookResult::PassThrough)

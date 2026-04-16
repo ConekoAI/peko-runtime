@@ -11,10 +11,10 @@
 //!
 //! NOTE: This module uses the unified EventStream interface (ADR-015)
 
+use crate::agent::stateless_service::MessageRequest;
 use crate::api::error::ApiError;
 use crate::api::state::AppState;
-use crate::api::streaming::{event_stream_to_sse, ChatSseEvent, SseStream, TokenUsage};
-use crate::agent::stateless_service::MessageRequest;
+use crate::api::streaming::{event_stream_to_sse, TokenUsage};
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
@@ -184,8 +184,8 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
     use tokio::sync::mpsc;
+    use uuid::Uuid;
 
     #[test]
     fn test_chat_request_deserialization() {

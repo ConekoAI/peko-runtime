@@ -51,29 +51,44 @@
 
 // Extension type adapters
 pub mod builtin_tool_adapter;
-pub mod skill_adapter;
-pub mod universal_tool_adapter;
-pub mod mcp_adapter;
 pub mod gateway_adapter;
 pub mod general_adapter;
+pub mod mcp_adapter;
+pub mod skill_adapter;
+pub mod universal_tool_adapter;
 
 // Re-export built-in tool adapter
 pub use builtin_tool_adapter::BuiltinToolAdapter;
 
 // Re-export skill adapter types
-pub use skill_adapter::{DiscoveredSkill, SkillAdapter, load_skills_from_directory, register_skills_with_core};
+pub use skill_adapter::{
+    load_skills_from_directory, register_skills_with_core, DiscoveredSkill, SkillAdapter,
+};
 
 // Re-export universal tool adapter types
-pub use universal_tool_adapter::{DiscoveredUniversalTool, UniversalToolAdapter, load_tools_from_directory, register_tools_with_core};
+pub use universal_tool_adapter::{
+    load_tools_from_directory, register_tools_with_core, DiscoveredUniversalTool,
+    UniversalToolAdapter,
+};
 
 // Re-export MCP adapter types
-pub use mcp_adapter::{DiscoveredMcpServer, McpAdapter, load_servers_from_directory, register_servers_with_core};
+pub use mcp_adapter::{
+    load_servers_from_directory, register_servers_with_core, DiscoveredMcpServer, McpAdapter,
+};
 
 // Re-export gateway adapter types
-pub use gateway_adapter::{DiscoveredGateway, GatewayAdapter, GatewayExtensionConfig, GatewayHookConfig, GatewayToolConfig, discover_gateway_extensions, load_and_register_gateways, register_gateways_with_core};
+pub use gateway_adapter::{
+    discover_gateway_extensions, load_and_register_gateways, register_gateways_with_core,
+    DiscoveredGateway, GatewayAdapter, GatewayExtensionConfig, GatewayHookConfig,
+    GatewayToolConfig,
+};
 
 // Re-export general extension adapter types
-pub use general_adapter::{DiscoveredGeneralExtension, GeneralExtensionAdapter, GeneralExtensionConfig, HookDeclaration, discover_general_extensions, load_and_register_general_extensions, register_general_extensions_with_core};
+pub use general_adapter::{
+    discover_general_extensions, load_and_register_general_extensions,
+    register_general_extensions_with_core, DiscoveredGeneralExtension, GeneralExtensionAdapter,
+    GeneralExtensionConfig, HookDeclaration,
+};
 
 // Re-export the adapter trait when implemented
 // pub use adapter_trait::ExtensionTypeAdapter;
@@ -161,14 +176,10 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
             ManifestFormat::YamlFrontmatterMarkdown { .. } => {
                 parse_yaml_frontmatter_markdown(path, content)
             }
-            ManifestFormat::Json { .. } => {
-                serde_json::from_str(content)
-                    .with_context(|| format!("Failed to parse JSON manifest at {:?}", path))
-            }
-            ManifestFormat::Toml { .. } => {
-                toml::from_str(content)
-                    .with_context(|| format!("Failed to parse TOML manifest at {:?}", path))
-            }
+            ManifestFormat::Json { .. } => serde_json::from_str(content)
+                .with_context(|| format!("Failed to parse JSON manifest at {:?}", path)),
+            ManifestFormat::Toml { .. } => toml::from_str(content)
+                .with_context(|| format!("Failed to parse TOML manifest at {:?}", path)),
             ManifestFormat::Custom { .. } => {
                 anyhow::bail!("Custom manifest formats must implement parse_manifest")
             }
@@ -214,7 +225,10 @@ fn parse_yaml_frontmatter_markdown(
     let mut manifest: crate::extensions::ExtensionManifest = serde_yaml::from_str(&frontmatter)
         .with_context(|| format!("Failed to parse YAML frontmatter in {:?}", path))?;
 
-    manifest.path = path.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf();
+    manifest.path = path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
 
     Ok(manifest)
 }
@@ -226,7 +240,7 @@ fn parse_yaml_frontmatter_markdown(
 pub mod parsing {
     use anyhow::{Context, Result};
     use serde::de::DeserializeOwned;
-    use std::collections::HashMap;
+    
     use std::path::{Path, PathBuf};
 
     /// Parse YAML frontmatter from markdown content
@@ -290,12 +304,10 @@ pub mod parsing {
     ///
     /// # Returns
     /// * `Ok((metadata, body))` - Deserialized metadata and body content
-    pub fn parse_yaml_frontmatter_typed<T: DeserializeOwned>(
-        content: &str,
-    ) -> Result<(T, String)> {
+    pub fn parse_yaml_frontmatter_typed<T: DeserializeOwned>(content: &str) -> Result<(T, String)> {
         let (frontmatter, body) = parse_yaml_frontmatter(content)?;
-        let metadata: T = serde_yaml::from_str(&frontmatter)
-            .context("Failed to parse YAML frontmatter")?;
+        let metadata: T =
+            serde_yaml::from_str(&frontmatter).context("Failed to parse YAML frontmatter")?;
         Ok((metadata, body))
     }
 
@@ -330,8 +342,7 @@ pub mod parsing {
         let content = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read TOML file: {:?}", path))?;
-        toml::from_str(&content)
-            .with_context(|| format!("Failed to parse TOML file: {:?}", path))
+        toml::from_str(&content).with_context(|| format!("Failed to parse TOML file: {:?}", path))
     }
 
     /// Parse a JSON file into a type
@@ -371,11 +382,7 @@ pub mod parsing {
     /// * `yaml` - The YAML value object
     /// * `field` - Field name to extract
     /// * `default` - Default value if field is missing
-    pub fn optional_string_field(
-        yaml: &serde_yaml::Value,
-        field: &str,
-        default: &str,
-    ) -> String {
+    pub fn optional_string_field(yaml: &serde_yaml::Value, field: &str, default: &str) -> String {
         yaml.get(field)
             .and_then(|v| v.as_str())
             .unwrap_or(default)
@@ -395,8 +402,8 @@ pub mod parsing {
     pub fn extract_extension_fields(
         yaml: &serde_yaml::Value,
     ) -> Result<(String, String, String, String)> {
-        let id = require_string_field(yaml, "id")
-            .or_else(|_| require_string_field(yaml, "name"))?; // Fallback to 'name' for skills
+        let id =
+            require_string_field(yaml, "id").or_else(|_| require_string_field(yaml, "name"))?; // Fallback to 'name' for skills
         let name = require_string_field(yaml, "name")?;
         let version = optional_string_field(yaml, "version", "1.0.0");
         let description = optional_string_field(yaml, "description", "");
@@ -426,7 +433,12 @@ pub mod parsing {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        Ok((id.to_string(), name.to_string(), version.to_string(), description.to_string()))
+        Ok((
+            id.to_string(),
+            name.to_string(),
+            version.to_string(),
+            description.to_string(),
+        ))
     }
 
     /// Convert a serde_yaml::Value to serde_json::Value
@@ -452,10 +464,7 @@ pub mod parsing {
             serde_yaml::Value::Mapping(map) => {
                 let json_map: serde_json::Map<String, serde_json::Value> = map
                     .into_iter()
-                    .filter_map(|(k, v)| {
-                        k.as_str()
-                            .map(|key| (key.to_string(), yaml_to_json(v)))
-                    })
+                    .filter_map(|(k, v)| k.as_str().map(|key| (key.to_string(), yaml_to_json(v))))
                     .collect();
                 serde_json::Value::Object(json_map)
             }
@@ -590,8 +599,8 @@ pub mod parsing {
             .await
             .with_context(|| format!("Failed to read file: {:?}", path))?;
         let (frontmatter, body) = parse_yaml_frontmatter(&content)?;
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&frontmatter)
-            .context("Failed to parse YAML frontmatter")?;
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(&frontmatter).context("Failed to parse YAML frontmatter")?;
         Ok((yaml, body))
     }
 

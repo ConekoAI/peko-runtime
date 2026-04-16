@@ -84,12 +84,9 @@ impl Manifest {
     pub fn exposed_parameters(&self) -> Value {
         use crate::tools::shared::filter_reserved_params;
         use std::collections::HashSet;
-        
-        let reserved: HashSet<String> = self.reserved_param_names()
-            .into_iter()
-            .cloned()
-            .collect();
-        
+
+        let reserved: HashSet<String> = self.reserved_param_names().into_iter().cloned().collect();
+
         filter_reserved_params(&self.parameters, &reserved)
     }
 
@@ -111,31 +108,26 @@ impl Manifest {
     }
 
     /// Validate parameters against schema
-    /// 
+    ///
     /// This checks that:
     /// 1. All required exposed parameters are present
     /// 2. No reserved parameters are present (they should be injected)
     pub fn validate_params(&self, params: &Value) -> anyhow::Result<()> {
         use crate::tools::shared::validation;
         use std::collections::HashSet;
-        
-        let reserved: HashSet<String> = self.reserved_param_names()
-            .into_iter()
-            .cloned()
-            .collect();
-        
+
+        let reserved: HashSet<String> = self.reserved_param_names().into_iter().cloned().collect();
+
         // Use shared validation for reserved params check
         validation::validate_no_reserved_in_user_params(params, &reserved)?;
-        
+
         // Get exposed schema (without reserved params) for required check
         let exposed = self.exposed_parameters();
         validation::validate_required_params(params, &exposed)?;
-        
+
         Ok(())
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -186,7 +178,7 @@ mod tests {
     #[test]
     fn test_reserved_params_access() {
         let manifest = create_test_manifest();
-        
+
         // Direct access to reserved params
         assert!(manifest.reserved_parameters.contains("session_id"));
         assert!(matches!(
@@ -198,10 +190,10 @@ mod tests {
     #[test]
     fn test_llm_description_fallback() {
         let mut manifest = create_test_manifest();
-        
+
         // With llm_description
         assert_eq!(manifest.llm_description(), "Use when testing");
-        
+
         // Without llm_description
         manifest.llm_description = None;
         assert_eq!(manifest.llm_description(), "A test tool");

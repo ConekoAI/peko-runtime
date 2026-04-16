@@ -31,8 +31,12 @@ async fn get_active_session_for_cli(
     agent: &str,
     team: &str,
 ) -> anyhow::Result<Option<String>> {
-    let mut manager =
-        crate::session::SessionManager::for_cli(paths.resolver.clone(), agent, Some(team), paths.user());
+    let mut manager = crate::session::SessionManager::for_cli(
+        paths.resolver.clone(),
+        agent,
+        Some(team),
+        paths.user(),
+    );
     let peer = Peer::User(paths.user().to_string());
     manager.get_active_session_id(&peer).await
 }
@@ -134,8 +138,6 @@ pub enum SessionCommands {
         #[arg(short, long)]
         team: Option<String>,
     },
-
-
 }
 
 /// Handle session commands
@@ -163,25 +165,23 @@ pub async fn handle_session(
             // Resolve active session if not specified
             let resolved_session_id = match session_id {
                 Some(id) => id,
-                None => {
-                    match get_active_session_for_cli(paths, agent_name, team).await? {
-                        Some(id) => {
-                            if !json {
-                                println!("📋 Using active session: {}", id);
-                            }
-                            id
+                None => match get_active_session_for_cli(paths, agent_name, team).await? {
+                    Some(id) => {
+                        if !json {
+                            println!("📋 Using active session: {}", id);
                         }
-                        None => {
-                            return Err(anyhow::anyhow!(
-                                "No active session for agent '{}'. \
+                        id
+                    }
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "No active session for agent '{}'. \
                                  Run 'pekobot session list {}' to see available sessions, \
                                  or specify a session ID explicitly.",
-                                agent_name,
-                                agent
-                            ));
-                        }
+                            agent_name,
+                            agent
+                        ));
                     }
-                }
+                },
             };
             show_session(paths, team, agent_name, &resolved_session_id, history, json).await
         }
@@ -195,27 +195,34 @@ pub async fn handle_session(
             // Resolve active session if not specified
             let resolved_session_id = match session_id {
                 Some(id) => id,
-                None => {
-                    match get_active_session_for_cli(paths, agent_name, team).await? {
-                        Some(id) => {
-                            if !json {
-                                println!("🌿 Branching from active session: {}", id);
-                            }
-                            id
+                None => match get_active_session_for_cli(paths, agent_name, team).await? {
+                    Some(id) => {
+                        if !json {
+                            println!("🌿 Branching from active session: {}", id);
                         }
-                        None => {
-                            return Err(anyhow::anyhow!(
-                                "No active session for agent '{}'. \
+                        id
+                    }
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "No active session for agent '{}'. \
                                  Run 'pekobot session list {}' to see available sessions, \
                                  or specify a session ID explicitly.",
-                                agent_name,
-                                agent
-                            ));
-                        }
+                            agent_name,
+                            agent
+                        ));
                     }
-                }
+                },
             };
-            branch_session(paths, team, agent_name, &resolved_session_id, label, paths.user(), json).await
+            branch_session(
+                paths,
+                team,
+                agent_name,
+                &resolved_session_id,
+                label,
+                paths.user(),
+                json,
+            )
+            .await
         }
         SessionCommands::Remove {
             agent,
@@ -234,7 +241,6 @@ pub async fn handle_session(
             let (team, agent_name) = parse_agent_identifier_with_override(&agent, team.as_deref())?;
             switch_session(paths, team, agent_name, &session_id, paths.user(), json).await
         }
-
     }
 }
 
@@ -544,13 +550,12 @@ fn history_event_to_display(event: HistoryEvent) -> Option<HistoryDisplayEntry> 
         HistoryEvent::ModelChange { provider, model_id } => {
             Some(HistoryDisplayEntry::ModelChange { provider, model_id })
         }
-        HistoryEvent::ToolCall { tool_name, args, .. } => {
+        HistoryEvent::ToolCall {
+            tool_name, args, ..
+        } => {
             // Display tool calls with their arguments
             let content = format!("{}", args);
-            Some(HistoryDisplayEntry::ToolResult {
-                tool_name,
-                content,
-            })
+            Some(HistoryDisplayEntry::ToolResult { tool_name, content })
         }
         HistoryEvent::Thinking { content } => Some(HistoryDisplayEntry::Message {
             role: "thinking".to_string(),
@@ -558,9 +563,7 @@ fn history_event_to_display(event: HistoryEvent) -> Option<HistoryDisplayEntry> 
             timestamp: String::new(), // Thinking events don't have timestamp in current format
         }),
         HistoryEvent::Compaction { summary } => Some(HistoryDisplayEntry::Compaction { summary }),
-        HistoryEvent::Custom { custom_type } => {
-            Some(HistoryDisplayEntry::Custom { custom_type })
-        }
+        HistoryEvent::Custom { custom_type } => Some(HistoryDisplayEntry::Custom { custom_type }),
     }
 }
 
@@ -776,9 +779,7 @@ async fn switch_session(
     let _ = manager
         .get_session_metadata(session_id)
         .await
-        .map_err(|_| {
-            anyhow::anyhow!("Session '{}' not found for agent '{}'", session_id, agent)
-        })?;
+        .map_err(|_| anyhow::anyhow!("Session '{}' not found for agent '{}'", session_id, agent))?;
 
     // Switch the active session for the specified user peer
     let peer = Peer::User(user.to_string());

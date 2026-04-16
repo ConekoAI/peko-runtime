@@ -51,9 +51,7 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RoleMetadata {
     /// User message metadata
-    User {
-        source: MessageSource,
-    },
+    User { source: MessageSource },
     /// Assistant message metadata
     Assistant {
         provider: String,
@@ -63,9 +61,7 @@ pub enum RoleMetadata {
     /// System message metadata (none needed)
     System,
     /// Tool result metadata
-    Tool {
-        tool_call_id: String,
-    },
+    Tool { tool_call_id: String },
 }
 
 impl RoleMetadata {
@@ -186,7 +182,9 @@ impl SessionMessage {
                 content: vec![ContentBlock::ToolResult {
                     tool_call_id: tool_call_id_str.clone(),
                     name: tool_name_str,
-                    content: vec![ContentBlock::Text { text: content.into() }],
+                    content: vec![ContentBlock::Text {
+                        text: content.into(),
+                    }],
                     is_error: false,
                 }],
                 timestamp: Utc::now(),
@@ -211,14 +209,13 @@ impl SessionMessage {
             .iter()
             .flat_map(|b| match b {
                 ContentBlock::Text { text } => vec![text.as_str()],
-                ContentBlock::ToolResult { content, .. } => {
-                    content.iter()
-                        .filter_map(|c| match c {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect()
-                }
+                ContentBlock::ToolResult { content, .. } => content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect(),
                 _ => vec![],
             })
             .collect()
@@ -398,7 +395,10 @@ mod tests {
         let event = SessionEvent::MessageV2(msg);
         let json = serde_json::to_string(&event).unwrap();
         let role_count = json.matches("\"role\":").count();
-        assert_eq!(role_count, 1, "Assistant should have exactly one 'role' field");
+        assert_eq!(
+            role_count, 1,
+            "Assistant should have exactly one 'role' field"
+        );
 
         // Test system message
         let msg = SessionMessage::system("You are helpful");

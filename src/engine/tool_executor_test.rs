@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::tool_executor::{ToolExecutor, ToolExecutionContext};
+    use crate::engine::tool_executor::{ToolExecutionContext, ToolExecutor};
     use crate::tools::{Tool, ToolContext};
     use async_trait::async_trait;
     use serde_json::json;
@@ -65,7 +65,7 @@ mod tests {
         ) -> anyhow::Result<serde_json::Value> {
             // Record that we received context
             *self.received_context.lock().unwrap() = Some(ctx.clone());
-            
+
             // Return both params and context info for verification
             Ok(json!({
                 "result": "success",
@@ -91,20 +91,23 @@ mod tests {
         };
 
         let params = json!({"input": "hello"});
-        
+
         // Clone for use after execution
         let tool_clone = Arc::clone(&tool);
-        
+
         let result = executor
             .execute_with_context(tool, params, &exec_context)
             .await;
 
         // Should succeed
         assert!(result.is_ok());
-        
+
         // Should have called execute_with_context
-        assert!(tool_clone.was_called_with_context(), "Tool should have received context");
-        
+        assert!(
+            tool_clone.was_called_with_context(),
+            "Tool should have received context"
+        );
+
         // Verify context was passed correctly
         let ctx = tool_clone.get_received_context().unwrap();
         assert_eq!(ctx.agent_id, Some("agent_123".to_string()));
@@ -126,7 +129,7 @@ mod tests {
         };
 
         let params = json!({"input": "test"});
-        
+
         let result = executor
             .execute_with_context(tool, params, &exec_context)
             .await
@@ -157,7 +160,7 @@ mod tests {
             "number": 42,
             "nested": {"key": "value"}
         });
-        
+
         let result = executor
             .execute_with_context(tool, params.clone(), &exec_context)
             .await

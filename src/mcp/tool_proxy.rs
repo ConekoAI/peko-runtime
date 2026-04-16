@@ -7,8 +7,8 @@ use crate::mcp::{
     manager::McpManager,
     types::{CallToolResult, Tool as McpTool, ToolResultContent},
 };
+use crate::tools::shared::proxy_utils::{estimate_tool_duration, execute_with_context_handling};
 use crate::tools::{Tool, ToolContext};
-use crate::tools::shared::proxy_utils::{execute_with_context_handling, estimate_tool_duration};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -42,7 +42,7 @@ impl McpToolProxy {
     pub fn new(server_name: String, tool: McpTool, manager: Arc<RwLock<McpManager>>) -> Self {
         // Estimate duration based on tool name heuristics
         let estimated_duration = estimate_tool_duration(&tool.name);
-        
+
         // Create full name with mcp: prefix for consistent identification
         let name = format!("mcp:{}:{}", server_name, tool.name);
 
@@ -63,7 +63,7 @@ impl McpToolProxy {
         estimated_duration_ms: u64,
     ) -> Self {
         let name = format!("mcp:{}:{}", server_name, tool.name);
-        
+
         Self {
             name,
             server_name,
@@ -89,7 +89,10 @@ impl McpToolProxy {
     ///
     /// This handles the case where the server is not running by attempting
     /// to start it and retrying the call.
-    async fn call_with_auto_start(&self, params: serde_json::Value) -> anyhow::Result<CallToolResult> {
+    async fn call_with_auto_start(
+        &self,
+        params: serde_json::Value,
+    ) -> anyhow::Result<CallToolResult> {
         let manager = self.manager.read().await;
 
         // Try to call the tool, starting the server if needed
@@ -206,12 +209,9 @@ impl Tool for McpToolProxy {
         ctx: &ToolContext,
     ) -> anyhow::Result<serde_json::Value> {
         // Use the shared context handling utility to eliminate duplication
-        execute_with_context_handling(
-            ctx,
-            &self.tool.name,
-            Some(&self.server_name),
-            || async { self.do_execute(params).await },
-        )
+        execute_with_context_handling(ctx, &self.tool.name, Some(&self.server_name), || async {
+            self.do_execute(params).await
+        })
         .await
     }
 
@@ -235,7 +235,7 @@ impl std::fmt::Debug for McpToolProxy {
 }
 
 /// Create tool proxies for all tools from all running MCP servers
-/// 
+///
 /// Uses `McpManager::get_all_tools()` to ensure reserved parameter injection
 /// is properly configured via `InjectableMcpToolProxy` when reserved params exist.
 pub async fn create_tool_proxies(manager: Arc<RwLock<McpManager>>) -> Vec<Arc<dyn Tool>> {
@@ -245,7 +245,10 @@ pub async fn create_tool_proxies(manager: Arc<RwLock<McpManager>>) -> Vec<Arc<dy
     let tools: Vec<Arc<dyn Tool>> = manager_guard.get_tools().await;
     drop(manager_guard);
 
-    debug!("Created {} MCP tool proxies (with reserved param support)", tools.len());
+    debug!(
+        "Created {} MCP tool proxies (with reserved param support)",
+        tools.len()
+    );
     tools
 }
 

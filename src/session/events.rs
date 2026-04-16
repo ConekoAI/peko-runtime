@@ -384,7 +384,9 @@ impl SessionEvent {
     /// Get content from assistant message (for title generation)
     pub fn assistant_content(&self) -> Option<String> {
         match self {
-            SessionEvent::MessageV2(m) if m.role() == crate::types::message::MessageRole::Assistant => {
+            SessionEvent::MessageV2(m)
+                if m.role() == crate::types::message::MessageRole::Assistant =>
+            {
                 Some(m.text_content())
             }
             _ => None,

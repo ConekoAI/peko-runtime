@@ -126,7 +126,7 @@ mod tests {
 
         // Check only SYSTEM.md is created
         assert!(tmp.path().join("SYSTEM.md").exists());
-        
+
         // Check old files are NOT created
         assert!(!tmp.path().join("AGENTS.md").exists());
         assert!(!tmp.path().join("TOOLS.md").exists());
@@ -146,7 +146,7 @@ mod tests {
         bootstrap.run().unwrap();
 
         let content = std::fs::read_to_string(tmp.path().join("SYSTEM.md")).unwrap();
-        
+
         // Check for key sections
         assert!(content.contains("# SYSTEM.md — my-agent"));
         assert!(content.contains("{{agent_name}}"));

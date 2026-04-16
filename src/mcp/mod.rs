@@ -63,8 +63,8 @@
 pub use client::{ClientError, McpClient};
 pub use config::{ConfigFormat, McpConfig, McpServerConfig, TransportType};
 pub use discovery::{
-    discover_servers, ensure_default_config, is_server_installed,
-    mcp_config_path, mcp_install_dir, DiscoveredServer, McpServerStatus,
+    discover_servers, ensure_default_config, is_server_installed, mcp_config_path, mcp_install_dir,
+    DiscoveredServer, McpServerStatus,
 };
 pub use injectable_proxy::InjectableMcpToolProxy;
 pub use manager::{ManagerError, McpManager, ServerState};

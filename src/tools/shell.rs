@@ -298,9 +298,7 @@ mod tests {
 
         // Create a file in temp directory
         let test_file = temp_dir.path().join("test.txt");
-        tokio::fs::write(&test_file, "test content")
-            .await
-            .unwrap();
+        tokio::fs::write(&test_file, "test content").await.unwrap();
 
         let params = json!({
             "command": if cfg!(windows) { "type test.txt" } else { "cat test.txt" },
@@ -312,7 +310,10 @@ mod tests {
 
         let response = result.unwrap();
         assert!(response["success"].as_bool().unwrap());
-        assert!(response["stdout"].as_str().unwrap().contains("test content"));
+        assert!(response["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("test content"));
     }
 
     #[tokio::test]
@@ -343,7 +344,10 @@ mod tests {
 
         let result = tool.execute(params).await;
         // Should succeed in execution but with non-zero exit code
-        assert!(result.is_ok(), "Should return result even for failed command");
+        assert!(
+            result.is_ok(),
+            "Should return result even for failed command"
+        );
 
         let response = result.unwrap();
         assert!(!response["success"].as_bool().unwrap());

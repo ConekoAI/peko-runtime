@@ -68,11 +68,11 @@ impl crate::tools::Tool for ExtensionAsyncTool {
         self.parameters.clone()
     }
 
-    async fn execute(&self, params: Value) -> Result<Value> {
+    async fn execute(&self, _params: Value) -> Result<Value> {
         // For sync execution of extension-based tools, we would need to:
         // 1. Use ExtensionCore to invoke ToolExecute hook
         // 2. Process the result
-        // 
+        //
         // For now, return an error indicating this path needs implementation
         // The async path (execute_async) is the primary use case
         Err(anyhow::anyhow!(
@@ -102,7 +102,7 @@ impl UnifiedAsyncTool for ExtensionAsyncTool {
     async fn execute_async(
         &self,
         params: Value,
-        config: AsyncToolConfig,
+        _config: AsyncToolConfig,
     ) -> Result<AsyncTaskReceipt> {
         self.adapter
             .execute_async(&self.tool_name, params, "default_session")
@@ -153,12 +153,8 @@ impl AsyncExtensionToolFactory {
         description: impl Into<String>,
         parameters: Value,
     ) -> BoxedAsyncTool {
-        let tool = ExtensionAsyncTool::new(
-            self.adapter.clone(),
-            tool_name,
-            description,
-            parameters,
-        );
+        let tool =
+            ExtensionAsyncTool::new(self.adapter.clone(), tool_name, description, parameters);
         Box::new(tool)
     }
 }
@@ -185,7 +181,7 @@ impl AsyncToolRegistry {
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<BoxedAsyncTool> {
         let tools = self.tools.read().unwrap();
-        tools.get(name).map(|t| {
+        tools.get(name).map(|_t| {
             // Clone the boxed trait object - this requires the trait to be clonable
             // For now, we'll use Arc internally in a future refactor
             todo!("Cloneable async tools or use Arc<dyn UnifiedAsyncTool>")
@@ -201,10 +197,7 @@ impl AsyncToolRegistry {
     /// Check if a tool supports async execution
     pub fn supports_async(&self, name: &str) -> bool {
         let tools = self.tools.read().unwrap();
-        tools
-            .get(name)
-            .map(|t| t.supports_async())
-            .unwrap_or(false)
+        tools.get(name).map(|t| t.supports_async()).unwrap_or(false)
     }
 }
 
@@ -232,12 +225,7 @@ impl ExtensionAsyncAdapterExt for ExtensionAsyncAdapter {
         description: impl Into<String>,
         parameters: Value,
     ) -> BoxedAsyncTool {
-        let tool = ExtensionAsyncTool::new(
-            self.clone(),
-            tool_name,
-            description,
-            parameters,
-        );
+        let tool = ExtensionAsyncTool::new(self.clone(), tool_name, description, parameters);
         Box::new(tool)
     }
 }
@@ -252,7 +240,7 @@ mod tests {
     fn test_extension_async_tool_creation() {
         let core = Arc::new(ExtensionCore::new());
         let adapter = ExtensionAsyncAdapter::new(core);
-        
+
         let tool = ExtensionAsyncTool::new(
             adapter,
             "test_tool",
@@ -270,10 +258,10 @@ mod tests {
     #[test]
     fn test_async_tool_registry() {
         let registry = AsyncToolRegistry::new();
-        
+
         // Initially empty
         assert!(registry.list().is_empty());
-        
+
         // TODO: Test registration once we have cloneable tools
     }
 }

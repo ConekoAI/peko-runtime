@@ -520,7 +520,7 @@ impl McpConfig {
         }
 
         let content = tokio::fs::read_to_string(&path).await?;
-        
+
         match format {
             ConfigFormat::Json => Self::from_json(&content),
             ConfigFormat::Toml => Self::from_toml(&content),

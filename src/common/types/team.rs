@@ -181,16 +181,25 @@ impl TeamExtConfig {
 
     /// Enable a capability
     pub fn enable(&mut self, capability: &str) {
-        if !self.enabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+        if !self
+            .enabled
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(capability))
+        {
             self.enabled.push(capability.to_string());
         }
-        self.disabled.retain(|e| !e.eq_ignore_ascii_case(capability));
+        self.disabled
+            .retain(|e| !e.eq_ignore_ascii_case(capability));
     }
 
     /// Disable a capability
     pub fn disable(&mut self, capability: &str) {
         self.enabled.retain(|e| !e.eq_ignore_ascii_case(capability));
-        if !self.disabled.iter().any(|e| e.eq_ignore_ascii_case(capability)) {
+        if !self
+            .disabled
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(capability))
+        {
             self.disabled.push(capability.to_string());
         }
     }

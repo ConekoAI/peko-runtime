@@ -4,7 +4,6 @@
 //! CLI commands and API routes for consistent agent data representation.
 
 use crate::types::agent::AgentConfig;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Agent summary for listing operations

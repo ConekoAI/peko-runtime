@@ -40,12 +40,8 @@
 //! ```
 
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
-use crate::extensions::core::{
-    HookContext, HookHandler, HookHandlerFactory, HookPoint,
-};
-use crate::extensions::types::{
-    ExtensionManifest, HookInput, HookOutput, HookResult,
-};
+use crate::extensions::core::{HookContext, HookHandler, HookHandlerFactory, HookPoint};
+use crate::extensions::types::{ExtensionManifest, HookInput, HookOutput, HookResult};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -133,11 +129,13 @@ impl ExtensionTypeAdapter for GatewayAdapter {
     async fn initialize(&self, manifest: &ExtensionManifest) -> Result<ExtensionState> {
         info!("Initializing gateway extension: {}", manifest.id);
 
-        if let Ok(config) = serde_json::from_value::<GatewayExtensionConfig>(
-            serde_json::json!(manifest.metadata.clone()),
-        ) {
+        if let Ok(config) =
+            serde_json::from_value::<GatewayExtensionConfig>(serde_json::json!(manifest
+                .metadata
+                .clone()))
+        {
             debug!("Gateway type: {}", config.gateway_type);
-            
+
             // Gateway initialization would happen here
             // For now, just validate the config
             match config.gateway_type.as_str() {
@@ -161,9 +159,11 @@ impl ExtensionTypeAdapter for GatewayAdapter {
     fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding> {
         let mut bindings = Vec::new();
 
-        if let Ok(config) = serde_json::from_value::<GatewayExtensionConfig>(
-            serde_json::json!(manifest.metadata.clone()),
-        ) {
+        if let Ok(config) =
+            serde_json::from_value::<GatewayExtensionConfig>(serde_json::json!(manifest
+                .metadata
+                .clone()))
+        {
             for hook in &config.hooks {
                 if let Some(hook_point) = parse_hook_point(&hook.point) {
                     bindings.push(HookBinding::new(
@@ -263,13 +263,11 @@ impl std::fmt::Debug for GatewayHookHandler {
 impl HookHandler for GatewayHookHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
         debug!("Gateway handler '{}' invoked", self.handler_name);
-        
+
         // Gateway handlers pass through by default
         // In a real implementation, this would dispatch to gateway-specific logic
         match ctx.input {
-            HookInput::SystemEvent(event) => {
-                HookResult::Continue(HookOutput::Event(event))
-            }
+            HookInput::SystemEvent(event) => HookResult::Continue(HookOutput::Event(event)),
             HookInput::ToolRegistry(access) => {
                 HookResult::Continue(HookOutput::Json(serde_json::json!({
                     "tools": access.tools
@@ -361,7 +359,10 @@ pub async fn discover_gateway_extensions(dir: &Path) -> Result<Vec<DiscoveredGat
     let mut discovered = Vec::new();
 
     if !dir.exists() {
-        debug!("Gateway extensions directory does not exist: {}", dir.display());
+        debug!(
+            "Gateway extensions directory does not exist: {}",
+            dir.display()
+        );
         return Ok(discovered);
     }
 
@@ -371,22 +372,32 @@ pub async fn discover_gateway_extensions(dir: &Path) -> Result<Vec<DiscoveredGat
 
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if !path.is_dir() { continue; }
+        if !path.is_dir() {
+            continue;
+        }
 
         let manifest_path = path.join("manifest.yaml");
         let manifest = if manifest_path.exists() {
             match tokio::fs::read_to_string(&manifest_path).await {
                 Ok(content) => parse_gateway_manifest(&content, &path),
-                Err(e) => { warn!("Failed to read manifest: {}", e); continue; }
+                Err(e) => {
+                    warn!("Failed to read manifest: {}", e);
+                    continue;
+                }
             }
         } else {
             let manifest_path = path.join("manifest.toml");
             if manifest_path.exists() {
                 match tokio::fs::read_to_string(&manifest_path).await {
                     Ok(content) => parse_gateway_manifest_toml(&content, &path),
-                    Err(e) => { warn!("Failed to read manifest: {}", e); continue; }
+                    Err(e) => {
+                        warn!("Failed to read manifest: {}", e);
+                        continue;
+                    }
                 }
-            } else { None }
+            } else {
+                None
+            }
         };
 
         if let Some((manifest, config)) = manifest {
@@ -398,9 +409,16 @@ pub async fn discover_gateway_extensions(dir: &Path) -> Result<Vec<DiscoveredGat
     Ok(discovered)
 }
 
-fn parse_gateway_manifest(content: &str, path: &Path) -> Option<(ExtensionManifest, GatewayExtensionConfig)> {
+fn parse_gateway_manifest(
+    content: &str,
+    path: &Path,
+) -> Option<(ExtensionManifest, GatewayExtensionConfig)> {
     let parts: Vec<&str> = content.splitn(3, "---").collect();
-    let frontmatter = if parts.len() >= 2 { parts[1].trim() } else { content.trim() };
+    let frontmatter = if parts.len() >= 2 {
+        parts[1].trim()
+    } else {
+        content.trim()
+    };
     let yaml: serde_yaml::Value = serde_yaml::from_str(frontmatter).ok()?;
 
     let id = yaml.get("id")?.as_str()?;
@@ -416,7 +434,12 @@ fn parse_gateway_manifest(content: &str, path: &Path) -> Option<(ExtensionManife
     };
 
     let mut manifest = ExtensionManifest::new(
-        id, "gateway", name, description, version, path.to_path_buf(),
+        id,
+        "gateway",
+        name,
+        description,
+        version,
+        path.to_path_buf(),
     );
 
     if let Ok(json_config) = serde_json::to_value(&config) {
@@ -430,7 +453,10 @@ fn parse_gateway_manifest(content: &str, path: &Path) -> Option<(ExtensionManife
     Some((manifest, config))
 }
 
-fn parse_gateway_manifest_toml(content: &str, path: &Path) -> Option<(ExtensionManifest, GatewayExtensionConfig)> {
+fn parse_gateway_manifest_toml(
+    content: &str,
+    path: &Path,
+) -> Option<(ExtensionManifest, GatewayExtensionConfig)> {
     let toml: toml::Value = toml::from_str(content).ok()?;
 
     let id = toml.get("id")?.as_str()?;
@@ -446,7 +472,12 @@ fn parse_gateway_manifest_toml(content: &str, path: &Path) -> Option<(ExtensionM
     };
 
     let mut manifest = ExtensionManifest::new(
-        id, "gateway", name, description, version, path.to_path_buf(),
+        id,
+        "gateway",
+        name,
+        description,
+        version,
+        path.to_path_buf(),
     );
 
     if let Ok(json_config) = serde_json::to_value(&config) {

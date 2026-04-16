@@ -32,7 +32,7 @@ impl BootstrapConfig {
     }
 
     /// Create config with a custom list of files (all treated as optional)
-    /// 
+    ///
     /// If `files` is None, returns an empty file list.
     /// Use `with_default_files()` explicitly if you want the default file list.
     pub fn with_files(files: Option<Vec<String>>, workspace_dir: PathBuf) -> Self {
@@ -48,7 +48,6 @@ impl BootstrapConfig {
             files,
         }
     }
-
 }
 
 /// Bootstrap file definition

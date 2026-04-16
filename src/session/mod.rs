@@ -26,11 +26,11 @@ pub mod directory;
 pub mod events;
 mod index;
 pub mod jsonl;
-pub mod message;
 pub mod key;
 pub mod lock;
 pub mod lock_utils;
 pub mod manager;
+pub mod message;
 pub mod metadata;
 pub mod metadata_controller;
 pub mod overlay;
@@ -50,10 +50,7 @@ pub use events::{
     SpawnRequestEvent, SpawnResultEvent, SystemEvent, ThinkingEvent, TokenUsage, ToolCallBlock,
     ToolCallEvent, ToolResultEvent,
 };
-pub use message::{RoleMetadata, SessionMessage};
-pub use index::{
-    MaintenanceConfig, MaintenanceReport, PeerIndex, PeerInfo, SessionEntry,
-};
+pub use index::{MaintenanceConfig, MaintenanceReport, PeerIndex, PeerInfo, SessionEntry};
 pub use jsonl::{NormalizedEntry, SessionStorage};
 pub use key::{
     base_key_from_overlay, derive_base_session_key, derive_overlay_key, derive_session_key,
@@ -61,9 +58,10 @@ pub use key::{
 };
 pub use lock::FileLock;
 pub use lock_utils::{
-    try_read_lock, try_read_lock_default, try_write_lock, try_write_lock_default,
-    LockError, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
+    try_read_lock, try_read_lock_default, try_write_lock, try_write_lock_default, LockError,
+    DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
 };
+pub use message::{RoleMetadata, SessionMessage};
 pub use metadata::{MetadataDiscrepancy, ReconciliationResult, SessionMetadata};
 pub use metadata_controller::{ConsistencyStatus, MetadataController};
 pub use unified::UnifiedSession;

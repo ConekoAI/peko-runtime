@@ -102,7 +102,10 @@ impl WriteFileTool {
                 // Default: overwrite
             }
             other => {
-                return Err(anyhow::anyhow!("Invalid mode: {}. Use overwrite, append, or create_new", other));
+                return Err(anyhow::anyhow!(
+                    "Invalid mode: {}. Use overwrite, append, or create_new",
+                    other
+                ));
             }
         }
 
@@ -202,7 +205,7 @@ Write binary data:
 ```json
 {"path": "data.bin", "content": "SGVsbG8=", "encoding": "base64"}
 ```"#
-        .to_string()
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -267,7 +270,9 @@ mod tests {
         assert_eq!(result["bytes_written"], 13);
         assert_eq!(result["mode"], "overwrite");
 
-        let content = fs::read_to_string(temp_dir.path().join("test.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("test.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "Hello, World!");
     }
 
@@ -277,7 +282,9 @@ mod tests {
         let tool = WriteFileTool::new().with_workspace(temp_dir.path());
 
         // Initial write
-        fs::write(temp_dir.path().join("log.txt"), "Line 1\n").await.unwrap();
+        fs::write(temp_dir.path().join("log.txt"), "Line 1\n")
+            .await
+            .unwrap();
 
         // Append
         let params = json!({
@@ -289,7 +296,9 @@ mod tests {
         let result = tool.execute(params).await.unwrap();
         assert_eq!(result["bytes_written"], 7);
 
-        let content = fs::read_to_string(temp_dir.path().join("log.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("log.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "Line 1\nLine 2\n");
     }
 
@@ -299,7 +308,9 @@ mod tests {
         let tool = WriteFileTool::new().with_workspace(temp_dir.path());
 
         // Create file
-        fs::write(temp_dir.path().join("existing.txt"), "content").await.unwrap();
+        fs::write(temp_dir.path().join("existing.txt"), "content")
+            .await
+            .unwrap();
 
         // Try to create_new
         let params = json!({
@@ -326,7 +337,9 @@ mod tests {
         let result = tool.execute(params).await.unwrap();
         assert!(result.is_object());
 
-        let content = fs::read_to_string(temp_dir.path().join("level1/level2/level3/file.txt")).await.unwrap();
+        let content = fs::read_to_string(temp_dir.path().join("level1/level2/level3/file.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "nested content");
     }
 

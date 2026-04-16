@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 ///
 /// This is the SINGLE POINT OF TRUTH for session metadata.
 /// No other component should directly access SessionIndex.
-/// 
+///
 /// Internally uses `SessionEntry` for storage; `SessionMetadata` is used
 /// at API boundaries for backward compatibility.
 pub struct MetadataController {
@@ -78,16 +78,13 @@ impl MetadataController {
 
         // Convert to entry for internal storage
         let entry = metadata.to_entry();
-        
+
         // Insert into index
         self.index.insert(entry.clone()).await?;
         self.index.save().await?;
 
         // Update cache with entry
-        self.cache
-            .write()
-            .await
-            .insert(session_id.clone(), entry);
+        self.cache.write().await.insert(session_id.clone(), entry);
 
         info!("Created metadata for session {}", session_id);
         Ok(())
@@ -105,10 +102,7 @@ impl MetadataController {
         self.index.save().await?;
 
         // Update cache with entry
-        self.cache
-            .write()
-            .await
-            .insert(session_id.clone(), entry);
+        self.cache.write().await.insert(session_id.clone(), entry);
 
         info!("Created entry for session {}", session_id);
         Ok(())
@@ -118,7 +112,11 @@ impl MetadataController {
     ///
     /// This is the internal method that returns `SessionEntry` directly.
     /// All internal operations should use this method.
-    async fn get_entry(&mut self, session_id: &str, sync_from_jsonl: bool) -> Result<Option<SessionEntry>> {
+    async fn get_entry(
+        &mut self,
+        session_id: &str,
+        sync_from_jsonl: bool,
+    ) -> Result<Option<SessionEntry>> {
         // Check cache first (only if not syncing)
         if !sync_from_jsonl {
             if let Some(cached) = self.cache.read().await.get(session_id).cloned() {
@@ -158,10 +156,16 @@ impl MetadataController {
             }
 
             // Sync token metrics
-            match self.sync_token_metrics_to_entry(session_id, &mut entry).await {
+            match self
+                .sync_token_metrics_to_entry(session_id, &mut entry)
+                .await
+            {
                 Ok(changed) if changed => needs_update = true,
                 Ok(_) => {}
-                Err(e) => warn!("Failed to sync token metrics from JSONL for {}: {}", session_id, e),
+                Err(e) => warn!(
+                    "Failed to sync token metrics from JSONL for {}: {}",
+                    session_id, e
+                ),
             }
 
             // Update index if any changes were made
@@ -184,7 +188,7 @@ impl MetadataController {
     ///
     /// If `sync_from_jsonl` is true, the message count will be synced from
     /// the actual JSONL content (source of truth).
-    /// 
+    ///
     /// This method converts from internal `SessionEntry` to `SessionMetadata`
     /// at the API boundary for backward compatibility.
     pub async fn get_metadata(
@@ -202,7 +206,7 @@ impl MetadataController {
     }
 
     /// Update metadata (full replacement)
-    /// 
+    ///
     /// Accepts `SessionMetadata` for backward compatibility but stores as `SessionEntry` internally.
     pub async fn update_metadata(&mut self, metadata: SessionMetadata) -> Result<()> {
         let session_id = metadata.session_id.clone();
@@ -216,17 +220,14 @@ impl MetadataController {
         self.index.save().await?;
 
         // Update cache with entry
-        self.cache
-            .write()
-            .await
-            .insert(session_id.clone(), entry);
+        self.cache.write().await.insert(session_id.clone(), entry);
 
         debug!("Updated metadata for session {}", session_id);
         Ok(())
     }
 
     /// Update entry (full replacement, internal use)
-    /// 
+    ///
     /// This method accepts `SessionEntry` directly for internal operations.
     pub async fn update_entry(&mut self, entry: SessionEntry) -> Result<()> {
         let session_id = entry.session_id.clone();
@@ -237,10 +238,7 @@ impl MetadataController {
         self.index.save().await?;
 
         // Update cache with entry
-        self.cache
-            .write()
-            .await
-            .insert(session_id.clone(), entry);
+        self.cache.write().await.insert(session_id.clone(), entry);
 
         debug!("Updated entry for session {}", session_id);
         Ok(())
@@ -283,7 +281,7 @@ impl MetadataController {
     }
 
     /// Record token usage for a session
-    /// 
+    ///
     /// `context_window` is the total_tokens from the current assistant message.
     /// `input_tokens` and `output_tokens` are the incremental tokens for this turn.
     pub async fn record_token_usage(
@@ -412,10 +410,19 @@ impl MetadataController {
             if let Some(p) = peer {
                 let peer_key = derive_base_session_key(&e.agent_name, &p);
 
-                if self.index.get_active_session_id(&peer_key).await?.as_deref() == Some(session_id) {
+                if self
+                    .index
+                    .get_active_session_id(&peer_key)
+                    .await?
+                    .as_deref()
+                    == Some(session_id)
+                {
                     self.index.clear_active_for_peer(&peer_key).await?;
                     self.index.save().await?;
-                    info!("Cleared peer routing for {} after session deletion", peer_key);
+                    info!(
+                        "Cleared peer routing for {} after session deletion",
+                        peer_key
+                    );
                 }
             }
         }
@@ -477,7 +484,7 @@ impl MetadataController {
     ///
     /// If `sync_from_jsonl` is true, message counts will be synced from
     /// the actual JSONL content (source of truth).
-    /// 
+    ///
     /// Converts from internal `SessionEntry` to `SessionMetadata` at API boundary.
     pub async fn list_metadata(&mut self, sync_from_jsonl: bool) -> Result<Vec<SessionMetadata>> {
         let entries = self.list_entries(sync_from_jsonl).await?;
@@ -499,7 +506,11 @@ impl MetadataController {
     }
 
     /// List sessions for a specific peer (internal - returns SessionEntry)
-    async fn list_entries_for_peer(&mut self, peer_key: &str, sync_from_jsonl: bool) -> Result<Vec<SessionEntry>> {
+    async fn list_entries_for_peer(
+        &mut self,
+        peer_key: &str,
+        sync_from_jsonl: bool,
+    ) -> Result<Vec<SessionEntry>> {
         let mut entries = self.index.list_for_peer(peer_key).await?;
 
         if sync_from_jsonl {
@@ -526,26 +537,30 @@ impl MetadataController {
     }
 
     /// List sessions for a specific peer
-    /// 
+    ///
     /// Converts from internal `SessionEntry` to `SessionMetadata` at API boundary.
     pub async fn list_for_peer(
         &mut self,
         peer_key: &str,
         sync_from_jsonl: bool,
     ) -> Result<Vec<SessionMetadata>> {
-        let entries = self.list_entries_for_peer(peer_key, sync_from_jsonl).await?;
+        let entries = self
+            .list_entries_for_peer(peer_key, sync_from_jsonl)
+            .await?;
         Ok(entries.into_iter().map(|e| e.to_metadata()).collect())
     }
 
     /// List sessions for a specific peer and return SessionInfo directly
-    /// 
+    ///
     /// This is a convenience method for the service layer that avoids double conversion.
     pub async fn list_session_info_for_peer(
         &mut self,
         peer_key: &str,
         sync_from_jsonl: bool,
     ) -> Result<Vec<crate::common::services::session_service::SessionInfo>> {
-        let entries = self.list_entries_for_peer(peer_key, sync_from_jsonl).await?;
+        let entries = self
+            .list_entries_for_peer(peer_key, sync_from_jsonl)
+            .await?;
         Ok(entries.into_iter().map(|e| e.to_info()).collect())
     }
 
@@ -570,7 +585,10 @@ impl MetadataController {
     /// - context_window: total_tokens from the last assistant message
     /// - total_input_tokens: sum of input_tokens from all assistant messages
     /// - total_output_tokens: sum of output_tokens from all assistant messages
-    pub async fn get_token_metrics_from_jsonl(&self, session_id: &str) -> Result<(usize, usize, usize)> {
+    pub async fn get_token_metrics_from_jsonl(
+        &self,
+        session_id: &str,
+    ) -> Result<(usize, usize, usize)> {
         let events = self
             .storage
             .load_events(session_id)
@@ -601,7 +619,8 @@ impl MetadataController {
     /// The JSONL file is the source of truth for message count and token usage.
     pub async fn sync_from_jsonl(&mut self, session_id: &str) -> Result<usize> {
         let actual_count = self.count_messages_from_jsonl(session_id).await?;
-        let (context_window, total_input, total_output) = self.get_token_metrics_from_jsonl(session_id).await?;
+        let (context_window, total_input, total_output) =
+            self.get_token_metrics_from_jsonl(session_id).await?;
 
         // Get current entry
         let mut entry = match self.get_entry_fast(session_id).await? {
@@ -782,11 +801,7 @@ impl MetadataController {
     /// Set active session for peer (proxy to SessionIndex)
     ///
     /// Updates the peer routing to make the specified session active.
-    pub async fn set_active_for_peer(
-        &mut self,
-        peer_key: &str,
-        session_id: &str,
-    ) -> Result<()> {
+    pub async fn set_active_for_peer(&mut self, peer_key: &str, session_id: &str) -> Result<()> {
         self.index.set_active_for_peer(peer_key, session_id).await?;
         self.index.save().await
     }
@@ -811,12 +826,15 @@ impl MetadataController {
     }
 
     /// List sessions for agent directly from index (proxy to SessionIndex)
-    pub async fn list_for_agent_from_index(&mut self, agent_name: &str) -> Result<Vec<SessionEntry>> {
+    pub async fn list_for_agent_from_index(
+        &mut self,
+        agent_name: &str,
+    ) -> Result<Vec<SessionEntry>> {
         self.index.list_for_agent(agent_name).await
     }
 
     /// List sessions for a specific peer directly from index (proxy to SessionIndex)
-    /// 
+    ///
     /// This returns SessionEntry objects directly without conversion to SessionMetadata.
     pub async fn list_for_peer_from_index(&mut self, peer_key: &str) -> Result<Vec<SessionEntry>> {
         self.index.list_for_peer(peer_key).await
@@ -836,7 +854,6 @@ impl MetadataController {
     pub async fn save_index(&mut self) -> Result<()> {
         self.index.save().await
     }
-
 }
 
 /// Consistency check result

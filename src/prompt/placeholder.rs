@@ -70,22 +70,26 @@ impl Placeholder {
 }
 
 /// Replace placeholders in template content with provided values
-/// 
+///
 /// Placeholders not found in `values` are left as-is or removed based on `remove_missing`.
-pub fn replace_placeholders(template: &str, values: &HashMap<Placeholder, String>, remove_missing: bool) -> String {
+pub fn replace_placeholders(
+    template: &str,
+    values: &HashMap<Placeholder, String>,
+    remove_missing: bool,
+) -> String {
     let mut result = template.to_string();
-    
+
     for (placeholder, value) in values {
         result = result.replace(placeholder.marker(), value);
     }
-    
+
     if remove_missing {
         // Remove any remaining unreplaced placeholders
         // Pattern: {{word_chars}}
         let re = regex::Regex::new(r"\{\{[a-z_]+\}\}").unwrap();
         result = re.replace_all(&result, "").to_string();
     }
-    
+
     result
 }
 
@@ -97,7 +101,10 @@ mod tests {
     fn test_placeholder_from_str() {
         assert_eq!(Placeholder::from_str("tools"), Some(Placeholder::Tools));
         assert_eq!(Placeholder::from_str("runtime"), Some(Placeholder::Runtime));
-        assert_eq!(Placeholder::from_str("agent_name"), Some(Placeholder::AgentName));
+        assert_eq!(
+            Placeholder::from_str("agent_name"),
+            Some(Placeholder::AgentName)
+        );
         assert_eq!(Placeholder::from_str("unknown"), None);
     }
 
@@ -113,7 +120,7 @@ mod tests {
         let mut values = HashMap::new();
         values.insert(Placeholder::AgentName, "test-agent".to_string());
         values.insert(Placeholder::Tools, "tool list".to_string());
-        
+
         let result = replace_placeholders(template, &values, false);
         assert_eq!(result, "Hello test-agent, tools: tool list");
     }
@@ -123,9 +130,8 @@ mod tests {
         let template = "Hello {{agent_name}}, missing: {{unknown}}";
         let mut values = HashMap::new();
         values.insert(Placeholder::AgentName, "test-agent".to_string());
-        
+
         let result = replace_placeholders(template, &values, true);
         assert_eq!(result, "Hello test-agent, missing: ");
     }
-
 }

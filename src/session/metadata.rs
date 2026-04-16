@@ -132,7 +132,7 @@ impl SessionMetadata {
     }
 
     /// Record token usage
-    /// 
+    ///
     /// `context_window` is the total_tokens from the current assistant message.
     /// `input` and `output` are the incremental tokens for this turn.
     pub fn record_tokens(&mut self, context_window: usize, input: usize, output: usize) {

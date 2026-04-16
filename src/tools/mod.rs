@@ -30,7 +30,7 @@ pub mod traits;
 pub mod write_file;
 
 /// Universal Tool Protocol - Backend-agnostic tool integration
-/// 
+///
 /// This module implements the custom tool system using JSON-RPC 2.0 over stdio.
 /// It supports reserved parameter injection and works with any language.
 pub mod universal;
@@ -54,12 +54,12 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};
 pub use read_file::ReadFileTool;
-pub use shell::ShellTool;
 pub use session_introspection::{
     AgentSessionRegistry, InMemorySessionRegistry, SessionInfo,
     SessionRegistry as SessionIntrospectionRegistry, SessionStatusTool, SessionsHistoryTool,
     SessionsListTool,
 };
+pub use shell::ShellTool;
 pub use str_replace_file::StrReplaceFileTool;
 pub use traits::{Tool, ToolError, ToolResult};
 pub use write_file::WriteFileTool;

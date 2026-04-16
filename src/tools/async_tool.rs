@@ -19,7 +19,7 @@
 //! impl UnifiedAsyncTool for MyTool {
 //!     fn supports_async(&self) -> bool { true }
 //!     
-//!     async fn execute_async(&self, params: Value, config: AsyncToolConfig) 
+//!     async fn execute_async(&self, params: Value, config: AsyncToolConfig)
 //!         -> Result<AsyncTaskReceipt> { ... }
 //!     
 //!     async fn check_status(&self, task_id: &AsyncTaskId) -> Result<AsyncTaskStatus> { ... }
@@ -34,7 +34,7 @@
 use crate::agent::async_tool_framework::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
 };
-use crate::tools::{Tool, ToolResult};
+use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -220,9 +220,10 @@ impl<T: Tool + Send + Sync + 'static> UnifiedAsyncTool for SyncToAsyncAdapter<T>
         let task_id = format!("{}:{}", tool_name, uuid::Uuid::new_v4());
         let inner = self.inner.clone();
         let params_clone = params.clone();
-        
+
         // Execute the sync tool in the background
-        let receipt = self.executor
+        let receipt = self
+            .executor
             .execute(
                 task_id.clone(),
                 tool_name.clone(),
@@ -231,9 +232,7 @@ impl<T: Tool + Send + Sync + 'static> UnifiedAsyncTool for SyncToAsyncAdapter<T>
                 config,
                 move || async move {
                     match inner.execute(params_clone).await {
-                        Ok(result) => Ok(AsyncTaskResult::Generic {
-                            data: result,
-                        }),
+                        Ok(result) => Ok(AsyncTaskResult::Generic { data: result }),
                         Err(e) => Ok(AsyncTaskResult::Generic {
                             data: serde_json::json!({"error": e.to_string()}),
                         }),
@@ -241,7 +240,7 @@ impl<T: Tool + Send + Sync + 'static> UnifiedAsyncTool for SyncToAsyncAdapter<T>
                 },
             )
             .await?;
-        
+
         Ok(receipt)
     }
 

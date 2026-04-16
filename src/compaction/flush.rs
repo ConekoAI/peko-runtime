@@ -146,7 +146,6 @@ impl MemoryFlusher {
         let trimmed = response.trim().to_uppercase();
         trimmed == "NO_REPLY" || trimmed.contains("NO_REPLY")
     }
-
 }
 
 impl Default for MemoryFlusher {
@@ -164,8 +163,7 @@ pub struct CompactionWithFlush {
     pub memory_flush: MemoryFlushConfig,
 }
 
-impl CompactionWithFlush {
-}
+impl CompactionWithFlush {}
 
 #[cfg(test)]
 mod tests {
@@ -249,5 +247,4 @@ mod tests {
 
         assert!(!flusher.state.flushed_this_cycle);
     }
-
 }

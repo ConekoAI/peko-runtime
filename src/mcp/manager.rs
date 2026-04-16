@@ -170,11 +170,19 @@ impl McpManager {
         // Log final status
         let final_servers = self.servers.read().await;
         for (name, handle) in final_servers.iter() {
-            info!("MCP server '{}' status: running={}, healthy={}, tools={}", 
-                name, handle.state.running, handle.state.healthy, handle.state.tools.len());
+            info!(
+                "MCP server '{}' status: running={}, healthy={}, tools={}",
+                name,
+                handle.state.running,
+                handle.state.healthy,
+                handle.state.tools.len()
+            );
         }
 
-        info!("MCP manager initialized with {} servers", final_servers.len());
+        info!(
+            "MCP manager initialized with {} servers",
+            final_servers.len()
+        );
         Ok(())
     }
 
@@ -476,16 +484,16 @@ impl McpManager {
     }
 
     /// Add a server configuration dynamically
-    /// 
+    ///
     /// This allows adding MCP servers at runtime without reloading the entire config.
     /// Returns true if the server was added, false if it already exists.
     pub async fn add_server_config(&self, config: McpServerConfig) -> Result<bool> {
         let mut servers = self.servers.write().await;
-        
+
         if servers.contains_key(&config.name) {
             return Ok(false); // Server already exists
         }
-        
+
         let handle = ServerHandle {
             config: config.clone(),
             client: None,
@@ -500,7 +508,7 @@ impl McpManager {
                 tools: Vec::new(),
             },
         };
-        
+
         servers.insert(config.name.clone(), handle);
         info!(server_name = %config.name, "Added MCP server configuration");
         Ok(true)

@@ -6,7 +6,8 @@
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::types::team::{
-    TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo, TeamMetadata, TeamMoveResult,
+    TeamCreationResult, TeamDeletionResult, TeamExportResult, TeamImportResult, TeamInfo,
+    TeamMetadata, TeamMoveResult,
 };
 use crate::identity::Identity;
 use crate::portable::{self, TeamExportOptions, TeamImportOptions};
@@ -291,15 +292,18 @@ impl TeamService {
         let mut agent_exports: Vec<(String, AgentConfig, Identity)> = Vec::new();
         for (agent_name, config) in &agents {
             // Generate a new identity for export
-            let identity = Identity::new(agent_name, crate::identity::did::DIDScope::Local).await
+            let identity = Identity::new(agent_name, crate::identity::did::DIDScope::Local)
+                .await
                 .with_context(|| format!("Failed to create identity for agent: {}", agent_name))?;
-            
+
             agent_exports.push((agent_name.clone(), config.clone(), identity));
         }
 
         // Get team metadata for description
         let team_dir = self.resolver.team_dir(name);
-        let description = load_team_metadata(&team_dir).await.ok()
+        let description = load_team_metadata(&team_dir)
+            .await
+            .ok()
             .and_then(|m| m.description);
 
         // Export options
@@ -315,13 +319,9 @@ impl TeamService {
         let base_dir = self.resolver.data_dir();
 
         // Export the team
-        let output_path = portable::export_team(
-            name,
-            None,
-            &base_dir,
-            agent_exports,
-            export_opts,
-        ).await.with_context(|| format!("Failed to export team '{}'", name))?;
+        let output_path = portable::export_team(name, None, &base_dir, agent_exports, export_opts)
+            .await
+            .with_context(|| format!("Failed to export team '{}'", name))?;
 
         Ok(TeamExportResult {
             name: name.to_string(),
@@ -339,18 +339,25 @@ impl TeamService {
         rotate_keys: bool,
     ) -> Result<TeamImportResult> {
         let path = std::path::PathBuf::from(file_path);
-        
+
         if !path.exists() {
             anyhow::bail!("File not found: {}", file_path);
         }
 
         // Create the team if it doesn't exist
         let team_name = new_name.as_deref().unwrap_or("imported");
-        
+
         if !self.team_exists(team_name) {
-            self.create_team(team_name, Some(&format!("Imported team from {}", file_path))).await?;
+            self.create_team(
+                team_name,
+                Some(&format!("Imported team from {}", file_path)),
+            )
+            .await?;
         } else if !force {
-            anyhow::bail!("Team '{}' already exists. Use --force to overwrite.", team_name);
+            anyhow::bail!(
+                "Team '{}' already exists. Use --force to overwrite.",
+                team_name
+            );
         }
 
         // Import options

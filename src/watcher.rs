@@ -228,9 +228,7 @@ pub async fn watch_agent_directory(
     reload_tx: mpsc::Sender<()>,
 ) -> anyhow::Result<WatchHandle> {
     let (watcher, handle) = FileWatcher::new(&path);
-    let FileWatcherHandle {
-        event_rx: mut rx,
-    } = handle;
+    let FileWatcherHandle { event_rx: mut rx } = handle;
 
     // Bridge between watch events and reload signals
     tokio::spawn(async move {

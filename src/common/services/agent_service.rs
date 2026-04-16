@@ -11,7 +11,9 @@ use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
 use crate::common::types::agent::*;
 use crate::identity::Identity;
-use crate::portable::{self, ExportOptions as PortableExportOptions, ImportOptions as PortableImportOptions};
+use crate::portable::{
+    self, ExportOptions as PortableExportOptions, ImportOptions as PortableImportOptions,
+};
 use crate::types::agent::{AgentConfig, PromptConfig, SystemFileConfig};
 use crate::types::provider::{ModelConfig, ProviderConfig, ProviderType};
 use anyhow::{Context, Result};
@@ -73,11 +75,7 @@ fn base_url(provider_type: ProviderType) -> Option<String> {
     }
 }
 
-fn build_default_agent_config(
-    name: &str,
-    provider: &str,
-    model: Option<String>,
-) -> AgentConfig {
+fn build_default_agent_config(name: &str, provider: &str, model: Option<String>) -> AgentConfig {
     let provider_type = parse_provider_type(provider);
     let default_model = model.unwrap_or_else(|| "default".to_string());
 
@@ -120,9 +118,7 @@ fn build_default_agent_config(
         prompt: Some(PromptConfig {
             system: Some(SystemFileConfig {
                 max_chars_per_file: 20_000,
-                files: Some(vec![
-                    "SYSTEM.md".to_string(),
-                ]),
+                files: Some(vec!["SYSTEM.md".to_string()]),
             }),
         }),
         // Use defaults for the rest
@@ -582,11 +578,12 @@ impl AgentService {
 
         // Load agent config
         let config_content = tokio::fs::read_to_string(&config_path).await?;
-        let config: AgentConfig = toml::from_str(&config_content)
-            .context("Failed to parse agent config")?;
+        let config: AgentConfig =
+            toml::from_str(&config_content).context("Failed to parse agent config")?;
 
         // Generate a new identity for the agent export
-        let identity = Identity::new(agent_name, crate::identity::did::DIDScope::Local).await
+        let identity = Identity::new(agent_name, crate::identity::did::DIDScope::Local)
+            .await
             .context("Failed to create identity for export")?;
 
         // Set up export paths
@@ -624,7 +621,9 @@ impl AgentService {
             .with_workspace_dir(&workspace_dir)
             .with_sessions_dir(&sessions_dir);
 
-        let result_path = packager.export(export_opts).await
+        let result_path = packager
+            .export(export_opts)
+            .await
             .context("Failed to export agent package")?;
 
         Ok(AgentExportResult {
@@ -667,11 +666,12 @@ impl AgentService {
 
         // Create unpackager with correct base directory for the team
         let team_dir = self.resolver.team_dir(team);
-        let unpackager = portable::Unpackager::new(file_path)
-            .with_base_dir(&team_dir);
-        
+        let unpackager = portable::Unpackager::new(file_path).with_base_dir(&team_dir);
+
         // Import the package
-        let result = unpackager.import(import_opts).await
+        let result = unpackager
+            .import(import_opts)
+            .await
             .context("Failed to import agent package")?;
 
         Ok(AgentImportResult {

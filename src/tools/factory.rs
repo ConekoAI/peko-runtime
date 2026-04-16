@@ -27,17 +27,14 @@
 
 use crate::tools::traits::Tool;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool,
-    ShellTool, SessionStatusTool, SessionsHistoryTool, SessionsListTool, StrReplaceFileTool,
-    WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool, SessionStatusTool, SessionsHistoryTool,
+    SessionsListTool, ShellTool, StrReplaceFileTool, WriteFileTool,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 // Extension Framework integration
-use crate::extensions::core::{global_core, HookPoint};
-use crate::extensions::{HookInput, HookOutput, HookResult};
 
 /// Helper for filtering disabled tools and building the final tool list
 ///
@@ -54,10 +51,8 @@ struct DisabledToolFilter {
 
 impl DisabledToolFilter {
     fn new(disabled_tools: &[String]) -> Self {
-        let disabled_set: HashSet<String> = disabled_tools
-            .iter()
-            .map(|s| s.to_lowercase())
-            .collect();
+        let disabled_set: HashSet<String> =
+            disabled_tools.iter().map(|s| s.to_lowercase()).collect();
 
         Self {
             tools: Vec::new(),
@@ -162,7 +157,7 @@ impl Default for ToolFactoryConfig {
     fn default() -> Self {
         Self {
             workspace_dir: PathBuf::from("."),
-            enable_granular_fs: true, // Enabled by default
+            enable_granular_fs: true,    // Enabled by default
             enable_granular_write: true, // Enable write tools by default
             enable_shell: true,
             enable_session_tools: true,
@@ -223,7 +218,6 @@ impl ToolFactoryConfig {
             ..Default::default()
         }
     }
-
 }
 
 impl McpFactoryConfig {
@@ -303,7 +297,6 @@ impl std::fmt::Debug for ToolCreationResult {
 }
 
 impl ToolFactory {
-
     /// Create all essential tools based on configuration (synchronous version)
     ///
     /// Respects `disabled_tools` configuration - disabled tools are excluded
@@ -318,9 +311,11 @@ impl ToolFactory {
             Arc::new(ReadFileTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
-        registry.register("write_file", config.enable_granular_fs && config.enable_granular_write, || {
-            Arc::new(WriteFileTool::new().with_workspace(config.workspace_dir.clone()))
-        });
+        registry.register(
+            "write_file",
+            config.enable_granular_fs && config.enable_granular_write,
+            || Arc::new(WriteFileTool::new().with_workspace(config.workspace_dir.clone())),
+        );
 
         registry.register("glob", config.enable_granular_fs, || {
             Arc::new(GlobTool::new().with_workspace(config.workspace_dir.clone()))
@@ -330,9 +325,11 @@ impl ToolFactory {
             Arc::new(GrepTool::new().with_workspace(config.workspace_dir.clone()))
         });
 
-        registry.register("str_replace_file", config.enable_granular_fs && config.enable_granular_write, || {
-            Arc::new(StrReplaceFileTool::new().with_workspace(config.workspace_dir.clone()))
-        });
+        registry.register(
+            "str_replace_file",
+            config.enable_granular_fs && config.enable_granular_write,
+            || Arc::new(StrReplaceFileTool::new().with_workspace(config.workspace_dir.clone())),
+        );
 
         // Shell tool
         let shell_enabled = config.enable_shell;
@@ -400,13 +397,6 @@ impl ToolFactory {
         }
     }
 
-
-
-
-
-
-
-
     /// Create full toolset (core tools only, sync version)
     /// Respects disabled_tools
     ///
@@ -427,13 +417,6 @@ impl ToolFactory {
         };
         Self::create_tools(&config)
     }
-
-
-
-
-
-
-
 }
 
 #[cfg(test)]

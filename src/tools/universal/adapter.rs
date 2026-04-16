@@ -4,14 +4,15 @@
 //! Handles: transport management, parameter injection, protocol translation.
 
 use super::manifest::Manifest;
-use super::protocol::{DescribeResult, ExecuteParams, ExecuteResult, Request, Response, ResponseResult, ExecutionContext};
+use super::protocol::{
+    ExecuteParams, ExecuteResult, ExecutionContext, Request,
+    ResponseResult,
+};
 use super::transport::Transport;
-use crate::extensions::services::ReservedParamsConfig;
 use crate::tools::{Tool, ToolContext};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 /// Adapter that wraps a universal tool for use in Pekobot
@@ -34,10 +35,7 @@ impl UniversalToolAdapter {
 
         // Verify executable exists
         if !executable.exists() {
-            return Err(anyhow::anyhow!(
-                "Executable not found: {:?}",
-                executable
-            ));
+            return Err(anyhow::anyhow!("Executable not found: {:?}", executable));
         }
 
         Ok(Self {
@@ -75,14 +73,18 @@ impl UniversalToolAdapter {
         if !self.manifest.reserved_parameters.is_empty() {
             // Convert ExecutionContext to ToolContext for resolution
             let tool_ctx = crate::tools::AbortSignal::new()
-                .create_context(&context.run_id.clone().unwrap_or_default(), "tool", &self.name)
+                .create_context(
+                    &context.run_id.clone().unwrap_or_default(),
+                    "tool",
+                    &self.name,
+                )
                 .with_agent_id(&context.agent_id)
                 .with_session_id(&context.session_id)
                 .with_peer_id(context.peer_id.as_deref().unwrap_or(""))
                 .with_workspace(&context.workspace);
-            
+
             let resolved = self.manifest.reserved_parameters.resolve(Some(&tool_ctx));
-            
+
             // Merge resolved params into user params
             if let Some(obj) = merged.as_object_mut() {
                 for (name, value) in resolved {
@@ -90,7 +92,7 @@ impl UniversalToolAdapter {
                 }
             }
         }
-        
+
         tracing::debug!(
             "UniversalToolAdapter - merged params: {}",
             serde_json::to_string(&merged).unwrap_or_default()
@@ -123,10 +125,7 @@ impl UniversalToolAdapter {
     ///
     /// This is used by the Extension Framework when ToolExecutionService
     /// has already handled parameter injection.
-    pub async fn execute_raw(
-        &self,
-        params: serde_json::Value,
-    ) -> Result<serde_json::Value> {
+    pub async fn execute_raw(&self, params: serde_json::Value) -> Result<serde_json::Value> {
         // Build execution context (minimal - params already merged by Extension Framework)
         let context = ExecutionContext {
             session_id: "unknown".to_string(),
@@ -161,9 +160,9 @@ impl UniversalToolAdapter {
                 if exec_result.success {
                     Ok(exec_result.data.unwrap_or(serde_json::Value::Null))
                 } else {
-                    Err(anyhow::anyhow!(
-                        exec_result.error.unwrap_or_else(|| "Unknown error".to_string())
-                    ))
+                    Err(anyhow::anyhow!(exec_result
+                        .error
+                        .unwrap_or_else(|| "Unknown error".to_string())))
                 }
             }
             Err(e) => Err(e),
@@ -188,7 +187,9 @@ impl UniversalToolAdapter {
                         // If success but no data, the tool might be returning the result directly
                         // in the same structure (e.g., {"success": true, "field": value})
                         if result.success && result.data.is_none() {
-                            tracing::debug!("ExecuteResult has no data, treating original as data payload");
+                            tracing::debug!(
+                                "ExecuteResult has no data, treating original as data payload"
+                            );
                             Ok(ExecuteResult {
                                 success: true,
                                 data: Some(value),
@@ -202,7 +203,9 @@ impl UniversalToolAdapter {
                     Err(_) => {
                         // If that fails, treat the entire value as the data payload
                         // This handles tools that return their result directly
-                        tracing::debug!("Response not in ExecuteResult format, treating as raw data");
+                        tracing::debug!(
+                            "Response not in ExecuteResult format, treating as raw data"
+                        );
                         Ok(ExecuteResult {
                             success: true,
                             data: Some(value),
@@ -212,9 +215,11 @@ impl UniversalToolAdapter {
                     }
                 }
             }
-            ResponseResult::Error(err) => {
-                Err(anyhow::anyhow!("Tool error ({}): {}", err.code, err.message))
-            }
+            ResponseResult::Error(err) => Err(anyhow::anyhow!(
+                "Tool error ({}): {}",
+                err.code,
+                err.message
+            )),
         }
     }
 }
@@ -250,9 +255,9 @@ impl Tool for UniversalToolAdapter {
         if result.success {
             Ok(result.data.unwrap_or(serde_json::Value::Null))
         } else {
-            Err(anyhow::anyhow!(
-                result.error.unwrap_or_else(|| "Unknown error".to_string())
-            ))
+            Err(anyhow::anyhow!(result
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string())))
         }
     }
 
@@ -268,14 +273,18 @@ impl Tool for UniversalToolAdapter {
         );
         let exec_context = ExecutionContext {
             session_id: ctx.session_id.clone().unwrap_or_else(|| ctx.run_id.clone()),
-            agent_id: ctx.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
+            agent_id: ctx
+                .agent_id
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
             peer_id: ctx.peer_id.clone(),
             workspace: ctx.workspace.clone().unwrap_or_else(|| ".".to_string()),
             run_id: Some(ctx.run_id.clone()),
         };
         tracing::debug!(
             "UniversalToolAdapter - ExecutionContext: agent_id={}, session_id={}",
-            exec_context.agent_id, exec_context.session_id
+            exec_context.agent_id,
+            exec_context.session_id
         );
 
         let result = self.execute_with_injection(params, exec_context).await?;
@@ -283,9 +292,9 @@ impl Tool for UniversalToolAdapter {
         if result.success {
             Ok(result.data.unwrap_or(serde_json::Value::Null))
         } else {
-            Err(anyhow::anyhow!(
-                result.error.unwrap_or_else(|| "Unknown error".to_string())
-            ))
+            Err(anyhow::anyhow!(result
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string())))
         }
     }
 }

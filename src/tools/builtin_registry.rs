@@ -12,9 +12,8 @@
 use crate::extensions::adapters::BuiltinToolAdapter;
 use crate::extensions::core::ExtensionCore;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool,
-    SessionStatusTool, SessionsHistoryTool, SessionsListTool, ShellTool, StrReplaceFileTool,
-    WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool, SessionStatusTool, SessionsHistoryTool,
+    SessionsListTool, ShellTool, StrReplaceFileTool, WriteFileTool,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -70,7 +69,10 @@ impl BuiltinRegistry {
     /// This is the single entry point for registering built-in tools.
     /// All tools are registered as hooks in ExtensionCore, making them
     /// discoverable via ToolRegister hook and executable via ToolExecute hook.
-    pub async fn register(core: &ExtensionCore, config: &BuiltinRegistryConfig) -> anyhow::Result<()> {
+    pub async fn register(
+        core: &ExtensionCore,
+        config: &BuiltinRegistryConfig,
+    ) -> anyhow::Result<()> {
         let disabled_set: HashSet<String> = config
             .disabled_tools
             .iter()

@@ -108,10 +108,7 @@ impl ToolCallAccumulator {
     pub fn is_new_call(&self, index: usize, id: &str) -> bool {
         if let Ok(buffer) = self.buffer.lock() {
             !buffer.contains_key(&index)
-                || buffer
-                    .get(&index)
-                    .and_then(|p| p.id.as_deref())
-                    != Some(id)
+                || buffer.get(&index).and_then(|p| p.id.as_deref()) != Some(id)
         } else {
             false
         }

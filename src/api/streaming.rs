@@ -188,7 +188,7 @@ pub fn event_stream_to_sse(
         let completion = event_stream.completion;
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
         let session_id = event_stream.session_id;
-        let mut turn_count = 0u32;
+        let turn_count = 0u32;
         let mut usage = TokenUsage::default();
         let mut end_received = false;
 
@@ -249,10 +249,7 @@ pub fn event_stream_to_sse(
         // Receiver closed - CRITICAL: Wait for completion signal before returning
         // This ensures session persistence is complete
         if end_received {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                completion
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_secs(30), completion).await {
                 Ok(Ok(Ok(()))) => Ok(()),
                 Ok(Ok(Err(e))) => Err(e),
                 Ok(Err(_recv_error)) => {

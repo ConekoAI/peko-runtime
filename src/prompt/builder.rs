@@ -3,7 +3,7 @@
 //! Matches `OpenClaw`'s section-based prompt assembly
 
 use crate::prompt::bootstrap::{default_workspace_dir, inject_bootstrap_files, BootstrapConfig};
-use crate::prompt::placeholder::{Placeholder, replace_placeholders};
+use crate::prompt::placeholder::{replace_placeholders, Placeholder};
 use crate::providers::ToolDefinition;
 use crate::tools::Tool;
 use chrono::Local;
@@ -74,7 +74,7 @@ impl SystemPromptBuilder {
     }
 
     /// Set the extension core for hook integration
-    /// 
+    ///
     /// This enables extensions to inject content into prompt sections.
     pub fn with_extension_core(mut self, core: Arc<crate::extensions::ExtensionCore>) -> Self {
         self.extension_core = Some(core);
@@ -90,9 +90,9 @@ impl SystemPromptBuilder {
         self.tools = tools;
         self
     }
-    
+
     /// Set tool definitions from unified registry (ADR-019 Phase 3)
-    /// 
+    ///
     /// This allows building prompts with ToolDefinition instead of Arc<dyn Tool>,
     /// enabling dynamic tool updates without session restart.
     pub fn with_tool_definitions(mut self, definitions: Vec<ToolDefinition>) -> Self {
@@ -132,7 +132,7 @@ impl SystemPromptBuilder {
     }
 
     /// Set custom system files to inject (all treated as optional)
-    /// 
+    ///
     /// If `files` is None, no files will be loaded (empty system prompt).
     /// Use `BootstrapConfig::with_default_files()` explicitly if you want defaults.
     pub fn with_system_files(mut self, files: Option<Vec<String>>) -> Self {
@@ -147,10 +147,10 @@ impl SystemPromptBuilder {
         }
 
         let is_minimal = self.mode == PromptMode::Minimal;
-        
+
         // 1. Load all bootstrap files (templates)
         let injected = inject_bootstrap_files(&self.bootstrap_config);
-        
+
         // 2. Concatenate all template content (skip missing file placeholders)
         let mut template = String::new();
         for section in &injected.sections {
@@ -163,51 +163,60 @@ impl SystemPromptBuilder {
             }
             template.push_str(&section.content);
         }
-        
+
         // If no templates loaded, fall back to minimal default
         if template.trim().is_empty() {
             return format!("You are {}.", self.agent_name);
         }
-        
+
         // 3. Build placeholder values
         let mut values = HashMap::new();
-        
+
         // Simple inline placeholders
         values.insert(Placeholder::AgentName, self.agent_name.clone());
         values.insert(Placeholder::Workspace, self.workspace.display().to_string());
         values.insert(Placeholder::Channel, self.channel.clone());
         values.insert(Placeholder::ThinkingLevel, self.thinking_level.clone());
-        values.insert(Placeholder::Timezone, Local::now().format("%:z").to_string());
-        
+        values.insert(
+            Placeholder::Timezone,
+            Local::now().format("%:z").to_string(),
+        );
+
         // Complex section placeholders
         values.insert(Placeholder::Tools, self.build_tools_section());
         values.insert(Placeholder::Skills, self.build_skills_section());
         values.insert(Placeholder::Runtime, self.build_runtime_section());
         values.insert(Placeholder::Sandbox, self.build_sandbox_section());
-        values.insert(Placeholder::ModelAliases, self.build_model_aliases_section());
-        values.insert(Placeholder::SelfUpdate, self.build_self_update_section(is_minimal));
-        
+        values.insert(
+            Placeholder::ModelAliases,
+            self.build_model_aliases_section(),
+        );
+        values.insert(
+            Placeholder::SelfUpdate,
+            self.build_self_update_section(is_minimal),
+        );
+
         // 4. Replace placeholders in template
         replace_placeholders(&template, &values, true)
     }
-    
+
     /// Build the Available Tools section
     fn build_tools_section(&self) -> String {
         let mut lines: Vec<String> = vec![];
-        
+
         lines.push("## Available Tools".to_string());
-        
+
         // ADR-019 Phase 3: Support both Arc<dyn Tool> and ToolDefinition
         // Prefer tool_definitions if available (dynamic updates), fall back to tools
         let has_tool_defs = !self.tool_definitions.is_empty();
         let has_tools = !self.tools.is_empty();
-        
+
         if !has_tool_defs && !has_tools {
             lines.push("No tools available.".to_string());
         } else {
             lines.push("You have access to the following tools. Use them wisely.".to_string());
             lines.push(String::new());
-            
+
             // Use tool_definitions if available (from unified registry)
             if has_tool_defs {
                 for def in &self.tool_definitions {
@@ -225,23 +234,31 @@ impl SystemPromptBuilder {
                     lines.push(String::new());
                 }
             }
-            
+
             lines.push("### Tool Use Guidelines".to_string());
-            lines.push("- Think step by step. Use available tools when needed to accomplish tasks.".to_string());
-            lines.push("- Multiple tools can be called in parallel if they are independent.".to_string());
-            lines.push("- When you have the final answer, provide it directly without tool calls.".to_string());
+            lines.push(
+                "- Think step by step. Use available tools when needed to accomplish tasks."
+                    .to_string(),
+            );
+            lines.push(
+                "- Multiple tools can be called in parallel if they are independent.".to_string(),
+            );
+            lines.push(
+                "- When you have the final answer, provide it directly without tool calls."
+                    .to_string(),
+            );
         }
-        
+
         // Reserved parameter documentation removed: ExtensionCore handles async/timeouts
         // via execution hooks, not prompt-level reserved parameters.
 
         // Phase 1: Extension Architecture - Allow extensions to inject tool content
         // Note: This is synchronous; async hook invocation will be added in future phases
         // when the prompt builder becomes async or we add a pre-built hook cache.
-        
+
         lines.join("\n")
     }
-    
+
     /// Build the Skills section via Extension Core hooks
     ///
     /// Uses the ExtensionCore hook system to inject skills content from registered
@@ -289,11 +306,11 @@ Constraints: never read more than one skill up front; only read after selecting.
 
         String::new()
     }
-    
+
     /// Build the Runtime section
     fn build_runtime_section(&self) -> String {
         let mut lines: Vec<String> = vec![];
-        
+
         lines.push("## Runtime".to_string());
         let hostname = std::env::var("HOSTNAME")
             .or_else(|_| std::env::var("COMPUTERNAME"))
@@ -303,10 +320,10 @@ Constraints: never read more than one skill up front; only read after selecting.
         lines.push(format!("OS: {}", std::env::consts::OS));
         lines.push(format!("Model: {}", self.model));
         lines.push(format!("Channel: {}", self.channel));
-        
+
         lines.join("\n")
     }
-    
+
     /// Build the Sandbox section (conditional)
     fn build_sandbox_section(&self) -> String {
         if self.sandbox_enabled {
@@ -315,7 +332,7 @@ Constraints: never read more than one skill up front; only read after selecting.
             String::new()
         }
     }
-    
+
     /// Build the Model Aliases section (conditional)
     fn build_model_aliases_section(&self) -> String {
         if self.model_aliases.is_empty() {
@@ -329,7 +346,7 @@ Constraints: never read more than one skill up front; only read after selecting.
             lines.join("\n")
         }
     }
-    
+
     /// Build the Self-Update section (conditional)
     fn build_self_update_section(&self, is_minimal: bool) -> String {
         if self.has_gateway && !is_minimal {
@@ -368,7 +385,7 @@ mod tests {
     #[test]
     fn test_builder_with_template() {
         let tmp = TempDir::new().unwrap();
-        
+
         // Create a template with placeholders
         let template = r#"## Your Role
 You are {{agent_name}}.
@@ -392,7 +409,7 @@ Be safe.
         assert!(prompt.contains("## Available Tools"));
         assert!(prompt.contains("## Runtime"));
         assert!(prompt.contains("Agent: test-agent"));
-        
+
         // Original placeholders should be gone
         assert!(!prompt.contains("{{agent_name}}"));
         assert!(!prompt.contains("{{tools}}"));
@@ -401,8 +418,7 @@ Be safe.
     #[test]
     fn test_builder_no_template_fallback() {
         // When no templates exist, should fallback to minimal
-        let builder = SystemPromptBuilder::new("test-agent")
-            .with_mode(PromptMode::Full);
+        let builder = SystemPromptBuilder::new("test-agent").with_mode(PromptMode::Full);
 
         let prompt = builder.build();
 
@@ -412,20 +428,22 @@ Be safe.
 
     #[test]
     fn test_builder_with_skills_via_extension_core() {
-        use crate::extensions::adapters::skill_adapter::{DiscoveredSkill, register_skills_with_core};
+        use crate::extensions::adapters::skill_adapter::{
+            register_skills_with_core, DiscoveredSkill,
+        };
         use crate::extensions::ExtensionManifest;
         use std::path::PathBuf;
 
         // Create a tokio runtime for async operations
         let rt = tokio::runtime::Runtime::new().unwrap();
-        
+
         let tmp = TempDir::new().unwrap();
         let template = "{{skills}}";
         std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
         // Create ExtensionCore and register skills
         let core = crate::extensions::ExtensionCore::new();
-        
+
         // Create a test skill using the new Extension system
         let skill = DiscoveredSkill {
             manifest: ExtensionManifest::new(

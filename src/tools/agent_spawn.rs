@@ -355,14 +355,12 @@ For framework-level async control, use:
         let args: AgentSpawnArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {}", e))?;
 
-        let cleanup = args
-            .cleanup
-            .map_or(SpawnCleanupPolicy::Keep, |s| {
-                match s.to_lowercase().as_str() {
-                    "delete" => SpawnCleanupPolicy::Delete,
-                    _ => SpawnCleanupPolicy::Keep,
-                }
-            });
+        let cleanup = args.cleanup.map_or(SpawnCleanupPolicy::Keep, |s| {
+            match s.to_lowercase().as_str() {
+                "delete" => SpawnCleanupPolicy::Delete,
+                _ => SpawnCleanupPolicy::Keep,
+            }
+        });
 
         // Get parent session key - from params, session provider, or current session context
         let parent_session_key = if let Some(key) = args.parent_session_key {
@@ -426,7 +424,8 @@ impl Tool for AgentSpawnStatusTool {
 Parameters:
 - run_id: The run ID returned by agent_spawn (required)
 
-Returns the current status and result if complete.".to_string()
+Returns the current status and result if complete."
+            .to_string()
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -582,15 +581,15 @@ mod tests {
         assert!(response["note"].as_str().unwrap().contains("depth"));
 
         // Test concurrent error
-        let response = AgentSpawnTool::format_error_response(
-            "Maximum concurrent runs exceeded".to_string(),
-        )
-        .unwrap();
+        let response =
+            AgentSpawnTool::format_error_response("Maximum concurrent runs exceeded".to_string())
+                .unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("concurrent"));
 
         // Test timeout error
-        let response = AgentSpawnTool::format_error_response("Execution timed out".to_string()).unwrap();
+        let response =
+            AgentSpawnTool::format_error_response("Execution timed out".to_string()).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "timeout");
     }
 

@@ -103,7 +103,9 @@ impl std::fmt::Display for SystemEvent {
                 write!(f, "Internal {event_type} from {source}")
             }
             SystemEvent::Timer {
-                schedule_id, task_id, ..
+                schedule_id,
+                task_id,
+                ..
             } => {
                 write!(f, "Timer {task_id} for {schedule_id}")
             }

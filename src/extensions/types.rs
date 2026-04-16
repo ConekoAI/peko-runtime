@@ -3,7 +3,6 @@
 //! This module defines the fundamental types used throughout the Extension
 //! architecture, including identifiers, manifest types, and shared data structures.
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -60,22 +59,22 @@ impl fmt::Display for HookId {
 pub struct ExtensionManifest {
     /// Unique identifier for the extension
     pub id: ExtensionId,
-    
+
     /// Extension type (skill, mcp, tool, channel, etc.)
     pub extension_type: String,
-    
+
     /// Human-readable name
     pub name: String,
-    
+
     /// Description of what the extension does
     pub description: String,
-    
+
     /// Version of the extension
     pub version: String,
-    
+
     /// Path to the extension directory
     pub path: PathBuf,
-    
+
     /// Additional metadata (type-specific)
     #[serde(flatten)]
     pub metadata: HashMap<String, serde_json::Value>,
@@ -101,12 +100,12 @@ impl ExtensionManifest {
             metadata: HashMap::new(),
         }
     }
-    
+
     /// Get a metadata value
     pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
         self.metadata.get(key)
     }
-    
+
     /// Set a metadata value
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) {
         self.metadata.insert(key.into(), value.into());
@@ -118,23 +117,20 @@ impl ExtensionManifest {
 pub struct AsyncReceipt {
     /// Unique task identifier
     pub task_id: String,
-    
+
     /// Estimated duration in seconds (for progress estimation)
     pub estimated_duration_secs: Option<u64>,
-    
+
     /// Name of tool to call for status checks
     pub check_status_tool: String,
-    
+
     /// Optional metadata
     pub metadata: Option<serde_json::Value>,
 }
 
 impl AsyncReceipt {
     /// Create a new async receipt
-    pub fn new(
-        task_id: impl Into<String>,
-        check_status_tool: impl Into<String>,
-    ) -> Self {
+    pub fn new(task_id: impl Into<String>, check_status_tool: impl Into<String>) -> Self {
         Self {
             task_id: task_id.into(),
             estimated_duration_secs: None,
@@ -142,13 +138,13 @@ impl AsyncReceipt {
             metadata: None,
         }
     }
-    
+
     /// Set estimated duration
     pub fn with_duration(mut self, seconds: u64) -> Self {
         self.estimated_duration_secs = Some(seconds);
         self
     }
-    
+
     /// Set metadata
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = Some(metadata);
@@ -164,16 +160,16 @@ pub use crate::agent::async_tool_framework::AsyncTaskStatus;
 pub enum HookResult {
     /// Continue with modified output
     Continue(HookOutput),
-    
+
     /// Continue with original input (pass-through)
     PassThrough,
-    
+
     /// Stop propagation, handler consumed the event
     Handled,
-    
+
     /// Replace entire result with this output
     Replace(HookOutput),
-    
+
     /// Error occurred during handling
     Error(anyhow::Error),
 }
@@ -183,31 +179,31 @@ pub enum HookResult {
 pub enum HookOutput {
     /// No output
     Unit,
-    
+
     /// Text fragment (for prompt sections)
     Text(String),
-    
+
     /// Tool registration
     Tool(crate::providers::ToolDefinition),
-    
+
     /// Event emission
     Event(crate::hooks::SystemEvent),
-    
+
     /// Message transformation
     Message(crate::types::message::ContentBlock),
-    
+
     /// Generic JSON value
     Json(serde_json::Value),
-    
+
     /// Multiple outputs
     Vec(Vec<HookOutput>),
-    
+
     /// Async execution receipt (returned by ToolExecuteAsync)
     Receipt(AsyncReceipt),
-    
+
     /// Task status (returned by ToolCheckStatus)
     TaskStatus(AsyncTaskStatus),
-    
+
     /// Boolean result (for operations like cancel)
     Bool(bool),
 }
@@ -217,22 +213,22 @@ impl HookOutput {
     pub fn unit() -> Self {
         Self::Unit
     }
-    
+
     /// Create text output
     pub fn text(s: impl Into<String>) -> Self {
         Self::Text(s.into())
     }
-    
+
     /// Create JSON output
     pub fn json(v: impl Into<serde_json::Value>) -> Self {
         Self::Json(v.into())
     }
-    
+
     /// Combine multiple outputs
     pub fn combine(outputs: Vec<HookOutput>) -> Self {
         Self::Vec(outputs)
     }
-    
+
     /// Convert to text if possible
     pub fn as_text(&self) -> Option<&str> {
         match self {
@@ -240,7 +236,7 @@ impl HookOutput {
             _ => None,
         }
     }
-    
+
     /// Convert to JSON if possible
     pub fn as_json(&self) -> Option<&serde_json::Value> {
         match self {
@@ -248,7 +244,7 @@ impl HookOutput {
             _ => None,
         }
     }
-    
+
     /// Convert to receipt if possible
     pub fn as_receipt(&self) -> Option<&AsyncReceipt> {
         match self {
@@ -256,7 +252,7 @@ impl HookOutput {
             _ => None,
         }
     }
-    
+
     /// Convert to task status if possible
     pub fn as_task_status(&self) -> Option<&AsyncTaskStatus> {
         match self {
@@ -264,7 +260,7 @@ impl HookOutput {
             _ => None,
         }
     }
-    
+
     /// Convert to bool if possible
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -272,17 +268,17 @@ impl HookOutput {
             _ => None,
         }
     }
-    
+
     /// Create a receipt output
     pub fn receipt(receipt: AsyncReceipt) -> Self {
         Self::Receipt(receipt)
     }
-    
+
     /// Create a task status output
     pub fn task_status(status: AsyncTaskStatus) -> Self {
         Self::TaskStatus(status)
     }
-    
+
     /// Create a boolean output
     pub fn bool(value: bool) -> Self {
         Self::Bool(value)
@@ -300,40 +296,34 @@ impl Default for HookOutput {
 pub enum HookInput {
     /// No input
     Unit,
-    
+
     /// Prompt build state
     PromptBuild(PromptBuildState),
-    
+
     /// Tool registry access
     ToolRegistry(ToolRegistryAccess),
-    
+
     /// Tool call parameters
     ToolCall {
         tool_name: String,
         params: serde_json::Value,
     },
-    
+
     /// Async task status check
-    TaskStatus {
-        task_id: String,
-        tool_name: String,
-    },
-    
+    TaskStatus { task_id: String, tool_name: String },
+
     /// Async task cancellation request
-    TaskCancel {
-        task_id: String,
-        tool_name: String,
-    },
-    
+    TaskCancel { task_id: String, tool_name: String },
+
     /// System event
     SystemEvent(crate::hooks::SystemEvent),
-    
+
     /// Session snapshot
     SessionState(SessionSnapshot),
-    
+
     /// Message envelope
     Message(MessageEnvelope),
-    
+
     /// Generic JSON value
     Json(serde_json::Value),
 }
@@ -349,16 +339,16 @@ impl Default for HookInput {
 pub struct PromptBuildState {
     /// Current agent name
     pub agent_name: String,
-    
+
     /// Current workspace path
     pub workspace: PathBuf,
-    
+
     /// Current model
     pub model: String,
-    
+
     /// Current channel
     pub channel: String,
-    
+
     /// Existing sections content
     pub sections: HashMap<String, String>,
 }
@@ -374,12 +364,12 @@ impl PromptBuildState {
             sections: HashMap::new(),
         }
     }
-    
+
     /// Get a section's current content
     pub fn section(&self, name: &str) -> Option<&str> {
         self.sections.get(name).map(|s| s.as_str())
     }
-    
+
     /// Set a section's content
     pub fn set_section(&mut self, name: impl Into<String>, content: impl Into<String>) {
         self.sections.insert(name.into(), content.into());
@@ -398,7 +388,7 @@ impl ToolRegistryAccess {
     pub fn new(tools: Vec<crate::providers::ToolDefinition>) -> Self {
         Self { tools }
     }
-    
+
     /// Add a tool definition
     pub fn add_tool(&mut self, tool: crate::providers::ToolDefinition) {
         self.tools.push(tool);
@@ -410,13 +400,13 @@ impl ToolRegistryAccess {
 pub struct SessionSnapshot {
     /// Session ID
     pub session_id: String,
-    
+
     /// Number of messages in session
     pub message_count: usize,
-    
+
     /// Current context window size (tokens)
     pub context_tokens: usize,
-    
+
     /// Session metadata
     pub metadata: HashMap<String, serde_json::Value>,
 }
@@ -426,13 +416,13 @@ pub struct SessionSnapshot {
 pub struct MessageEnvelope {
     /// Message content
     pub content: crate::types::message::ContentBlock,
-    
+
     /// Source channel/entity
     pub source: Option<String>,
-    
+
     /// Target channel/entity
     pub target: Option<String>,
-    
+
     /// Message metadata
     pub metadata: HashMap<String, serde_json::Value>,
 }
@@ -447,13 +437,13 @@ impl MessageEnvelope {
             metadata: HashMap::new(),
         }
     }
-    
+
     /// Set source
     pub fn with_source(mut self, source: impl Into<String>) -> Self {
         self.source = Some(source.into());
         self
     }
-    
+
     /// Set target
     pub fn with_target(mut self, target: impl Into<String>) -> Self {
         self.target = Some(target.into());
@@ -496,7 +486,9 @@ impl ToolSource {
         match self {
             ToolSource::BuiltIn => "built-in".to_string(),
             ToolSource::Mcp { server } => format!("MCP server: {}", server),
-            ToolSource::Universal { extension_id } => format!("universal extension: {}", extension_id),
+            ToolSource::Universal { extension_id } => {
+                format!("universal extension: {}", extension_id)
+            }
             ToolSource::General { extension_id } => format!("extension: {}", extension_id),
         }
     }
@@ -530,16 +522,20 @@ impl ToolMetadata {
             description: description.into(),
             parameters,
             source,
-            reserved_params: crate::extensions::services::reserved_params::ReservedParamsConfig::new(),
+            reserved_params:
+                crate::extensions::services::reserved_params::ReservedParamsConfig::new(),
         }
     }
-    
+
     /// Set reserved params configuration
-    pub fn with_reserved_params(mut self, config: crate::extensions::services::reserved_params::ReservedParamsConfig) -> Self {
+    pub fn with_reserved_params(
+        mut self,
+        config: crate::extensions::services::reserved_params::ReservedParamsConfig,
+    ) -> Self {
         self.reserved_params = config;
         self
     }
-    
+
     /// Convert to ToolDefinition for LLM API
     pub fn to_tool_definition(&self) -> crate::providers::ToolDefinition {
         crate::providers::ToolDefinition {
@@ -553,14 +549,14 @@ impl ToolMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_extension_id() {
         let id = ExtensionId::new("test-skill");
         assert_eq!(id.0, "test-skill");
         assert_eq!(id.to_string(), "test-skill");
     }
-    
+
     #[test]
     fn test_extension_manifest() {
         let manifest = ExtensionManifest::new(
@@ -571,30 +567,30 @@ mod tests {
             "1.0.0",
             PathBuf::from("/tmp/skills/docker"),
         );
-        
+
         assert_eq!(manifest.id.0, "docker-skill");
         assert_eq!(manifest.extension_type, "skill");
         assert_eq!(manifest.name, "Docker Skill");
     }
-    
+
     #[test]
     fn test_hook_output() {
         let text = HookOutput::text("Hello");
         assert_eq!(text.as_text(), Some("Hello"));
         assert!(text.as_json().is_none());
-        
+
         let json = HookOutput::json(serde_json::json!({"key": "value"}));
         assert!(json.as_text().is_none());
         assert!(json.as_json().is_some());
     }
-    
+
     #[test]
     fn test_prompt_build_state() {
         let state = PromptBuildState::new("test-agent", PathBuf::from("/tmp"));
         assert_eq!(state.agent_name, "test-agent");
         assert!(state.section("tools").is_none());
     }
-    
+
     #[test]
     fn test_message_envelope() {
         let envelope = MessageEnvelope::new(crate::types::message::ContentBlock::Text {
@@ -602,7 +598,7 @@ mod tests {
         })
         .with_source("user")
         .with_target("agent");
-        
+
         assert_eq!(envelope.source, Some("user".to_string()));
         assert_eq!(envelope.target, Some("agent".to_string()));
     }

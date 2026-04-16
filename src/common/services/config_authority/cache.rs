@@ -48,7 +48,10 @@ impl ConfigCache {
         let key = Self::cache_key(&entry.team, &entry.name);
         let mut cache = self.cache.write().await;
         cache.insert(key, entry.clone());
-        debug!("Cached config for agent '{}' in team '{}'", entry.name, entry.team);
+        debug!(
+            "Cached config for agent '{}' in team '{}'",
+            entry.name, entry.team
+        );
     }
 
     /// Remove an entry from cache
@@ -68,13 +71,9 @@ impl ConfigCache {
 
     /// Get all cached entries for a team
     pub async fn list_by_team(&self, team: &str) -> Vec<AgentConfigEntry> {
-        let prefix = format!("{}/", team);
+        let _prefix = format!("{}/", team);
         let cache = self.cache.read().await;
-        cache
-            .values()
-            .filter(|e| e.team == team)
-            .cloned()
-            .collect()
+        cache.values().filter(|e| e.team == team).cloned().collect()
     }
 
     /// Get all cached entries
@@ -100,7 +99,10 @@ mod tests {
     #[tokio::test]
     async fn test_cache_key() {
         assert_eq!(ConfigCache::cache_key("team1", "agent1"), "team1/agent1");
-        assert_eq!(ConfigCache::cache_key("default", "myagent"), "default/myagent");
+        assert_eq!(
+            ConfigCache::cache_key("default", "myagent"),
+            "default/myagent"
+        );
     }
 
     #[tokio::test]

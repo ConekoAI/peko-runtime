@@ -12,7 +12,7 @@ use futures::StreamExt;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 /// Unified provider
 ///
@@ -87,8 +87,14 @@ impl Provider {
     }
 
     /// Simple chat interface
-    pub async fn chat(&self, message: &str, model: &str, temperature: f64) -> anyhow::Result<String> {
-        self.chat_with_system(None, message, model, temperature).await
+    pub async fn chat(
+        &self,
+        message: &str,
+        model: &str,
+        temperature: f64,
+    ) -> anyhow::Result<String> {
+        self.chat_with_system(None, message, model, temperature)
+            .await
     }
 
     /// Warm up the HTTP connection pool
@@ -101,7 +107,7 @@ impl Provider {
         &self,
         system_prompt: Option<&str>,
         message: &str,
-        model: &str,
+        _model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
         let messages = if let Some(system) = system_prompt {
@@ -189,9 +195,8 @@ impl Provider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
         options: &ChatOptions,
-    ) -> anyhow::Result<
-        Pin<Box<dyn futures::Stream<Item = anyhow::Result<StreamEvent>> + Send>>,
-    > {
+    ) -> anyhow::Result<Pin<Box<dyn futures::Stream<Item = anyhow::Result<StreamEvent>> + Send>>>
+    {
         let msgs = self.convert_chat_messages(messages);
         let tool_defs = self.convert_tools(tools);
 
@@ -215,13 +220,11 @@ impl Provider {
             let mut sse_stream = crate::providers::transport::sse::SseParser::parse_stream(stream);
             while let Some(result) = sse_stream.next().await {
                 let output = match result {
-                    Ok(event) => {
-                        match adapter.parse_sse_event(&event.data) {
-                            Ok(Some(stream_event)) => Some(Ok(stream_event)),
-                            Ok(None) => None,
-                            Err(e) => Some(Err(e)),
-                        }
-                    }
+                    Ok(event) => match adapter.parse_sse_event(&event.data) {
+                        Ok(Some(stream_event)) => Some(Ok(stream_event)),
+                        Ok(None) => None,
+                        Err(e) => Some(Err(e)),
+                    },
                     Err(e) => Some(Err(e)),
                 };
 

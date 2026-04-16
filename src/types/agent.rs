@@ -69,7 +69,7 @@ impl Default for AgentConfig {
 #[serde(default)]
 pub struct PromptConfig {
     /// System file configuration (formerly bootstrap)
-    #[serde(alias = "bootstrap")]  // Backward compatibility
+    #[serde(alias = "bootstrap")] // Backward compatibility
     pub system: Option<SystemFileConfig>,
 }
 
@@ -233,24 +233,24 @@ impl ToolConfig {
     /// for consistent identification across extension types.
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
         // Check if tool is in the whitelist (case-insensitive, supports wildcards)
-        let in_whitelist = self.enabled.iter()
-            .any(|pattern| {
-                // Direct match (case-insensitive)
-                if pattern.eq_ignore_ascii_case(tool_name) {
-                    return true;
-                }
-                
-                // Support wildcard patterns like "mcp:identity:*"
-                // This matches full names like "mcp:identity:echo_identity"
-                if pattern.ends_with('*') {
-                    let prefix = &pattern[..pattern.len()-1];
-                    return tool_name.to_lowercase().starts_with(&prefix.to_lowercase());
-                }
-                false
-            });
+        let in_whitelist = self.enabled.iter().any(|pattern| {
+            // Direct match (case-insensitive)
+            if pattern.eq_ignore_ascii_case(tool_name) {
+                return true;
+            }
+
+            // Support wildcard patterns like "mcp:identity:*"
+            // This matches full names like "mcp:identity:echo_identity"
+            if pattern.ends_with('*') {
+                let prefix = &pattern[..pattern.len() - 1];
+                return tool_name.to_lowercase().starts_with(&prefix.to_lowercase());
+            }
+            false
+        });
 
         // Get per-tool settings if they exist
-        let per_tool_enabled = self.get_tool_settings(tool_name)
+        let per_tool_enabled = self
+            .get_tool_settings(tool_name)
             .map(|s| s.enabled)
             .unwrap_or(true);
 
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn test_tool_config_default_whitelist() {
         let config = ToolConfig::default();
-        
+
         // Default whitelist is empty (secure-by-default)
         assert!(config.enabled.is_empty());
     }
@@ -427,7 +427,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        
+
         // All whitelisted tools should be enabled
         assert!(config.is_tool_enabled("shell"));
         assert!(config.is_tool_enabled("read_file"));
@@ -439,11 +439,11 @@ mod tests {
         assert!(config.is_tool_enabled("sessions_history"));
         assert!(config.is_tool_enabled("session_status"));
         assert!(config.is_tool_enabled("cron"));
-        
+
         // Case-insensitive matching
         assert!(config.is_tool_enabled("SHELL"));
         assert!(config.is_tool_enabled("Session_Status"));
-        
+
         // Unknown tools should not be enabled
         assert!(!config.is_tool_enabled("unknown_tool"));
     }
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn test_agent_config_has_default_tools() {
         let config = AgentConfig::default();
-        
+
         // Default tool config exists but whitelist is empty (secure-by-default)
         assert!(config.tools.is_some());
         let tools = config.tools.unwrap();
@@ -505,7 +505,7 @@ mod tests {
             ..Default::default()
         };
         let toml = toml::to_string(&config).unwrap();
-        
+
         // Should contain the enabled list
         assert!(toml.contains("enabled"));
         assert!(toml.contains("shell"));

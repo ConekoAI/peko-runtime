@@ -56,30 +56,21 @@ pub use async_adapter::ExtensionAsyncAdapter;
 
 // Re-export context types
 pub use context::{
-    ClosureHookHandler,
-    ExtensionConfig,
-    ExtensionServices,
-    HookBinding,
-    HookBindingBuilder,
-    HookContext,
-    HookHandler,
-    HookHandlerFactory,
-    HookState,
-    TelemetryService,
+    ClosureHookHandler, ExtensionConfig, ExtensionServices, HookBinding, HookBindingBuilder,
+    HookContext, HookHandler, HookHandlerFactory, HookState, TelemetryService,
 };
 
 // Re-export registry types
-pub use registry::{global_core, init_global_core, BuiltinExtensionInfo, ExtensionCore, RegisteredHook};
+pub use registry::{
+    global_core, init_global_core, BuiltinExtensionInfo, ExtensionCore, RegisteredHook,
+};
 
 // Re-export tool registry types
 pub use crate::extensions::types::{ToolMetadata, ToolSource};
 
 // Re-export services for convenience
 pub use crate::extensions::services::{
-    ParamSource,
-    ReservedParamsConfig,
-    ReservedParamsService,
-    ToolExecutionConfig,
+    ParamSource, ReservedParamsConfig, ReservedParamsService, ToolExecutionConfig,
     ToolExecutionService,
 };
 
@@ -120,7 +111,8 @@ mod integration_tests {
     #[async_trait::async_trait]
     impl HookHandler for TrackingHandler {
         async fn handle(&self, _ctx: HookContext) -> HookResult {
-            self.invocations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.invocations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             HookResult::PassThrough
         }
 
@@ -356,7 +348,8 @@ mod integration_tests {
         #[async_trait::async_trait]
         impl HookHandler for SecondHandler {
             async fn handle(&self, _ctx: HookContext) -> HookResult {
-                self.invoked.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.invoked
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 HookResult::PassThrough
             }
 
@@ -391,22 +384,20 @@ mod integration_tests {
         }
 
         // Second handler should NOT be invoked because first returned Handled
-        assert!(!handler2
-            .invoked
-            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!handler2.invoked.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]
     async fn test_global_instance() {
         // Note: This test may run after other tests that already set the global core.
         // We can only verify that global_core() returns consistent results.
-        
+
         // If global core is already set, verify it's consistent
         if let Some(global1) = global_core() {
             let global2 = global_core().unwrap();
             assert!(Arc::ptr_eq(&global1, &global2));
         }
-        
+
         // Try to set our own core
         let core = Arc::new(ExtensionCore::new());
         init_global_core(core.clone());

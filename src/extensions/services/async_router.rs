@@ -126,7 +126,8 @@ impl AsyncReservedParams {
 
     /// Get effective timeout (use reserved or default)
     pub fn effective_timeout(&self, is_async: bool) -> u64 {
-        self.timeout_secs.unwrap_or(if is_async { 300 } else { 120 })
+        self.timeout_secs
+            .unwrap_or(if is_async { 300 } else { 120 })
     }
 
     /// Validate callback mode
@@ -252,10 +253,7 @@ impl AsyncExecutionRouter {
         let timeout_secs = reserved.effective_timeout(false);
         let timeout = Duration::from_secs(timeout_secs);
 
-        info!(
-            timeout = timeout_secs,
-            "Executing tool synchronously"
-        );
+        info!(timeout = timeout_secs, "Executing tool synchronously");
 
         // Build the context for parameter injection
         let abort_signal = crate::tools::AbortSignal::new();
@@ -312,8 +310,14 @@ impl AsyncExecutionRouter {
                         .to_string(),
                 ),
             );
-            map.insert("timeout_requested".to_string(), Value::Number(timeout_secs.into()));
-            map.insert("callback_mode".to_string(), Value::String(reserved.callback.clone()));
+            map.insert(
+                "timeout_requested".to_string(),
+                Value::Number(timeout_secs.into()),
+            );
+            map.insert(
+                "callback_mode".to_string(),
+                Value::String(reserved.callback.clone()),
+            );
             map.insert("original_params".to_string(), params.clone());
             map
         }))

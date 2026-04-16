@@ -63,12 +63,15 @@ impl From<&SessionEvent> for HistoryEventResponse {
 
         match event {
             SessionEvent::MessageV2(msg) => {
-                response.role = Some(match msg.role() {
-                    crate::types::message::MessageRole::User => "user",
-                    crate::types::message::MessageRole::Assistant => "assistant",
-                    crate::types::message::MessageRole::System => "system",
-                    crate::types::message::MessageRole::Tool => "tool",
-                }.to_string());
+                response.role = Some(
+                    match msg.role() {
+                        crate::types::message::MessageRole::User => "user",
+                        crate::types::message::MessageRole::Assistant => "assistant",
+                        crate::types::message::MessageRole::System => "system",
+                        crate::types::message::MessageRole::Tool => "tool",
+                    }
+                    .to_string(),
+                );
                 response.content = Some(msg.text_content());
             }
             SessionEvent::Thinking(e) => {

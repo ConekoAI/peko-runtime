@@ -201,7 +201,7 @@ impl EventProcessor {
     }
 
     /// Process streaming delta event (AssistantDelta)
-    /// 
+    ///
     /// Unlike AssistantText, deltas are incremental and should be printed
     /// without newlines to enable real-time streaming display.
     fn process_assistant_delta(
@@ -223,7 +223,7 @@ impl EventProcessor {
         // Deltas are always printed inline (no newline) for streaming
         actions.push(ChannelAction::Print(text.to_string()));
         actions.push(ChannelAction::Flush);
-        
+
         // Track interstitial state for when we transition to final
         self.state.is_interstitial = is_interstitial;
         self.state.last_was_interstitial = is_interstitial;

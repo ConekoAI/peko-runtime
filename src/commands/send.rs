@@ -19,11 +19,11 @@
 //!   echo "Hello" | pekobot send myagent --stdin
 //!   pekobot send myagent --file prompt.txt
 
+use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::channels::{Channel, CliChannel, CliMode};
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
 use crate::common::services::{AgentValidator, ConfigAuthorityImpl};
-use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
 use anyhow::Result;
 use clap::Args;
 use std::sync::Arc;
@@ -98,9 +98,8 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         agent_entry.name, agent_entry.team
     );
 
-    let agent_service = Arc::new(
-        StatelessAgentService::new(config_service, path_resolver.clone()).await?,
-    );
+    let agent_service =
+        Arc::new(StatelessAgentService::new(config_service, path_resolver.clone()).await?);
 
     // Build message request (same logic as HTTP API)
     let request = MessageRequest::new(agent_name, message)
@@ -110,12 +109,11 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         .with_new_session(args.new);
 
     // Create CLI channel with appropriate mode (streaming is default)
-    let channel = CliChannel::new(&args.agent)
-        .with_mode(if args.no_stream {
-            CliMode::Blocking
-        } else {
-            CliMode::Streaming
-        });
+    let channel = CliChannel::new(&args.agent).with_mode(if args.no_stream {
+        CliMode::Blocking
+    } else {
+        CliMode::Streaming
+    });
 
     // Send message using StatelessAgentService directly (ADR-016)
     let event_stream = agent_service.execute_message_streaming(request).await?;
@@ -134,7 +132,11 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
             }
             anyhow::bail!(
                 "Agent execution failed{}",
-                output.error.as_ref().map(|e| format!(": {e}")).unwrap_or_default()
+                output
+                    .error
+                    .as_ref()
+                    .map(|e| format!(": {e}"))
+                    .unwrap_or_default()
             );
         }
     }

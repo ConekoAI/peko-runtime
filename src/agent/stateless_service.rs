@@ -23,7 +23,6 @@ use crate::session::types::{ChannelType, Peer};
 use crate::types::message::ContentBlock;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -87,7 +86,7 @@ pub struct ExecutionContext {
 }
 
 /// Message request for high-level message execution
-/// 
+///
 /// This type is used by execute_message() and execute_message_streaming()
 /// to provide a unified interface for message sending.
 #[derive(Debug, Clone)]
@@ -184,7 +183,7 @@ pub struct ToolCallRecord {
 }
 
 /// Message sending result
-/// 
+///
 /// This is the high-level result type returned by execute_message()
 #[derive(Debug, Clone)]
 pub struct MessageResult {
@@ -288,13 +287,13 @@ impl StatelessAgentService {
     }
 
     /// Execute a message and return a blocking response
-    /// 
+    ///
     /// This is the high-level interface that replaces MessageService::send_message()
     /// It handles session resolution and executes the agent, returning the complete result.
-    /// 
+    ///
     /// # Arguments
     /// * `request` - The message request containing agent name, message, and session options
-    /// 
+    ///
     /// # Returns
     /// A `MessageResult` containing the response, session info, and execution metadata
     pub async fn execute_message(&self, request: MessageRequest) -> Result<MessageResult> {
@@ -369,13 +368,13 @@ impl StatelessAgentService {
     }
 
     /// Execute a message and return an EventStream for streaming
-    /// 
+    ///
     /// This is the high-level streaming interface that replaces MessageService::send_message_unified()
     /// It handles session resolution and executes the agent, returning a stream of events.
-    /// 
+    ///
     /// # Arguments
     /// * `request` - The message request containing agent name, message, and session options
-    /// 
+    ///
     /// # Returns
     /// An `EventStream` containing the receiver for events and completion signal
     pub async fn execute_message_streaming(
@@ -491,9 +490,13 @@ impl StatelessAgentService {
         // 2. Open the specific session by ID
         // This ensures we write to the correct session file
         let team = Some(config_entry.team.as_str());
-        let mut session_manager =
-            SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team, &request.user);
-        
+        let mut session_manager = SessionManager::for_cli(
+            self.path_resolver.clone(),
+            &request.agent_name,
+            team,
+            &request.user,
+        );
+
         // Try to open existing session, create if not exists
         let session = match session_manager.open_session(&request.session_id).await? {
             Some(handle) => {
@@ -509,15 +512,13 @@ impl StatelessAgentService {
                 let handle = session_manager
                     .create_session(&request.agent_name, &peer, options)
                     .await?;
-                
+
                 handle.base().clone()
             }
         };
 
         // 3. Load session history from the opened session
-        let history = self
-            .load_session_history(session.clone())
-            .await?;
+        let history = self.load_session_history(session.clone()).await?;
 
         // 4. Cold-start agent (spawn)
         let agent = Agent::new(config_entry.config.clone())
@@ -630,16 +631,26 @@ impl StatelessAgentService {
 
         // Open the specific session by ID (same logic as execute_inner)
         let team = Some(config_entry.team.as_str());
-        let mut session_manager =
-            SessionManager::for_cli(self.path_resolver.clone(), &request.agent_name, team, &request.user);
-        
+        let mut session_manager = SessionManager::for_cli(
+            self.path_resolver.clone(),
+            &request.agent_name,
+            team,
+            &request.user,
+        );
+
         let session = match session_manager.open_session(&request.session_id).await? {
             Some(handle) => {
-                debug!("Opened existing session '{}' for streaming", request.session_id);
+                debug!(
+                    "Opened existing session '{}' for streaming",
+                    request.session_id
+                );
                 handle.base().clone()
             }
             None => {
-                debug!("Session '{}' not found, creating new for streaming", request.session_id);
+                debug!(
+                    "Session '{}' not found, creating new for streaming",
+                    request.session_id
+                );
                 let peer = Peer::User(request.user.clone());
                 let options = crate::session::SessionCreateOptions::new()
                     .with_trigger("api")
@@ -647,7 +658,7 @@ impl StatelessAgentService {
                 let handle = session_manager
                     .create_session(&request.agent_name, &peer, options)
                     .await?;
-                
+
                 handle.base().clone()
             }
         };
@@ -657,7 +668,7 @@ impl StatelessAgentService {
     }
 
     /// Execute streaming with an already-resolved session
-    /// 
+    ///
     /// This is the internal implementation used by both `execute_streaming`
     /// and `execute_message_streaming`. It uses tokio::spawn (not spawn_blocking)
     /// for single-runtime execution and provides completion signals.
@@ -670,9 +681,7 @@ impl StatelessAgentService {
         let prompt = self.build_prompt(&request.message, &[])?;
 
         // Load history for the agent
-        let history = self
-            .load_session_history(session.clone())
-            .await?;
+        let history = self.load_session_history(session.clone()).await?;
 
         // Load agent
         let agent = Agent::new(
@@ -861,13 +870,12 @@ mod tests {
     #[test]
     fn test_message_request_with_session_opt() {
         // Test with Some
-        let request1 = MessageRequest::new("agent", "hi")
-            .with_session_opt(Some("session-id".to_string()));
+        let request1 =
+            MessageRequest::new("agent", "hi").with_session_opt(Some("session-id".to_string()));
         assert_eq!(request1.session_id, Some("session-id".to_string()));
 
         // Test with None
-        let request2 = MessageRequest::new("agent", "hi")
-            .with_session_opt(None);
+        let request2 = MessageRequest::new("agent", "hi").with_session_opt(None);
         assert_eq!(request2.session_id, None);
     }
 
@@ -914,7 +922,8 @@ mod tests {
         // Verify default timeout is 300 seconds (5 minutes)
         // We can't directly check the private field, but we can verify
         // the method returns self correctly
-        let service_with_timeout = service.with_default_timeout(std::time::Duration::from_secs(120));
+        let service_with_timeout =
+            service.with_default_timeout(std::time::Duration::from_secs(120));
         // Just verify it compiles and returns
         drop(service_with_timeout);
     }

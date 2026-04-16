@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs;
 
 use crate::tools::Tool;
@@ -71,9 +71,9 @@ impl ReadFileTool {
         let resolved = self.resolve_path(path);
 
         // Verify it's a file
-        let metadata = fs::metadata(&resolved).await.with_context(|| {
-            format!("Failed to read file metadata: {}", resolved.display())
-        })?;
+        let metadata = fs::metadata(&resolved)
+            .await
+            .with_context(|| format!("Failed to read file metadata: {}", resolved.display()))?;
 
         if !metadata.is_file() {
             return Err(anyhow::anyhow!(
@@ -103,25 +103,26 @@ impl ReadFileTool {
         };
 
         // Apply line range if specified and text content
-        let (final_content, total_lines, start_line, end_line) = if is_binary || encoding_used == "base64" {
-            // For binary, line range doesn't apply
-            (content_str, None, None, None)
-        } else {
-            let lines: Vec<&str> = content_str.lines().collect();
-            let total = lines.len();
-            
-            let start = line_offset.map(|o| o.saturating_sub(1)).unwrap_or(0);
-            let end = n_lines.map(|n| (start + n).min(total)).unwrap_or(total);
-            
-            let selected: Vec<&str> = lines.get(start..end).unwrap_or(&[]).to_vec();
-            
-            (
-                selected.join("\n"),
-                Some(total),
-                Some(start + 1), // Convert back to 1-indexed
-                Some(end),
-            )
-        };
+        let (final_content, total_lines, start_line, end_line) =
+            if is_binary || encoding_used == "base64" {
+                // For binary, line range doesn't apply
+                (content_str, None, None, None)
+            } else {
+                let lines: Vec<&str> = content_str.lines().collect();
+                let total = lines.len();
+
+                let start = line_offset.map(|o| o.saturating_sub(1)).unwrap_or(0);
+                let end = n_lines.map(|n| (start + n).min(total)).unwrap_or(total);
+
+                let selected: Vec<&str> = lines.get(start..end).unwrap_or(&[]).to_vec();
+
+                (
+                    selected.join("\n"),
+                    Some(total),
+                    Some(start + 1), // Convert back to 1-indexed
+                    Some(end),
+                )
+            };
 
         let mut result = serde_json::json!({
             "content": final_content,
@@ -197,7 +198,7 @@ Read binary file:
 ```json
 {"path": "image.png", "encoding": "base64"}
 ```"#
-        .to_string()
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -258,7 +259,9 @@ mod tests {
         let tool = ReadFileTool::new().with_workspace(temp_dir.path());
 
         // Create test file
-        fs::write(temp_dir.path().join("test.txt"), "Hello, World!").await.unwrap();
+        fs::write(temp_dir.path().join("test.txt"), "Hello, World!")
+            .await
+            .unwrap();
 
         let params = json!({"path": "test.txt"});
         let result = tool.execute(params).await.unwrap();
@@ -275,7 +278,9 @@ mod tests {
 
         // Create test file with multiple lines
         let content = "line1\nline2\nline3\nline4\nline5";
-        fs::write(temp_dir.path().join("lines.txt"), content).await.unwrap();
+        fs::write(temp_dir.path().join("lines.txt"), content)
+            .await
+            .unwrap();
 
         // Read lines 2-3
         let params = json!({
@@ -298,17 +303,21 @@ mod tests {
 
         // Create binary file
         let binary_content = vec![0u8, 1, 2, 3, 255, 254, 253];
-        fs::write(temp_dir.path().join("binary.bin"), &binary_content).await.unwrap();
+        fs::write(temp_dir.path().join("binary.bin"), &binary_content)
+            .await
+            .unwrap();
 
         let params = json!({"path": "binary.bin", "encoding": "base64"});
         let result = tool.execute(params).await.unwrap();
 
         assert_eq!(result["encoding"], "base64");
-        
+
         // Verify we can decode it back
         let base64_content = result["content"].as_str().unwrap();
         use base64::Engine;
-        let decoded = base64::engine::general_purpose::STANDARD.decode(base64_content).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(base64_content)
+            .unwrap();
         assert_eq!(decoded, binary_content);
     }
 

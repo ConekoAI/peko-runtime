@@ -52,11 +52,7 @@ impl ReservedParamsConfig {
     }
 
     /// Add a runtime parameter
-    pub fn with_runtime(
-        mut self,
-        name: impl Into<String>,
-        field: impl Into<String>,
-    ) -> Self {
+    pub fn with_runtime(mut self, name: impl Into<String>, field: impl Into<String>) -> Self {
         self.params.insert(
             name.into(),
             ParamSource::Runtime {
@@ -68,19 +64,13 @@ impl ReservedParamsConfig {
 
     /// Add an environment variable parameter
     pub fn with_env(mut self, name: impl Into<String>, var: impl Into<String>) -> Self {
-        self.params.insert(
-            name.into(),
-            ParamSource::Env { var: var.into() },
-        );
+        self.params
+            .insert(name.into(), ParamSource::Env { var: var.into() });
         self
     }
 
     /// Add a static parameter
-    pub fn with_static(
-        mut self,
-        name: impl Into<String>,
-        value: impl Into<Value>,
-    ) -> Self {
+    pub fn with_static(mut self, name: impl Into<String>, value: impl Into<Value>) -> Self {
         self.params.insert(
             name.into(),
             ParamSource::Static {
@@ -142,8 +132,6 @@ impl ReservedParamsConfig {
     }
 }
 
-
-
 impl ParamSource {
     /// Resolve this parameter source to a value
     ///
@@ -191,7 +179,11 @@ impl ReservedParamsService {
     }
 
     /// Parse configuration from TOML/JSON string
-    pub fn parse_config(&self, data: &str, format: ConfigFormat) -> anyhow::Result<ReservedParamsConfig> {
+    pub fn parse_config(
+        &self,
+        data: &str,
+        format: ConfigFormat,
+    ) -> anyhow::Result<ReservedParamsConfig> {
         match format {
             ConfigFormat::Json => {
                 let config: ReservedParamsConfig = serde_json::from_str(data)?;
@@ -203,7 +195,6 @@ impl ReservedParamsService {
             }
         }
     }
-
 }
 
 /// Configuration file format
@@ -288,7 +279,9 @@ mod tests {
         let service = ReservedParamsService::new();
 
         let json_config = r#"{"agent_id":{"source":"runtime","field":"agent_id"}}"#;
-        let config = service.parse_config(json_config, ConfigFormat::Json).unwrap();
+        let config = service
+            .parse_config(json_config, ConfigFormat::Json)
+            .unwrap();
 
         assert!(config.contains("agent_id"));
         assert!(matches!(

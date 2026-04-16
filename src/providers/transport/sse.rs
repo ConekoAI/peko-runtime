@@ -18,7 +18,7 @@ pub struct SseParser;
 
 impl SseParser {
     /// Parse a stream of bytes into SSE events
-    /// 
+    ///
     /// This uses a channel-based approach to handle stateful parsing across
     /// chunk boundaries. It properly handles:
     /// - Multiple events per chunk
@@ -49,7 +49,7 @@ impl SseParser {
                         while let Some(pos) = find_event_end(&buffer) {
                             let event_text = buffer[..pos].trim().to_string();
                             buffer.drain(..pos);
-                            
+
                             let events = Self::parse_chunk(&event_text);
                             for event in events {
                                 if tx.send(Ok(event)).await.is_err() {

@@ -79,9 +79,9 @@ pub async fn migrate_json_entry(
 
     // Ensure parent directory exists
     if let Some(parent) = toml_path.parent() {
-        tokio::fs::create_dir_all(parent).await.with_context(|| {
-            format!("Failed to create directory: {}", parent.display())
-        })?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
 
     // Write TOML
@@ -141,9 +141,7 @@ pub async fn migrate_json_dir(
                 }
                 Err(e) => {
                     summary.failed += 1;
-                    summary
-                        .errors
-                        .push(format!("{}: {}", path.display(), e));
+                    summary.errors.push(format!("{}: {}", path.display(), e));
                     warn!("Failed to migrate {}: {}", path.display(), e);
                 }
             }

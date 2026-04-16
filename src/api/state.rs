@@ -75,8 +75,6 @@ pub struct AppState {
     /// Lifecycle manager (tracks active executions only)
     lifecycle: Arc<LifecycleManager>,
 
-
-
     /// Session service (unified for CLI and API)
     session_service: Arc<SessionService>,
 

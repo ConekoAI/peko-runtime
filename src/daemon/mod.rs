@@ -9,11 +9,11 @@
 //! - Graceful shutdown
 
 use crate::common::paths::PathResolver;
+use crate::cron::events::SystemEvent;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
 use crate::observability::Observability;
-use crate::cron::events::SystemEvent;
-use crate::session::MaintenanceConfig;
 use crate::session::metadata_controller::MetadataController;
+use crate::session::MaintenanceConfig;
 use crate::types::agent::AgentConfig;
 use anyhow::Result;
 use chrono::Utc;
@@ -746,7 +746,6 @@ impl Daemon {
 
         Ok(())
     }
-
 }
 
 /// Handle for controlling a spawned daemon

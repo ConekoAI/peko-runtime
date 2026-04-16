@@ -3,7 +3,7 @@
 //! Extracts and imports .team files into the local Pekobot runtime
 
 use crate::portable::team_packager::TeamManifest;
-use crate::portable::{Unpackager, ImportOptions as AgentImportOptions};
+use crate::portable::{ImportOptions as AgentImportOptions, Unpackager};
 use anyhow::Context;
 use std::collections::HashMap;
 use std::io::Read;
@@ -91,49 +91,53 @@ impl TeamUnpackager {
     /// Inspect a team package without importing
     pub async fn inspect(&self) -> anyhow::Result<TeamManifest> {
         let files = self.extract_package().await?;
-        
+
         let manifest_bytes = files
             .get("team/manifest.toml")
             .ok_or_else(|| anyhow::anyhow!("Missing team/manifest.toml in package"))?;
         let manifest_str = std::str::from_utf8(manifest_bytes)?;
         let manifest = TeamManifest::from_toml(manifest_str)?;
-        
+
         Ok(manifest)
     }
 
     /// Import the team package
     pub async fn import(&self, options: TeamImportOptions) -> anyhow::Result<TeamImportResult> {
         let files = self.extract_package().await?;
-        
+
         // Parse manifest
         let manifest = self.parse_manifest(&files)?;
-        
-        let team_name = options.new_name.clone()
+
+        let team_name = options
+            .new_name
+            .clone()
             .unwrap_or_else(|| manifest.team.name.clone());
-        
+
         // Create team directory
         let team_dir = self.base_dir.join("teams").join(team_name.clone());
         if team_dir.exists() && !options.force {
-            anyhow::bail!("Team '{}' already exists. Use --force to overwrite.", team_name);
+            anyhow::bail!(
+                "Team '{}' already exists. Use --force to overwrite.",
+                team_name
+            );
         }
-        
-        tokio::fs::create_dir_all(&team_dir).await
+
+        tokio::fs::create_dir_all(&team_dir)
+            .await
             .with_context(|| format!("Failed to create team directory: {}", team_dir.display()))?;
 
         // Group files by agent
         let agent_files = self.group_files_by_agent(&files);
-        
+
         let mut imported_agents = Vec::new();
-        
+
         // Import each agent
         for (agent_name, agent_data) in agent_files {
-            let agent_result = self.import_agent_files(
-                &agent_name,
-                &agent_data,
-                &team_name,
-                &options,
-            ).await.with_context(|| format!("Failed to import agent: {}", agent_name))?;
-            
+            let agent_result = self
+                .import_agent_files(&agent_name, &agent_data, &team_name, &options)
+                .await
+                .with_context(|| format!("Failed to import agent: {}", agent_name))?;
+
             imported_agents.push(agent_result);
         }
 
@@ -157,10 +161,10 @@ impl TeamUnpackager {
         for entry in archive.entries()? {
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
-            
+
             let mut content = Vec::new();
             entry.read_to_end(&mut content)?;
-            
+
             files.insert(path, content);
         }
 
@@ -174,14 +178,17 @@ impl TeamUnpackager {
             .ok_or_else(|| anyhow::anyhow!("Missing team/manifest.toml in package"))?;
         let manifest_str = std::str::from_utf8(manifest_bytes)?;
         let manifest = TeamManifest::from_toml(manifest_str)?;
-        
+
         Ok(manifest)
     }
 
     /// Group files by agent
-    fn group_files_by_agent(&self, files: &HashMap<String, Vec<u8>>) -> HashMap<String, HashMap<String, Vec<u8>>> {
+    fn group_files_by_agent(
+        &self,
+        files: &HashMap<String, Vec<u8>>,
+    ) -> HashMap<String, HashMap<String, Vec<u8>>> {
         let mut agents: HashMap<String, HashMap<String, Vec<u8>>> = HashMap::new();
-        
+
         for (path, content) in files {
             if let Some(agent_path) = path.strip_prefix("agents/") {
                 if let Some((agent_name, file_path)) = agent_path.split_once('/') {
@@ -192,7 +199,7 @@ impl TeamUnpackager {
                 }
             }
         }
-        
+
         agents
     }
 
@@ -206,12 +213,12 @@ impl TeamUnpackager {
     ) -> anyhow::Result<AgentImportSummary> {
         // Clone files for this agent to pass to unpackager
         let agent_files = files.clone();
-        
+
         // Use the regular Unpackager with in-memory files
         let team_dir = self.base_dir.join("teams").join(team_name);
-        let unpackager = Unpackager::new("dummy.agent")  // Path doesn't matter for in-memory import
+        let unpackager = Unpackager::new("dummy.agent") // Path doesn't matter for in-memory import
             .with_base_dir(&team_dir);
-        
+
         let agent_opts = AgentImportOptions {
             new_name: Some(name.to_string()),
             passphrase: None,
@@ -223,8 +230,10 @@ impl TeamUnpackager {
             skip_validation: false,
             force: options.force,
         };
-        
-        let result = unpackager.import_from_files(agent_files, agent_opts).await
+
+        let result = unpackager
+            .import_from_files(agent_files, agent_opts)
+            .await
             .with_context(|| format!("Failed to import agent: {}", name))?;
 
         Ok(AgentImportSummary {
@@ -250,8 +259,7 @@ pub async fn import_team_with_base_dir(
     base_dir: impl AsRef<Path>,
     options: TeamImportOptions,
 ) -> anyhow::Result<TeamImportResult> {
-    let unpackager = TeamUnpackager::new(package_path)
-        .with_base_dir(base_dir);
+    let unpackager = TeamUnpackager::new(package_path).with_base_dir(base_dir);
     unpackager.import(options).await
 }
 

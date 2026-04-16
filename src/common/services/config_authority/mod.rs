@@ -21,14 +21,14 @@
 //! let entry = authority.get("my-agent", Some("default")).await?;
 //! ```
 
+pub mod authority_trait;
 pub mod cache;
 pub mod entry;
-pub mod authority_trait;
 pub mod implementation;
 pub mod io;
 pub mod migration;
 
 // Re-export types for convenience
-pub use entry::{AgentConfigEntry, ConfigSource};
 pub use authority_trait::{ConfigAuthority, ConfigError, ConfigResult};
+pub use entry::{AgentConfigEntry, ConfigSource};
 pub use implementation::ConfigAuthorityImpl;

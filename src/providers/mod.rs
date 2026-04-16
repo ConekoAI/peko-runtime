@@ -18,7 +18,9 @@ pub mod transport;
 pub mod types;
 
 // Re-export commonly used types
-pub use adapters::{AnthropicAdapter, ApiAdapter, AnyAdapter, OpenAiAdapter, OpenAiCompatibleAdapter};
+pub use adapters::{
+    AnthropicAdapter, AnyAdapter, ApiAdapter, OpenAiAdapter, OpenAiCompatibleAdapter,
+};
 pub use core::Provider;
 pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
 pub use transport::{AuthConfig, HttpClient, SseParser};

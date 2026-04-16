@@ -566,7 +566,8 @@ impl Tool for CronTool {
     }
 
     fn description(&self) -> String {
-        "Manage scheduled jobs: at, every, cron, idle, event, list, cancel. Persisted to cron.json.".to_string()
+        "Manage scheduled jobs: at, every, cron, idle, event, list, cancel. Persisted to cron.json."
+            .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {

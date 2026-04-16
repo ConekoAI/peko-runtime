@@ -12,7 +12,7 @@
 //! - Only truly unique APIs need a new adapter implementation
 
 use crate::providers::{
-    adapters::{AnyAdapter, AnthropicAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
+    adapters::{AnthropicAdapter, AnyAdapter, OpenAiAdapter, OpenAiCompatibleAdapter},
     core::Provider,
 };
 use crate::types::provider::{ProviderConfig, ProviderType};
@@ -379,11 +379,12 @@ fn create_provider_with_adapter(
 ) -> Result<Arc<Provider>> {
     match metadata.api_type {
         ApiType::OpenAICompletions => {
-            let adapter = AnyAdapter::OpenAi(if base_url.is_empty() || base_url == metadata.base_url {
-                OpenAiAdapter::new(model)
-            } else {
-                OpenAiAdapter::new(model).with_base_url(base_url)
-            });
+            let adapter =
+                AnyAdapter::OpenAi(if base_url.is_empty() || base_url == metadata.base_url {
+                    OpenAiAdapter::new(model)
+                } else {
+                    OpenAiAdapter::new(model).with_base_url(base_url)
+                });
             Ok(Arc::new(Provider::new(adapter, api_key, config)?))
         }
         ApiType::AnthropicMessages => {

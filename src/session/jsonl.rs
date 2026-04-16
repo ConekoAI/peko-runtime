@@ -363,7 +363,9 @@ impl SessionStorage {
                     id: message_id,
                     content: text,
                     timestamp,
-                    source: msg.source().unwrap_or(crate::session::events::MessageSource::User),
+                    source: msg
+                        .source()
+                        .unwrap_or(crate::session::events::MessageSource::User),
                 }),
                 MessageRole::Assistant => Some(NormalizedEntry::AssistantMessage {
                     id: message_id,
@@ -377,13 +379,21 @@ impl SessionStorage {
                     timestamp,
                 }),
                 MessageRole::Tool => {
-                    let tool_name = msg.message.content.iter().find_map(|block| {
-                        if let crate::types::message::ContentBlock::ToolResult { name, .. } = block {
-                            Some(name.clone())
-                        } else {
-                            None
-                        }
-                    }).unwrap_or_default();
+                    let tool_name = msg
+                        .message
+                        .content
+                        .iter()
+                        .find_map(|block| {
+                            if let crate::types::message::ContentBlock::ToolResult {
+                                name, ..
+                            } = block
+                            {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
                     Some(NormalizedEntry::ToolResult {
                         tool_call_id: msg.tool_call_id().unwrap_or_default().to_string(),
                         tool_name,

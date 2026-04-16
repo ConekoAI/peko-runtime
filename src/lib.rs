@@ -163,11 +163,9 @@ pub(crate) mod compaction;
 // ============================================================================
 
 /// Development and experimental features
-
 // ============================================================================
 // Public API
 // ============================================================================
-
 pub use agent::Agent;
 
 // Re-export event types for tool monitoring and streaming
