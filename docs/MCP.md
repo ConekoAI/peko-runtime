@@ -211,7 +211,8 @@ async fn main() -> anyhow::Result<()> {
     manager.read().await.init().await?;
 
     // Get built-in tools
-    let mut tools = pekobot::tools::ToolFactory::create_full_tools(".".into());
+    let config = pekobot::tools::ToolFactoryConfig::full(".".into());
+    let mut tools = pekobot::tools::ToolFactory::create_tools(&config);
 
     // Add MCP tools
     let mcp_tools = manager.read().await.get_tools().await;

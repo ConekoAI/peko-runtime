@@ -401,26 +401,6 @@ impl ToolFactory {
         }
     }
 
-    /// Create full toolset (core tools only, sync version)
-    /// Respects `disabled_tools`
-    ///
-    /// DEPRECATED: Use `create_tools` with `ToolFactoryConfig::full()` instead.
-    #[deprecated(
-        since = "0.9.0",
-        note = "Use create_tools with ToolFactoryConfig::full() instead"
-    )]
-    #[must_use]
-    pub fn create_full_tools(
-        workspace_dir: PathBuf,
-        disabled_tools: Vec<String>,
-    ) -> ToolCreationResult {
-        let config = ToolFactoryConfig {
-            workspace_dir,
-            disabled_tools,
-            ..Default::default()
-        };
-        Self::create_tools(&config)
-    }
 }
 
 #[cfg(test)]
