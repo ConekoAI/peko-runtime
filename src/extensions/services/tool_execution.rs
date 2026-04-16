@@ -145,18 +145,27 @@ impl ToolExecutionService {
     {
         let effective_timeout = timeout.unwrap_or(self.default_timeout);
 
-        // Spawn the tool execution in a blocking task with panic catching
+        // Spawn the tool execution in a blocking task with panic catching.
+        // The timeout is applied INSIDE the blocking task (via tokio::time::timeout
+        // around the executor future) so that the async work is actually cancelled.
+        // Applying tokio::time::timeout to the JoinHandle of a spawn_blocking task
+        // only times out awaiting the handle; the blocking thread continues running.
         let spawn_result = tokio::task::spawn_blocking({
             move || {
                 // Use AssertUnwindSafe because we're catching the panic anyway
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     // Create a runtime for the async tool execution
                     let rt = tokio::runtime::Handle::current();
-                    rt.block_on(async move { executor(params).await })
+                    rt.block_on(async move {
+                        tokio::time::timeout(effective_timeout, executor(params)).await
+                    })
                 }));
 
                 match result {
-                    Ok(tool_result) => tool_result,
+                    Ok(Ok(tool_result)) => Ok(tool_result),
+                    Ok(Err(_)) => Err(anyhow::anyhow!(
+                        "TOOL_TIMEOUT: Tool execution exceeded the {effective_timeout:?} limit"
+                    )),
                     Err(panic_info) => {
                         let panic_msg = if let Some(s) = panic_info.downcast_ref::<String>() {
                             s.clone()
@@ -172,12 +181,11 @@ impl ToolExecutionService {
             }
         });
 
-        // Apply timeout to the spawned task
-        let result = tokio::time::timeout(effective_timeout, spawn_result).await;
+        let result = spawn_result.await;
 
         match result {
-            Ok(Ok(tool_result)) => tool_result,
-            Ok(Err(e)) => {
+            Ok(tool_result) => tool_result?,
+            Err(e) => {
                 if e.is_panic() {
                     error!("Task panicked during execution: {}", e);
                     Err(anyhow::anyhow!("Tool task panicked"))
@@ -185,9 +193,6 @@ impl ToolExecutionService {
                     Err(anyhow::anyhow!("Tool task cancelled"))
                 }
             }
-            Err(_) => Err(anyhow::anyhow!(
-                "Tool timed out after {effective_timeout:?}"
-            )),
         }
     }
 

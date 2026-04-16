@@ -329,6 +329,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_shell_timeout() {
+        let tool = ShellTool::new();
+
+        // Use a cross-platform sleep command
+        let sleep_cmd = if cfg!(windows) {
+            "Start-Sleep -Seconds 10"
+        } else {
+            "sleep 10"
+        };
+
+        let params = json!({"command": sleep_cmd});
+
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            tool.execute(params),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "Shell command should have timed out, but it completed: {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_shell_nonexistent_command() {
         let tool = ShellTool::new();
 

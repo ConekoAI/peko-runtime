@@ -94,9 +94,12 @@ impl AsyncReservedParams {
                 reserved.async_mode = v.as_bool().unwrap_or(false);
             }
 
-            // Extract _timeout
+            // Extract _timeout (accept integer, float, or string)
             if let Some(v) = obj.remove("_timeout") {
-                reserved.timeout_secs = v.as_u64();
+                reserved.timeout_secs = v
+                    .as_u64()
+                    .or_else(|| v.as_f64().map(|f| f as u64))
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()));
             }
 
             // Extract _callback
@@ -501,6 +504,34 @@ mod tests {
         let value = result.unwrap();
         assert_eq!(value["result"], "success");
         assert_eq!(value["input"]["query"], "test");
+    }
+
+    #[tokio::test]
+    async fn test_router_sync_timeout() {
+        let router = AsyncExecutionRouter::new();
+        let exec_service = ToolExecutionService::new();
+        let tool_context = ToolExecutionContext::new("agent1", "session1", "run1");
+        let exec_config = ToolExecutionConfig::with_schema(json!({"type": "object"}));
+
+        let mut params = json!({"query": "test", "_timeout": 1});
+
+        let result = router
+            .route(
+                "test_tool",
+                &mut params,
+                &exec_service,
+                &tool_context,
+                &exec_config,
+                |_p| async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    Ok(json!({"result": "success"}))
+                },
+            )
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("TOOL_TIMEOUT"), "Expected timeout error, got: {err}");
     }
 
     #[tokio::test]
