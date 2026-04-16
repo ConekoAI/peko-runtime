@@ -329,8 +329,7 @@ impl Agent {
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
-            let loop_ =
-                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core));
+            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
 
             match loop_.run(prompt, on_event).await {
                 Ok(result) => Ok(result),
@@ -393,8 +392,7 @@ impl Agent {
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
-            let loop_ =
-                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core));
+            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
 
             match loop_
                 .run_with_resume(prompt, on_event, session, history)
@@ -442,7 +440,7 @@ impl Agent {
             tokio::task::spawn_local(async move {
                 use crate::engine::loop_v4::AgenticLoopV4;
 
-                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc.clone(), extension_core);
+                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc.clone(), extension_core).await;
 
                 let _result = loop_
                     .run(&prompt, move |event| {
@@ -497,8 +495,7 @@ impl Agent {
 
             use crate::engine::loop_v4::AgenticLoopV4;
 
-            let loop_ =
-                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core));
+            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
 
             // Use streaming config with Live delivery mode for real-time output
             let streaming_config = crate::engine::OrchestratorConfig::live();

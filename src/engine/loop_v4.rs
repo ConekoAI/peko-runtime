@@ -64,12 +64,12 @@ impl AgenticLoopV4 {
     /// * `agent` - The agent configuration
     /// * `provider` - The LLM provider to use
     /// * `extension_core` - The `ExtensionCore` for skill loading and hook integration
-    pub fn new(
+    pub async fn new(
         agent: Arc<Agent>,
         provider: Arc<crate::providers::Provider>,
         extension_core: Arc<crate::extensions::ExtensionCore>,
     ) -> Self {
-        let system_prompt = build_system_prompt(&agent, &extension_core);
+        let system_prompt = build_system_prompt(&agent, &extension_core).await;
 
         Self {
             agent,
@@ -1563,7 +1563,7 @@ impl AgenticLoopV4 {
 /// Includes bootstrap file injection (AGENTS.md, SOUL.md, etc.) and skills
 ///
 /// Skills are loaded via the `ExtensionCore` using the `SkillAdapter`.
-fn build_system_prompt(
+async fn build_system_prompt(
     agent: &Agent,
     extension_core: &Arc<crate::extensions::ExtensionCore>,
 ) -> String {
@@ -1607,13 +1607,14 @@ fn build_system_prompt(
         .map_or(&vec![], |t| &t.skills)
         .clone();
 
-    // Load and register skills with ExtensionCore (asynchronous block)
-    let _skills_loaded = load_and_register_skills_sync(
+    // Load and register skills with ExtensionCore
+    let _skills_loaded = load_and_register_skills(
         agent.name(),
         &enabled_skills,
         &path_resolver,
         extension_core,
-    );
+    )
+    .await;
 
     // Extract custom bootstrap files from agent config if specified
     let bootstrap_files = agent
@@ -1639,14 +1640,12 @@ fn build_system_prompt(
 ///
 /// # Returns
 /// The number of skills successfully registered with the `ExtensionCore`.
-fn load_and_register_skills_sync(
+async fn load_and_register_skills(
     agent_name: &str,
     enabled_skills: &[String],
     path_resolver: &crate::common::paths::PathResolver,
     extension_core: &Arc<crate::extensions::ExtensionCore>,
 ) -> usize {
-    
-
     // Use PathResolver for consistent path resolution
     let skills_dir = path_resolver.skills_dir();
 
@@ -1686,27 +1685,8 @@ fn load_and_register_skills_sync(
     }
 
     // Register skills with ExtensionCore
-    // We need to spawn a blocking task since we're in a sync context
-    let core = Arc::clone(extension_core);
     let count = skills_to_register.len();
-
-    // Create a new runtime for the async registration
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        // We're in an async context, spawn a blocking task
-        let _ = handle
-            .block_on(async { register_skills_with_core(&core, skills_to_register).await });
-    } else {
-        // No runtime available, create a new one for this operation
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                tracing::warn!("Failed to create runtime for skill registration: {}", e);
-                return 0;
-            }
-        };
-        let _ =
-            rt.block_on(async { register_skills_with_core(&core, skills_to_register).await });
-    }
+    let _ = register_skills_with_core(extension_core, skills_to_register).await;
 
     tracing::info!(
         "Registered {} enabled skills for agent {}",
