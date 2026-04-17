@@ -15,6 +15,8 @@ The current async tool execution implementation (Option 3: minimal file-based po
 
 A temporary workaround was added where the CLI waits up to 30 seconds for background tasks before exiting. This fixes tests but creates poor UX for real CLI usage — a user running `peko send` with a 5-minute async build would see the CLI block for 5 minutes after the agent already responded.
 
+Additionally, `src/commands/send.rs` uses `StatelessAgentService::execute_message_streaming()` directly and does **not** call `wait_for_async_tasks()`, meaning async tasks are already at risk of being dropped in the primary CLI path.
+
 ## Problem Statement
 
 ### Current Architecture (In-Process Background Tasks)
@@ -49,12 +51,18 @@ peko send "run long build"
 |-------|--------|
 | Background tasks die with process | Async work lost between CLI invocations |
 | CLI blocks on exit (workaround) | Poor UX for genuine long-running tasks |
+| `send.rs` has no wait protection | Async tasks already broken in main CLI path |
 | No centralized task management | Can't list, cancel, or monitor tasks globally |
 | Task files may be orphaned | No cleanup of zombie task records |
 
 ## Decision
 
-Move the `UnifiedAsyncExecutor` and all async task lifecycle management into the **pekobot daemon**. The CLI will submit async tasks to the daemon via IPC and receive receipts immediately. The daemon owns task execution, task file updates, and cleanup.
+Move the `UnifiedAsyncExecutor` and all async task lifecycle management into the **pekobot daemon**. The CLI will submit async tasks to the daemon via HTTP IPC and receive receipts immediately. The daemon owns task execution, task file updates, and cleanup.
+
+To keep the architecture clean, we introduce:
+
+1. An **`AsyncTaskTransport` trait** that abstracts whether tasks run locally (daemon mode) or remotely (CLI client mode). The `AsyncExecutionRouter` routes based on parameters; it does **not** contain transport logic.
+2. A **`ToolRuntime`** component that is extracted from `Agent` so the daemon can resolve and execute tools without instantiating a full agent. This is the long-term, future-proof architecture (Option B).
 
 ### Target Architecture
 
@@ -66,16 +74,24 @@ peko send "run long build"
 │  CLI / Agent                            │
 │  ───────────                            │
 │  • Build async tool call                │
-│  • Submit to daemon via IPC             │
+│  • Submit to daemon via HTTP API        │
 │  • Receive receipt immediately          │
 │  • Return response to user              │
 │  • Exit cleanly — task survives!        │
 └─────────────────────────────────────────┘
     │
-    ▼ IPC (HTTP / Unix socket / named pipe)
+    ▼ HTTP IPC (localhost:11435)
 ┌─────────────────────────────────────────┐
 │  Pekobot Daemon                         │
 │  ───────────────                        │
+│  ┌─────────────────────────────────┐    │
+│  │  ToolRuntime                    │    │
+│  │  ───────────                    │    │
+│  │  • Tool registry (ExtensionCore)│    │
+│  │  • Built-in tool initialization │    │
+│  │  • Tool resolution by name      │    │
+│  │  • Workspace context per agent  │    │
+│  └─────────────────────────────────┘    │
 │  ┌─────────────────────────────────┐    │
 │  │  UnifiedAsyncExecutor           │    │
 │  │  ─────────────────────          │    │
@@ -102,100 +118,204 @@ peko send "run long build"
 - **Observability**: Enables `peko tasks` command to list/monitor/cancel tasks
 - **Resource control**: Daemon can enforce global limits on concurrent async tasks
 - **Clean CLI UX**: No blocking wait hack needed
+- **SRP preserved**: Transport logic is extracted from the router; tool runtime is separate from agent lifecycle
+- **Future-proof**: `ToolRuntime` can be reused by other daemon services (cron jobs, webhooks, future job queues)
 
 ### Negative
 
-- **Daemon dependency**: Async tools require daemon to be running
-- **IPC complexity**: Need reliable communication between CLI and daemon
-- **Larger scope**: Touches daemon, CLI, and async framework
+- **Daemon dependency for async tools**: If the daemon is not running, async tools cannot execute (sync tools remain unaffected)
+- **IPC overhead**: One additional HTTP round-trip per async tool call
+- **Refactoring cost**: `Agent::init_builtins_async()` must be extracted into `ToolRuntime`
+- **Larger initial scope**: Touches daemon, API routes, CLI transport, async framework, and agent initialization
 
 ## Implementation Plan
 
-### Phase 1: Daemon Task API
+### Phase 0: Extract `ToolRuntime` from `Agent`
 
-Add async task management endpoints to the daemon:
+Currently, `Agent::init_builtins_async()` (`src/agent/agent.rs:48`) initializes built-in tools and registers them with an `ExtensionCore` that is owned by the `Agent`. The daemon has no `Agent`, so it cannot execute tools.
+
+We extract a reusable **`ToolRuntime`** component:
 
 ```rust
-// New daemon commands
-pub enum DaemonCommand {
-    // ... existing commands
-    SpawnAsyncTask(SpawnAsyncTaskRequest),
-    CancelAsyncTask(AsyncTaskId),
-    GetAsyncTaskStatus(AsyncTaskId),
-    ListAsyncTasks { session_key: Option<String> },
+pub struct ToolRuntime {
+    extension_core: Arc<ExtensionCore>,
+    path_resolver: PathResolver,
 }
 
+impl ToolRuntime {
+    pub async fn new(path_resolver: PathResolver) -> Result<Self> {
+        let extension_core = Arc::new(ExtensionCore::new());
+        // Register built-in tools (extracted from Agent::init_builtins_async)
+        Self::register_builtins(&extension_core, &path_resolver).await?;
+        Ok(Self { extension_core, path_resolver })
+    }
+
+    pub async fn execute_tool(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+        workspace: &std::path::Path,
+    ) -> Result<serde_json::Value> {
+        // Resolve tool via ExtensionCore and execute
+        // ...
+    }
+}
+```
+
+**Refactoring steps:**
+1. Move the built-in tool registration logic from `Agent::init_builtins_async()` into `ToolRuntime::register_builtins()`.
+2. `Agent::init_builtins_async()` delegates to `ToolRuntime::register_builtins()`.
+3. `Agent` holds a `ToolRuntime` instead of directly owning `ExtensionCore` (or both hold `Arc<ExtensionCore>`).
+4. The daemon's `AppState` holds a shared `Arc<ToolRuntime>`.
+
+This ensures both `Agent` and daemon initialize tools the same way, without duplication.
+
+### Phase 1: Add `ToolRuntime` and `UnifiedAsyncExecutor` to Daemon State
+
+The daemon's `AppState` (`src/api/state.rs`) must hold both components:
+
+```rust
+pub struct AppState {
+    // ... existing fields ...
+    pub tool_runtime: Arc<ToolRuntime>,
+    pub async_task_executor: Arc<UnifiedAsyncExecutor>,
+}
+```
+
+Both are constructed during `AppState::build()` and live for the lifetime of the daemon.
+
+### Phase 2: Daemon HTTP API Routes
+
+Add new routes under `/async/tasks` in `src/api/routes/async_tasks.rs`:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/async/tasks` | Spawn a new async task |
+| GET | `/async/tasks/{id}` | Get task status and result |
+| DELETE | `/async/tasks/{id}` | Cancel a task |
+| GET | `/async/tasks` | List tasks (optionally filter by `session_key`) |
+
+**Request body (`SpawnAsyncTaskRequest`):**
+```rust
 pub struct SpawnAsyncTaskRequest {
     pub task_id: AsyncTaskId,
     pub tool_name: String,
     pub params: serde_json::Value,
     pub session_key: String,
+    pub workspace: std::path::PathBuf,  // Needed for tool context
     pub config: AsyncToolConfig,
 }
 ```
 
-### Phase 2: IPC Transport
+**Route handler logic:**
+1. Look up the tool in `state.tool_runtime`
+2. Build the `sync_executor` closure using `tool_runtime.execute_tool()`
+3. Submit the closure to `state.async_task_executor.execute()`
+4. Return `AsyncTaskReceipt` to the caller
 
-Choose and implement IPC between CLI and daemon:
+Request/response types mirror `AsyncTaskReceipt` and `TaskFileRecord` exactly so that the agent sees the same contract regardless of transport.
 
-| Option | Pros | Cons | Recommendation |
-|--------|------|------|----------------|
-| HTTP on localhost | Simple, cross-platform | Port conflicts, overhead | **Preferred** |
-| Unix domain socket | Fast, secure | Windows support limited | Secondary |
-| Named pipe (Windows) | Native on Windows | Not portable | Fallback |
+### Phase 3: `AsyncTaskTransport` Abstraction
 
-**Decision**: Use HTTP on a configurable localhost port (default e.g. 7373) for maximum portability.
-
-### Phase 3: AsyncExecutionRouter Integration
-
-Modify `AsyncExecutionRouter` to detect whether it's running inside the daemon or a client:
+Introduce a transport trait in `src/extensions/services/async_transport.rs`:
 
 ```rust
-impl AsyncExecutionRouter {
-    pub async fn execute_async<F, Fut>(...) -> Result<Value> {
-        if is_daemon_mode() {
-            // Direct execution (current path)
-            self.execute_local(...).await
-        } else {
-            // Client mode: submit to daemon
-            self.submit_to_daemon(...).await
-        }
-    }
+#[async_trait::async_trait]
+pub trait AsyncTaskTransport: Send + Sync {
+    async fn spawn_task(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+        tool_context: &ToolExecutionContext,
+        config: AsyncToolConfig,
+    ) -> Result<AsyncTaskReceipt>;
+
+    async fn get_status(&self, task_id: &AsyncTaskId) -> Result<Option<AsyncTaskStatus>>;
+    async fn cancel_task(&self, task_id: &AsyncTaskId) -> Result<bool>;
 }
 ```
 
-In client mode, the router:
-1. Calls daemon HTTP API to spawn the task
-2. Receives the same `AsyncTaskReceipt`
-3. Returns it as JSON to the agent
+Two implementations:
 
-### Phase 4: Remove CLI Wait Hack
+- **`LocalAsyncTransport`** — wraps `UnifiedAsyncExecutor::execute()` directly (used in daemon)
+- **`DaemonHttpTransport`** — submits via `ApiClient` to `/async/tasks` (used in CLI)
 
-Once daemon submission works, remove `agent.wait_for_async_tasks()` from `src/channels/cli.rs`.
+The `AsyncExecutionRouter` is constructed with a `Box<dyn AsyncTaskTransport>`:
 
-### Phase 5: Task Janitor
+```rust
+pub struct AsyncExecutionRouter {
+    transport: Box<dyn AsyncTaskTransport>,
+    default_sync_timeout: Duration,
+    default_async_timeout: Duration,
+}
+```
 
-Add a background cron job in the daemon that:
+This eliminates the need for `is_daemon_mode()` branching inside the router.
+
+### Phase 4: CLI Transport Integration
+
+In CLI mode, construct the `AsyncExecutionRouter` with `DaemonHttpTransport`.
+
+The transport uses the existing `ApiClient` (`src/api/client.rs`), extended with async-task methods:
+
+```rust
+impl ApiClient {
+    pub async fn spawn_async_task(&self, req: &SpawnAsyncTaskRequest) -> Result<AsyncTaskReceipt, ClientError>;
+    pub async fn get_async_task(&self, task_id: &str) -> Result<AsyncTaskStatusResponse, ClientError>;
+    pub async fn cancel_async_task(&self, task_id: &str) -> Result<(), ClientError>;
+}
+```
+
+If the daemon is unreachable, the transport returns an error. The CLI may optionally auto-start the daemon (see *Out of Scope* below).
+
+### Phase 5: Remove CLI Wait Hacks
+
+Once daemon submission is active:
+
+1. Remove `agent.wait_for_async_tasks()` from `src/channels/cli.rs:439-446`
+2. No change needed in `src/commands/send.rs` because the async task now lives in the daemon, not the CLI process
+
+### Phase 6: Task File Janitor
+
+Register a daemon-internal cron job (reusing the existing `CronScheduler`) that:
+
 - Scans `async_tasks/` directory
 - Removes task files older than a configurable TTL (default 24h)
-- Updates registry entries for tasks that completed but weren't delivered
+- Calls `registry.cleanup_completed()` to purge stale in-memory entries
 
 ## Affected Components
 
 | Component | Changes |
 |-----------|---------|
-| `src/daemon/mod.rs` | Add async task commands and executor |
-| `src/daemon/server.rs` | HTTP endpoints for task spawn/cancel/list |
-| `src/agent/async_tool_framework.rs` | Support client-mode submission |
-| `src/extensions/services/async_router.rs` | Route to daemon when not in daemon mode |
+| `src/agent/agent.rs` | Delegate built-in tool init to `ToolRuntime` |
+| `src/runtime/tool_runtime.rs` | **New** — extracted tool registry and execution |
+| `src/api/state.rs` | Add `ToolRuntime` and `UnifiedAsyncExecutor` to `AppState` |
+| `src/api/routes/mod.rs` | Merge `/async/tasks` router |
+| `src/api/routes/async_tasks.rs` | **New** — HTTP endpoints for task lifecycle |
+| `src/api/client.rs` | Add async task methods to `ApiClient` |
+| `src/agent/async_tool_framework.rs` | Ensure `AsyncTaskReceipt` is serializable for HTTP |
+| `src/extensions/services/async_router.rs` | Inject `AsyncTaskTransport`, remove local-only assumptions |
+| `src/extensions/services/async_transport.rs` | **New** — `LocalAsyncTransport` and `DaemonHttpTransport` |
 | `src/channels/cli.rs` | Remove `wait_for_async_tasks` hack |
-| `src/api/client.rs` | Add daemon client for async task API |
+| `src/daemon/mod.rs` | Register janitor cron job (optional) |
 
 ## Migration Path
 
-1. Keep the current in-process fallback for when daemon is not running
-2. Log a warning: "Async tools work best with pekobot daemon running"
-3. After daemon-based async is stable, deprecate the fallback
+1. **Daemon-first**: When daemon is running, all async tasks are submitted via HTTP
+2. **Graceful degradation**: If daemon is unreachable, return a clear error:  
+   `"Async tool execution requires the pekobot daemon. Start it with: pekobot daemon start"`
+3. **No in-process fallback**: The old `tokio::spawn` path is removed from the CLI entirely. The daemon always uses `LocalAsyncTransport`.
+
+## Out of Scope (Separate ADRs)
+
+### ADR-020a: CLI Auto-Start Daemon
+The question of whether *all* CLI commands should automatically start the daemon if it is not running is a product-level decision that affects every command (`peko send`, `peko agent create`, `peko ext enable`, etc.). This ADR focuses **only** on async tool execution transport. If auto-start is desired, it should be specified in a follow-up ADR so that:
+- The daemon-start logic can be centralized (`ensure_daemon_running()`)
+- Commands that do not need the daemon (e.g. pure config operations) can opt out
+- UX and offline-usage implications are considered explicitly
+
+### ADR-020b: Daemon-Mode Detection
+Instead of an `is_daemon_mode()` global function, the daemon sets an environment variable (`PEKOBOT_DAEMON_MODE=1`) during startup. Components that need to know their runtime context read this variable at initialization time. This is documented here but does not require a separate ADR unless it grows into a broader runtime-profile system.
 
 ## References
 
@@ -203,3 +323,6 @@ Add a background cron job in the daemon that:
 - Async router: `src/extensions/services/async_router.rs`
 - CLI wait hack: `src/channels/cli.rs:439-446`
 - Existing daemon module: `src/daemon/mod.rs`
+- Existing API client: `src/api/client.rs`
+- E2E test contract: `e2e_tests/extensions/tools/tool_async.ps1`
+- Agent tool initialization: `src/agent/agent.rs:48`
