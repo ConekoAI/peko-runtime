@@ -866,7 +866,7 @@ impl HookHandler for McpToolExecuteHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
         // Parse tool name from pattern mcp:{server}:{tool}
         let (tool_name, params) = match ctx.as_tool_call() {
-            Some((tool_name, params)) => {
+            Some((tool_name, params, _)) => {
                 // Check if this is an MCP tool for our server
                 let expected_prefix = format!("{}:{}", MCP_TOOL_PREFIX, self.server_name);
                 if !tool_name.starts_with(&expected_prefix) {
@@ -1063,7 +1063,7 @@ impl HookHandler for McpToolExecuteAsyncHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
         // Parse tool name and params from context
         let (tool_name, params) = match ctx.as_tool_call() {
-            Some((tool_name, params)) => {
+            Some((tool_name, params, _)) => {
                 let expected_prefix = format!("{}:{}", MCP_TOOL_PREFIX, self.server_name);
                 if !tool_name.starts_with(&expected_prefix) {
                     return HookResult::PassThrough;

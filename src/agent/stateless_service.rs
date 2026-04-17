@@ -597,6 +597,11 @@ impl StatelessAgentService {
         );
 
         // 7. Agent is dropped here (stateless)
+        //
+        // ADR-020: If DaemonHttpTransport is active, async tasks live in the daemon
+        // and survive CLI exit. If LocalAsyncTransport is active, tasks are in-process
+        // and will be dropped. The global ExtensionCore is initialized with the
+        // appropriate transport in main.rs::init_extension_core().
 
         Ok(ExecutionResult {
             response: final_response,

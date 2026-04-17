@@ -152,6 +152,20 @@ impl Daemon {
             status.running = true;
         }
 
+        // Create shared AppState for API server and janitor
+        let app_state = crate::api::state::AppState::new(
+            &self.config.data_dir,
+            &self.config.host,
+            self.config.port,
+            crate::api::state::DaemonConfigSnapshot {
+                data_dir: self.config.data_dir.clone(),
+                config_dir: self.config.config_dir.clone(),
+                log_level: "info".to_string(),
+            },
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
+
         // Start HTTP API server
         let api_config = crate::api::ServerConfig {
             host: self.config.host.clone(),
@@ -165,9 +179,7 @@ impl Daemon {
         };
 
         let (api_shutdown_tx, api_shutdown_rx) = tokio::sync::oneshot::channel();
-        let api_server = crate::api::ApiServer::new(api_config)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to create API server: {e}"))?;
+        let api_server = crate::api::ApiServer::with_state(api_config, app_state.clone());
 
         let api_handle = tokio::spawn(async move {
             if let Err(e) = api_server.run(api_shutdown_rx).await {
@@ -179,6 +191,7 @@ impl Daemon {
         let mut poll_tick = interval(self.config.poll_interval);
         let mut maintenance_tick = interval(self.config.maintenance_interval);
         let mut idle_check_tick = interval(Duration::from_secs(60)); // Check idle jobs every minute
+        let mut janitor_tick = interval(Duration::from_secs(3600)); // Run janitor every hour
 
         info!("✅ Daemon ready. Waiting for cron jobs...");
 
@@ -205,6 +218,21 @@ impl Daemon {
                 _ = maintenance_tick.tick() => {
                     if let Err(e) = self.run_session_maintenance().await {
                         error!("Error running session maintenance: {}", e);
+                    }
+                }
+
+                // Periodic async task janitor (ADR-020 Phase 6)
+                _ = janitor_tick.tick() => {
+                    let executor = &app_state.async_task_executor;
+                    match executor.run_janitor(Duration::from_secs(24 * 3600)).await {
+                        Ok((files, registry)) => {
+                            if files > 0 || registry > 0 {
+                                info!("Async task janitor cleaned {} task files and {} registry entries", files, registry);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error running async task janitor: {}", e);
+                        }
                     }
                 }
 

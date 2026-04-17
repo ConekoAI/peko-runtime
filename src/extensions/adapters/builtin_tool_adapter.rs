@@ -102,8 +102,8 @@ impl BuiltinExecuteHandler {
 impl HookHandler for BuiltinExecuteHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
         // Extract tool call parameters
-        let (tool_name, params) = match ctx.as_tool_call() {
-            Some((name, params)) => (name, params),
+        let (tool_name, params, workspace) = match ctx.as_tool_call() {
+            Some((name, params, workspace)) => (name, params, workspace),
             None => return HookResult::PassThrough,
         };
 
@@ -122,7 +122,7 @@ impl HookHandler for BuiltinExecuteHandler {
         let exec_service = ctx.services.tool_execution();
         let async_router = ctx.services.async_router();
 
-        // Build execution context from hook state or use defaults
+        // Build execution context from hook input, falling back to hook state
         let tool_ctx = match ctx.as_tool_context() {
             Some(tc) => crate::extensions::services::ToolExecutionContext::new(
                 tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
@@ -132,9 +132,16 @@ impl HookHandler for BuiltinExecuteHandler {
                 tc.run_id.clone(),
             )
             .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
-            None => crate::extensions::services::ToolExecutionContext::new(
-                "unknown", "unknown", "unknown",
-            ),
+            None => {
+                let ctx = crate::extensions::services::ToolExecutionContext::new(
+                    "unknown", "unknown", "unknown",
+                );
+                // Use workspace from HookInput::ToolCall if available
+                match workspace {
+                    Some(ws) => ctx.with_workspace(ws),
+                    None => ctx,
+                }
+            }
         };
 
         // Create execution config (built-in tools have no reserved params)

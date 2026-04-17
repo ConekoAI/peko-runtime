@@ -730,6 +730,7 @@ impl AgenticLoopV4 {
                             let hook_input = HookInput::ToolCall {
                                 tool_name: name.clone(),
                                 params: arguments.clone(),
+                                workspace: self.agent.config.workspace.as_ref().map(|p| p.to_string_lossy().to_string()),
                             };
 
                             let hook_result = self
@@ -1405,6 +1406,7 @@ impl AgenticLoopV4 {
                             let hook_input = HookInput::ToolCall {
                                 tool_name: name.clone(),
                                 params: arguments.clone(),
+                                workspace: self.agent.config.workspace.as_ref().map(|p| p.to_string_lossy().to_string()),
                             };
 
                             match self

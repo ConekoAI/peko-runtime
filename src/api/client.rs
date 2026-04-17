@@ -450,6 +450,51 @@ impl ApiClient {
     }
 
     // =================================================================================
+    // Async Task Endpoints (ADR-020)
+    // =================================================================================
+
+    /// Spawn a new async task
+    pub async fn spawn_async_task(
+        &self,
+        req: &crate::api::routes::async_tasks::SpawnAsyncTaskRequest,
+    ) -> Result<crate::agent::async_tool_framework::AsyncTaskReceipt, ClientError> {
+        self.post("/async/tasks", req).await
+    }
+
+    /// Get the status of an async task
+    pub async fn get_async_task(
+        &self,
+        task_id: &str,
+    ) -> Result<crate::api::routes::async_tasks::AsyncTaskStatusResponse, ClientError> {
+        let path = format!("/async/tasks/{task_id}");
+        self.get(&path).await
+    }
+
+    /// Cancel an async task
+    ///
+    /// Returns `true` if the task was found and cancelled.
+    pub async fn cancel_async_task(&self, task_id: &str) -> Result<bool, ClientError> {
+        let path = format!("/async/tasks/{task_id}");
+        let url = format!("{}{}", self.base_url, path);
+        let response = self
+            .client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(map_http_error)?;
+
+        let status = response.status();
+        if status.is_success() {
+            let body = response.json::<serde_json::Value>().await.map_err(|e| {
+                ClientError::InvalidResponse(format!("Failed to parse cancel response: {e}"))
+            })?;
+            Ok(body.get("cancelled").and_then(|v| v.as_bool()).unwrap_or(false))
+        } else {
+            Err(self.parse_error(response).await)
+        }
+    }
+
+    // =================================================================================
     // Internal HTTP Methods
     // =================================================================================
 

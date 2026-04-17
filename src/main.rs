@@ -17,6 +17,16 @@ async fn main() {
     // Set up global paths
     let paths = GlobalPaths::from_cli(&cli);
 
+    // Initialize global ExtensionCore with the appropriate async transport
+    // BEFORE running any command that might create agents.
+    // - Daemon commands use LocalAsyncTransport (daemon owns task execution)
+    // - CLI commands try DaemonHttpTransport first, fall back to LocalAsyncTransport
+    if let Err(e) = init_extension_core(&cli.command).await {
+        tracing::warn!("Failed to initialize extension core with preferred transport: {}", e);
+        // Fallback: init with default local transport
+        let _ = run_extension_migration_with_local_transport().await;
+    }
+
     // Run auto-migration for legacy extensions (Phase 8)
     // This is idempotent - will only migrate once
     if let Err(e) = run_extension_migration(&paths).await {
@@ -52,24 +62,65 @@ async fn main() {
     }
 }
 
+/// Initialize the global ExtensionCore with the appropriate transport
+///
+/// - Daemon commands: LocalAsyncTransport (daemon executes tasks locally)
+/// - CLI commands: DaemonHttpTransport if daemon is reachable, else LocalAsyncTransport
+async fn init_extension_core(command: &Commands) -> anyhow::Result<()> {
+    use pekobot::extensions::core::{init_global_core, ExtensionCore, ExtensionServices};
+    use pekobot::extensions::services::AsyncExecutionRouter;
+    use std::sync::Arc;
+
+    let is_daemon_cmd = matches!(command, Commands::Daemon(_));
+
+    let router = if is_daemon_cmd {
+        tracing::info!("Initializing ExtensionCore with LocalAsyncTransport (daemon mode)");
+        AsyncExecutionRouter::with_transport(
+            pekobot::extensions::services::async_transport::create_local_transport(),
+        )
+    } else {
+        tracing::info!("Auto-detecting async transport for CLI mode");
+        let transport = pekobot::extensions::services::async_transport::create_transport().await;
+        AsyncExecutionRouter::with_transport(transport)
+    };
+
+    let services = ExtensionServices::with_async_router(router);
+    let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
+    init_global_core(core);
+    tracing::debug!("Initialized global ExtensionCore with async transport");
+
+    Ok(())
+}
+
+/// Fallback: initialize global ExtensionCore with default local transport
+async fn run_extension_migration_with_local_transport() -> anyhow::Result<()> {
+    use pekobot::extensions::core::{init_global_core, ExtensionCore};
+    use std::sync::Arc;
+
+    if pekobot::extensions::core::global_core().is_none() {
+        let core = Arc::new(ExtensionCore::new());
+        init_global_core(core);
+    }
+    Ok(())
+}
+
 /// Run auto-migration for legacy extensions (Phase 8)
 ///
 /// This function checks if legacy extensions need to be migrated to the new
 /// Extension 2.0 system and performs the migration if needed.
-///
-/// This also initializes the global ExtensionCore, making it available to
-/// agents via the Extension Framework.
 async fn run_extension_migration(_paths: &GlobalPaths) -> anyhow::Result<()> {
-    use pekobot::extensions::core::{init_global_core, ExtensionCore};
+    use pekobot::extensions::core::{global_core, init_global_core, ExtensionCore};
     use pekobot::extensions::manager::ExtensionManager;
     use pekobot::extensions::migration::migrate_legacy_extensions;
     use std::sync::Arc;
 
-    // Create or get the global extension core
-    // This is used by ToolFactory to discover extension tools
-    let core = Arc::new(ExtensionCore::new());
-    init_global_core(core.clone());
-    tracing::debug!("Initialized global ExtensionCore");
+    // Ensure global core is initialized (fallback if init_extension_core failed)
+    let core = global_core().unwrap_or_else(|| {
+        let core = Arc::new(ExtensionCore::new());
+        init_global_core(core.clone());
+        core
+    });
+    tracing::debug!("Using global ExtensionCore for migration");
 
     // Create extension manager with the global core
     let mut manager = ExtensionManager::with_core(core.clone());

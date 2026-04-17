@@ -303,8 +303,7 @@ impl HookOutput {
 
 
 /// Input to a hook handler
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum HookInput {
     /// No input
     #[default]
@@ -320,6 +319,8 @@ pub enum HookInput {
     ToolCall {
         tool_name: String,
         params: serde_json::Value,
+        /// Workspace directory for tool execution (optional)
+        workspace: Option<String>,
     },
 
     /// Async task status check

@@ -105,6 +105,12 @@ impl Agent {
             tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
         }
 
+        // ADR-020: Set tool config on ExtensionCore before registering tools
+        // so that permission checks pass during registration
+        if let Some(ref tool_config) = self.config.tools {
+            self.extension_core.set_tool_config(tool_config.clone()).await;
+        }
+
         // Load Universal Tools from extensions directory (where `pekobot ext install` puts them)
         let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
         tracing::info!(

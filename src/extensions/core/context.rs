@@ -73,10 +73,14 @@ impl HookContext {
     }
 
     /// Get input as tool call if applicable
-    #[must_use] 
-    pub fn as_tool_call(&self) -> Option<(&str, &serde_json::Value)> {
+    #[must_use]
+    pub fn as_tool_call(&self) -> Option<(&str, &serde_json::Value, Option<&str>)> {
         match &self.input {
-            HookInput::ToolCall { tool_name, params } => Some((tool_name, params)),
+            HookInput::ToolCall {
+                tool_name,
+                params,
+                workspace,
+            } => Some((tool_name, params, workspace.as_deref())),
             _ => None,
         }
     }
@@ -228,15 +232,21 @@ pub struct ExtensionServices {
 }
 
 impl ExtensionServices {
-    /// Create new extension services
-    #[must_use] 
+    /// Create new extension services with default local transport
+    #[must_use]
     pub fn new() -> Self {
+        Self::with_async_router(crate::extensions::services::AsyncExecutionRouter::new())
+    }
+
+    /// Create with a custom async execution router (for custom transport)
+    #[must_use]
+    pub fn with_async_router(async_router: crate::extensions::services::AsyncExecutionRouter) -> Self {
         Self {
             config: ExtensionConfig::default(),
             telemetry: TelemetryService::new(),
             tool_execution: crate::extensions::services::ToolExecutionService::new(),
             reserved_params: crate::extensions::services::ReservedParamsService::new(),
-            async_router: crate::extensions::services::AsyncExecutionRouter::new(),
+            async_router,
         }
     }
 

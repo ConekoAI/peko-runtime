@@ -31,8 +31,12 @@ pub mod tool_execution;
 // Async execution router module
 pub mod async_router;
 
+// Async task transport abstraction (ADR-020)
+pub mod async_transport;
+
 // Re-export main types
 pub use async_router::{AsyncExecutionRouter, AsyncReservedParams, ToolExecutionContext};
+pub use async_transport::{AsyncTaskTransport, DaemonHttpTransport, LocalAsyncTransport};
 pub use reserved_params::{ParamSource, ReservedParamsConfig, ReservedParamsService};
 pub use tool_execution::{ToolExecutionConfig, ToolExecutionService};
 
@@ -50,14 +54,29 @@ pub struct Services {
 }
 
 impl Services {
-    /// Create new services container
-    #[must_use] 
+    /// Create new services container with default local transport
+    #[must_use]
     pub fn new() -> Self {
+        Self::with_transport(async_transport::create_local_transport())
+    }
+
+    /// Create services with a custom async task transport
+    #[must_use]
+    pub fn with_transport(transport: Arc<dyn AsyncTaskTransport>) -> Self {
         Self {
             reserved_params: Arc::new(reserved_params::ReservedParamsService::new()),
             tool_execution: Arc::new(tool_execution::ToolExecutionService::new()),
-            async_router: Arc::new(async_router::AsyncExecutionRouter::new()),
+            async_router: Arc::new(async_router::AsyncExecutionRouter::with_transport(transport)),
         }
+    }
+
+    /// Create services by auto-detecting the best transport
+    ///
+    /// - If daemon is reachable, uses `DaemonHttpTransport`
+    /// - Otherwise, falls back to `LocalAsyncTransport`
+    pub async fn new_auto() -> Self {
+        let transport = async_transport::create_transport().await;
+        Self::with_transport(transport)
     }
 
     /// Get the reserved parameters service

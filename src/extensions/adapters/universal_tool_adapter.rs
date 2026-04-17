@@ -561,7 +561,7 @@ impl HookHandler for UniversalToolExecuteHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
         // Extract tool call parameters from context
         let params = match ctx.as_tool_call() {
-            Some((tool_name, params)) => {
+            Some((tool_name, params, _)) => {
                 if tool_name != self.tool_name {
                     return HookResult::PassThrough; // Not for this tool
                 }
@@ -681,7 +681,7 @@ impl HookHandler for UniversalToolExecuteAsyncHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
         // Validate this is the right tool
         match ctx.as_tool_call() {
-            Some((tool_name, _)) if tool_name != self.tool_name => {
+            Some((tool_name, _, _)) if tool_name != self.tool_name => {
                 return HookResult::PassThrough;
             }
             None => return HookResult::PassThrough,

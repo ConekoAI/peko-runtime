@@ -3,6 +3,7 @@
 //! Shared state accessible to all API route handlers.
 //! Updated for stateless cold-start architecture.
 
+use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
@@ -12,6 +13,7 @@ use crate::common::services::{
 use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
+use crate::runtime::ToolRuntime;
 use crate::team::TeamManager;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -81,6 +83,12 @@ pub struct AppState {
     /// Team management service (unified for CLI and API)
     team_service: Arc<TeamManagementService>,
 
+    /// Tool runtime for async task execution (ADR-020)
+    pub tool_runtime: Arc<ToolRuntime>,
+
+    /// Async task executor for daemon-side background execution (ADR-020)
+    pub async_task_executor: Arc<UnifiedAsyncExecutor>,
+
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
 }
@@ -98,6 +106,8 @@ impl std::fmt::Debug for AppState {
             .field("agent_service", &"<StatelessAgentService>")
             .field("agent_mgmt_service", &"<AgentService>")
             .field("team_service", &"<TeamManagementService>")
+            .field("tool_runtime", &"<ToolRuntime>")
+            .field("async_task_executor", &"<UnifiedAsyncExecutor>")
             .finish()
     }
 }
@@ -213,7 +223,15 @@ impl AppState {
             path_resolver_clone.clone(),
         ));
 
-        let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone));
+        let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone.clone()));
+
+        // ADR-020: Initialize ToolRuntime and UnifiedAsyncExecutor for daemon-side async execution
+        let tool_runtime = Arc::new(
+            ToolRuntime::new(path_resolver_clone.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
+        );
+        let async_task_executor = Arc::new(UnifiedAsyncExecutor::new());
 
         Ok(Self {
             started_at: SystemTime::now(),
@@ -235,6 +253,8 @@ impl AppState {
             lifecycle,
             session_service,
             team_service,
+            tool_runtime,
+            async_task_executor,
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
     }

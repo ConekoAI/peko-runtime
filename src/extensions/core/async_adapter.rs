@@ -165,6 +165,7 @@ impl ExtensionAsyncAdapter {
                 HookInput::ToolCall {
                     tool_name: tool_name.to_string(),
                     params: params.clone(),
+                    workspace: None,
                 },
             )
             .await;
@@ -220,6 +221,7 @@ impl ExtensionAsyncAdapter {
                             HookInput::ToolCall {
                                 tool_name: tool_name_clone,
                                 params,
+                                workspace: None,
                             },
                         )
                         .await;

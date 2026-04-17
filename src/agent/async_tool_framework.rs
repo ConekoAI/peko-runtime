@@ -481,6 +481,24 @@ pub struct AsyncTaskEntry {
     completion_tx: Option<mpsc::Sender<AsyncTaskStatus>>,
 }
 
+impl Clone for AsyncTaskEntry {
+    fn clone(&self) -> Self {
+        Self {
+            task_id: self.task_id.clone(),
+            tool_name: self.tool_name.clone(),
+            params: self.params.clone(),
+            status: self.status.clone(),
+            result: self.result.clone(),
+            parent_session_key: self.parent_session_key.clone(),
+            created_at: self.created_at,
+            completed_at: self.completed_at,
+            config: self.config.clone(),
+            formatted_result: self.formatted_result.clone(),
+            completion_tx: None,
+        }
+    }
+}
+
 impl AsyncTaskEntry {
     /// Create a new async task entry
     #[must_use]
@@ -522,24 +540,6 @@ impl AsyncTaskEntry {
         if let Some(ref tx) = self.completion_tx {
             // Use try_send to avoid blocking - if channel is full, skip notification
             let _ = tx.try_send(self.status.clone());
-        }
-    }
-}
-
-impl Clone for AsyncTaskEntry {
-    fn clone(&self) -> Self {
-        Self {
-            task_id: self.task_id.clone(),
-            tool_name: self.tool_name.clone(),
-            params: self.params.clone(),
-            status: self.status.clone(),
-            result: self.result.clone(),
-            parent_session_key: self.parent_session_key.clone(),
-            created_at: self.created_at,
-            completed_at: self.completed_at,
-            config: self.config.clone(),
-            formatted_result: self.formatted_result.clone(),
-            completion_tx: None, // Channels don't clone, will need to be re-set
         }
     }
 }
@@ -729,6 +729,18 @@ impl AsyncTaskRegistry {
         self.pending_announcements
             .get(session_key)
             .map_or(0, std::vec::Vec::len)
+    }
+
+    /// List all tasks, optionally filtered by session_key
+    #[must_use]
+    pub fn list_tasks(&self, session_key: Option<&str>) -> Vec<AsyncTaskEntry> {
+        self.tasks
+            .values()
+            .filter(|entry| {
+                session_key.map_or(true, |sk| entry.parent_session_key == sk)
+            })
+            .map(|entry| entry.clone())
+            .collect()
     }
 
     pub fn cleanup_completed(&mut self) -> usize {
@@ -1321,6 +1333,164 @@ impl UnifiedAsyncExecutor {
         })
     }
 
+    /// Execute an async task with a boxed future
+    ///
+    /// This is a non-generic variant of `execute()` for callers that cannot
+    /// easily satisfy the `FnOnce() -> Fut` inference (e.g. HTTP route handlers).
+    pub async fn execute_boxed(
+        &self,
+        task_id: AsyncTaskId,
+        tool_name: impl Into<String>,
+        params: Value,
+        parent_session_key: impl Into<String>,
+        config: AsyncToolConfig,
+        execution_fn: Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<AsyncTaskResult>> + Send>> + Send>,
+    ) -> Result<AsyncTaskReceipt> {
+        let tool_name = tool_name.into();
+        let parent_session_key = parent_session_key.into();
+
+        let task_file = self.task_file_writer.as_ref().map(|w| w.task_file_path(&task_id));
+
+        if let Some(ref writer) = self.task_file_writer {
+            let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
+            record.timeout_requested = Some(config.timeout_secs);
+            record.callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
+            if let Err(e) = writer.write(&record).await {
+                tracing::warn!("Failed to write initial task file for {}: {}", task_id, e);
+            }
+        }
+
+        let entry = AsyncTaskEntry::new(
+            task_id.clone(),
+            tool_name.clone(),
+            params,
+            parent_session_key.clone(),
+            config.clone(),
+        );
+
+        {
+            let mut registry = self.registry.write().await;
+            registry.register(entry);
+        }
+
+        let delivery_target = config.delivery_target.unwrap_or(self.default_delivery);
+        let delivery = {
+            let deliveries = self.deliveries.read().await;
+            deliveries.get(&delivery_target).cloned()
+        };
+
+        let delivery: Box<dyn ResultDelivery> = match delivery {
+            Some(d) => d,
+            None => Box::new(QueueDelivery::new(self.queue_manager.clone())),
+        };
+
+        enum TaskOutcome {
+            Success(AsyncTaskResult),
+            Failure(anyhow::Error),
+            Timeout,
+        }
+
+        let registry_clone = self.registry.clone();
+        let task_id_clone = task_id.clone();
+        let task_file_writer_clone = self.task_file_writer.clone();
+        let timeout_secs = config.timeout_secs;
+        let callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
+
+        tokio::spawn(async move {
+            {
+                let mut registry = registry_clone.write().await;
+                registry.update_status(&task_id_clone, AsyncTaskStatus::Running);
+            }
+            if let Some(ref writer) = task_file_writer_clone {
+                let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.timeout_requested = Some(timeout_secs);
+                record.callback_mode = callback_mode.clone();
+                record.set_running();
+                if let Err(e) = writer.write(&record).await {
+                    tracing::warn!("Failed to write running task file for {}: {}", task_id_clone, e);
+                }
+            }
+
+            let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+            let outcome = match tokio::time::timeout(timeout_duration, execution_fn()).await {
+                Ok(Ok(async_result)) => TaskOutcome::Success(async_result),
+                Ok(Err(e)) => TaskOutcome::Failure(e),
+                Err(_) => TaskOutcome::Timeout,
+            };
+
+            let was_cancelled = {
+                let registry = registry_clone.read().await;
+                registry.get(&task_id_clone)
+                    .map(|e| matches!(e.status, AsyncTaskStatus::Cancelled))
+                    .unwrap_or(false)
+            };
+
+            if was_cancelled {
+                tracing::debug!("Task {} was cancelled, skipping result update", task_id_clone);
+                return;
+            }
+
+            let status = match &outcome {
+                TaskOutcome::Success(_) => AsyncTaskStatus::Completed {
+                    result: ToolResult::success(serde_json::json!({"completed": true})),
+                },
+                TaskOutcome::Failure(e) => AsyncTaskStatus::Failed {
+                    error: e.to_string(),
+                },
+                TaskOutcome::Timeout => AsyncTaskStatus::TimedOut {
+                    error: format!("Task timed out after {}s", timeout_secs),
+                },
+            };
+
+            {
+                let mut registry = registry_clone.write().await;
+                registry.update_status(&task_id_clone, status.clone());
+
+                if let TaskOutcome::Success(ref async_result) = outcome {
+                    if let Some(entry) = registry.get_mut(&task_id_clone) {
+                        entry.set_result(async_result.clone());
+                    }
+                }
+            }
+
+            if let Some(ref writer) = task_file_writer_clone {
+                let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.timeout_requested = Some(timeout_secs);
+                record.callback_mode = callback_mode.clone();
+                match outcome {
+                    TaskOutcome::Success(async_result) => {
+                        if let AsyncTaskResult::Process { stdout, stderr, exit_code } = &async_result {
+                            record.set_process_output(stdout.clone(), stderr.clone(), *exit_code);
+                        }
+                        record.set_completed(serde_json::to_value(&async_result).unwrap_or_default());
+                    }
+                    TaskOutcome::Failure(e) => {
+                        record.set_failed(e.to_string());
+                    }
+                    TaskOutcome::Timeout => {
+                        record.set_timed_out(format!("Task timed out after {}s", timeout_secs));
+                    }
+                }
+                if let Err(e) = writer.write(&record).await {
+                    tracing::warn!("Failed to write final task file for {}: {}", task_id_clone, e);
+                }
+            }
+
+            if let Some(entry) = registry_clone.read().await.get(&task_id_clone) {
+                if let Err(e) = delivery.deliver(entry).await {
+                    tracing::debug!("Delivery result for task {}: {}", task_id_clone, e);
+                }
+            }
+        });
+
+        Ok(AsyncTaskReceipt {
+            task_id: task_id.clone(),
+            status: AsyncTaskStatus::Pending,
+            estimated_duration_secs: None,
+            task_file,
+        })
+    }
+
     /// Wait for a task to complete (sync mode)
     ///
     /// This is a convenience method for tools that need to wait for completion.
@@ -1372,6 +1542,36 @@ impl UnifiedAsyncExecutor {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// List all tasks in the registry, optionally filtered by session_key
+    pub async fn list_tasks(
+        &self,
+        session_key: Option<&str>,
+    ) -> Vec<AsyncTaskEntry> {
+        let registry = self.registry.read().await;
+        registry.list_tasks(session_key)
+    }
+
+    /// Run janitor: clean old task files and purge stale registry entries
+    ///
+    /// Returns the number of task files removed and the number of registry entries purged.
+    pub async fn run_janitor(
+        &self,
+        file_ttl: Duration,
+    ) -> Result<(usize, usize)> {
+        let files_removed = if let Some(ref writer) = self.task_file_writer {
+            writer.cleanup_old(file_ttl).await?
+        } else {
+            0
+        };
+
+        let registry_purged = {
+            let mut registry = self.registry.write().await;
+            registry.cleanup_completed()
+        };
+
+        Ok((files_removed, registry_purged))
     }
 }
 

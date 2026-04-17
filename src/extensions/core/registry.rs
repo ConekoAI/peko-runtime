@@ -999,6 +999,7 @@ mod tests {
                 HookInput::ToolCall {
                     tool_name: "test_tool".to_string(),
                     params: serde_json::json!({}),
+                    workspace: None,
                 },
             )
             .await;
@@ -1056,6 +1057,7 @@ mod tests {
                 HookInput::ToolCall {
                     tool_name: "enabled_tool".to_string(),
                     params: serde_json::json!({}),
+                    workspace: None,
                 },
             )
             .await;

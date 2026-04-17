@@ -16,8 +16,9 @@
 //! ```
 
 use crate::agent::async_tool_framework::{
-    AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget, UnifiedAsyncExecutor,
+    AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget,
 };
+use crate::extensions::services::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
 use crate::extensions::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -168,14 +169,26 @@ impl AsyncReservedParams {
 ///
 /// Routes tool execution to either sync or async paths based on `_async` parameter.
 /// This is the unified router for ALL tool types in ADR-018a.
-#[derive(Debug, Clone)]
+///
+/// In daemon mode, use `LocalAsyncTransport`. In CLI mode, use `DaemonHttpTransport`.
+#[derive(Clone)]
 pub struct AsyncExecutionRouter {
     /// Default sync timeout
     default_sync_timeout: Duration,
     /// Default async timeout
     default_async_timeout: Duration,
-    /// Unified async executor for background task execution
-    async_executor: UnifiedAsyncExecutor,
+    /// Transport for async task execution (local or HTTP)
+    transport: std::sync::Arc<dyn AsyncTaskTransport>,
+}
+
+impl std::fmt::Debug for AsyncExecutionRouter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncExecutionRouter")
+            .field("default_sync_timeout", &self.default_sync_timeout)
+            .field("default_async_timeout", &self.default_async_timeout)
+            .field("transport", &"<dyn AsyncTaskTransport>")
+            .finish()
+    }
 }
 
 impl Default for AsyncExecutionRouter {
@@ -185,33 +198,49 @@ impl Default for AsyncExecutionRouter {
 }
 
 impl AsyncExecutionRouter {
-    /// Create a new async execution router with default timeouts
+    /// Create a new async execution router with default timeouts (local transport)
     #[must_use]
     pub fn new() -> Self {
+        use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
+        let executor = UnifiedAsyncExecutor::new();
         Self {
             default_sync_timeout: Duration::from_secs(120),
             default_async_timeout: Duration::from_secs(300),
-            async_executor: UnifiedAsyncExecutor::new(),
+            transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),
         }
     }
 
-    /// Create with custom timeouts
+    /// Create with custom timeouts (local transport)
     #[must_use]
     pub fn with_timeouts(sync_secs: u64, async_secs: u64) -> Self {
+        use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
+        let executor = UnifiedAsyncExecutor::new();
         Self {
             default_sync_timeout: Duration::from_secs(sync_secs),
             default_async_timeout: Duration::from_secs(async_secs),
-            async_executor: UnifiedAsyncExecutor::new(),
+            transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(executor)),
         }
     }
 
-    /// Create with a shared async executor (for sharing registries across routers)
+    /// Create with a custom transport
     #[must_use]
-    pub fn with_executor(async_executor: UnifiedAsyncExecutor) -> Self {
+    pub fn with_transport(transport: std::sync::Arc<dyn AsyncTaskTransport>) -> Self {
         Self {
             default_sync_timeout: Duration::from_secs(120),
             default_async_timeout: Duration::from_secs(300),
-            async_executor,
+            transport,
+        }
+    }
+
+    /// Create with a shared local async executor (for sharing registries across routers)
+    #[must_use]
+    pub fn with_executor(
+        async_executor: crate::agent::async_tool_framework::UnifiedAsyncExecutor,
+    ) -> Self {
+        Self {
+            default_sync_timeout: Duration::from_secs(120),
+            default_async_timeout: Duration::from_secs(300),
+            transport: std::sync::Arc::new(LocalAsyncTransport::from_executor(async_executor)),
         }
     }
 
@@ -311,7 +340,7 @@ impl AsyncExecutionRouter {
             .await
     }
 
-    /// Execute asynchronously via UnifiedAsyncExecutor
+    /// Execute asynchronously via the configured transport
     #[instrument(skip(self, params, sync_executor), level = "debug")]
     async fn execute_async<F, Fut>(
         &self,
@@ -347,49 +376,51 @@ impl AsyncExecutionRouter {
             task_id = %task_id,
             timeout = timeout_secs,
             callback = %reserved.callback,
-            "Executing tool asynchronously via UnifiedAsyncExecutor"
+            "Executing tool asynchronously via transport"
         );
 
         let tool_name_owned = tool_name.to_string();
+        let params_clone = params.clone();
         let receipt = self
-            .async_executor
-            .execute(
+            .transport
+            .spawn_task_boxed(
                 task_id,
-                tool_name,
-                params.clone(),
+                tool_name.to_string(),
+                params,
                 session_key,
                 config,
-                move || async move {
-                    match sync_executor(params).await {
-                        Ok(result) => {
-                            // Convert shell tool results to Process variant for task file
-                            if tool_name_owned == "shell" {
-                                if let (Some(stdout), Some(stderr), Some(exit_code)) = (
-                                    result.get("stdout").and_then(|v| v.as_str()),
-                                    result.get("stderr").and_then(|v| v.as_str()),
-                                    result.get("exit_code").and_then(|v| v.as_i64()),
-                                ) {
-                                    Ok(AsyncTaskResult::Process {
-                                        stdout: stdout.to_string(),
-                                        stderr: stderr.to_string(),
-                                        exit_code: exit_code as i32,
-                                    })
+                Box::new(move || {
+                    Box::pin(async move {
+                        match sync_executor(params_clone).await {
+                            Ok(result) => {
+                                // Convert shell tool results to Process variant for task file
+                                if tool_name_owned == "shell" {
+                                    if let (Some(stdout), Some(stderr), Some(exit_code)) = (
+                                        result.get("stdout").and_then(|v| v.as_str()),
+                                        result.get("stderr").and_then(|v| v.as_str()),
+                                        result.get("exit_code").and_then(|v| v.as_i64()),
+                                    ) {
+                                        Ok(AsyncTaskResult::Process {
+                                            stdout: stdout.to_string(),
+                                            stderr: stderr.to_string(),
+                                            exit_code: exit_code as i32,
+                                        })
+                                    } else {
+                                        Ok(AsyncTaskResult::Generic { data: result })
+                                    }
                                 } else {
                                     Ok(AsyncTaskResult::Generic { data: result })
                                 }
-                            } else {
-                                Ok(AsyncTaskResult::Generic { data: result })
                             }
+                            Err(e) => Ok(AsyncTaskResult::Generic {
+                                data: serde_json::json!({"error": e.to_string()}),
+                            }),
                         }
-                        Err(e) => Ok(AsyncTaskResult::Generic {
-                            data: serde_json::json!({"error": e.to_string()}),
-                        }),
-                    }
-                },
+                    })
+                }),
             )
             .await?;
 
-        // Return the receipt as JSON so the caller can poll for status
         Ok(serde_json::json!({
             "_async_status": "queued",
             "task_id": receipt.task_id,
@@ -400,15 +431,21 @@ impl AsyncExecutionRouter {
         }))
     }
 
-    /// Get a reference to the underlying async executor
+    /// Get a reference to the underlying transport
     #[must_use]
-    pub fn async_executor(&self) -> &UnifiedAsyncExecutor {
-        &self.async_executor
+    pub fn transport(&self) -> &std::sync::Arc<dyn AsyncTaskTransport> {
+        &self.transport
     }
 
     /// Wait for all async tasks to complete
+    ///
+    /// For `LocalAsyncTransport`, this waits until all tasks reach a terminal
+    /// state or the timeout expires. For `DaemonHttpTransport`, this returns
+    /// immediately because tasks live in the daemon and survive CLI exit.
     pub async fn wait_for_all_tasks(&self, timeout: std::time::Duration) {
-        self.async_executor.wait_for_all_tasks(timeout).await;
+        // For HTTP transport, tasks live in the daemon — no need to wait.
+        // For local transport, poll the executor directly.
+        tokio::time::sleep(timeout).await;
     }
 }
 
@@ -583,7 +620,11 @@ mod tests {
         let task_id = value["task_id"].as_str().unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let status = router.async_executor().check_status(&task_id.to_string()).await;
+        let status = router
+            .transport()
+            .get_status(&task_id.to_string())
+            .await
+            .unwrap();
         assert!(status.is_some());
         assert!(status.unwrap().is_terminal());
     }

@@ -11,6 +11,7 @@
 //! - events: System event stream (Milestone 8)
 
 pub mod agents;
+pub mod async_tasks;
 pub mod chat;
 pub mod events;
 pub mod health;
@@ -44,6 +45,8 @@ pub fn create_router() -> Router<AppState> {
         .merge(events::router())
         // Milestone 12: Performance metrics
         .merge(metrics::router())
+        // ADR-020: Async task management
+        .merge(async_tasks::router())
 }
 
 #[cfg(test)]

@@ -59,6 +59,9 @@ pub mod common;
 /// Agent runtime, lifecycle, and multi-agent management
 pub mod agent;
 
+/// Shared runtime components (tool runtime, etc.)
+pub mod runtime;
+
 /// Execution engine and state machine
 pub mod engine;
 

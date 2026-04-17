@@ -60,7 +60,28 @@ impl ApiServer {
     ///
     /// If the host is not a loopback address, a security warning will be logged.
     pub async fn new(config: ServerConfig) -> anyhow::Result<Self> {
-        // Log security warning for non-loopback binding
+        Self::log_security_warning(&config);
+
+        let state = AppState::new(
+            &config.workspace_path,
+            &config.host,
+            config.port,
+            config.daemon_config.clone(),
+        )
+        .await?;
+
+        Ok(Self { config, state })
+    }
+
+    /// Create an API server with an existing AppState
+    ///
+    /// Used by the daemon when it needs to share state with background tasks.
+    pub fn with_state(config: ServerConfig, state: AppState) -> Self {
+        Self::log_security_warning(&config);
+        Self { config, state }
+    }
+
+    fn log_security_warning(config: &ServerConfig) {
         if !is_loopback(&config.host) {
             warn!(
                 "\n\
@@ -73,16 +94,6 @@ impl ApiServer {
                 config.host
             );
         }
-
-        let state = AppState::new(
-            &config.workspace_path,
-            &config.host,
-            config.port,
-            config.daemon_config.clone(),
-        )
-        .await?;
-
-        Ok(Self { config, state })
     }
 
     /// Create the Axum router with all routes and middleware
