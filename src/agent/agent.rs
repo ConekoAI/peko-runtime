@@ -3,7 +3,7 @@
 use crate::agent::subagent_executor::SubagentExecutor;
 use crate::common::paths::PathResolver;
 use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
-use crate::extensions::core::{global_core, init_global_core, ExtensionCore};
+use crate::extensions::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::context::{SessionContext, SessionRouter};
 use crate::session::manager::SessionManager;
@@ -215,12 +215,8 @@ impl Agent {
             config.name
         )));
 
-        // Get or initialize global extension core
-        let extension_core = global_core().unwrap_or_else(|| {
-            let core = Arc::new(ExtensionCore::new());
-            init_global_core(core.clone());
-            core
-        });
+        // Global ExtensionCore is always initialized in main.rs before command dispatch.
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
 
         let agent = Self {
             config,

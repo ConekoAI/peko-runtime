@@ -20,12 +20,10 @@ async fn main() {
     // Initialize global ExtensionCore with the appropriate async transport
     // BEFORE running any command that might create agents.
     // - Daemon commands use LocalAsyncTransport (daemon owns task execution)
-    // - CLI commands try DaemonHttpTransport first, fall back to LocalAsyncTransport
-    if let Err(e) = init_extension_core(&cli.command).await {
-        tracing::warn!("Failed to initialize extension core with preferred transport: {}", e);
-        // Fallback: init with default local transport
-        let _ = run_extension_migration_with_local_transport().await;
-    }
+    // - CLI commands use DaemonHttpTransport if daemon is reachable;
+    //   otherwise UnavailableAsyncTransport so async tools fail fast with a clear error.
+    //   ADR-020: No in-process fallback. The old tokio::spawn path is removed from CLI.
+    init_extension_core(&cli.command).await;
 
     // Run auto-migration for legacy extensions (Phase 8)
     // This is idempotent - will only migrate once
@@ -65,8 +63,10 @@ async fn main() {
 /// Initialize the global ExtensionCore with the appropriate transport
 ///
 /// - Daemon commands: LocalAsyncTransport (daemon executes tasks locally)
-/// - CLI commands: DaemonHttpTransport if daemon is reachable, else LocalAsyncTransport
-async fn init_extension_core(command: &Commands) -> anyhow::Result<()> {
+/// - CLI commands: DaemonHttpTransport if daemon is reachable, else UnavailableAsyncTransport
+///   so that async tools fail fast with a clear error instead of falling back to
+///   in-process execution that would be dropped on CLI exit (ADR-020).
+async fn init_extension_core(command: &Commands) {
     use pekobot::extensions::core::{init_global_core, ExtensionCore, ExtensionServices};
     use pekobot::extensions::services::AsyncExecutionRouter;
     use std::sync::Arc;
@@ -80,28 +80,28 @@ async fn init_extension_core(command: &Commands) -> anyhow::Result<()> {
         )
     } else {
         tracing::info!("Auto-detecting async transport for CLI mode");
-        let transport = pekobot::extensions::services::async_transport::create_transport().await?;
-        AsyncExecutionRouter::with_transport(transport)
+        match pekobot::extensions::services::async_transport::create_transport().await {
+            Ok(transport) => AsyncExecutionRouter::with_transport(transport),
+            Err(e) => {
+                tracing::warn!(
+                    "Daemon not reachable, async tools will fail: {}",
+                    e
+                );
+                AsyncExecutionRouter::with_transport(std::sync::Arc::new(
+                    pekobot::extensions::services::async_transport::UnavailableAsyncTransport::new(
+                        "Pekobot daemon is not running. Async tool execution requires the daemon.\n\
+                         Start it with: pekobot daemon start\n\
+                         Or use sync mode (remove _async: true from the tool call).",
+                    ),
+                ))
+            }
+        }
     };
 
     let services = ExtensionServices::with_async_router(router);
     let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
     init_global_core(core);
     tracing::debug!("Initialized global ExtensionCore with async transport");
-
-    Ok(())
-}
-
-/// Fallback: initialize global ExtensionCore with default local transport
-async fn run_extension_migration_with_local_transport() -> anyhow::Result<()> {
-    use pekobot::extensions::core::{init_global_core, ExtensionCore};
-    use std::sync::Arc;
-
-    if pekobot::extensions::core::global_core().is_none() {
-        let core = Arc::new(ExtensionCore::new());
-        init_global_core(core);
-    }
-    Ok(())
 }
 
 /// Run auto-migration for legacy extensions (Phase 8)
@@ -109,17 +109,13 @@ async fn run_extension_migration_with_local_transport() -> anyhow::Result<()> {
 /// This function checks if legacy extensions need to be migrated to the new
 /// Extension 2.0 system and performs the migration if needed.
 async fn run_extension_migration(_paths: &GlobalPaths) -> anyhow::Result<()> {
-    use pekobot::extensions::core::{global_core, init_global_core, ExtensionCore};
+    use pekobot::extensions::core::global_core;
     use pekobot::extensions::manager::ExtensionManager;
     use pekobot::extensions::migration::migrate_legacy_extensions;
-    use std::sync::Arc;
 
-    // Ensure global core is initialized (fallback if init_extension_core failed)
-    let core = global_core().unwrap_or_else(|| {
-        let core = Arc::new(ExtensionCore::new());
-        init_global_core(core.clone());
-        core
-    });
+    let core = global_core().ok_or_else(|| {
+        anyhow::anyhow!("Global ExtensionCore not initialized before migration")
+    })?;
     tracing::debug!("Using global ExtensionCore for migration");
 
     // Create extension manager with the global core

@@ -159,16 +159,11 @@ async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> Exte
         mcp_adapter::McpAdapter, skill_adapter::SkillAdapter,
         universal_tool_adapter::UniversalToolAdapter,
     };
-    use crate::extensions::core::{global_core, init_global_core, ExtensionCore};
+    use crate::extensions::core::global_core;
     use crate::tools::builtin_registry::{BuiltinRegistry, BuiltinRegistryConfig};
-    use std::sync::Arc;
 
-    // Get or initialize global ExtensionCore for consistency with agent
-    let core = global_core().unwrap_or_else(|| {
-        let core = Arc::new(ExtensionCore::new());
-        init_global_core(core.clone());
-        core
-    });
+    // Global ExtensionCore is always initialized in main.rs before command dispatch.
+    let core = global_core().expect("Global ExtensionCore not initialized");
 
     // Register built-in tools so they appear in ExtensionCore queries (e.g. ext list)
     if let Err(e) = BuiltinRegistry::register(&core, &BuiltinRegistryConfig::default()).await {

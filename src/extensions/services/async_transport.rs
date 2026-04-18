@@ -244,6 +244,65 @@ impl Default for DaemonHttpTransport {
 }
 
 // ================================================================================
+// UnavailableAsyncTransport — used when daemon is unreachable in CLI mode
+// ================================================================================
+
+/// Transport that always returns an error, used when async execution is unavailable.
+///
+/// This is used in CLI mode when the daemon is not running. Sync tools continue
+/// to work, but async tools fail fast with a clear error message instead of
+/// silently falling back to in-process execution (which would be dropped on CLI exit).
+#[derive(Debug, Clone)]
+pub struct UnavailableAsyncTransport {
+    message: String,
+}
+
+impl UnavailableAsyncTransport {
+    /// Create with a custom error message
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AsyncTaskTransport for UnavailableAsyncTransport {
+    async fn spawn_task(
+        &self,
+        _task_id: AsyncTaskId,
+        _tool_name: String,
+        _params: Value,
+        _session_key: String,
+        _workspace: std::path::PathBuf,
+        _config: AsyncToolConfig,
+    ) -> Result<AsyncTaskReceipt> {
+        anyhow::bail!("{}", self.message)
+    }
+
+    async fn spawn_task_boxed(
+        &self,
+        _task_id: AsyncTaskId,
+        _tool_name: String,
+        _params: Value,
+        _session_key: String,
+        _workspace: std::path::PathBuf,
+        _config: AsyncToolConfig,
+        _execution_fn: BoxedExecutionFn,
+    ) -> Result<AsyncTaskReceipt> {
+        anyhow::bail!("{}", self.message)
+    }
+
+    async fn get_status(&self, _task_id: &AsyncTaskId) -> Result<Option<AsyncTaskStatus>> {
+        anyhow::bail!("{}", self.message)
+    }
+
+    async fn cancel_task(&self, _task_id: &AsyncTaskId) -> Result<bool> {
+        anyhow::bail!("{}", self.message)
+    }
+}
+
+// ================================================================================
 // Transport factory — detects daemon and chooses transport
 // ================================================================================
 
