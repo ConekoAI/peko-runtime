@@ -69,6 +69,9 @@ pub struct ExtensionAsyncAdapter {
 
     /// Cache of extension capabilities (which tools support async)
     capability_cache: Arc<RwLock<HashMap<String, AsyncCapability>>>,
+
+    /// Workspace directory for tool execution context
+    workspace: Option<String>,
 }
 
 /// Capability information for a tool's async support
@@ -89,11 +92,16 @@ struct AsyncCapability {
 
 impl ExtensionAsyncAdapter {
     /// Create a new async adapter with default executor
+    ///
+    /// # Note
+    /// If the adapter will be used for tool execution that requires workspace
+    /// context, chain `.with_workspace(...)` after `new()`.
     pub fn new(core: Arc<ExtensionCore>) -> Self {
         Self {
             core,
             executor: UnifiedAsyncExecutor::new(),
             capability_cache: Arc::new(RwLock::new(HashMap::new())),
+            workspace: None,
         }
     }
 
@@ -103,7 +111,14 @@ impl ExtensionAsyncAdapter {
             core,
             executor,
             capability_cache: Arc::new(RwLock::new(HashMap::new())),
+            workspace: None,
         }
+    }
+
+    /// Set the workspace directory for tool execution context
+    pub fn with_workspace(mut self, workspace: impl Into<String>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
     }
 
     /// Get the underlying `ExtensionCore`
@@ -165,7 +180,7 @@ impl ExtensionAsyncAdapter {
                 HookInput::ToolCall {
                     tool_name: tool_name.to_string(),
                     params: params.clone(),
-                    workspace: None,
+                    workspace: self.workspace.clone(),
                 },
             )
             .await;
@@ -201,6 +216,7 @@ impl ExtensionAsyncAdapter {
         let task_id = format!("{}_{}", tool_name, Uuid::new_v4().simple());
         let core = self.core.clone();
         let tool_name_clone = tool_name.to_string();
+        let workspace = self.workspace.clone();
 
         info!(tool_name, task_id, "Starting fallback async execution");
 
@@ -221,7 +237,7 @@ impl ExtensionAsyncAdapter {
                             HookInput::ToolCall {
                                 tool_name: tool_name_clone,
                                 params,
-                                workspace: None,
+                                workspace,
                             },
                         )
                         .await;

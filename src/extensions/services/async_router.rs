@@ -381,6 +381,7 @@ impl AsyncExecutionRouter {
 
         let tool_name_owned = tool_name.to_string();
         let params_clone = params.clone();
+        let workspace = std::path::PathBuf::from(&tool_context.workspace);
         let receipt = self
             .transport
             .spawn_task_boxed(
@@ -388,6 +389,7 @@ impl AsyncExecutionRouter {
                 tool_name.to_string(),
                 params,
                 session_key,
+                workspace,
                 config,
                 Box::new(move || {
                     Box::pin(async move {

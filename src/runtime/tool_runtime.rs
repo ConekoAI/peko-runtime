@@ -89,7 +89,7 @@ impl ToolRuntime {
     /// Register built-in tools with the given `ExtensionCore`
     ///
     /// This logic is extracted from `Agent::init_builtins_async()`.
-    async fn register_builtins(
+    pub async fn register_builtins(
         extension_core: &ExtensionCore,
         path_resolver: &PathResolver,
     ) -> Result<()> {
@@ -167,13 +167,24 @@ impl ToolRuntime {
         tool_name: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        self.execute_tool_with_workspace(tool_name, params, &self.workspace)
+            .await
+    }
+
+    /// Execute a tool with an explicit workspace override
+    pub async fn execute_tool_with_workspace(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+        workspace: &std::path::Path,
+    ) -> Result<serde_json::Value> {
         let point = HookPoint::ToolExecute {
             tool_name: tool_name.to_string(),
         };
         let input = HookInput::ToolCall {
             tool_name: tool_name.to_string(),
             params,
-            workspace: Some(self.workspace.to_string_lossy().to_string()),
+            workspace: Some(workspace.to_string_lossy().to_string()),
         };
 
         let result = self.extension_core.invoke_hook(point, input).await;

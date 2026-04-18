@@ -48,28 +48,18 @@ impl Agent {
     async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::session_introspection::AgentSessionRegistry;
         use crate::tools::{
-            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, GlobTool, GrepTool,
-            ReadFileTool, SessionStatusTool, SessionsSendTool, ShellTool, StrReplaceFileTool, Tool,
-            WriteFileTool,
+            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, SessionStatusTool,
+            SessionsSendTool, Tool,
         };
 
-        // Create core tools (granular filesystem tools are now preferred over FileSystemTool)
-        // Initialize granular tools with workspace if configured
-        let workspace = self
-            .config
-            .workspace
-            .as_ref()
-            .unwrap_or(&std::path::PathBuf::from("."))
-            .clone();
-        let mut tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(ShellTool::new().with_workspace(workspace.clone())),
-            // Granular filesystem tools - initialized with workspace if available
-            Arc::new(ReadFileTool::new().with_workspace(workspace.clone())),
-            Arc::new(WriteFileTool::new().with_workspace(workspace.clone())),
-            Arc::new(GlobTool::new().with_workspace(workspace.clone())),
-            Arc::new(GrepTool::new().with_workspace(workspace.clone())),
-            Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
-        ];
+        // ADR-020 Phase 0: Delegate common built-in tool registration to ToolRuntime
+        // This eliminates duplication between Agent and daemon tool initialization.
+        let path_resolver = crate::common::paths::PathResolver::new();
+        crate::runtime::ToolRuntime::register_builtins(&self.extension_core, &path_resolver)
+            .await?;
+
+        // Agent-specific tools (not part of ToolRuntime::register_builtins)
+        let mut tools: Vec<Arc<dyn Tool>> = vec![];
 
         // Add session introspection tools backed by the real session manager
         let session_registry = AgentSessionRegistry::new(
@@ -157,9 +147,9 @@ impl Agent {
             );
         }
 
-        // ADR-018/019: Register ONLY built-in tools with ExtensionCore
+        // ADR-018/019: Register ONLY agent-specific built-in tools with ExtensionCore
+        // Common built-in tools are already registered via ToolRuntime::register_builtins
         // Extension tools (Universal and MCP) are already registered via ExtensionManager hooks
-        // This prevents double registration (DRY violation fix)
         for tool in &tools {
             if let Err(e) =
                 BuiltinToolAdapter::register_tool(&self.extension_core, tool.clone()).await
@@ -178,7 +168,7 @@ impl Agent {
         }
 
         tracing::info!(
-            "Registered {} built-in tools with ExtensionCore",
+            "Registered {} agent-specific built-in tools with ExtensionCore",
             tools.len()
         );
 

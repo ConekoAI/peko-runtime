@@ -34,6 +34,7 @@ pub trait AsyncTaskTransport: Send + Sync {
         tool_name: String,
         params: Value,
         session_key: String,
+        workspace: std::path::PathBuf,
         config: AsyncToolConfig,
     ) -> Result<AsyncTaskReceipt>;
 
@@ -51,12 +52,13 @@ pub trait AsyncTaskTransport: Send + Sync {
         tool_name: String,
         params: Value,
         session_key: String,
+        workspace: std::path::PathBuf,
         config: AsyncToolConfig,
         _execution_fn: BoxedExecutionFn,
     ) -> Result<AsyncTaskReceipt> {
         // Default: ignore the closure and delegate to spawn_task.
         // HTTP transport uses this path because the daemon has its own ToolRuntime.
-        self.spawn_task(task_id, tool_name, params, session_key, config)
+        self.spawn_task(task_id, tool_name, params, session_key, workspace, config)
             .await
     }
 
@@ -102,6 +104,7 @@ impl AsyncTaskTransport for LocalAsyncTransport {
         _tool_name: String,
         _params: Value,
         _session_key: String,
+        _workspace: std::path::PathBuf,
         _config: AsyncToolConfig,
     ) -> Result<AsyncTaskReceipt> {
         // This method should not be called directly for local execution.
@@ -117,6 +120,7 @@ impl AsyncTaskTransport for LocalAsyncTransport {
         tool_name: String,
         params: Value,
         session_key: String,
+        _workspace: std::path::PathBuf,
         config: AsyncToolConfig,
         execution_fn: BoxedExecutionFn,
     ) -> Result<AsyncTaskReceipt> {
@@ -183,6 +187,7 @@ impl AsyncTaskTransport for DaemonHttpTransport {
         tool_name: String,
         params: Value,
         session_key: String,
+        workspace: std::path::PathBuf,
         config: AsyncToolConfig,
     ) -> Result<AsyncTaskReceipt> {
         let req = SpawnAsyncTaskRequest {
@@ -190,7 +195,7 @@ impl AsyncTaskTransport for DaemonHttpTransport {
             tool_name,
             params,
             session_key,
-            workspace: std::path::PathBuf::from("."),
+            workspace,
             config,
         };
         let receipt = self.client.spawn_async_task(&req).await?;

@@ -68,6 +68,7 @@ async fn spawn_async_task(
     );
 
     let tool_runtime = Arc::clone(&state.tool_runtime);
+    let workspace = req.workspace.clone();
 
     // Build the execution closure
     let tool_name = req.tool_name.clone();
@@ -77,7 +78,7 @@ async fn spawn_async_task(
     > = Box::new(move || {
         let tool_runtime = Arc::clone(&tool_runtime);
         Box::pin(async move {
-            tool_runtime.execute_tool(&tool_name, params).await.map(|result| {
+            tool_runtime.execute_tool_with_workspace(&tool_name, params, &workspace).await.map(|result| {
                 AsyncTaskResult::Generic { data: result }
             })
         })
