@@ -1,9 +1,11 @@
 # ADR-020: Daemon-Based Async Tool Execution
 
-**Status**: Proposed  
+**Status**: Completed  
 **Date**: 2026-04-16  
+**Last Updated**: 2026-04-17  
 **Author**: Kimi Code CLI  
-**Depends On**: ADR-018a (Tool Execution Unification)
+**Depends On**: ADR-018a (Tool Execution Unification)  
+**Superseded By**: ADR-021 (Daemon as Central Runtime)
 
 ## Context
 
@@ -316,6 +318,32 @@ The question of whether *all* CLI commands should automatically start the daemon
 
 ### ADR-020b: Daemon-Mode Detection
 Instead of an `is_daemon_mode()` global function, the daemon sets an environment variable (`PEKOBOT_DAEMON_MODE=1`) during startup. Components that need to know their runtime context read this variable at initialization time. This is documented here but does not require a separate ADR unless it grows into a broader runtime-profile system.
+
+## Implementation Status
+
+**Completed: 2026-04-17**
+
+All phases were implemented:
+
+| Phase | Component | Status | Files |
+|-------|-----------|--------|-------|
+| Phase 0 | `ToolRuntime` extraction | ✅ | `src/runtime/mod.rs`, `src/runtime/tool_runtime.rs` |
+| Phase 1 | Add to `AppState` | ✅ | `src/api/state.rs` |
+| Phase 2 | HTTP API routes | ✅ | `src/api/routes/async_tasks.rs`, `src/api/routes/mod.rs` |
+| Phase 3 | `AsyncTaskTransport` trait | ✅ | `src/extensions/services/async_transport.rs` |
+| Phase 4 | `ApiClient` extension | ✅ | `src/api/client.rs` |
+| Phase 5 | Remove CLI wait hacks | ✅ | `src/channels/cli.rs`, `src/agent/stateless_service.rs` |
+| Phase 6 | Task file janitor | ✅ | `src/daemon/mod.rs`, `UnifiedAsyncExecutor::run_janitor()` |
+
+**Key implementation details:**
+- `Agent::init_builtins_async()` delegates to `ToolRuntime::register_builtins()` (Phase 0)
+- `create_transport()` in CLI attempts `DaemonHttpTransport`, falls back to `LocalAsyncTransport`
+- `main.rs` initializes global `ExtensionCore` with the appropriate transport before command dispatch
+- Workspace propagation through the full async execution chain (HookInput::ToolCall.workspace)
+- `BuiltinToolAdapter` updated to extract and forward workspace from `HookInput`
+
+**Known limitation (addressed by ADR-021):**
+The daemon's `ToolRuntime` only registers built-in tools (`ShellTool`, `ReadFileTool`, etc.). MCP tools and universal tools are not registered in the daemon's `ExtensionCore` — they are registered per-agent in the CLI process. This means async tool execution is currently limited to built-in tools only. ADR-021 addresses this by making the daemon the central runtime with the full extension registry.
 
 ## References
 

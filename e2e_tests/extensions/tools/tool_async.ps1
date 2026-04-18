@@ -2,7 +2,7 @@
 # Async Tool Execution E2E Test
 #
 # Tests the async execution path for tools using the _async reserved parameter.
-# Design: Option 3 (minimal file-based polling) - see discussion in PR.
+# Design: see ADR-20.
 #
 # Expected behavior:
 # 1. Agent calls a tool with _async: true
