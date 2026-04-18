@@ -29,35 +29,32 @@ use crate::api::types::HealthResponse;
 /// ```
 pub async fn health_check(State(state): State<AppState>) -> Response {
     let uptime = state.uptime_seconds();
+    let is_ready = state.is_ready().await;
     let is_degraded = state.is_degraded().await;
     let instance_count = state.instance_count().await;
     let team_count = state.team_count().await;
+    tracing::info!("Health check: ready={}, degraded={}, uptime={}, instances={}, teams={}", is_ready, is_degraded, uptime, instance_count, team_count);
 
-    let response = if is_degraded {
-        HealthResponse {
-            status: "degraded".to_string(),
-            version: crate::VERSION.to_string(),
-            uptime_seconds: uptime,
-            instance_count,
-            team_count,
-        }
+    // Determine status and HTTP code
+    let (status_code, status_str) = if !is_ready {
+        // Daemon is still starting up
+        (StatusCode::SERVICE_UNAVAILABLE, "starting".to_string())
+    } else if is_degraded {
+        // Daemon is degraded
+        (StatusCode::SERVICE_UNAVAILABLE, "degraded".to_string())
     } else {
-        HealthResponse {
-            status: "ok".to_string(),
-            version: crate::VERSION.to_string(),
-            uptime_seconds: uptime,
-            instance_count,
-            team_count,
-        }
+        (StatusCode::OK, "ok".to_string())
     };
 
-    let status = if is_degraded {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::OK
+    let response = HealthResponse {
+        status: status_str,
+        version: crate::VERSION.to_string(),
+        uptime_seconds: uptime,
+        instance_count,
+        team_count,
     };
 
-    (status, Json(response)).into_response()
+    (status_code, Json(response)).into_response()
 }
 
 #[cfg(test)]

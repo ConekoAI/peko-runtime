@@ -19,11 +19,12 @@ pub mod images;
 pub mod info;
 pub mod metrics;
 pub mod sessions;
+pub mod shutdown;
 pub mod teams;
 pub mod webhooks;
 pub mod websocket;
 
-use axum::{routing::get, Router};
+use axum::{routing::{get, post}, Router};
 
 use crate::api::state::AppState;
 
@@ -33,6 +34,8 @@ pub fn create_router() -> Router<AppState> {
         // Health and info endpoints (Milestone 1)
         .route("/health", get(health::health_check))
         .route("/info", get(info::daemon_info))
+        // Shutdown endpoint
+        .route("/shutdown", post(shutdown::shutdown))
         // Merge nested routers (Milestone 2, 3, 4 & 7)
         .merge(images::router())
         .merge(agents::router())

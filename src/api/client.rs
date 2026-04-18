@@ -108,6 +108,8 @@ impl ApiClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(5))
+            .pool_max_idle_per_host(0)
+            .no_proxy()
             .build()?;
 
         Ok(Self {
@@ -492,6 +494,29 @@ impl ApiClient {
         } else {
             Err(self.parse_error(response).await)
         }
+    }
+
+    // =================================================================================
+    // Daemon Control Endpoints
+    // =================================================================================
+
+    /// Shutdown the daemon gracefully
+    ///
+    /// Sends a shutdown request to the daemon. The daemon will exit gracefully.
+    pub async fn shutdown(&self, force: bool) -> Result<(), ClientError> {
+        let path = "/shutdown";
+        let body = serde_json::json!({ "force": force });
+        let url = format!("{}{}", self.base_url, path);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(map_http_error)?;
+
+        self.handle_response(response).await
     }
 
     // =================================================================================

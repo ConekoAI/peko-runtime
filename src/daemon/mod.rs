@@ -90,7 +90,6 @@ pub struct DaemonStatus {
 pub struct Daemon {
     config: DaemonConfig,
     scheduler: Arc<CronScheduler>,
-    command_rx: mpsc::Receiver<DaemonCommand>,
     status: Arc<Mutex<DaemonStatus>>,
     /// Idle detector for idle-triggered jobs
     idle_detector: Arc<IdleDetector>,
@@ -102,14 +101,13 @@ pub struct Daemon {
 
 impl Daemon {
     /// Create a new daemon
-    pub fn new(config: DaemonConfig, command_rx: mpsc::Receiver<DaemonCommand>) -> Result<Self> {
-        Self::with_event_receiver(config, command_rx, None)
+    pub fn new(config: DaemonConfig) -> Result<Self> {
+        Self::with_event_receiver(config, None)
     }
 
     /// Create a new daemon with event receiver for event-triggered jobs
     pub fn with_event_receiver(
         config: DaemonConfig,
-        command_rx: mpsc::Receiver<DaemonCommand>,
         event_rx: Option<mpsc::Receiver<SystemEvent>>,
     ) -> Result<Self> {
         let scheduler = Arc::new(CronScheduler::new(&config.cron_db_path)?);
@@ -127,7 +125,6 @@ impl Daemon {
         Ok(Self {
             config,
             scheduler,
-            command_rx,
             status,
             idle_detector,
             event_rx,
@@ -166,6 +163,10 @@ impl Daemon {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
 
+        // Mark daemon as ready (server is listening)
+        app_state.set_ready(true).await;
+        info!("✅ Daemon ready to accept requests");
+
         // Start HTTP API server
         let api_config = crate::api::ServerConfig {
             host: self.config.host.clone(),
@@ -192,6 +193,9 @@ impl Daemon {
         let mut maintenance_tick = interval(self.config.maintenance_interval);
         let mut idle_check_tick = interval(Duration::from_secs(60)); // Check idle jobs every minute
         let mut janitor_tick = interval(Duration::from_secs(3600)); // Run janitor every hour
+
+        // Subscribe to shutdown signals from AppState
+        let mut shutdown_rx = app_state.subscribe_shutdown();
 
         info!("✅ Daemon ready. Waiting for cron jobs...");
 
@@ -248,29 +252,24 @@ impl Daemon {
                     }
                 }
 
-                // Handle commands
-                Some(cmd) = self.command_rx.recv() => {
-                    match cmd {
-                        DaemonCommand::Shutdown => {
-                            info!("🛑 Daemon shutdown requested...");
-                            // Signal API server to shutdown
-                            let _ = api_shutdown_tx.send(());
-                            break;
-                        }
-                        DaemonCommand::CheckCron => {
-                            info!("🔍 Manual cron check triggered");
-                            if let Err(e) = self.check_and_run_jobs().await {
-                                error!("Error in manual cron check: {}", e);
-                            }
-                        }
-                        DaemonCommand::GetStatus => {
-                            let status = self.status.lock().await.clone();
-                            info!("📊 Daemon status: {:?}", status);
-                        }
-                    }
+                // Handle shutdown signal from API (POST /shutdown endpoint)
+                _ = shutdown_rx.recv() => {
+                    info!("🛑 Daemon shutdown requested via API...");
+                    let _ = api_shutdown_tx.send(());
+                    break;
+                }
+
+                // Handle Ctrl+C / SIGTERM
+                _ = tokio::signal::ctrl_c() => {
+                    info!("🛑 Daemon received Ctrl+C...");
+                    let _ = api_shutdown_tx.send(());
+                    break;
                 }
             }
         }
+
+        // Mark daemon as not ready
+        app_state.set_ready(false).await;
 
         // Wait for API server to finish
         let _ = api_handle.await;

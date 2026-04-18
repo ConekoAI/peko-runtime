@@ -5,7 +5,6 @@
 
 use axum::{extract::connect_info::IntoMakeServiceWithConnectInfo, middleware::from_fn, Router};
 use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 use crate::api::middleware::{
@@ -134,9 +133,36 @@ impl ApiServer {
         let app = self.create_router();
 
         // Create TCP listener
-        let listener = TcpListener::bind(&addr)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind to {addr}: {e}"))?;
+        // On Unix, we use SO_REUSEADDR to handle TIME_WAIT on restart
+        // On Windows, this isn't supported the same way, so we just bind normally
+        let listener = {
+            #[cfg(unix)]
+            {
+                use std::os::fd::{FromRawFd, IntoRawFd};
+
+                // Create a std TcpListener with SO_REUSEADDR
+                let std_listener = std::net::TcpListener::bind(addr)
+                    .map_err(|e| anyhow::anyhow!("Failed to bind to {addr}: {e}"))?;
+
+                // SO_REUSEADDR allows binding to a socket in TIME_WAIT state
+                std_listener
+                    .set_reuseaddr(true)
+                    .map_err(|e| anyhow::anyhow!("Failed to set SO_REUSEADDR: {e}"))?;
+
+                // Convert to tokio TcpListener
+                tokio::net::TcpListener::from_std(std_listener)
+                    .map_err(|e| anyhow::anyhow!("Failed to create tokio listener: {e}"))?
+            }
+
+            #[cfg(windows)]
+            {
+                // On Windows, just use tokio's bind directly
+                // Note: Windows doesn't support SO_REUSEADDR the same way Unix does
+                tokio::net::TcpListener::bind(addr)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to bind to {addr}: {e}"))?
+            }
+        };
 
         let actual_addr = listener.local_addr()?;
         info!(

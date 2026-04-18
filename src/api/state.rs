@@ -18,7 +18,7 @@ use crate::team::TeamManager;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 /// Shared application state for the HTTP API (Stateless Architecture)
 ///
@@ -89,6 +89,9 @@ pub struct AppState {
     /// Async task executor for daemon-side background execution (ADR-020)
     pub async_task_executor: Arc<UnifiedAsyncExecutor>,
 
+    /// Shutdown broadcast channel - send () to trigger graceful shutdown
+    shutdown_tx: Arc<broadcast::Sender<()>>,
+
     /// Internal state that can be modified
     inner: Arc<RwLock<AppStateInner>>,
 }
@@ -121,6 +124,8 @@ struct AppStateInner {
     pub instance_count: u64,
     /// Number of teams (cached)
     pub team_count: u64,
+    /// Whether the daemon is ready to serve requests
+    pub ready: bool,
 }
 
 /// Snapshot of daemon configuration
@@ -233,6 +238,9 @@ impl AppState {
         );
         let async_task_executor = Arc::new(UnifiedAsyncExecutor::new());
 
+        // Create shutdown broadcast channel
+        let (shutdown_tx, _) = broadcast::channel(1);
+
         Ok(Self {
             started_at: SystemTime::now(),
             workspace_path,
@@ -255,6 +263,7 @@ impl AppState {
             team_service,
             tool_runtime,
             async_task_executor,
+            shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
     }
@@ -312,6 +321,29 @@ impl AppState {
     /// Mark the daemon as degraded
     pub async fn mark_degraded(&self) {
         self.set_degraded(true).await;
+    }
+
+    /// Check if the daemon is ready to serve requests
+    pub async fn is_ready(&self) -> bool {
+        let inner = self.inner.read().await;
+        inner.ready
+    }
+
+    /// Mark the daemon as ready
+    pub async fn set_ready(&self, ready: bool) {
+        let mut inner = self.inner.write().await;
+        inner.ready = ready;
+    }
+
+    /// Subscribe to shutdown signals
+    pub fn subscribe_shutdown(&self) -> broadcast::Receiver<()> {
+        self.shutdown_tx.subscribe()
+    }
+
+    /// Request graceful shutdown
+    pub async fn request_shutdown(&self, _force: bool) {
+        // Note: force parameter reserved for future use
+        let _ = self.shutdown_tx.send(());
     }
 
     /// Get the hook registry

@@ -136,6 +136,9 @@ impl TaskFileWriter {
     }
 
     pub async fn cleanup_old(&self, max_age: Duration) -> Result<usize> {
+        if !self.base_dir.exists() {
+            return Ok(0);
+        }
         let mut count = 0;
         let mut entries = tokio::fs::read_dir(&self.base_dir).await?;
         let cutoff = std::time::SystemTime::now() - max_age;
