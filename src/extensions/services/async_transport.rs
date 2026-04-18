@@ -247,29 +247,31 @@ impl Default for DaemonHttpTransport {
 // Transport factory — detects daemon and chooses transport
 // ================================================================================
 
-/// Create the appropriate transport for the current runtime context
+/// Create the appropriate transport for CLI mode
 ///
-/// - If the daemon is reachable, returns `DaemonHttpTransport` (CLI mode)
-/// - Otherwise, returns `LocalAsyncTransport` (daemon mode or standalone)
-pub async fn create_transport() -> std::sync::Arc<dyn AsyncTaskTransport> {
-    // Try daemon HTTP transport first
-    match DaemonHttpTransport::new() {
-        Ok(http) => {
-            if http.is_daemon_reachable().await {
-                tracing::info!("Using DaemonHttpTransport for async tasks (daemon is running)");
-                return std::sync::Arc::new(http);
-            }
-        }
-        Err(e) => {
-            tracing::debug!("Failed to create DaemonHttpTransport: {e}");
-        }
-    }
+/// - If the daemon is reachable, returns `DaemonHttpTransport`
+/// - Otherwise, returns an error — async tool execution requires the daemon
+///
+/// # Why no fallback?
+///
+/// `LocalAsyncTransport` spawns tasks via `tokio::spawn`. When the CLI exits,
+/// the tokio runtime shuts down and any spawned tasks are dropped — they never
+/// complete. This produces "phantom success": the agent receives a valid receipt,
+/// but the task was never executed. Failing fast with a clear error is safer.
+pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTransport>> {
+    let http = DaemonHttpTransport::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create daemon HTTP client: {e}"))?;
 
-    // Fallback to local transport
-    tracing::info!("Using LocalAsyncTransport for async tasks (daemon not reachable)");
-    std::sync::Arc::new(LocalAsyncTransport::from_executor(
-        UnifiedAsyncExecutor::new(),
-    ))
+    if http.is_daemon_reachable().await {
+        tracing::info!("Using DaemonHttpTransport for async tasks (daemon is running)");
+        Ok(std::sync::Arc::new(http))
+    } else {
+        anyhow::bail!(
+            "Pekobot daemon is not running. Async tool execution requires the daemon.\n\
+             Start it with: pekobot daemon start\n\
+             Or use sync mode (remove _async: true from the tool call)."
+        )
+    }
 }
 
 /// Create a local transport (for daemon mode where HTTP is not needed)

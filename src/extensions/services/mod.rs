@@ -73,10 +73,10 @@ impl Services {
     /// Create services by auto-detecting the best transport
     ///
     /// - If daemon is reachable, uses `DaemonHttpTransport`
-    /// - Otherwise, falls back to `LocalAsyncTransport`
-    pub async fn new_auto() -> Self {
-        let transport = async_transport::create_transport().await;
-        Self::with_transport(transport)
+    /// - Otherwise, returns an error — async tool execution requires the daemon
+    pub async fn new_auto() -> anyhow::Result<Self> {
+        let transport = async_transport::create_transport().await?;
+        Ok(Self::with_transport(transport))
     }
 
     /// Get the reserved parameters service

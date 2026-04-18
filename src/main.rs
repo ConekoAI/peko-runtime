@@ -80,7 +80,7 @@ async fn init_extension_core(command: &Commands) -> anyhow::Result<()> {
         )
     } else {
         tracing::info!("Auto-detecting async transport for CLI mode");
-        let transport = pekobot::extensions::services::async_transport::create_transport().await;
+        let transport = pekobot::extensions::services::async_transport::create_transport().await?;
         AsyncExecutionRouter::with_transport(transport)
     };
 
