@@ -325,7 +325,10 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
                     // Wait for daemon to shut down (up to 5 seconds)
                     for i in 0..10 {
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                        if !is_process_running(get_running_pid(&pid_file).unwrap_or(0)) {
+                        let pid_file = get_pid_file_path()?;
+                        let pid = get_running_pid(&pid_file);
+                        let running = pid.map(is_process_running).unwrap_or(false);
+                        if !running {
                             // Daemon stopped
                             let _ = std::fs::remove_file(&pid_file);
                             return Ok(());
