@@ -151,6 +151,33 @@ impl HookHandler for BuiltinExecuteHandler {
         // Clone params for mutation (AsyncExecutionRouter extracts _async, etc.)
         let mut params_mut = params.clone();
 
+        // Inject agent workspace into tool parameters for filesystem tools.
+        // Built-in tools are created once at daemon startup with a global workspace,
+        // but each agent has its own workspace. We inject the agent's workspace
+        // so the tool searches in the correct location.
+        if let Some(ref ws) = workspace {
+            if let Some(obj) = params_mut.as_object_mut() {
+                match tool_name {
+                    "glob" => {
+                        if !obj.contains_key("directory") {
+                            obj.insert("directory".to_string(), serde_json::Value::String(ws.to_string()));
+                        }
+                    }
+                    "grep" => {
+                        if !obj.contains_key("path") {
+                            obj.insert("path".to_string(), serde_json::Value::String(ws.to_string()));
+                        }
+                    }
+                    "shell" => {
+                        if !obj.contains_key("cwd") {
+                            obj.insert("cwd".to_string(), serde_json::Value::String(ws.to_string()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Clone tool for the closure (needed for 'static bound)
         let tool = self.tool.clone();
         let tool_name = tool.name().to_string();
