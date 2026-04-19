@@ -3,11 +3,8 @@
 //! This command replaces the deprecated `agent start --message` and `session send` commands
 //! with a unified, top-level interface for sending messages to agents.
 //!
-//! Per ADR-013, agents are stateless and cold-start on every request. This command
-//! performs a cold-start sequence: load config, load session, instantiate tools,
-//! run agentic loop, then exit and free resources.
-//!
-//! Per ADR-015, this command supports both streaming (default) and blocking modes.
+//! Per ADR-021, the CLI is now a thin client. All execution happens in the daemon.
+//! This command sends an IPC request and streams the response.
 //!
 //! Examples:
 //!   pekobot send myagent "What is the weather?"
@@ -19,24 +16,18 @@
 //!   echo "Hello" | pekobot send myagent --stdin
 //!   pekobot send myagent --file prompt.txt
 
-use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
-use crate::channels::{Channel, CliChannel, CliMode};
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
-use crate::common::services::{AgentValidator, ConfigAuthorityImpl};
+use crate::ipc::{DaemonClient, ResponsePacket};
 use anyhow::Result;
 use clap::Args;
-use std::sync::Arc;
+use std::io::Write;
 use tracing::info;
 
 /// Send a message to an agent (unified command)
 ///
-/// This is the primary way to interact with agents. Agents cold-start on each
-/// request, load their configuration and session history, process the message,
-/// then exit and free all resources.
-///
-/// The message can be provided as an argument, from a file, or via stdin.
-/// Agent can be specified as just "name" (uses default team) or "team/name".
+/// This is the primary way to interact with agents. The daemon handles all
+/// execution; the CLI just forwards the request and prints the response.
 #[derive(Args, Clone, Debug)]
 #[command(disable_version_flag = true)]
 pub struct SendArgs {
@@ -72,7 +63,7 @@ pub struct SendArgs {
 }
 
 /// Handle the send command
-pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Result<()> {
+pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> Result<()> {
     // Resolve the message content
     let message = resolve_message(&args).await?;
 
@@ -85,61 +76,87 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         agent_name, team
     );
 
-    // Use StatelessAgentService directly (ADR-016: bypass MessageService)
-    let path_resolver = paths.resolver.clone();
-    let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
+    // Connect to daemon (auto-starts if needed)
+    let client = DaemonClient::connect().await?;
 
-    // EARLY VALIDATION: Check agent exists BEFORE creating session infrastructure
-    // This prevents creating session directories for non-existent agents
-    let validator = AgentValidator::new(config_service.clone());
-    let agent_entry = validator.validate_exists(agent_name, Some(team)).await?;
-    info!(
-        "Validated agent '{}' in team '{}'",
-        agent_entry.name, agent_entry.team
-    );
+    // Send execute request to daemon
+    let mut stream = client
+        .execute(
+            agent_name,
+            team,
+            message,
+            args.session.clone(),
+            args.new,
+            !args.no_stream,
+        )
+        .await?;
 
-    let agent_service =
-        Arc::new(StatelessAgentService::new(config_service, path_resolver.clone()).await?);
-
-    // Build message request (same logic as HTTP API)
-    let request = MessageRequest::new(agent_name, message)
-        .with_team(team)
-        .with_user(paths.user())
-        .with_session_opt(args.session.clone())
-        .with_new_session(args.new);
-
-    // Create CLI channel with appropriate mode (streaming is default)
-    let channel = CliChannel::new(&args.agent).with_mode(if args.no_stream {
-        CliMode::Blocking
-    } else {
-        CliMode::Streaming
-    });
-
-    // Send message using StatelessAgentService directly (ADR-016)
-    let event_stream = agent_service.execute_message_streaming(request).await?;
-
-    // Process events through channel (handles both blocking and streaming)
-    let output = channel.process_stream(event_stream).await?;
-
-    // Output response (CLI presentation layer)
-    if output.success {
-        if args.no_stream {
-            // In blocking mode, output the collected final text
-            println!("{}", output.final_text);
+    // Process response stream
+    if args.no_stream {
+        // Blocking mode: collect all text and print at the end
+        let mut final_text = String::new();
+        while let Some(packet) = stream.next().await {
+            match packet {
+                ResponsePacket::Text { chunk, .. } => {
+                    final_text.push_str(&chunk);
+                }
+                ResponsePacket::Done { success, error, .. } => {
+                    if success {
+                        println!("{}", final_text.trim());
+                        return Ok(());
+                    }
+                    anyhow::bail!(
+                        "Agent execution failed{}",
+                        error.map(|e| format!(": {e}")).unwrap_or_default()
+                    );
+                }
+                ResponsePacket::Error { message, .. } => {
+                    anyhow::bail!("Agent execution failed: {message}");
+                }
+                ResponsePacket::Heartbeat { .. } => {
+                    // Ignore heartbeats in blocking mode
+                }
+                _ => {}
+            }
         }
-        // In streaming mode (default), the channel already printed tokens as they arrived
+        anyhow::bail!("Stream closed unexpectedly");
     } else {
-        anyhow::bail!(
-            "Agent execution failed{}",
-            output
-                .error
-                .as_ref()
-                .map(|e| format!(": {e}"))
-                .unwrap_or_default()
-        );
+        // Streaming mode: print chunks as they arrive
+        let mut has_started_line = false;
+        while let Some(packet) = stream.next().await {
+            match packet {
+                ResponsePacket::Text { chunk, .. } => {
+                    if !has_started_line {
+                        print!("\n{}: ", args.agent);
+                        std::io::stdout().flush()?;
+                        has_started_line = true;
+                    }
+                    print!("{}", chunk);
+                    std::io::stdout().flush()?;
+                }
+                ResponsePacket::Done { success, error, .. } => {
+                    if has_started_line {
+                        println!();
+                    }
+                    if success {
+                        return Ok(());
+                    }
+                    anyhow::bail!(
+                        "Agent execution failed{}",
+                        error.map(|e| format!(": {e}")).unwrap_or_default()
+                    );
+                }
+                ResponsePacket::Error { message, .. } => {
+                    anyhow::bail!("Agent execution failed: {message}");
+                }
+                ResponsePacket::Heartbeat { .. } => {
+                    // Ignore heartbeats — they just keep the connection alive
+                }
+                _ => {}
+            }
+        }
+        anyhow::bail!("Stream closed unexpectedly");
     }
-
-    Ok(())
 }
 
 /// Resolve message from various sources (argument, file, or stdin)
@@ -165,7 +182,7 @@ async fn resolve_message(args: &SendArgs) -> Result<String> {
              pekobot send myagent \"Hello\"\n  \
              pekobot send myagent --file prompt.txt\n  \
              echo \"Hello\" | pekobot send myagent --stdin"
-        );
+        )
     }
 }
 

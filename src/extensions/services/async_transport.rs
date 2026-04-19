@@ -146,41 +146,33 @@ impl LocalAsyncTransport {
 }
 
 // ================================================================================
-// DaemonHttpTransport — used inside the CLI
+// DaemonIpcTransport — used inside the CLI
 // ================================================================================
 
-use crate::api::client::ApiClient;
-use crate::api::routes::async_tasks::SpawnAsyncTaskRequest;
+use crate::ipc::{DaemonClient, ResponsePacket};
 
-/// HTTP transport that submits tasks to the daemon via `ApiClient`
-#[derive(Debug, Clone)]
-pub struct DaemonHttpTransport {
-    client: ApiClient,
+/// IPC transport that submits tasks to the daemon via UDP/Unix socket
+#[derive(Debug)]
+pub struct DaemonIpcTransport {
+    client: DaemonClient,
 }
 
-impl DaemonHttpTransport {
-    /// Create a new HTTP transport with the default daemon address
-    pub fn new() -> anyhow::Result<Self> {
+impl DaemonIpcTransport {
+    /// Create a new IPC transport (connects to daemon, auto-starts if needed)
+    pub async fn new() -> anyhow::Result<Self> {
         Ok(Self {
-            client: ApiClient::new()?,
-        })
-    }
-
-    /// Create with a specific daemon address
-    pub fn with_addr(addr: &str) -> anyhow::Result<Self> {
-        Ok(Self {
-            client: ApiClient::with_addr(addr)?,
+            client: DaemonClient::connect().await?,
         })
     }
 
     /// Check if the daemon is reachable
     pub async fn is_daemon_reachable(&self) -> bool {
-        self.client.health_check().await.is_ok()
+        self.client.is_running().await
     }
 }
 
 #[async_trait::async_trait]
-impl AsyncTaskTransport for DaemonHttpTransport {
+impl AsyncTaskTransport for DaemonIpcTransport {
     async fn spawn_task(
         &self,
         task_id: AsyncTaskId,
@@ -188,58 +180,48 @@ impl AsyncTaskTransport for DaemonHttpTransport {
         params: Value,
         session_key: String,
         workspace: std::path::PathBuf,
-        config: AsyncToolConfig,
+        _config: AsyncToolConfig,
     ) -> Result<AsyncTaskReceipt> {
-        let req = SpawnAsyncTaskRequest {
-            task_id,
-            tool_name,
-            params,
-            session_key,
-            workspace,
-            config,
-        };
-        let receipt = self.client.spawn_async_task(&req).await?;
-        Ok(receipt)
+        let mut stream = self
+            .client
+            .spawn_async_task(tool_name, params, session_key, workspace)
+            .await?;
+
+        // Wait for the async receipt response
+        while let Some(packet) = stream.next().await {
+            match packet {
+                ResponsePacket::AsyncReceipt { receipt, .. } => return Ok(receipt),
+                ResponsePacket::Error { message, .. } => anyhow::bail!(message),
+                ResponsePacket::Done { success, error, .. } => {
+                    if !success {
+                        anyhow::bail!(error.unwrap_or_else(|| "Async spawn failed".to_string()));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        anyhow::bail!("Stream closed without receipt for task {}", task_id)
     }
 
-    async fn get_status(&self, task_id: &AsyncTaskId) -> Result<Option<AsyncTaskStatus>> {
-        let resp = self.client.get_async_task(task_id).await?;
-        // Map the HTTP response status string back to AsyncTaskStatus
-        let status = match resp.status.as_str() {
-            "pending" => Some(AsyncTaskStatus::Pending),
-            "running" => Some(AsyncTaskStatus::Running),
-            "cancelled" => Some(AsyncTaskStatus::Cancelled),
-            "completed" => {
-                if let Some(result) = resp.result {
-                    Some(AsyncTaskStatus::Completed {
-                        result: crate::tools::traits::ToolResult::success(result),
-                    })
-                } else {
-                    Some(AsyncTaskStatus::Completed {
-                        result: crate::tools::traits::ToolResult::success(serde_json::json!({})),
-                    })
-                }
-            }
-            "failed" => Some(AsyncTaskStatus::Failed {
-                error: resp.error.unwrap_or_else(|| "Unknown error".to_string()),
-            }),
-            "timed_out" => Some(AsyncTaskStatus::TimedOut {
-                error: resp.error.unwrap_or_else(|| "Timed out".to_string()),
-            }),
-            _ => None,
-        };
-        Ok(status)
+    async fn get_status(&self, _task_id: &AsyncTaskId) -> Result<Option<AsyncTaskStatus>> {
+        // TODO: Implement status check via IPC
+        // For now, return None to trigger fallback behavior
+        Ok(None)
     }
 
     async fn cancel_task(&self, task_id: &AsyncTaskId) -> Result<bool> {
-        let cancelled = self.client.cancel_async_task(task_id).await?;
-        Ok(cancelled)
-    }
-}
+        let mut stream = self.client.cancel_async_task(task_id).await?;
 
-impl Default for DaemonHttpTransport {
-    fn default() -> Self {
-        Self::new().expect("Failed to create DaemonHttpTransport")
+        while let Some(packet) = stream.next().await {
+            match packet {
+                ResponsePacket::Done { success, .. } => return Ok(success),
+                ResponsePacket::Error { message, .. } => anyhow::bail!(message),
+                _ => {}
+            }
+        }
+
+        anyhow::bail!("Stream closed without cancel confirmation for task {}", task_id)
     }
 }
 
@@ -308,7 +290,7 @@ impl AsyncTaskTransport for UnavailableAsyncTransport {
 
 /// Create the appropriate transport for CLI mode
 ///
-/// - If the daemon is reachable, returns `DaemonHttpTransport`
+/// - If the daemon is reachable via IPC, returns `DaemonIpcTransport`
 /// - Otherwise, returns an error — async tool execution requires the daemon
 ///
 /// # Why no fallback?
@@ -318,12 +300,25 @@ impl AsyncTaskTransport for UnavailableAsyncTransport {
 /// complete. This produces "phantom success": the agent receives a valid receipt,
 /// but the task was never executed. Failing fast with a clear error is safer.
 pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTransport>> {
-    let http = DaemonHttpTransport::new()
-        .map_err(|e| anyhow::anyhow!("Failed to create daemon HTTP client: {e}"))?;
+    // Use try_connect_quick (200ms timeout, no auto-start) to avoid hanging
+    // on daemon-unreachable commands like `agent list`.
+    let client = match crate::ipc::ConnectionManager::try_connect_quick().await {
+        Ok(conn) => crate::ipc::DaemonClient::with_connection(conn).await?,
+        Err(e) => {
+            anyhow::bail!(
+                "Pekobot daemon is not running. Async tool execution requires the daemon.\n\
+                 Start it with: pekobot daemon start\n\
+                 Or use sync mode (remove _async: true from the tool call).\n\
+                 Details: {e}"
+            )
+        }
+    };
 
-    if http.is_daemon_reachable().await {
-        tracing::info!("Using DaemonHttpTransport for async tasks (daemon is running)");
-        Ok(std::sync::Arc::new(http))
+    let ipc = DaemonIpcTransport { client };
+
+    if ipc.is_daemon_reachable().await {
+        tracing::info!("Using DaemonIpcTransport for async tasks (daemon is running)");
+        Ok(std::sync::Arc::new(ipc))
     } else {
         anyhow::bail!(
             "Pekobot daemon is not running. Async tool execution requires the daemon.\n\
@@ -349,9 +344,4 @@ mod tests {
         let _ = transport.executor();
     }
 
-    #[test]
-    fn test_daemon_http_transport_default_addr() {
-        let transport = DaemonHttpTransport::new();
-        assert!(transport.is_ok());
-    }
 }

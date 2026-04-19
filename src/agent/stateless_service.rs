@@ -705,6 +705,7 @@ impl StatelessAgentService {
         // This ensures session writes complete before completion signal
         tokio::spawn(async move {
             let on_event = move |event: AgenticEvent| {
+                tracing::info!("EventStream: sending event: {:?}", std::mem::discriminant(&event));
                 let _ = event_tx.try_send(event);
             };
 

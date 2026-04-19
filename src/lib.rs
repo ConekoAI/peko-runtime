@@ -124,6 +124,9 @@ pub(crate) mod daemon;
 /// HTTP API server
 pub mod api;
 
+/// IPC layer (UDP/Unix socket) for CLI↔daemon communication
+pub mod ipc;
+
 /// Observability (metrics, tracing, audit, performance)
 pub mod observability;
 

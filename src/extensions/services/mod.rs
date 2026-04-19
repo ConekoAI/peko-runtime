@@ -36,7 +36,7 @@ pub mod async_transport;
 
 // Re-export main types
 pub use async_router::{AsyncExecutionRouter, AsyncReservedParams, ToolExecutionContext};
-pub use async_transport::{AsyncTaskTransport, DaemonHttpTransport, LocalAsyncTransport, UnavailableAsyncTransport};
+pub use async_transport::{AsyncTaskTransport, DaemonIpcTransport, LocalAsyncTransport, UnavailableAsyncTransport};
 pub use reserved_params::{ParamSource, ReservedParamsConfig, ReservedParamsService};
 pub use tool_execution::{ToolExecutionConfig, ToolExecutionService};
 

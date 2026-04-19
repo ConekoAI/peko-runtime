@@ -5,12 +5,12 @@
 //! - The daemon binary is always started with --daemon flag (blocks forever)
 //! - Background mode: CLI spawns daemon as child process and returns immediately
 
-use crate::api::client::ApiClient;
 use crate::commands::GlobalPaths;
 use crate::daemon::{Daemon, DaemonConfig};
 use clap::Subcommand;
 use std::path::PathBuf;
 use tokio::process::Command;
+use tracing::warn;
 
 /// Daemon management subcommands
 ///
@@ -94,15 +94,12 @@ pub async fn handle_daemon(
                 data_dir: paths.data_dir.clone(),
                 enable_isolated_execution: true,
                 maintenance_interval: std::time::Duration::from_secs(3600), // 1 hour
-                host: crate::api::DEFAULT_HOST.to_string(),
-                port: crate::api::DEFAULT_PORT,
             };
 
             if foreground {
                 println!("🚀 Starting daemon in foreground (interval: {interval}s)...");
                 println!("   Config dir: {}", config.config_dir.display());
                 println!("   Data dir: {}", config.data_dir.display());
-                println!("   API: http://{}:{}", config.host, config.port);
 
                 let daemon = Daemon::new(config)?;
                 if let Err(e) = daemon.run().await {
@@ -192,13 +189,26 @@ pub async fn handle_daemon(
     }
 }
 
-/// Check if daemon is running by trying to connect to its API
+/// Check if daemon is running by trying to connect via IPC (no auto-start)
 async fn check_daemon_running() -> anyhow::Result<bool> {
-    let client = ApiClient::new()?;
-    match client.health_check().await {
-        Ok(health) => {
-            // Status "ok" means ready, any other status means starting or degraded
-            Ok(health.status == "ok")
+    use crate::ipc::{ConnectionManager, RequestPacket, ResponsePacket};
+
+    match ConnectionManager::try_connect().await {
+        Ok(conn) => {
+            let ping = RequestPacket::Ping { request_id: 0 };
+            if let Ok(bytes) = ping.to_bytes() {
+                if conn.send(&bytes).await.is_ok() {
+                    let mut buf = vec![0u8; 65536];
+                    if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
+                        if let Ok(response) = ResponsePacket::from_bytes(&buf[..len]) {
+                            if matches!(response, ResponsePacket::Pong { .. }) {
+                                return Ok(true);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(false)
         }
         Err(_) => Ok(false),
     }
@@ -237,64 +247,58 @@ fn is_process_running(pid: u32) -> bool {
 async fn show_daemon_status(json: bool) -> anyhow::Result<()> {
     let pid_file = get_pid_file_path()?;
 
-    // Try to get health info first - this tells us if daemon is actually running
-    let client_result = ApiClient::new();
-
-    // If we can connect to the health endpoint, daemon is running (regardless of PID file)
-    if let Ok(client) = &client_result {
-        match client.health_check().await {
-            Ok(health) => {
-                let info = client.daemon_info().await;
-                let pid = info.as_ref().map(|i| i.pid).unwrap_or(0);
+    // Try IPC (no auto-start)
+    match crate::ipc::ConnectionManager::try_connect().await {
+        Ok(conn) => {
+            let ping = crate::ipc::RequestPacket::Ping { request_id: 0 };
+            let pong = async {
+                let bytes = ping.to_bytes().ok()?;
+                conn.send(&bytes).await.ok()?;
+                let mut buf = vec![0u8; 65536];
+                let len = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await.ok()?;
+                let response = crate::ipc::ResponsePacket::from_bytes(&buf[..len]).ok()?;
+                match response {
+                    crate::ipc::ResponsePacket::Pong { uptime_secs, version, .. } => Some((uptime_secs, version)),
+                    _ => None,
+                }
+            };
+            if let Some((uptime_secs, version)) = pong.await {
+                let pid = get_running_pid(&pid_file);
                 if json {
                     let output = serde_json::json!({
                         "running": true,
-                        "status": health.status,
-                        "version": health.version,
-                        "uptime_seconds": health.uptime_seconds,
-                        "instance_count": health.instance_count,
-                        "team_count": health.team_count,
-                        "pid": pid,
-                        "ready": health.status == "ok",
+                        "status": "ok",
+                        "version": version,
+                        "uptime_seconds": uptime_secs,
+                        "pid": pid.unwrap_or(0),
+                        "ready": true,
                     });
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 } else {
-                    let ready = if health.status == "ok" { "✅" } else { "⚠️" };
                     println!("📊 Daemon Status:");
-                    println!("  Status: {ready} {}", match health.status.as_str() {
-                        "ok" => "Running",
-                        "starting" => "Starting...",
-                        "degraded" => "Degraded",
-                        s => s,
-                    });
-                    println!("  Version: {}", health.version);
-                    println!("  Uptime: {}s", health.uptime_seconds);
-                    if let Ok(info) = info {
-                        println!("  PID: {}", info.pid);
-                        println!("  Port: {}", info.port);
-                        println!("  Workspace: {}", info.workspace);
+                    println!("  Status: ✅ Running");
+                    println!("  Version: {}", version);
+                    println!("  Uptime: {}s", uptime_secs);
+                    if let Some(pid) = pid {
+                        println!("  PID: {}", pid);
                     }
-                    println!("  Instances: {}", health.instance_count);
-                    println!("  Teams: {}", health.team_count);
                 }
                 return Ok(());
             }
-            Err(_) => {}
         }
+        Err(_) => {}
     }
 
-    // Health check failed - daemon is not running
-    // Check if PID file exists and is stale
+    // Daemon is not running
     if pid_file.exists() {
         let pid_str = std::fs::read_to_string(&pid_file).unwrap_or_default();
         let pid: u32 = pid_str.trim().parse().unwrap_or(0);
         if pid > 0 && is_process_running(pid) {
-            // Process IS running but health check failed - strange state
             if json {
-                println!("{{\"running\": false, \"error\": \"health check failed but process {} exists\"}}", pid);
+                println!("{{\"running\": false, \"error\": \"daemon not responding (process {} exists)\"}}", pid);
             } else {
                 println!("📊 Daemon Status:");
-                println!("  Status: ❌ Not responding (process {} exists but API unreachable)", pid);
+                println!("  Status: ❌ Not responding (process {} exists but IPC unreachable)", pid);
                 println!("  PID: {}", pid);
             }
             return Ok(());
@@ -313,44 +317,55 @@ async fn show_daemon_status(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Stop the daemon gracefully via API, or force kill if API fails
+/// Stop the daemon via PID-based kill
 async fn stop_daemon(force: bool) -> anyhow::Result<()> {
     let pid_file = get_pid_file_path()?;
 
-    // Try graceful shutdown via API first
+    // Try graceful shutdown via IPC first (no auto-start)
+    let mut ipc_reachable = false;
     if !force {
-        if let Ok(client) = ApiClient::new() {
-            match client.shutdown(false).await {
-                Ok(()) => {
-                    // Wait for daemon to shut down (up to 5 seconds)
-                    for i in 0..10 {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                        let pid_file = get_pid_file_path()?;
-                        let pid = get_running_pid(&pid_file);
-                        let running = pid.map(is_process_running).unwrap_or(false);
-                        if !running {
-                            // Daemon stopped
-                            let _ = std::fs::remove_file(&pid_file);
-                            return Ok(());
+        if let Ok(conn) = crate::ipc::ConnectionManager::try_connect().await {
+            let ping = crate::ipc::RequestPacket::Ping { request_id: 0 };
+            if let Ok(bytes) = ping.to_bytes() {
+                if conn.send(&bytes).await.is_ok() {
+                    let mut buf = vec![0u8; 65536];
+                    if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
+                        if let Ok(crate::ipc::ResponsePacket::Pong { .. }) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
+                            ipc_reachable = true;
                         }
                     }
-                    eprintln!("⚠️  Daemon did not stop gracefully, force killing...");
-                }
-                Err(e) => {
-                    eprintln!("⚠️  API shutdown failed: {e}, falling back to PID kill...");
                 }
             }
         }
     }
 
-    // Fall back to PID-based kill
+    if !ipc_reachable && !force {
+        println!("ℹ️  Daemon not reachable via IPC, trying PID file...");
+    }
+
+    // PID-based kill
+    let mut killed = false;
     if let Some(pid) = get_running_pid(&pid_file) {
+        println!("   Found PID file with PID: {pid}");
         #[cfg(windows)]
         {
-            Command::new("taskkill")
+            let output = Command::new("taskkill")
                 .args(["/F", "/PID", &pid.to_string()])
                 .output()
                 .await?;
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if output.status.success() {
+                println!("   taskkill /F /PID {pid} succeeded");
+            } else {
+                println!("   taskkill /F /PID {pid} failed: {stderr}");
+            }
+            if !stderr.is_empty() {
+                println!("   taskkill stderr: {stderr}");
+            }
+            if !stdout.is_empty() {
+                println!("   taskkill stdout: {stdout}");
+            }
         }
         #[cfg(unix)]
         {
@@ -362,17 +377,61 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
         }
 
         // Wait for process to actually terminate
-        for _ in 0..10 {
+        for i in 0..30 {
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
             if !is_process_running(pid) {
+                killed = true;
+                println!("   Process {pid} terminated after {}ms", (i + 1) * 200);
                 break;
             }
         }
+        if !killed {
+            println!("   Warning: Process {pid} may still be running");
+        }
+    } else {
+        println!("   No valid PID file found");
     }
 
-    // Clean up PID file
+    // Clean up PID file and lock files
     let _ = std::fs::remove_file(&pid_file);
     let _ = std::fs::remove_file(pid_file.with_extension("lock"));
+    let _ = std::fs::remove_file(pid_file.with_file_name("daemon_autostart.lock"));
+
+    // Final verification: ensure no daemon is responding on IPC
+    println!("   Verifying daemon is stopped...");
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    if let Ok(conn) = crate::ipc::ConnectionManager::try_connect().await {
+        let ping = crate::ipc::RequestPacket::Ping { request_id: 0 };
+        if let Ok(bytes) = ping.to_bytes() {
+            if conn.send(&bytes).await.is_ok() {
+                let mut buf = vec![0u8; 65536];
+                if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
+                    if let Ok(crate::ipc::ResponsePacket::Pong { .. }) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
+                        // Daemon is still running — try to kill all pekobot processes as fallback
+                        println!("   Daemon still responding! Attempting fallback kill...");
+                        #[cfg(windows)]
+                        {
+                            let exe_name = std::env::current_exe()
+                                .ok()
+                                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+                                .unwrap_or_else(|| "pekobot".to_string());
+                            let im_arg = format!("{exe_name}.exe");
+                            println!("   Running: taskkill /F /IM {im_arg}");
+                            let _ = Command::new("taskkill")
+                                .args(["/F", "/IM", &im_arg])
+                                .output()
+                                .await;
+                        }
+                        return Err(anyhow::anyhow!(
+                            "Daemon process is still running after stop attempt. \
+                             Try: taskkill /F /IM pekobot.exe"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    println!("   Daemon is stopped");
 
     Ok(())
 }
@@ -404,6 +463,9 @@ async fn spawn_daemon(paths: &GlobalPaths, interval: u64) -> anyhow::Result<()> 
         .arg(interval.to_string())
         .env("PEKOBOT_CONFIG_DIR", &paths.config_dir)
         .env("PEKOBOT_DATA_DIR", &paths.data_dir)
+        // Suppress child output so it doesn't flood the parent terminal
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         // Detach so child outlives parent
         .kill_on_drop(false);
 
@@ -430,25 +492,42 @@ async fn spawn_daemon(paths: &GlobalPaths, interval: u64) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Wait for daemon to be ready (health check returns status "ok")
+/// Wait for daemon to be ready (IPC ping returns Pong)
+///
+/// Uses `try_connect` to avoid auto-starting another daemon — the caller
+/// is responsible for having already spawned the daemon process.
 async fn wait_for_daemon_ready() -> bool {
+    use crate::ipc::ConnectionManager;
+
     for i in 0..40 {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-        if let Ok(client) = ApiClient::new() {
-            match client.health_check().await {
-                Ok(health) if health.status == "ok" => {
-                    return true;
-                }
-                Ok(health) => {
-                    eprintln!("   Daemon status: {} (waiting... {})", health.status, i);
-                }
-                Err(e) => {
-                    eprintln!("   Health check attempt {} failed: {}", i, e);
+        // Use try_connect to avoid auto-starting a second daemon
+        match ConnectionManager::try_connect().await {
+            Ok(conn) => {
+                // Send a ping and wait for Pong
+                let ping = crate::ipc::RequestPacket::Ping { request_id: 0 };
+                if let Ok(ping_bytes) = ping.to_bytes() {
+                    if conn.send(&ping_bytes).await.is_ok() {
+                        let mut buf = vec![0u8; 65536];
+                        if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
+                            if let Ok(response) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
+                                match response {
+                                    crate::ipc::ResponsePacket::Pong { .. } => {
+                                        return true;
+                                    }
+                                    _ => {
+                                        eprintln!("   Unexpected response to ping (waiting... {})", i);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            eprintln!("   Attempt {}: Failed to create API client", i);
+            Err(_) => {
+                eprintln!("   Attempt {}: Daemon not yet ready", i);
+            }
         }
     }
     false

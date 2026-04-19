@@ -40,10 +40,6 @@ pub struct DaemonConfig {
     pub enable_isolated_execution: bool,
     /// Session maintenance interval (0 to disable)
     pub maintenance_interval: Duration,
-    /// Host address for HTTP API server
-    pub host: String,
-    /// Port for HTTP API server
-    pub port: u16,
 }
 
 impl Default for DaemonConfig {
@@ -60,8 +56,6 @@ impl Default for DaemonConfig {
             data_dir,
             enable_isolated_execution: true,
             maintenance_interval: Duration::from_secs(3600), // 1 hour default
-            host: crate::api::DEFAULT_HOST.to_string(),
-            port: crate::api::DEFAULT_PORT,
         }
     }
 }
@@ -149,11 +143,11 @@ impl Daemon {
             status.running = true;
         }
 
-        // Create shared AppState for API server and janitor
+        // Create shared AppState for daemon services
         let app_state = crate::api::state::AppState::new(
             &self.config.data_dir,
-            &self.config.host,
-            self.config.port,
+            "127.0.0.1", // host placeholder (HTTP API removed)
+            0,             // port placeholder (HTTP API removed)
             crate::api::state::DaemonConfigSnapshot {
                 data_dir: self.config.data_dir.clone(),
                 config_dir: self.config.config_dir.clone(),
@@ -167,24 +161,12 @@ impl Daemon {
         app_state.set_ready(true).await;
         info!("✅ Daemon ready to accept requests");
 
-        // Start HTTP API server
-        let api_config = crate::api::ServerConfig {
-            host: self.config.host.clone(),
-            port: self.config.port,
-            workspace_path: self.config.data_dir.clone(),
-            daemon_config: crate::api::state::DaemonConfigSnapshot {
-                data_dir: self.config.data_dir.clone(),
-                config_dir: self.config.config_dir.clone(),
-                log_level: "info".to_string(),
-            },
-        };
-
-        let (api_shutdown_tx, api_shutdown_rx) = tokio::sync::oneshot::channel();
-        let api_server = crate::api::ApiServer::with_state(api_config, app_state.clone());
-
-        let api_handle = tokio::spawn(async move {
-            if let Err(e) = api_server.run(api_shutdown_rx).await {
-                error!("API server error: {}", e);
+        // Start IPC server (replaces HTTP API per ADR-021)
+        let ipc_server = crate::ipc::IpcServer::new(app_state.clone()).await
+            .map_err(|e| anyhow::anyhow!("Failed to start IPC server: {e}"))?;
+        let ipc_handle = tokio::spawn(async move {
+            if let Err(e) = ipc_server.run().await {
+                error!("IPC server error: {}", e);
             }
         });
 
@@ -207,14 +189,24 @@ impl Daemon {
                 // Periodic cron check (time-based jobs)
                 _ = poll_tick.tick() => {
                     if let Err(e) = self.check_and_run_jobs().await {
-                        error!("Error checking cron jobs: {}", e);
+                        let msg = e.to_string();
+                        if msg.contains("no such table") {
+                            debug!("Cron table not initialized, skipping cron check");
+                        } else {
+                            error!("Error checking cron jobs: {}", e);
+                        }
                     }
                 }
 
                 // Periodic idle check (idle-triggered jobs)
                 _ = idle_check_tick.tick() => {
                     if let Err(e) = self.check_idle_jobs().await {
-                        error!("Error checking idle jobs: {}", e);
+                        let msg = e.to_string();
+                        if msg.contains("no such table") {
+                            debug!("Cron table not initialized, skipping idle check");
+                        } else {
+                            error!("Error checking idle jobs: {}", e);
+                        }
                     }
                 }
 
@@ -252,17 +244,15 @@ impl Daemon {
                     }
                 }
 
-                // Handle shutdown signal from API (POST /shutdown endpoint)
+                // Handle shutdown signal from API
                 _ = shutdown_rx.recv() => {
-                    info!("🛑 Daemon shutdown requested via API...");
-                    let _ = api_shutdown_tx.send(());
+                    info!("🛑 Daemon shutdown requested...");
                     break;
                 }
 
                 // Handle Ctrl+C / SIGTERM
                 _ = tokio::signal::ctrl_c() => {
                     info!("🛑 Daemon received Ctrl+C...");
-                    let _ = api_shutdown_tx.send(());
                     break;
                 }
             }
@@ -271,8 +261,8 @@ impl Daemon {
         // Mark daemon as not ready
         app_state.set_ready(false).await;
 
-        // Wait for API server to finish
-        let _ = api_handle.await;
+        // Wait for IPC server to finish
+        let _ = ipc_handle.await;
 
         {
             let mut status = self.status.lock().await;
@@ -817,12 +807,9 @@ mod tests {
             data_dir: tmp.path().join("data"),
             enable_isolated_execution: false,
             maintenance_interval: Duration::from_secs(60), // 1 minute for tests
-            host: "127.0.0.1".to_string(),
-            port: 0, // Port 0 = let OS assign a free port
         };
 
-        let (_tx, rx) = mpsc::channel(10);
-        let daemon = Daemon::new(config, rx).unwrap();
+        let daemon = Daemon::new(config).unwrap();
 
         let status = daemon.status.lock().await.clone();
         assert!(!status.running);

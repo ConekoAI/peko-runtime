@@ -230,11 +230,30 @@ impl AppState {
 
         let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone.clone()));
 
-        // ADR-020: Initialize ToolRuntime and UnifiedAsyncExecutor for daemon-side async execution
+        // ADR-021: Initialize global ExtensionCore FIRST so ToolRuntime can register
+        // tools with it, and Agent::new() can find them later.
+        let global_core = {
+            use crate::extensions::core::{init_global_core, ExtensionCore, ExtensionServices};
+            use crate::extensions::services::AsyncExecutionRouter;
+            let router = AsyncExecutionRouter::with_transport(
+                crate::extensions::services::async_transport::create_local_transport(),
+            );
+            let services = ExtensionServices::with_async_router(router);
+            let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
+            init_global_core(Arc::clone(&core));
+            core
+        };
+
+        // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
+        // are registered where Agent::new() can find them.
         let tool_runtime = Arc::new(
-            ToolRuntime::new(path_resolver_clone.clone())
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
+            ToolRuntime::with_workspace_and_core(
+                path_resolver_clone.clone(),
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                global_core,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
         );
         let async_task_executor = Arc::new(UnifiedAsyncExecutor::new());
 

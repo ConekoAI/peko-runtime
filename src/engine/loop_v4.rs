@@ -554,10 +554,15 @@ impl AgenticLoopV4 {
             let response = if self.provider.supports_native_tools() {
                 // Use native tool calling
                 info!(
-                    "Calling chat_with_tools with {} messages and {} tool definitions",
+                    "Calling chat_with_tools with {} messages and {} tool definitions: {:?}",
                     messages.len(),
-                    tool_defs.len()
+                    tool_defs.len(),
+                    tool_defs.iter().map(|d| &d.name).collect::<Vec<_>>()
                 );
+                // Log tool definitions being sent to provider
+                for (i, def) in tool_defs.iter().enumerate() {
+                    info!("Tool def [{}]: name={}, params={}", i, def.name, def.parameters);
+                }
                 self.provider
                     .chat_with_tools(&messages, &tool_defs, &options)
                     .await?
@@ -724,7 +729,7 @@ impl AgenticLoopV4 {
                         let tool_in_extension =
                             self.extension_core.get_tool_metadata(name).await.is_some();
 
-                        let tool_result = if tool_in_extension {
+                        let (tool_result_str, tool_result_json, success) = if tool_in_extension {
                             // Route through ExtensionCore for unified execution with panic isolation
                             let hook_point = HookPointBuilder::tool_execute(name);
                             let hook_input = HookInput::ToolCall {
@@ -748,14 +753,15 @@ impl AgenticLoopV4 {
                                         "Tool '{}' executed successfully via ExtensionCore: {}",
                                         name, result
                                     );
-                                    result.to_string()
+                                    let s = result.to_string();
+                                    (s.clone(), result, true)
                                 }
                                 HookResult::Continue(HookOutput::Text(result)) => {
                                     info!(
                                         "Tool '{}' executed successfully via ExtensionCore (text)",
                                         name
                                     );
-                                    result
+                                    (result.clone(), serde_json::Value::String(result), true)
                                 }
                                 HookResult::Continue(other) => {
                                     warn!(
@@ -763,31 +769,37 @@ impl AgenticLoopV4 {
                                         name,
                                         std::mem::discriminant(&other)
                                     );
-                                    "Error: Unexpected output type from tool".to_string()
+                                    let s = "Error: Unexpected output type from tool".to_string();
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::PassThrough => {
                                     // No handler registered - tool not found in extensions
                                     warn!("Tool '{}' not handled by ExtensionCore", name);
-                                    format!("Tool '{name}' not available")
+                                    let s = format!("Tool '{name}' not available");
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::Error(e) => {
                                     info!("Tool '{}' failed via ExtensionCore: {}", name, e);
-                                    format!("Error: {e}")
+                                    let s = format!("Error: {e}");
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::Handled => {
                                     warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                    "Error: Tool execution was consumed by handler".to_string()
+                                    let s = "Error: Tool execution was consumed by handler".to_string();
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::Replace(output) => {
                                     warn!(
                                         "Hook result for tool '{}' was Replace: {:?}",
                                         name, output
                                     );
-                                    "Error: Tool execution was replaced".to_string()
+                                    let s = "Error: Tool execution was replaced".to_string();
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                             }
                         } else {
-                            format!("Tool '{name}' not found")
+                            let s = format!("Tool '{name}' not found");
+                            (s.clone(), serde_json::Value::String(s), false)
                         };
 
                         let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -795,15 +807,15 @@ impl AgenticLoopV4 {
                         // Add tool result to session
                         {
                             let mut s = session.write().await;
-                            s.add_tool_result(id, name, &tool_result).await?;
+                            s.add_tool_result(id, name, &tool_result_str).await?;
                         }
 
                         // Emit tool end event
                         on_event(AgenticEvent::ToolEnd {
                             run_id: run_id.clone(),
                             tool_id: id.clone(),
-                            result: serde_json::json!(&tool_result),
-                            success: !tool_result.starts_with("Error:"),
+                            result: tool_result_json,
+                            success,
                             duration_ms,
                         });
 
@@ -814,9 +826,9 @@ impl AgenticLoopV4 {
                                 tool_call_id: id.clone(),
                                 name: name.clone(),
                                 content: vec![ContentBlock::Text {
-                                    text: tool_result.clone(),
+                                    text: tool_result_str.clone(),
                                 }],
-                                is_error: tool_result.starts_with("Error:"),
+                                is_error: !success,
                             }],
                             tool_calls: None,
                             tool_call_id: Some(id.clone()),
@@ -1400,7 +1412,7 @@ impl AgenticLoopV4 {
                         let tool_in_extension =
                             self.extension_core.get_tool_metadata(name).await.is_some();
 
-                        let tool_result = if tool_in_extension {
+                        let (tool_result_str, tool_result_json, success) = if tool_in_extension {
                             // Route through ExtensionCore for unified execution with panic isolation
                             let hook_point = HookPointBuilder::tool_execute(name);
                             let hook_input = HookInput::ToolCall {
@@ -1419,14 +1431,15 @@ impl AgenticLoopV4 {
                                         "Tool '{}' executed successfully via ExtensionCore",
                                         name
                                     );
-                                    result.to_string()
+                                    let s = result.to_string();
+                                    (s.clone(), result, true)
                                 }
                                 HookResult::Continue(HookOutput::Text(result)) => {
                                     info!(
                                         "Tool '{}' executed successfully via ExtensionCore",
                                         name
                                     );
-                                    result
+                                    (result.clone(), serde_json::Value::String(result), true)
                                 }
                                 HookResult::Continue(HookOutput::Vec(outputs)) => {
                                     // Multiple outputs from different handlers - find first useful one
@@ -1436,19 +1449,20 @@ impl AgenticLoopV4 {
                                         outputs.len()
                                     );
                                     let result = outputs.iter().find_map(|o| match o {
-                                        HookOutput::Json(v) => Some(v.to_string()),
-                                        HookOutput::Text(t) => Some(t.clone()),
+                                        HookOutput::Json(v) => Some((v.to_string(), v.clone())),
+                                        HookOutput::Text(t) => Some((t.clone(), serde_json::Value::String(t.clone()))),
                                         _ => None,
                                     });
-                                    if let Some(r) = result {
+                                    if let Some((s, v)) = result {
                                         info!("Tool '{}' executed successfully via ExtensionCore (from {} outputs)", name, outputs.len());
-                                        r
+                                        (s, v, true)
                                     } else {
                                         warn!(
                                             "Tool '{}' returned Vec with no Json/Text: {:?}",
                                             name, outputs
                                         );
-                                        "Error: Unexpected Vec output from tool".to_string()
+                                        let s = "Error: Unexpected Vec output from tool".to_string();
+                                        (s.clone(), serde_json::Value::String(s), false)
                                     }
                                 }
                                 HookResult::Continue(other) => {
@@ -1457,31 +1471,37 @@ impl AgenticLoopV4 {
                                         name,
                                         std::mem::discriminant(&other)
                                     );
-                                    "Error: Unexpected output type from tool".to_string()
+                                    let s = "Error: Unexpected output type from tool".to_string();
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::PassThrough => {
                                     // No handler registered - tool not found in extensions
                                     warn!("Tool '{}' not handled by ExtensionCore", name);
-                                    format!("Tool '{name}' not available")
+                                    let s = format!("Tool '{name}' not available");
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::Error(e) => {
                                     info!("Tool '{}' failed via ExtensionCore: {}", name, e);
-                                    format!("Error: {e}")
+                                    let s = format!("Error: {e}");
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::Handled => {
                                     warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                    "Error: Tool execution was consumed by handler".to_string()
+                                    let s = "Error: Tool execution was consumed by handler".to_string();
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::Replace(output) => {
                                     warn!(
                                         "Hook result for tool '{}' was Replace: {:?}",
                                         name, output
                                     );
-                                    "Error: Tool execution was replaced".to_string()
+                                    let s = "Error: Tool execution was replaced".to_string();
+                                    (s.clone(), serde_json::Value::String(s), false)
                                 }
                             }
                         } else {
-                            format!("Tool '{name}' not found")
+                            let s = format!("Tool '{name}' not found");
+                            (s.clone(), serde_json::Value::String(s), false)
                         };
 
                         let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -1489,14 +1509,14 @@ impl AgenticLoopV4 {
                         // Add to session
                         {
                             let mut s = session.write().await;
-                            s.add_tool_result(id, name, &tool_result).await?;
+                            s.add_tool_result(id, name, &tool_result_str).await?;
                         }
 
                         on_event(AgenticEvent::ToolEnd {
                             run_id: run_id.clone(),
                             tool_id: id.clone(),
-                            result: serde_json::json!(&tool_result),
-                            success: !tool_result.starts_with("Error:"),
+                            result: tool_result_json,
+                            success,
                             duration_ms,
                         });
 
@@ -1507,9 +1527,9 @@ impl AgenticLoopV4 {
                                 tool_call_id: id.clone(),
                                 name: name.clone(),
                                 content: vec![ContentBlock::Text {
-                                    text: tool_result.clone(),
+                                    text: tool_result_str.clone(),
                                 }],
-                                is_error: tool_result.starts_with("Error:"),
+                                is_error: !success,
                             }],
                             tool_calls: None,
                             tool_call_id: Some(id.clone()),

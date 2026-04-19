@@ -253,13 +253,6 @@ impl StreamOrchestrator {
             });
         }
 
-        // Emit end event
-        events.push(AgenticEvent::Lifecycle {
-            run_id: self.run_id.clone(),
-            phase: LifecyclePhase::End,
-            error: None,
-        });
-
         events
     }
 
@@ -467,21 +460,11 @@ mod tests {
         // Finalize should emit accumulated text
         let events = orchestrator.finalize();
 
-        // Should have AssistantText and Lifecycle::End
+        // Should have AssistantText (Lifecycle::End is emitted by engine loop, not orchestrator)
         let has_assistant_text = events
             .iter()
             .any(|e| matches!(e, AgenticEvent::AssistantText { .. }));
-        let has_end = events.iter().any(|e| {
-            matches!(
-                e,
-                AgenticEvent::Lifecycle {
-                    phase: LifecyclePhase::End,
-                    ..
-                }
-            )
-        });
         assert!(has_assistant_text);
-        assert!(has_end);
     }
 
     #[test]

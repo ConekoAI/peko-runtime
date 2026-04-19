@@ -206,35 +206,71 @@ impl SystemPromptBuilder {
 
         lines.push("## Available Tools".to_string());
 
+        // Phase 1: Extension Architecture - Query ExtensionCore for tools via hooks
+        // This picks up tools registered by BuiltinToolAdapter, MCPAdapter, etc.
+        let mut has_extension_tools = false;
+        if let Some(ref core) = self.extension_core {
+            if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+                use crate::extensions::{HookInput, HookPoint};
+                let hook_point = HookPoint::PromptSystemSection {
+                    section: "tools".to_string(),
+                    priority: 100,
+                };
+                let core = core.clone();
+
+                let result = tokio::task::block_in_place(move || {
+                    tokio::runtime::Handle::current().block_on(async move {
+                        core.invoke_hook_text(hook_point, HookInput::Unit).await
+                    })
+                });
+
+                if let Some(tools_text) = result {
+                    if !tools_text.is_empty() {
+                        has_extension_tools = true;
+                        lines.push("You have access to the following tools. Use them wisely.".to_string());
+                        lines.push(String::new());
+                        lines.push(tools_text);
+                        lines.push(String::new());
+                    }
+                }
+            }
+        }
+
         // ADR-019 Phase 3: Support both Arc<dyn Tool> and ToolDefinition
         // Prefer tool_definitions if available (dynamic updates), fall back to tools
+        // Only used if ExtensionCore didn't provide tools
         let has_tool_defs = !self.tool_definitions.is_empty();
         let has_tools = !self.tools.is_empty();
 
-        if !has_tool_defs && !has_tools {
-            lines.push("No tools available.".to_string());
-        } else {
-            lines.push("You have access to the following tools. Use them wisely.".to_string());
-            lines.push(String::new());
-
-            // Use tool_definitions if available (from unified registry)
-            if has_tool_defs {
-                for def in &self.tool_definitions {
-                    lines.push(format!("### {}", def.name));
-                    lines.push(String::new());
-                    lines.push(def.description.clone());
-                    lines.push(String::new());
-                }
+        if !has_extension_tools {
+            if !has_tool_defs && !has_tools {
+                lines.push("No tools available.".to_string());
             } else {
-                // Fall back to legacy Tool trait objects
-                for tool in &self.tools {
-                    lines.push(format!("### {}", tool.name()));
-                    lines.push(String::new());
-                    lines.push(tool.description());
-                    lines.push(String::new());
+                lines.push("You have access to the following tools. Use them wisely.".to_string());
+                lines.push(String::new());
+
+                // Use tool_definitions if available (from unified registry)
+                if has_tool_defs {
+                    for def in &self.tool_definitions {
+                        lines.push(format!("### {}", def.name));
+                        lines.push(String::new());
+                        lines.push(def.description.clone());
+                        lines.push(String::new());
+                    }
+                } else {
+                    // Fall back to legacy Tool trait objects
+                    for tool in &self.tools {
+                        lines.push(format!("### {}", tool.name()));
+                        lines.push(String::new());
+                        lines.push(tool.description());
+                        lines.push(String::new());
+                    }
                 }
             }
+        }
 
+        // Tool Use Guidelines (always add if there are tools)
+        if has_extension_tools || has_tool_defs || has_tools {
             lines.push("### Tool Use Guidelines".to_string());
             lines.push(
                 "- Think step by step. Use available tools when needed to accomplish tasks."
@@ -248,13 +284,6 @@ impl SystemPromptBuilder {
                     .to_string(),
             );
         }
-
-        // Reserved parameter documentation removed: ExtensionCore handles async/timeouts
-        // via execution hooks, not prompt-level reserved parameters.
-
-        // Phase 1: Extension Architecture - Allow extensions to inject tool content
-        // Note: This is synchronous; async hook invocation will be added in future phases
-        // when the prompt builder becomes async or we add a pre-built hook cache.
 
         lines.join("\n")
     }

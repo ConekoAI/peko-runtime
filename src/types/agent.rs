@@ -199,10 +199,9 @@ impl Default for ToolSettings {
 /// Tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-#[derive(Default)]
 pub struct ToolConfig {
     /// Enabled built-in tools (whitelist)
-    /// If empty, all tools are available (backward compatibility)
+    /// If empty, NO tools are allowed (secure by default)
     pub enabled: Vec<String>,
     /// Enabled skills for this agent (whitelist)
     pub skills: Vec<String>,
@@ -221,6 +220,30 @@ pub struct ToolConfig {
     pub grep: Option<ToolSettings>,
     #[serde(default)]
     pub str_replace_file: Option<ToolSettings>,
+}
+
+impl Default for ToolConfig {
+    fn default() -> Self {
+        Self {
+            // Default: enable all common built-in tools so agents work out of the box
+            enabled: vec![
+                "shell".to_string(),
+                "read_file".to_string(),
+                "write_file".to_string(),
+                "glob".to_string(),
+                "grep".to_string(),
+                "str_replace_file".to_string(),
+            ],
+            skills: vec![],
+            http: None,
+            custom: None,
+            read_file: None,
+            write_file: None,
+            glob: None,
+            grep: None,
+            str_replace_file: None,
+        }
+    }
 }
 
 impl ToolConfig {

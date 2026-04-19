@@ -57,6 +57,25 @@ impl ToolRuntime {
         })
     }
 
+    /// Create with a specific workspace and an existing ExtensionCore
+    ///
+    /// Used by the daemon to register tools with the global ExtensionCore
+    /// so that agents created later can find them.
+    pub async fn with_workspace_and_core(
+        path_resolver: PathResolver,
+        workspace: impl Into<PathBuf>,
+        extension_core: Arc<ExtensionCore>,
+    ) -> Result<Self> {
+        let workspace = workspace.into();
+        Self::register_builtins(&extension_core, &path_resolver).await?;
+
+        Ok(Self {
+            extension_core,
+            path_resolver,
+            workspace,
+        })
+    }
+
     /// Create a new `ToolRuntime` with custom extension services
     ///
     /// This is useful when the caller wants to inject a pre-configured
