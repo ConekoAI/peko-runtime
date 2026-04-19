@@ -98,11 +98,15 @@ pub async fn handle_daemon(
                 port: crate::api::DEFAULT_PORT,
             };
 
+            let silent = std::env::var("PEKOBOT_DAEMON_SILENT").is_ok();
+
             if foreground {
-                println!("🚀 Starting daemon in foreground (interval: {interval}s)...");
-                println!("   Config dir: {}", config.config_dir.display());
-                println!("   Data dir: {}", config.data_dir.display());
-                println!("   API: http://{}:{}", config.host, config.port);
+                if !silent {
+                    println!("🚀 Starting daemon in foreground (interval: {interval}s)...");
+                    println!("   Config dir: {}", config.config_dir.display());
+                    println!("   Data dir: {}", config.data_dir.display());
+                    println!("   API: http://{}:{}", config.host, config.port);
+                }
 
                 let daemon = Daemon::new(config)?;
                 if let Err(e) = daemon.run().await {
@@ -404,8 +408,11 @@ async fn spawn_daemon(paths: &GlobalPaths, interval: u64) -> anyhow::Result<()> 
         .arg(interval.to_string())
         .env("PEKOBOT_CONFIG_DIR", &paths.config_dir)
         .env("PEKOBOT_DATA_DIR", &paths.data_dir)
+        .env("PEKOBOT_DAEMON_SILENT", "1")
         // Detach so child outlives parent
-        .kill_on_drop(false);
+        .kill_on_drop(false)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
 
     let mut child = cmd.spawn()?;
 

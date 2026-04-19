@@ -69,11 +69,12 @@ Write-Host "Enabled shell and read_file tools" -ForegroundColor Green
 
 # Start daemon
 Write-Host "`nStarting pekobot daemon..." -ForegroundColor Cyan
-peko daemon start 2>&1 | Out-Null
+peko daemon start
 
 # Wait for daemon to be ready
 $daemonReady = $false
 for ($i = 0; $i -lt 30; $i++) {
+    Write-Host "Checking if daemon is running..." -ForegroundColor Yellow
     $status = peko daemon status 2>&1
     if ($status -match "running") {
         $daemonReady = $true
