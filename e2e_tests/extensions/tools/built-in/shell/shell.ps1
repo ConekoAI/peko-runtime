@@ -42,6 +42,28 @@ if (Test-Path $DataDir) {
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
+# Start daemon
+Write-Host "`nStarting pekobot daemon..." -ForegroundColor Cyan
+peko daemon start
+
+# Wait for daemon to be ready
+$daemonReady = $false
+for ($i = 0; $i -lt 30; $i++) {
+    Write-Host "Checking if daemon is running..." -ForegroundColor Yellow
+    $status = peko daemon status 2>&1
+    if ($status -match "running") {
+        $daemonReady = $true
+        break
+    }
+    Start-Sleep -Milliseconds 200
+}
+
+if (-not $daemonReady) {
+    Write-Error "Daemon failed to start"
+    exit 1
+}
+Write-Host "Daemon is running" -ForegroundColor Green
+
 # Set API key
 peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
@@ -72,7 +94,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $cmd = if ($IsWindows -or $env:OS -eq "Windows_NT") { "dir" } else { "ls" }
 Write-Host "Sending request to execute $cmd..." -ForegroundColor Yellow
-$response = peko send $agentName "Use your shell tool to check what's in your workspace. After executing the tool, respond TOOL_SUCCESS if you can see files listed, otherwise respond TOOL_FAILED." 2>&1
+$response = peko send $agentName "Use your shell tool to check what's in your workspace. After executing the tool, respond TOOL_SUCCESS if you can see files listed, otherwise respond TOOL_FAILED." --no-stream 2>&1
 Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
@@ -123,5 +145,9 @@ if (Test-Path "$workspaceDir/testdir") {
 
 peko agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
+
+# Stop daemon
+peko daemon stop 2>&1 | Out-Null
+Write-Host "Stopped daemon" -ForegroundColor Green
 
 Write-Host "`n✅ Shell tool e2e tests completed!" -ForegroundColor Green

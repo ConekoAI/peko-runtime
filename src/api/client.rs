@@ -153,18 +153,19 @@ impl ApiClient {
         self.get_with_query("/agents", &query).await
     }
 
-    /// Register a new agent from image
+    /// Register a new agent from image or provider
     ///
-    /// ADR-013: Creates configuration, does not start instance
+    /// ADR-013: Creates configuration, does not start instance.
+    /// Pass the provider name (e.g., "minimax", "openai") as `provider`.
     pub async fn register_agent(
         &self,
-        image: &str,
+        provider: &str,
         name: Option<&str>,
         team_id: Option<&str>,
         env: Option<serde_json::Map<String, serde_json::Value>>,
     ) -> Result<AgentConfigResponse, ClientError> {
         let body = serde_json::json!({
-            "image": image,
+            "provider": provider,
             "name": name,
             "team_id": team_id,
             "env": env,
