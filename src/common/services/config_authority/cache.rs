@@ -64,6 +64,18 @@ impl ConfigCache {
         debug!("Removed cache for agent '{}' in team '{}'", agent, team);
     }
 
+    /// Remove an entry from cache (synchronous version for sync contexts)
+    pub fn remove_sync(&self, team: &str, agent: &str) {
+        let key = Self::cache_key(team, agent);
+        // Use try_write to avoid blocking; if lock is contended, skip
+        if let Ok(mut cache) = self.cache.try_write() {
+            cache.remove(&key);
+            debug!("Removed cache for agent '{}' in team '{}'", agent, team);
+        } else {
+            debug!("Cache lock contested, skipping invalidation for '{}/{}'", team, agent);
+        }
+    }
+
     /// Clear all entries from cache
     pub async fn clear(&self) {
         let mut cache = self.cache.write().await;

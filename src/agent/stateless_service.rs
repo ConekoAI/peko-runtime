@@ -284,11 +284,26 @@ impl StatelessAgentService {
 
     /// Get team for an agent (helper to avoid repetition)
     async fn get_team(&self, agent_name: &str) -> Result<Option<String>> {
-        Ok(self
-            .config_service
-            .get(agent_name, None)
-            .await?
-            .map(|entry| entry.team))
+        // First try cache; if miss, search all teams
+        if let Some(entry) = self.config_service.get(agent_name, None).await? {
+            return Ok(Some(entry.team));
+        }
+        Ok(None)
+    }
+
+    /// Load agent config fresh, bypassing any stale cache
+    async fn load_config_fresh(&self, agent_name: &str) -> Result<crate::common::services::AgentConfigEntry> {
+        // Determine team first (may use cache, but we'll invalidate before loading config)
+        let team = self.get_team(agent_name).await?.unwrap_or_else(|| "default".to_string());
+
+        // Invalidate cache to ensure we read the latest config from disk
+        // This is critical for mid-session tool enable/disable changes made by CLI
+        self.config_service.invalidate_cache(agent_name, &team).await;
+
+        let entry = self.config_service.get(agent_name, Some(&team)).await?
+            .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_name))?;
+
+        Ok(entry)
     }
 
     /// Execute a message and return a blocking response
@@ -483,12 +498,9 @@ impl StatelessAgentService {
     async fn execute_inner(&self, request: ExecutionRequest) -> Result<ExecutionResult> {
         let start = Instant::now();
 
-        // 1. Load agent configuration (fast - from in-memory cache)
-        let config_entry = self
-            .config_service
-            .get(&request.agent_name, None)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?;
+        // 1. Load agent configuration fresh from disk
+        // ADR-019: Invalidate cache to pick up mid-session tool config changes
+        let config_entry = self.load_config_fresh(&request.agent_name).await?;
 
         // 2. Open the specific session by ID
         // This ensures we write to the correct session file
@@ -685,17 +697,13 @@ impl StatelessAgentService {
         // Load history for the agent
         let history = self.load_session_history(session.clone()).await?;
 
-        // Load agent
-        let agent = Agent::new(
-            self.config_service
-                .get(&request.agent_name, None)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", request.agent_name))?
-                .config
-                .clone(),
-        )
-        .await
-        .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
+        // Load agent config fresh from disk
+        // ADR-019: Invalidate cache to pick up mid-session tool config changes
+        let config_entry = self.load_config_fresh(&request.agent_name).await?;
+
+        let agent = Agent::new(config_entry.config.clone())
+            .await
+            .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
         // Create channels
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(1000);

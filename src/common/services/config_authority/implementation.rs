@@ -356,6 +356,10 @@ impl ConfigAuthorityImpl {
 
         let updated = toml::to_string_pretty(&config)?;
         std::fs::write(&config_path, updated)?;
+
+        // Invalidate cache so subsequent reads pick up the change
+        self.cache.remove_sync(team, agent_name);
+
         Ok(())
     }
 
@@ -379,6 +383,10 @@ impl ConfigAuthorityImpl {
 
         let updated = toml::to_string_pretty(&config)?;
         std::fs::write(&config_path, updated)?;
+
+        // Invalidate cache so subsequent reads pick up the change
+        self.cache.remove_sync(team, agent_name);
+
         Ok(())
     }
 }
