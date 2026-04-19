@@ -87,7 +87,7 @@ Write-Host "TEST 1: Glob *.py pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .py files..." -ForegroundColor Yellow
-$response = peko send $agentName "Use your glob tool with pattern='*.py'. After getting the result, respond TOOL_SUCCESS if script.py is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your glob tool with pattern='*.py'. After getting the result, respond TOOL_SUCCESS if script.py is in the result, otherwise respond TOOL_FAILED with an explanation." --no-stream 2>&1
 Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
@@ -109,7 +109,7 @@ Write-Host "TEST 2: Glob *.rs pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find .rs files..." -ForegroundColor Yellow
-$response = peko send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. After getting the result, respond TOOL_SUCCESS if file1.rs is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your glob tool (NOT shell) to find all files matching '*.rs' in your workspace. After getting the result, respond TOOL_SUCCESS if file1.rs is in the result, otherwise respond TOOL_FAILED with an explanation." --no-stream 2>&1
 Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
@@ -131,7 +131,7 @@ Write-Host "TEST 3: Glob **/*.rs recursive pattern" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "Sending request to find all .rs files recursively..." -ForegroundColor Yellow
-$response = peko send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. After getting the result, respond TOOL_SUCCESS if main.rs is in the result, otherwise respond TOOL_FAILED." --no-stream 2>&1
+$response = peko send $agentName "Use your glob tool (NOT shell) with pattern='**/*.rs'. After getting the result, respond TOOL_SUCCESS if main.rs is in the result, otherwise respond TOOL_FAILED with an explanation." --no-stream 2>&1
 Start-Sleep -Seconds 3
 Write-Host "Response: $response"
 
