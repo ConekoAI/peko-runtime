@@ -53,6 +53,20 @@ if (Test-Path $DataDir) {
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
+# Set API key
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+Write-Host "Set API key for $Provider" -ForegroundColor Green
+
+# Create agent
+$agentName = "async_test"
+peko agent create $agentName --provider $Provider 2>&1 | Out-Null
+Write-Host "Created agent: $agentName" -ForegroundColor Green
+
+# Enable required tools
+peko ext enable shell --target default/$agentName 2>&1 | Out-Null
+peko ext enable read_file --target default/$agentName 2>&1 | Out-Null
+Write-Host "Enabled shell and read_file tools" -ForegroundColor Green
+
 # Start daemon
 Write-Host "`nStarting pekobot daemon..." -ForegroundColor Cyan
 peko daemon start 2>&1 | Out-Null
@@ -73,21 +87,6 @@ if (-not $daemonReady) {
     exit 1
 }
 Write-Host "Daemon is running" -ForegroundColor Green
-
-# Set API key
-peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
-Write-Host "Set API key for $Provider" -ForegroundColor Green
-
-# Create agent
-$agentName = "async_test"
-peko agent create $agentName --provider $Provider 2>&1 | Out-Null
-Write-Host "Created agent: $agentName" -ForegroundColor Green
-
-# Enable required tools
-peko ext enable shell --target default/$agentName 2>&1 | Out-Null
-peko ext enable read_file --target default/$agentName 2>&1 | Out-Null
-Write-Host "Enabled shell and read_file tools" -ForegroundColor Green
-
 
 # Ensure cleanup runs even if tests fail
 try {

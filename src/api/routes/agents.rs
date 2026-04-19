@@ -48,15 +48,6 @@ pub struct AgentConfigResponse {
     /// Last updated timestamp
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
-    /// Full agent configuration (added for CLI relay compatibility)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<crate::types::agent::AgentConfig>,
-    /// Path to agent configuration file
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub config_path: Option<String>,
-    /// Number of sessions
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_count: Option<usize>,
 }
 
 impl From<crate::common::services::AgentConfigEntry> for AgentConfigResponse {
@@ -80,9 +71,6 @@ impl From<crate::common::services::AgentConfigEntry> for AgentConfigResponse {
             registered_at: entry
                 .registered_at.map_or_else(|| chrono::Utc::now().to_rfc3339(), |d| d.to_rfc3339()),
             updated_at: entry.updated_at.map(|d| d.to_rfc3339()),
-            config: Some(entry.config),
-            config_path: None,
-            session_count: None,
         }
     }
 }
@@ -97,16 +85,13 @@ impl From<crate::common::types::agent::AgentSummary> for AgentConfigResponse {
             .collect();
 
         Self {
-            name: summary.name.clone(),
+            name: summary.name,
             image_ref: summary.config.provider.default_model.clone(),
             image_digest: "sha256:unknown".to_string(),
-            team_id: Some(summary.team.clone()),
+            team_id: Some(summary.team),
             capabilities,
             registered_at: chrono::Utc::now().to_rfc3339(),
             updated_at: None,
-            config: Some(summary.config),
-            config_path: Some(summary.config_path.to_string_lossy().to_string()),
-            session_count: None,
         }
     }
 }
@@ -121,16 +106,13 @@ impl From<crate::common::types::agent::AgentInfo> for AgentConfigResponse {
             .collect();
 
         Self {
-            name: info.name.clone(),
+            name: info.name,
             image_ref: info.config.provider.default_model.clone(),
             image_digest: "sha256:unknown".to_string(),
-            team_id: Some(info.team.clone()),
+            team_id: Some(info.team),
             capabilities,
             registered_at: chrono::Utc::now().to_rfc3339(),
             updated_at: None,
-            config: Some(info.config),
-            config_path: Some(info.config_path.to_string_lossy().to_string()),
-            session_count: Some(info.session_count),
         }
     }
 }
@@ -536,9 +518,6 @@ mod tests {
             capabilities: vec!["chat".to_string(), "search".to_string()],
             registered_at: Utc::now().to_rfc3339(),
             updated_at: None,
-            config: None,
-            config_path: None,
-            session_count: None,
         };
 
         let json = serde_json::to_string(&response).unwrap();

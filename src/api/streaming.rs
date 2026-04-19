@@ -8,13 +8,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// SSE event types for chat streaming
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum ChatSseEvent {
     /// Text delta (incremental content)
@@ -59,7 +59,7 @@ pub enum ChatSseEvent {
 }
 
 /// Token usage statistics
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct TokenUsage {
     #[serde(rename = "input_tokens")]
     pub input_tokens: u64,

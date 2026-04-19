@@ -1,8 +1,8 @@
 //! Agent Command Handlers
 //!
-//! NOTE: Query/mutation commands (list, show, create, remove, move) use the
-//! HTTP API via `ApiClient`. File-system commands (init, export, import,
-//! inspect, config) remain local.
+//! NOTE: All business logic is delegated to `AgentService` in `common::services`.
+//! This module only handles CLI-specific concerns like output formatting and
+//! user interaction.
 
 use crate::commands::agent::AgentConfigCommands;
 use crate::commands::GlobalPaths;
@@ -14,51 +14,10 @@ use crate::common::types::agent::{
     AgentInitRequest,
 };
 
-/// Helper: create an API client and verify daemon is running
-fn api_client() -> anyhow::Result<crate::api::client::ApiClient> {
-    crate::api::client::ApiClient::new()
-}
-
-/// Helper: verify daemon is running via health check
-async fn ensure_daemon_running(client: &crate::api::client::ApiClient) -> anyhow::Result<()> {
-    client.health_check().await.map_err(|_| {
-        anyhow::anyhow!(
-            "Daemon not running. Start it with: pekobot daemon start --foreground"
-        )
-    })?;
-    Ok(())
-}
-
-/// Helper: get provider type string from agent response
-fn agent_provider_type(agent: &crate::api::client::AgentConfigResponse) -> String {
-    agent
-        .config
-        .as_ref()
-        .map(|c| format!("{:?}", c.provider.provider_type))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Helper: get model from agent response
-fn agent_model(agent: &crate::api::client::AgentConfigResponse) -> String {
-    agent
-        .config
-        .as_ref()
-        .map(|c| c.provider.default_model.clone())
-        .unwrap_or_default()
-}
-
-/// Helper: get description from agent response
-fn agent_description(agent: &crate::api::client::AgentConfigResponse) -> Option<String> {
-    agent.config.as_ref().and_then(|c| c.description.clone())
-}
-
 /// Handle agent list command
-pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> anyhow::Result<()> {
-    let client = api_client()?;
-    ensure_daemon_running(&client).await?;
-
-    let response = client.list_agents(None).await?;
-    let agents = response.items;
+pub async fn handle_agent_list(paths: &GlobalPaths, long: bool, json: bool) -> anyhow::Result<()> {
+    let service = paths.services().agent();
+    let agents = service.list_agents(None).await?;
 
     if json {
         // Build JSON output with team structure
@@ -68,12 +27,11 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
         for agent in &agents {
             let entry = serde_json::json!({
                 "name": agent.name,
-                "provider": agent_provider_type(agent),
-                "model": agent_model(agent),
-                "description": agent_description(agent),
+                "provider": format!("{:?}", agent.config.provider.provider_type),
+                "model": agent.config.provider.default_model,
+                "description": agent.config.description,
             });
-            let team = agent.team_id.clone().unwrap_or_else(|| "default".to_string());
-            teams.entry(team).or_default().push(entry);
+            teams.entry(agent.team.clone()).or_default().push(entry);
             total_agents += 1;
         }
 
@@ -98,8 +56,7 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
         // Group by team
         let mut teams: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
         for agent in agents {
-            let team = agent.team_id.clone().unwrap_or_else(|| "default".to_string());
-            teams.entry(team).or_default().push(agent);
+            teams.entry(agent.team.clone()).or_default().push(agent);
         }
 
         // Sort teams: default first, then alphabetically
@@ -121,9 +78,9 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
             for agent in team_agents {
                 if long {
                     println!("\n    📦 {}", agent.name);
-                    println!("       Provider: {}", agent_provider_type(agent));
-                    println!("       Model: {}", agent_model(agent));
-                    if let Some(desc) = agent_description(agent) {
+                    println!("       Provider: {:?}", agent.config.provider.provider_type);
+                    println!("       Model: {}", agent.config.provider.default_model);
+                    if let Some(desc) = &agent.config.description {
                         println!("       Description: {desc}");
                     }
                 } else {
@@ -138,45 +95,35 @@ pub async fn handle_agent_list(_paths: &GlobalPaths, long: bool, json: bool) -> 
 
 /// Handle agent show command
 pub async fn handle_agent_show(
-    _paths: &GlobalPaths,
+    paths: &GlobalPaths,
     name: String,
     team: Option<String>,
     json: bool,
 ) -> anyhow::Result<()> {
-    let client = api_client()?;
-    ensure_daemon_running(&client).await?;
-
+    let service = paths.services().agent();
     let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
 
-    // The API uses agent name as the path parameter; team is not part of the path
-    // We list all agents and filter by name + team
-    let response = client.list_agents(None).await?;
-    let agent = response
-        .items
-        .into_iter()
-        .find(|a| {
-            a.name == agent_name && a.team_id.as_deref().unwrap_or("default") == team
-        })
+    let agent = service
+        .get_agent(agent_name, Some(team))
+        .await?
         .ok_or_else(|| anyhow::anyhow!("Agent '{agent_name}' not found in team '{team}'"))?;
 
     if json {
         let output = serde_json::json!({
             "name": agent.name,
-            "team": agent.team_id.clone(),
+            "team": agent.team,
             "config": agent.config,
             "session_count": agent.session_count,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("📦 Agent: {}", agent.name);
-        println!("   Team: {}", agent.team_id.clone().unwrap_or_else(|| "default".to_string()));
-        if let Some(path) = &agent.config_path {
-            println!("   Config: {path}");
-        }
-        println!("   Provider: {}", agent_provider_type(&agent));
-        println!("   Model: {}", agent_model(&agent));
-        println!("   Sessions: {}", agent.session_count.unwrap_or(0));
-        if let Some(desc) = agent_description(&agent) {
+        println!("   Team: {}", agent.team);
+        println!("   Config: {}", agent.config_path.display());
+        println!("   Provider: {:?}", agent.config.provider.provider_type);
+        println!("   Model: {}", agent.config.provider.default_model);
+        println!("   Sessions: {}", agent.session_count);
+        if let Some(desc) = &agent.config.description {
             println!("   Description: {desc}");
         }
     }
@@ -186,66 +133,71 @@ pub async fn handle_agent_show(
 
 /// Handle agent create command
 pub async fn handle_agent_create(
-    _paths: &GlobalPaths,
+    paths: &GlobalPaths,
     name: String,
     team: Option<String>,
     provider: String,
     force: bool,
 ) -> anyhow::Result<()> {
-    let client = api_client()?;
-    ensure_daemon_running(&client).await?;
+    let service = paths.services().agent();
 
     let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
 
-    let result = client
-        .register_agent(&provider, Some(&agent_name), Some(&team), None)
-        .await?;
+    let request = AgentCreateRequest::new(agent_name, &provider)
+        .with_team(team)
+        .with_force(force);
+
+    let result = service.create_agent(request).await?;
 
     println!(
         "✅ Created agent '{}' in team '{}'",
-        result.name,
-        result.team_id.unwrap_or_else(|| "default".to_string())
+        result.name, result.team
     );
-    println!("   Provider: {}", result.image_ref);
+    println!("   Provider: {}", result.provider);
+    println!("   Config: {}", result.config_path.display());
 
     Ok(())
 }
 
 /// Handle agent remove command
 pub async fn handle_agent_remove(
-    _paths: &GlobalPaths,
+    paths: &GlobalPaths,
     name: String,
     team: Option<String>,
     purge: bool,
     _force: bool,
     json: bool,
 ) -> anyhow::Result<()> {
-    let client = api_client()?;
-    ensure_daemon_running(&client).await?;
+    let service = paths.services().agent();
 
     let (team, agent_name) = parse_agent_identifier_with_override(&name, team.as_deref())?;
 
-    // The HTTP API doesn't support purge via unregister; we just delete the agent config
-    client.unregister_agent(&agent_name).await?;
+    let opts = AgentDeleteOptions {
+        purge_identity: purge,
+        force: _force,
+    };
+
+    let result = service.delete_agent(agent_name, Some(team), opts).await?;
 
     if json {
         println!(
             "{{\"success\": true, \"name\": \"{}\", \"team\": \"{}\", \"purged\": {}}}",
-            agent_name, team, purge
+            result.name, result.team, purge
         );
     } else {
         if purge {
-            println!("🗑️  Purged identity for '{agent_name}'");
+            println!("🗑️  Purged identity for '{}'", result.name);
         }
-        println!("✅ Deleted agent '{agent_name}' from team '{team}'");
+
+        println!(
+            "✅ Deleted agent '{}' from team '{}'",
+            result.name, result.team
+        );
     }
     Ok(())
 }
 
 /// Handle agent move command
-///
-/// NOTE: This command performs filesystem operations (moving config files)
-/// and remains local. There is no HTTP equivalent.
 pub async fn handle_agent_move(
     paths: &GlobalPaths,
     old_name: String,

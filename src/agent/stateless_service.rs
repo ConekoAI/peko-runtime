@@ -680,22 +680,6 @@ impl StatelessAgentService {
         request: ExecutionRequest,
         session: Arc<RwLock<crate::session::unified::UnifiedSession>>,
     ) -> Result<crate::channels::EventStream> {
-        let (event_stream, _handle) = self
-            .execute_streaming_with_session_cancellable(request, session)
-            .await?;
-        Ok(event_stream)
-    }
-
-    /// Execute streaming with cancellation support (ADR-021 Phase 2)
-    ///
-    /// Returns both the `EventStream` and a `JoinHandle` to the agentic loop task.
-    /// The caller can abort the handle to cancel execution (e.g. on client disconnect).
-    #[instrument(skip(self, request, session), fields(agent = %request.agent_name))]
-    async fn execute_streaming_with_session_cancellable(
-        &self,
-        request: ExecutionRequest,
-        session: Arc<RwLock<crate::session::unified::UnifiedSession>>,
-    ) -> Result<(crate::channels::EventStream, tokio::task::JoinHandle<()>)> {
         let prompt = self.build_prompt(&request.message, &[])?;
 
         // Load history for the agent
@@ -719,7 +703,7 @@ impl StatelessAgentService {
 
         // Spawn task on main runtime (NOT spawn_blocking)
         // This ensures session writes complete before completion signal
-        let loop_handle = tokio::spawn(async move {
+        tokio::spawn(async move {
             let on_event = move |event: AgenticEvent| {
                 let _ = event_tx.try_send(event);
             };
@@ -738,82 +722,12 @@ impl StatelessAgentService {
             // event_tx is dropped here, signaling end of stream
         });
 
-        let event_stream = crate::channels::EventStream {
+        Ok(crate::channels::EventStream {
             receiver: event_rx,
             completion: completion_rx,
             session_id: request.session_id,
             is_new_session: false,
-        };
-
-        Ok((event_stream, loop_handle))
-    }
-
-    /// Execute a message with streaming and return a cancellable event stream
-    ///
-    /// This is the high-level streaming interface with cancellation support.
-    /// Returns the `EventStream` and a `JoinHandle` to the agentic loop task.
-    pub async fn execute_message_streaming_cancellable(
-        &self,
-        request: MessageRequest,
-    ) -> Result<(crate::channels::EventStream, tokio::task::JoinHandle<()>)> {
-        let start = Instant::now();
-
-        // Resolve session using SessionManager (single authority)
-        let team = self.get_team(&request.agent_name).await?;
-        let mut session_manager = SessionManager::for_cli(
-            self.path_resolver.clone(),
-            &request.agent_name,
-            team.as_deref(),
-            &request.user,
-        );
-
-        let resolved = session_manager
-            .resolve_session(
-                &request.agent_name,
-                request.team.as_deref(),
-                ChannelType::Http,
-                "default",
-                request.session_id.clone(),
-                request.new_session,
-            )
-            .await?;
-
-        let session_id = resolved.session_id.clone();
-        let is_new_session = resolved.is_new;
-
-        // Build execution request
-        let exec_request = ExecutionRequest {
-            agent_name: request.agent_name.clone(),
-            session_id: session_id.clone(),
-            message: request.message,
-            context: None,
-            timeout_secs: request.timeout_secs,
-            user: request.user.clone(),
-        };
-
-        // Get base session for execution
-        let base_session = resolved.context.hybrid.base.clone();
-
-        // Execute streaming with cancellation support
-        let (event_stream, loop_handle) = self
-            .execute_streaming_with_session_cancellable(exec_request, base_session)
-            .await?;
-
-        let duration_ms = start.elapsed().as_millis() as u64;
-        info!(
-            "Streaming setup complete for '{}' in {}ms (cancellable)",
-            request.agent_name, duration_ms
-        );
-
-        // Wrap the event stream with the correct session metadata
-        let event_stream = crate::channels::EventStream {
-            receiver: event_stream.receiver,
-            completion: event_stream.completion,
-            session_id,
-            is_new_session,
-        };
-
-        Ok((event_stream, loop_handle))
+        })
     }
 
     /// Get current metrics

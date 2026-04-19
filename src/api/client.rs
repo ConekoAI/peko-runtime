@@ -6,7 +6,6 @@
 use crate::api::types::{
     BranchResponse, ErrorResponse, HealthResponse, HistoryResponse, InfoResponse, SessionResponse,
 };
-use futures::StreamExt;
 use reqwest::{Client, Response, StatusCode};
 use serde::{de::DeserializeOwned, Serialize};
 use std::time::Duration;
@@ -236,70 +235,6 @@ impl ApiClient {
             "timeout_secs": timeout_secs,
         });
         self.post(&path, &body).await
-    }
-
-    /// Stream chat with an agent via SSE (ADR-021 Phase 2)
-    ///
-    /// Connects to `POST /agents/{name}/chat` with `Accept: text/event-stream`
-    /// and yields SSE events as they arrive.
-    pub async fn chat_stream(
-        &self,
-        name: &str,
-        message: &str,
-        session_id: Option<&str>,
-    ) -> Result<impl futures::Stream<Item = Result<ChatSseEvent, ClientError>>, ClientError> {
-        let path = format!("/agents/{name}/chat");
-        let url = format!("{}{}", self.base_url, path);
-
-        let body = serde_json::json!({
-            "message": message,
-            "session_id": session_id,
-            "role": "user",
-        });
-
-        let response = self
-            .client
-            .post(&url)
-            .header("Accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(map_http_error)?;
-
-        let status = response.status();
-        if !status.is_success() {
-            return Err(self.parse_error(response).await);
-        }
-
-        // Stream SSE events from the response
-        let stream = response.bytes_stream().map(|chunk| {
-            chunk
-                .map_err(ClientError::Http)
-                .and_then(|bytes| Self::parse_sse_chunk(&bytes))
-        });
-
-        Ok::<_, ClientError>(stream)
-    }
-
-    /// Parse a chunk of SSE data into a ChatSseEvent
-    fn parse_sse_chunk(bytes: &[u8]) -> Result<ChatSseEvent, ClientError> {
-        let text = String::from_utf8_lossy(bytes);
-        let mut event_type = "message";
-        let mut data = String::new();
-
-        for line in text.lines() {
-            if line.starts_with("event: ") {
-                event_type = &line[7..];
-            } else if line.starts_with("data: ") {
-                data.push_str(&line[6..]);
-            }
-        }
-
-        if data.is_empty() {
-            return Err(ClientError::InvalidResponse("Empty SSE data".to_string()));
-        }
-
-        serde_json::from_str(&data).map_err(ClientError::Serialization)
     }
 
     // Legacy method aliases (deprecated)
@@ -565,31 +500,6 @@ impl ApiClient {
     // Daemon Control Endpoints
     // =================================================================================
 
-    // =================================================================================
-    // Extension Endpoints
-    // =================================================================================
-
-    /// List all extensions (installed and built-in)
-    pub async fn list_extensions(&self) -> Result<crate::api::types::ListExtensionsResponse, ClientError> {
-        self.get("/extensions").await
-    }
-
-    /// Enable an extension by ID
-    pub async fn enable_extension(&self, id: &str) -> Result<serde_json::Value, ClientError> {
-        let path = format!("/extensions/{id}/enable");
-        self.post(&path, &serde_json::json!({})).await
-    }
-
-    /// Disable an extension by ID
-    pub async fn disable_extension(&self, id: &str) -> Result<serde_json::Value, ClientError> {
-        let path = format!("/extensions/{id}/disable");
-        self.post(&path, &serde_json::json!({})).await
-    }
-
-    // =================================================================================
-    // Daemon Control Endpoints
-    // =================================================================================
-
     /// Shutdown the daemon gracefully
     ///
     /// Sends a shutdown request to the daemon. The daemon will exit gracefully.
@@ -789,15 +699,6 @@ pub struct AgentConfigResponse {
     /// Last updated timestamp
     #[serde(default)]
     pub updated_at: Option<String>,
-    /// Full agent configuration (for CLI relay compatibility)
-    #[serde(default)]
-    pub config: Option<crate::types::agent::AgentConfig>,
-    /// Path to agent configuration file
-    #[serde(default)]
-    pub config_path: Option<String>,
-    /// Number of sessions
-    #[serde(default)]
-    pub session_count: Option<usize>,
 }
 
 /// Paginated agents response (replaces `PaginatedInstancesResponse`)
@@ -834,9 +735,6 @@ pub struct ExecuteAgentResponse {
     #[serde(default)]
     pub error: Option<String>,
 }
-
-/// SSE event types for streaming chat (re-exported from streaming module)
-pub use crate::api::streaming::ChatSseEvent;
 
 // Legacy type aliases for backward compatibility (deprecated)
 #[deprecated(since = "0.2.0", note = "Use AgentConfigResponse instead")]
@@ -967,9 +865,6 @@ mod tests {
             capabilities: vec!["chat".to_string(), "search".to_string()],
             registered_at: "2026-03-17T10:00:00Z".to_string(),
             updated_at: Some("2026-03-17T11:00:00Z".to_string()),
-            config: None,
-            config_path: None,
-            session_count: None,
         };
 
         let json = serde_json::to_string(&agent).unwrap();

@@ -3,6 +3,7 @@
 //! Shared state accessible to all API route handlers.
 //! Updated for stateless cold-start architecture.
 
+use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
@@ -12,7 +13,7 @@ use crate::common::services::{
 use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
-use crate::runtime::RuntimeFacade;
+use crate::runtime::ToolRuntime;
 use crate::team::TeamManager;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -82,8 +83,11 @@ pub struct AppState {
     /// Team management service (unified for CLI and API)
     team_service: Arc<TeamManagementService>,
 
-    /// Runtime facade — consolidated tool runtime (ADR-021 Phase 1)
-    pub runtime: Arc<RuntimeFacade>,
+    /// Tool runtime for async task execution (ADR-020)
+    pub tool_runtime: Arc<ToolRuntime>,
+
+    /// Async task executor for daemon-side background execution (ADR-020)
+    pub async_task_executor: Arc<UnifiedAsyncExecutor>,
 
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
@@ -105,7 +109,8 @@ impl std::fmt::Debug for AppState {
             .field("agent_service", &"<StatelessAgentService>")
             .field("agent_mgmt_service", &"<AgentService>")
             .field("team_service", &"<TeamManagementService>")
-            .field("runtime", &"<RuntimeFacade>")
+            .field("tool_runtime", &"<ToolRuntime>")
+            .field("async_task_executor", &"<UnifiedAsyncExecutor>")
             .finish()
     }
 }
@@ -225,20 +230,13 @@ impl AppState {
 
         let agent_mgmt_service = Arc::new(AgentService::new(path_resolver_clone.clone()));
 
-        // ADR-021: Initialize RuntimeFacade with full tool registry
-        // Reuse the global ExtensionCore that was already initialized in main.rs
-        // with the appropriate async transport (LocalAsyncTransport for daemon).
-        let global_core = crate::extensions::core::global_core()
-            .ok_or_else(|| anyhow::anyhow!("Global ExtensionCore not initialized. Ensure init_extension_core() is called before AppState::build()"))?;
-        let runtime = Arc::new(
-            RuntimeFacade::with_core(path_resolver_clone.clone(), global_core)
+        // ADR-020: Initialize ToolRuntime and UnifiedAsyncExecutor for daemon-side async execution
+        let tool_runtime = Arc::new(
+            ToolRuntime::new(path_resolver_clone.clone())
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to create runtime facade: {e}"))?,
+                .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
         );
-        runtime
-            .initialise_full_registry()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to initialise tool registry: {e}"))?;
+        let async_task_executor = Arc::new(UnifiedAsyncExecutor::new());
 
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
@@ -263,7 +261,8 @@ impl AppState {
             lifecycle,
             session_service,
             team_service,
-            runtime,
+            tool_runtime,
+            async_task_executor,
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })

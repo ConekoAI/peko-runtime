@@ -192,29 +192,31 @@ async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> Exte
 /// Handle extension subcommands
 pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> anyhow::Result<()> {
     match command {
-        // HTTP relay commands (ADR-021 Phase 5)
-        ExtCommands::List {
-            enabled_only,
-            r#type,
-        } => handle_list_http(enabled_only, r#type).await,
-
-        // Local filesystem commands
         ExtCommands::Validate { path, verbose } => handle_validate(path, verbose).await,
         ExtCommands::Debug { id } => {
+            // Create storage in the data directory
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
             let mut manager = create_manager_with_adapters(Some(storage)).await;
+            // Load all extensions to populate the manager
             manager.load_all().await?;
             handle_debug(&manager, id).await
         }
         _ => {
+            // Create storage in the data directory
             let storage = ExtensionStorage::with_dir(paths.data_dir.join("extensions"));
             let mut manager = create_manager_with_adapters(Some(storage)).await;
+
+            // Load all extensions to populate the manager
             manager.load_all().await?;
 
             match command {
                 ExtCommands::Install { path, r#type } => {
                     handle_install(&mut manager, path, r#type).await
                 }
+                ExtCommands::List {
+                    enabled_only,
+                    r#type,
+                } => handle_list(&manager, enabled_only, r#type).await,
                 ExtCommands::Enable { id, target } => {
                     handle_enable(&mut manager, paths, id, target).await
                 }
@@ -234,9 +236,7 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                     agent,
                 } => handle_config(paths, id, show, set, unset, global, team, agent).await,
                 // These are handled above
-                ExtCommands::List { .. }
-                | ExtCommands::Validate { .. }
-                | ExtCommands::Debug { .. } => unreachable!(),
+                ExtCommands::Validate { .. } | ExtCommands::Debug { .. } => unreachable!(),
             }
         }
     }
@@ -267,88 +267,10 @@ async fn handle_install(
     }
 }
 
-/// Handle list command via HTTP API (ADR-021 Phase 5)
-async fn handle_list_http(
-    _enabled_only: bool, // Kept for CLI compatibility, but ignored
-    ext_type: Option<String>,
-) -> anyhow::Result<()> {
-    let client = crate::api::client::ApiClient::new()?;
-    client
-        .health_check()
-        .await
-        .map_err(|_| anyhow::anyhow!("Daemon not running. Start it with: pekobot daemon start --foreground"))?;
-
-    let response = client.list_extensions().await?;
-
-    // Filter installed extensions by type
-    let filtered_installed: Vec<_> = response
-        .extensions
-        .into_iter()
-        .filter(|ext| {
-            if let Some(ref t) = ext_type {
-                if &ext.extension_type != t {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
-
-    // Filter built-ins by type
-    let filtered_builtins: Vec<_> = response
-        .builtins
-        .into_iter()
-        .filter(|b| {
-            if let Some(ref t) = ext_type {
-                if &b.ext_type != t {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
-
-    if filtered_installed.is_empty() && filtered_builtins.is_empty() {
-        println!("No extensions match the specified criteria.");
-        return Ok(());
-    }
-
-    println!("{:<24} {:<14} {:<18} SOURCE", "ID", "TYPE", "NAME");
-    println!("{}", "-".repeat(72));
-
-    for b in &filtered_builtins {
-        let status = if b.enabled { "" } else { " [disabled]" };
-        println!(
-            "{:<24} {:<14} {:<18} built-in{}",
-            b.id, b.ext_type, b.name, status
-        );
-    }
-
-    for ext in &filtered_installed {
-        println!(
-            "{:<24} {:<14} {:<18} installed",
-            ext.id, ext.extension_type, ext.name
-        );
-    }
-
-    println!();
-    println!(
-        "Total: {} extension(s)",
-        filtered_installed.len() + filtered_builtins.len()
-    );
-    if !filtered_builtins.is_empty() {
-        println!("Note: Built-in extensions are compiled into the binary.");
-        println!("      Installed extensions are loaded from disk.");
-    }
-
-    Ok(())
-}
-
-/// Handle list command (local fallback)
+/// Handle list command
 ///
 /// Shows both installed extensions and built-in extensions registered with
 /// `ExtensionCore`. Built-ins are compiled into the binary and always available.
-#[allow(dead_code)]
 async fn handle_list(
     manager: &ExtensionManager,
     _enabled_only: bool, // Kept for CLI compatibility, but ignored
