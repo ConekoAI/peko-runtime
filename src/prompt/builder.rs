@@ -208,26 +208,7 @@ impl SystemPromptBuilder {
 
         // ADR-019 Phase 3: Support both Arc<dyn Tool> and ToolDefinition
         // Prefer tool_definitions if available (dynamic updates), fall back to tools
-        // If extension_core is set, query it for the latest tool definitions
-        let tool_defs: Vec<ToolDefinition> = if !self.tool_definitions.is_empty() {
-            self.tool_definitions.clone()
-        } else if let Some(ref core) = self.extension_core {
-            // Query ExtensionCore for enabled tool definitions
-            if let Ok(_handle) = tokio::runtime::Handle::try_current() {
-                let core = core.clone();
-                tokio::task::block_in_place(move || {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        core.list_tool_definitions().await
-                    })
-                })
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        };
-
-        let has_tool_defs = !tool_defs.is_empty();
+        let has_tool_defs = !self.tool_definitions.is_empty();
         let has_tools = !self.tools.is_empty();
 
         if !has_tool_defs && !has_tools {
@@ -238,7 +219,7 @@ impl SystemPromptBuilder {
 
             // Use tool_definitions if available (from unified registry)
             if has_tool_defs {
-                for def in &tool_defs {
+                for def in &self.tool_definitions {
                     lines.push(format!("### {}", def.name));
                     lines.push(String::new());
                     lines.push(def.description.clone());

@@ -107,13 +107,7 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
                 Ok(ChatSseEvent::Delta { text }) => {
                     output.push_str(&text);
                 }
-                Ok(ChatSseEvent::Done { usage, .. }) => {
-                    // Only break if this is the final done event (has actual usage)
-                    // Intermediate iterations send done with zero usage
-                    if usage.total_tokens > 0 {
-                        break;
-                    }
-                }
+                Ok(ChatSseEvent::Done { .. }) => break,
                 Ok(ChatSseEvent::Error { message, .. }) => {
                     anyhow::bail!("Agent execution error: {message}");
                 }

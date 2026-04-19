@@ -1626,15 +1626,10 @@ async fn build_system_prompt(
         .and_then(|p| p.system.as_ref())
         .and_then(|s| s.files.clone());
 
-    // Query tool definitions from ExtensionCore before building prompt
-    // This avoids block_in_place issues in the synchronous builder
-    let tool_defs = extension_core.list_tool_definitions().await;
-
     SystemPromptBuilder::new(agent.name())
         .with_mode(PromptMode::Full)
         .with_workspace(&workspace_dir)
         .with_extension_core(Arc::clone(extension_core))
-        .with_tool_definitions(tool_defs)
         .with_system_files(bootstrap_files)
         .build()
 }

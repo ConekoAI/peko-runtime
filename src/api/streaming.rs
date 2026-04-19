@@ -130,10 +130,6 @@ pub fn engine_event_to_sse(
             // All AssistantText events are complete blocks, not deltas
             Some(ChatSseEvent::Delta { text: text.clone() })
         }
-        // Assistant delta (incremental text streaming)
-        crate::engine::AgenticEvent::AssistantDelta { text, .. } => {
-            Some(ChatSseEvent::Delta { text: text.clone() })
-        }
         // Deprecated: legacy event type (backward compatibility)
         #[allow(deprecated)]
         crate::engine::AgenticEvent::Assistant { text, is_delta, .. } => {
@@ -214,8 +210,16 @@ pub fn event_stream_to_sse(
                     ..
                 } => {
                     end_received = true;
-                    // Don't send Done here - intermediate iterations also emit Lifecycle::End.
-                    // Wait for the event stream to actually end, then send final Done.
+                    // Send completion event to client
+                    let _ = sender
+                        .send(ChatSseEvent::Done {
+                            message_id: format!("msg_{}", Uuid::new_v4().simple()),
+                            session_id: session_id.clone(),
+                            turn_count,
+                            usage: usage.clone(),
+                        })
+                        .await;
+                    // Don't break yet - wait for receiver to close
                 }
                 crate::engine::AgenticEvent::Lifecycle {
                     phase: crate::engine::LifecyclePhase::Error,
@@ -244,18 +248,6 @@ pub fn event_stream_to_sse(
                 }
                 _ => {}
             }
-        }
-
-        // Event stream ended - send final Done event to client
-        if end_received && !stream_errored {
-            let _ = sender
-                .send(ChatSseEvent::Done {
-                    message_id: format!("msg_{}", Uuid::new_v4().simple()),
-                    session_id: session_id.clone(),
-                    turn_count,
-                    usage: usage.clone(),
-                })
-                .await;
         }
 
         // Receiver closed - CRITICAL: Wait for completion signal before returning
