@@ -46,12 +46,40 @@ pub async fn health_check(State(state): State<AppState>) -> Response {
         (StatusCode::OK, "ok".to_string())
     };
 
+    // Query MCP server health
+    let mcp_health = {
+        let manager = state.runtime.mcp_manager();
+        let manager = manager.read().await;
+        let servers = manager.list_servers().await;
+        drop(manager);
+
+        if !servers.is_empty() {
+            let healthy = servers.iter().filter(|s| s.healthy).count();
+            let running = servers.iter().filter(|s| s.running).count();
+            let degraded: Vec<String> = servers
+                .iter()
+                .filter(|s| s.running && !s.healthy)
+                .map(|s| s.name.clone())
+                .collect();
+
+            Some(crate::api::types::McpServersHealth {
+                total: servers.len(),
+                healthy,
+                running,
+                degraded,
+            })
+        } else {
+            None
+        }
+    };
+
     let response = HealthResponse {
         status: status_str,
         version: crate::VERSION.to_string(),
         uptime_seconds: uptime,
         instance_count,
         team_count,
+        mcp_servers: mcp_health,
     };
 
     (status_code, Json(response)).into_response()
@@ -67,7 +95,7 @@ mod tests {
 
     async fn test_state() -> AppState {
         let temp_dir = TempDir::new().unwrap();
-        AppState::with_data_dir(
+        let state = AppState::with_data_dir(
             temp_dir.path(),
             "127.0.0.1",
             11435,
@@ -75,7 +103,10 @@ mod tests {
             temp_dir.path().to_path_buf(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        // Mark as ready so health check returns ok (not "starting")
+        state.set_ready(true).await;
+        state
     }
 
     #[tokio::test]
@@ -116,5 +147,29 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(json["status"], "degraded");
+    }
+
+    #[tokio::test]
+    async fn test_health_check_starting() {
+        let temp_dir = TempDir::new().unwrap();
+        let state = AppState::with_data_dir(
+            temp_dir.path(),
+            "127.0.0.1",
+            11435,
+            DaemonConfigSnapshot::default(),
+            temp_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+        // NOT marking as ready — should return "starting"
+
+        let response = health_check(State(state)).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["status"], "starting");
     }
 }

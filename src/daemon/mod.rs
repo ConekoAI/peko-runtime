@@ -193,6 +193,7 @@ impl Daemon {
         let mut maintenance_tick = interval(self.config.maintenance_interval);
         let mut idle_check_tick = interval(Duration::from_secs(60)); // Check idle jobs every minute
         let mut janitor_tick = interval(Duration::from_secs(3600)); // Run janitor every hour
+        let mut mcp_health_tick = interval(Duration::from_secs(60)); // Check MCP servers every minute
 
         // Subscribe to shutdown signals from AppState
         let mut shutdown_rx = app_state.subscribe_shutdown();
@@ -227,7 +228,7 @@ impl Daemon {
 
                 // Periodic async task janitor (ADR-020 Phase 6)
                 _ = janitor_tick.tick() => {
-                    let executor = &app_state.async_task_executor;
+                    let executor = app_state.runtime.async_task_executor();
                     match executor.run_janitor(Duration::from_secs(24 * 3600)).await {
                         Ok((files, registry)) => {
                             if files > 0 || registry > 0 {
@@ -237,6 +238,13 @@ impl Daemon {
                         Err(e) => {
                             error!("Error running async task janitor: {}", e);
                         }
+                    }
+                }
+
+                // Periodic MCP server health check (ADR-021 Phase 4)
+                _ = mcp_health_tick.tick() => {
+                    if let Err(e) = self.check_mcp_servers(&app_state).await {
+                        error!("Error checking MCP servers: {}", e);
                     }
                 }
 
@@ -773,6 +781,112 @@ impl Daemon {
 
         Ok(())
     }
+
+    /// Check MCP servers and restart any that are unhealthy.
+    ///
+    /// This is a backup orchestration layer. The primary auto-restart logic
+    /// lives in `McpManager::start_health_check()`. The daemon tick provides
+    /// an additional safety net for servers that may have missed health checks
+    /// or need tool re-registration after restart.
+    async fn check_mcp_servers(
+        &self,
+        app_state: &crate::api::state::AppState,
+    ) -> Result<()> {
+        let manager = app_state.runtime.mcp_manager();
+        let manager_guard = manager.read().await;
+        let servers = manager_guard.list_servers().await;
+        drop(manager_guard);
+
+        let mut needs_restart = Vec::new();
+        for server in servers {
+            // Restart if not running, or unhealthy with retries remaining
+            if !server.running
+                || (!server.healthy && server.restart_count < crate::mcp::McpManager::MAX_RESTART_ATTEMPTS)
+            {
+                needs_restart.push(server.name);
+            }
+        }
+
+        if needs_restart.is_empty() {
+            return Ok(());
+        }
+
+        info!(
+            "Daemon MCP health check: {} server(s) need restart",
+            needs_restart.len()
+        );
+
+        // Attempt restarts
+        let manager = app_state.runtime.mcp_manager();
+        let mut manager_guard = manager.write().await;
+        for name in &needs_restart {
+            info!("Daemon restarting MCP server: {}", name);
+            if let Err(e) = manager_guard.restart_server(name).await {
+                warn!("Failed to restart MCP server '{}': {}", name, e);
+            } else {
+                info!("MCP server '{}' restarted successfully", name);
+            }
+        }
+        drop(manager_guard);
+
+        // After restarts, re-register MCP tools with ExtensionCore
+        // The register_tool method is idempotent (overwrites existing)
+        self.reregister_mcp_tools(app_state).await?;
+
+        Ok(())
+    }
+
+    /// Re-register MCP tools with ExtensionCore after server restart.
+    ///
+    /// This ensures the unified tool registry reflects the current state
+    /// of all MCP servers. `ExtensionCore::register_tool` is idempotent
+    /// and overwrites existing tools with the same name.
+    async fn reregister_mcp_tools(
+        &self,
+        app_state: &crate::api::state::AppState,
+    ) -> Result<()> {
+        use crate::extensions::adapters::mcp_adapter::McpAdapter;
+
+        let manager = app_state.runtime.mcp_manager();
+        let manager_guard = manager.read().await;
+        let server_states = manager_guard.list_servers().await;
+        drop(manager_guard);
+
+        let core = app_state.runtime.extension_core();
+        let adapter = McpAdapter::with_default_manager();
+        let mut total_registered = 0;
+
+        for server in server_states {
+            if !server.running || !server.healthy {
+                continue;
+            }
+
+            match adapter.register_server_tools(core, &server.name).await {
+                Ok(count) => {
+                    total_registered += count;
+                    debug!(
+                        "Re-registered {} MCP tools for server '{}'",
+                        count, server.name
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to re-register MCP tools for server '{}': {}",
+                        server.name, e
+                    );
+                }
+            }
+        }
+
+        if total_registered > 0 {
+            info!(
+                "Re-registered {} MCP tools across all servers",
+                total_registered
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// Handle for controlling a spawned daemon
@@ -821,8 +935,7 @@ mod tests {
             port: 0, // Port 0 = let OS assign a free port
         };
 
-        let (_tx, rx) = mpsc::channel(10);
-        let daemon = Daemon::new(config, rx).unwrap();
+        let daemon = Daemon::new(config).unwrap();
 
         let status = daemon.status.lock().await.clone();
         assert!(!status.running);

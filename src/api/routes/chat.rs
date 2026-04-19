@@ -96,20 +96,31 @@ async fn chat_handler(
         || accept_header.is_empty();
 
     if streaming {
-        // Use unified EventStream API with SSE adapter (ADR-016)
+        // Use unified EventStream API with SSE adapter (ADR-016 / ADR-021 Phase 2)
         let msg_request = MessageRequest::new(agent_name.clone(), request.message.clone())
             .with_session_opt(request.session_id.clone())
             .with_new_session(request.session_id.is_none());
 
-        // Get EventStream directly from StatelessAgentService (bypassing MessageService)
-        let event_stream = state
+        // Get cancellable EventStream from StatelessAgentService
+        let (event_stream, loop_handle) = state
             .agent_service()
-            .execute_message_streaming(msg_request)
+            .execute_message_streaming_cancellable(msg_request)
             .await
             .map_err(|e| ApiError::internal(format!("Failed to start stream: {e}"), ""))?;
 
         // Convert to SSE using adapter
-        let (sse_stream, _handle) = event_stream_to_sse(event_stream);
+        let (sse_stream, forwarder_handle) = event_stream_to_sse(event_stream);
+
+        // Spawn a task that aborts the agentic loop when the client disconnects
+        tokio::spawn(async move {
+            // Wait for the forwarder to finish (client disconnect or loop completion)
+            let _ = forwarder_handle.await;
+            // If the loop is still running, abort it
+            if !loop_handle.is_finished() {
+                debug!("Client disconnected or forwarder ended, aborting agentic loop");
+                loop_handle.abort();
+            }
+        });
 
         Ok::<_, ApiError>(sse_stream.into_response())
     } else {

@@ -3,11 +3,9 @@
 //! This command replaces the deprecated `agent start --message` and `session send` commands
 //! with a unified, top-level interface for sending messages to agents.
 //!
-//! Per ADR-013, agents are stateless and cold-start on every request. This command
-//! performs a cold-start sequence: load config, load session, instantiate tools,
-//! run agentic loop, then exit and free resources.
-//!
-//! Per ADR-015, this command supports both streaming (default) and blocking modes.
+//! Per ADR-013, agents are stateless and cold-start on every request.
+//! Per ADR-021 Phase 2, the CLI is a thin client that forwards requests to the daemon
+//! over HTTP. All execution happens in the daemon.
 //!
 //! Examples:
 //!   pekobot send myagent "What is the weather?"
@@ -19,21 +17,19 @@
 //!   echo "Hello" | pekobot send myagent --stdin
 //!   pekobot send myagent --file prompt.txt
 
-use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
-use crate::channels::{Channel, CliChannel, CliMode};
+use crate::api::client::{ApiClient, ChatSseEvent, ClientError};
 use crate::commands::GlobalPaths;
 use crate::common::identifiers::parse_agent_identifier_with_override;
-use crate::common::services::{AgentValidator, ConfigAuthorityImpl};
 use anyhow::Result;
 use clap::Args;
-use std::sync::Arc;
+use futures::StreamExt;
 use tracing::info;
 
 /// Send a message to an agent (unified command)
 ///
-/// This is the primary way to interact with agents. Agents cold-start on each
-/// request, load their configuration and session history, process the message,
-/// then exit and free all resources.
+/// This is the primary way to interact with agents. The CLI forwards the
+/// request to the daemon over HTTP. The daemon cold-starts the agent,
+/// processes the message, and streams back the response.
 ///
 /// The message can be provided as an argument, from a file, or via stdin.
 /// Agent can be specified as just "name" (uses default team) or "team/name".
@@ -72,7 +68,7 @@ pub struct SendArgs {
 }
 
 /// Handle the send command
-pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Result<()> {
+pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> Result<()> {
     // Resolve the message content
     let message = resolve_message(&args).await?;
 
@@ -85,58 +81,82 @@ pub async fn handle_send(args: SendArgs, paths: &GlobalPaths, _json: bool) -> Re
         agent_name, team
     );
 
-    // Use StatelessAgentService directly (ADR-016: bypass MessageService)
-    let path_resolver = paths.resolver.clone();
-    let config_service = Arc::new(ConfigAuthorityImpl::new(path_resolver.clone()));
+    // Create API client (connects to daemon)
+    let client = ApiClient::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create API client: {e}"))?;
 
-    // EARLY VALIDATION: Check agent exists BEFORE creating session infrastructure
-    // This prevents creating session directories for non-existent agents
-    let validator = AgentValidator::new(config_service.clone());
-    let agent_entry = validator.validate_exists(agent_name, Some(team)).await?;
-    info!(
-        "Validated agent '{}' in team '{}'",
-        agent_entry.name, agent_entry.team
-    );
-
-    let agent_service =
-        Arc::new(StatelessAgentService::new(config_service, path_resolver.clone()).await?);
-
-    // Build message request (same logic as HTTP API)
-    let request = MessageRequest::new(agent_name, message)
-        .with_team(team)
-        .with_user(paths.user())
-        .with_session_opt(args.session.clone())
-        .with_new_session(args.new);
-
-    // Create CLI channel with appropriate mode (streaming is default)
-    let channel = CliChannel::new(&args.agent).with_mode(if args.no_stream {
-        CliMode::Blocking
-    } else {
-        CliMode::Streaming
-    });
-
-    // Send message using StatelessAgentService directly (ADR-016)
-    let event_stream = agent_service.execute_message_streaming(request).await?;
-
-    // Process events through channel (handles both blocking and streaming)
-    let output = channel.process_stream(event_stream).await?;
-
-    // Output response (CLI presentation layer)
-    if output.success {
-        if args.no_stream {
-            // In blocking mode, output the collected final text
-            println!("{}", output.final_text);
-        }
-        // In streaming mode (default), the channel already printed tokens as they arrived
-    } else {
+    // Check daemon is running
+    if let Err(ClientError::DaemonNotRunning { addr }) = client.health_check().await {
         anyhow::bail!(
-            "Agent execution failed{}",
-            output
-                .error
-                .as_ref()
-                .map(|e| format!(": {e}"))
-                .unwrap_or_default()
+            "Daemon is not running at {addr}. Start it with: pekobot daemon start"
         );
+    }
+
+    if args.no_stream {
+        // Non-streaming: use the execute endpoint (blocking)
+        // For now, fall back to streaming but collect output
+        // TODO: Add dedicated blocking endpoint when available
+        let mut output = String::new();
+        let mut stream = client
+            .chat_stream(&agent_name, &message, args.session.as_deref())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start chat stream: {e}"))?;
+
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(ChatSseEvent::Delta { text }) => {
+                    output.push_str(&text);
+                }
+                Ok(ChatSseEvent::Done { .. }) => break,
+                Ok(ChatSseEvent::Error { message, .. }) => {
+                    anyhow::bail!("Agent execution error: {message}");
+                }
+                Ok(_) => {} // Ignore other events in blocking mode
+                Err(e) => {
+                    anyhow::bail!("Stream error: {e}");
+                }
+            }
+        }
+
+        println!("{output}");
+    } else {
+        // Streaming mode: connect to SSE endpoint and print events as they arrive
+        let mut stream = client
+            .chat_stream(&agent_name, &message, args.session.as_deref())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to start chat stream: {e}"))?;
+
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(ChatSseEvent::Delta { text }) => {
+                    print!("{text}");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                }
+                Ok(ChatSseEvent::ToolCall { tool, .. }) => {
+                    eprintln!("\n🔧 Calling tool: {tool}");
+                }
+                Ok(ChatSseEvent::ToolResult { output, error, .. }) => {
+                    if let Some(err) = error {
+                        eprintln!("\n❌ Tool error: {err}");
+                    } else {
+                        eprintln!("\n✅ Tool result: {output}");
+                    }
+                }
+                Ok(ChatSseEvent::Thinking { text }) => {
+                    eprintln!("\n💭 {text}");
+                }
+                Ok(ChatSseEvent::Done { .. }) => {
+                    println!();
+                    break;
+                }
+                Ok(ChatSseEvent::Error { message, .. }) => {
+                    anyhow::bail!("\n❌ Agent execution error: {message}");
+                }
+                Err(e) => {
+                    anyhow::bail!("Stream error: {e}");
+                }
+            }
+        }
     }
 
     Ok(())

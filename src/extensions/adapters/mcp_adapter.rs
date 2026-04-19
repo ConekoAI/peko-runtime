@@ -64,7 +64,7 @@ pub const MCP_TOOL_PREFIX: &str = "mcp";
 static GLOBAL_MCP_MANAGER: OnceLock<Arc<RwLock<crate::mcp::McpManager>>> = OnceLock::new();
 
 /// Get or initialize the global MCP manager
-fn get_global_mcp_manager() -> Arc<RwLock<crate::mcp::McpManager>> {
+pub fn get_global_mcp_manager() -> Arc<RwLock<crate::mcp::McpManager>> {
     GLOBAL_MCP_MANAGER
         .get_or_init(|| {
             let config = crate::mcp::McpConfig::default();

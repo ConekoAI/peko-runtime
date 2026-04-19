@@ -67,32 +67,15 @@ async fn spawn_async_task(
         "Spawning async task via daemon API"
     );
 
-    let tool_runtime = Arc::clone(&state.tool_runtime);
-    let workspace = req.workspace.clone();
-
-    // Build the execution closure
-    let tool_name = req.tool_name.clone();
-    let params = req.params.clone();
-    let execution_fn: Box<
-        dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<AsyncTaskResult>> + Send>> + Send,
-    > = Box::new(move || {
-        let tool_runtime = Arc::clone(&tool_runtime);
-        Box::pin(async move {
-            tool_runtime.execute_tool_with_workspace(&tool_name, params, &workspace).await.map(|result| {
-                AsyncTaskResult::Generic { data: result }
-            })
-        })
-    });
-
     let receipt = state
-        .async_task_executor
-        .execute_boxed(
+        .runtime
+        .execute_tool_async(
             req.task_id,
             req.tool_name,
             req.params,
             req.session_key,
+            req.workspace,
             req.config,
-            execution_fn,
         )
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to spawn async task: {e}")))?;
@@ -107,7 +90,7 @@ async fn get_async_task(
 ) -> Result<Json<AsyncTaskStatusResponse>, ApiError> {
     debug!(task_id = %id, "Getting async task status");
 
-    let status = state.async_task_executor.check_status(&id).await;
+    let status = state.runtime.async_task_executor().check_status(&id).await;
 
     let response = match status {
         Some(AsyncTaskStatus::Completed { result }) => AsyncTaskStatusResponse {
@@ -159,7 +142,8 @@ async fn cancel_async_task(
     info!(task_id = %id, "Cancelling async task");
 
     let cancelled = state
-        .async_task_executor
+        .runtime
+        .async_task_executor()
         .cancel(&id)
         .await
         .map_err(|e| ApiError::internal_error(format!("Failed to cancel async task: {e}")))?;
@@ -178,7 +162,8 @@ async fn list_async_tasks(
     debug!("Listing async tasks");
 
     let tasks = state
-        .async_task_executor
+        .runtime
+        .async_task_executor()
         .list_tasks(query.session_key.as_deref())
         .await;
 

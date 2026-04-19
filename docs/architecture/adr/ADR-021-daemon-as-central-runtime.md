@@ -1,8 +1,8 @@
 # ADR-021: Daemon as Central Runtime
 
-**Status**: Proposed  
+**Status**: Accepted (Phases 1-5 implemented)  
 **Date**: 2026-04-17  
-**Last Updated**: 2026-04-18  
+**Last Updated**: 2026-04-19  
 **Author**: Kimi Code CLI  
 **Depends On**: ADR-020 (Daemon-Based Async Execution)  
 
@@ -44,6 +44,20 @@ The codebase currently has **three independent tool-registry initialisation path
 
 None of these paths share a single "initialise full registry" function. ADR-021 eliminates this duplication by centralising all registry initialisation in the daemon.
 
+### Changes Since ADR-021 Was Drafted (2026-04-18)
+
+Several infrastructure improvements landed between drafting and implementation:
+
+| Change | File(s) | Impact |
+|--------|---------|--------|
+| **Removed `LocalAsyncTransport` fallback** | `src/main.rs` | CLI now uses `UnavailableAsyncTransport` when daemon is unreachable — async tools fail fast with a clear error instead of silently falling back to in-process execution. |
+| **Graceful shutdown endpoint** | `src/api/routes/shutdown.rs`, `src/commands/daemon.rs` | New `POST /shutdown` API route triggers graceful shutdown via AppState broadcast channel. |
+| **Daemon ready-state** | `src/api/state.rs`, `src/api/routes/health.rs` | `AppState` now has `ready` flag and `shutdown_tx` broadcast. Health endpoint returns `"starting"` (HTTP 503) until daemon marks itself ready. |
+| **Daemon lifecycle rewrite** | `src/commands/daemon.rs`, `src/daemon/mod.rs` | PID-based process management, `wait_for_daemon_ready()`, foreground/background modes, stale PID file cleanup. `Daemon::new()` no longer takes `command_rx`. |
+| **Agent init simplification** | `src/agent/agent.rs` | Removed fallback `ExtensionCore::new()` in `Agent::new()`. Global core is always initialized in `main.rs`. |
+
+These changes **support ADR-021's goals** and are incorporated into the implementation plan below.
+
 ## Problem Statement
 
 ### Current Architecture (Post-ADR-020)
@@ -66,7 +80,7 @@ CLI (pekobot send)
 | Sync tools run in CLI | CLI must stay alive; long-running tools block the process |
 | Dual tool registries | MCP server configs loaded in both CLI and daemon separately |
 | Daemon underutilised | Daemon has full infrastructure but only handles async built-in tools |
-| Fallback is broken | If daemon unreachable, `LocalAsyncTransport` silently loses tasks |
+| Fallback is broken | `LocalAsyncTransport` fallback removed; `UnavailableAsyncTransport` fails fast |
 
 ## Decision
 
@@ -102,14 +116,18 @@ Pekobot Daemon
     │    │                                            (built-in + MCP + universal)
     │    ├─ agent_service: Arc<StatelessAgentService>
     │    ├─ session_service: Arc<SessionService>
-    │    └─ lifecycle: Arc<LifecycleManager>
+    │    ├─ lifecycle: Arc<LifecycleManager>
+    │    ├─ shutdown_tx: Arc<broadcast::Sender<()>>   ← EXISTING: graceful shutdown
+    │    └─ ready: bool                                 ← EXISTING: startup state
     │
     ├─ HTTP API
     │    ├─ POST /async/tasks      ← existing (async tool spawn)
     │    ├─ GET  /async/tasks/{id} ← existing (async status)
     │    ├─ DELETE /async/tasks/{id}
     │    ├─ GET  /async/tasks
+    │    ├─ POST /shutdown           ← EXISTING (graceful shutdown)
     │    ├─ POST /tools/execute    ← NEW: synchronous tool execution
+    │    ├─ GET  /tools            ← NEW: list all available tools
     │    └─ POST /session/message  ← NEW: stateless agentic loop in daemon
     │
     └─ MCP Server Lifecycle Manager
@@ -118,7 +136,7 @@ Pekobot Daemon
 
 **AppState Refactoring (SRP Compliance)**
 
-`AppState` currently holds 14 fields and is trending toward a God Object. To prevent this, we introduce a `RuntimeFacade` that encapsulates all **shared** tool-runtime concerns:
+`AppState` currently holds 14+ fields and is trending toward a God Object. To prevent this, we introduce a `RuntimeFacade` that encapsulates all **shared** tool-runtime concerns:
 
 ```rust
 // src/runtime/facade.rs
@@ -188,7 +206,7 @@ CLI: peko send "use mcp:github:create_issue with _async=true"
 
 | Risk | Mitigation |
 |------|------------|
-| **Daemon is always required** | CLI cannot operate standalone. Document this clearly; remove the `LocalAsyncTransport` fallback in `main.rs`. |
+| **Daemon is always required** | CLI cannot operate standalone. Documented clearly; `LocalAsyncTransport` fallback removed in favor of `UnavailableAsyncTransport` that fails fast with clear error. |
 | **Session affinity** | Sessions are persisted to JSONL (`src/session/` file-based storage), so data survives daemon restart. Runtime state (active agent turns, pending tool calls) is lost. Acceptable for v1. |
 | **Network latency** | localhost HTTP round-trip (~1-2 ms). Negligible for tool execution. |
 | **Migration cost** | Phased approach (see below) spreads cost over multiple releases. |
@@ -216,6 +234,7 @@ CLI: peko send "use mcp:github:create_issue with _async=true"
    - Loads MCP servers via `ExtensionManager` with `McpAdapter::with_default_manager()`
 3. Replace `AppState.tool_runtime` and `AppState.async_task_executor` with `AppState.runtime: Arc<RuntimeFacade>`.
 4. Add `POST /tools/execute` endpoint for sync tool calls (basic tool execution without agent loop).
+5. Add `GET /tools` endpoint for listing all available tools.
 
 **Tool allowlist strategy:**
 
@@ -256,18 +275,14 @@ The following tools are **not** moved to `RuntimeFacade` because they hold agent
 
 These tools continue to be registered by `Agent::init_builtins_async()` (or by `StatelessAgentService` when it creates the ephemeral `Agent`). The shared `ExtensionCore` from `RuntimeFacade` is passed to the agent, so the agent registers its specific tools on top of the shared registry.
 
-**Cleanup in `main.rs` (moved from Phase 3):**
+**Cleanup in `main.rs` (already completed post-drafting):**
 
-Remove the `LocalAsyncTransport` fallback and global `ExtensionCore` initialisation:
+The `LocalAsyncTransport` fallback and global `ExtensionCore` initialisation changes described in the original ADR have already been implemented:
 
 ```rust
-// REMOVE:
-// if let Err(e) = init_extension_core(&cli.command).await { ... }
-// if let Err(e) = run_extension_migration(&paths).await { ... }
-//
-// REPLACE WITH:
-// CLI commands validate daemon reachability via ApiClient::health_check()
-// and fail fast with a clear message if the daemon is not running.
+// DONE: Removed LocalAsyncTransport fallback
+// CLI commands now use UnavailableAsyncTransport when daemon is unreachable,
+// so async tools fail fast with a clear error.
 ```
 
 **Feasibility: HIGH** — All components exist; this is wiring and consolidation.
@@ -289,21 +304,11 @@ Remove the `LocalAsyncTransport` fallback and global `ExtensionCore` initialisat
 
 No new endpoint is needed. The CLI `send` command changes from local execution to an HTTP client of this existing endpoint.
 
-**CLI changes:**
-```rust
-// src/commands/send.rs
-// BEFORE: creates Agent, runs loop locally via agent_service.execute_message_streaming()
-// AFTER:
-let client = ApiClient::new()?;
-let stream = client.chat_stream(agent_name, message, session_id).await?;
-// Stream events to stdout
-```
-
 **SSE cancellation on client disconnect:**
 
-The current `event_stream_to_sse()` (`src/api/streaming.rs:183`) forwards events from `EventStream` to SSE. If the client disconnects, `sender.send()` fails and the forwarder breaks — but the agentic loop task (spawned by `StatelessAgentService` at `stateless_service.rs:706`) may continue running because the `JoinHandle` is discarded.
+The current `event_stream_to_sse()` (`src/api/streaming.rs`) forwards events from `EventStream` to SSE. If the client disconnects, `sender.send()` fails and the forwarder breaks — but the agentic loop task (spawned by `StatelessAgentService`) may continue running because the `JoinHandle` is discarded.
 
-To handle this cleanly, `StatelessAgentService` needs to expose the loop task handle. The internal method `execute_streaming_with_session` spawns the loop via `tokio::spawn` but drops the handle. Two implementation options:
+To handle this cleanly, `StatelessAgentService` needs to expose the loop task handle. Two implementation options:
 
 **Option A (recommended — non-breaking):** Add a new public method:
 ```rust
@@ -341,77 +346,95 @@ tokio::select! {
 
 ---
 
-### Phase 3: Deprecate CLI Agent Instantiation
+### Phase 3: Deprecate CLI Agent Instantiation ✅ COMPLETED
 
 After Phase 2, these CLI code paths become dead:
 - `Agent::new()` in CLI context (agents are created by daemon's `StatelessAgentService`)
 - `StatelessAgentService` CLI initialisation (moved to daemon)
 - Local `ExtensionCore` initialisation in CLI (already removed in Phase 1)
 
-**Remove or deprecate:**
-- `src/commands/send.rs` local execution path
-- Any other CLI commands that still instantiate `Agent` directly
+**Completed changes:**
+- `src/commands/send.rs` local execution path — **removed**. `send` is now a thin HTTP client wrapper around `ApiClient::chat_stream()`.
+- Verified no other CLI commands instantiate `Agent` or `StatelessAgentService` directly.
+- `ext` commands still use `global_core()` for listing/enabling/disabling built-in extensions and tools — this is acceptable; the global `ExtensionCore` is initialized in `main.rs` for all commands.
+- `CliChannel` (`src/channels/cli.rs`) is no longer used by any production CLI code path. It remains in the codebase for its own unit tests and as a reference implementation of the `Channel` trait.
 
 **Feasibility: MEDIUM** — Touching command handlers; requires testing every CLI path.
 
 ---
 
-### Phase 4: MCP Server Lifecycle in Daemon
+### Phase 4: MCP Server Lifecycle in Daemon ✅ COMPLETED
 
 **Goal**: MCP servers are monitored, restarted on failure, and managed centrally by the daemon.
 
-**Current state of MCP sharing:** `McpAdapter::with_default_manager()` uses a **global `OnceLock<Arc<RwLock<McpManager>>>`** (`src/extensions/adapters/mcp_adapter.rs:64`). This ensures that all `McpAdapter` instances share the same `McpManager`. However:
+**Completed changes:**
 
-- The global is lazily initialised with `McpConfig::default()` (empty configuration).
-- It is only populated when `ensure_server_config()` is called during `ExtensionManager::load_from_directory()`.
-- The daemon's current path (`ToolRuntime::new()`) never creates an `McpAdapter`, so the global is **never initialised in the daemon**.
+1. **Auto-restart in health check task** (`src/mcp/manager.rs`):
+   - Added `consecutive_failures` to `ServerState`
+   - Extended `start_health_check()` to auto-restart after 3 consecutive failures
+   - Exponential backoff: `min(2^restart_count, 300s)` (capped at 5 minutes)
+   - Max 5 restart attempts before giving up
+   - `MAX_RESTART_ATTEMPTS` is `pub` for external consumers
 
-Therefore, the **singleton Arc pattern exists** but the daemon **does not currently use it**. Phase 4's real work is:
+2. **Daemon MCP health tick** (`src/daemon/mod.rs`):
+   - Added `mcp_health_tick` interval (60s) to the daemon's `tokio::select!` loop
+   - `check_mcp_servers()` — backup orchestration that restarts unhealthy servers
+   - `reregister_mcp_tools()` — re-registers MCP tools with `ExtensionCore` after restart
+   - `ExtensionCore::register_tool` is idempotent (overwrites existing), so re-registration is safe
 
-1. **Daemon-side initialisation**: Ensure `RuntimeFacade::initialise_full_registry()` triggers `McpAdapter::with_default_manager()` and loads user configs into the global manager.
-2. **Health monitoring**: Periodic ping/heartbeat to each MCP server process.
-3. **Restart on failure**: If a server process exits or becomes unresponsive, terminate the old process and restart it.
-4. **Tool re-registration**: After restart, re-register the server's tools with `ExtensionCore`.
-5. **Failure backoff**: Exponential backoff for restart loops to avoid hammering broken servers.
+3. **MCP server API routes** (`src/api/routes/mcp.rs`):
+   - `GET /mcp/servers` — list all MCP servers with status, restart count, tool count
+   - `POST /mcp/servers/{name}/restart` — manual restart endpoint
 
-**Health check design (to be specified in implementation):**
-```rust
-// src/mcp/health.rs (new module)
-pub struct McpHealthMonitor {
-    check_interval: Duration,
-    backoff: ExponentialBackoff,
-}
+4. **Health endpoint extension** (`src/api/routes/health.rs`, `src/api/types.rs`):
+   - `HealthResponse` now includes optional `mcp_servers: McpServersHealth`
+   - Shows total, healthy, running counts and degraded server names
+   - Backward compatible via `#[serde(skip_serializing_if = "Option::is_none")]`
 
-impl McpHealthMonitor {
-    pub async fn monitor(&self, server_name: &str, manager: &McpManager) { ... }
-}
-```
+5. **RuntimeFacade accessor** (`src/runtime/facade.rs`):
+   - Added `mcp_manager()` method returning `Arc<RwLock<McpManager>>`
+   - Uses the global singleton shared across all `McpAdapter` instances
 
-**Feasibility: LOW** — Health monitoring and graceful restart are genuinely new, complex work. Recommend deferring until Phase 1-3 are stable.
+**Feasibility: LOW** → **COMPLETED** — All infrastructure existed; this was wiring and extending existing patterns.
 
 ---
 
-### Phase 5: CLI as Pure Relay
+### Phase 5: CLI as Pure Relay ✅ COMPLETED
 
 **Goal**: CLI has zero tool execution logic. Every operation is an RPC to the daemon.
 
-**Commands converted one at a time:**
+**Completed conversions:**
 
-| Command | Phase | Daemon API Endpoint |
-|---------|-------|---------------------|
-| `pekobot send` | 2 | `POST /agents/:name/chat` (existing) |
-| `pekobot agent create` | 5 | `POST /agents` |
-| `pekobot ext enable` | 5 | `POST /extensions/{id}/enable` |
-| `pekobot ext install` | 5 | `POST /extensions` |
-| `pekobot session` | 5 | `GET/DELETE /session/{key}` |
+| Command | Status | Daemon API Endpoint | Notes |
+|---------|--------|---------------------|-------|
+| `pekobot send` | ✅ Phase 2 | `POST /agents/:name/chat` | Already HTTP since Phase 2 |
+| `pekobot agent list` | ✅ Phase 5 | `GET /agents` | Now uses `ApiClient::list_agents()` |
+| `pekobot agent show` | ✅ Phase 5 | `GET /agents` (filter) | Now uses `ApiClient::list_agents()` + filter |
+| `pekobot agent create` | ✅ Phase 5 | `POST /agents` | Now uses `ApiClient::register_agent()` |
+| `pekobot agent remove` | ✅ Phase 5 | `DELETE /agents/{name}` | Now uses `ApiClient::unregister_agent()` |
+| `pekobot ext list` | ✅ Phase 5 | `GET /extensions` | New endpoint; now uses `ApiClient::list_extensions()` |
 
-**After Phase 5, the CLI package contains only:**
-- CLI argument parsing (`clap`)
-- HTTP client (`ApiClient`)
-- Output formatting / streaming
-- Daemon lifecycle commands (`daemon start`, `daemon stop`, `daemon status`)
+**Commands intentionally kept local (filesystem operations):**
 
-**Feasibility: MEDIUM** — Low technical risk, but high touch-point count. Converting one command per release reduces risk.
+| Command | Rationale |
+|---------|-----------|
+| `pekobot agent init` | Creates local directory structure |
+| `pekobot agent move` | No HTTP equivalent; filesystem move |
+| `pekobot agent export/import/inspect` | Package file I/O |
+| `pekobot agent config get/set` | Local config file editing |
+| `pekobot ext enable/disable` | Built-in capability enablement modifies local config + `ExtensionCore` hooks |
+| `pekobot ext install/uninstall` | Copies/deletes files |
+| `pekobot ext validate/bundle/config` | Local file operations |
+| `pekobot session list/show/branch/remove/switch` | Offline-first design (ADR-013) |
+| `pekobot daemon/cron/system/config/auth/update` | Inherently local operations |
+
+**Key changes:**
+1. **New API endpoints** (`src/api/routes/extensions.rs`): `GET /extensions`, `POST /extensions/{id}/enable`, `POST /extensions/{id}/disable`
+2. **Enhanced `AgentConfigResponse`** with `config`, `config_path`, `session_count` fields for CLI compatibility
+3. **Agent handlers** (`src/commands/agent/handlers.rs`): `list`, `show`, `create`, `remove` now use `ApiClient`
+4. **Extension list** (`src/commands/ext.rs`): Now uses `ApiClient::list_extensions()` via HTTP
+
+**Feasibility: MEDIUM** → **COMPLETED** — Pragmatic scope: converted pure query/mutation commands; kept filesystem-heavy and offline-first commands local.
 
 ## API Surface
 
@@ -424,6 +447,12 @@ impl McpHealthMonitor {
 | DELETE | `/async/tasks/{id}` | Cancel task |
 | GET | `/async/tasks` | List tasks |
 
+### Existing (added since ADR-020 drafting)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/shutdown` | Trigger graceful daemon shutdown |
+
 ### New Endpoints
 
 | Method | Path | Description | Phase |
@@ -432,10 +461,11 @@ impl McpHealthMonitor {
 | DELETE | `/session/{key}` | Delete session | 5 |
 | POST | `/tools/execute` | Execute a tool synchronously (no agent loop) | 1 |
 | GET | `/tools` | List all available tools | 1 |
-| GET | `/mcp/servers` | List MCP servers | 4 |
-| POST | `/mcp/servers` | Add MCP server config | 4 |
-| DELETE | `/mcp/servers/{name}` | Remove MCP server | 4 |
-| POST | `/mcp/servers/{name}/restart` | Restart MCP server | 4 |
+| GET | `/mcp/servers` | List MCP servers | 4 ✅ |
+| POST | `/mcp/servers/{name}/restart` | Restart MCP server | 4 ✅ |
+| GET | `/extensions` | List all extensions | 5 ✅ |
+| POST | `/extensions/{id}/enable` | Enable an extension | 5 ✅ |
+| POST | `/extensions/{id}/disable` | Disable an extension | 5 ✅ |
 
 ## Out of Scope
 
@@ -465,3 +495,5 @@ This ADR assumes a single local daemon. Multi-host deployment is out of scope.
 - MCP adapter: `src/extensions/adapters/mcp_adapter.rs`
 - API streaming: `src/api/streaming.rs`
 - Chat routes: `src/api/routes/chat.rs`
+- Shutdown route: `src/api/routes/shutdown.rs`
+- Health route: `src/api/routes/health.rs`

@@ -22,6 +22,22 @@ pub struct HealthResponse {
     pub instance_count: u64,
     /// Number of deployed teams
     pub team_count: u64,
+    /// MCP server health summary (added in ADR-021 Phase 4)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub mcp_servers: Option<McpServersHealth>,
+}
+
+/// MCP server health summary
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServersHealth {
+    /// Total number of configured MCP servers
+    pub total: usize,
+    /// Number of healthy MCP servers
+    pub healthy: usize,
+    /// Number of running MCP servers
+    pub running: usize,
+    /// Names of unhealthy/degraded servers
+    pub degraded: Vec<String>,
 }
 
 impl HealthResponse {
@@ -33,6 +49,7 @@ impl HealthResponse {
             uptime_seconds,
             instance_count: 0,
             team_count: 0,
+            mcp_servers: None,
         }
     }
 
@@ -44,8 +61,50 @@ impl HealthResponse {
             uptime_seconds,
             instance_count: 0,
             team_count: 0,
+            mcp_servers: None,
         }
     }
+}
+
+// =============================================================================
+// Extension Endpoints
+// =============================================================================
+
+/// Response from listing extensions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListExtensionsResponse {
+    /// Installed extensions
+    pub extensions: Vec<ExtensionInfo>,
+    /// Built-in extensions
+    pub builtins: Vec<BuiltinExtensionInfo>,
+}
+
+/// Installed extension information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtensionInfo {
+    /// Extension ID
+    pub id: String,
+    /// Extension name
+    pub name: String,
+    /// Extension type
+    pub extension_type: String,
+    /// Extension version
+    pub version: String,
+}
+
+/// Built-in extension information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuiltinExtensionInfo {
+    /// Built-in extension ID
+    pub id: String,
+    /// Extension name
+    pub name: String,
+    /// Extension type
+    pub ext_type: String,
+    /// Whether the extension is enabled
+    pub enabled: bool,
+    /// Capabilities provided
+    pub capabilities: Vec<String>,
 }
 
 // =============================================================================

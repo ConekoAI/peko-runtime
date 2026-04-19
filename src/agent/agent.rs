@@ -932,9 +932,19 @@ mod tests {
     use super::*;
     use crate::types::agent::AgentConfig;
 
+    fn ensure_global_core() {
+        use crate::extensions::core::{global_core, init_global_core, ExtensionCore};
+        use std::sync::Arc;
+        if global_core().is_none() {
+            init_global_core(Arc::new(ExtensionCore::new()));
+        }
+    }
+
     #[tokio::test]
     async fn test_agent_creation() {
         use crate::types::provider::{ProviderConfig, ProviderType};
+
+        ensure_global_core();
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
@@ -957,6 +967,8 @@ mod tests {
     async fn test_agent_has_session_manager() {
         use crate::types::provider::{ProviderConfig, ProviderType};
 
+        ensure_global_core();
+
         let config = AgentConfig {
             name: "test-agent-session".to_string(),
             provider: ProviderConfig {
@@ -978,6 +990,8 @@ mod tests {
     async fn test_agent_session_router() {
         use crate::session::types::{ChannelType, Peer};
         use crate::types::provider::{ProviderConfig, ProviderType};
+
+        ensure_global_core();
 
         let config = AgentConfig {
             name: "test-agent-router".to_string(),

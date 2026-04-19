@@ -14,13 +14,16 @@ pub mod agents;
 pub mod async_tasks;
 pub mod chat;
 pub mod events;
+pub mod extensions;
 pub mod health;
 pub mod images;
 pub mod info;
+pub mod mcp;
 pub mod metrics;
 pub mod sessions;
 pub mod shutdown;
 pub mod teams;
+pub mod tools;
 pub mod webhooks;
 pub mod websocket;
 
@@ -46,10 +49,14 @@ pub fn create_router() -> Router<AppState> {
         // Milestone 8: Webhooks and system events
         .merge(webhooks::router())
         .merge(events::router())
+        .merge(mcp::router())
+        .merge(extensions::router())
         // Milestone 12: Performance metrics
         .merge(metrics::router())
         // ADR-020: Async task management
         .merge(async_tasks::router())
+        // ADR-021: Tool execution and listing
+        .merge(tools::router())
 }
 
 #[cfg(test)]
@@ -63,7 +70,7 @@ mod tests {
 
     async fn test_state() -> AppState {
         let temp_dir = TempDir::new().unwrap();
-        AppState::with_data_dir(
+        let state = AppState::with_data_dir(
             temp_dir.path(),
             "127.0.0.1",
             11435,
@@ -71,7 +78,9 @@ mod tests {
             temp_dir.path().to_path_buf(),
         )
         .await
-        .unwrap()
+        .unwrap();
+        state.set_ready(true).await;
+        state
     }
 
     #[tokio::test]

@@ -62,6 +62,8 @@ pub struct ServerState {
     pub healthy: bool,
     /// Number of restart attempts
     pub restart_count: u32,
+    /// Consecutive health check failures
+    pub consecutive_failures: u32,
     /// Last error (if any)
     pub last_error: Option<String>,
     /// Server info from initialization
@@ -135,6 +137,7 @@ impl McpManager {
                         running: false,
                         healthy: false,
                         restart_count: 0,
+                        consecutive_failures: 0,
                         last_error: None,
                         server_info: None,
                         tools: Vec::new(),
@@ -503,6 +506,7 @@ impl McpManager {
                 running: false,
                 healthy: false,
                 restart_count: 0,
+                consecutive_failures: 0,
                 last_error: None,
                 server_info: None,
                 tools: Vec::new(),
@@ -514,10 +518,27 @@ impl McpManager {
         Ok(true)
     }
 
+    /// Maximum consecutive failures before triggering auto-restart
+    const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+    /// Maximum auto-restart attempts before giving up
+    pub const MAX_RESTART_ATTEMPTS: u32 = 5;
+    /// Maximum backoff delay in seconds (5 minutes)
+    const MAX_BACKOFF_SECS: u64 = 300;
+
+    /// Calculate exponential backoff for restart attempts
+    fn calculate_backoff(restart_count: u32) -> Duration {
+        let secs = std::cmp::min(2u64.saturating_pow(restart_count), Self::MAX_BACKOFF_SECS);
+        Duration::from_secs(secs)
+    }
+
     /// Start health check task for a server
+    ///
+    /// This task pings the server periodically and auto-restarts it if it becomes
+    /// unhealthy for too many consecutive checks. Backoff increases with each restart.
     fn start_health_check(&self, name: &str, client: Arc<RwLock<McpClient>>) -> JoinHandle<()> {
         let name = name.to_string();
         let servers = self.servers.clone();
+        let self_arc = Arc::new(RwLock::new(self.clone()));
 
         tokio::spawn(async move {
             let interval = {
@@ -543,11 +564,64 @@ impl McpManager {
                     if handle.state.healthy != healthy {
                         if healthy {
                             info!("MCP server '{}' is now healthy", name);
+                            handle.state.consecutive_failures = 0;
                         } else {
                             warn!("MCP server '{}' is now unhealthy", name);
                         }
                         handle.state.healthy = healthy;
+                    } else if !healthy {
+                        handle.state.consecutive_failures += 1;
+                        warn!(
+                            "MCP server '{}' consecutive failures: {}/{}",
+                            name,
+                            handle.state.consecutive_failures,
+                            Self::MAX_CONSECUTIVE_FAILURES
+                        );
                     }
+
+                    // Check if we should auto-restart
+                    let should_restart = !healthy
+                        && handle.state.consecutive_failures >= Self::MAX_CONSECUTIVE_FAILURES
+                        && handle.state.restart_count < Self::MAX_RESTART_ATTEMPTS;
+
+                    if should_restart {
+                        let restart_count = handle.state.restart_count;
+                        drop(servers_guard); // Release lock before restart
+
+                        let backoff = Self::calculate_backoff(restart_count);
+                        warn!(
+                            "MCP server '{}' unhealthy for {} checks. Auto-restarting in {:?} (attempt {}/{})",
+                            name,
+                            Self::MAX_CONSECUTIVE_FAILURES,
+                            backoff,
+                            restart_count + 1,
+                            Self::MAX_RESTART_ATTEMPTS
+                        );
+
+                        tokio::time::sleep(backoff).await;
+
+                        let manager = self_arc.read().await;
+                        match manager.restart_server(&name).await {
+                            Ok(()) => {
+                                info!("MCP server '{}' auto-restarted successfully. Exiting old health task.", name);
+                                // restart_server() spawns a new health check task.
+                                // This old task must exit to avoid duplicate health monitors.
+                                break;
+                            }
+                            Err(e) => {
+                                warn!("MCP server '{}' auto-restart failed: {}", name, e);
+                                let mut servers_guard = servers.write().await;
+                                if let Some(handle) = servers_guard.get_mut(&name) {
+                                    handle.state.last_error = Some(e.to_string());
+                                }
+                                // On failure, continue monitoring — the daemon tick
+                                // or next health check cycle will retry.
+                            }
+                        }
+                    } // close `if should_restart`
+                } else {
+                    // Server no longer exists — exit health check task
+                    break;
                 }
             }
         })
