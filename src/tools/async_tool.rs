@@ -14,17 +14,23 @@
 //! # Implementation Guide
 //!
 //! For native async support, implement `UnifiedAsyncTool`:
-//! ```rust
+//! ```rust,ignore
+//! use async_trait::async_trait;
+//! use pekobot::tools::async_tool::UnifiedAsyncTool;
+//! use pekobot::agent::async_tool_framework::{AsyncTaskReceipt, AsyncTaskId, AsyncTaskStatus, AsyncToolConfig};
+//! use serde_json::Value;
+//! use anyhow::Result;
+//!
 //! #[async_trait]
 //! impl UnifiedAsyncTool for MyTool {
 //!     fn supports_async(&self) -> bool { true }
-//!     
+//!
 //!     async fn execute_async(&self, params: Value, config: AsyncToolConfig)
-//!         -> Result<AsyncTaskReceipt> { ... }
-//!     
-//!     async fn check_status(&self, task_id: &AsyncTaskId) -> Result<AsyncTaskStatus> { ... }
-//!     
-//!     async fn cancel(&self, task_id: &AsyncTaskId) -> Result<bool> { ... }
+//!         -> Result<AsyncTaskReceipt> { todo!() }
+//!
+//!     async fn check_status(&self, task_id: &AsyncTaskId) -> Result<AsyncTaskStatus> { todo!() }
+//!
+//!     async fn cancel(&self, task_id: &AsyncTaskId) -> Result<bool> { todo!() }
 //! }
 //! ```
 //!

@@ -257,6 +257,8 @@ pub mod parsing {
     ///
     /// # Example
     /// ```
+    /// use pekobot::extensions::adapters::parsing::parse_yaml_frontmatter;
+    ///
     /// let content = r#"---
     /// name: my-extension
     /// version: 1.0.0
