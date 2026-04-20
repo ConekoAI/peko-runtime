@@ -18,8 +18,10 @@
 use crate::agent::async_tool_framework::{
     AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget,
 };
+use crate::extensions::core::HookContext;
 use crate::extensions::services::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
 use crate::extensions::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
+use crate::extensions::types::{HookOutput, HookResult};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -441,6 +443,107 @@ impl AsyncExecutionRouter {
     #[must_use]
     pub fn transport(&self) -> &std::sync::Arc<dyn AsyncTaskTransport> {
         &self.transport
+    }
+
+    /// Execute a tool from a HookContext — eliminates adapter boilerplate.
+    ///
+    /// This convenience method handles the common glue code that every
+    /// `ToolExecute` hook handler performs:
+    /// - Extracting params from `HookContext::as_tool_call()`
+    /// - Validating the tool name matches
+    /// - Building `ToolExecutionContext` from hook state
+    /// - Routing through `self.route()`
+    /// - Mapping the result to `HookResult`
+    ///
+    /// Adapters only provide:
+    /// 1. Tool name matching logic
+    /// 2. Optional param preprocessing
+    /// 3. The actual tool execution closure
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// impl HookHandler for MyToolHandler {
+    ///     async fn handle(&self, ctx: HookContext) -> HookResult {
+    ///         let tool = self.tool.clone();
+    ///         ctx.services.async_router().execute_from_hook(
+    ///             &ctx,
+    ///             self.tool.name(),
+    ///             &ToolExecutionConfig::with_schema(self.tool.parameters()),
+    ///             Some(|params, workspace| {
+    ///                 // Optional preprocessing
+    ///             }),
+    ///             move |p| async move { tool.execute(p).await },
+    ///         ).await
+    ///     }
+    /// }
+    /// ```
+    pub async fn execute_from_hook<F, Fut, P>(
+        &self,
+        ctx: &HookContext,
+        tool_name: &str,
+        exec_config: &ToolExecutionConfig,
+        preprocessor: Option<P>,
+        exec_fn: F,
+    ) -> HookResult
+    where
+        F: FnOnce(Value) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
+        P: Fn(&mut Value, Option<&str>) + Send,
+    {
+        // 1. Extract tool call from context
+        let (called_tool_name, mut params, workspace) = match ctx.as_tool_call() {
+            Some((name, params, ws)) => (name, params.clone(), ws),
+            None => return HookResult::PassThrough,
+        };
+
+        // 2. Validate tool name match
+        if called_tool_name != tool_name {
+            return HookResult::PassThrough;
+        }
+
+        // 3. Get services from context
+        let exec_service = ctx.services.tool_execution();
+
+        // 4. Build execution context
+        let tool_ctx = match ctx.as_tool_context() {
+            Some(tc) => ToolExecutionContext::new(
+                tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.session_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.run_id.clone(),
+            )
+            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
+            None => {
+                let ctx = ToolExecutionContext::new("unknown", "unknown", "unknown");
+                match workspace {
+                    Some(ws) => ctx.with_workspace(ws),
+                    None => ctx,
+                }
+            }
+        };
+
+        // 5. Run preprocessor if provided
+        if let Some(pre) = preprocessor {
+            pre(&mut params, workspace);
+        }
+
+        // 6. Route through AsyncExecutionRouter
+        let result = self
+            .route(
+                tool_name,
+                &mut params,
+                exec_service,
+                &tool_ctx,
+                exec_config,
+                exec_fn,
+            )
+            .await;
+
+        // 7. Map result to HookResult
+        match result {
+            Ok(value) => HookResult::Continue(HookOutput::Json(value)),
+            Err(e) => HookResult::Error(e),
+        }
     }
 
     /// Wait for all async tasks to complete

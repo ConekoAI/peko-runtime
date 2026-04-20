@@ -559,77 +559,29 @@ struct UniversalToolExecuteHandler {
 #[async_trait]
 impl HookHandler for UniversalToolExecuteHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
-        // Extract tool call parameters from context
-        let params = match ctx.as_tool_call() {
-            Some((tool_name, params, _)) => {
-                if tool_name != self.tool_name {
-                    return HookResult::PassThrough; // Not for this tool
-                }
-                params.clone()
-            }
-            None => {
-                // Try to get from JSON input
-                match ctx.as_json() {
-                    Some(json) => json.clone(),
-                    None => return HookResult::PassThrough,
-                }
-            }
-        };
-
-        debug!(
-            tool_name = %self.tool_name,
-            params = %serde_json::to_string(&params).unwrap_or_default(),
-            "Executing universal tool via Extension Framework"
-        );
-
-        // Use AsyncExecutionRouter for unified execution with panic isolation and timeout
-        let async_router = ctx.services.async_router();
-        let exec_service = ctx.services.tool_execution();
-
-        let tool_ctx = crate::extensions::services::async_router::ToolExecutionContext::new(
-            "agent",
-            "session",
-            ctx.invocation_id.clone(),
-        )
-        .with_workspace(".");
-
-        let exec_config = ToolExecutionConfig::with_schema(self.full_schema.clone());
-
-        let mut params_mut = params.clone();
         let manifest_path = self.manifest_path.clone();
         let executable = self.executable.clone();
 
-        let result = async_router
-            .route(
+        let exec_config = crate::extensions::services::ToolExecutionConfig::with_schema(
+            self.full_schema.clone(),
+        );
+
+        ctx.services.async_router()
+            .execute_from_hook(
+                &ctx,
                 &self.tool_name,
-                &mut params_mut,
-                exec_service,
-                &tool_ctx,
                 &exec_config,
+                None::<fn(&mut serde_json::Value, Option<&str>)>,
                 move |merged_params| async move {
-                    // Create adapter and execute with merged params
                     let adapter = crate::tools::universal::UniversalToolAdapter::from_manifest(
                         &manifest_path,
                         &executable,
                     )
                     .await?;
-
-                    // Execute with the merged parameters (injection already done)
                     adapter.execute_raw(merged_params).await
                 },
             )
-            .await;
-
-        match result {
-            Ok(output) => {
-                info!(tool_name = %self.tool_name, output = %output, "Tool executed successfully");
-                HookResult::Continue(HookOutput::Json(output))
-            }
-            Err(e) => {
-                error!(tool_name = %self.tool_name, error = %e, "Tool execution failed");
-                HookResult::Error(e)
-            }
-        }
+            .await
     }
 
     fn hook_point(&self) -> HookPoint {

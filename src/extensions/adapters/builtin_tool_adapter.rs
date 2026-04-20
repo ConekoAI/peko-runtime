@@ -101,106 +101,49 @@ impl BuiltinExecuteHandler {
 #[async_trait]
 impl HookHandler for BuiltinExecuteHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
-        // Extract tool call parameters
-        let (tool_name, params, workspace) = match ctx.as_tool_call() {
-            Some((name, params, workspace)) => (name, params, workspace),
-            None => return HookResult::PassThrough,
-        };
+        let tool = self.tool.clone();
+        let tool_name = tool.name().to_string();
+        let tool_name_for_preproc = tool_name.clone();
 
-        // Verify this handler is for the right tool
-        if tool_name != self.tool.name() {
-            return HookResult::PassThrough;
-        }
-
-        // ADR-018a: Use AsyncExecutionRouter for unified execution
-        // This provides:
-        // - _async parameter extraction and routing
-        // - Panic isolation via ToolExecutionService
-        // - Timeout enforcement
-        // - Consistent context injection
-
-        let exec_service = ctx.services.tool_execution();
-        let async_router = ctx.services.async_router();
-
-        // Build execution context from hook input, falling back to hook state
-        let tool_ctx = match ctx.as_tool_context() {
-            Some(tc) => crate::extensions::services::ToolExecutionContext::new(
-                tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                tc.session_id
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                tc.run_id.clone(),
-            )
-            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
-            None => {
-                let ctx = crate::extensions::services::ToolExecutionContext::new(
-                    "unknown", "unknown", "unknown",
-                );
-                // Use workspace from HookInput::ToolCall if available
-                match workspace {
-                    Some(ws) => ctx.with_workspace(ws),
-                    None => ctx,
-                }
-            }
-        };
-
-        // Create execution config (built-in tools have no reserved params)
         let exec_config =
             crate::extensions::services::ToolExecutionConfig::with_schema(self.tool.parameters());
 
-        // Clone params for mutation (AsyncExecutionRouter extracts _async, etc.)
-        let mut params_mut = params.clone();
-
-        // Inject agent workspace into tool parameters for filesystem tools.
-        // Built-in tools are created once at daemon startup with a global workspace,
-        // but each agent has its own workspace. We inject the agent's workspace
-        // so the tool searches in the correct location.
-        if let Some(ref ws) = workspace {
-            if let Some(obj) = params_mut.as_object_mut() {
-                match tool_name {
-                    "glob" => {
-                        if !obj.contains_key("directory") {
-                            obj.insert("directory".to_string(), serde_json::Value::String(ws.to_string()));
-                        }
-                    }
-                    "grep" => {
-                        if !obj.contains_key("path") {
-                            obj.insert("path".to_string(), serde_json::Value::String(ws.to_string()));
-                        }
-                    }
-                    "shell" => {
-                        if !obj.contains_key("cwd") {
-                            obj.insert("cwd".to_string(), serde_json::Value::String(ws.to_string()));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        // Clone tool for the closure (needed for 'static bound)
-        let tool = self.tool.clone();
-        let tool_name = tool.name().to_string();
-
-        // Route execution through AsyncExecutionRouter
-        let result = async_router
-            .route(
+        ctx.services.async_router()
+            .execute_from_hook(
+                &ctx,
                 &tool_name,
-                &mut params_mut,
-                exec_service,
-                &tool_ctx,
                 &exec_config,
+                Some(move |params: &mut serde_json::Value, workspace: Option<&str>| {
+                    // Inject agent workspace into tool parameters for filesystem tools.
+                    if let Some(ws) = workspace {
+                        if let Some(obj) = params.as_object_mut() {
+                            match tool_name_for_preproc.as_str() {
+                                "glob" => {
+                                    if !obj.contains_key("directory") {
+                                        obj.insert("directory".to_string(), serde_json::Value::String(ws.to_string()));
+                                    }
+                                }
+                                "grep" => {
+                                    if !obj.contains_key("path") {
+                                        obj.insert("path".to_string(), serde_json::Value::String(ws.to_string()));
+                                    }
+                                }
+                                "shell" => {
+                                    if !obj.contains_key("cwd") {
+                                        obj.insert("cwd".to_string(), serde_json::Value::String(ws.to_string()));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }),
                 move |p| {
                     let tool = tool.clone();
                     async move { tool.execute(p).await }
                 },
             )
-            .await;
-
-        match result {
-            Ok(value) => HookResult::Continue(HookOutput::Json(value)),
-            Err(e) => HookResult::Error(e),
-        }
+            .await
     }
 
     fn hook_point(&self) -> HookPoint {

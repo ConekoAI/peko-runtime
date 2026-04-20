@@ -865,9 +865,8 @@ impl std::fmt::Debug for McpToolExecuteHandler {
 impl HookHandler for McpToolExecuteHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
         // Parse tool name from pattern mcp:{server}:{tool}
-        let (tool_name, params) = match ctx.as_tool_call() {
+        let (called_tool_name, _params) = match ctx.as_tool_call() {
             Some((tool_name, params, _)) => {
-                // Check if this is an MCP tool for our server
                 let expected_prefix = format!("{}:{}", MCP_TOOL_PREFIX, self.server_name);
                 if !tool_name.starts_with(&expected_prefix) {
                     return HookResult::PassThrough;
@@ -880,17 +879,17 @@ impl HookHandler for McpToolExecuteHandler {
         // Use specific tool name if set (unified registry), otherwise extract from pattern
         let actual_tool = match &self.tool_name {
             Some(name) => {
-                // Verify the requested tool matches this handler's specific tool
                 let expected_full_name =
                     format!("{}:{}:{}", MCP_TOOL_PREFIX, self.server_name, name);
-                if tool_name != expected_full_name {
+                if called_tool_name != expected_full_name {
                     return HookResult::PassThrough;
                 }
-                name.as_str()
+                name.clone()
             }
-            None => tool_name
+            None => called_tool_name
                 .strip_prefix(&format!("{}:{}:", MCP_TOOL_PREFIX, self.server_name))
-                .unwrap_or(&tool_name),
+                .unwrap_or(&called_tool_name)
+                .to_string(),
         };
 
         debug!(
@@ -899,63 +898,32 @@ impl HookHandler for McpToolExecuteHandler {
             "Executing MCP tool via Extension Framework"
         );
 
-        // ADR-018a: Use AsyncExecutionRouter for unified execution
-        // This provides _async routing, panic isolation, and timeout
-
         // Get server configuration for reserved parameters
         let server_config = {
             let manager = self.manager.read().await;
             manager.get_server_config(&self.server_name).await
         };
 
-        // Get reserved params config from server config
         let reserved_params = server_config
             .as_ref()
             .map(|c| c.reserved_parameters.clone())
             .unwrap_or_default();
 
-        // Use basic object schema (MCP doesn't expose full JSON schema for validation)
-        let tool_schema = serde_json::json!({"type": "object"});
-
-        // Build execution config
-        let exec_config = ToolExecutionConfig::new(reserved_params, tool_schema);
-
-        // Get services from context
-        let exec_service = ctx.services.tool_execution();
-        let async_router = ctx.services.async_router();
-
-        // Build execution context
-        let tool_ctx = match ctx.as_tool_context() {
-            Some(tc) => crate::extensions::services::ToolExecutionContext::new(
-                tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                tc.session_id
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                tc.run_id.clone(),
-            )
-            .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
-            None => crate::extensions::services::ToolExecutionContext::new(
-                "unknown", "unknown", "unknown",
-            ),
-        };
-
-        // Clone params for mutation (AsyncExecutionRouter extracts _async, etc.)
-        let mut params_mut = params.clone();
-
-        // Clone manager and server/tool names for the closure
         let manager = self.manager.clone();
         let server_name = self.server_name.clone();
-        let actual_tool_owned = actual_tool.to_string();
-        let tool_name_for_router = actual_tool_owned.clone();
+        let actual_tool_owned = actual_tool.clone();
 
-        // Route execution through AsyncExecutionRouter
-        let result = async_router
-            .route(
-                &tool_name_for_router,
-                &mut params_mut,
-                exec_service,
-                &tool_ctx,
+        let exec_config = crate::extensions::services::ToolExecutionConfig::new(
+            reserved_params,
+            serde_json::json!({"type": "object"}),
+        );
+
+        ctx.services.async_router()
+            .execute_from_hook(
+                &ctx,
+                &called_tool_name,
                 &exec_config,
+                None::<fn(&mut serde_json::Value, Option<&str>)>,
                 move |p| {
                     let manager = manager.clone();
                     let server = server_name.clone();
@@ -963,7 +931,6 @@ impl HookHandler for McpToolExecuteHandler {
                     async move {
                         let mgr = manager.read().await;
                         let mcp_result = mgr.call_tool(&server, &tool, p).await?;
-                        // Convert MCP result to JSON
                         let json_result = serde_json::json!({
                             "success": !mcp_result.is_error,
                             "contents": mcp_result.content.iter().map(|c| match c {
@@ -986,15 +953,7 @@ impl HookHandler for McpToolExecuteHandler {
                     }
                 },
             )
-            .await;
-
-        match result {
-            Ok(json_result) => HookResult::Continue(HookOutput::Json(json_result)),
-            Err(e) => {
-                error!(server_name = %self.server_name, tool_name = %actual_tool, error = %e, "MCP tool execution failed");
-                HookResult::Error(anyhow::anyhow!("MCP tool error: {e}"))
-            }
-        }
+            .await
     }
 
     fn hook_point(&self) -> HookPoint {
