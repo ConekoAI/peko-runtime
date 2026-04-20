@@ -9,6 +9,8 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Resetting pekobot..." -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
+peko daemon stop
+
 # Build pekobot
 Write-Host "Building pekobot..." -ForegroundColor Cyan
 pushd "$PSScriptRoot/.."
