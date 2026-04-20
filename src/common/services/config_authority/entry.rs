@@ -29,7 +29,7 @@ pub enum ConfigSource {
 
 impl ConfigSource {
     /// Get image reference (if from image)
-    #[must_use] 
+    #[must_use]
     pub fn image_ref(&self) -> Option<&str> {
         match self {
             ConfigSource::Image { image_ref, .. } => Some(image_ref),
@@ -38,7 +38,7 @@ impl ConfigSource {
     }
 
     /// Get image digest (if from image)
-    #[must_use] 
+    #[must_use]
     pub fn image_digest(&self) -> Option<&str> {
         match self {
             ConfigSource::Image { image_digest, .. } => Some(image_digest),
@@ -89,7 +89,7 @@ pub struct AgentConfigEntry {
 
 impl AgentConfigEntry {
     /// Get capabilities as a list of strings
-    #[must_use] 
+    #[must_use]
     pub fn capabilities(&self) -> Vec<String> {
         self.config
             .capabilities
@@ -99,13 +99,13 @@ impl AgentConfigEntry {
     }
 
     /// Check if agent has a specific capability
-    #[must_use] 
+    #[must_use]
     pub fn has_capability(&self, name: &str) -> bool {
         self.config.capabilities.iter().any(|c| c.name == name)
     }
 
     /// Get image reference (backward compatibility)
-    #[must_use] 
+    #[must_use]
     pub fn image_ref(&self) -> &str {
         self.source
             .as_ref()
@@ -114,7 +114,7 @@ impl AgentConfigEntry {
     }
 
     /// Get image digest (backward compatibility)
-    #[must_use] 
+    #[must_use]
     pub fn image_digest(&self) -> &str {
         self.source
             .as_ref()

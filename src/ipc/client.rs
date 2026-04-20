@@ -96,10 +96,7 @@ impl DaemonClient {
         let team_str: String = team.into();
         debug!(
             "Execute request {}: agent={} team={} stream={}",
-            request_id,
-            agent_str,
-            team_str,
-            stream
+            request_id, agent_str, team_str, stream
         );
 
         let packet = RequestPacket::Execute {

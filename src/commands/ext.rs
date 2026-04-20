@@ -92,7 +92,7 @@ pub enum ExtCommands {
     /// Examples:
     ///   pekobot ext config my-extension --show
     ///   pekobot ext config my-extension --global --set `api_key=secret`
-    ///   pekobot ext config my-extension --team myteam --set endpoint=https://api.example.com
+    ///   pekobot ext config my-extension --team myteam --set endpoint=<https://api.example.com>
     ///   pekobot ext config my-extension --agent myteam/myagent --set timeout=30
     ///   pekobot ext config my-extension --unset `api_key`
     Config {
@@ -397,9 +397,7 @@ async fn handle_enable(
                         e
                     );
                 } else {
-                    println!(
-                        "Added '{whitelist_entry}' to agent '{target}' tool whitelist"
-                    );
+                    println!("Added '{whitelist_entry}' to agent '{target}' tool whitelist");
                 }
             }
 
@@ -432,9 +430,7 @@ async fn add_tool_to_agent_whitelist(
 
     if let Some(agent_name) = agent {
         config_service.enable_tool_sync(&agent_name, &team, tool_name)?;
-        println!(
-            "Added '{tool_name}' to agent '{team}/{agent_name}' tool whitelist"
-        );
+        println!("Added '{tool_name}' to agent '{team}/{agent_name}' tool whitelist");
         tracing::info!(
             "Added '{}' to agent '{}/{}' tool whitelist",
             tool_name,
@@ -510,9 +506,7 @@ async fn handle_enable_builtin(
 
     if let Some(agent_name) = agent {
         config_service.enable_tool_sync(&agent_name, &team, capability)?;
-        println!(
-            "Enabled '{capability}' for agent '{agent_name}' in team '{team}'"
-        );
+        println!("Enabled '{capability}' for agent '{agent_name}' in team '{team}'");
     } else {
         // Team-level: update team extensions config
         let team_dir = paths.data_dir.join("teams").join(&team);
@@ -601,9 +595,7 @@ async fn handle_disable_builtin(
 
     if let Some(agent_name) = agent {
         config_service.disable_tool_sync(&agent_name, &team, capability)?;
-        println!(
-            "Disabled '{capability}' for agent '{agent_name}' in team '{team}'"
-        );
+        println!("Disabled '{capability}' for agent '{agent_name}' in team '{team}'");
     } else {
         // Team-level: update team extensions config
         let team_dir = paths.data_dir.join("teams").join(&team);
@@ -846,9 +838,7 @@ async fn handle_config(
 
     // Handle --show (default if no other actions)
     if show || (set_values.is_empty() && unset_keys.is_empty()) {
-        println!(
-            "Configuration for extension '{id}' ({scope_label} scope):"
-        );
+        println!("Configuration for extension '{id}' ({scope_label} scope):");
         println!();
 
         let target_config: &HashMap<String, serde_json::Value> = match (&team_id, &agent_id) {
@@ -898,21 +888,15 @@ async fn handle_config(
             .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
 
         config.set(team_id, agent_id.as_deref(), key.clone(), json_value);
-        println!(
-            "Set {key} = {value} for extension '{id}' at {scope_label} scope"
-        );
+        println!("Set {key} = {value} for extension '{id}' at {scope_label} scope");
     }
 
     // Handle --unset
     for key in &unset_keys {
         if config.unset(team_id, agent_id.as_deref(), key) {
-            println!(
-                "Unset '{key}' for extension '{id}' at {scope_label} scope"
-            );
+            println!("Unset '{key}' for extension '{id}' at {scope_label} scope");
         } else {
-            println!(
-                "Key '{key}' not found for extension '{id}' at {scope_label} scope"
-            );
+            println!("Key '{key}' not found for extension '{id}' at {scope_label} scope");
         }
     }
 

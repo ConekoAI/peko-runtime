@@ -230,17 +230,19 @@ impl Unpackager {
         // Compute workspace and sessions paths for result
         let team = "default";
         let workspace_path = if options.import_workspace {
-            Some(
-                dirs::data_dir().map_or_else(|| self.base_dir.join("workspaces").join(&name), |d| d.join("pekobot").join("workspaces").join(team).join(&name)),
-            )
+            Some(dirs::data_dir().map_or_else(
+                || self.base_dir.join("workspaces").join(&name),
+                |d| d.join("pekobot").join("workspaces").join(team).join(&name),
+            ))
         } else {
             None
         };
 
         let sessions_path = if options.import_sessions {
-            Some(
-                dirs::data_dir().map_or_else(|| self.base_dir.join("sessions").join(&name), |d| d.join("pekobot").join("sessions").join(team).join(&name)),
-            )
+            Some(dirs::data_dir().map_or_else(
+                || self.base_dir.join("sessions").join(&name),
+                |d| d.join("pekobot").join("sessions").join(team).join(&name),
+            ))
         } else {
             None
         };

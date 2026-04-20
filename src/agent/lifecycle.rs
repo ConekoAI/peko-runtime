@@ -28,7 +28,7 @@ pub struct ExecutionRecord {
 
 impl ExecutionRecord {
     /// Get duration since execution started
-    #[must_use] 
+    #[must_use]
     pub fn duration(&self) -> std::time::Duration {
         self.started_at.elapsed()
     }

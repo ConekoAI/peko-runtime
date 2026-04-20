@@ -199,13 +199,13 @@ impl CronStorage {
     }
 
     /// Get job by ID
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, job_id: &str) -> Option<&CronJob> {
         self.jobs.get(job_id)
     }
 
     /// Get job by label
-    #[must_use] 
+    #[must_use]
     pub fn get_by_label(&self, label: &str) -> Option<&CronJob> {
         self.jobs.values().find(|j| j.label == label)
     }
@@ -216,7 +216,7 @@ impl CronStorage {
     }
 
     /// List all jobs
-    #[must_use] 
+    #[must_use]
     pub fn list(&self) -> Vec<&CronJob> {
         self.jobs.values().collect()
     }
@@ -312,13 +312,11 @@ impl CronTool {
             .unwrap_or_else(|| format!("every-{}", Uuid::new_v4().simple()));
 
         // Calculate next run
-        let start_at = args
-            .start_at
-            .and_then(|s| {
-                DateTime::parse_from_rfc3339(&s)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&Utc))
-            });
+        let start_at = args.start_at.and_then(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc))
+        });
 
         let next_run = start_at.unwrap_or_else(Utc::now);
 

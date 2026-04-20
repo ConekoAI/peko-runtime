@@ -22,7 +22,7 @@ pub struct HookRegistry {
 
 impl HookRegistry {
     /// Create a new empty hook registry
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             hooks: Arc::new(RwLock::new(HashMap::new())),
@@ -340,7 +340,6 @@ impl Default for HookRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[tokio::test]
     async fn test_register_and_get_webhook() {

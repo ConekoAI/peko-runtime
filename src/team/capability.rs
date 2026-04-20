@@ -78,7 +78,7 @@ impl TeamCapabilityConfig {
     /// Note: Empty enabled list means "no team-level restrictions" (agents can use their own config).
     /// If you want to restrict, explicitly add to disabled list or leave enabled empty but
     /// rely on agents' own configs.
-    #[must_use] 
+    #[must_use]
     pub fn is_enabled(&self, cap_name: &str) -> bool {
         if self.disabled.contains(&cap_name.to_string()) {
             return false;
@@ -121,7 +121,7 @@ pub struct TeamCapabilityManager {
 
 impl TeamCapabilityManager {
     /// Create a new manager
-    #[must_use] 
+    #[must_use]
     pub fn new(path_resolver: PathResolver) -> Self {
         Self { path_resolver }
     }

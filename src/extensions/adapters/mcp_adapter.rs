@@ -97,7 +97,7 @@ impl McpAdapter {
     ///
     /// This ensures all MCP adapters share the same manager instance,
     /// so server configs loaded by one adapter are visible to all others.
-    #[must_use] 
+    #[must_use]
     pub fn with_default_manager() -> Self {
         Self {
             manager: get_global_mcp_manager(),
@@ -106,7 +106,7 @@ impl McpAdapter {
 
     /// Create a new MCP adapter with a fresh manager (for testing only)
     #[cfg(test)]
-    #[must_use] 
+    #[must_use]
     pub fn with_fresh_manager() -> Self {
         let config = crate::mcp::McpConfig::default();
         let manager = Arc::new(RwLock::new(crate::mcp::McpManager::new(config)));
@@ -261,7 +261,7 @@ impl McpAdapter {
     }
 
     /// Get the MCP manager
-    #[must_use] 
+    #[must_use]
     pub fn manager(&self) -> Arc<RwLock<crate::mcp::McpManager>> {
         self.manager.clone()
     }
@@ -441,10 +441,7 @@ impl ExtensionTypeAdapter for McpAdapter {
         ManifestFormat::Custom {
             detector: |path| {
                 // Direct file path (e.g., path/to/config.toml)
-                if path
-                    .extension()
-                    .is_some_and(|e| e == "toml" || e == "json")
-                {
+                if path.extension().is_some_and(|e| e == "toml" || e == "json") {
                     return path.exists();
                 }
                 // Directory containing config.toml or config.json

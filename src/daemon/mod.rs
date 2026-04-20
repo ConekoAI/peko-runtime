@@ -149,7 +149,7 @@ impl Daemon {
         let app_state = crate::daemon::state::AppState::new(
             &self.config.data_dir,
             "127.0.0.1", // host placeholder (HTTP API removed)
-            0,             // port placeholder (HTTP API removed)
+            0,           // port placeholder (HTTP API removed)
             crate::daemon::state::DaemonConfigSnapshot {
                 data_dir: self.config.data_dir.clone(),
                 config_dir: self.config.config_dir.clone(),
@@ -165,7 +165,11 @@ impl Daemon {
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::write(&pid_file, std::process::id().to_string());
-        info!("   PID file: {} (pid={})", pid_file.display(), std::process::id());
+        info!(
+            "   PID file: {} (pid={})",
+            pid_file.display(),
+            std::process::id()
+        );
 
         // Mark daemon as ready (server is listening)
         app_state.set_ready(true).await;
@@ -173,7 +177,8 @@ impl Daemon {
 
         // Start IPC server (replaces HTTP API per ADR-021)
         let ipc_shutdown_rx = app_state.subscribe_shutdown();
-        let ipc_server = crate::ipc::IpcServer::new(app_state.clone()).await
+        let ipc_server = crate::ipc::IpcServer::new(app_state.clone())
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to start IPC server: {e}"))?;
         let ipc_handle = tokio::spawn(async move {
             if let Err(e) = ipc_server.run(ipc_shutdown_rx).await {
@@ -811,7 +816,6 @@ impl DaemonHandle {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
 
     #[tokio::test]
     async fn test_daemon_creation() {

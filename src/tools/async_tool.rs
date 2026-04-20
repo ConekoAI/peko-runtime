@@ -145,7 +145,7 @@ impl<T: Tool> SyncToAsyncAdapter<T> {
     }
 
     /// Get a reference to the inner tool
-    #[must_use] 
+    #[must_use]
     pub fn inner(&self) -> &T {
         &self.inner
     }

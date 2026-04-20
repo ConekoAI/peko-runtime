@@ -90,7 +90,7 @@ impl ImageRef {
     }
 
     /// Get the display string for this reference
-    #[must_use] 
+    #[must_use]
     pub fn display(&self) -> String {
         match self {
             Self::RegistryRef { host, path, tag } => format!("{host}/{path}:{tag}"),
@@ -120,7 +120,7 @@ impl ImageId {
     }
 
     /// Get the string representation
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

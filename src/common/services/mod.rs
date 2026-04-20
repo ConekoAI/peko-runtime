@@ -46,7 +46,7 @@ impl ServiceRegistry {
     /// Create a new service registry with the given path resolver
     ///
     /// This is the CLI entry point - it doesn't include runtime services.
-    #[must_use] 
+    #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
         Self {
             agent: AgentService::new(resolver.clone()),
@@ -59,7 +59,7 @@ impl ServiceRegistry {
     /// Create a new service registry with runtime services
     ///
     /// This is the API entry point - it includes runtime services like `TeamManager`.
-    #[must_use] 
+    #[must_use]
     pub fn with_runtime(
         resolver: PathResolver,
         runtime_manager: Arc<crate::team::TeamManager>,

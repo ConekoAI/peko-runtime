@@ -89,7 +89,9 @@ impl PacketStream {
 /// This runs on a per-connection basis.
 pub(crate) struct StreamRouter {
     /// Active streams by request_id
-    streams: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<u64, mpsc::UnboundedSender<ResponsePacket>>>>,
+    streams: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<u64, mpsc::UnboundedSender<ResponsePacket>>>,
+    >,
 }
 
 impl StreamRouter {
@@ -129,9 +131,7 @@ impl StreamRouter {
 /// routes packets to the appropriate streams.
 ///
 /// Returns a `StreamRouter` that can be used to register new streams.
-pub(crate) fn spawn_receiver(
-    conn: ConnectionHandle,
-) -> StreamRouter {
+pub(crate) fn spawn_receiver(conn: ConnectionHandle) -> StreamRouter {
     let router = StreamRouter::new();
     let router_clone = StreamRouter {
         streams: router.streams.clone(),
@@ -140,7 +140,10 @@ pub(crate) fn spawn_receiver(
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
         loop {
-            match conn.recv_timeout(&mut buf, Duration::from_secs(CLI_TIMEOUT_SECS)).await {
+            match conn
+                .recv_timeout(&mut buf, Duration::from_secs(CLI_TIMEOUT_SECS))
+                .await
+            {
                 Ok(len) => {
                     if len == 0 {
                         continue;

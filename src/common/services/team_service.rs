@@ -23,7 +23,7 @@ pub struct TeamService {
 
 impl TeamService {
     /// Create a new team service with the given path resolver
-    #[must_use] 
+    #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
         Self { resolver }
     }
@@ -259,13 +259,13 @@ impl TeamService {
     }
 
     /// Check if a team exists
-    #[must_use] 
+    #[must_use]
     pub fn team_exists(&self, name: &str) -> bool {
         self.resolver.team_dir(name).exists()
     }
 
     /// Get the path resolver
-    #[must_use] 
+    #[must_use]
     pub fn resolver(&self) -> &PathResolver {
         &self.resolver
     }
@@ -351,15 +351,10 @@ impl TeamService {
         let team_name = new_name.as_deref().unwrap_or("imported");
 
         if !self.team_exists(team_name) {
-            self.create_team(
-                team_name,
-                Some(&format!("Imported team from {file_path}")),
-            )
-            .await?;
+            self.create_team(team_name, Some(&format!("Imported team from {file_path}")))
+                .await?;
         } else if !force {
-            anyhow::bail!(
-                "Team '{team_name}' already exists. Use --force to overwrite."
-            );
+            anyhow::bail!("Team '{team_name}' already exists. Use --force to overwrite.");
         }
 
         // Import options

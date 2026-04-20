@@ -29,7 +29,7 @@ pub enum TriggerSource {
 
 impl TriggerSource {
     /// Get display name for the trigger source
-    #[must_use] 
+    #[must_use]
     pub fn display_name(&self) -> &'static str {
         match self {
             TriggerSource::Cron { .. } => "cron",
@@ -40,7 +40,7 @@ impl TriggerSource {
     }
 
     /// Get payload data for the trigger
-    #[must_use] 
+    #[must_use]
     pub fn payload(&self) -> serde_json::Value {
         match self {
             TriggerSource::Cron { schedule } => {
@@ -96,13 +96,13 @@ pub struct HookTrigger {
 
 impl HookTrigger {
     /// Create a new hook trigger
-    #[must_use] 
+    #[must_use]
     pub fn new(hook: RegisteredHook, source: TriggerSource) -> Self {
         Self { hook, source }
     }
 
     /// Build the message to send to the agent
-    #[must_use] 
+    #[must_use]
     pub fn build_message(&self) -> String {
         match &self.hook.action {
             HookAction::Run { message } => {
@@ -138,7 +138,7 @@ impl HookTrigger {
     }
 
     /// Build a session event for the trigger
-    #[must_use] 
+    #[must_use]
     pub fn build_session_event(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "hook.trigger",
@@ -154,25 +154,25 @@ impl HookTrigger {
     }
 
     /// Get the target session type
-    #[must_use] 
+    #[must_use]
     pub fn session_target(&self) -> SessionTarget {
         self.hook.session_target
     }
 
     /// Get hook ID
-    #[must_use] 
+    #[must_use]
     pub fn hook_id(&self) -> &str {
         &self.hook.id
     }
 
     /// Get instance ID
-    #[must_use] 
+    #[must_use]
     pub fn instance_id(&self) -> &str {
         &self.hook.instance_id
     }
 
     /// Check if hook is enabled
-    #[must_use] 
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.hook.enabled
     }
@@ -190,7 +190,7 @@ pub struct HookTriggerProcessor {
 
 impl HookTriggerProcessor {
     /// Create a new trigger processor
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {}
     }

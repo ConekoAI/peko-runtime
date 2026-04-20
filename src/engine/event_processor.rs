@@ -352,7 +352,6 @@ impl Default for EventProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn make_assistant_text(text: &str, sequence: usize, is_interstitial: bool) -> AgenticEvent {
         AgenticEvent::AssistantText {

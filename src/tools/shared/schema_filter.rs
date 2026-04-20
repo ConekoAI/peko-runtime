@@ -39,7 +39,7 @@ use std::collections::HashSet;
 /// let filtered = filter_reserved_params(&schema, &reserved);
 /// // filtered no longer contains agent_id
 /// ```
-#[must_use] 
+#[must_use]
 pub fn filter_reserved_params(schema: &Value, reserved: &HashSet<String>) -> Value {
     if reserved.is_empty() {
         return schema.clone();
@@ -69,7 +69,7 @@ pub fn filter_reserved_params(schema: &Value, reserved: &HashSet<String>) -> Val
 /// Filter reserved parameters from a JSON schema using a slice
 ///
 /// Convenience wrapper for `filter_reserved_params` that accepts a slice.
-#[must_use] 
+#[must_use]
 pub fn filter_reserved_params_slice(schema: &Value, reserved: &[String]) -> Value {
     let set: HashSet<String> = reserved.iter().cloned().collect();
     filter_reserved_params(schema, &set)
@@ -151,7 +151,7 @@ fn validate_no_leak(filtered: &Value, reserved: &HashSet<String>) -> Result<(), 
 }
 
 /// Get the list of parameter names from a schema
-#[must_use] 
+#[must_use]
 pub fn get_parameter_names(schema: &Value) -> Vec<String> {
     schema
         .get("properties")
@@ -161,7 +161,7 @@ pub fn get_parameter_names(schema: &Value) -> Vec<String> {
 }
 
 /// Check if a schema contains any reserved parameters
-#[must_use] 
+#[must_use]
 pub fn contains_reserved_params(schema: &Value, reserved: &HashSet<String>) -> bool {
     if let Some(properties) = schema.get("properties") {
         if let Some(props_obj) = properties.as_object() {

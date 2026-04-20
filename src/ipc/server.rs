@@ -32,7 +32,10 @@ enum ServerSocket {
 
 impl ServerSocket {
     /// Receive a packet from the socket
-    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, Option<std::net::SocketAddr>)> {
+    async fn recv_from(
+        &self,
+        buf: &mut [u8],
+    ) -> std::io::Result<(usize, Option<std::net::SocketAddr>)> {
         match self {
             #[cfg(unix)]
             Self::Unix { socket, .. } => {
@@ -129,7 +132,10 @@ impl IpcServer {
     /// Run the IPC server loop
     ///
     /// This method runs until the daemon shuts down or the shutdown signal is received.
-    pub async fn run(&self, mut shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> anyhow::Result<()> {
+    pub async fn run(
+        &self,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    ) -> anyhow::Result<()> {
         let mut buf = vec![0u8; 65536];
 
         info!("IPC server ready, waiting for requests...");
@@ -214,7 +220,16 @@ impl IpcServer {
                 stream,
             } => {
                 Self::handle_execute(
-                    request_id, agent, team, message, session_id, new_session, stream, state, socket, addr,
+                    request_id,
+                    agent,
+                    team,
+                    message,
+                    session_id,
+                    new_session,
+                    stream,
+                    state,
+                    socket,
+                    addr,
                 )
                 .await?;
             }
@@ -227,12 +242,22 @@ impl IpcServer {
                 workspace,
             } => {
                 Self::handle_async_spawn(
-                    request_id, tool_name, params, session_key, workspace, state, socket, addr,
+                    request_id,
+                    tool_name,
+                    params,
+                    session_key,
+                    workspace,
+                    state,
+                    socket,
+                    addr,
                 )
                 .await?;
             }
 
-            RequestPacket::AsyncCancel { request_id, task_id } => {
+            RequestPacket::AsyncCancel {
+                request_id,
+                task_id,
+            } => {
                 Self::handle_async_cancel(request_id, task_id, state, socket, addr).await?;
             }
         }
@@ -255,8 +280,13 @@ impl IpcServer {
     ) -> anyhow::Result<()> {
         use crate::agent::stateless_service::MessageRequest;
         use crate::engine::{AgenticEvent, LifecyclePhase};
-        
-        tracing::info!("IPC handle_execute started: request_id={}, agent={}, stream={}", request_id, agent, stream_enabled);
+
+        tracing::info!(
+            "IPC handle_execute started: request_id={}, agent={}, stream={}",
+            request_id,
+            agent,
+            stream_enabled
+        );
 
         let agent_service = state.agent_service().clone();
 
@@ -518,5 +548,3 @@ impl IpcServer {
         Ok(())
     }
 }
-
-

@@ -452,7 +452,7 @@ impl SessionStorage {
     }
 
     /// Get index file path for a session
-    #[must_use] 
+    #[must_use]
     pub fn index_path(&self, session_id: &str) -> PathBuf {
         self.storage_dir.join(format!("{session_id}.index.json"))
     }
@@ -504,9 +504,7 @@ impl SessionStorage {
         let target_path = self.session_path(target_id);
 
         if !source_path.exists() {
-            return Err(anyhow::anyhow!(
-                "Source session {source_id} does not exist"
-            ));
+            return Err(anyhow::anyhow!("Source session {source_id} does not exist"));
         }
 
         fs::copy(&source_path, &target_path).await?;

@@ -330,7 +330,8 @@ pub fn create_provider(config: ProviderConfig) -> Result<Arc<Provider>> {
 
     // Get model from config or use default
     let model = config
-        .default_model_config().map_or_else(|| metadata.default_model.to_string(), |m| m.name.clone());
+        .default_model_config()
+        .map_or_else(|| metadata.default_model.to_string(), |m| m.name.clone());
 
     create_provider_with_adapter(metadata, api_key, base_url, model, config)
 }
@@ -354,7 +355,8 @@ fn create_openai_compatible_provider(config: &ProviderConfig) -> Result<Arc<Prov
         .context("Base URL required for OpenAI-compatible provider")?;
 
     let model = config
-        .default_model_config().map_or_else(|| "gpt-4o-mini".to_string(), |m| m.name.clone());
+        .default_model_config()
+        .map_or_else(|| "gpt-4o-mini".to_string(), |m| m.name.clone());
 
     // Create a generic OpenAI-compatible adapter
     let adapter = AnyAdapter::OpenAiCompatible(OpenAiCompatibleAdapter::new(

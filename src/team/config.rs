@@ -270,13 +270,13 @@ impl TeamConfig {
     }
 
     /// Get the default shared files path for this team
-    #[must_use] 
+    #[must_use]
     pub fn default_shared_files_path(&self) -> String {
         format!(".pekobot/teams/{}/shared/files", self.identity.name)
     }
 
     /// Get the shared files path (custom or default)
-    #[must_use] 
+    #[must_use]
     pub fn shared_files_path(&self) -> String {
         self.shared
             .as_ref()
@@ -286,7 +286,7 @@ impl TeamConfig {
     }
 
     /// Check if shared files are enabled
-    #[must_use] 
+    #[must_use]
     pub fn shared_files_enabled(&self) -> bool {
         self.shared
             .as_ref()
@@ -295,7 +295,7 @@ impl TeamConfig {
     }
 
     /// Get the bus backend configuration
-    #[must_use] 
+    #[must_use]
     pub fn bus_config(&self) -> BusConfig {
         self.shared
             .as_ref()

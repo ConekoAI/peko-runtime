@@ -58,19 +58,19 @@ pub struct MigrationReport {
 
 impl MigrationReport {
     /// Create a new empty migration report
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Check if the migration was completely successful
-    #[must_use] 
+    #[must_use]
     pub fn is_success(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Get the total number of successfully migrated items
-    #[must_use] 
+    #[must_use]
     pub fn total_migrated(&self) -> usize {
         self.skills_migrated.len() + self.mcp_servers_migrated.len() + self.tools_migrated.len()
     }
@@ -132,7 +132,7 @@ fn default_migration_version() -> String {
 /// Get the path to the migration state file
 ///
 /// Returns: `<data_dir>/extensions/migration-state.json`
-#[must_use] 
+#[must_use]
 pub fn migration_state_path() -> PathBuf {
     default_data_dir()
         .join("extensions")
@@ -304,7 +304,10 @@ pub struct LegacyUniversalTool {
 /// Scans `~/.pekobot/skills/` for directories containing `SKILL.md` files.
 /// Returns a list of legacy skills found.
 pub async fn discover_legacy_skills() -> Result<Vec<LegacySkill>> {
-    let skills_dir = dirs::home_dir().map_or_else(|| PathBuf::from(".pekobot").join("skills"), |d| d.join(".pekobot").join("skills"));
+    let skills_dir = dirs::home_dir().map_or_else(
+        || PathBuf::from(".pekobot").join("skills"),
+        |d| d.join(".pekobot").join("skills"),
+    );
 
     let mut skills = Vec::new();
 
@@ -395,7 +398,10 @@ async fn parse_skill_md(path: &Path) -> Result<(String, String, Vec<String>, Opt
 /// Reads the MCP configuration file at `~/.pekobot/mcp.toml` and returns
 /// a list of configured MCP servers.
 pub async fn discover_legacy_mcp_servers() -> Result<Vec<LegacyMcpServer>> {
-    let mcp_toml = dirs::home_dir().map_or_else(|| PathBuf::from(".pekobot").join("mcp.toml"), |d| d.join(".pekobot").join("mcp.toml"));
+    let mcp_toml = dirs::home_dir().map_or_else(
+        || PathBuf::from(".pekobot").join("mcp.toml"),
+        |d| d.join(".pekobot").join("mcp.toml"),
+    );
 
     let mut servers = Vec::new();
 
@@ -431,7 +437,10 @@ pub async fn discover_legacy_mcp_servers() -> Result<Vec<LegacyMcpServer>> {
 /// Scans `~/.pekobot/tools/` for directories containing `manifest.json` files.
 /// Returns a list of legacy universal tools found.
 pub async fn discover_legacy_universal_tools() -> Result<Vec<LegacyUniversalTool>> {
-    let tools_dir = dirs::home_dir().map_or_else(|| PathBuf::from(".pekobot").join("tools"), |d| d.join(".pekobot").join("tools"));
+    let tools_dir = dirs::home_dir().map_or_else(
+        || PathBuf::from(".pekobot").join("tools"),
+        |d| d.join(".pekobot").join("tools"),
+    );
 
     let mut tools = Vec::new();
 
@@ -806,8 +815,7 @@ pub async fn migrate_legacy_extensions(manager: &mut ExtensionManager) -> Result
 /// Migrate legacy extensions with options
 ///
 /// Extended version that allows for more control over the migration process.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MigrationOptions {
     /// Force migration even if already completed
     pub force: bool,
@@ -816,7 +824,6 @@ pub struct MigrationOptions {
     /// Skip specific items by name
     pub skip_items: Vec<String>,
 }
-
 
 /// Types of extensions that can be migrated
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

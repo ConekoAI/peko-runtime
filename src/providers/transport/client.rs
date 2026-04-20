@@ -82,7 +82,7 @@ impl HttpClient {
     }
 
     /// Set retry policy for this client
-    #[must_use] 
+    #[must_use]
     pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = Some(policy);
         self
@@ -221,9 +221,7 @@ impl HttpClient {
         };
 
         match &self.retry_policy {
-            Some(policy) => {
-                RetryExecutor::execute(policy, &format!("GET {path}"), operation).await
-            }
+            Some(policy) => RetryExecutor::execute(policy, &format!("GET {path}"), operation).await,
             None => operation().await,
         }
     }

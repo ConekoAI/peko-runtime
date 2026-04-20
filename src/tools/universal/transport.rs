@@ -37,7 +37,7 @@ impl Transport {
     }
 
     /// Set the request timeout
-    #[must_use] 
+    #[must_use]
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.request_timeout = Duration::from_secs(secs);
         self
@@ -61,9 +61,8 @@ impl Transport {
             .map_err(|_| anyhow::anyhow!("Tool request timed out"))??;
 
         // Parse response
-        let response: Response = serde_json::from_str(&response_json).map_err(|e| {
-            anyhow::anyhow!("Invalid JSON response: {response_json} (error: {e})")
-        })?;
+        let response: Response = serde_json::from_str(&response_json)
+            .map_err(|e| anyhow::anyhow!("Invalid JSON response: {response_json} (error: {e})"))?;
 
         // Verify id matches
         if response.id != req.id {
@@ -93,7 +92,7 @@ pub struct MockTransport {
 
 #[cfg(test)]
 impl MockTransport {
-    #[must_use] 
+    #[must_use]
     pub fn new(responses: Vec<Response>) -> Self {
         Self {
             responses,

@@ -47,7 +47,7 @@ pub enum ParamSource {
 
 impl ReservedParamsConfig {
     /// Create an empty configuration
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -82,13 +82,13 @@ impl ReservedParamsConfig {
     }
 
     /// Check if configuration is empty
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.params.is_empty()
     }
 
     /// Get number of configured parameters
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.params.len()
     }
@@ -99,13 +99,13 @@ impl ReservedParamsConfig {
     }
 
     /// Check if a parameter is configured
-    #[must_use] 
+    #[must_use]
     pub fn contains(&self, name: &str) -> bool {
         self.params.contains_key(name)
     }
 
     /// Get a specific parameter source
-    #[must_use] 
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&ParamSource> {
         self.params.get(name)
     }
@@ -117,7 +117,7 @@ impl ReservedParamsConfig {
     ///
     /// # Returns
     /// Map of parameter names to resolved values
-    #[must_use] 
+    #[must_use]
     pub fn resolve(&self, ctx: Option<&crate::tools::ToolContext>) -> HashMap<String, Value> {
         let mut result = HashMap::new();
         for (name, source) in &self.params {
@@ -127,7 +127,7 @@ impl ReservedParamsConfig {
     }
 
     /// Convert to JSON object with resolved values
-    #[must_use] 
+    #[must_use]
     pub fn resolve_to_object(&self, ctx: Option<&crate::tools::ToolContext>) -> Value {
         let resolved = self.resolve(ctx);
         Value::Object(
@@ -150,18 +150,17 @@ impl ParamSource {
         use crate::tools::shared::context_resolver::{ContextResolver, ToolContextAdapter};
 
         match self {
-            Self::Runtime { field } => ctx
-                .map_or(Value::Null, |c| {
-                    let adapter = ToolContextAdapter::new(c);
-                    ContextResolver::resolve_field(&adapter, field)
-                }),
+            Self::Runtime { field } => ctx.map_or(Value::Null, |c| {
+                let adapter = ToolContextAdapter::new(c);
+                ContextResolver::resolve_field(&adapter, field)
+            }),
             Self::Env { var } => std::env::var(var).map_or(Value::Null, Value::String),
             Self::Static { value } => value.clone(),
         }
     }
 
     /// Get the source type as a string
-    #[must_use] 
+    #[must_use]
     pub fn source_type(&self) -> &'static str {
         match self {
             Self::Runtime { .. } => "runtime",
@@ -180,7 +179,7 @@ pub struct ReservedParamsService;
 
 impl ReservedParamsService {
     /// Create a new reserved parameters service
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }

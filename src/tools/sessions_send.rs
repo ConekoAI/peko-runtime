@@ -169,7 +169,10 @@ impl SessionsSendTool {
     fn extract_agent_id_from_session(&self, session_id: &str) -> Option<String> {
         // Session ID format: agent:{agent_id}:session:{uuid}
         // or: agent:{agent_id}:spawn:{parent}:{uuid}
-        session_id.split(':').nth(1).map(std::string::ToString::to_string)
+        session_id
+            .split(':')
+            .nth(1)
+            .map(std::string::ToString::to_string)
     }
 
     /// Execute send

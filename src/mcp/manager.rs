@@ -362,7 +362,7 @@ impl McpManager {
     /// server has `reserved_parameters` configured) which implement the Tool trait.
     ///
     /// # Returns
-    /// A vector of Arc<dyn Tool> containing all MCP tools from running servers
+    /// A vector of `Arc<dyn Tool>` containing all MCP tools from running servers
     pub async fn get_tools(&self) -> Vec<Arc<dyn crate::tools::Tool>> {
         use crate::mcp::injectable_proxy::InjectableMcpToolProxy;
         use crate::mcp::tool_proxy::McpToolProxy;

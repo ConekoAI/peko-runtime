@@ -286,7 +286,10 @@ async fn list_sessions_from_disk(sessions_dir: &PathBuf) -> Result<Vec<SessionEn
     let mut controller = MetadataController::new(sessions_dir);
     // Sync from JSONL to ensure message counts are accurate
     let metadata_list = controller.list_metadata(true).await?;
-    Ok(metadata_list.into_iter().map(super::super::session::metadata::SessionMetadata::to_entry).collect())
+    Ok(metadata_list
+        .into_iter()
+        .map(super::super::session::metadata::SessionMetadata::to_entry)
+        .collect())
 }
 
 // ================================================================================
@@ -305,12 +308,8 @@ async fn list_sessions(
         if json {
             println!("[]");
         } else {
-            println!(
-                "📭 Agent '{agent}' not found in team '{team}' or has no sessions."
-            );
-            println!(
-                "   Create the agent first with: pekobot agent create {team}/{agent}"
-            );
+            println!("📭 Agent '{agent}' not found in team '{team}' or has no sessions.");
+            println!("   Create the agent first with: pekobot agent create {team}/{agent}");
         }
         return Ok(());
     };
@@ -636,9 +635,7 @@ async fn branch_session(
         .get_session_metadata(session_id)
         .await
         .map_err(|_| {
-            anyhow::anyhow!(
-                "Parent session '{session_id}' not found for agent '{agent}'"
-            )
+            anyhow::anyhow!("Parent session '{session_id}' not found for agent '{agent}'")
         })?;
 
     // Perform the branch using SessionManager
@@ -661,9 +658,7 @@ async fn branch_session(
         }
         println!();
         println!("   The branched session contains a copy of the parent's history.");
-        println!(
-            "   Switch to it with: pekobot session switch {team}/{agent} {new_session_id}"
-        );
+        println!("   Switch to it with: pekobot session switch {team}/{agent} {new_session_id}");
     }
 
     Ok(())
@@ -688,7 +683,9 @@ async fn delete_session(
     let mut controller = crate::session::MetadataController::new(&loc.sessions_dir);
 
     // Check if session exists and get metadata for confirmation
-    let metadata = if let Some(m) = controller.get_metadata_fast(session_id).await? { Some(m) } else {
+    let metadata = if let Some(m) = controller.get_metadata_fast(session_id).await? {
+        Some(m)
+    } else {
         // Check if JSONL file exists without metadata (orphaned)
         let jsonl_path = loc.sessions_dir.join(format!("{session_id}.jsonl"));
         if !jsonl_path.exists() {
@@ -770,9 +767,7 @@ async fn switch_session(
             "{{\"success\": true, \"session_id\": \"{session_id}\", \"agent\": \"{agent}\", \"team\": \"{team}\"}}"
         );
     } else {
-        println!(
-            "✅ Switched active session for '{team}/{agent}' to '{session_id}'"
-        );
+        println!("✅ Switched active session for '{team}/{agent}' to '{session_id}'");
         println!();
         println!("   Future 'pekobot send' commands will use this session.");
     }

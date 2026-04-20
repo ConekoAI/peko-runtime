@@ -48,14 +48,22 @@ pub const DAEMON_MODE_ENV: &str = "PEKOBOT_DAEMON";
 pub fn default_socket_path() -> std::path::PathBuf {
     dirs::home_dir()
         .map(|d| d.join(".pekobot").join("run").join("daemon.sock"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".pekobot").join("run").join("daemon.sock"))
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(".pekobot")
+                .join("run")
+                .join("daemon.sock")
+        })
 }
 
 /// Get the default PID file path
 pub fn default_pid_path() -> std::path::PathBuf {
     dirs::home_dir()
         .map(|d| d.join(".pekobot").join("run").join("daemon.pid"))
-        .unwrap_or_else(|| std::path::PathBuf::from(".pekobot").join("run").join("daemon.pid"))
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(".pekobot")
+                .join("run")
+                .join("daemon.pid")
+        })
 }
 
 /// Ensure the run directory exists

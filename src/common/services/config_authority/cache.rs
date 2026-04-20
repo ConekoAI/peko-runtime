@@ -25,7 +25,7 @@ impl Default for ConfigCache {
 
 impl ConfigCache {
     /// Create a new empty cache
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
@@ -33,7 +33,7 @@ impl ConfigCache {
     }
 
     /// Generate cache key from team and agent name
-    #[must_use] 
+    #[must_use]
     pub fn cache_key(team: &str, agent: &str) -> String {
         format!("{team}/{agent}")
     }
@@ -72,7 +72,10 @@ impl ConfigCache {
             cache.remove(&key);
             debug!("Removed cache for agent '{}' in team '{}'", agent, team);
         } else {
-            debug!("Cache lock contested, skipping invalidation for '{}/{}'", team, agent);
+            debug!(
+                "Cache lock contested, skipping invalidation for '{}/{}'",
+                team, agent
+            );
         }
     }
 

@@ -110,17 +110,15 @@ impl SharedServicesFabric {
     }
 
     /// Get the shared files path
-    #[must_use] 
+    #[must_use]
     pub fn files_path(&self) -> &PathBuf {
         &self.files_path
     }
 
     /// Check if shared files are enabled
-    #[must_use] 
+    #[must_use]
     pub fn files_enabled(&self) -> bool {
-        self.files_config
-            .as_ref()
-            .is_none_or(|f| f.enabled)
+        self.files_config.as_ref().is_none_or(|f| f.enabled)
     }
 
     /// Register an agent as a consumer of shared MCP servers
@@ -205,13 +203,13 @@ impl SharedServicesFabric {
     }
 
     /// Get shared MCP server info
-    #[must_use] 
+    #[must_use]
     pub fn get_mcp_server(&self, name: &str) -> Option<&SharedMcpServer> {
         self.mcp_servers.get(name)
     }
 
     /// List all shared MCP servers
-    #[must_use] 
+    #[must_use]
     pub fn list_mcp_servers(&self) -> Vec<&SharedMcpServer> {
         self.mcp_servers.values().collect()
     }
@@ -222,7 +220,7 @@ impl SharedServicesFabric {
     /// - Private namespace: `{instance_id}`
     /// - Agent-type namespace: `{agent_name}`
     /// - Team shared namespace: `_team_shared`
-    #[must_use] 
+    #[must_use]
     pub fn get_memory_namespace(
         &self,
         instance_id: &str,

@@ -80,7 +80,7 @@ impl Team {
     }
 
     /// Get the default workspace path for a team
-    #[must_use] 
+    #[must_use]
     pub fn default_workspace_path(name: &str) -> PathBuf {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -90,7 +90,7 @@ impl Team {
     }
 
     /// Get the shared files path
-    #[must_use] 
+    #[must_use]
     pub fn shared_files_path(&self) -> PathBuf {
         let relative_path = self.config.shared_files_path();
         if std::path::Path::new(&relative_path).is_absolute() {
@@ -101,13 +101,13 @@ impl Team {
     }
 
     /// Count total instances in the team
-    #[must_use] 
+    #[must_use]
     pub fn total_instances(&self) -> usize {
         self.agent_instances.values().map(std::vec::Vec::len).sum()
     }
 
     /// Get all instance IDs
-    #[must_use] 
+    #[must_use]
     pub fn all_instance_ids(&self) -> Vec<String> {
         self.agent_instances
             .values()
@@ -128,7 +128,7 @@ pub struct TeamManager {
 
 impl TeamManager {
     /// Create a new team manager
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             teams: Arc::new(RwLock::new(HashMap::new())),
@@ -138,7 +138,7 @@ impl TeamManager {
     }
 
     /// Create with custom data directory
-    #[must_use] 
+    #[must_use]
     pub fn with_data_dir(_data_dir: PathBuf) -> Self {
         Self::new()
     }

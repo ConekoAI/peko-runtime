@@ -52,7 +52,7 @@ pub struct ImageRegistry {
 
 impl ImageRegistry {
     /// Create a new registry
-    #[must_use] 
+    #[must_use]
     pub fn new(config: RegistryConfig) -> Self {
         Self {
             config,
@@ -188,7 +188,7 @@ impl ImageRegistry {
     }
 
     /// Check if a layer exists
-    #[must_use] 
+    #[must_use]
     pub fn has_layer(&self, digest: &ImageDigest) -> bool {
         self.layer_path(digest).exists()
     }
@@ -441,10 +441,8 @@ mod tests {
 
         let hex1 = "c".repeat(64);
         let hex2 = "d".repeat(64);
-        let manifest1 =
-            ImageManifest::new("agent1", "1.0.0").with_digest(format!("sha256:{hex1}"));
-        let manifest2 =
-            ImageManifest::new("agent2", "2.0.0").with_digest(format!("sha256:{hex2}"));
+        let manifest1 = ImageManifest::new("agent1", "1.0.0").with_digest(format!("sha256:{hex1}"));
+        let manifest2 = ImageManifest::new("agent2", "2.0.0").with_digest(format!("sha256:{hex2}"));
 
         registry.store_manifest(&manifest1).await.unwrap();
         registry.store_manifest(&manifest2).await.unwrap();

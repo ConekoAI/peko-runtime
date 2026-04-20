@@ -31,7 +31,7 @@ pub struct WatchConfig {
 
 impl FileWatchHookManager {
     /// Create a new file watch hook manager
-    #[must_use] 
+    #[must_use]
     pub fn new(registry: std::sync::Arc<HookRegistry>) -> Self {
         Self {
             registry,
@@ -167,7 +167,7 @@ impl FileWatchHookManager {
     }
 
     /// Get active watch count
-    #[must_use] 
+    #[must_use]
     pub fn watch_count(&self) -> usize {
         self.watch_configs.len()
     }

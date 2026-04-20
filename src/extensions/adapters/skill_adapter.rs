@@ -50,7 +50,7 @@ pub struct SkillAdapter;
 
 impl SkillAdapter {
     /// Create a new skill adapter
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -304,7 +304,7 @@ pub fn read_skill_content(skill_path: &Path) -> Result<String> {
 
 /// Format skills for inclusion in system prompt
 /// Matches `OpenClaw`'s formatSkillsForPrompt
-#[must_use] 
+#[must_use]
 pub fn format_skills_for_prompt(skills: &[&DiscoveredSkill]) -> String {
     if skills.is_empty() {
         return String::new();
@@ -325,7 +325,7 @@ pub fn format_skills_for_prompt(skills: &[&DiscoveredSkill]) -> String {
 }
 
 /// Build the complete skills section for system prompt
-#[must_use] 
+#[must_use]
 pub fn build_skills_prompt(skills: &[&DiscoveredSkill]) -> String {
     let skills_block = format_skills_for_prompt(skills);
     if skills_block.is_empty() {
@@ -345,7 +345,7 @@ Constraints: never read more than one skill up front; only read after selecting.
 }
 
 /// Helper to load skills from directory using the adapter
-#[must_use] 
+#[must_use]
 pub fn load_skills_from_directory(path: &Path) -> Vec<DiscoveredSkill> {
     let adapter = SkillAdapter::new();
     adapter.discover_skills(path)

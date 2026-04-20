@@ -6,7 +6,10 @@
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
 use crate::providers::transport::HttpClient;
-use crate::providers::types::{Message, MessageRole, ContentBlock, ChatOptions, ChatMessage, ToolDefinition, ChatResponse, StreamEvent, StopReason, TokenUsage};
+use crate::providers::types::{
+    ChatMessage, ChatOptions, ChatResponse, ContentBlock, Message, MessageRole, StopReason,
+    StreamEvent, TokenUsage, ToolDefinition,
+};
 use crate::types::provider::ProviderConfig;
 use futures::StreamExt;
 use std::pin::Pin;
@@ -71,13 +74,13 @@ impl Provider {
     }
 
     /// Provider name
-    #[must_use] 
+    #[must_use]
     pub fn name(&self) -> &str {
         self.adapter.name()
     }
 
     /// Check if this provider supports native tool calling
-    #[must_use] 
+    #[must_use]
     pub fn supports_native_tools(&self) -> bool {
         self.adapter.supports_native_tools()
     }
@@ -361,8 +364,10 @@ impl Provider {
 
     /// Get the model name (config or default)
     fn model(&self) -> String {
-        self.config
-            .default_model_config().map_or_else(|| self.adapter.default_model().to_string(), |m| m.name.clone())
+        self.config.default_model_config().map_or_else(
+            || self.adapter.default_model().to_string(),
+            |m| m.name.clone(),
+        )
     }
 
     /// Convert legacy `ChatMessage` to new Message format

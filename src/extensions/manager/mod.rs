@@ -45,19 +45,19 @@ pub struct ExtensionStorage {
 }
 
 impl ExtensionStorage {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self { storage_dir: None }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_dir(storage_dir: PathBuf) -> Self {
         Self {
             storage_dir: Some(storage_dir),
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn dir(&self) -> Option<&Path> {
         self.storage_dir.as_deref()
     }
@@ -88,9 +88,7 @@ impl ExtensionStorage {
             })?;
         } else {
             copy_dir_recursive(source, &target_dir).with_context(|| {
-                format!(
-                    "Failed to copy extension from {source:?} to {target_dir:?}"
-                )
+                format!("Failed to copy extension from {source:?} to {target_dir:?}")
             })?;
         }
 
@@ -163,7 +161,7 @@ pub struct BundleMetadata {
 }
 
 impl ExtensionManager {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             adapters: HashMap::new(),
@@ -184,7 +182,7 @@ impl ExtensionManager {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_storage(storage: ExtensionStorage) -> Self {
         Self {
             adapters: HashMap::new(),
@@ -195,18 +193,18 @@ impl ExtensionManager {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_storage_dir(mut self, storage_dir: PathBuf) -> Self {
         self.storage = ExtensionStorage::with_dir(storage_dir);
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn core(&self) -> &ExtensionCore {
         &self.core
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn core_arc(&self) -> Arc<ExtensionCore> {
         self.core.clone()
     }
@@ -648,12 +646,12 @@ impl ExtensionManager {
         Ok(())
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn list_extensions(&self) -> Vec<&LoadedExtension> {
         self.extensions.values().collect()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn get_extension(&self, id: &ExtensionId) -> Option<&LoadedExtension> {
         self.extensions.get(id)
     }
@@ -791,7 +789,9 @@ impl ExtensionManager {
                 );
 
                 // Get manifest path - for Custom formats, we need to determine it manually
-                let manifest_path = if let Some(p) = format.manifest_path(&path) { p } else {
+                let manifest_path = if let Some(p) = format.manifest_path(&path) {
+                    p
+                } else {
                     // For Custom formats, check common manifest file names
                     let candidates = vec![
                         path.join("config.toml"),
@@ -885,22 +885,22 @@ impl Default for ExtensionManager {
 pub mod discovery_paths {
     use std::path::PathBuf;
 
-    #[must_use] 
+    #[must_use]
     pub fn user_config() -> Option<PathBuf> {
         dirs::config_dir().map(|d| d.join("pekobot/extensions"))
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn user_data() -> Option<PathBuf> {
         dirs::data_dir().map(|d| d.join("pekobot/extensions"))
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn project_local() -> PathBuf {
         PathBuf::from(".pekobot/extensions")
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn system_wide() -> Option<PathBuf> {
         #[cfg(target_os = "linux")]
         {
@@ -918,7 +918,7 @@ pub mod discovery_paths {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn all() -> Vec<PathBuf> {
         let mut paths = Vec::new();
 

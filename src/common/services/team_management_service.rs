@@ -12,11 +12,14 @@
 //! - Runtime operations (deploy, stop, scale) use `TeamRuntimeManager`
 //! - Both CLI and API use this unified service
 
-use crate::daemon::state::AppState;
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
-use crate::common::types::team::{TeamCreationResult, TeamInfo, TeamDeletionResult, TeamDeployRequest, TeamDeployResult, TeamRuntimeInfo, TeamRuntimeStatus, TeamScaleRequest, TeamScaleResult, TeamConfigSource};
+use crate::common::types::team::{
+    TeamConfigSource, TeamCreationResult, TeamDeletionResult, TeamDeployRequest, TeamDeployResult,
+    TeamInfo, TeamRuntimeInfo, TeamRuntimeStatus, TeamScaleRequest, TeamScaleResult,
+};
+use crate::daemon::state::AppState;
 use crate::team::config::TeamConfig;
 use crate::team::{TeamManager, TeamStatus};
 use anyhow::{Context, Result};
@@ -47,7 +50,7 @@ impl std::fmt::Debug for TeamManagementService {
 
 impl TeamManagementService {
     /// Create a new team management service
-    #[must_use] 
+    #[must_use]
     pub fn new(
         config_service: TeamService,
         runtime_manager: Arc<TeamManager>,
@@ -114,7 +117,7 @@ impl TeamManagementService {
     }
 
     /// Check if a team exists
-    #[must_use] 
+    #[must_use]
     pub fn team_exists(&self, name: &str) -> bool {
         self.config_service.team_exists(name)
     }
@@ -305,7 +308,7 @@ impl TeamManagementService {
     }
 
     /// Get the path resolver
-    #[must_use] 
+    #[must_use]
     pub fn resolver(&self) -> &PathResolver {
         &self.resolver
     }

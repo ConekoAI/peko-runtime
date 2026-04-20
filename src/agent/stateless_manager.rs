@@ -65,7 +65,10 @@ impl StatelessAgentManager {
             .join("pekobot");
 
         let path_resolver = crate::common::paths::PathResolver::with_dirs(
-            dirs::home_dir().map_or_else(|| PathBuf::from(".").join(".pekobot"), |d| d.join(".pekobot")),
+            dirs::home_dir().map_or_else(
+                || PathBuf::from(".").join(".pekobot"),
+                |d| d.join(".pekobot"),
+            ),
             data_dir.clone(),
             dirs::cache_dir().map_or_else(|| data_dir.join("cache"), |d| d.join("pekobot")),
         );

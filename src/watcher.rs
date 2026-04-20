@@ -126,9 +126,7 @@ impl FileWatcher {
             Err(e) => {
                 error!("Failed to create file watcher: {}", e);
                 let _ = event_tx
-                    .send(WatchEvent::Error(format!(
-                        "Failed to create watcher: {e}"
-                    )))
+                    .send(WatchEvent::Error(format!("Failed to create watcher: {e}")))
                     .await;
                 return Err(e);
             }

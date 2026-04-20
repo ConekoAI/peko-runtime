@@ -12,7 +12,7 @@
 //!
 //! # Architecture
 //!
-//! ```
+//! ```text
 //! ToolExecutor ──▶ ExtensionAsyncAdapter ──▶ ExtensionCore (hooks)
 //!       │                                          │
 //!       └──────────▶ UnifiedAsyncExecutor ◄────────┘
@@ -122,7 +122,7 @@ impl ExtensionAsyncAdapter {
     }
 
     /// Get the underlying `ExtensionCore`
-    #[must_use] 
+    #[must_use]
     pub fn core(&self) -> &Arc<ExtensionCore> {
         &self.core
     }
@@ -199,9 +199,9 @@ impl ExtensionAsyncAdapter {
                     params: None,
                 })
             }
-            HookResult::PassThrough => Err(anyhow!(
-                "No async handler registered for tool {tool_name}"
-            )),
+            HookResult::PassThrough => {
+                Err(anyhow!("No async handler registered for tool {tool_name}"))
+            }
             HookResult::Error(e) => Err(anyhow!("Async execution error: {e}")),
             _ => Err(anyhow!("Unexpected hook result for async execution")),
         }
@@ -365,7 +365,7 @@ impl ExtensionAsyncAdapter {
     }
 
     /// Get a reference to the underlying executor
-    #[must_use] 
+    #[must_use]
     pub fn executor(&self) -> &UnifiedAsyncExecutor {
         &self.executor
     }
@@ -445,10 +445,8 @@ mod tests {
         async fn handle(&self, ctx: HookContext) -> HookResult {
             if let HookInput::ToolCall { tool_name, .. } = ctx.input() {
                 if tool_name == self.tool_name.as_str() {
-                    let receipt = AsyncReceipt::new(
-                        format!("task_{}", Uuid::new_v4().simple()),
-                    )
-                    .with_duration(60);
+                    let receipt = AsyncReceipt::new(format!("task_{}", Uuid::new_v4().simple()))
+                        .with_duration(60);
 
                     return HookResult::Continue(HookOutput::Receipt(receipt));
                 }

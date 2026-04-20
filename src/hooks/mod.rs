@@ -87,7 +87,7 @@ pub enum SessionTarget {
 }
 
 impl SessionTarget {
-    #[must_use] 
+    #[must_use]
     pub fn from_str(s: &str) -> Self {
         match s {
             "active" => SessionTarget::Active,
@@ -260,7 +260,7 @@ pub struct EventFilter {
 
 impl EventFilter {
     /// Check if an event matches this filter
-    #[must_use] 
+    #[must_use]
     pub fn matches(&self, event: &SystemEvent) -> bool {
         // Check resource type filters
         if let Some(ref types) = self.resource_types {
@@ -372,7 +372,7 @@ pub struct EventBroadcaster {
 }
 
 impl EventBroadcaster {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             subscribers: Arc::new(RwLock::new(Vec::new())),

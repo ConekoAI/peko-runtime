@@ -4,7 +4,10 @@
 
 use super::{extract_text_content, ToolCallAccumulator};
 use crate::providers::transport::AuthConfig;
-use crate::providers::types::{Message, MessageRole, ContentBlock, ToolDefinition, ChatOptions, ChatResponse, StopReason, TokenUsage, StreamEvent};
+use crate::providers::types::{
+    ChatOptions, ChatResponse, ContentBlock, Message, MessageRole, StopReason, StreamEvent,
+    TokenUsage, ToolDefinition,
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

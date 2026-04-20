@@ -323,11 +323,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_severity_levels() {
-        let severities = [AuditSeverity::Debug,
+        let severities = [
+            AuditSeverity::Debug,
             AuditSeverity::Info,
             AuditSeverity::Warning,
             AuditSeverity::Error,
-            AuditSeverity::Security];
+            AuditSeverity::Security,
+        ];
 
         let mut logger = AuditLogger::new();
         for (i, severity) in severities.iter().enumerate() {

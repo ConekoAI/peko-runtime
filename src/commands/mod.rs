@@ -280,7 +280,7 @@ impl GlobalPaths {
     /// Get agent workspace directory
     ///
     /// Returns the path to an agent's workspace directory.
-    /// Format: <`data_dir>/workspaces`/<team>/<agent>
+    /// Format: `<data_dir>/workspaces/<team>/<agent>`
     ///
     /// # Arguments
     /// * `agent` - The agent name

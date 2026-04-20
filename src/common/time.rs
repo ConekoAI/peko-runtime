@@ -17,7 +17,7 @@
 /// # use pekobot::common::time::format_timestamp;
 /// let local_time = format_timestamp("2026-03-17T10:30:00+00:00");
 /// ```
-#[must_use] 
+#[must_use]
 pub fn format_timestamp(ts: &str) -> String {
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
         dt.with_timezone(&chrono::Local)
@@ -42,7 +42,7 @@ pub fn format_timestamp(ts: &str) -> String {
 /// # use pekobot::common::time::format_timestamp_ms;
 /// let local_time = format_timestamp_ms(1_712_200_200_000);
 /// ```
-#[must_use] 
+#[must_use]
 pub fn format_timestamp_ms(ts_ms: u64) -> String {
     let secs = (ts_ms / 1000) as i64;
     let nanos = ((ts_ms % 1000) * 1_000_000) as u32;
@@ -56,7 +56,7 @@ pub fn format_timestamp_ms(ts_ms: u64) -> String {
 }
 
 /// Format a millisecond timestamp to RFC3339 string
-#[must_use] 
+#[must_use]
 pub fn format_timestamp_rfc3339(ms: u64) -> String {
     chrono::DateTime::from_timestamp_millis(ms as i64)
         .map(|dt| dt.to_rfc3339())

@@ -145,7 +145,9 @@ impl SessionRecovery {
         }
 
         // Check if session has ended
-        let has_ended = events.iter().any(super::events::SessionEvent::is_session_ended);
+        let has_ended = events
+            .iter()
+            .any(super::events::SessionEvent::is_session_ended);
 
         if !has_ended {
             // Session didn't end cleanly
@@ -276,8 +278,7 @@ impl RecoveryState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
+
     use tempfile::TempDir;
 
     #[tokio::test]

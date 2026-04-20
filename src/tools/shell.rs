@@ -341,11 +341,8 @@ mod tests {
 
         let params = json!({"command": sleep_cmd});
 
-        let result = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            tool.execute(params),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(1), tool.execute(params)).await;
 
         assert!(
             result.is_err(),

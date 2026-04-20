@@ -561,7 +561,10 @@ impl AgenticLoopV4 {
                 );
                 // Log tool definitions being sent to provider
                 for (i, def) in tool_defs.iter().enumerate() {
-                    info!("Tool def [{}]: name={}, params={}", i, def.name, def.parameters);
+                    info!(
+                        "Tool def [{}]: name={}, params={}",
+                        i, def.name, def.parameters
+                    );
                 }
                 self.provider
                     .chat_with_tools(&messages, &tool_defs, &options)
@@ -735,7 +738,12 @@ impl AgenticLoopV4 {
                             let hook_input = HookInput::ToolCall {
                                 tool_name: name.clone(),
                                 params: arguments.clone(),
-                                workspace: self.agent.config.workspace.as_ref().map(|p| p.to_string_lossy().to_string()),
+                                workspace: self
+                                    .agent
+                                    .config
+                                    .workspace
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().to_string()),
                             };
 
                             let hook_result = self
@@ -785,7 +793,8 @@ impl AgenticLoopV4 {
                                 }
                                 HookResult::Handled => {
                                     warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                    let s = "Error: Tool execution was consumed by handler".to_string();
+                                    let s =
+                                        "Error: Tool execution was consumed by handler".to_string();
                                     (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::Replace(output) => {
@@ -1418,7 +1427,12 @@ impl AgenticLoopV4 {
                             let hook_input = HookInput::ToolCall {
                                 tool_name: name.clone(),
                                 params: arguments.clone(),
-                                workspace: self.agent.config.workspace.as_ref().map(|p| p.to_string_lossy().to_string()),
+                                workspace: self
+                                    .agent
+                                    .config
+                                    .workspace
+                                    .as_ref()
+                                    .map(|p| p.to_string_lossy().to_string()),
                             };
 
                             match self
@@ -1450,7 +1464,9 @@ impl AgenticLoopV4 {
                                     );
                                     let result = outputs.iter().find_map(|o| match o {
                                         HookOutput::Json(v) => Some((v.to_string(), v.clone())),
-                                        HookOutput::Text(t) => Some((t.clone(), serde_json::Value::String(t.clone()))),
+                                        HookOutput::Text(t) => {
+                                            Some((t.clone(), serde_json::Value::String(t.clone())))
+                                        }
                                         _ => None,
                                     });
                                     if let Some((s, v)) = result {
@@ -1461,7 +1477,8 @@ impl AgenticLoopV4 {
                                             "Tool '{}' returned Vec with no Json/Text: {:?}",
                                             name, outputs
                                         );
-                                        let s = "Error: Unexpected Vec output from tool".to_string();
+                                        let s =
+                                            "Error: Unexpected Vec output from tool".to_string();
                                         (s.clone(), serde_json::Value::String(s), false)
                                     }
                                 }
@@ -1487,7 +1504,8 @@ impl AgenticLoopV4 {
                                 }
                                 HookResult::Handled => {
                                     warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                    let s = "Error: Tool execution was consumed by handler".to_string();
+                                    let s =
+                                        "Error: Tool execution was consumed by handler".to_string();
                                     (s.clone(), serde_json::Value::String(s), false)
                                 }
                                 HookResult::Replace(output) => {
@@ -1798,6 +1816,4 @@ fn parse_content_block(value: &serde_json::Value) -> Option<ContentBlock> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-}
+mod tests {}

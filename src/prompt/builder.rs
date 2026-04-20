@@ -227,7 +227,9 @@ impl SystemPromptBuilder {
                 if let Some(tools_text) = result {
                     if !tools_text.is_empty() {
                         has_extension_tools = true;
-                        lines.push("You have access to the following tools. Use them wisely.".to_string());
+                        lines.push(
+                            "You have access to the following tools. Use them wisely.".to_string(),
+                        );
                         lines.push(String::new());
                         lines.push(tools_text);
                         lines.push(String::new());

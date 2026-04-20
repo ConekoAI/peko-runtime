@@ -255,7 +255,7 @@ impl ToolConfig {
     ///
     /// Tools must be referenced by their full names (e.g., "`mcp:identity:echo_identity`")
     /// for consistent identification across extension types.
-    #[must_use] 
+    #[must_use]
     pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
         // Check if tool is in the whitelist (case-insensitive, supports wildcards)
         let in_whitelist = self.enabled.iter().any(|pattern| {
@@ -274,9 +274,7 @@ impl ToolConfig {
         });
 
         // Get per-tool settings if they exist
-        let per_tool_enabled = self
-            .get_tool_settings(tool_name)
-            .is_none_or(|s| s.enabled);
+        let per_tool_enabled = self.get_tool_settings(tool_name).is_none_or(|s| s.enabled);
 
         // Tool is enabled if it's in the whitelist AND not explicitly disabled via per-tool config
         // OR if it's explicitly enabled via per-tool config (even if not in whitelist)
@@ -284,7 +282,7 @@ impl ToolConfig {
     }
 
     /// Get per-tool settings for a specific tool (by `snake_case` name)
-    #[must_use] 
+    #[must_use]
     pub fn get_tool_settings(&self, tool_name: &str) -> Option<&ToolSettings> {
         match tool_name {
             "read_file" => self.read_file.as_ref(),
@@ -296,7 +294,6 @@ impl ToolConfig {
         }
     }
 }
-
 
 /// HTTP tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,8 +411,10 @@ mod tests {
     fn test_tool_config_default_whitelist() {
         let config = ToolConfig::default();
 
-        // Default whitelist is empty (secure-by-default)
-        assert!(config.enabled.is_empty());
+        // Default whitelist enables common built-in tools so agents work out of the box
+        assert!(!config.enabled.is_empty());
+        assert!(config.enabled.contains(&"shell".to_string()));
+        assert!(config.enabled.contains(&"read_file".to_string()));
     }
 
     #[test]
@@ -500,10 +499,11 @@ mod tests {
     fn test_agent_config_has_default_tools() {
         let config = AgentConfig::default();
 
-        // Default tool config exists but whitelist is empty (secure-by-default)
+        // Default tool config exists with common built-in tools enabled
         assert!(config.tools.is_some());
         let tools = config.tools.unwrap();
-        assert!(tools.enabled.is_empty());
+        assert!(!tools.enabled.is_empty());
+        assert!(tools.enabled.contains(&"shell".to_string()));
     }
 
     #[test]

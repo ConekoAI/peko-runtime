@@ -217,8 +217,9 @@ impl ToolRuntime {
                 }
                 _ => anyhow::bail!("Unexpected output type from tool '{}'", tool_name),
             },
-            crate::extensions::types::HookResult::Error(e) => Err(e)
-                .with_context(|| format!("Tool execution failed for '{}'", tool_name)),
+            crate::extensions::types::HookResult::Error(e) => {
+                Err(e).with_context(|| format!("Tool execution failed for '{}'", tool_name))
+            }
             crate::extensions::types::HookResult::PassThrough => {
                 anyhow::bail!("No handler found for tool '{}'", tool_name)
             }
@@ -237,7 +238,10 @@ impl ToolRuntime {
     /// Check if a tool is registered
     #[must_use]
     pub async fn has_tool(&self, tool_name: &str) -> bool {
-        self.extension_core.get_tool_metadata(tool_name).await.is_some()
+        self.extension_core
+            .get_tool_metadata(tool_name)
+            .await
+            .is_some()
     }
 }
 
@@ -287,7 +291,11 @@ mod tests {
             .execute_tool("shell", json!({"command": "echo hello"}))
             .await;
 
-        assert!(result.is_ok(), "Expected shell execution to succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Expected shell execution to succeed: {:?}",
+            result
+        );
         let output = result.unwrap();
         assert!(output.get("stdout").is_some() || output.get("result").is_some());
     }
@@ -297,9 +305,7 @@ mod tests {
         let resolver = PathResolver::new();
         let runtime = ToolRuntime::new(resolver).await.unwrap();
 
-        let result = runtime
-            .execute_tool("nonexistent_tool", json!({}))
-            .await;
+        let result = runtime.execute_tool("nonexistent_tool", json!({})).await;
 
         assert!(result.is_err());
     }

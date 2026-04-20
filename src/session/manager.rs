@@ -347,7 +347,7 @@ pub struct SessionCreateOptions {
 }
 
 impl SessionCreateOptions {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -503,7 +503,7 @@ impl SessionManager {
     ///     "alice"
     /// );
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn for_cli(
         path_resolver: PathResolver,
         agent_name: &str,
@@ -555,7 +555,7 @@ impl SessionManager {
     }
 
     /// Get the path resolver if available
-    #[must_use] 
+    #[must_use]
     pub fn path_resolver(&self) -> Option<&PathResolver> {
         self.path_resolver.as_ref()
     }
@@ -823,8 +823,7 @@ impl SessionManager {
         );
 
         // 2. Create metadata
-        let mut metadata =
-            SessionMetadata::new(&session_id, agent, format!("{session_id}.jsonl"));
+        let mut metadata = SessionMetadata::new(&session_id, agent, format!("{session_id}.jsonl"));
         if let Some(parent_id) = options.parent_session_id {
             metadata.parent_session_id = Some(parent_id);
         }
@@ -1674,7 +1673,7 @@ impl SessionManager {
     }
 
     /// List all active sessions for an agent
-    #[must_use] 
+    #[must_use]
     pub fn list_agent_sessions(&self, agent_id: &str) -> Vec<String> {
         let mut sessions = Vec::new();
 
@@ -1741,7 +1740,7 @@ impl SessionManager {
     }
 
     /// Check if an agent has any active sessions
-    #[must_use] 
+    #[must_use]
     pub fn agent_has_sessions(&self, agent_id: &str) -> bool {
         self.base_sessions
             .keys()
@@ -1749,7 +1748,7 @@ impl SessionManager {
     }
 
     /// Get the number of active sessions for an agent
-    #[must_use] 
+    #[must_use]
     pub fn agent_session_count(&self, agent_id: &str) -> usize {
         self.base_sessions
             .keys()
@@ -1762,10 +1761,7 @@ impl SessionManager {
     fn clone_manager(&self) -> Self {
         // Create a new manager with same state
         // Shares the metadata controller Arc for cache consistency
-        let _sessions_dir = self
-            .sessions_dir
-            .clone()
-            .unwrap_or_else(std::env::temp_dir);
+        let _sessions_dir = self.sessions_dir.clone().unwrap_or_else(std::env::temp_dir);
         Self {
             base_sessions: self.base_sessions.clone(),
             channel_overlays: self.channel_overlays.clone(),

@@ -49,10 +49,7 @@ impl std::fmt::Display for LockError {
                 lock_name,
                 duration,
             } => {
-                write!(
-                    f,
-                    "Timeout acquiring lock '{lock_name}' after {duration:?}"
-                )
+                write!(f, "Timeout acquiring lock '{lock_name}' after {duration:?}")
             }
             LockError::Poisoned { lock_name } => {
                 write!(f, "Lock '{lock_name}' was poisoned (holder panicked)")
@@ -67,7 +64,7 @@ impl std::error::Error for LockError {}
 ///
 /// Note: This is provided as a helper function rather than a From impl
 /// to avoid conflicting with anyhow's blanket impl.
-#[must_use] 
+#[must_use]
 pub fn into_anyhow(err: LockError) -> anyhow::Error {
     anyhow::anyhow!(err.to_string())
 }

@@ -32,7 +32,6 @@ pub enum MessageSource {
     SpawnParent,
 }
 
-
 /// Token usage statistics
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TokenUsage {
@@ -63,7 +62,7 @@ pub enum RoleMetadata {
 
 impl RoleMetadata {
     /// Get the message role for this metadata
-    #[must_use] 
+    #[must_use]
     pub fn role(&self) -> MessageRole {
         match self {
             RoleMetadata::User { .. } => MessageRole::User,
@@ -196,13 +195,13 @@ impl SessionMessage {
     }
 
     /// Get the message role
-    #[must_use] 
+    #[must_use]
     pub fn role(&self) -> MessageRole {
         self.message.role
     }
 
     /// Get text content (convenience)
-    #[must_use] 
+    #[must_use]
     pub fn text_content(&self) -> String {
         self.message
             .content
@@ -222,7 +221,7 @@ impl SessionMessage {
     }
 
     /// Get message source (if user message)
-    #[must_use] 
+    #[must_use]
     pub fn source(&self) -> Option<MessageSource> {
         match &self.role_metadata {
             RoleMetadata::User { source } => Some(*source),
@@ -231,7 +230,7 @@ impl SessionMessage {
     }
 
     /// Get provider (if assistant message)
-    #[must_use] 
+    #[must_use]
     pub fn provider(&self) -> Option<&str> {
         match &self.role_metadata {
             RoleMetadata::Assistant { provider, .. } => Some(provider),
@@ -240,7 +239,7 @@ impl SessionMessage {
     }
 
     /// Get model (if assistant message)
-    #[must_use] 
+    #[must_use]
     pub fn model(&self) -> Option<&str> {
         match &self.role_metadata {
             RoleMetadata::Assistant { model, .. } => Some(model),
@@ -249,7 +248,7 @@ impl SessionMessage {
     }
 
     /// Get token usage (if assistant message)
-    #[must_use] 
+    #[must_use]
     pub fn usage(&self) -> Option<&TokenUsage> {
         match &self.role_metadata {
             RoleMetadata::Assistant { usage, .. } => Some(usage),
@@ -258,7 +257,7 @@ impl SessionMessage {
     }
 
     /// Get tool call ID (if tool message)
-    #[must_use] 
+    #[must_use]
     pub fn tool_call_id(&self) -> Option<&str> {
         match &self.role_metadata {
             RoleMetadata::Tool { tool_call_id } => Some(tool_call_id),
@@ -267,7 +266,7 @@ impl SessionMessage {
     }
 
     /// Convert to `ChatMessage` for provider API
-    #[must_use] 
+    #[must_use]
     pub fn to_chat_message(&self) -> crate::providers::ChatMessage {
         crate::providers::ChatMessage {
             role: match self.role() {

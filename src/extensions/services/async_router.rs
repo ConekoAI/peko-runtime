@@ -126,7 +126,8 @@ impl AsyncReservedParams {
 
             // Extract _retry (accept integer or string)
             if let Some(v) = obj.remove("_retry") {
-                reserved.retry_count = v.as_u64()
+                reserved.retry_count = v
+                    .as_u64()
                     .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
                     .unwrap_or(0) as u32;
             }
@@ -148,20 +149,20 @@ impl AsyncReservedParams {
     }
 
     /// Get effective timeout (use reserved or default)
-    #[must_use] 
+    #[must_use]
     pub fn effective_timeout(&self, is_async: bool) -> u64 {
         self.timeout_secs
             .unwrap_or(if is_async { 300 } else { 120 })
     }
 
     /// Validate callback mode
-    #[must_use] 
+    #[must_use]
     pub fn is_valid_callback(&self) -> bool {
         matches!(self.callback.as_str(), "queue" | "stream" | "blocking")
     }
 
     /// Validate priority
-    #[must_use] 
+    #[must_use]
     pub fn is_valid_priority(&self) -> bool {
         matches!(self.priority.as_str(), "low" | "normal" | "high")
     }
@@ -285,8 +286,14 @@ impl AsyncExecutionRouter {
 
         if reserved.async_mode {
             // Async path: execute via UnifiedAsyncExecutor
-            self.execute_async(tool_name, params.clone(), tool_context, &reserved, sync_executor)
-                .await
+            self.execute_async(
+                tool_name,
+                params.clone(),
+                tool_context,
+                &reserved,
+                sync_executor,
+            )
+            .await
         } else {
             // Sync path with timeout
             self.execute_sync(
@@ -361,9 +368,18 @@ impl AsyncExecutionRouter {
         let session_key = format!("{}_{}", tool_context.agent_id, tool_context.session_id);
 
         let (delivery_mode, delivery_target) = match reserved.callback.as_str() {
-            "stream" => (AsyncResultDeliveryMode::Interrupt, DeliveryTarget::EventBroadcast),
-            "blocking" => (AsyncResultDeliveryMode::QueueWhenBusy, DeliveryTarget::DirectChannel),
-            _ => (AsyncResultDeliveryMode::QueueWhenBusy, DeliveryTarget::AsyncQueue),
+            "stream" => (
+                AsyncResultDeliveryMode::Interrupt,
+                DeliveryTarget::EventBroadcast,
+            ),
+            "blocking" => (
+                AsyncResultDeliveryMode::QueueWhenBusy,
+                DeliveryTarget::DirectChannel,
+            ),
+            _ => (
+                AsyncResultDeliveryMode::QueueWhenBusy,
+                DeliveryTarget::AsyncQueue,
+            ),
         };
 
         let config = AsyncToolConfig {
@@ -509,7 +525,9 @@ impl AsyncExecutionRouter {
         let tool_ctx = match ctx.as_tool_context() {
             Some(tc) => ToolExecutionContext::new(
                 tc.agent_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                tc.session_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                tc.session_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 tc.run_id.clone(),
             )
             .with_workspace(tc.workspace.clone().unwrap_or_else(|| ".".to_string())),
@@ -696,7 +714,10 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("TOOL_TIMEOUT"), "Expected timeout error, got: {err}");
+        assert!(
+            err.contains("TOOL_TIMEOUT"),
+            "Expected timeout error, got: {err}"
+        );
     }
 
     #[tokio::test]

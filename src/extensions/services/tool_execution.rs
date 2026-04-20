@@ -72,7 +72,7 @@ impl Default for ToolExecutionService {
 
 impl ToolExecutionService {
     /// Create a new tool execution service with default timeout
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             default_timeout: Duration::from_secs(120),
@@ -80,7 +80,7 @@ impl ToolExecutionService {
     }
 
     /// Create with custom default timeout
-    #[must_use] 
+    #[must_use]
     pub fn with_timeout(default_timeout: Duration) -> Self {
         Self { default_timeout }
     }
@@ -319,7 +319,7 @@ impl ToolExecutionService {
     ///
     /// # Returns
     /// Filtered schema without reserved parameters
-    #[must_use] 
+    #[must_use]
     pub fn filter_schema_for_llm(&self, schema: &Value, reserved: &ReservedParamsConfig) -> Value {
         use crate::tools::shared::filter_reserved_params;
 
@@ -330,7 +330,7 @@ impl ToolExecutionService {
     /// Get exposed parameters (schema without reserved params)
     ///
     /// Convenience method that filters the schema for LLM visibility.
-    #[must_use] 
+    #[must_use]
     pub fn get_exposed_schema(
         &self,
         full_schema: &Value,
@@ -351,7 +351,7 @@ pub struct ToolExecutionConfig {
 
 impl ToolExecutionConfig {
     /// Create new execution config
-    #[must_use] 
+    #[must_use]
     pub fn new(reserved_params: ReservedParamsConfig, full_schema: Value) -> Self {
         Self {
             reserved_params,
@@ -360,7 +360,7 @@ impl ToolExecutionConfig {
     }
 
     /// Create config with empty reserved params
-    #[must_use] 
+    #[must_use]
     pub fn with_schema(full_schema: Value) -> Self {
         Self {
             reserved_params: ReservedParamsConfig::new(),
@@ -369,7 +369,7 @@ impl ToolExecutionConfig {
     }
 
     /// Add reserved params to config (builder pattern)
-    #[must_use] 
+    #[must_use]
     pub fn with_reserved_params(mut self, reserved: ReservedParamsConfig) -> Self {
         self.reserved_params = reserved;
         self

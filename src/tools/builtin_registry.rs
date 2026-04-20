@@ -161,7 +161,7 @@ impl BuiltinRegistry {
     }
 
     /// Get list of all built-in tool names
-    #[must_use] 
+    #[must_use]
     pub fn all_tool_names() -> Vec<&'static str> {
         vec![
             "shell",
@@ -178,7 +178,7 @@ impl BuiltinRegistry {
     }
 
     /// Check if a tool name is a built-in tool
-    #[must_use] 
+    #[must_use]
     pub fn is_builtin(name: &str) -> bool {
         let name_lower = name.to_lowercase();
         Self::all_tool_names()

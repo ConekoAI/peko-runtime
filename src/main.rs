@@ -102,9 +102,8 @@ async fn run_extension_migration(_paths: &GlobalPaths) -> anyhow::Result<()> {
     use pekobot::extensions::manager::ExtensionManager;
     use pekobot::extensions::migration::migrate_legacy_extensions;
 
-    let core = global_core().ok_or_else(|| {
-        anyhow::anyhow!("Global ExtensionCore not initialized before migration")
-    })?;
+    let core = global_core()
+        .ok_or_else(|| anyhow::anyhow!("Global ExtensionCore not initialized before migration"))?;
     tracing::debug!("Using global ExtensionCore for migration");
 
     // Create extension manager with the global core

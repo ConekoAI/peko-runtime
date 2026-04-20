@@ -149,15 +149,14 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             };
 
             // Confirm deletion
-            if !force
-                && !confirm_team_deletion(&name, team_info.agent_count)? {
-                    if json {
-                        println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
-                    } else {
-                        println!("Cancelled.");
-                    }
-                    return Ok(());
+            if !force && !confirm_team_deletion(&name, team_info.agent_count)? {
+                if json {
+                    println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
+                } else {
+                    println!("Cancelled.");
                 }
+                return Ok(());
+            }
 
             let result = service.delete_team(&name).await?;
             render_team_deleted(&result, json);
@@ -178,15 +177,14 @@ pub async fn handle_team(cmd: TeamCommands, paths: &GlobalPaths, json: bool) -> 
             };
 
             // Confirm move
-            if !force
-                && !confirm_team_move(&old_name, &new_name, team_info.agent_count)? {
-                    if json {
-                        println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
-                    } else {
-                        println!("Cancelled.");
-                    }
-                    return Ok(());
+            if !force && !confirm_team_move(&old_name, &new_name, team_info.agent_count)? {
+                if json {
+                    println!("{{\"success\": false, \"reason\": \"cancelled\"}}");
+                } else {
+                    println!("Cancelled.");
                 }
+                return Ok(());
+            }
 
             let result = service.move_team(&old_name, &new_name).await?;
             render_team_moved(&result, json);
@@ -438,9 +436,7 @@ fn render_team_imported(result: &crate::common::types::team::TeamImportResult, j
 fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
     println!("⚠️  This will permanently delete team '{name}'.");
     if agent_count > 0 {
-        println!(
-            "   It contains {agent_count} agent(s) that will also be deleted."
-        );
+        println!("   It contains {agent_count} agent(s) that will also be deleted.");
     }
     println!("   This action cannot be undone.");
     print!("   Continue? [y/N] ");
@@ -453,13 +449,9 @@ fn confirm_team_deletion(name: &str, agent_count: usize) -> Result<bool> {
 }
 
 fn confirm_team_move(old_name: &str, new_name: &str, agent_count: usize) -> Result<bool> {
-    println!(
-        "⚠️  This will rename team '{old_name}' to '{new_name}'."
-    );
+    println!("⚠️  This will rename team '{old_name}' to '{new_name}'.");
     if agent_count > 0 {
-        println!(
-            "   It contains {agent_count} agent(s) that will be moved."
-        );
+        println!("   It contains {agent_count} agent(s) that will be moved.");
     }
     print!("   Continue? [y/N] ");
     std::io::Write::flush(&mut std::io::stdout())?;

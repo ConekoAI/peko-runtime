@@ -46,25 +46,25 @@ impl HookContext {
     }
 
     /// Get the hook point category
-    #[must_use] 
+    #[must_use]
     pub fn category(&self) -> &'static str {
         self.point.category()
     }
 
     /// Get the hook point name
-    #[must_use] 
+    #[must_use]
     pub fn name(&self) -> String {
         self.point.name()
     }
 
     /// Check if input is of a specific type
-    #[must_use] 
+    #[must_use]
     pub fn is_input<T: 'static>(&self) -> bool {
         matches!(&self.input, HookInput::Json(_) if std::any::TypeId::of::<T>() == std::any::TypeId::of::<serde_json::Value>())
     }
 
     /// Get input as prompt build state if applicable
-    #[must_use] 
+    #[must_use]
     pub fn as_prompt_build(&self) -> Option<&crate::extensions::types::PromptBuildState> {
         match &self.input {
             HookInput::PromptBuild(state) => Some(state),
@@ -86,7 +86,7 @@ impl HookContext {
     }
 
     /// Get input as system event if applicable
-    #[must_use] 
+    #[must_use]
     pub fn as_system_event(&self) -> Option<&crate::hooks::SystemEvent> {
         match &self.input {
             HookInput::SystemEvent(event) => Some(event),
@@ -95,7 +95,7 @@ impl HookContext {
     }
 
     /// Get input as session state if applicable
-    #[must_use] 
+    #[must_use]
     pub fn as_session_state(&self) -> Option<&crate::extensions::types::SessionSnapshot> {
         match &self.input {
             HookInput::SessionState(state) => Some(state),
@@ -104,7 +104,7 @@ impl HookContext {
     }
 
     /// Get input as message if applicable
-    #[must_use] 
+    #[must_use]
     pub fn as_message(&self) -> Option<&crate::extensions::types::MessageEnvelope> {
         match &self.input {
             HookInput::Message(msg) => Some(msg),
@@ -113,7 +113,7 @@ impl HookContext {
     }
 
     /// Get input as JSON if applicable
-    #[must_use] 
+    #[must_use]
     pub fn as_json(&self) -> Option<&serde_json::Value> {
         match &self.input {
             HookInput::Json(v) => Some(v),
@@ -122,13 +122,13 @@ impl HookContext {
     }
 
     /// Get the raw input
-    #[must_use] 
+    #[must_use]
     pub fn input(&self) -> &HookInput {
         &self.input
     }
 
     /// Get input as task status check if applicable
-    #[must_use] 
+    #[must_use]
     pub fn as_task_status(&self) -> Option<(&str, &str)> {
         match &self.input {
             HookInput::TaskStatus { task_id, tool_name } => Some((task_id, tool_name)),
@@ -137,7 +137,7 @@ impl HookContext {
     }
 
     /// Get input as task cancel request if applicable
-    #[must_use] 
+    #[must_use]
     pub fn as_task_cancel(&self) -> Option<(&str, &str)> {
         match &self.input {
             HookInput::TaskCancel { task_id, tool_name } => Some((task_id, tool_name)),
@@ -148,7 +148,7 @@ impl HookContext {
     /// Get tool context from state if available
     ///
     /// This is used for runtime parameter resolution during tool execution.
-    #[must_use] 
+    #[must_use]
     pub fn as_tool_context(&self) -> Option<&crate::tools::ToolContext> {
         self.state.get::<crate::tools::ToolContext>("tool_context")
     }
@@ -166,7 +166,7 @@ pub struct HookState {
 
 impl HookState {
     /// Create new empty state
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             data: HashMap::new(),
@@ -179,7 +179,7 @@ impl HookState {
     }
 
     /// Get a value from state
-    #[must_use] 
+    #[must_use]
     pub fn get<T: Any + Send + Sync>(&self, key: &str) -> Option<&T> {
         self.data.get(key).and_then(|v| v.downcast_ref::<T>())
     }
@@ -198,7 +198,7 @@ impl HookState {
     }
 
     /// Check if a key exists
-    #[must_use] 
+    #[must_use]
     pub fn contains(&self, key: &str) -> bool {
         self.data.contains_key(key)
     }
@@ -240,7 +240,9 @@ impl ExtensionServices {
 
     /// Create with a custom async execution router (for custom transport)
     #[must_use]
-    pub fn with_async_router(async_router: crate::extensions::services::AsyncExecutionRouter) -> Self {
+    pub fn with_async_router(
+        async_router: crate::extensions::services::AsyncExecutionRouter,
+    ) -> Self {
         Self {
             config: ExtensionConfig::default(),
             telemetry: TelemetryService::new(),
@@ -308,7 +310,7 @@ pub struct ExtensionConfig {
 
 impl ExtensionConfig {
     /// Create default configuration
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             max_hook_duration_ms: 5000, // 5 seconds default
@@ -318,7 +320,7 @@ impl ExtensionConfig {
     }
 
     /// Get a setting for a specific extension
-    #[must_use] 
+    #[must_use]
     pub fn get_extension_setting(
         &self,
         extension_id: &str,
@@ -342,7 +344,7 @@ pub struct TelemetryService {
 
 impl TelemetryService {
     /// Create new telemetry service
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             invocation_counts: std::sync::Mutex::new(HashMap::new()),
@@ -507,7 +509,7 @@ pub struct HookBinding {
 
 impl HookBinding {
     /// Create a new hook binding
-    #[must_use] 
+    #[must_use]
     pub fn new(point: HookPoint, factory: Box<dyn HookHandlerFactory>) -> Self {
         Self {
             point,

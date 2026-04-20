@@ -86,7 +86,7 @@ impl ErrorObject {
     }
 
     /// Method not found (-32601)
-    #[must_use] 
+    #[must_use]
     pub fn method_not_found(method: &str) -> Self {
         Self {
             code: -32601,

@@ -98,7 +98,9 @@ impl Agent {
         // ADR-020: Set tool config on ExtensionCore before registering tools
         // so that permission checks pass during registration
         if let Some(ref tool_config) = self.config.tools {
-            self.extension_core.set_tool_config(tool_config.clone()).await;
+            self.extension_core
+                .set_tool_config(tool_config.clone())
+                .await;
         }
 
         // Load Universal Tools from extensions directory (where `pekobot ext install` puts them)
@@ -321,7 +323,8 @@ impl Agent {
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
-            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
+            let loop_ =
+                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
 
             match loop_.run(prompt, on_event).await {
                 Ok(result) => Ok(result),
@@ -384,7 +387,8 @@ impl Agent {
             let provider_arc = Arc::clone(provider);
             let agent_arc = Arc::new(self.clone_for_loop(provider_arc.clone()));
 
-            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
+            let loop_ =
+                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
 
             match loop_
                 .run_with_resume(prompt, on_event, session, history)
@@ -432,7 +436,8 @@ impl Agent {
             tokio::task::spawn_local(async move {
                 use crate::engine::loop_v4::AgenticLoopV4;
 
-                let loop_ = AgenticLoopV4::new(agent_arc, provider_arc.clone(), extension_core).await;
+                let loop_ =
+                    AgenticLoopV4::new(agent_arc, provider_arc.clone(), extension_core).await;
 
                 let _result = loop_
                     .run(&prompt, move |event| {
@@ -487,7 +492,8 @@ impl Agent {
 
             use crate::engine::loop_v4::AgenticLoopV4;
 
-            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
+            let loop_ =
+                AgenticLoopV4::new(agent_arc, provider_arc, Arc::clone(&self.extension_core)).await;
 
             // Use streaming config with Live delivery mode for real-time output
             let streaming_config = crate::engine::OrchestratorConfig::live();
@@ -934,7 +940,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_creation() {
+        use crate::extensions::core::ExtensionCore;
         use crate::types::provider::{ProviderConfig, ProviderType};
+
+        // Initialize global ExtensionCore for the test
+        let core = Arc::new(ExtensionCore::new());
+        crate::extensions::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent".to_string(),
@@ -955,7 +966,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_has_session_manager() {
+        use crate::extensions::core::ExtensionCore;
         use crate::types::provider::{ProviderConfig, ProviderType};
+
+        // Initialize global ExtensionCore for the test
+        let core = Arc::new(ExtensionCore::new());
+        crate::extensions::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-session".to_string(),
@@ -976,8 +992,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_agent_session_router() {
+        use crate::extensions::core::ExtensionCore;
         use crate::session::types::{ChannelType, Peer};
         use crate::types::provider::{ProviderConfig, ProviderType};
+
+        // Initialize global ExtensionCore for the test
+        let core = Arc::new(ExtensionCore::new());
+        crate::extensions::core::init_global_core(core);
 
         let config = AgentConfig {
             name: "test-agent-router".to_string(),

@@ -175,7 +175,7 @@ impl SubagentExecutor {
     }
 
     /// Set the provider for LLM execution
-    #[must_use] 
+    #[must_use]
     pub fn with_provider(mut self, provider: Arc<crate::providers::Provider>) -> Self {
         self.provider = Some(provider);
         self
@@ -362,7 +362,10 @@ impl SubagentExecutor {
                                 session_manager_clone,
                             ),
                         )
-                        .await { r } else {
+                        .await
+                        {
+                            r
+                        } else {
                             warn!(
                                 "Subagent timed out: run_id={} timeout={}s",
                                 run_id_clone, timeout

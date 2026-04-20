@@ -95,7 +95,7 @@ pub struct GeneralExtensionAdapter;
 
 impl GeneralExtensionAdapter {
     /// Create a new general extension adapter
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -130,11 +130,11 @@ impl GeneralExtensionAdapter {
             // Prompt lifecycle
             "prompt.system_section" => {
                 let section = decl.params.get("section")?.as_str()?.to_string();
-                let priority = decl
-                    .params
-                    .get("priority")
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or(i64::from(GENERAL_HOOK_PRIORITY)) as i32;
+                let priority =
+                    decl.params
+                        .get("priority")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(i64::from(GENERAL_HOOK_PRIORITY)) as i32;
                 Some(HookPoint::PromptSystemSection { section, priority })
             }
             "prompt.pre_process" => Some(HookPoint::PromptPreProcess),
@@ -464,13 +464,15 @@ pub async fn discover_general_extensions(dir: &Path) -> Result<Vec<DiscoveredGen
 /// Extract hook declarations from YAML
 fn extract_hooks_from_yaml(yaml: &serde_yaml::Value) -> Result<Vec<HookDeclaration>> {
     yaml.get("hooks")
-        .and_then(|h| serde_yaml::from_value(h.clone()).ok()).map_or_else(|| Ok(Vec::new()), Ok)
+        .and_then(|h| serde_yaml::from_value(h.clone()).ok())
+        .map_or_else(|| Ok(Vec::new()), Ok)
 }
 
 /// Extract hook declarations from JSON
 fn extract_hooks_from_json(json: &serde_json::Value) -> Result<Vec<HookDeclaration>> {
     json.get("hooks")
-        .and_then(|h| serde_json::from_value(h.clone()).ok()).map_or_else(|| Ok(Vec::new()), Ok)
+        .and_then(|h| serde_json::from_value(h.clone()).ok())
+        .map_or_else(|| Ok(Vec::new()), Ok)
 }
 
 /// Build manifest from JSON (general extension specific)

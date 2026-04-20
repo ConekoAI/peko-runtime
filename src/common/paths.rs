@@ -44,9 +44,12 @@ pub const DEFAULT_TEAM: &str = "default";
 ///
 /// Returns `~/.pekobot` or the current directory's `.pekobot` folder
 /// as a fallback if home directory is not available.
-#[must_use] 
+#[must_use]
 pub fn default_config_dir() -> PathBuf {
-    dirs::home_dir().map_or_else(|| PathBuf::from(".").join(".pekobot"), |d| d.join(".pekobot"))
+    dirs::home_dir().map_or_else(
+        || PathBuf::from(".").join(".pekobot"),
+        |d| d.join(".pekobot"),
+    )
 }
 
 /// Get the default data directory
@@ -62,7 +65,7 @@ pub fn default_data_dir() -> PathBuf {
 /// Get the default cache directory
 ///
 /// Falls back to `{data_dir}/cache` if `cache_dir` is not available.
-#[must_use] 
+#[must_use]
 pub fn default_cache_dir() -> PathBuf {
     dirs::cache_dir().map_or_else(|| default_data_dir().join("cache"), |d| d.join("pekobot"))
 }
@@ -97,13 +100,13 @@ impl Default for PathResolver {
 
 impl PathResolver {
     /// Create a new path resolver with default directories
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a path resolver with custom directories
-    #[must_use] 
+    #[must_use]
     pub fn with_dirs(config_dir: PathBuf, data_dir: PathBuf, cache_dir: PathBuf) -> Self {
         Self {
             config_dir,
@@ -128,19 +131,19 @@ impl PathResolver {
     }
 
     /// Get the config directory
-    #[must_use] 
+    #[must_use]
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
     }
 
     /// Get the data directory
-    #[must_use] 
+    #[must_use]
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
 
     /// Get the cache directory
-    #[must_use] 
+    #[must_use]
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }
@@ -152,7 +155,7 @@ impl PathResolver {
     /// Get the teams configuration directory
     ///
     /// Path: `{config_dir}/teams`
-    #[must_use] 
+    #[must_use]
     pub fn teams_dir(&self) -> PathBuf {
         self.config_dir.join("teams")
     }
@@ -160,7 +163,7 @@ impl PathResolver {
     /// Get a specific team's configuration directory
     ///
     /// Path: `{config_dir}/teams/{team}`
-    #[must_use] 
+    #[must_use]
     pub fn team_dir(&self, team: &str) -> PathBuf {
         self.teams_dir().join(team)
     }
@@ -168,7 +171,7 @@ impl PathResolver {
     /// Get the agents directory for a specific team
     ///
     /// Path: `{config_dir}/teams/{team}/agents`
-    #[must_use] 
+    #[must_use]
     pub fn agents_dir(&self, team: Option<&str>) -> PathBuf {
         let team = team.unwrap_or(DEFAULT_TEAM);
         self.team_dir(team).join("agents")
@@ -177,7 +180,7 @@ impl PathResolver {
     /// Get the path to an agent's configuration file
     ///
     /// Path: `{config_dir}/teams/{team}/agents/{agent}/config.toml`
-    #[must_use] 
+    #[must_use]
     pub fn agent_config(&self, agent: &str, team: Option<&str>) -> PathBuf {
         self.agents_dir(team).join(agent).join("config.toml")
     }
@@ -185,7 +188,7 @@ impl PathResolver {
     /// Get the MCP configuration file path
     ///
     /// Path: `{config_dir}/mcp.toml`
-    #[must_use] 
+    #[must_use]
     pub fn mcp_config(&self) -> PathBuf {
         self.config_dir.join("mcp.toml")
     }
@@ -193,7 +196,7 @@ impl PathResolver {
     /// Get the Universal Tools directory
     ///
     /// Path: `{data_dir}/tools`
-    #[must_use] 
+    #[must_use]
     pub fn universal_tools_dir(&self) -> PathBuf {
         self.data_dir.join("tools")
     }
@@ -201,7 +204,7 @@ impl PathResolver {
     /// Get the Skills directory
     ///
     /// Path: `{data_dir}/skills`
-    #[must_use] 
+    #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
         self.data_dir.join("skills")
     }
@@ -213,7 +216,7 @@ impl PathResolver {
     /// Get the sessions root directory
     ///
     /// Path: `{data_dir}/sessions`
-    #[must_use] 
+    #[must_use]
     pub fn sessions_root(&self) -> PathBuf {
         self.data_dir.join("sessions")
     }
@@ -221,7 +224,7 @@ impl PathResolver {
     /// Get the sessions directory for a specific team
     ///
     /// Path: `{data_dir}/sessions/{team}`
-    #[must_use] 
+    #[must_use]
     pub fn team_sessions_dir(&self, team: &str) -> PathBuf {
         self.sessions_root().join(team)
     }
@@ -229,7 +232,7 @@ impl PathResolver {
     /// Get the path to an agent's sessions directory
     ///
     /// Path: `{data_dir}/sessions/{team}/{agent}`
-    #[must_use] 
+    #[must_use]
     pub fn agent_sessions_dir(&self, agent: &str, team: Option<&str>) -> PathBuf {
         let team = team.unwrap_or(DEFAULT_TEAM);
         self.team_sessions_dir(team).join(agent)
@@ -238,7 +241,7 @@ impl PathResolver {
     /// Get the path to an agent's session file
     ///
     /// Path: `{data_dir}/sessions/{team}/{agent}/{session_id}.jsonl`
-    #[must_use] 
+    #[must_use]
     pub fn agent_session_file(&self, agent: &str, team: Option<&str>, session_id: &str) -> PathBuf {
         self.agent_sessions_dir(agent, team)
             .join(format!("{session_id}.jsonl"))
@@ -247,7 +250,7 @@ impl PathResolver {
     /// Get the workspaces root directory
     ///
     /// Path: `{data_dir}/workspaces`
-    #[must_use] 
+    #[must_use]
     pub fn workspaces_root(&self) -> PathBuf {
         self.data_dir.join("workspaces")
     }
@@ -255,7 +258,7 @@ impl PathResolver {
     /// Get the workspace directory for a specific team
     ///
     /// Path: `{data_dir}/workspaces/{team}`
-    #[must_use] 
+    #[must_use]
     pub fn team_workspaces_dir(&self, team: &str) -> PathBuf {
         self.workspaces_root().join(team)
     }
@@ -263,7 +266,7 @@ impl PathResolver {
     /// Get the path to an agent's workspace directory
     ///
     /// Path: `{data_dir}/workspaces/{team}/{agent}`
-    #[must_use] 
+    #[must_use]
     pub fn agent_workspace(&self, agent: &str, team: Option<&str>) -> PathBuf {
         let team = team.unwrap_or(DEFAULT_TEAM);
         self.team_workspaces_dir(team).join(agent)
@@ -273,7 +276,7 @@ impl PathResolver {
     ///
     /// Same as `agent_workspace` but requires an explicit team.
     /// Path: `{data_dir}/workspaces/{team}/{agent}`
-    #[must_use] 
+    #[must_use]
     pub fn agent_workspace_with_team(&self, agent: &str, team: &str) -> PathBuf {
         self.team_workspaces_dir(team).join(agent)
     }
@@ -281,7 +284,7 @@ impl PathResolver {
     /// Get the tools directory
     ///
     /// Path: `{data_dir}/tools`
-    #[must_use] 
+    #[must_use]
     pub fn tools_dir(&self) -> PathBuf {
         self.data_dir.join("tools")
     }

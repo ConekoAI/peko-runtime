@@ -185,13 +185,13 @@ impl StreamBuffer {
     }
 
     /// Get current buffer size in characters
-    #[must_use] 
+    #[must_use]
     pub fn buffer_len(&self) -> usize {
         self.text_buffer.len()
     }
 
     /// Check if buffer is empty
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.text_buffer.is_empty() && self.pending.is_empty()
     }

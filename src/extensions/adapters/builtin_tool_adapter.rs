@@ -108,36 +108,48 @@ impl HookHandler for BuiltinExecuteHandler {
         let exec_config =
             crate::extensions::services::ToolExecutionConfig::with_schema(self.tool.parameters());
 
-        ctx.services.async_router()
+        ctx.services
+            .async_router()
             .execute_from_hook(
                 &ctx,
                 &tool_name,
                 &exec_config,
-                Some(move |params: &mut serde_json::Value, workspace: Option<&str>| {
-                    // Inject agent workspace into tool parameters for filesystem tools.
-                    if let Some(ws) = workspace {
-                        if let Some(obj) = params.as_object_mut() {
-                            match tool_name_for_preproc.as_str() {
-                                "glob" => {
-                                    if !obj.contains_key("directory") {
-                                        obj.insert("directory".to_string(), serde_json::Value::String(ws.to_string()));
+                Some(
+                    move |params: &mut serde_json::Value, workspace: Option<&str>| {
+                        // Inject agent workspace into tool parameters for filesystem tools.
+                        if let Some(ws) = workspace {
+                            if let Some(obj) = params.as_object_mut() {
+                                match tool_name_for_preproc.as_str() {
+                                    "glob" => {
+                                        if !obj.contains_key("directory") {
+                                            obj.insert(
+                                                "directory".to_string(),
+                                                serde_json::Value::String(ws.to_string()),
+                                            );
+                                        }
                                     }
-                                }
-                                "grep" => {
-                                    if !obj.contains_key("path") {
-                                        obj.insert("path".to_string(), serde_json::Value::String(ws.to_string()));
+                                    "grep" => {
+                                        if !obj.contains_key("path") {
+                                            obj.insert(
+                                                "path".to_string(),
+                                                serde_json::Value::String(ws.to_string()),
+                                            );
+                                        }
                                     }
-                                }
-                                "shell" => {
-                                    if !obj.contains_key("cwd") {
-                                        obj.insert("cwd".to_string(), serde_json::Value::String(ws.to_string()));
+                                    "shell" => {
+                                        if !obj.contains_key("cwd") {
+                                            obj.insert(
+                                                "cwd".to_string(),
+                                                serde_json::Value::String(ws.to_string()),
+                                            );
+                                        }
                                     }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
                         }
-                    }
-                }),
+                    },
+                ),
                 move |p| {
                     let tool = tool.clone();
                     async move { tool.execute(p).await }

@@ -12,8 +12,9 @@ use serde_json::Value;
 
 /// Boxed async execution closure type
 pub type BoxedExecutionFn = Box<
-    dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<AsyncTaskResult>> + Send>>
-        + Send,
+    dyn FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<AsyncTaskResult>> + Send>,
+        > + Send,
 >;
 
 /// Transport abstraction for async task execution
@@ -125,7 +126,14 @@ impl AsyncTaskTransport for LocalAsyncTransport {
         execution_fn: BoxedExecutionFn,
     ) -> Result<AsyncTaskReceipt> {
         self.executor
-            .execute_boxed(task_id, tool_name, params, session_key, config, execution_fn)
+            .execute_boxed(
+                task_id,
+                tool_name,
+                params,
+                session_key,
+                config,
+                execution_fn,
+            )
             .await
     }
 
@@ -221,7 +229,10 @@ impl AsyncTaskTransport for DaemonIpcTransport {
             }
         }
 
-        anyhow::bail!("Stream closed without cancel confirmation for task {}", task_id)
+        anyhow::bail!(
+            "Stream closed without cancel confirmation for task {}",
+            task_id
+        )
     }
 }
 
@@ -330,7 +341,9 @@ pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTr
 
 /// Create a local transport (for daemon mode where HTTP is not needed)
 pub fn create_local_transport() -> std::sync::Arc<dyn AsyncTaskTransport> {
-    std::sync::Arc::new(LocalAsyncTransport::from_executor(UnifiedAsyncExecutor::new()))
+    std::sync::Arc::new(LocalAsyncTransport::from_executor(
+        UnifiedAsyncExecutor::new(),
+    ))
 }
 
 #[cfg(test)]
@@ -343,5 +356,4 @@ mod tests {
         let transport = LocalAsyncTransport::from_executor(executor);
         let _ = transport.executor();
     }
-
 }

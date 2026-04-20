@@ -57,14 +57,14 @@ impl CliChannel {
     }
 
     /// Set the operating mode (blocking or streaming)
-    #[must_use] 
+    #[must_use]
     pub fn with_mode(mut self, mode: CliMode) -> Self {
         self.mode = mode;
         self
     }
 
     /// Get the current mode
-    #[must_use] 
+    #[must_use]
     pub fn mode(&self) -> CliMode {
         self.mode
     }

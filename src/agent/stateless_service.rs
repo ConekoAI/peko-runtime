@@ -64,14 +64,14 @@ impl ExecutionRequest {
     }
 
     /// Set execution context
-    #[must_use] 
+    #[must_use]
     pub fn with_context(mut self, context: ExecutionContext) -> Self {
         self.context = Some(context);
         self
     }
 
     /// Set timeout
-    #[must_use] 
+    #[must_use]
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
         self
@@ -142,21 +142,21 @@ impl MessageRequest {
     }
 
     /// Set session ID from Option (preserves None)
-    #[must_use] 
+    #[must_use]
     pub fn with_session_opt(mut self, session_id: Option<String>) -> Self {
         self.session_id = session_id;
         self
     }
 
     /// Set new session flag
-    #[must_use] 
+    #[must_use]
     pub fn with_new_session(mut self, new: bool) -> Self {
         self.new_session = new;
         self
     }
 
     /// Set timeout
-    #[must_use] 
+    #[must_use]
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
         self
@@ -292,15 +292,26 @@ impl StatelessAgentService {
     }
 
     /// Load agent config fresh, bypassing any stale cache
-    async fn load_config_fresh(&self, agent_name: &str) -> Result<crate::common::services::AgentConfigEntry> {
+    async fn load_config_fresh(
+        &self,
+        agent_name: &str,
+    ) -> Result<crate::common::services::AgentConfigEntry> {
         // Determine team first (may use cache, but we'll invalidate before loading config)
-        let team = self.get_team(agent_name).await?.unwrap_or_else(|| "default".to_string());
+        let team = self
+            .get_team(agent_name)
+            .await?
+            .unwrap_or_else(|| "default".to_string());
 
         // Invalidate cache to ensure we read the latest config from disk
         // This is critical for mid-session tool enable/disable changes made by CLI
-        self.config_service.invalidate_cache(agent_name, &team).await;
+        self.config_service
+            .invalidate_cache(agent_name, &team)
+            .await;
 
-        let entry = self.config_service.get(agent_name, Some(&team)).await?
+        let entry = self
+            .config_service
+            .get(agent_name, Some(&team))
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {}", agent_name))?;
 
         Ok(entry)
@@ -513,21 +524,22 @@ impl StatelessAgentService {
         );
 
         // Try to open existing session, create if not exists
-        let session = if let Some(handle) = session_manager.open_session(&request.session_id).await? {
-            debug!("Opened existing session '{}'", request.session_id);
-            handle.base().clone()
-        } else {
-            debug!("Session '{}' not found, creating new", request.session_id);
-            let peer = Peer::User(request.user.clone());
-            let options = crate::session::SessionCreateOptions::new()
-                .with_trigger("api")
-                .with_session_id(&request.session_id);
-            let handle = session_manager
-                .create_session(&request.agent_name, &peer, options)
-                .await?;
+        let session =
+            if let Some(handle) = session_manager.open_session(&request.session_id).await? {
+                debug!("Opened existing session '{}'", request.session_id);
+                handle.base().clone()
+            } else {
+                debug!("Session '{}' not found, creating new", request.session_id);
+                let peer = Peer::User(request.user.clone());
+                let options = crate::session::SessionCreateOptions::new()
+                    .with_trigger("api")
+                    .with_session_id(&request.session_id);
+                let handle = session_manager
+                    .create_session(&request.agent_name, &peer, options)
+                    .await?;
 
-            handle.base().clone()
-        };
+                handle.base().clone()
+            };
 
         // 3. Load session history from the opened session
         let history = self.load_session_history(session.clone()).await?;
@@ -655,27 +667,28 @@ impl StatelessAgentService {
             &request.user,
         );
 
-        let session = if let Some(handle) = session_manager.open_session(&request.session_id).await? {
-            debug!(
-                "Opened existing session '{}' for streaming",
-                request.session_id
-            );
-            handle.base().clone()
-        } else {
-            debug!(
-                "Session '{}' not found, creating new for streaming",
-                request.session_id
-            );
-            let peer = Peer::User(request.user.clone());
-            let options = crate::session::SessionCreateOptions::new()
-                .with_trigger("api")
-                .with_session_id(&request.session_id);
-            let handle = session_manager
-                .create_session(&request.agent_name, &peer, options)
-                .await?;
+        let session =
+            if let Some(handle) = session_manager.open_session(&request.session_id).await? {
+                debug!(
+                    "Opened existing session '{}' for streaming",
+                    request.session_id
+                );
+                handle.base().clone()
+            } else {
+                debug!(
+                    "Session '{}' not found, creating new for streaming",
+                    request.session_id
+                );
+                let peer = Peer::User(request.user.clone());
+                let options = crate::session::SessionCreateOptions::new()
+                    .with_trigger("api")
+                    .with_session_id(&request.session_id);
+                let handle = session_manager
+                    .create_session(&request.agent_name, &peer, options)
+                    .await?;
 
-            handle.base().clone()
-        };
+                handle.base().clone()
+            };
 
         // Delegate to the internal method (which loads history itself)
         self.execute_streaming_with_session(request, session).await
@@ -713,7 +726,10 @@ impl StatelessAgentService {
         // This ensures session writes complete before completion signal
         tokio::spawn(async move {
             let on_event = move |event: AgenticEvent| {
-                tracing::info!("EventStream: sending event: {:?}", std::mem::discriminant(&event));
+                tracing::info!(
+                    "EventStream: sending event: {:?}",
+                    std::mem::discriminant(&event)
+                );
                 let _ = event_tx.try_send(event);
             };
 

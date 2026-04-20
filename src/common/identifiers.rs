@@ -229,7 +229,7 @@ pub enum ValidationError {
 }
 
 /// Check if a string looks like a team/agent identifier (contains '/')
-#[must_use] 
+#[must_use]
 pub fn is_qualified_identifier(input: &str) -> bool {
     input.trim().contains('/') && input.trim().matches('/').count() == 1
 }

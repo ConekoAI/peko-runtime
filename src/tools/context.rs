@@ -408,7 +408,7 @@ impl<T: ToolWithContext> AbortableTool<T> {
     }
 
     /// Get the abort signal for this tool
-    #[must_use] 
+    #[must_use]
     pub fn abort_signal(&self) -> AbortSignal {
         self.abort_signal.clone()
     }

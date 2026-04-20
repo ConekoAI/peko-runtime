@@ -134,7 +134,7 @@ impl SseParser {
 
     /// Parse a single SSE event from a data string
     /// Used by adapters to convert SSE data to provider-specific events
-    #[must_use] 
+    #[must_use]
     pub fn parse_event(data: &str) -> Option<SseEvent> {
         if data.is_empty() {
             None

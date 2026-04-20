@@ -40,7 +40,7 @@ impl ExtensionAsyncTool {
     }
 
     /// Get the underlying adapter
-    #[must_use] 
+    #[must_use]
     pub fn adapter(&self) -> &ExtensionAsyncAdapter {
         &self.adapter
     }
@@ -135,7 +135,7 @@ pub struct AsyncExtensionToolFactory {
 
 impl AsyncExtensionToolFactory {
     /// Create a new factory
-    #[must_use] 
+    #[must_use]
     pub fn new(adapter: ExtensionAsyncAdapter) -> Self {
         Self { adapter }
     }
@@ -168,7 +168,7 @@ pub struct AsyncToolRegistry {
 
 impl AsyncToolRegistry {
     /// Create a new empty registry
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tools: std::sync::RwLock::new(std::collections::HashMap::new()),

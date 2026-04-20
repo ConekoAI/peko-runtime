@@ -71,21 +71,21 @@ impl ImageManifest {
     }
 
     /// Set the base image
-    #[must_use] 
+    #[must_use]
     pub fn with_base(mut self, base: BaseInfo) -> Self {
         self.base = Some(base);
         self
     }
 
     /// Set capability dependencies
-    #[must_use] 
+    #[must_use]
     pub fn with_capabilities(mut self, caps: CapabilityDeps) -> Self {
         self.capabilities = Some(caps);
         self
     }
 
     /// Calculate total size of all layers
-    #[must_use] 
+    #[must_use]
     pub fn total_size_bytes(&self) -> u64 {
         self.layers.iter().map(|l| l.size_bytes).sum()
     }
@@ -102,7 +102,7 @@ impl ImageManifest {
     }
 
     /// Get layer by type
-    #[must_use] 
+    #[must_use]
     pub fn get_layer(&self, layer_type: LayerType) -> Option<&Layer> {
         self.layers.iter().find(|l| l.layer_type == layer_type)
     }
@@ -145,14 +145,14 @@ impl Layer {
     }
 
     /// Set multiple paths
-    #[must_use] 
+    #[must_use]
     pub fn with_paths(mut self, paths: Vec<String>) -> Self {
         self.paths = Some(paths);
         self
     }
 
     /// Get all paths as a Vec
-    #[must_use] 
+    #[must_use]
     pub fn get_paths(&self) -> Vec<&str> {
         if let Some(ref p) = self.path {
             vec![p.as_str()]
@@ -186,7 +186,7 @@ pub enum LayerType {
 
 impl LayerType {
     /// Get the directory name for this layer type (if applicable)
-    #[must_use] 
+    #[must_use]
     pub fn directory(&self) -> Option<&'static str> {
         match self {
             LayerType::Tools => Some("tools"),
@@ -198,7 +198,7 @@ impl LayerType {
     }
 
     /// Get the file name for this layer type (if single file)
-    #[must_use] 
+    #[must_use]
     pub fn filename(&self) -> Option<&'static str> {
         match self {
             LayerType::Config => Some("config.toml"),
@@ -243,27 +243,27 @@ pub struct CapabilityDeps {
 
 impl CapabilityDeps {
     /// Create empty capability deps
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Add tools
-    #[must_use] 
+    #[must_use]
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.tools = Some(tools);
         self
     }
 
     /// Add skills
-    #[must_use] 
+    #[must_use]
     pub fn with_skills(mut self, skills: Vec<String>) -> Self {
         self.skills = Some(skills);
         self
     }
 
     /// Add mcps
-    #[must_use] 
+    #[must_use]
     pub fn with_mcps(mut self, mcps: Vec<String>) -> Self {
         self.mcps = Some(mcps);
         self
@@ -307,7 +307,7 @@ impl ImageDigest {
     }
 
     /// Create from raw bytes (computes the hash)
-    #[must_use] 
+    #[must_use]
     pub fn from_bytes(data: &[u8]) -> Self {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -317,19 +317,19 @@ impl ImageDigest {
     }
 
     /// Get the full digest string (sha256:...)
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.digest
     }
 
     /// Get just the hex part (without sha256: prefix)
-    #[must_use] 
+    #[must_use]
     pub fn hex(&self) -> &str {
         &self.digest[7..]
     }
 
     /// Get the directory name for storage (sha256-abc123...)
-    #[must_use] 
+    #[must_use]
     pub fn dir_name(&self) -> String {
         self.digest.replace(':', "-")
     }
@@ -361,7 +361,7 @@ impl<'de> Deserialize<'de> for ImageDigest {
 }
 
 /// Compute SHA-256 digest of data
-#[must_use] 
+#[must_use]
 pub fn compute_digest(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();

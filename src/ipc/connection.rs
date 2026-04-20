@@ -39,10 +39,7 @@ use super::{default_pid_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DE
 pub enum ConnectionHandle {
     /// Unix domain datagram socket (Unix only)
     #[cfg(unix)]
-    Unix {
-        socket: UnixDatagram,
-        path: PathBuf,
-    },
+    Unix { socket: UnixDatagram, path: PathBuf },
     /// UDP socket (Windows fallback, or Unix opt-in)
     Udp {
         socket: Arc<UdpSocket>,
@@ -75,12 +72,8 @@ impl ConnectionHandle {
     pub async fn recv(&self, buf: &mut [u8]) -> anyhow::Result<usize> {
         let len = match self {
             #[cfg(unix)]
-            Self::Unix { socket, .. } => {
-                socket.recv(buf).await?
-            }
-            Self::Udp { socket, .. } => {
-                socket.recv(buf).await?
-            }
+            Self::Unix { socket, .. } => socket.recv(buf).await?,
+            Self::Udp { socket, .. } => socket.recv(buf).await?,
         };
         Ok(len)
     }
@@ -108,8 +101,11 @@ impl ConnectionHandle {
                 // Use a unique temp file per clone to avoid races and leaks.
                 // Include a random suffix so concurrent clones don't collide.
                 let rnd: u32 = std::process::id().wrapping_add(rand::random());
-                let tmp_path = std::env::temp_dir()
-                    .join(format!("pekobot_cli_{}_{}.sock", std::process::id(), rnd));
+                let tmp_path = std::env::temp_dir().join(format!(
+                    "pekobot_cli_{}_{}.sock",
+                    std::process::id(),
+                    rnd
+                ));
                 let socket = UnixDatagram::bind(&tmp_path)?;
                 Ok(Self::Unix {
                     socket,
@@ -187,7 +183,9 @@ impl ConnectionManager {
         {
             let default_sock = default_socket_path();
             debug!("Trying default Unix socket: {}", default_sock.display());
-            if let Ok(handle) = Self::connect_unix_with_timeout(&default_sock.to_string_lossy(), ping_timeout).await {
+            if let Ok(handle) =
+                Self::connect_unix_with_timeout(&default_sock.to_string_lossy(), ping_timeout).await
+            {
                 return Ok(handle);
             }
         }
@@ -212,14 +210,17 @@ impl ConnectionManager {
     }
 
     #[cfg(unix)]
-    async fn connect_unix_with_timeout(path: &str, timeout: Duration) -> anyhow::Result<ConnectionHandle> {
+    async fn connect_unix_with_timeout(
+        path: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<ConnectionHandle> {
         let path_buf = PathBuf::from(path);
         if !path_buf.exists() {
             anyhow::bail!("Unix socket does not exist: {}", path);
         }
 
-        let tmp_path = std::env::temp_dir()
-            .join(format!("pekobot_cli_{}.sock", std::process::id()));
+        let tmp_path =
+            std::env::temp_dir().join(format!("pekobot_cli_{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&tmp_path);
         let socket = UnixDatagram::bind(&tmp_path)
             .map_err(|e| anyhow::anyhow!("Failed to bind Unix socket: {e}"))?;
@@ -255,7 +256,10 @@ impl ConnectionManager {
         Self::connect_udp_with_timeout(addr, Duration::from_secs(2)).await
     }
 
-    async fn connect_udp_with_timeout(addr: &str, timeout: Duration) -> anyhow::Result<ConnectionHandle> {
+    async fn connect_udp_with_timeout(
+        addr: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<ConnectionHandle> {
         let socket = UdpSocket::bind("127.0.0.1:0")
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind UDP socket: {e}"))?;
@@ -282,7 +286,6 @@ impl ConnectionManager {
             addr: addr.to_string(),
         })
     }
-
 }
 
 /// Stub for non-Unix platforms
@@ -294,7 +297,10 @@ impl ConnectionManager {
     }
 
     #[allow(dead_code)]
-    async fn connect_unix_with_timeout(_path: &str, _timeout: Duration) -> anyhow::Result<ConnectionHandle> {
+    async fn connect_unix_with_timeout(
+        _path: &str,
+        _timeout: Duration,
+    ) -> anyhow::Result<ConnectionHandle> {
         anyhow::bail!("Unix sockets not supported on this platform")
     }
 }
@@ -302,6 +308,7 @@ impl ConnectionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::default_socket_path;
 
     #[test]
     fn test_default_paths() {

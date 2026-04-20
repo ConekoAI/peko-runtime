@@ -37,7 +37,7 @@ pub struct ConfigIo;
 
 impl ConfigIo {
     /// Create a new `ConfigIo` instance
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -124,7 +124,7 @@ pub struct ApiKeyResolver {
 
 impl ApiKeyResolver {
     /// Create a new `ApiKeyResolver`
-    #[must_use] 
+    #[must_use]
     pub fn new(config_dir: PathBuf) -> Self {
         Self { config_dir }
     }

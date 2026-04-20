@@ -3,7 +3,7 @@
 //! Provides dot-notation get/set operations on `AgentConfig` via JSON intermediate
 //! representation, enabling generic CLI commands like:
 //!   pekobot agent config get my-agent tools.enabled
-//!   pekobot agent config set my-agent tools.enabled '["`shell","read_file`"]'
+//!   pekobot agent config set my-agent tools.enabled '["shell","read_file"]'
 
 use crate::types::agent::AgentConfig;
 use anyhow::{Context, Result};
@@ -130,8 +130,11 @@ mod tests {
     fn test_get_array() {
         let config = AgentConfig::default();
         let value = get_config_value(&config, "tools.enabled").unwrap();
-        // Default whitelist is empty (secure-by-default)
-        assert_eq!(value, serde_json::json!([]));
+        // Default whitelist enables common built-in tools
+        assert!(value.is_array());
+        let arr = value.as_array().unwrap();
+        assert!(!arr.is_empty());
+        assert!(arr.contains(&serde_json::json!("shell")));
     }
 
     #[test]

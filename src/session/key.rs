@@ -478,8 +478,6 @@ mod tests {
 
     #[test]
     fn test_parse_session_key_v2_base() {
-        
-
         let key = "agent:testagent:peer:user:alice";
         let parsed = parse_session_key_v2(key).unwrap();
 

@@ -55,10 +55,7 @@ pub enum RequestPacket {
 
     /// Cancel an async task
     #[serde(rename = "async_cancel")]
-    AsyncCancel {
-        request_id: u64,
-        task_id: String,
-    },
+    AsyncCancel { request_id: u64, task_id: String },
 
     /// Health check / status ping
     #[serde(rename = "ping")]
@@ -137,10 +134,7 @@ pub enum ResponsePacket {
 
     /// Error response
     #[serde(rename = "error")]
-    Error {
-        request_id: u64,
-        message: String,
-    },
+    Error { request_id: u64, message: String },
 
     /// Ping response
     #[serde(rename = "pong")]

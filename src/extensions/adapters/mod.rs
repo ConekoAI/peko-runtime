@@ -240,7 +240,7 @@ fn parse_yaml_frontmatter_markdown(
 pub mod parsing {
     use anyhow::{Context, Result};
     use serde::de::DeserializeOwned;
-    
+
     use std::path::{Path, PathBuf};
 
     /// Parse YAML frontmatter from markdown content
@@ -382,7 +382,7 @@ pub mod parsing {
     /// * `yaml` - The YAML value object
     /// * `field` - Field name to extract
     /// * `default` - Default value if field is missing
-    #[must_use] 
+    #[must_use]
     pub fn optional_string_field(yaml: &serde_yaml::Value, field: &str, default: &str) -> String {
         yaml.get(field)
             .and_then(|v| v.as_str())
@@ -590,7 +590,7 @@ pub mod parsing {
     }
 
     /// Check if a directory contains a file
-    #[must_use] 
+    #[must_use]
     pub fn has_file(dir: &Path, filename: &str) -> bool {
         dir.join(filename).exists()
     }
@@ -660,7 +660,7 @@ pub mod parsing {
     /// Synchronous version of `find_executable`
     ///
     /// Used in contexts where async is not available (e.g., `parse_manifest` trait method).
-    #[must_use] 
+    #[must_use]
     pub fn find_executable_sync(tool_path: &Path, tool_name: &str) -> Option<PathBuf> {
         // Try common patterns first
         let candidates = [
@@ -729,7 +729,7 @@ pub enum ManifestFormat {
 
 impl ManifestFormat {
     /// Detect if a path contains a manifest of this format
-    #[must_use] 
+    #[must_use]
     pub fn detect(&self, path: &std::path::Path) -> bool {
         match self {
             Self::YamlFrontmatterMarkdown { file_name, .. } => path.join(file_name).exists(),
@@ -740,7 +740,7 @@ impl ManifestFormat {
     }
 
     /// Get the manifest file path
-    #[must_use] 
+    #[must_use]
     pub fn manifest_path(&self, base_path: &std::path::Path) -> Option<std::path::PathBuf> {
         match self {
             Self::YamlFrontmatterMarkdown { file_name, .. }
@@ -767,7 +767,7 @@ pub enum ExtensionState {
 
 impl ExtensionState {
     /// Check if state is empty
-    #[must_use] 
+    #[must_use]
     pub fn is_unit(&self) -> bool {
         matches!(self, Self::Unit)
     }
@@ -789,7 +789,7 @@ pub struct BuiltInAdapters;
 
 impl BuiltInAdapters {
     /// Create a new built-in adapter provider
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -801,7 +801,7 @@ impl BuiltInAdapters {
     /// - `UniversalToolAdapter`: For universal tool protocol extensions
     /// - `McpAdapter`: For MCP server extensions
     /// - `GatewayAdapter`: For gateway plugin extensions (includes I/O channels)
-    #[must_use] 
+    #[must_use]
     pub fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>> {
         vec![
             Box::new(SkillAdapter::new()),

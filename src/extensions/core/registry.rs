@@ -125,7 +125,7 @@ pub struct ExtensionCore {
 
 impl ExtensionCore {
     /// Create a new Extension Core
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             hooks: RwLock::new(HashMap::new()),
@@ -209,11 +209,7 @@ impl ExtensionCore {
 
             // Sort by priority (higher first)
             let hooks = self.hooks.read().await;
-            entry.sort_by_key(|id| {
-                hooks
-                    .get(id)
-                    .map_or(0, |h| -h.priority)
-            });
+            entry.sort_by_key(|id| hooks.get(id).map_or(0, |h| -h.priority));
         }
 
         debug!(
@@ -926,9 +922,7 @@ mod tests {
 
         match result {
             HookResult::PassThrough => (), // Expected when disabled
-            _ => panic!(
-                "Expected PassThrough when globally disabled, got {result:?}"
-            ),
+            _ => panic!("Expected PassThrough when globally disabled, got {result:?}"),
         }
     }
 

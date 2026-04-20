@@ -204,14 +204,16 @@ impl OrchestrationConfig {
     /// Validate configuration
     pub fn validate(&self) -> anyhow::Result<()> {
         // Basic validation - ensure ports don't conflict
-        if self.webhook.enabled && self.external_ingress.enabled
-            && self.webhook.port == self.external_ingress.port {
-                anyhow::bail!(
-                    "Webhook port ({}) conflicts with external ingress port ({})",
-                    self.webhook.port,
-                    self.external_ingress.port
-                );
-            }
+        if self.webhook.enabled
+            && self.external_ingress.enabled
+            && self.webhook.port == self.external_ingress.port
+        {
+            anyhow::bail!(
+                "Webhook port ({}) conflicts with external ingress port ({})",
+                self.webhook.port,
+                self.external_ingress.port
+            );
+        }
         Ok(())
     }
 }

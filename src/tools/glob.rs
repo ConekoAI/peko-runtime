@@ -122,7 +122,8 @@ impl GlobTool {
                 })
                 .unwrap_or_else(|| PathBuf::from("."));
             let file_name = pattern_path
-                .file_name().map_or_else(|| "*".to_string(), |s| s.to_string_lossy().to_string());
+                .file_name()
+                .map_or_else(|| "*".to_string(), |s| s.to_string_lossy().to_string());
             (base_dir.join(parent), file_name)
         };
 

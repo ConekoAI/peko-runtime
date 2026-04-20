@@ -179,7 +179,7 @@ impl ToolFactoryConfig {
     ///
     /// Use this for restricted environments where only basic file reading
     /// and shell operations are needed.
-    #[must_use] 
+    #[must_use]
     pub fn minimal(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
@@ -197,7 +197,7 @@ impl ToolFactoryConfig {
     ///
     /// Use this for code editing tasks where targeted file modifications
     /// are preferred over full file rewrites.
-    #[must_use] 
+    #[must_use]
     pub fn coding(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
@@ -212,7 +212,7 @@ impl ToolFactoryConfig {
     /// Create a full configuration (all built-in tools)
     ///
     /// This enables all built-in tools except MCP.
-    #[must_use] 
+    #[must_use]
     pub fn full(workspace_dir: PathBuf) -> Self {
         Self {
             workspace_dir,
@@ -225,7 +225,7 @@ impl ToolFactoryConfig {
 
 impl McpFactoryConfig {
     /// Create a disabled MCP configuration
-    #[must_use] 
+    #[must_use]
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -400,7 +400,6 @@ impl ToolFactory {
             },
         }
     }
-
 }
 
 #[cfg(test)]

@@ -37,7 +37,7 @@ impl std::fmt::Debug for ToolContextAdapter<'_> {
 }
 
 impl<'a> ToolContextAdapter<'a> {
-    #[must_use] 
+    #[must_use]
     pub fn new(ctx: &'a crate::tools::ToolContext) -> Self {
         Self { ctx }
     }
@@ -80,7 +80,7 @@ impl std::fmt::Debug for ExecutionContextAdapter {
 }
 
 impl ExecutionContextAdapter {
-    #[must_use] 
+    #[must_use]
     pub fn new(ctx: crate::tools::universal::protocol::ExecutionContext) -> Self {
         Self { ctx }
     }
@@ -123,21 +123,11 @@ impl ContextResolver {
     /// - `Value::Null` if the field is not set or unknown
     pub fn resolve_field(source: &dyn ContextSource, field: &str) -> Value {
         match field {
-            "session_id" => source
-                .get_session_id()
-                .map_or(Value::Null, Value::String),
-            "agent_id" => source
-                .get_agent_id()
-                .map_or(Value::Null, Value::String),
-            "peer_id" => source
-                .get_peer_id()
-                .map_or(Value::Null, Value::String),
-            "workspace" => source
-                .get_workspace()
-                .map_or(Value::Null, Value::String),
-            "run_id" => source
-                .get_run_id()
-                .map_or(Value::Null, Value::String),
+            "session_id" => source.get_session_id().map_or(Value::Null, Value::String),
+            "agent_id" => source.get_agent_id().map_or(Value::Null, Value::String),
+            "peer_id" => source.get_peer_id().map_or(Value::Null, Value::String),
+            "workspace" => source.get_workspace().map_or(Value::Null, Value::String),
+            "run_id" => source.get_run_id().map_or(Value::Null, Value::String),
             _ => {
                 tracing::warn!("Unknown context field requested: {}", field);
                 Value::Null
@@ -146,7 +136,7 @@ impl ContextResolver {
     }
 
     /// Get all available field names
-    #[must_use] 
+    #[must_use]
     pub fn available_fields() -> &'static [&'static str] {
         &["session_id", "agent_id", "peer_id", "workspace", "run_id"]
     }

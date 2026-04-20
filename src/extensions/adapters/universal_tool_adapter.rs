@@ -39,7 +39,7 @@ use crate::extensions::core::{
     ToolMetadata,
     ToolSource, // NEW
 };
- // NEW
+// NEW
 use crate::extensions::types::{
     AsyncReceipt, ExtensionId, ExtensionManifest, HookId, HookOutput, HookResult,
 };
@@ -63,7 +63,7 @@ pub struct UniversalToolAdapter;
 
 impl UniversalToolAdapter {
     /// Create a new universal tool adapter
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -204,7 +204,11 @@ impl UniversalToolAdapter {
         // Extract description - prefer llm_description if available
         let description = manifest
             .get("llm_description")
-            .and_then(|v| v.as_str()).map_or_else(|| manifest.description.clone(), std::string::ToString::to_string);
+            .and_then(|v| v.as_str())
+            .map_or_else(
+                || manifest.description.clone(),
+                std::string::ToString::to_string,
+            );
 
         // Extract parameters schema
         let parameters = manifest
@@ -462,7 +466,11 @@ impl HookHandlerFactory for UniversalToolPromptFactory {
         let llm_desc = self
             .manifest
             .get("llm_description")
-            .and_then(|v| v.as_str()).map_or_else(|| self.manifest.description.clone(), std::string::ToString::to_string);
+            .and_then(|v| v.as_str())
+            .map_or_else(
+                || self.manifest.description.clone(),
+                std::string::ToString::to_string,
+            );
 
         Box::new(UniversalToolPromptHandler {
             tool_name: self.manifest.name.clone(),
@@ -562,11 +570,11 @@ impl HookHandler for UniversalToolExecuteHandler {
         let manifest_path = self.manifest_path.clone();
         let executable = self.executable.clone();
 
-        let exec_config = crate::extensions::services::ToolExecutionConfig::with_schema(
-            self.full_schema.clone(),
-        );
+        let exec_config =
+            crate::extensions::services::ToolExecutionConfig::with_schema(self.full_schema.clone());
 
-        ctx.services.async_router()
+        ctx.services
+            .async_router()
             .execute_from_hook(
                 &ctx,
                 &self.tool_name,
@@ -821,7 +829,11 @@ pub async fn register_tools_with_core(
         let llm_desc = tool
             .manifest
             .get("llm_description")
-            .and_then(|v| v.as_str()).map_or_else(|| tool.manifest.description.clone(), std::string::ToString::to_string);
+            .and_then(|v| v.as_str())
+            .map_or_else(
+                || tool.manifest.description.clone(),
+                std::string::ToString::to_string,
+            );
 
         let prompt_handler = Arc::new(UniversalToolPromptHandler {
             tool_name: tool.manifest.name.clone(),

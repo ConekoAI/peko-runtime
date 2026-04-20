@@ -128,7 +128,7 @@ impl SessionEntry {
     /// Convert to `SessionMetadata` for backward compatibility
     ///
     /// This is the preferred conversion method when passing to API boundaries.
-    #[must_use] 
+    #[must_use]
     pub fn to_metadata(&self) -> crate::session::metadata::SessionMetadata {
         crate::session::metadata::SessionMetadata::from_entry(self.clone())
     }
@@ -136,7 +136,7 @@ impl SessionEntry {
     /// Convert to `SessionInfo` for service layer
     ///
     /// This is the preferred conversion method when passing to `SessionService`.
-    #[must_use] 
+    #[must_use]
     pub fn to_info(&self) -> crate::common::services::session_service::SessionInfo {
         crate::common::services::session_service::SessionInfo::from(self.clone())
     }
@@ -658,7 +658,6 @@ impl SessionIndex {
         };
 
         let mut pruned = 0;
-        
 
         for session_id in to_prune {
             // Remove from sessions

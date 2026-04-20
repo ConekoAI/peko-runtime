@@ -4,10 +4,7 @@
 //! Handles: transport management, parameter injection, protocol translation.
 
 use super::manifest::Manifest;
-use super::protocol::{
-    ExecuteParams, ExecuteResult, ExecutionContext, Request,
-    ResponseResult,
-};
+use super::protocol::{ExecuteParams, ExecuteResult, ExecutionContext, Request, ResponseResult};
 use super::transport::Transport;
 use crate::tools::{Tool, ToolContext};
 use anyhow::{Context, Result};
@@ -55,7 +52,7 @@ impl UniversalToolAdapter {
     }
 
     /// Get the underlying manifest
-    #[must_use] 
+    #[must_use]
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
@@ -132,7 +129,8 @@ impl UniversalToolAdapter {
             session_id: "unknown".to_string(),
             agent_id: "unknown".to_string(),
             peer_id: None,
-            workspace: std::env::current_dir().map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
+            workspace: std::env::current_dir()
+                .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
             run_id: None,
         };
 
@@ -200,9 +198,7 @@ impl UniversalToolAdapter {
                 } else {
                     // If that fails, treat the entire value as the data payload
                     // This handles tools that return their result directly
-                    tracing::debug!(
-                        "Response not in ExecuteResult format, treating as raw data"
-                    );
+                    tracing::debug!("Response not in ExecuteResult format, treating as raw data");
                     Ok(ExecuteResult {
                         success: true,
                         data: Some(value),
@@ -240,7 +236,8 @@ impl Tool for UniversalToolAdapter {
             session_id: "unknown".to_string(),
             agent_id: "unknown".to_string(),
             peer_id: None,
-            workspace: std::env::current_dir().map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
+            workspace: std::env::current_dir()
+                .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
             run_id: None,
         };
 
@@ -301,7 +298,7 @@ pub struct UniversalToolBuilder {
 }
 
 impl UniversalToolBuilder {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             manifest: None,
@@ -310,7 +307,7 @@ impl UniversalToolBuilder {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn manifest(mut self, manifest: Manifest) -> Self {
         self.manifest = Some(manifest);
         self
@@ -327,7 +324,7 @@ impl UniversalToolBuilder {
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn timeout(mut self, secs: u64) -> Self {
         self.timeout = Duration::from_secs(secs);
         self

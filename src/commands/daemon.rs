@@ -11,7 +11,6 @@ use clap::Subcommand;
 use std::path::PathBuf;
 use tokio::process::Command;
 
-
 /// Daemon management subcommands
 ///
 /// The daemon is the core service that manages agents and provides the HTTP API.
@@ -199,7 +198,10 @@ async fn check_daemon_running() -> anyhow::Result<bool> {
             if let Ok(bytes) = ping.to_bytes() {
                 if conn.send(&bytes).await.is_ok() {
                     let mut buf = vec![0u8; 65536];
-                    if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
+                    if let Ok(len) = conn
+                        .recv_timeout(&mut buf, std::time::Duration::from_secs(2))
+                        .await
+                    {
                         if let Ok(response) = ResponsePacket::from_bytes(&buf[..len]) {
                             if matches!(response, ResponsePacket::Pong { .. }) {
                                 return Ok(true);
@@ -255,10 +257,17 @@ async fn show_daemon_status(json: bool) -> anyhow::Result<()> {
                 let bytes = ping.to_bytes().ok()?;
                 conn.send(&bytes).await.ok()?;
                 let mut buf = vec![0u8; 65536];
-                let len = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await.ok()?;
+                let len = conn
+                    .recv_timeout(&mut buf, std::time::Duration::from_secs(2))
+                    .await
+                    .ok()?;
                 let response = crate::ipc::ResponsePacket::from_bytes(&buf[..len]).ok()?;
                 match response {
-                    crate::ipc::ResponsePacket::Pong { uptime_secs, version, .. } => Some((uptime_secs, version)),
+                    crate::ipc::ResponsePacket::Pong {
+                        uptime_secs,
+                        version,
+                        ..
+                    } => Some((uptime_secs, version)),
                     _ => None,
                 }
             };
@@ -298,7 +307,10 @@ async fn show_daemon_status(json: bool) -> anyhow::Result<()> {
                 println!("{{\"running\": false, \"error\": \"daemon not responding (process {} exists)\"}}", pid);
             } else {
                 println!("📊 Daemon Status:");
-                println!("  Status: ❌ Not responding (process {} exists but IPC unreachable)", pid);
+                println!(
+                    "  Status: ❌ Not responding (process {} exists but IPC unreachable)",
+                    pid
+                );
                 println!("  PID: {}", pid);
             }
             return Ok(());
@@ -325,12 +337,20 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
     let mut shutdown_sent = false;
     if !force {
         if let Ok(conn) = crate::ipc::ConnectionManager::try_connect().await {
-            let shutdown_req = crate::ipc::RequestPacket::Shutdown { request_id: 0, force: false };
+            let shutdown_req = crate::ipc::RequestPacket::Shutdown {
+                request_id: 0,
+                force: false,
+            };
             if let Ok(bytes) = shutdown_req.to_bytes() {
                 if conn.send(&bytes).await.is_ok() {
                     let mut buf = vec![0u8; 65536];
-                    if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(3)).await {
-                        if let Ok(crate::ipc::ResponsePacket::ShuttingDown { .. }) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
+                    if let Ok(len) = conn
+                        .recv_timeout(&mut buf, std::time::Duration::from_secs(3))
+                        .await
+                    {
+                        if let Ok(crate::ipc::ResponsePacket::ShuttingDown { .. }) =
+                            crate::ipc::ResponsePacket::from_bytes(&buf[..len])
+                        {
                             shutdown_sent = true;
                             println!("   Graceful shutdown request sent via IPC");
                         }
@@ -420,8 +440,13 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
         if let Ok(bytes) = ping.to_bytes() {
             if conn.send(&bytes).await.is_ok() {
                 let mut buf = vec![0u8; 65536];
-                if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
-                    if let Ok(crate::ipc::ResponsePacket::Pong { .. }) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
+                if let Ok(len) = conn
+                    .recv_timeout(&mut buf, std::time::Duration::from_secs(2))
+                    .await
+                {
+                    if let Ok(crate::ipc::ResponsePacket::Pong { .. }) =
+                        crate::ipc::ResponsePacket::from_bytes(&buf[..len])
+                    {
                         // Daemon is still running — try to kill all pekobot/peko processes as fallback
                         println!("   Daemon still responding! Attempting fallback kill...");
                         #[cfg(windows)]
@@ -530,14 +555,22 @@ async fn wait_for_daemon_ready() -> bool {
                 if let Ok(ping_bytes) = ping.to_bytes() {
                     if conn.send(&ping_bytes).await.is_ok() {
                         let mut buf = vec![0u8; 65536];
-                        if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
-                            if let Ok(response) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
+                        if let Ok(len) = conn
+                            .recv_timeout(&mut buf, std::time::Duration::from_secs(2))
+                            .await
+                        {
+                            if let Ok(response) =
+                                crate::ipc::ResponsePacket::from_bytes(&buf[..len])
+                            {
                                 match response {
                                     crate::ipc::ResponsePacket::Pong { .. } => {
                                         return true;
                                     }
                                     _ => {
-                                        eprintln!("   Unexpected response to ping (waiting... {})", i);
+                                        eprintln!(
+                                            "   Unexpected response to ping (waiting... {})",
+                                            i
+                                        );
                                     }
                                 }
                             }

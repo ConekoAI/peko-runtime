@@ -181,8 +181,7 @@ impl AgentConfig {
 
     /// Serialize to TOML string
     pub fn to_toml(&self) -> anyhow::Result<String> {
-        toml::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize config: {e}"))
+        toml::to_string_pretty(self).map_err(|e| anyhow::anyhow!("Failed to serialize config: {e}"))
     }
 
     /// Validate the configuration
@@ -226,7 +225,7 @@ impl AgentConfig {
     }
 
     /// Merge with a base config (base first, then self overrides)
-    #[must_use] 
+    #[must_use]
     pub fn merge_with_base(mut self, base: Self) -> Self {
         // Merge capabilities (append and deduplicate)
         let base_caps = base.capabilities;
@@ -253,7 +252,7 @@ impl AgentConfig {
     }
 
     /// Get tools list
-    #[must_use] 
+    #[must_use]
     pub fn tools(&self) -> Vec<String> {
         self.capabilities
             .as_ref()
@@ -262,7 +261,7 @@ impl AgentConfig {
     }
 
     /// Get skills list
-    #[must_use] 
+    #[must_use]
     pub fn skills(&self) -> Vec<String> {
         self.capabilities
             .as_ref()
@@ -271,7 +270,7 @@ impl AgentConfig {
     }
 
     /// Get mcps list
-    #[must_use] 
+    #[must_use]
     pub fn mcps(&self) -> Vec<String> {
         self.capabilities
             .as_ref()
@@ -711,9 +710,7 @@ secret_key = "sk-ant-api03-AbCdEfGh123456789XYZabcdefghijklmnopqrstuvwxyz"
             // Debug: print what was parsed
             let config = result.unwrap();
             let toml_out = config.to_toml().unwrap();
-            panic!(
-                "Expected error but config parsed successfully. TOML output:\n{toml_out}"
-            );
+            panic!("Expected error but config parsed successfully. TOML output:\n{toml_out}");
         }
         let err = result.unwrap_err().to_string();
         assert!(
@@ -741,10 +738,7 @@ api_key = "your_api_key_here"
 "#;
 
         let result = AgentConfig::from_toml(toml_with_placeholder);
-        assert!(
-            result.is_ok(),
-            "Placeholders should be allowed: {result:?}"
-        );
+        assert!(result.is_ok(), "Placeholders should be allowed: {result:?}");
     }
 
     #[test]
@@ -806,9 +800,6 @@ token = "abc123"
 "#;
 
         let result = AgentConfig::from_toml(toml_short);
-        assert!(
-            result.is_ok(),
-            "Short values should be allowed: {result:?}"
-        );
+        assert!(result.is_ok(), "Short values should be allowed: {result:?}");
     }
 }

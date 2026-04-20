@@ -106,7 +106,7 @@ where
 }
 
 /// Format a status message for tool execution
-#[must_use] 
+#[must_use]
 pub fn format_status(tool_name: &str, server_name: Option<&str>, status: &str) -> String {
     if let Some(server) = server_name {
         format!("{status} {tool_name} (via {server})")
@@ -118,7 +118,7 @@ pub fn format_status(tool_name: &str, server_name: Option<&str>, status: &str) -
 /// Estimate tool duration based on name heuristics
 ///
 /// This is a shared implementation used by both MCP and Universal tool proxies.
-#[must_use] 
+#[must_use]
 pub fn estimate_tool_duration(name: &str) -> u64 {
     let name_lower = name.to_lowercase();
 

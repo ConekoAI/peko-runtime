@@ -224,7 +224,7 @@ pub enum HookPoint {
 
 impl HookPoint {
     /// Get a string representation of the hook point category
-    #[must_use] 
+    #[must_use]
     pub fn category(&self) -> &'static str {
         match self {
             Self::PromptSystemSection { .. } | Self::PromptPreProcess | Self::PromptPostProcess => {
@@ -254,7 +254,7 @@ impl HookPoint {
     }
 
     /// Get the hook point name
-    #[must_use] 
+    #[must_use]
     pub fn name(&self) -> String {
         match self {
             Self::PromptSystemSection { section, .. } => {
@@ -306,7 +306,7 @@ impl HookPoint {
     /// - `tool.execute.*` matches any tool execution
     /// - `prompt.*` matches any prompt hook
     /// - `event.subscribe.instance.*` matches instance events
-    #[must_use] 
+    #[must_use]
     pub fn matches(&self, pattern: &str) -> bool {
         let name = self.name();
 
@@ -337,7 +337,7 @@ impl HookPoint {
     }
 
     /// Get priority if applicable
-    #[must_use] 
+    #[must_use]
     pub fn priority(&self) -> Option<i32> {
         match self {
             Self::PromptSystemSection { priority, .. } => Some(*priority),
@@ -436,7 +436,7 @@ impl HookPointBuilder {
     }
 
     /// Create an agent iteration hook point
-    #[must_use] 
+    #[must_use]
     pub fn agent_iteration(iteration: usize) -> HookPoint {
         HookPoint::AgentIteration { iteration }
     }
@@ -447,7 +447,7 @@ pub mod common {
     use super::HookPoint;
 
     /// Hook into the tools section of the system prompt
-    #[must_use] 
+    #[must_use]
     pub fn tools_section() -> HookPoint {
         HookPoint::PromptSystemSection {
             section: "tools".to_string(),
@@ -456,7 +456,7 @@ pub mod common {
     }
 
     /// Hook into the skills section of the system prompt
-    #[must_use] 
+    #[must_use]
     pub fn skills_section() -> HookPoint {
         HookPoint::PromptSystemSection {
             section: "skills".to_string(),
@@ -465,7 +465,7 @@ pub mod common {
     }
 
     /// Hook into the runtime section of the system prompt
-    #[must_use] 
+    #[must_use]
     pub fn runtime_section() -> HookPoint {
         HookPoint::PromptSystemSection {
             section: "runtime".to_string(),
@@ -474,25 +474,25 @@ pub mod common {
     }
 
     /// Register tools
-    #[must_use] 
+    #[must_use]
     pub fn tool_register() -> HookPoint {
         HookPoint::ToolRegister
     }
 
     /// Handle channel input
-    #[must_use] 
+    #[must_use]
     pub fn channel_input() -> HookPoint {
         HookPoint::ChannelInput
     }
 
     /// Handle channel output
-    #[must_use] 
+    #[must_use]
     pub fn channel_output() -> HookPoint {
         HookPoint::ChannelOutput
     }
 
     /// Subscribe to all events
-    #[must_use] 
+    #[must_use]
     pub fn all_events() -> HookPoint {
         HookPoint::EventSubscribe {
             topic_pattern: "*".to_string(),
@@ -500,7 +500,7 @@ pub mod common {
     }
 
     /// Subscribe to instance events
-    #[must_use] 
+    #[must_use]
     pub fn instance_events() -> HookPoint {
         HookPoint::EventSubscribe {
             topic_pattern: "instance.*".to_string(),
@@ -508,7 +508,7 @@ pub mod common {
     }
 
     /// Subscribe to team events
-    #[must_use] 
+    #[must_use]
     pub fn team_events() -> HookPoint {
         HookPoint::EventSubscribe {
             topic_pattern: "team.*".to_string(),

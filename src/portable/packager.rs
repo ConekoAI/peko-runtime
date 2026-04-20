@@ -683,8 +683,6 @@ pub async fn export_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
 
     // Note: These tests would need a mock identity setup
     // For now, just test the options struct

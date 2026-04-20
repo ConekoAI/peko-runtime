@@ -488,17 +488,18 @@ impl UnifiedSession {
                 },
             },
             "assistant" => {
-                let token_usage = usage
-                    .as_ref()
-                    .map_or(crate::session::message::TokenUsage {
+                let token_usage = usage.as_ref().map_or(
+                    crate::session::message::TokenUsage {
                         input_tokens: 0,
                         output_tokens: 0,
                         total_tokens: 0,
-                    }, |u| crate::session::message::TokenUsage {
+                    },
+                    |u| crate::session::message::TokenUsage {
                         input_tokens: u.input as u32,
                         output_tokens: u.output as u32,
                         total_tokens: (u.input + u.output) as u32,
-                    });
+                    },
+                );
 
                 SessionMessage::assistant_with_blocks(
                     final_content_blocks,
@@ -636,10 +637,7 @@ impl UnifiedSession {
     /// `ChatMessage` with full `ContentBlock` fidelity.
     async fn load_history_native(&self) -> Result<Vec<ChatMessage>> {
         let events = self.storage.load_events(&self.id).await?;
-        let messages: Vec<ChatMessage> = events
-            .iter()
-            .filter_map(event_to_chat_message)
-            .collect();
+        let messages: Vec<ChatMessage> = events.iter().filter_map(event_to_chat_message).collect();
 
         Ok(messages)
     }
@@ -879,7 +877,6 @@ mod tests {
     #[test]
     fn test_entries_to_context_text_with_tool_result() {
         use crate::session::NormalizedEntry;
-        
 
         let entries = vec![NormalizedEntry::ToolResult {
             tool_call_id: "1".to_string(),

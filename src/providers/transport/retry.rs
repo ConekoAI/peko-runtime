@@ -36,7 +36,7 @@ impl Default for RetryPolicy {
 
 impl RetryPolicy {
     /// Create a policy from `max_retries` and `base_delay_ms` (for `ProviderConfig` compatibility)
-    #[must_use] 
+    #[must_use]
     pub fn from_config(max_retries: u32, base_delay_ms: u64) -> Option<Self> {
         if max_retries == 0 {
             return None;
@@ -49,7 +49,7 @@ impl RetryPolicy {
     }
 
     /// Calculate delay for a specific attempt (0-indexed)
-    #[must_use] 
+    #[must_use]
     pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
         let multiplier = self.backoff_multiplier.powi(attempt as i32);
         let delay = self.base_delay.mul_f64(multiplier);
@@ -57,7 +57,7 @@ impl RetryPolicy {
     }
 
     /// Check if a status code should trigger a retry
-    #[must_use] 
+    #[must_use]
     pub fn is_retryable_status(&self, status: u16) -> bool {
         self.retryable_status_codes.contains(&status)
     }

@@ -32,7 +32,7 @@ pub struct Subscription {
 
 impl EventBusHookIntegration {
     /// Create new event bus hook integration
-    #[must_use] 
+    #[must_use]
     pub fn new(registry: Arc<HookRegistry>) -> Self {
         Self {
             registry,

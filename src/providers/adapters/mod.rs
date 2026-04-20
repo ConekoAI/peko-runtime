@@ -6,7 +6,9 @@
 //! - OpenAI-Compatible: Same as `OpenAI` with different base URL
 
 use crate::providers::transport::AuthConfig;
-use crate::providers::types::{ContentBlock, Message, ToolDefinition, ChatOptions, ChatResponse, StreamEvent, MessageRole};
+use crate::providers::types::{
+    ChatOptions, ChatResponse, ContentBlock, Message, MessageRole, StreamEvent, ToolDefinition,
+};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -41,7 +43,7 @@ struct PartialToolCall {
 
 impl ToolCallAccumulator {
     /// Create a new empty accumulator
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             buffer: Arc::new(Mutex::new(HashMap::new())),
@@ -67,7 +69,7 @@ impl ToolCallAccumulator {
     /// # Returns
     /// * `Some(ContentBlock::ToolCall)` when all parts are received and JSON is valid
     /// * `None` if still accumulating or on error
-    #[must_use] 
+    #[must_use]
     pub fn accumulate(
         &self,
         index: usize,
@@ -107,7 +109,7 @@ impl ToolCallAccumulator {
     }
 
     /// Check if a tool call at the given index is new (not yet in buffer).
-    #[must_use] 
+    #[must_use]
     pub fn is_new_call(&self, index: usize, id: &str) -> bool {
         if let Ok(buffer) = self.buffer.lock() {
             !buffer.contains_key(&index)
@@ -123,7 +125,7 @@ impl ToolCallAccumulator {
     /// # Returns
     /// * `Some(ContentBlock::ToolCall)` if a pending tool call exists (even with empty/invalid args)
     /// * `None` if no pending tool call at this index
-    #[must_use] 
+    #[must_use]
     pub fn finalize(&self, index: usize) -> Option<ContentBlock> {
         if let Ok(mut buffer) = self.buffer.lock() {
             if let Some(entry) = buffer.remove(&index) {

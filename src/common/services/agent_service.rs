@@ -9,7 +9,11 @@ use crate::common::identifiers::{
 };
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;
-use crate::common::types::agent::{AgentSummary, AgentInfo, AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult, AgentRenameResult, AgentInitRequest, AgentInitResult, AgentUpdateRequest, AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult};
+use crate::common::types::agent::{
+    AgentCreateRequest, AgentCreationResult, AgentDeleteOptions, AgentDeleteResult,
+    AgentExportOptions, AgentExportResult, AgentImportOptions, AgentImportResult, AgentInfo,
+    AgentInitRequest, AgentInitResult, AgentRenameResult, AgentSummary, AgentUpdateRequest,
+};
 use crate::identity::Identity;
 use crate::portable::{
     self, ExportOptions as PortableExportOptions, ImportOptions as PortableImportOptions,
@@ -128,7 +132,7 @@ fn build_default_agent_config(name: &str, provider: &str, model: Option<String>)
 
 impl AgentService {
     /// Create a new agent service with the given path resolver
-    #[must_use] 
+    #[must_use]
     pub fn new(resolver: PathResolver) -> Self {
         let team_service = TeamService::new(resolver.clone());
         Self {
@@ -154,8 +158,10 @@ impl AgentService {
                 continue;
             }
 
-            let team_name = team_path
-                .file_name().map_or_else(|| "unknown".to_string(), |n| n.to_string_lossy().to_string());
+            let team_name = team_path.file_name().map_or_else(
+                || "unknown".to_string(),
+                |n| n.to_string_lossy().to_string(),
+            );
 
             // Apply team filter if specified
             if let Some(filter) = team_filter {
@@ -358,15 +364,12 @@ impl AgentService {
             anyhow::bail!("Invalid new agent name '{new_name}': {e}");
         }
 
-        let (from_team, old_agent_name) =
-            parse_agent_identifier_with_override(old_name, team)?;
+        let (from_team, old_agent_name) = parse_agent_identifier_with_override(old_name, team)?;
         let target_team = to_team.unwrap_or(from_team);
 
         let old_config_path = self.resolver.agent_config(old_agent_name, Some(from_team));
         if !old_config_path.exists() {
-            anyhow::bail!(
-                "Agent '{old_agent_name}' not found in team '{from_team}'"
-            );
+            anyhow::bail!("Agent '{old_agent_name}' not found in team '{from_team}'");
         }
 
         // Check if target team exists
@@ -380,9 +383,7 @@ impl AgentService {
         // Check if target agent already exists
         let new_config_path = self.resolver.agent_config(new_name, Some(target_team));
         if new_config_path.exists() {
-            anyhow::bail!(
-                "Agent '{new_name}' already exists in team '{target_team}'"
-            );
+            anyhow::bail!("Agent '{new_name}' already exists in team '{target_team}'");
         }
 
         // Create target directory
@@ -670,7 +671,7 @@ impl AgentService {
     }
 
     /// Check if an agent exists
-    #[must_use] 
+    #[must_use]
     pub fn agent_exists(&self, name: &str, team: Option<&str>) -> bool {
         if let Ok((team, agent_name)) = parse_agent_identifier_with_override(name, team) {
             self.resolver.agent_config(agent_name, Some(team)).exists()
@@ -680,7 +681,7 @@ impl AgentService {
     }
 
     /// Get the path resolver
-    #[must_use] 
+    #[must_use]
     pub fn resolver(&self) -> &PathResolver {
         &self.resolver
     }
@@ -725,9 +726,7 @@ fn map_agent_validation_error(name: &str, e: ValidationError) -> anyhow::Error {
     match e {
         ValidationError::Empty => anyhow::anyhow!("Agent name cannot be empty"),
         ValidationError::TooLong(max) => {
-            anyhow::anyhow!(
-                "Agent name '{name}' exceeds maximum length of {max} characters"
-            )
+            anyhow::anyhow!("Agent name '{name}' exceeds maximum length of {max} characters")
         }
         ValidationError::Reserved(reserved) => {
             anyhow::anyhow!("'{reserved}' is a reserved name and cannot be used")

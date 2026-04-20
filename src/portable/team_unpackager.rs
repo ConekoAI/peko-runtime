@@ -116,9 +116,7 @@ impl TeamUnpackager {
         // Create team directory
         let team_dir = self.base_dir.join("teams").join(team_name.clone());
         if team_dir.exists() && !options.force {
-            anyhow::bail!(
-                "Team '{team_name}' already exists. Use --force to overwrite."
-            );
+            anyhow::bail!("Team '{team_name}' already exists. Use --force to overwrite.");
         }
 
         tokio::fs::create_dir_all(&team_dir)

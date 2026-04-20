@@ -85,13 +85,13 @@ impl AgentCreateRequest {
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_auto_create_team(mut self, auto: bool) -> Self {
         self.auto_create_team = auto;
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
         self
@@ -150,7 +150,7 @@ impl AgentInitRequest {
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_force(mut self, force: bool) -> Self {
         self.force = force;
         self

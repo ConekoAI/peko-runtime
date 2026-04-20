@@ -36,7 +36,7 @@ impl std::fmt::Display for ConfigAuthorityImpl {
 
 impl ConfigAuthorityImpl {
     /// Create a new `ConfigAuthorityImpl`
-    #[must_use] 
+    #[must_use]
     pub fn new(path_resolver: PathResolver) -> Self {
         let config_dir = path_resolver.config_dir().to_path_buf();
         Self {

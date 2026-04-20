@@ -11,8 +11,7 @@ use crate::engine::{
 use crate::providers::StreamEvent;
 
 /// Delivery mode for streaming
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeliveryMode {
     /// Emit every delta immediately (for CLI, TUI)
     Live,
@@ -22,7 +21,6 @@ pub enum DeliveryMode {
     /// Buffer until complete (for non-streaming channels)
     FinalOnly,
 }
-
 
 /// Orchestrator configuration
 #[derive(Debug, Clone)]
@@ -50,7 +48,7 @@ impl Default for OrchestratorConfig {
 
 impl OrchestratorConfig {
     /// Create configuration for live mode (CLI)
-    #[must_use] 
+    #[must_use]
     pub fn live() -> Self {
         Self {
             delivery_mode: DeliveryMode::Live,
@@ -60,7 +58,7 @@ impl OrchestratorConfig {
     }
 
     /// Create configuration for block mode (Discord)
-    #[must_use] 
+    #[must_use]
     pub fn block() -> Self {
         Self {
             delivery_mode: DeliveryMode::Block,
@@ -69,7 +67,7 @@ impl OrchestratorConfig {
     }
 
     /// Create configuration for final-only mode
-    #[must_use] 
+    #[must_use]
     pub fn final_only() -> Self {
         Self {
             delivery_mode: DeliveryMode::FinalOnly,
@@ -144,7 +142,10 @@ impl StreamOrchestrator {
     /// Process a `StreamEvent` and return `AgenticEvents` to emit
     pub fn process(&mut self, event: StreamEvent) -> Vec<AgenticEvent> {
         match event {
-            StreamEvent::Start { provider: _, model: _ } => {
+            StreamEvent::Start {
+                provider: _,
+                model: _,
+            } => {
                 self.state = OrchestratorState::Text;
                 vec![AgenticEvent::Lifecycle {
                     run_id: self.run_id.clone(),
@@ -375,7 +376,7 @@ impl StreamOrchestrator {
     }
 
     /// Get current state
-    #[must_use] 
+    #[must_use]
     pub fn state(&self) -> &str {
         match self.state {
             OrchestratorState::Idle => "idle",
@@ -387,7 +388,7 @@ impl StreamOrchestrator {
     }
 
     /// Get buffer length
-    #[must_use] 
+    #[must_use]
     pub fn buffer_len(&self) -> usize {
         self.buffer.buffer_len()
     }
@@ -396,7 +397,6 @@ impl StreamOrchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_orchestrator_live_mode() {

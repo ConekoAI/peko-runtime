@@ -1,8 +1,13 @@
 # Clippy configuration for Pekobot
 # Relaxed rules for practical development
 
-# Documentation warnings - too pedantic for this codebase
 avoid-breaking-exported-api = false
-
-# Allow some patterns that are common in this codebase
 allow-unwrap-in-tests = true
+
+# Increase thresholds for large projects
+cognitive-complexity-threshold = 30
+enum-variant-name-threshold = 5
+enum-variant-size-threshold = 500
+excessive-nesting-threshold = 10
+future-size-threshold = 16384
+large-error-threshold = 256

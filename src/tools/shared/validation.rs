@@ -220,7 +220,7 @@ pub struct ValidationReport {
 }
 
 impl ValidationReport {
-    #[must_use] 
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
     }
@@ -241,7 +241,7 @@ pub struct ValidationBuilder {
 }
 
 impl ValidationBuilder {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             reserved: HashSet::new(),
@@ -249,13 +249,13 @@ impl ValidationBuilder {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_reserved(mut self, params: &[String]) -> Self {
         self.reserved = params.iter().cloned().collect();
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_schema(mut self, schema: Value) -> Self {
         self.schema = Some(schema);
         self

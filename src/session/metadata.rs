@@ -82,7 +82,7 @@ impl SessionMetadata {
     }
 
     /// Create from existing `SessionEntry` (index data)
-    #[must_use] 
+    #[must_use]
     pub fn from_entry(entry: SessionEntry) -> Self {
         Self {
             session_id: entry.session_id,
@@ -104,7 +104,7 @@ impl SessionMetadata {
     }
 
     /// Convert to `SessionEntry` for index storage
-    #[must_use] 
+    #[must_use]
     pub fn to_entry(self) -> SessionEntry {
         SessionEntry {
             session_id: self.session_id,
@@ -219,7 +219,7 @@ impl ReconciliationResult {
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn reconciled(mut self, old_count: usize, new_count: usize) -> Self {
         self.was_reconciled = true;
         self.old_message_count = old_count;

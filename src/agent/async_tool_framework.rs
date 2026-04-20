@@ -242,7 +242,9 @@ impl<'de> Deserialize<'de> for AsyncTaskStatus {
                             .ok_or_else(|| serde::de::Error::custom("missing error field"))?;
                         Ok(Self::TimedOut { error })
                     }
-                    _ => Err(serde::de::Error::custom(format!("unknown status: {status}"))),
+                    _ => Err(serde::de::Error::custom(format!(
+                        "unknown status: {status}"
+                    ))),
                 }
             }
             _ => Err(serde::de::Error::custom("expected string or object")),
@@ -319,8 +321,7 @@ pub enum AsyncTaskResult {
 }
 
 /// Message types for session-to-session communication (A2A)
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum SessionMessageType {
     /// Initial request to another agent
     #[default]
@@ -334,7 +335,6 @@ pub enum SessionMessageType {
     /// Error/timeout notification
     Error,
 }
-
 
 impl AsyncTaskResult {
     /// Format the result for display/announcement to users
@@ -746,9 +746,7 @@ impl AsyncTaskRegistry {
     pub fn list_tasks(&self, session_key: Option<&str>) -> Vec<AsyncTaskEntry> {
         self.tasks
             .values()
-            .filter(|entry| {
-                session_key.map_or(true, |sk| entry.parent_session_key == sk)
-            })
+            .filter(|entry| session_key.map_or(true, |sk| entry.parent_session_key == sk))
             .map(|entry| entry.clone())
             .collect()
     }
@@ -815,7 +813,6 @@ pub enum DeliveryTarget {
     /// Deliver via direct channel (for sync waiting)
     DirectChannel,
 }
-
 
 /// Trait for result delivery mechanisms
 ///
@@ -1123,7 +1120,7 @@ impl UnifiedAsyncExecutor {
     }
 
     /// Set the default delivery target
-    #[must_use] 
+    #[must_use]
     pub fn with_default_delivery(mut self, target: DeliveryTarget) -> Self {
         self.default_delivery = target;
         self
@@ -1182,14 +1179,19 @@ impl UnifiedAsyncExecutor {
         let parent_session_key = parent_session_key.into();
 
         // Determine task file path
-        let task_file = self.task_file_writer.as_ref().map(|w| w.task_file_path(&task_id));
+        let task_file = self
+            .task_file_writer
+            .as_ref()
+            .map(|w| w.task_file_path(&task_id));
 
         // Create initial task file record
         if let Some(ref writer) = self.task_file_writer {
             let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
             record.params = Some(params.clone());
             record.timeout_requested = Some(config.timeout_secs);
-            record.callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
+            record.callback_mode = config
+                .delivery_target
+                .map(|dt| format!("{:?}", dt).to_lowercase());
             if let Err(e) = writer.write(&record).await {
                 tracing::warn!("Failed to write initial task file for {}: {}", task_id, e);
             }
@@ -1235,7 +1237,9 @@ impl UnifiedAsyncExecutor {
         let task_id_clone = task_id.clone();
         let task_file_writer_clone = self.task_file_writer.clone();
         let timeout_secs = config.timeout_secs;
-        let callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
+        let callback_mode = config
+            .delivery_target
+            .map(|dt| format!("{:?}", dt).to_lowercase());
         let params_for_spawn = params.clone();
 
         // Spawn the background execution
@@ -1252,7 +1256,11 @@ impl UnifiedAsyncExecutor {
                 record.callback_mode = callback_mode.clone();
                 record.set_running();
                 if let Err(e) = writer.write(&record).await {
-                    tracing::warn!("Failed to write running task file for {}: {}", task_id_clone, e);
+                    tracing::warn!(
+                        "Failed to write running task file for {}: {}",
+                        task_id_clone,
+                        e
+                    );
                 }
             }
 
@@ -1267,13 +1275,17 @@ impl UnifiedAsyncExecutor {
             // Check if task was cancelled before updating
             let was_cancelled = {
                 let registry = registry_clone.read().await;
-                registry.get(&task_id_clone)
+                registry
+                    .get(&task_id_clone)
                     .map(|e| matches!(e.status, AsyncTaskStatus::Cancelled))
                     .unwrap_or(false)
             };
 
             if was_cancelled {
-                tracing::debug!("Task {} was cancelled, skipping result update", task_id_clone);
+                tracing::debug!(
+                    "Task {} was cancelled, skipping result update",
+                    task_id_clone
+                );
                 return;
             }
 
@@ -1311,12 +1323,21 @@ impl UnifiedAsyncExecutor {
                 match outcome {
                     TaskOutcome::Success(async_result) => {
                         match &async_result {
-                            AsyncTaskResult::Process { stdout, stderr, exit_code } => {
-                                record.set_process_output(stdout.clone(), stderr.clone(), *exit_code);
+                            AsyncTaskResult::Process {
+                                stdout,
+                                stderr,
+                                exit_code,
+                            } => {
+                                record.set_process_output(
+                                    stdout.clone(),
+                                    stderr.clone(),
+                                    *exit_code,
+                                );
                             }
                             _ => {}
                         }
-                        record.set_completed(serde_json::to_value(&async_result).unwrap_or_default());
+                        record
+                            .set_completed(serde_json::to_value(&async_result).unwrap_or_default());
                     }
                     TaskOutcome::Failure(e) => {
                         record.set_failed(e.to_string());
@@ -1326,7 +1347,11 @@ impl UnifiedAsyncExecutor {
                     }
                 }
                 if let Err(e) = writer.write(&record).await {
-                    tracing::warn!("Failed to write final task file for {}: {}", task_id_clone, e);
+                    tracing::warn!(
+                        "Failed to write final task file for {}: {}",
+                        task_id_clone,
+                        e
+                    );
                 }
             }
 
@@ -1359,18 +1384,27 @@ impl UnifiedAsyncExecutor {
         params: Value,
         parent_session_key: impl Into<String>,
         config: AsyncToolConfig,
-        execution_fn: Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<AsyncTaskResult>> + Send>> + Send>,
+        execution_fn: Box<
+            dyn FnOnce() -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<AsyncTaskResult>> + Send>,
+                > + Send,
+        >,
     ) -> Result<AsyncTaskReceipt> {
         let tool_name = tool_name.into();
         let parent_session_key = parent_session_key.into();
 
-        let task_file = self.task_file_writer.as_ref().map(|w| w.task_file_path(&task_id));
+        let task_file = self
+            .task_file_writer
+            .as_ref()
+            .map(|w| w.task_file_path(&task_id));
 
         if let Some(ref writer) = self.task_file_writer {
             let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
             record.params = Some(params.clone());
             record.timeout_requested = Some(config.timeout_secs);
-            record.callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
+            record.callback_mode = config
+                .delivery_target
+                .map(|dt| format!("{:?}", dt).to_lowercase());
             if let Err(e) = writer.write(&record).await {
                 tracing::warn!("Failed to write initial task file for {}: {}", task_id, e);
             }
@@ -1410,7 +1444,9 @@ impl UnifiedAsyncExecutor {
         let task_id_clone = task_id.clone();
         let task_file_writer_clone = self.task_file_writer.clone();
         let timeout_secs = config.timeout_secs;
-        let callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
+        let callback_mode = config
+            .delivery_target
+            .map(|dt| format!("{:?}", dt).to_lowercase());
         let params_for_spawn = params.clone();
 
         tokio::spawn(async move {
@@ -1425,7 +1461,11 @@ impl UnifiedAsyncExecutor {
                 record.callback_mode = callback_mode.clone();
                 record.set_running();
                 if let Err(e) = writer.write(&record).await {
-                    tracing::warn!("Failed to write running task file for {}: {}", task_id_clone, e);
+                    tracing::warn!(
+                        "Failed to write running task file for {}: {}",
+                        task_id_clone,
+                        e
+                    );
                 }
             }
 
@@ -1438,13 +1478,17 @@ impl UnifiedAsyncExecutor {
 
             let was_cancelled = {
                 let registry = registry_clone.read().await;
-                registry.get(&task_id_clone)
+                registry
+                    .get(&task_id_clone)
                     .map(|e| matches!(e.status, AsyncTaskStatus::Cancelled))
                     .unwrap_or(false)
             };
 
             if was_cancelled {
-                tracing::debug!("Task {} was cancelled, skipping result update", task_id_clone);
+                tracing::debug!(
+                    "Task {} was cancelled, skipping result update",
+                    task_id_clone
+                );
                 return;
             }
 
@@ -1478,10 +1522,16 @@ impl UnifiedAsyncExecutor {
                 record.callback_mode = callback_mode.clone();
                 match outcome {
                     TaskOutcome::Success(async_result) => {
-                        if let AsyncTaskResult::Process { stdout, stderr, exit_code } = &async_result {
+                        if let AsyncTaskResult::Process {
+                            stdout,
+                            stderr,
+                            exit_code,
+                        } = &async_result
+                        {
                             record.set_process_output(stdout.clone(), stderr.clone(), *exit_code);
                         }
-                        record.set_completed(serde_json::to_value(&async_result).unwrap_or_default());
+                        record
+                            .set_completed(serde_json::to_value(&async_result).unwrap_or_default());
                     }
                     TaskOutcome::Failure(e) => {
                         record.set_failed(e.to_string());
@@ -1491,7 +1541,11 @@ impl UnifiedAsyncExecutor {
                     }
                 }
                 if let Err(e) = writer.write(&record).await {
-                    tracing::warn!("Failed to write final task file for {}: {}", task_id_clone, e);
+                    tracing::warn!(
+                        "Failed to write final task file for {}: {}",
+                        task_id_clone,
+                        e
+                    );
                 }
             }
 
@@ -1565,10 +1619,7 @@ impl UnifiedAsyncExecutor {
     }
 
     /// List all tasks in the registry, optionally filtered by session_key
-    pub async fn list_tasks(
-        &self,
-        session_key: Option<&str>,
-    ) -> Vec<AsyncTaskEntry> {
+    pub async fn list_tasks(&self, session_key: Option<&str>) -> Vec<AsyncTaskEntry> {
         let registry = self.registry.read().await;
         registry.list_tasks(session_key)
     }
@@ -1576,10 +1627,7 @@ impl UnifiedAsyncExecutor {
     /// Run janitor: clean old task files and purge stale registry entries
     ///
     /// Returns the number of task files removed and the number of registry entries purged.
-    pub async fn run_janitor(
-        &self,
-        file_ttl: Duration,
-    ) -> Result<(usize, usize)> {
+    pub async fn run_janitor(&self, file_ttl: Duration) -> Result<(usize, usize)> {
         let files_removed = if let Some(ref writer) = self.task_file_writer {
             writer.cleanup_old(file_ttl).await?
         } else {

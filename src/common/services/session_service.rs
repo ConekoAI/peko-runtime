@@ -96,7 +96,7 @@ pub struct HistoryQuery {
 }
 
 impl HistoryQuery {
-    #[must_use] 
+    #[must_use]
     pub fn default() -> Self {
         Self {
             include_tool_calls: true,
@@ -147,7 +147,7 @@ pub struct SessionService {
 
 impl SessionService {
     /// Create a new session service
-    #[must_use] 
+    #[must_use]
     pub fn new(path_resolver: PathResolver) -> Self {
         Self { path_resolver }
     }
@@ -322,9 +322,7 @@ impl SessionService {
 
         // Check if session exists
         if !storage.session_exists(session_id).await {
-            anyhow::bail!(
-                "Session '{session_id}' not found for agent '{agent_name}'"
-            );
+            anyhow::bail!("Session '{session_id}' not found for agent '{agent_name}'");
         }
 
         // Delete the session file
@@ -428,10 +426,9 @@ impl SessionService {
         let event_type = event.event_type();
 
         // Filter based on query params
-        if !query.include_tool_calls
-            && (event_type == "tool.call" || event_type == "tool.result") {
-                return None;
-            }
+        if !query.include_tool_calls && (event_type == "tool.call" || event_type == "tool.result") {
+            return None;
+        }
 
         if !query.include_thinking && event_type == "thinking" {
             return None;
