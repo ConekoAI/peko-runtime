@@ -67,27 +67,6 @@ peko ext enable shell --target default/$agentName 2>&1 | Out-Null
 peko ext enable read_file --target default/$agentName 2>&1 | Out-Null
 Write-Host "Enabled shell and read_file tools" -ForegroundColor Green
 
-# Start daemon
-Write-Host "`nStarting pekobot daemon..." -ForegroundColor Cyan
-peko daemon start 2>&1 | Out-Null
-
-# Wait for daemon to be ready
-$daemonReady = $false
-for ($i = 0; $i -lt 30; $i++) {
-    $status = peko daemon status 2>&1
-    if ($status -match "running") {
-        $daemonReady = $true
-        break
-    }
-    Start-Sleep -Milliseconds 200
-}
-
-if (-not $daemonReady) {
-    Write-Error "Daemon failed to start"
-    exit 1
-}
-Write-Host "Daemon is running" -ForegroundColor Green
-
 # Ensure cleanup runs even if tests fail
 try {
     # ============================================================
@@ -100,17 +79,20 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $prompt = @"
-Use the shell tool to run the command 'echo async_start; Start-Sleep 6; echo async_complete' with async mode enabled.
+Use the shell tool to run the command 'echo async_start; Start-Sleep 30; echo async_complete' with async mode enabled.
 To do this, include `_async: true` in the tool parameters.
 
 The tool should return a JSON receipt immediately. Read that receipt carefully.
-The receipt should contain a 'task_file' path where you can check for progress and results. Read the task_file path from the receipt and check its contents. If you see a header json identical to your receipt, and the output contains 'async_start', Respond with ASYNC_SUCCESS and include the task_file path from the receipt.
+The receipt should contain a 'task_file' path where you can check for progress and results. Read the task_file path from the receipt and check its contents. If you see a header json identical to your receipt, and the output contains null, indicating the task is still running, Respond with ASYNC_SUCCESS and include the task_file path from the receipt and the contents of the file.
 If you don't get a receipt, or the receipt doesn't contain a task_file, or you get the result of the command right away instead of a receipt, or the file contents don't match expectations, respond with ASYNC_FAILED and explain what you got back when you called the tool.
 "@
 
     Write-Host "Sending async shell request..." -ForegroundColor Yellow
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $response = peko send $agentName $prompt --no-stream 2>&1
+    $stopwatch.Stop()
     Write-Host "Response: $response"
+    Write-Host "Elapsed time: $($stopwatch.Elapsed.ToString('hh\:mm\:ss'))" -ForegroundColor Yellow
 
     $success = $response -match "ASYNC_SUCCESS"
     $failed = $response -match "ASYNC_FAILED"
@@ -123,8 +105,15 @@ If you don't get a receipt, or the receipt doesn't contain a task_file, or you g
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
 
+    # Verify the agent returned quickly (less than 20s) — proves it didn't block on the 30s background task
+    if ($stopwatch.Elapsed.TotalSeconds -gt 20) {
+        Write-Host "FAIL: Agent took $($stopwatch.Elapsed.TotalSeconds.ToString('F1'))s to respond — it may have blocked on the background task" -ForegroundColor Red
+    } else {
+        Write-Host "PASS: Agent returned in $($stopwatch.Elapsed.TotalSeconds.ToString('F1'))s — did not block on background task" -ForegroundColor Green
+    }
+
     Write-Host "`nWaiting for async task to complete..." -ForegroundColor Yellow
-    Start-Sleep 6
+    Start-Sleep 30
     # ============================================================
     # TEST 2: Direct progress polling via task_file
     # ============================================================
@@ -190,13 +179,10 @@ If you don't get a receipt, or the receipt doesn't contain a task_file, or you g
 
     peko agent delete $agentName --force 2>&1 | Out-Null
     Write-Host "Deleted test agent" -ForegroundColor Green
-
-    peko daemon stop 2>&1 | Out-Null
-    Write-Host "Stopped daemon" -ForegroundColor Green
 }
 
 Write-Host "`nAsync tool E2E test completed!" -ForegroundColor Green
 Write-Host "`nNotes:" -ForegroundColor Cyan
-Write-Host "- This test assumes Option 3 (minimal file-based polling)." -ForegroundColor Cyan
+Write-Host "- This test assumes minimal file-based polling." -ForegroundColor Cyan
 Write-Host "- The agent polls the task_file path from the receipt directly." -ForegroundColor Cyan
 Write-Host "- No automatic queue injection into the agentic loop is expected." -ForegroundColor Cyan
