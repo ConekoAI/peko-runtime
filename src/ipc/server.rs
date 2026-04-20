@@ -15,7 +15,7 @@ use tracing::{error, info, trace, warn};
 
 use super::packet::{RequestPacket, ResponsePacket, HEARTBEAT_INTERVAL_SECS};
 use super::{DEFAULT_HOST, DEFAULT_PORT};
-use crate::api::state::AppState;
+use crate::daemon::state::AppState;
 
 /// Platform-specific server socket (wrapped in Arc for shared ownership)
 #[derive(Clone)]

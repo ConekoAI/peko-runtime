@@ -8,6 +8,8 @@
 //! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
 
+pub mod state;
+
 use crate::common::paths::PathResolver;
 use crate::cron::events::SystemEvent;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
@@ -144,11 +146,11 @@ impl Daemon {
         }
 
         // Create shared AppState for daemon services
-        let app_state = crate::api::state::AppState::new(
+        let app_state = crate::daemon::state::AppState::new(
             &self.config.data_dir,
             "127.0.0.1", // host placeholder (HTTP API removed)
             0,             // port placeholder (HTTP API removed)
-            crate::api::state::DaemonConfigSnapshot {
+            crate::daemon::state::DaemonConfigSnapshot {
                 data_dir: self.config.data_dir.clone(),
                 config_dir: self.config.config_dir.clone(),
                 log_level: "info".to_string(),

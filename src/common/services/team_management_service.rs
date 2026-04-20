@@ -12,7 +12,7 @@
 //! - Runtime operations (deploy, stop, scale) use `TeamRuntimeManager`
 //! - Both CLI and API use this unified service
 
-use crate::api::state::AppState;
+use crate::daemon::state::AppState;
 use crate::common::identifiers::{validate_team_name, ValidationError};
 use crate::common::paths::PathResolver;
 use crate::common::services::TeamService;

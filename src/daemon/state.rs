@@ -1,7 +1,7 @@
-//! Application State
+//! Daemon Application State
 //!
-//! Shared state accessible to all API route handlers.
-//! Updated for stateless cold-start architecture.
+//! Shared state accessible to the daemon and IPC server.
+//! This is the daemon's composition root — all services are initialized here.
 
 use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;

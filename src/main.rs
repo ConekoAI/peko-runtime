@@ -47,15 +47,7 @@ async fn main() {
                 eprintln!("❌ Error: {}", e);
             }
 
-            // Determine exit code
-            let exit_code =
-                if let Some(client_err) = e.downcast_ref::<pekobot::api::client::ClientError>() {
-                    client_err.exit_code()
-                } else {
-                    1
-                };
-
-            std::process::exit(exit_code);
+            std::process::exit(1);
         }
     }
 }

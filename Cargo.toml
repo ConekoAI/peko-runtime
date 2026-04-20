@@ -17,11 +17,9 @@ serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "0.8"
 
-# HTTP client & server
+# HTTP client (used by registry, MCP transport, providers, message tool)
 reqwest = { version = "0.11", features = ["json", "stream"] }
 bytes = "1.5"
-axum = { version = "0.7", features = ["ws"] }
-tower = { version = "0.4", features = ["util"] }
 
 # CLI
 clap = { version = "4.4", features = ["derive", "env"] }
@@ -108,9 +106,7 @@ mcp = []
 tokio-test = "0.4"
 tempfile = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
-axum = "0.7"
-tower = "0.4"
-tower-http = { version = "0.5", features = ["fs"] }
+
 
 [[bin]]
 name = "pekobot"

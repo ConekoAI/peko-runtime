@@ -121,9 +121,6 @@ pub mod hooks;
 /// Daemon mode for background execution
 pub(crate) mod daemon;
 
-/// HTTP API server
-pub mod api;
-
 /// IPC layer (UDP/Unix socket) for CLI↔daemon communication
 pub mod ipc;
 

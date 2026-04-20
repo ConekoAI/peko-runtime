@@ -5,7 +5,7 @@
 //! - A2A communication via event bus
 //! - Horizontal scaling support
 
-use crate::api::state::AppState;
+use crate::daemon::state::AppState;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
