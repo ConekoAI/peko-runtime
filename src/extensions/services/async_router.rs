@@ -423,14 +423,18 @@ impl AsyncExecutionRouter {
             )
             .await?;
 
-        Ok(serde_json::json!({
+        let mut receipt_json = serde_json::json!({
             "_async_status": "queued",
             "task_id": receipt.task_id,
             "status": receipt.status,
             "task_file": receipt.task_file,
             "timeout_requested": timeout_secs,
             "callback_mode": reserved.callback,
-        }))
+        });
+        if let Some(params) = receipt.params {
+            receipt_json["params"] = params;
+        }
+        Ok(receipt_json)
     }
 
     /// Get a reference to the underlying transport

@@ -30,6 +30,9 @@ pub struct TaskFileRecord {
     #[serde(rename = "_async_status")]
     pub async_status: String,
     pub status: String,
+    /// Parameters the agent used to invoke the tool (audit transparency)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
     pub exit_code: Option<i32>,
@@ -52,6 +55,7 @@ impl TaskFileRecord {
             tool_name,
             async_status: "pending".to_string(),
             status: "pending".to_string(),
+            params: None,
             stdout: None,
             stderr: None,
             exit_code: None,
@@ -267,6 +271,9 @@ pub struct AsyncTaskReceipt {
     pub estimated_duration_secs: Option<u64>,
     /// Path to the task file on disk for polling (Option 3: minimal file-based polling)
     pub task_file: Option<std::path::PathBuf>,
+    /// Parameters the agent used to invoke the tool (audit transparency)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
 }
 
 /// Unified result type for all async operations
@@ -1180,6 +1187,7 @@ impl UnifiedAsyncExecutor {
         // Create initial task file record
         if let Some(ref writer) = self.task_file_writer {
             let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
+            record.params = Some(params.clone());
             record.timeout_requested = Some(config.timeout_secs);
             record.callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
             if let Err(e) = writer.write(&record).await {
@@ -1187,11 +1195,11 @@ impl UnifiedAsyncExecutor {
             }
         }
 
-        // Create task entry
+        // Create task entry (clone params for the entry, keep original for receipt)
         let entry = AsyncTaskEntry::new(
             task_id.clone(),
             tool_name.clone(),
-            params,
+            params.clone(),
             parent_session_key.clone(),
             config.clone(),
         );
@@ -1228,6 +1236,7 @@ impl UnifiedAsyncExecutor {
         let task_file_writer_clone = self.task_file_writer.clone();
         let timeout_secs = config.timeout_secs;
         let callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
+        let params_for_spawn = params.clone();
 
         // Spawn the background execution
         tokio::spawn(async move {
@@ -1238,6 +1247,7 @@ impl UnifiedAsyncExecutor {
             }
             if let Some(ref writer) = task_file_writer_clone {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.params = Some(params_for_spawn.clone());
                 record.timeout_requested = Some(timeout_secs);
                 record.callback_mode = callback_mode.clone();
                 record.set_running();
@@ -1295,6 +1305,7 @@ impl UnifiedAsyncExecutor {
             // Write final task file record
             if let Some(ref writer) = task_file_writer_clone {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.params = Some(params_for_spawn.clone());
                 record.timeout_requested = Some(timeout_secs);
                 record.callback_mode = callback_mode.clone();
                 match outcome {
@@ -1333,6 +1344,7 @@ impl UnifiedAsyncExecutor {
             status: AsyncTaskStatus::Pending,
             estimated_duration_secs: None,
             task_file,
+            params: Some(params.clone()),
         })
     }
 
@@ -1356,6 +1368,7 @@ impl UnifiedAsyncExecutor {
 
         if let Some(ref writer) = self.task_file_writer {
             let mut record = TaskFileRecord::new(task_id.clone(), tool_name.clone());
+            record.params = Some(params.clone());
             record.timeout_requested = Some(config.timeout_secs);
             record.callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
             if let Err(e) = writer.write(&record).await {
@@ -1366,7 +1379,7 @@ impl UnifiedAsyncExecutor {
         let entry = AsyncTaskEntry::new(
             task_id.clone(),
             tool_name.clone(),
-            params,
+            params.clone(),
             parent_session_key.clone(),
             config.clone(),
         );
@@ -1398,6 +1411,7 @@ impl UnifiedAsyncExecutor {
         let task_file_writer_clone = self.task_file_writer.clone();
         let timeout_secs = config.timeout_secs;
         let callback_mode = config.delivery_target.map(|dt| format!("{:?}", dt).to_lowercase());
+        let params_for_spawn = params.clone();
 
         tokio::spawn(async move {
             {
@@ -1406,6 +1420,7 @@ impl UnifiedAsyncExecutor {
             }
             if let Some(ref writer) = task_file_writer_clone {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.params = Some(params_for_spawn.clone());
                 record.timeout_requested = Some(timeout_secs);
                 record.callback_mode = callback_mode.clone();
                 record.set_running();
@@ -1458,6 +1473,7 @@ impl UnifiedAsyncExecutor {
 
             if let Some(ref writer) = task_file_writer_clone {
                 let mut record = TaskFileRecord::new(task_id_clone.clone(), tool_name.clone());
+                record.params = Some(params_for_spawn.clone());
                 record.timeout_requested = Some(timeout_secs);
                 record.callback_mode = callback_mode.clone();
                 match outcome {
@@ -1491,6 +1507,7 @@ impl UnifiedAsyncExecutor {
             status: AsyncTaskStatus::Pending,
             estimated_duration_secs: None,
             task_file,
+            params: Some(params.clone()),
         })
     }
 

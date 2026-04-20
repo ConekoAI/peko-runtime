@@ -196,6 +196,7 @@ impl ExtensionAsyncAdapter {
                     status: AsyncTaskStatus::Pending,
                     estimated_duration_secs: receipt.estimated_duration_secs,
                     task_file: receipt.task_file,
+                    params: None,
                 })
             }
             HookResult::PassThrough => Err(anyhow!(

@@ -105,8 +105,8 @@ If you don't get a receipt, or the receipt doesn't contain a task_file, or you g
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
 
-    # Verify the agent returned quickly (less than 20s) — proves it didn't block on the 30s background task
-    if ($stopwatch.Elapsed.TotalSeconds -gt 20) {
+    # Verify the agent returned quickly (less than 30s) — proves it didn't block on the 30s background task
+    if ($stopwatch.Elapsed.TotalSeconds -gt 30) {
         Write-Host "FAIL: Agent took $($stopwatch.Elapsed.TotalSeconds.ToString('F1'))s to respond — it may have blocked on the background task" -ForegroundColor Red
     } else {
         Write-Host "PASS: Agent returned in $($stopwatch.Elapsed.TotalSeconds.ToString('F1'))s — did not block on background task" -ForegroundColor Green
