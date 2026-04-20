@@ -38,8 +38,19 @@ impl PacketStream {
     /// Receive the next packet
     ///
     /// Returns `None` when the stream is closed (Done/Error received, or daemon died).
+    /// Also returns `None` if no packet is received within the CLI timeout period,
+    /// to prevent hanging forever on a dead or stuck daemon.
     pub async fn next(&mut self) -> Option<ResponsePacket> {
-        self.rx.recv().await
+        match tokio::time::timeout(Duration::from_secs(CLI_TIMEOUT_SECS), self.rx.recv()).await {
+            Ok(packet) => packet,
+            Err(_) => {
+                warn!(
+                    "PacketStream timeout for request {}: no packet received within {}s",
+                    self.request_id, CLI_TIMEOUT_SECS
+                );
+                None
+            }
+        }
     }
 
     /// Collect all text chunks into a single string
