@@ -79,15 +79,6 @@ pub struct ExtensionAsyncAdapter {
 struct AsyncCapability {
     /// Whether the tool supports native async via hooks
     supports_native_async: bool,
-
-    /// Whether the tool supports status checking
-    supports_status_check: bool,
-
-    /// Whether the tool supports cancellation
-    supports_cancel: bool,
-
-    /// Name of the status check tool (if different from default)
-    status_tool_name: Option<String>,
 }
 
 impl ExtensionAsyncAdapter {
@@ -382,9 +373,6 @@ impl ExtensionAsyncAdapter {
             tool_name.to_string(),
             AsyncCapability {
                 supports_native_async: true,
-                supports_status_check: true,
-                supports_cancel: true,
-                status_tool_name: None,
             },
         );
 

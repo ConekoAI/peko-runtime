@@ -120,11 +120,6 @@ impl StreamRouter {
         }
     }
 
-    /// Unregister a stream (call when Done/Error received)
-    pub async fn unregister(&self, request_id: u64) {
-        let mut streams = self.streams.lock().await;
-        streams.remove(&request_id);
-    }
 }
 
 /// Spawn a background receiver task that reads from the socket and

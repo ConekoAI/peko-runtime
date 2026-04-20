@@ -32,25 +32,6 @@ pub enum Placeholder {
 }
 
 impl Placeholder {
-    /// Parse placeholder from string (without braces)
-    #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "tools" => Some(Self::Tools),
-            "skills" => Some(Self::Skills),
-            "runtime" => Some(Self::Runtime),
-            "sandbox" => Some(Self::Sandbox),
-            "model_aliases" => Some(Self::ModelAliases),
-            "self_update" => Some(Self::SelfUpdate),
-            "timezone" => Some(Self::Timezone),
-            "agent_name" => Some(Self::AgentName),
-            "workspace" => Some(Self::Workspace),
-            "channel" => Some(Self::Channel),
-            "thinking_level" => Some(Self::ThinkingLevel),
-            _ => None,
-        }
-    }
-
     /// Get the placeholder marker for this variant
     pub fn marker(&self) -> &'static str {
         match self {
@@ -96,17 +77,6 @@ pub fn replace_placeholders(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_placeholder_from_str() {
-        assert_eq!(Placeholder::from_str("tools"), Some(Placeholder::Tools));
-        assert_eq!(Placeholder::from_str("runtime"), Some(Placeholder::Runtime));
-        assert_eq!(
-            Placeholder::from_str("agent_name"),
-            Some(Placeholder::AgentName)
-        );
-        assert_eq!(Placeholder::from_str("unknown"), None);
-    }
 
     #[test]
     fn test_placeholder_markers() {

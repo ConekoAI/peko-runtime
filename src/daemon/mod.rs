@@ -62,17 +62,6 @@ impl Default for DaemonConfig {
     }
 }
 
-/// Commands sent to the daemon
-#[derive(Debug)]
-pub enum DaemonCommand {
-    /// Shutdown the daemon gracefully
-    Shutdown,
-    /// Trigger immediate cron check
-    CheckCron,
-    /// Get daemon status
-    GetStatus,
-}
-
 /// Daemon status
 #[derive(Debug, Clone)]
 pub struct DaemonStatus {
@@ -783,32 +772,6 @@ impl Daemon {
         }
 
         Ok(())
-    }
-}
-
-/// Handle for controlling a spawned daemon
-pub struct DaemonHandle {
-    command_tx: mpsc::Sender<DaemonCommand>,
-    status: Arc<Mutex<DaemonStatus>>,
-    _handle: tokio::task::JoinHandle<()>,
-}
-
-impl DaemonHandle {
-    /// Send shutdown command
-    pub async fn shutdown(&self) -> Result<()> {
-        self.command_tx.send(DaemonCommand::Shutdown).await?;
-        Ok(())
-    }
-
-    /// Trigger immediate cron check
-    pub async fn check_cron(&self) -> Result<()> {
-        self.command_tx.send(DaemonCommand::CheckCron).await?;
-        Ok(())
-    }
-
-    /// Get daemon status
-    pub async fn get_status(&self) -> DaemonStatus {
-        self.status.lock().await.clone()
     }
 }
 

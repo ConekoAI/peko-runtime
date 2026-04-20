@@ -80,7 +80,6 @@ impl BootstrapFile {
 #[derive(Debug, Clone)]
 pub struct InjectedContext {
     pub sections: Vec<InjectedSection>,
-    pub total_chars: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -93,7 +92,6 @@ pub struct InjectedSection {
 /// Load and inject bootstrap files
 pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
     let mut sections = vec![];
-    let mut total_chars = 0;
 
     for file_def in &config.files {
         let path = config.workspace_dir.join(&file_def.name);
@@ -107,8 +105,6 @@ pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
                 } else {
                     (content, false)
                 };
-
-                total_chars += content.len();
 
                 sections.push(InjectedSection {
                     name: file_def.section_name.clone(),
@@ -135,7 +131,6 @@ pub fn inject_bootstrap_files(config: &BootstrapConfig) -> InjectedContext {
 
     InjectedContext {
         sections,
-        total_chars,
     }
 }
 

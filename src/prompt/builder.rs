@@ -23,17 +23,6 @@ pub enum PromptMode {
     None,
 }
 
-impl PromptMode {
-    /// Parse from string
-    #[must_use]
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "minimal" => Self::Minimal,
-            "none" => Self::None,
-            _ => Self::Full,
-        }
-    }
-}
 
 /// System prompt builder
 pub struct SystemPromptBuilder {
@@ -86,11 +75,6 @@ impl SystemPromptBuilder {
         self
     }
 
-    pub fn with_tools(mut self, tools: Vec<Arc<dyn Tool>>) -> Self {
-        self.tools = tools;
-        self
-    }
-
     /// Set tool definitions from unified registry (ADR-019 Phase 3)
     ///
     /// This allows building prompts with `ToolDefinition` instead of Arc<dyn Tool>,
@@ -103,31 +87,6 @@ impl SystemPromptBuilder {
     pub fn with_workspace(mut self, workspace: impl AsRef<std::path::Path>) -> Self {
         self.workspace = workspace.as_ref().to_path_buf();
         self.bootstrap_config.workspace_dir = self.workspace.clone();
-        self
-    }
-
-    pub fn with_model(mut self, model: &str) -> Self {
-        self.model = model.to_string();
-        self
-    }
-
-    pub fn with_thinking_level(mut self, level: &str) -> Self {
-        self.thinking_level = level.to_string();
-        self
-    }
-
-    pub fn with_channel(mut self, channel: &str) -> Self {
-        self.channel = channel.to_string();
-        self
-    }
-
-    pub fn with_sandbox(mut self, enabled: bool) -> Self {
-        self.sandbox_enabled = enabled;
-        self
-    }
-
-    pub fn with_model_aliases(mut self, aliases: Vec<String>) -> Self {
-        self.model_aliases = aliases;
         self
     }
 
@@ -397,14 +356,6 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_prompt_mode_from_str() {
-        assert_eq!(PromptMode::from_str("full"), PromptMode::Full);
-        assert_eq!(PromptMode::from_str("minimal"), PromptMode::Minimal);
-        assert_eq!(PromptMode::from_str("none"), PromptMode::None);
-        assert_eq!(PromptMode::from_str("invalid"), PromptMode::Full); // Default
-    }
-
-    #[test]
     fn test_builder_basic() {
         let builder = SystemPromptBuilder::new("test-agent").with_mode(PromptMode::None);
 
@@ -524,57 +475,18 @@ Level: {{thinking_level}}";
 
         let builder = SystemPromptBuilder::new("my-agent")
             .with_workspace(tmp.path())
-            .with_mode(PromptMode::Full)
-            .with_model("k2p5")
-            .with_thinking_level("high");
+            .with_mode(PromptMode::Full);
 
         let prompt = builder.build();
 
         assert!(prompt.contains("Agent: my-agent"));
         assert!(prompt.contains("Workspace:"));
         assert!(prompt.contains("Channel: discord"));
-        assert!(prompt.contains("Level: high"));
+        // Level defaults to "medium" since with_thinking_level was removed
+        assert!(prompt.contains("Level: medium"));
     }
 
-    #[test]
-    fn test_conditional_sections() {
-        let tmp = TempDir::new().unwrap();
-        let template = "{{sandbox}}\n{{model_aliases}}\n{{self_update}}";
-        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
 
-        // With all conditions enabled
-        let builder = SystemPromptBuilder::new("test-agent")
-            .with_workspace(tmp.path())
-            .with_sandbox(true)
-            .with_model_aliases(vec!["fast".to_string(), "slow".to_string()]);
-
-        let prompt = builder.build();
-
-        assert!(prompt.contains("## Sandbox"));
-        assert!(prompt.contains("Sandbox: enabled"));
-        assert!(prompt.contains("## Model Aliases"));
-        assert!(prompt.contains("- fast"));
-        assert!(prompt.contains("- slow"));
-        assert!(prompt.contains("## Self-Update"));
-    }
-
-    #[test]
-    fn test_conditional_sections_disabled() {
-        let tmp = TempDir::new().unwrap();
-        let template = "{{sandbox}}\n{{model_aliases}}";
-        std::fs::write(tmp.path().join("SYSTEM.md"), template).unwrap();
-
-        // With all conditions disabled
-        let builder = SystemPromptBuilder::new("test-agent")
-            .with_workspace(tmp.path())
-            .with_sandbox(false);
-
-        let prompt = builder.build();
-
-        // Sections should be empty (placeholders removed with nothing inserted)
-        assert!(!prompt.contains("## Sandbox"));
-        assert!(!prompt.contains("## Model Aliases"));
-    }
 
     #[test]
     fn test_minimal_mode_basic() {

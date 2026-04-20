@@ -252,13 +252,6 @@ impl SessionIndex {
         }
     }
 
-    /// Set custom cache TTL
-    #[must_use]
-    pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
-        self.cache_ttl = ttl;
-        self
-    }
-
     /// Ensure directory exists
     async fn ensure_dir(&self) -> Result<()> {
         if !self.dir.exists() {
@@ -423,15 +416,6 @@ impl SessionIndex {
             .map(|p| p.active_session_id.clone()))
     }
 
-    /// Get active session ID for peer using immutable borrow
-    /// Returns None if peers not loaded in cache
-    pub fn get_active_session_id_cached(&self, peer_key: &str) -> Option<String> {
-        self.peers_cache
-            .as_ref()
-            .and_then(|peers| peers.peers.get(peer_key))
-            .map(|p| p.active_session_id.clone())
-    }
-
     /// List all sessions for a peer (O(N) where N = sessions for peer, typically small)
     pub async fn list_for_peer(&mut self, peer_key: &str) -> Result<Vec<SessionEntry>> {
         let peers = self.load_peers().await?;
@@ -500,37 +484,6 @@ impl SessionIndex {
         Ok(())
     }
 
-    /// Branch session for peer (O(1))
-    pub async fn branch_for_peer(&mut self, new_entry: SessionEntry, peer_key: &str) -> Result<()> {
-        let new_session_id = new_entry.session_id.clone();
-
-        // Add to sessions.json
-        let sessions = self.load_sessions_mut().await?;
-        sessions.insert(new_session_id.clone(), new_entry);
-        self.sessions_modified = true;
-
-        // Update peers.json - add to peer and make active
-        let peers = self.load_peers_mut().await?;
-        let peer_info = peers
-            .peers
-            .entry(peer_key.to_string())
-            .or_insert_with(|| PeerInfo::new(new_session_id.clone()));
-
-        peer_info.add_session(new_session_id.clone());
-        self.peers_modified = true;
-
-        info!("Branched session {} for peer {}", new_session_id, peer_key);
-        Ok(())
-    }
-
-    /// Create new session without peer association
-    pub async fn create(&mut self, entry: SessionEntry) -> Result<()> {
-        let sessions = self.load_sessions_mut().await?;
-        sessions.insert(entry.session_id.clone(), entry);
-        self.sessions_modified = true;
-        Ok(())
-    }
-
     // =================================================================================
     // Listing Operations
     // =================================================================================
@@ -555,11 +508,6 @@ impl SessionIndex {
         // Sort by updated_at descending
         entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(entries)
-    }
-
-    /// Find entry by session ID
-    pub async fn find_by_session_id(&mut self, session_id: &str) -> Result<Option<SessionEntry>> {
-        self.get(session_id).await
     }
 
     // =================================================================================

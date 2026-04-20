@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::{default_pid_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
 
@@ -246,14 +246,6 @@ impl ConnectionManager {
             socket,
             path: path_buf,
         })
-    }
-
-    /// Connect via UDP
-    ///
-    /// # Errors
-    /// Returns error if UDP ping fails
-    async fn connect_udp(addr: &str) -> anyhow::Result<ConnectionHandle> {
-        Self::connect_udp_with_timeout(addr, Duration::from_secs(2)).await
     }
 
     async fn connect_udp_with_timeout(

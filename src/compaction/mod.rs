@@ -9,7 +9,6 @@
 //! Based on pi_agent_rust compaction algorithm.
 
 pub mod background;
-pub mod flush;
 
 use crate::providers::{ChatMessage, MessageRole};
 use crate::types::message::ContentBlock;
