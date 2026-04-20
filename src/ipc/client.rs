@@ -1,8 +1,8 @@
 //! Daemon Client — Packet Send/Receive Only
 //!
 //! Per SRP, this struct only sends `RequestPacket`s and receives
-//! `ResponsePacket`s. Connection management (discovery, auto-start,
-/// reconnection) is handled by `ConnectionManager`.
+//! `ResponsePacket`s. Connection management (discovery, reconnection)
+//! is handled by `ConnectionManager`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -32,12 +32,15 @@ impl std::fmt::Debug for DaemonClient {
 }
 
 impl DaemonClient {
-    /// Connect to the daemon (auto-starts if necessary)
+    /// Connect to the daemon.
+    ///
+    /// The CLI does NOT auto-start the daemon. Start it manually with:
+    ///   pekobot daemon start
     ///
     /// # Errors
-    /// Returns error if daemon cannot be reached or started
+    /// Returns error if daemon is not reachable
     pub async fn connect() -> anyhow::Result<Self> {
-        let conn = ConnectionManager::connect_or_start().await?;
+        let conn = ConnectionManager::connect().await?;
         Self::with_connection(conn).await
     }
 

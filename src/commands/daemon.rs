@@ -351,7 +351,6 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
                 // Clean up PID file and lock files
                 let _ = std::fs::remove_file(&pid_file);
                 let _ = std::fs::remove_file(pid_file.with_extension("lock"));
-                let _ = std::fs::remove_file(pid_file.with_file_name("daemon_autostart.lock"));
                 return Ok(());
             }
         }
@@ -412,7 +411,6 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
     // Clean up PID file and lock files
     let _ = std::fs::remove_file(&pid_file);
     let _ = std::fs::remove_file(pid_file.with_extension("lock"));
-    let _ = std::fs::remove_file(pid_file.with_file_name("daemon_autostart.lock"));
 
     // 3. Final verification: ensure no daemon is responding on IPC
     println!("   Verifying daemon is stopped...");

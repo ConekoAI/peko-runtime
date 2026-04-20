@@ -32,4 +32,7 @@ if (Test-Path $DataDir) {
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
 
+Write-Host "Starting pekobot daemon..." -ForegroundColor Cyan
+peko daemon start
+
 Write-Host "Reset complete." -ForegroundColor Green

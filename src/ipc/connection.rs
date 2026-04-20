@@ -1,15 +1,21 @@
-//! Connection Manager — Daemon Discovery, Auto-Start, and Socket Lifecycle
+//! Connection Manager — Daemon Discovery and Socket Lifecycle
 //!
-//! This module handles the messy real-world concerns of finding and
+//! This module handles the real-world concerns of finding and
 //! maintaining a connection to the daemon:
 //!
 //! 1. **Discovery**: Find the daemon via env var, default path, or port
-//! 2. **Auto-start**: Spawn the daemon if it's not running
-//! 3. **Reconnection**: Handle transient failures
+//! 2. **Reconnection**: Handle transient failures
 //!
 //! `ConnectionManager` is separate from `DaemonClient` per SRP.
 //! `DaemonClient` sends/receives packets; `ConnectionManager` handles
 //! connection lifecycle.
+//!
+//! The CLI does NOT auto-start the daemon. Like Docker, the daemon must be
+//! started explicitly by the user (`pekobot daemon start`). This avoids:
+//! - Privilege boundary issues (daemon may need elevated permissions)
+//! - Ambiguity about where to start the daemon (local vs remote)
+//! - Unexpected resource consumption from background processes
+//! - System stability issues from implicit service startup
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,8 +23,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
-use tokio::process::Command;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::{default_pid_path, DAEMON_ADDR_ENV, DAEMON_SOCK_ENV, DEFAULT_HOST, DEFAULT_PORT};
 
@@ -124,18 +129,14 @@ impl ConnectionHandle {
     }
 }
 
-/// Path to a lock file used to prevent concurrent auto-start attempts
-fn auto_start_lock_path() -> PathBuf {
-    default_pid_path().with_file_name("daemon_autostart.lock")
-}
-
 /// Manages daemon discovery and connection lifecycle
 pub struct ConnectionManager;
 
 impl ConnectionManager {
     /// Connect to the daemon, failing if it's not running.
     ///
-    /// Use `connect_or_start()` if you want auto-start behavior.
+    /// The CLI does NOT auto-start the daemon. Start it manually with:
+    ///   pekobot daemon start
     ///
     /// # Errors
     /// Returns error if daemon is not reachable
@@ -143,87 +144,7 @@ impl ConnectionManager {
         Self::try_connect().await
     }
 
-    /// Connect to the daemon, auto-starting it if necessary.
-    ///
-    /// Uses a file-based lock to prevent multiple concurrent auto-start
-    /// attempts from spawning a storm of daemon processes.
-    ///
-    /// Resolution order:
-    /// 1. `PEKOBOT_DAEMON_SOCK` env var (Unix socket)
-    /// 2. `PEKOBOT_DAEMON_ADDR` env var (UDP host:port)
-    /// 3. Default Unix socket at `~/.pekobot/run/daemon.sock`
-    /// 4. Default UDP at `127.0.0.1:11435`
-    ///
-    /// If none are reachable, auto-starts the daemon and retries with a
-    /// short timeout (max ~3s). Fails fast if the daemon cannot be started.
-    ///
-    /// # Errors
-    /// Returns error if daemon cannot be reached or started
-    pub async fn connect_or_start() -> anyhow::Result<ConnectionHandle> {
-        // Try to connect without auto-start first (quick 500ms check)
-        if let Ok(handle) = Self::try_connect_quick().await {
-            return Ok(handle);
-        }
-
-        // Check if another process is already trying to auto-start
-        let lock_path = auto_start_lock_path();
-        if lock_path.exists() {
-            // Another process is auto-starting; wait briefly for it
-            warn!("Another process appears to be auto-starting the daemon, waiting...");
-            for i in 0..10 {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                if let Ok(handle) = Self::try_connect_quick().await {
-                    info!("Connected to daemon after waiting for auto-start (attempt {})", i + 1);
-                    return Ok(handle);
-                }
-            }
-            // Lock file is stale — remove it and try ourselves
-            let _ = std::fs::remove_file(&lock_path);
-        }
-
-        // Create lock file
-        if let Some(parent) = lock_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&lock_path, std::process::id().to_string());
-
-        // Double-check: maybe daemon started while we were checking
-        if let Ok(handle) = Self::try_connect_quick().await {
-            let _ = std::fs::remove_file(&lock_path);
-            return Ok(handle);
-        }
-
-        // Daemon not running — try to auto-start
-        info!("Daemon not running, attempting auto-start...");
-        let start_result = Self::auto_start_daemon().await;
-
-        // Retry with short timeout (max ~3s)
-        for i in 0..10 {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            if let Ok(handle) = Self::try_connect_quick().await {
-                info!("Connected to daemon after auto-start");
-                let _ = std::fs::remove_file(&lock_path);
-                return Ok(handle);
-            }
-            debug!("Connection attempt {} after auto-start...", i + 1);
-        }
-
-        let _ = std::fs::remove_file(&lock_path);
-
-        if let Err(e) = start_result {
-            anyhow::bail!(
-                "Daemon is not running and auto-start failed: {e}\n\
-                 Start it manually: pekobot daemon start --foreground"
-            )
-        } else {
-            anyhow::bail!(
-                "Daemon is not running and did not respond after auto-start.\n\
-                 Start it manually: pekobot daemon start --foreground"
-            )
-        }
-    }
-
-    /// Try to connect to an already-running daemon (no auto-start)
+    /// Try to connect to an already-running daemon.
     ///
     /// Uses a 2-second timeout for the ping handshake.
     ///
@@ -362,57 +283,6 @@ impl ConnectionManager {
         })
     }
 
-    /// Auto-start the daemon as a background process
-    ///
-    /// # Errors
-    /// Returns error if daemon binary cannot be found or spawn fails
-    async fn auto_start_daemon() -> anyhow::Result<()> {
-        let exe_path = std::env::current_exe()
-            .map_err(|e| anyhow::anyhow!("Cannot find pekobot binary: {e}"))?;
-
-        info!("Auto-starting daemon: {}", exe_path.display());
-
-        let mut cmd = Command::new(&exe_path);
-        cmd.arg("daemon")
-            .arg("start")
-            .arg("--foreground")
-            .env("PEKOBOT_DAEMON", "1")
-            .kill_on_drop(false)
-            // Suppress child output so it doesn't flood the parent terminal
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-
-        // On Windows, also suppress the new console window
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
-
-        // Inherit config/data dirs from current process if set
-        for var in ["PEKOBOT_CONFIG_DIR", "PEKOBOT_DATA_DIR", "PEKOBOT_CACHE_DIR"] {
-            if let Ok(val) = std::env::var(var) {
-                cmd.env(var, val);
-            }
-        }
-
-        let child = cmd.spawn().map_err(|e| {
-            anyhow::anyhow!("Failed to spawn daemon process: {e}")
-        })?;
-
-        if let Some(pid) = child.id() {
-            let pid_path = default_pid_path();
-            if let Some(parent) = pid_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(&pid_path, pid.to_string());
-            debug!("Wrote daemon PID {} to {}", pid, pid_path.display());
-        }
-
-        // Don't wait for the child — it daemonizes itself
-        // The connect retry loop will handle waiting for readiness
-        Ok(())
-    }
 }
 
 /// Stub for non-Unix platforms

@@ -76,7 +76,7 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
         agent_name, team
     );
 
-    // Connect to daemon (auto-starts if needed)
+    // Connect to daemon (fails if not running — start it with: pekobot daemon start)
     let client = DaemonClient::connect().await?;
 
     // Send execute request to daemon

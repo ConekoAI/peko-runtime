@@ -279,7 +279,6 @@ impl Daemon {
         let pid_file = crate::ipc::default_pid_path();
         let _ = std::fs::remove_file(&pid_file);
         let _ = std::fs::remove_file(pid_file.with_extension("lock"));
-        let _ = std::fs::remove_file(pid_file.with_file_name("daemon_autostart.lock"));
 
         {
             let mut status = self.status.lock().await;

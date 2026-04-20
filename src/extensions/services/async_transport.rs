@@ -158,7 +158,7 @@ pub struct DaemonIpcTransport {
 }
 
 impl DaemonIpcTransport {
-    /// Create a new IPC transport (connects to daemon, auto-starts if needed)
+    /// Create a new IPC transport (connects to daemon, fails if not running)
     pub async fn new() -> anyhow::Result<Self> {
         Ok(Self {
             client: DaemonClient::connect().await?,
