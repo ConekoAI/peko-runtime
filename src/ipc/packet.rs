@@ -63,6 +63,10 @@ pub enum RequestPacket {
     /// Health check / status ping
     #[serde(rename = "ping")]
     Ping { request_id: u64 },
+
+    /// Request graceful daemon shutdown
+    #[serde(rename = "shutdown")]
+    Shutdown { request_id: u64, force: bool },
 }
 
 impl RequestPacket {
@@ -73,7 +77,8 @@ impl RequestPacket {
             Self::Execute { request_id, .. }
             | Self::AsyncSpawn { request_id, .. }
             | Self::AsyncCancel { request_id, .. }
-            | Self::Ping { request_id } => *request_id,
+            | Self::Ping { request_id }
+            | Self::Shutdown { request_id, .. } => *request_id,
         }
     }
 
@@ -148,6 +153,10 @@ pub enum ResponsePacket {
     /// Heartbeat — sent during long streams so CLI can detect dead daemon
     #[serde(rename = "heartbeat")]
     Heartbeat { request_id: u64 },
+
+    /// Shutdown acknowledgement
+    #[serde(rename = "shutting_down")]
+    ShuttingDown { request_id: u64 },
 }
 
 impl ResponsePacket {
@@ -160,7 +169,8 @@ impl ResponsePacket {
             | Self::Done { request_id, .. }
             | Self::Error { request_id, .. }
             | Self::Pong { request_id, .. }
-            | Self::Heartbeat { request_id } => *request_id,
+            | Self::Heartbeat { request_id }
+            | Self::ShuttingDown { request_id } => *request_id,
         }
     }
 

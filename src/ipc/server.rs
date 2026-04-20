@@ -128,45 +128,55 @@ impl IpcServer {
 
     /// Run the IPC server loop
     ///
-    /// This method runs until the daemon shuts down.
-    pub async fn run(&self) -> anyhow::Result<()> {
+    /// This method runs until the daemon shuts down or the shutdown signal is received.
+    pub async fn run(&self, mut shutdown_rx: tokio::sync::broadcast::Receiver<()>) -> anyhow::Result<()> {
         let mut buf = vec![0u8; 65536];
 
         info!("IPC server ready, waiting for requests...");
 
         loop {
-            match self.socket.recv_from(&mut buf).await {
-                Ok((len, addr)) => {
-                    if len == 0 {
-                        continue;
-                    }
+            tokio::select! {
+                result = self.socket.recv_from(&mut buf) => {
+                    match result {
+                        Ok((len, addr)) => {
+                            if len == 0 {
+                                continue;
+                            }
 
-                    match RequestPacket::from_bytes(&buf[..len]) {
-                        Ok(request) => {
-                            trace!("Received request: {:?}", request);
-                            let request_id = request.request_id();
+                            match RequestPacket::from_bytes(&buf[..len]) {
+                                Ok(request) => {
+                                    trace!("Received request: {:?}", request);
+                                    let request_id = request.request_id();
 
-                            // Spawn a task to handle the request
-                            let state = self.app_state.clone();
-                            let socket = self.socket.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = Self::handle_request(request, state, socket, addr).await {
-                                    error!("Error handling request {}: {}", request_id, e);
+                                    // Spawn a task to handle the request
+                                    let state = self.app_state.clone();
+                                    let socket = self.socket.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = Self::handle_request(request, state, socket, addr).await {
+                                            error!("Error handling request {}: {}", request_id, e);
+                                        }
+                                    });
                                 }
-                            });
+                                Err(e) => {
+                                    warn!("Failed to parse request packet: {}", e);
+                                }
+                            }
                         }
                         Err(e) => {
-                            warn!("Failed to parse request packet: {}", e);
+                            error!("Socket receive error: {}", e);
+                            // Brief pause to avoid tight error loop
+                            tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     }
                 }
-                Err(e) => {
-                    error!("Socket receive error: {}", e);
-                    // Brief pause to avoid tight error loop
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                _ = shutdown_rx.recv() => {
+                    info!("IPC server received shutdown signal, stopping...");
+                    break;
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Handle a single request
@@ -185,6 +195,13 @@ impl IpcServer {
                     version: crate::VERSION.to_string(),
                 };
                 Self::send_packet(&socket, response, addr).await?;
+            }
+
+            RequestPacket::Shutdown { request_id, force } => {
+                info!("Shutdown request received via IPC (force={})", force);
+                let response = ResponsePacket::ShuttingDown { request_id };
+                Self::send_packet(&socket, response, addr).await?;
+                state.request_shutdown(force).await;
             }
 
             RequestPacket::Execute {

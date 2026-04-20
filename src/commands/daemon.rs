@@ -10,7 +10,7 @@ use crate::daemon::{Daemon, DaemonConfig};
 use clap::Subcommand;
 use std::path::PathBuf;
 use tokio::process::Command;
-use tracing::warn;
+
 
 /// Daemon management subcommands
 ///
@@ -317,21 +317,22 @@ async fn show_daemon_status(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Stop the daemon via PID-based kill
+/// Stop the daemon via IPC graceful shutdown, then PID-based kill as fallback
 async fn stop_daemon(force: bool) -> anyhow::Result<()> {
     let pid_file = get_pid_file_path()?;
 
-    // Try graceful shutdown via IPC first (no auto-start)
-    let mut ipc_reachable = false;
+    // 1. Try graceful shutdown via IPC first (no auto-start)
+    let mut shutdown_sent = false;
     if !force {
         if let Ok(conn) = crate::ipc::ConnectionManager::try_connect().await {
-            let ping = crate::ipc::RequestPacket::Ping { request_id: 0 };
-            if let Ok(bytes) = ping.to_bytes() {
+            let shutdown_req = crate::ipc::RequestPacket::Shutdown { request_id: 0, force: false };
+            if let Ok(bytes) = shutdown_req.to_bytes() {
                 if conn.send(&bytes).await.is_ok() {
                     let mut buf = vec![0u8; 65536];
-                    if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
-                        if let Ok(crate::ipc::ResponsePacket::Pong { .. }) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
-                            ipc_reachable = true;
+                    if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(3)).await {
+                        if let Ok(crate::ipc::ResponsePacket::ShuttingDown { .. }) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
+                            shutdown_sent = true;
+                            println!("   Graceful shutdown request sent via IPC");
                         }
                     }
                 }
@@ -339,11 +340,27 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
         }
     }
 
-    if !ipc_reachable && !force {
-        println!("ℹ️  Daemon not reachable via IPC, trying PID file...");
+    // Wait for graceful shutdown to take effect (daemon needs time to clean up)
+    if shutdown_sent && !force {
+        println!("   Waiting for daemon to shut down gracefully...");
+        // Poll for up to 5 seconds to give the daemon time to exit
+        for i in 0..25 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            if let Ok(false) = check_daemon_running().await {
+                println!("   Daemon stopped gracefully after {}ms", (i + 1) * 200);
+                // Clean up PID file and lock files
+                let _ = std::fs::remove_file(&pid_file);
+                let _ = std::fs::remove_file(pid_file.with_extension("lock"));
+                let _ = std::fs::remove_file(pid_file.with_file_name("daemon_autostart.lock"));
+                return Ok(());
+            }
+        }
+        println!("   Daemon still running after graceful request, falling back to PID kill...");
+    } else if !force {
+        println!("   Daemon not reachable via IPC, trying PID file...");
     }
 
-    // PID-based kill
+    // 2. PID-based kill
     let mut killed = false;
     if let Some(pid) = get_running_pid(&pid_file) {
         println!("   Found PID file with PID: {pid}");
@@ -397,7 +414,7 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
     let _ = std::fs::remove_file(pid_file.with_extension("lock"));
     let _ = std::fs::remove_file(pid_file.with_file_name("daemon_autostart.lock"));
 
-    // Final verification: ensure no daemon is responding on IPC
+    // 3. Final verification: ensure no daemon is responding on IPC
     println!("   Verifying daemon is stopped...");
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     if let Ok(conn) = crate::ipc::ConnectionManager::try_connect().await {
@@ -407,18 +424,23 @@ async fn stop_daemon(force: bool) -> anyhow::Result<()> {
                 let mut buf = vec![0u8; 65536];
                 if let Ok(len) = conn.recv_timeout(&mut buf, std::time::Duration::from_secs(2)).await {
                     if let Ok(crate::ipc::ResponsePacket::Pong { .. }) = crate::ipc::ResponsePacket::from_bytes(&buf[..len]) {
-                        // Daemon is still running — try to kill all pekobot processes as fallback
+                        // Daemon is still running — try to kill all pekobot/peko processes as fallback
                         println!("   Daemon still responding! Attempting fallback kill...");
                         #[cfg(windows)]
                         {
-                            let exe_name = std::env::current_exe()
-                                .ok()
-                                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-                                .unwrap_or_else(|| "pekobot".to_string());
-                            let im_arg = format!("{exe_name}.exe");
-                            println!("   Running: taskkill /F /IM {im_arg}");
-                            let _ = Command::new("taskkill")
-                                .args(["/F", "/IM", &im_arg])
+                            // Try both known binary names since the binary can be invoked as either
+                            for im_arg in ["pekobot.exe", "peko.exe"] {
+                                println!("   Running: taskkill /F /IM {im_arg}");
+                                let _ = Command::new("taskkill")
+                                    .args(["/F", "/IM", im_arg])
+                                    .output()
+                                    .await;
+                            }
+                        }
+                        #[cfg(unix)]
+                        {
+                            let _ = Command::new("pkill")
+                                .args(["-9", "-f", "pekobot daemon"])
                                 .output()
                                 .await;
                         }

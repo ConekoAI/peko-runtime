@@ -157,15 +157,24 @@ impl Daemon {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
 
+        // Write our own PID file so stop commands can find us even if the parent is gone
+        let pid_file = crate::ipc::default_pid_path();
+        if let Some(parent) = pid_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&pid_file, std::process::id().to_string());
+        info!("   PID file: {} (pid={})", pid_file.display(), std::process::id());
+
         // Mark daemon as ready (server is listening)
         app_state.set_ready(true).await;
         info!("✅ Daemon ready to accept requests");
 
         // Start IPC server (replaces HTTP API per ADR-021)
+        let ipc_shutdown_rx = app_state.subscribe_shutdown();
         let ipc_server = crate::ipc::IpcServer::new(app_state.clone()).await
             .map_err(|e| anyhow::anyhow!("Failed to start IPC server: {e}"))?;
         let ipc_handle = tokio::spawn(async move {
-            if let Err(e) = ipc_server.run().await {
+            if let Err(e) = ipc_server.run(ipc_shutdown_rx).await {
                 error!("IPC server error: {}", e);
             }
         });
@@ -263,6 +272,12 @@ impl Daemon {
 
         // Wait for IPC server to finish
         let _ = ipc_handle.await;
+
+        // Clean up PID file
+        let pid_file = crate::ipc::default_pid_path();
+        let _ = std::fs::remove_file(&pid_file);
+        let _ = std::fs::remove_file(pid_file.with_extension("lock"));
+        let _ = std::fs::remove_file(pid_file.with_file_name("daemon_autostart.lock"));
 
         {
             let mut status = self.status.lock().await;
