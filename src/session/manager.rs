@@ -49,7 +49,7 @@ use super::metadata_controller::MetadataController;
 use super::overlay::{ChannelOverlay, SessionOverlay};
 use super::spawn::SpawnOverlay;
 use super::types::{ChannelType, Peer, SpawnCleanupPolicy};
-use super::unified::UnifiedSession;
+use super::unified::Session;
 use crate::common::paths::PathResolver;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -115,19 +115,19 @@ impl OverlayRef {
 #[derive(Debug, Clone)]
 pub struct HybridSession {
     /// Base session (shared across all overlays for a peer)
-    pub base: Arc<RwLock<UnifiedSession>>,
+    pub base: Arc<RwLock<Session>>,
     /// Active overlay (channel or spawn)
     pub overlay: OverlayRef,
 }
 
 impl HybridSession {
     /// Create a new hybrid session
-    pub fn new(base: Arc<RwLock<UnifiedSession>>, overlay: OverlayRef) -> Self {
+    pub fn new(base: Arc<RwLock<Session>>, overlay: OverlayRef) -> Self {
         Self { base, overlay }
     }
 
     /// Create a hybrid session with no overlay
-    pub fn base_only(base: Arc<RwLock<UnifiedSession>>) -> Self {
+    pub fn base_only(base: Arc<RwLock<Session>>) -> Self {
         Self {
             base,
             overlay: OverlayRef::None,
@@ -204,7 +204,7 @@ impl HybridSession {
 #[derive(Debug, Clone)]
 pub struct SessionHandle {
     session_id: String,
-    base: Arc<RwLock<UnifiedSession>>,
+    base: Arc<RwLock<Session>>,
     overlay: Option<OverlayRef>,
     /// Shared metadata controller for metadata operations
     /// This avoids the circular reference from holding `SessionManager`
@@ -215,7 +215,7 @@ impl SessionHandle {
     /// Create a new session handle
     fn new(
         session_id: impl Into<String>,
-        base: Arc<RwLock<UnifiedSession>>,
+        base: Arc<RwLock<Session>>,
         overlay: Option<OverlayRef>,
         metadata: Arc<RwLock<MetadataController>>,
     ) -> Self {
@@ -234,7 +234,7 @@ impl SessionHandle {
     }
 
     /// Get the base session (for internal operations)
-    pub(crate) fn base(&self) -> &Arc<RwLock<UnifiedSession>> {
+    pub(crate) fn base(&self) -> &Arc<RwLock<Session>> {
         &self.base
     }
 
@@ -415,8 +415,8 @@ pub struct ResolvedSession {
 /// All session resolution goes through this manager.
 #[derive(Debug)]
 pub struct SessionManager {
-    /// Base sessions: (`agent_id`, peer) -> `UnifiedSession`
-    base_sessions: HashMap<(String, Peer), Arc<RwLock<UnifiedSession>>>,
+    /// Base sessions: (`agent_id`, peer) -> `Session`
+    base_sessions: HashMap<(String, Peer), Arc<RwLock<Session>>>,
     /// Channel overlays: `overlay_key` -> `ChannelOverlay`
     channel_overlays: HashMap<String, Arc<RwLock<ChannelOverlay>>>,
     /// Spawn overlays: `overlay_key` -> `SpawnOverlay`
@@ -813,8 +813,8 @@ impl SessionManager {
             .map(|p| p.to_string_lossy().to_string());
         storage.create_session(&session_id, cwd).await?;
 
-        // 2. Create UnifiedSession from components
-        let session = UnifiedSession::from_components(
+        // 2. Create Session from components
+        let session = Session::from_components(
             session_id.clone(),
             agent.to_string(),
             session_key.clone(),
@@ -915,8 +915,8 @@ impl SessionManager {
             Peer::User("default".to_string())
         };
 
-        // 3. Load UnifiedSession from JSONL with peer info
-        let session = UnifiedSession::open_by_id(
+        // 3. Load Session from JSONL with peer info
+        let session = Session::open_by_id(
             &metadata.agent_name,
             session_id,
             &sessions_dir,
@@ -1172,7 +1172,7 @@ impl SessionManager {
         &mut self,
         agent: &str,
         peer: &Peer,
-    ) -> Result<Arc<RwLock<UnifiedSession>>> {
+    ) -> Result<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
 
         // Check cache first
@@ -1215,7 +1215,7 @@ impl SessionManager {
             let session = if transcript_path.exists() {
                 // File exists, open it by ID
                 info!("Opening existing session: {}", transcript_path.display());
-                UnifiedSession::open_by_id(agent, &session_id, sessions_dir, Some(peer)).await?
+                Session::open_by_id(agent, &session_id, sessions_dir, Some(peer)).await?
             } else {
                 // Create the session file directly using SessionStorage
                 info!("Creating new session file: {}", transcript_path.display());
@@ -1225,8 +1225,8 @@ impl SessionManager {
                     .map(|p| p.to_string_lossy().to_string());
                 storage.create_session(&session_id, cwd).await?;
 
-                // Create UnifiedSession from components
-                UnifiedSession::from_components(
+                // Create Session from components
+                Session::from_components(
                     session_id.clone(),
                     agent.to_string(),
                     peer_key.clone(),
@@ -1252,7 +1252,7 @@ impl SessionManager {
         &self,
         agent: &str,
         peer: &Peer,
-    ) -> Option<Arc<RwLock<UnifiedSession>>> {
+    ) -> Option<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.get(&key).cloned()
     }
@@ -1303,7 +1303,7 @@ impl SessionManager {
     /// session resumption), and we need to create a channel overlay on top of it.
     pub async fn create_channel_overlay_on_base(
         &mut self,
-        base: Arc<RwLock<UnifiedSession>>,
+        base: Arc<RwLock<Session>>,
         peer: &Peer,
         channel_type: ChannelType,
         channel_id: &str,
@@ -1448,7 +1448,7 @@ impl SessionManager {
     async fn get_parent_base_session(
         &self,
         session_key: &str,
-    ) -> Option<Arc<RwLock<UnifiedSession>>> {
+    ) -> Option<Arc<RwLock<Session>>> {
         // Extract base key from overlay key if needed
         let base_key = crate::session::key::base_key_from_overlay(session_key)
             .unwrap_or_else(|| session_key.to_string());
@@ -1515,7 +1515,7 @@ impl SessionManager {
         &mut self,
         agent: &str,
         peer: &Peer,
-    ) -> Option<Arc<RwLock<UnifiedSession>>> {
+    ) -> Option<Arc<RwLock<Session>>> {
         let key = (agent.to_string(), peer.clone());
         self.base_sessions.remove(&key)
     }
@@ -1789,8 +1789,8 @@ impl Default for SessionManager {
 /// This is used for shared-context spawns where the child should start with
 /// the parent's conversation history.
 async fn copy_session_context(
-    parent: &Arc<RwLock<UnifiedSession>>,
-    child: &Arc<RwLock<UnifiedSession>>,
+    parent: &Arc<RwLock<Session>>,
+    child: &Arc<RwLock<Session>>,
 ) -> Result<()> {
     use crate::providers::MessageRole;
     use crate::types::message::ContentBlock;
@@ -2374,7 +2374,7 @@ mod tests {
         let peer = Peer::User("alice".to_string());
 
         // get_or_create_base should require initialized SessionManager
-        // (no legacy fallback to UnifiedSession::open)
+        // (no legacy fallback to Session::open)
         let result = manager.get_or_create_base("test_agent", &peer).await;
 
         // Should succeed because we have a directory set

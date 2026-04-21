@@ -17,7 +17,7 @@ use tracing::{error, info, warn};
 
 use crate::agent::async_tool_framework::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskRegistry, AsyncTaskResult,
-    AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, UnifiedAsyncExecutor,
+    AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, AsyncExecutor,
     WaitResult,
 };
 use crate::agent::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
@@ -76,7 +76,7 @@ pub struct SubagentExecutor {
     /// Registry for tracking runs (subagent-specific)
     registry: SharedSubagentRegistry,
     /// Unified async executor for background task execution
-    unified_executor: UnifiedAsyncExecutor,
+    unified_executor: AsyncExecutor,
     /// Session router for creating sessions
     session_router: SessionRouter,
     /// Agent name for the executor
@@ -105,7 +105,7 @@ impl SubagentExecutor {
         let async_registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
         let unified_executor =
-            UnifiedAsyncExecutor::with_registries(async_registry, async_queue_manager);
+            AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
         Self {
             registry: create_shared_registry(),
@@ -132,7 +132,7 @@ impl SubagentExecutor {
         let async_registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
         let unified_executor =
-            UnifiedAsyncExecutor::with_registries(async_registry, async_queue_manager);
+            AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
         Self {
             registry,
@@ -159,7 +159,7 @@ impl SubagentExecutor {
         max_concurrent: usize,
     ) -> Self {
         let unified_executor =
-            UnifiedAsyncExecutor::with_registries(async_registry, async_queue_manager);
+            AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
         Self {
             registry,
@@ -221,7 +221,7 @@ impl SubagentExecutor {
 
     /// Get a reference to the unified executor
     #[must_use]
-    pub fn unified_executor(&self) -> &UnifiedAsyncExecutor {
+    pub fn unified_executor(&self) -> &AsyncExecutor {
         &self.unified_executor
     }
 
@@ -553,7 +553,7 @@ impl SubagentExecutor {
     pub async fn shutdown(&self) {
         info!("Shutting down subagent executor...");
 
-        // Note: UnifiedAsyncExecutor doesn't track all task handles externally,
+        // Note: AsyncExecutor doesn't track all task handles externally,
         // so we rely on the registry to know what might be running
         // In practice, the async task registry handles cleanup internally
 
@@ -638,7 +638,7 @@ impl Clone for SubagentExecutor {
 /// 1. Loads the child session
 /// 2. Adds system prompt and user task message
 /// 3. Creates a minimal agent with tools
-/// 4. Runs `AgenticLoopV4` to execute the task
+/// 4. Runs `AgenticLoop` to execute the task
 /// 5. Returns the assistant's response
 async fn execute_subagent_task(
     agent_name: &str,
@@ -704,7 +704,7 @@ async fn execute_subagent_task(
         }
     }
 
-    // TODO: Full agent execution with AgenticLoopV4
+    // TODO: Full agent execution with AgenticLoop
     // For now, return a placeholder that shows the task was received
     // This will be implemented in a follow-up to avoid complex Send issues
     let output = format!(

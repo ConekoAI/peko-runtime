@@ -48,7 +48,7 @@ pub use async_tool_framework::{
     AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
     CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery, ResultDelivery,
     SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
-    UnifiedAsyncExecutor, WaitResult,
+    AsyncExecutor, WaitResult,
 };
 
 // Re-export types for backward compatibility

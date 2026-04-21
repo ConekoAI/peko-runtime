@@ -1,6 +1,6 @@
 //! Extension Async Adapter
 //!
-//! Bridges `ExtensionCore` async hooks to the `UnifiedAsyncExecutor` framework.
+//! Bridges `ExtensionCore` async hooks to the `AsyncExecutor` framework.
 //!
 //! This adapter enables extensions (MCP, Universal Tools, etc.) to participate
 //! in the async tool execution ecosystem with the same capabilities as built-in tools:
@@ -15,7 +15,7 @@
 //! ```text
 //! ToolExecutor ──▶ ExtensionAsyncAdapter ──▶ ExtensionCore (hooks)
 //!       │                                          │
-//!       └──────────▶ UnifiedAsyncExecutor ◄────────┘
+//!       └──────────▶ AsyncExecutor ◄────────┘
 //!                         │
 //!                         ▼
 //!              ┌─────────────────────┐
@@ -41,7 +41,7 @@
 //! ```
 
 use crate::agent::async_tool_framework::{
-    AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, UnifiedAsyncExecutor,
+    AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, AsyncExecutor,
     WaitResult,
 };
 use crate::extensions::core::{ExtensionCore, HookPointBuilder};
@@ -55,7 +55,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-/// Bridges `ExtensionCore` hooks to `UnifiedAsyncExecutor`
+/// Bridges `ExtensionCore` hooks to `AsyncExecutor`
 ///
 /// This adapter provides a unified interface for async tool execution that works
 /// with both extensions that implement async hooks and those that don't.
@@ -65,7 +65,7 @@ pub struct ExtensionAsyncAdapter {
     core: Arc<ExtensionCore>,
 
     /// Unified async executor for background task management
-    executor: UnifiedAsyncExecutor,
+    executor: AsyncExecutor,
 
     /// Cache of extension capabilities (which tools support async)
     capability_cache: Arc<RwLock<HashMap<String, AsyncCapability>>>,
@@ -90,14 +90,14 @@ impl ExtensionAsyncAdapter {
     pub fn new(core: Arc<ExtensionCore>) -> Self {
         Self {
             core,
-            executor: UnifiedAsyncExecutor::new(),
+            executor: AsyncExecutor::new(),
             capability_cache: Arc::new(RwLock::new(HashMap::new())),
             workspace: None,
         }
     }
 
     /// Create with a custom executor (for sharing registries)
-    pub fn with_executor(core: Arc<ExtensionCore>, executor: UnifiedAsyncExecutor) -> Self {
+    pub fn with_executor(core: Arc<ExtensionCore>, executor: AsyncExecutor) -> Self {
         Self {
             core,
             executor,
@@ -212,7 +212,7 @@ impl ExtensionAsyncAdapter {
 
         info!(tool_name, task_id, "Starting fallback async execution");
 
-        // Execute using UnifiedAsyncExecutor
+        // Execute using AsyncExecutor
         let receipt = self
             .executor
             .execute(
@@ -357,7 +357,7 @@ impl ExtensionAsyncAdapter {
 
     /// Get a reference to the underlying executor
     #[must_use]
-    pub fn executor(&self) -> &UnifiedAsyncExecutor {
+    pub fn executor(&self) -> &AsyncExecutor {
         &self.executor
     }
 

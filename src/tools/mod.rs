@@ -66,7 +66,7 @@ pub use write_file::WriteFileTool;
 
 // Async tool trait re-exports
 pub use async_tool::{
-    into_async_tool, BoxedAsyncTool, SyncToAsyncAdapter, ToolAsyncExt, UnifiedAsyncTool,
+    into_async_tool, BoxedAsyncTool, SyncToAsyncAdapter, ToolAsyncExt, AsyncTool,
 };
 // ToolWrapper and wrapper.rs removed in ADR-019 cleanup.
 // Reserved parameter handling is now unified in ExtensionCore execution hooks.
@@ -77,5 +77,5 @@ pub use crate::agent::async_tool_framework::{
     AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
     CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery, ResultDelivery,
     SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
-    UnifiedAsyncExecutor, WaitResult,
+    AsyncExecutor, WaitResult,
 };

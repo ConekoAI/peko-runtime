@@ -204,8 +204,8 @@ impl AsyncExecutionRouter {
     /// Create a new async execution router with default timeouts (local transport)
     #[must_use]
     pub fn new() -> Self {
-        use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
-        let executor = UnifiedAsyncExecutor::new();
+        use crate::agent::async_tool_framework::AsyncExecutor;
+        let executor = AsyncExecutor::new();
         Self {
             default_sync_timeout: Duration::from_secs(120),
             default_async_timeout: Duration::from_secs(300),
@@ -216,8 +216,8 @@ impl AsyncExecutionRouter {
     /// Create with custom timeouts (local transport)
     #[must_use]
     pub fn with_timeouts(sync_secs: u64, async_secs: u64) -> Self {
-        use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
-        let executor = UnifiedAsyncExecutor::new();
+        use crate::agent::async_tool_framework::AsyncExecutor;
+        let executor = AsyncExecutor::new();
         Self {
             default_sync_timeout: Duration::from_secs(sync_secs),
             default_async_timeout: Duration::from_secs(async_secs),
@@ -238,7 +238,7 @@ impl AsyncExecutionRouter {
     /// Create with a shared local async executor (for sharing registries across routers)
     #[must_use]
     pub fn with_executor(
-        async_executor: crate::agent::async_tool_framework::UnifiedAsyncExecutor,
+        async_executor: crate::agent::async_tool_framework::AsyncExecutor,
     ) -> Self {
         Self {
             default_sync_timeout: Duration::from_secs(120),
@@ -285,7 +285,7 @@ impl AsyncExecutionRouter {
         );
 
         if reserved.async_mode {
-            // Async path: execute via UnifiedAsyncExecutor
+            // Async path: execute via AsyncExecutor
             self.execute_async(
                 tool_name,
                 params.clone(),

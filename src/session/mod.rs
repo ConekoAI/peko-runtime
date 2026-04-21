@@ -41,7 +41,7 @@ pub mod sync;
 pub mod types;
 pub mod unified;
 
-// Re-export UnifiedSession (replaces both BaseSession and SimpleSession)
+// Re-export Session (replaces both BaseSession and SimpleSession)
 pub use context::{SessionContext, SessionRouter};
 pub use events::{
     generate_event_id, generate_message_id, generate_tool_call_id, A2aMessageType,
@@ -64,7 +64,7 @@ pub use lock_utils::{
 pub use message::{RoleMetadata, SessionMessage};
 pub use metadata::{MetadataDiscrepancy, ReconciliationResult, SessionMetadata};
 pub use metadata_controller::{ConsistencyStatus, MetadataController};
-pub use unified::UnifiedSession;
+pub use unified::Session;
 
 // Re-export overlay architecture types
 pub use types::{ChannelType, OverlayType, Peer, SpawnCleanupPolicy};

@@ -1008,7 +1008,7 @@ impl ResultDelivery for CallbackDelivery {
 /// Trait for tools that support async execution
 ///
 /// # Deprecated
-/// This trait is deprecated in favor of using `UnifiedAsyncExecutor` directly.
+/// This trait is deprecated in favor of using `AsyncExecutor` directly.
 /// Tools should implement async execution by calling `executor.execute()` with
 /// a closure that returns `AsyncTaskResult`.
 ///
@@ -1017,7 +1017,7 @@ impl ResultDelivery for CallbackDelivery {
 /// // Old: Implement AsyncTool trait
 /// impl AsyncTool for MyTool { ... }
 ///
-/// // New: Use UnifiedAsyncExecutor
+/// // New: Use AsyncExecutor
 /// let receipt = executor.execute(
 ///     task_id, tool_name, params, session_key, config,
 ///     move || async move {
@@ -1028,7 +1028,7 @@ impl ResultDelivery for CallbackDelivery {
 /// ```
 #[deprecated(
     since = "0.2.0",
-    note = "Use UnifiedAsyncExecutor::execute() instead. See docs/async-tool-framework.md for migration guide."
+    note = "Use AsyncExecutor::execute() instead. See docs/async-tool-framework.md for migration guide."
 )]
 #[async_trait::async_trait]
 pub trait AsyncTool: Send + Sync {
@@ -1062,7 +1062,7 @@ pub trait AsyncTool: Send + Sync {
 /// - Automatic status updates
 /// - Result formatting and caching
 #[derive(Clone)]
-pub struct UnifiedAsyncExecutor {
+pub struct AsyncExecutor {
     /// Task registry for tracking all async operations
     registry: SharedAsyncTaskRegistry,
     /// Queue manager for queue-based delivery (deprecated, kept for compatibility)
@@ -1075,7 +1075,7 @@ pub struct UnifiedAsyncExecutor {
     task_file_writer: Option<TaskFileWriter>,
 }
 
-impl UnifiedAsyncExecutor {
+impl AsyncExecutor {
     /// Create a new unified async executor
     #[must_use]
     pub fn new() -> Self {
@@ -1643,9 +1643,9 @@ impl UnifiedAsyncExecutor {
     }
 }
 
-impl std::fmt::Debug for UnifiedAsyncExecutor {
+impl std::fmt::Debug for AsyncExecutor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UnifiedAsyncExecutor")
+        f.debug_struct("AsyncExecutor")
             .field("registry", &"<AsyncTaskRegistry>")
             .field("queue_manager", &"<AsyncResultQueueManager>")
             .field(
@@ -1658,7 +1658,7 @@ impl std::fmt::Debug for UnifiedAsyncExecutor {
     }
 }
 
-impl Default for UnifiedAsyncExecutor {
+impl Default for AsyncExecutor {
     fn default() -> Self {
         Self::new()
     }
@@ -2224,11 +2224,11 @@ mod tests {
         assert_eq!(target, DeliveryTarget::AsyncQueue);
     }
 
-    // Tests for UnifiedAsyncExecutor (Phase 3)
+    // Tests for AsyncExecutor (Phase 3)
 
     #[tokio::test]
     async fn test_unified_executor_creation() {
-        let executor = UnifiedAsyncExecutor::new();
+        let executor = AsyncExecutor::new();
 
         // Should be able to access registry and queue manager
         let _registry = executor.registry();
@@ -2236,13 +2236,13 @@ mod tests {
 
         // Debug should work
         let debug_str = format!("{executor:?}");
-        assert!(debug_str.contains("UnifiedAsyncExecutor"));
+        assert!(debug_str.contains("AsyncExecutor"));
     }
 
     #[tokio::test]
     async fn test_unified_executor_default_delivery() {
         let executor =
-            UnifiedAsyncExecutor::new().with_default_delivery(DeliveryTarget::SessionAnnouncement);
+            AsyncExecutor::new().with_default_delivery(DeliveryTarget::SessionAnnouncement);
 
         let debug_str = format!("{executor:?}");
         assert!(debug_str.contains("SessionAnnouncement"));
@@ -2250,7 +2250,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_executor_execute() {
-        let executor = UnifiedAsyncExecutor::new();
+        let executor = AsyncExecutor::new();
         let task_id = "test_task_001".to_string();
 
         // Execute a simple async task
@@ -2286,7 +2286,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_executor_check_status() {
-        let executor = UnifiedAsyncExecutor::new();
+        let executor = AsyncExecutor::new();
         let task_id = "status_check_task".to_string();
 
         // Check non-existent task
@@ -2317,7 +2317,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_executor_cancel() {
-        let executor = UnifiedAsyncExecutor::new();
+        let executor = AsyncExecutor::new();
         let task_id = "cancel_task".to_string();
 
         // Execute a long-running task
@@ -2354,7 +2354,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_executor_queue_delivery() {
-        let executor = UnifiedAsyncExecutor::new();
+        let executor = AsyncExecutor::new();
         let task_id = "queue_delivery_task".to_string();
 
         // Execute a task
@@ -2392,7 +2392,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_executor_custom_callback_delivery() {
-        let executor = UnifiedAsyncExecutor::new();
+        let executor = AsyncExecutor::new();
         let delivered = Arc::new(RwLock::new(false));
         let delivered_clone = delivered.clone();
 
@@ -2443,7 +2443,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unified_executor_default() {
-        let executor: UnifiedAsyncExecutor = Default::default();
+        let executor: AsyncExecutor = Default::default();
 
         // Should work the same as new()
         let task_id = "default_exec_task".to_string();

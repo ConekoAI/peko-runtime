@@ -445,7 +445,7 @@ pub async fn send_single_message_with_session(
     // The daemon owns task execution, so the CLI can exit immediately
     // without waiting for background tasks.
 
-    // Note: The engine (AgenticLoopV4) already adds both user and assistant messages
+    // Note: The engine (AgenticLoop) already adds both user and assistant messages
     // to the session during execution, so we don't need to add them manually here.
 
     // Return the process result (contains the collected output)

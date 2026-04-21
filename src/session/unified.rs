@@ -1,4 +1,4 @@
-//! Unified session implementation
+//! Session implementation
 //!
 //! This module provides a single, authoritative session implementation that
 //! manages conversation persistence via JSONL files.
@@ -13,7 +13,7 @@
 //! ## Important: `SessionManager` is the ONLY Way
 //!
 //! As of Phase 3 refactor, **all session creation and opening MUST go through
-//! `SessionManager`**. `UnifiedSession` is now an internal implementation detail.
+//! `SessionManager`**. `Session` is now an internal implementation detail.
 //! External code should use `SessionHandle` obtained from `SessionManager`.
 
 use crate::engine::ToolCall;
@@ -29,7 +29,7 @@ use crate::types::ContentBlock;
 use anyhow::Result;
 use chrono::Utc;
 // ====================================================================================
-// Message Conversion Functions (Phase 4a: Extracted from UnifiedSession)
+// Message Conversion Functions (Phase 4a: Extracted from Session)
 // ====================================================================================
 use crate::session::NormalizedEntry;
 
@@ -86,16 +86,16 @@ pub(crate) fn entries_to_context_text(entries: &[NormalizedEntry]) -> String {
     context
 }
 
-/// Unified session - internal implementation for conversation persistence
+/// Session - internal implementation for conversation persistence
 ///
 /// **IMPORTANT**: This is an internal implementation detail. Do not use directly.
 /// All session operations should go through `SessionManager` which provides
 /// `SessionHandle` for external use.
 ///
-/// `UnifiedSession` manages the JSONL file storage for conversation history.
+/// `Session` manages the JSONL file storage for conversation history.
 /// It is created and opened only by `SessionManager`.
 #[derive(Debug)]
-pub struct UnifiedSession {
+pub struct Session {
     /// Session ID (UUID format)
     pub id: String,
     /// Agent name
@@ -122,12 +122,12 @@ pub struct UnifiedSession {
     pub current_model: Option<String>,
 }
 
-impl UnifiedSession {
+impl Session {
     // ============================================================
     // Creation
     // ============================================================
 
-    /// Create a `UnifiedSession` from components (used by `SessionManager` after JSONL creation)
+    /// Create a `Session` from components (used by `SessionManager` after JSONL creation)
     ///
     /// This is a low-level constructor. Prefer using `open_by_id` for opening existing sessions.
     pub(crate) fn from_components(
@@ -159,7 +159,7 @@ impl UnifiedSession {
 
     /// Open an existing unified session by ID
     ///
-    /// This is the ONLY way to open a `UnifiedSession`. It requires the session ID
+    /// This is the ONLY way to open a `Session`. It requires the session ID
     /// which must be obtained from `MetadataController` via `SessionManager`.
     ///
     /// NOTE: All session opening must go through `SessionManager::open_session()`.
@@ -206,7 +206,7 @@ impl UnifiedSession {
     // Helper Methods
     // ============================================================
 
-    /// Build a `UnifiedSession` from normalized entries (supports both new and legacy formats)
+    /// Build a `Session` from normalized entries (supports both new and legacy formats)
     /// JSONL is the source of truth for message count.
     async fn from_entries(
         session_id: String,
@@ -766,7 +766,7 @@ mod tests {
     use super::*;
 
     // Note: Creation tests moved to SessionManager tests
-    // UnifiedSession::create* methods were removed in Phase 3
+    // Session::create* methods were removed in Phase 3
     // All creation must go through SessionManager::create_session()
 
     #[test]
@@ -918,9 +918,9 @@ mod tests {
         // Create a session
         storage.create_session(session_id, None).await.unwrap();
 
-        // Open it as a UnifiedSession
+        // Open it as a Session
         let mut session =
-            UnifiedSession::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
                 .await
                 .unwrap();
 

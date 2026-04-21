@@ -304,7 +304,7 @@ impl Agent {
         &self,
         prompt: &str,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
-    ) -> Result<crate::engine::AgenticResultV4> {
+    ) -> Result<crate::engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
@@ -322,10 +322,10 @@ impl Agent {
     pub async fn execute_with_session(
         &self,
         prompt: &str,
-        session: Arc<tokio::sync::RwLock<crate::session::UnifiedSession>>,
+        session: Arc<tokio::sync::RwLock<crate::session::Session>>,
         history: Option<Vec<crate::providers::ChatMessage>>,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
-    ) -> Result<crate::engine::AgenticResultV4> {
+    ) -> Result<crate::engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
@@ -361,10 +361,10 @@ impl Agent {
     pub async fn execute_streaming_with_session<F>(
         &self,
         prompt: &str,
-        session: std::sync::Arc<tokio::sync::RwLock<crate::session::UnifiedSession>>,
+        session: std::sync::Arc<tokio::sync::RwLock<crate::session::Session>>,
         history: Option<Vec<crate::providers::ChatMessage>>,
         on_event: F,
-    ) -> Result<crate::engine::AgenticResultV4>
+    ) -> Result<crate::engine::AgenticResult>
     where
         F: Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
     {
@@ -758,7 +758,7 @@ impl Agent {
             }
         }
     }
-    /// Execute with native tool calling using `AgenticLoopV4` (unified API).
+    /// Execute with native tool calling using `AgenticLoop` (unified API).
     ///
     /// This is the recommended method for agent execution with native tool calling support.
     /// The `on_event` callback receives all streaming events (text deltas, tool calls, etc.).

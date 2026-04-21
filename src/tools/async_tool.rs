@@ -7,22 +7,22 @@
 //! # Architecture
 //!
 //! The async tool system has three layers:
-//! 1. **`UnifiedAsyncTool` trait** (this file) - Native async-capable tools implement this
-//! 2. **`ExtensionAsyncAdapter`** - Bridges `ExtensionCore` hooks with `UnifiedAsyncExecutor`
-//! 3. **`UnifiedAsyncExecutor`** - Manages task lifecycle and execution
+//! 1. **`AsyncTool` trait** (this file) - Native async-capable tools implement this
+//! 2. **`ExtensionAsyncAdapter`** - Bridges `ExtensionCore` hooks with `AsyncExecutor`
+//! 3. **`AsyncExecutor`** - Manages task lifecycle and execution
 //!
 //! # Implementation Guide
 //!
-//! For native async support, implement `UnifiedAsyncTool`:
+//! For native async support, implement `AsyncTool`:
 //! ```rust,ignore
 //! use async_trait::async_trait;
-//! use pekobot::tools::async_tool::UnifiedAsyncTool;
+//! use pekobot::tools::async_tool::AsyncTool;
 //! use pekobot::agent::async_tool_framework::{AsyncTaskReceipt, AsyncTaskId, AsyncTaskStatus, AsyncToolConfig};
 //! use serde_json::Value;
 //! use anyhow::Result;
 //!
 //! #[async_trait]
-//! impl UnifiedAsyncTool for MyTool {
+//! impl AsyncTool for MyTool {
 //!     fn supports_async(&self) -> bool { true }
 //!
 //!     async fn execute_async(&self, params: Value, config: AsyncToolConfig)
@@ -52,7 +52,7 @@ use std::sync::Arc;
 /// Tools can implement this to provide native async support, or use the
 /// `SyncToAsyncAdapter` for automatic sync-to-async wrapping.
 #[async_trait]
-pub trait UnifiedAsyncTool: Tool {
+pub trait AsyncTool: Tool {
     /// Check if this tool supports async execution
     ///
     /// Returns true if the tool has implemented native async support.
@@ -126,11 +126,11 @@ pub trait UnifiedAsyncTool: Tool {
 
 /// Adapter that wraps a synchronous Tool to provide async compatibility
 ///
-/// This adapter uses the `UnifiedAsyncExecutor` to run sync tools in the background,
+/// This adapter uses the `AsyncExecutor` to run sync tools in the background,
 /// providing async semantics without requiring the tool to implement native async support.
 pub struct SyncToAsyncAdapter<T: Tool> {
     inner: Arc<T>,
-    executor: crate::agent::async_tool_framework::UnifiedAsyncExecutor,
+    executor: crate::agent::async_tool_framework::AsyncExecutor,
 }
 
 impl<T: Tool> SyncToAsyncAdapter<T> {
@@ -138,14 +138,14 @@ impl<T: Tool> SyncToAsyncAdapter<T> {
     pub fn new(inner: Arc<T>) -> Self {
         Self {
             inner,
-            executor: crate::agent::async_tool_framework::UnifiedAsyncExecutor::new(),
+            executor: crate::agent::async_tool_framework::AsyncExecutor::new(),
         }
     }
 
     /// Create with a custom executor
     pub fn with_executor(
         inner: Arc<T>,
-        executor: crate::agent::async_tool_framework::UnifiedAsyncExecutor,
+        executor: crate::agent::async_tool_framework::AsyncExecutor,
     ) -> Self {
         Self { inner, executor }
     }
@@ -205,7 +205,7 @@ impl<T: Tool + Send + Sync + 'static> Tool for SyncToAsyncAdapter<T> {
 }
 
 #[async_trait]
-impl<T: Tool + Send + Sync + 'static> UnifiedAsyncTool for SyncToAsyncAdapter<T> {
+impl<T: Tool + Send + Sync + 'static> AsyncTool for SyncToAsyncAdapter<T> {
     fn supports_async(&self) -> bool {
         true // This adapter enables async for any sync tool
     }
@@ -272,18 +272,18 @@ impl<T: Tool + Send + Sync + 'static> UnifiedAsyncTool for SyncToAsyncAdapter<T>
 }
 
 /// Trait object type for async-capable tools
-pub type BoxedAsyncTool = Box<dyn UnifiedAsyncTool + Send + Sync>;
+pub type BoxedAsyncTool = Box<dyn AsyncTool + Send + Sync>;
 
-/// Convert a boxed Tool to a boxed `UnifiedAsyncTool`
+/// Convert a boxed Tool to a boxed `AsyncTool`
 ///
-/// If the tool already implements `UnifiedAsyncTool`, returns it directly.
+/// If the tool already implements `AsyncTool`, returns it directly.
 /// Otherwise, wraps it in a `SyncToAsyncAdapter`.
 pub fn into_async_tool<T>(tool: T) -> BoxedAsyncTool
 where
     T: Tool + Send + Sync + 'static,
 {
     // For now, we always wrap in SyncToAsyncAdapter
-    // In the future, we could check if the tool already implements UnifiedAsyncTool
+    // In the future, we could check if the tool already implements AsyncTool
     Box::new(SyncToAsyncAdapter::new(Arc::new(tool)))
 }
 
@@ -300,7 +300,7 @@ pub trait ToolAsyncExt: Tool {
     /// Wrap this tool in an async adapter with custom executor
     fn into_async_with_executor(
         self,
-        executor: crate::agent::async_tool_framework::UnifiedAsyncExecutor,
+        executor: crate::agent::async_tool_framework::AsyncExecutor,
     ) -> SyncToAsyncAdapter<Self>
     where
         Self: Sized,

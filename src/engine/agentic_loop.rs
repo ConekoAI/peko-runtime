@@ -1,4 +1,4 @@
-//! Agentic loop v4 - unified streaming core with presentation-layer delivery modes
+//! Agentic loop - unified streaming core with presentation-layer delivery modes
 //!
 //! Architecture:
 //! - Single core loop (`run_inner`) that always processes streaming events
@@ -15,7 +15,7 @@ use crate::agent::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
 use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
-use crate::session::UnifiedSession;
+use crate::session::Session;
 use crate::types::message::ContentBlock;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -52,8 +52,8 @@ pub struct ToolCall {
     pub parameters: serde_json::Value,
 }
 
-/// v4 agentic loop with native tool calling
-pub struct AgenticLoopV4 {
+/// Agentic loop with native tool calling
+pub struct AgenticLoop {
     agent: Arc<Agent>,
     provider: Arc<crate::providers::Provider>,
     max_iterations: usize,
@@ -62,8 +62,8 @@ pub struct AgenticLoopV4 {
     extension_core: Arc<crate::extensions::ExtensionCore>,
 }
 
-impl AgenticLoopV4 {
-    /// Create a new v4 agentic loop
+impl AgenticLoop {
+    /// Create a new agentic loop
     ///
     /// # Arguments
     /// * `agent` - The agent configuration
@@ -110,7 +110,7 @@ impl AgenticLoopV4 {
         &self,
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
-        session: Arc<RwLock<UnifiedSession>>,
+        session: Arc<RwLock<Session>>,
         history: Option<Vec<ChatMessage>>,
     ) -> Result<AgenticResult> {
         let config = crate::engine::OrchestratorConfig::final_only();
@@ -128,7 +128,7 @@ impl AgenticLoopV4 {
         &self,
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
-        session: Arc<RwLock<UnifiedSession>>,
+        session: Arc<RwLock<Session>>,
         history: Option<Vec<ChatMessage>>,
         streaming_config: crate::engine::OrchestratorConfig,
     ) -> Result<AgenticResult> {
@@ -258,7 +258,7 @@ impl AgenticLoopV4 {
     async fn run_inner(
         &self,
         mut messages: Vec<ChatMessage>,
-        session: Arc<RwLock<UnifiedSession>>,
+        session: Arc<RwLock<Session>>,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
         streaming_config: crate::engine::OrchestratorConfig,
@@ -994,7 +994,7 @@ impl AgenticLoopV4 {
         &self,
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
-        session: Arc<RwLock<UnifiedSession>>,
+        session: Arc<RwLock<Session>>,
         history: Option<Vec<ChatMessage>>,
         streaming_config: crate::engine::OrchestratorConfig,
     ) -> Result<AgenticResult> {

@@ -603,7 +603,7 @@ impl StatelessAgentService {
                 }
             };
 
-        // Note: Session persistence is handled by the engine loop via UnifiedSession.
+        // Note: Session persistence is handled by the engine loop via Session.
         // The engine loop's session.add_user() and session.add_assistant() methods
         // already write to the session file during execution.
         // We do NOT write here to avoid duplication and format conflicts.
@@ -703,7 +703,7 @@ impl StatelessAgentService {
     async fn execute_streaming_with_session(
         &self,
         request: ExecutionRequest,
-        session: Arc<RwLock<crate::session::unified::UnifiedSession>>,
+        session: Arc<RwLock<crate::session::unified::Session>>,
     ) -> Result<crate::channels::EventStream> {
         let prompt = self.build_prompt(&request.message, &[])?;
 
@@ -766,7 +766,7 @@ impl StatelessAgentService {
     /// (including `ToolCall` and `ToolResult` blocks), instead of the lossy normalized format.
     async fn load_session_history(
         &self,
-        session: Arc<RwLock<crate::session::UnifiedSession>>,
+        session: Arc<RwLock<crate::session::Session>>,
     ) -> Result<Vec<ChatMessage>> {
         let messages = session.read().await.load_history().await?;
         Ok(messages)

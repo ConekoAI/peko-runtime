@@ -4,11 +4,11 @@
 //! for an `Agent`. It takes `Arc<Agent>` at construction, eliminating the need
 //! for `clone_for_loop()`.
 
-use crate::engine::loop_v4::AgenticLoopV4;
-use crate::engine::{AgenticEvent, AgenticResultV4, OrchestratorConfig};
+use crate::engine::agentic_loop::AgenticLoop;
+use crate::engine::{AgenticEvent, AgenticResult, OrchestratorConfig};
 use crate::extensions::core::ExtensionCore;
 use crate::providers::Provider;
-use crate::session::UnifiedSession;
+use crate::session::Session;
 use crate::types::agent::AgentState;
 use anyhow::Result;
 use std::sync::Arc;
@@ -55,7 +55,7 @@ impl AgentExecutor {
         &self,
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
-    ) -> Result<AgenticResultV4> {
+    ) -> Result<AgenticResult> {
         if self.agent.state() != AgentState::Idle {
             return Err(anyhow::anyhow!(
                 "Agent is not idle (current state: {:?})",
@@ -80,7 +80,7 @@ impl AgentExecutor {
             }
         );
 
-        let loop_ = AgenticLoopV4::new(
+        let loop_ = AgenticLoop::new(
             Arc::clone(&self.agent),
             Arc::clone(&self.provider),
             Arc::clone(&self.extension_core),
@@ -106,10 +106,10 @@ impl AgentExecutor {
     pub async fn execute_with_session(
         &self,
         prompt: &str,
-        session: Arc<RwLock<UnifiedSession>>,
+        session: Arc<RwLock<Session>>,
         history: Option<Vec<crate::providers::ChatMessage>>,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
-    ) -> Result<AgenticResultV4> {
+    ) -> Result<AgenticResult> {
         if self.agent.state() != AgentState::Idle {
             return Err(anyhow::anyhow!(
                 "Agent is not idle (current state: {:?})",
@@ -138,7 +138,7 @@ impl AgentExecutor {
             }
         );
 
-        let loop_ = AgenticLoopV4::new(
+        let loop_ = AgenticLoop::new(
             Arc::clone(&self.agent),
             Arc::clone(&self.provider),
             Arc::clone(&self.extension_core),
@@ -183,7 +183,7 @@ impl AgentExecutor {
         let extension_core = Arc::clone(&self.extension_core);
 
         tokio::task::spawn_local(async move {
-            let loop_ = AgenticLoopV4::new(agent_arc, provider_arc, extension_core).await;
+            let loop_ = AgenticLoop::new(agent_arc, provider_arc, extension_core).await;
 
             let _result = loop_
                 .run(&prompt, move |event| {
@@ -208,10 +208,10 @@ impl AgentExecutor {
     pub async fn execute_streaming_with_session<F>(
         &self,
         prompt: &str,
-        session: Arc<RwLock<UnifiedSession>>,
+        session: Arc<RwLock<Session>>,
         history: Option<Vec<crate::providers::ChatMessage>>,
         on_event: F,
-    ) -> Result<AgenticResultV4>
+    ) -> Result<AgenticResult>
     where
         F: Fn(AgenticEvent) + Send + Sync + 'static,
     {
@@ -229,7 +229,7 @@ impl AgentExecutor {
 
         self.prepare_execution().await?;
 
-        let loop_ = AgenticLoopV4::new(
+        let loop_ = AgenticLoop::new(
             Arc::clone(&self.agent),
             Arc::clone(&self.provider),
             Arc::clone(&self.extension_core),

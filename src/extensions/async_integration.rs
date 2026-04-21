@@ -1,20 +1,20 @@
-//! Integration between `ExtensionAsyncAdapter` and `UnifiedAsyncTool` trait
+//! Integration between `ExtensionAsyncAdapter` and `AsyncTool` trait
 //!
 //! This module provides the bridge between the extension-based async system
-//! and the `UnifiedAsyncTool` trait for seamless async tool execution.
+//! and the `AsyncTool` trait for seamless async tool execution.
 
 use crate::agent::async_tool_framework::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
 };
 use crate::extensions::core::ExtensionAsyncAdapter;
-use crate::tools::{BoxedAsyncTool, UnifiedAsyncTool};
+use crate::tools::{BoxedAsyncTool, AsyncTool};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Extension-based implementation of `UnifiedAsyncTool`
+/// Extension-based implementation of `AsyncTool`
 ///
-/// This adapter wraps an `ExtensionAsyncAdapter` to implement the `UnifiedAsyncTool` trait,
+/// This adapter wraps an `ExtensionAsyncAdapter` to implement the `AsyncTool` trait,
 /// allowing extension-based tools to be used interchangeably with native async tools.
 pub struct ExtensionAsyncTool {
     adapter: ExtensionAsyncAdapter,
@@ -83,7 +83,7 @@ impl crate::tools::Tool for ExtensionAsyncTool {
 }
 
 #[async_trait]
-impl UnifiedAsyncTool for ExtensionAsyncTool {
+impl AsyncTool for ExtensionAsyncTool {
     fn supports_async(&self) -> bool {
         // Check if the extension has async hooks registered
         // This is a simplified check - in practice, we'd query the extension capabilities
@@ -148,7 +148,7 @@ impl AsyncExtensionToolFactory {
     /// * `parameters` - JSON schema for tool parameters
     ///
     /// # Returns
-    /// A boxed `UnifiedAsyncTool` that wraps the extension
+    /// A boxed `AsyncTool` that wraps the extension
     pub fn create_tool(
         &self,
         tool_name: impl Into<String>,
@@ -187,7 +187,7 @@ impl AsyncToolRegistry {
         tools.get(name).map(|_t| {
             // Clone the boxed trait object - this requires the trait to be clonable
             // For now, we'll use Arc internally in a future refactor
-            todo!("Cloneable async tools or use Arc<dyn UnifiedAsyncTool>")
+            todo!("Cloneable async tools or use Arc<dyn AsyncTool>")
         })
     }
 
@@ -210,9 +210,9 @@ impl Default for AsyncToolRegistry {
     }
 }
 
-/// Extension trait for `ExtensionAsyncAdapter` to add `UnifiedAsyncTool` integration
+/// Extension trait for `ExtensionAsyncAdapter` to add `AsyncTool` integration
 pub trait ExtensionAsyncAdapterExt {
-    /// Wrap this adapter as a `UnifiedAsyncTool` for the given tool
+    /// Wrap this adapter as a `AsyncTool` for the given tool
     fn as_async_tool(
         &self,
         tool_name: impl Into<String>,

@@ -3,7 +3,7 @@
 //! Shared state accessible to the daemon and IPC server.
 //! This is the daemon's composition root — all services are initialized here.
 
-use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
+use crate::agent::async_tool_framework::AsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{
@@ -87,7 +87,7 @@ pub struct AppState {
     pub tool_runtime: Arc<ToolRuntime>,
 
     /// Async task executor for daemon-side background execution (ADR-020)
-    pub async_task_executor: Arc<UnifiedAsyncExecutor>,
+    pub async_task_executor: Arc<AsyncExecutor>,
 
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
@@ -110,7 +110,7 @@ impl std::fmt::Debug for AppState {
             .field("agent_mgmt_service", &"<AgentService>")
             .field("team_service", &"<TeamManagementService>")
             .field("tool_runtime", &"<ToolRuntime>")
-            .field("async_task_executor", &"<UnifiedAsyncExecutor>")
+            .field("async_task_executor", &"<AsyncExecutor>")
             .finish()
     }
 }
@@ -260,7 +260,7 @@ impl AppState {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
         );
-        let async_task_executor = Arc::new(UnifiedAsyncExecutor::new());
+        let async_task_executor = Arc::new(AsyncExecutor::new());
 
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);

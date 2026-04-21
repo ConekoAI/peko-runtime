@@ -382,7 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_context_agent_name() {
-        // Note: This would require filesystem access to create a UnifiedSession
+        // Note: This would require filesystem access to create a Session
         // The test documents the expected behavior
     }
 

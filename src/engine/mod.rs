@@ -8,8 +8,8 @@ pub mod event_processor;
 pub mod events;
 pub mod execution;
 pub mod input;
-pub mod loop_v4;
-// Note: SimpleSession merged into UnifiedSession in src/session/unified.rs
+pub mod agentic_loop;
+// Note: SimpleSession merged into Session in src/session/unified.rs
 pub mod state;
 pub mod stream_buffer;
 pub mod stream_orchestrator;
@@ -20,8 +20,8 @@ pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
 pub use execution::{ExecutionMode, TaskExecutor, TaskId, TaskStatus, TaskSummary};
 pub use input::{A2AMessageType, AgentInput, HookType, InputContext};
-pub use loop_v4::{AgenticLoopV4, AgenticResult as AgenticResultV4, ToolCall};
-// SimpleSession now unified - use crate::session::UnifiedSession
+pub use agentic_loop::{AgenticLoop, AgenticResult, ToolCall};
+// SimpleSession now unified - use crate::session::Session
 pub use state::{AgentState, StateMachine};
 pub use stream_buffer::{CoalesceConfig, StreamBuffer};
 pub use stream_orchestrator::{DeliveryMode, OrchestratorConfig, StreamOrchestrator};

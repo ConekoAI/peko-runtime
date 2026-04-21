@@ -20,7 +20,7 @@ pub type BoxedExecutionFn = Box<
 /// Transport abstraction for async task execution
 ///
 /// Implementations:
-/// - `LocalAsyncTransport` — runs tasks in-process via `UnifiedAsyncExecutor` (daemon mode)
+/// - `LocalAsyncTransport` — runs tasks in-process via `AsyncExecutor` (daemon mode)
 /// - `DaemonHttpTransport` — submits tasks to daemon via HTTP API (CLI mode)
 #[async_trait::async_trait]
 pub trait AsyncTaskTransport: Send + Sync {
@@ -76,23 +76,23 @@ pub trait AsyncTaskTransport: Send + Sync {
 // LocalAsyncTransport — used inside the daemon
 // ================================================================================
 
-use crate::agent::async_tool_framework::UnifiedAsyncExecutor;
+use crate::agent::async_tool_framework::AsyncExecutor;
 use std::sync::Arc;
 
-/// Local transport that executes tasks in-process via `UnifiedAsyncExecutor`
+/// Local transport that executes tasks in-process via `AsyncExecutor`
 #[derive(Debug, Clone)]
 pub struct LocalAsyncTransport {
-    executor: Arc<UnifiedAsyncExecutor>,
+    executor: Arc<AsyncExecutor>,
 }
 
 impl LocalAsyncTransport {
     /// Create a new local transport wrapping the given executor
-    pub fn new(executor: Arc<UnifiedAsyncExecutor>) -> Self {
+    pub fn new(executor: Arc<AsyncExecutor>) -> Self {
         Self { executor }
     }
 
-    /// Create from a bare `UnifiedAsyncExecutor`
-    pub fn from_executor(executor: UnifiedAsyncExecutor) -> Self {
+    /// Create from a bare `AsyncExecutor`
+    pub fn from_executor(executor: AsyncExecutor) -> Self {
         Self::new(Arc::new(executor))
     }
 }
@@ -148,7 +148,7 @@ impl AsyncTaskTransport for LocalAsyncTransport {
 
 impl LocalAsyncTransport {
     /// Get a reference to the underlying executor
-    pub fn executor(&self) -> &UnifiedAsyncExecutor {
+    pub fn executor(&self) -> &AsyncExecutor {
         &self.executor
     }
 }
@@ -342,7 +342,7 @@ pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTr
 /// Create a local transport (for daemon mode where HTTP is not needed)
 pub fn create_local_transport() -> std::sync::Arc<dyn AsyncTaskTransport> {
     std::sync::Arc::new(LocalAsyncTransport::from_executor(
-        UnifiedAsyncExecutor::new(),
+        AsyncExecutor::new(),
     ))
 }
 
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_local_transport_new() {
-        let executor = UnifiedAsyncExecutor::new();
+        let executor = AsyncExecutor::new();
         let transport = LocalAsyncTransport::from_executor(executor);
         let _ = transport.executor();
     }
