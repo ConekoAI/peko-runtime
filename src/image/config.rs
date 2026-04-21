@@ -18,9 +18,9 @@ pub struct AgentConfig {
     /// Capability dependencies
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<CapabilityConfig>,
-    /// Hooks for outbound activation
+    /// Triggers for outbound activation
     #[serde(default)]
-    pub hooks: Vec<Hook>,
+    pub triggers: Vec<Trigger>,
     /// Resource limits
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<Resources>,
@@ -202,17 +202,17 @@ impl AgentConfig {
             ));
         }
 
-        // Validate hooks
-        for (i, hook) in self.hooks.iter().enumerate() {
-            if let Err(e) = hook.validate() {
-                return Err(anyhow::anyhow!("Hook [{i}] validation failed: {e}"));
+        // Validate triggers
+        for (i, trigger) in self.triggers.iter().enumerate() {
+            if let Err(e) = trigger.validate() {
+                return Err(anyhow::anyhow!("Trigger [{i}] validation failed: {e}"));
             }
         }
 
         // Check for duplicate webhook paths
         let mut seen_paths: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for hook in &self.hooks {
-            if let HookType::Webhook { path, .. } = &hook.hook_type {
+        for trigger in &self.triggers {
+            if let TriggerType::Webhook { path, .. } = &trigger.trigger_type {
                 if !seen_paths.insert(path.as_str()) {
                     return Err(anyhow::anyhow!("Duplicate webhook path: {path}"));
                 }
@@ -240,10 +240,10 @@ impl AgentConfig {
             (None, None) => None,
         };
 
-        // Merge hooks (base hooks first, then self hooks appended)
-        let mut merged_hooks = base.hooks;
-        merged_hooks.extend(self.hooks);
-        self.hooks = merged_hooks;
+        // Merge triggers (base triggers first, then self triggers appended)
+        let mut merged_triggers = base.triggers;
+        merged_triggers.extend(self.triggers);
+        self.triggers = merged_triggers;
 
         // Provider: self overrides entirely if present, else inherit base
         // (already default behavior via struct replacement)
@@ -415,26 +415,26 @@ pub struct CapabilityOptions {
     pub auto_install: Option<bool>,
 }
 
-/// Hook configuration for outbound activation
+/// Trigger configuration for outbound activation
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Hook {
-    /// Hook type
+pub struct Trigger {
+    /// Trigger type
     #[serde(flatten)]
-    pub hook_type: HookType,
+    pub trigger_type: TriggerType,
     /// Action: "run" (start session with trigger as message)
     pub action: String,
     /// Session target: "new" or "active"
     #[serde(default = "default_session_target")]
     pub session: String,
-    /// Whether hook is enabled
+    /// Whether trigger is enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
-/// Hook types
+/// Trigger types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum HookType {
+pub enum TriggerType {
     /// Cron-based schedule
     Cron {
         /// 5-field crontab expression
@@ -463,11 +463,11 @@ pub enum HookType {
     },
 }
 
-impl Hook {
-    /// Validate this hook
+impl Trigger {
+    /// Validate this trigger
     pub fn validate(&self) -> anyhow::Result<()> {
-        match &self.hook_type {
-            HookType::Cron { schedule } => {
+        match &self.trigger_type {
+            TriggerType::Cron { schedule } => {
                 // Validate crontab expression (5 fields)
                 let parts: Vec<&str> = schedule.split_whitespace().collect();
                 if parts.len() != 5 {
@@ -476,7 +476,7 @@ impl Hook {
                     ));
                 }
             }
-            HookType::Webhook { path, token } => {
+            TriggerType::Webhook { path, token } => {
                 if path.is_empty() {
                     return Err(anyhow::anyhow!("Webhook path cannot be empty"));
                 }
@@ -495,12 +495,12 @@ impl Hook {
                     }
                 }
             }
-            HookType::Event { topic } => {
+            TriggerType::Event { topic } => {
                 if topic.is_empty() {
                     return Err(anyhow::anyhow!("Event topic cannot be empty"));
                 }
             }
-            HookType::FileWatch { path, .. } => {
+            TriggerType::FileWatch { path, .. } => {
                 if path.is_empty() {
                     return Err(anyhow::anyhow!("File watch path cannot be empty"));
                 }
@@ -627,7 +627,7 @@ max_tokens = 4096
 [capabilities]
 tools = ["read_file", "web_search"]
 
-[[hooks]]
+[[triggers]]
 type = "cron"
 schedule = "0 8 * * *"
 action = "run"
@@ -641,26 +641,26 @@ session = "new"
     }
 
     #[test]
-    fn test_hook_validation() {
-        let hook = Hook {
-            hook_type: HookType::Cron {
+    fn test_trigger_validation() {
+        let trigger = Trigger {
+            trigger_type: TriggerType::Cron {
                 schedule: "0 8 * * *".to_string(),
             },
             action: "run".to_string(),
             session: "new".to_string(),
             enabled: true,
         };
-        assert!(hook.validate().is_ok());
+        assert!(trigger.validate().is_ok());
 
-        let bad_hook = Hook {
-            hook_type: HookType::Cron {
+        let bad_trigger = Trigger {
+            trigger_type: TriggerType::Cron {
                 schedule: "invalid".to_string(),
             },
             action: "run".to_string(),
             session: "new".to_string(),
             enabled: true,
         };
-        assert!(bad_hook.validate().is_err());
+        assert!(bad_trigger.validate().is_err());
     }
 
     #[test]

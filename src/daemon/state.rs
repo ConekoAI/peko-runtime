@@ -10,7 +10,6 @@ use crate::common::services::{
     AgentService, ConfigAuthority, ConfigAuthorityImpl, SessionService, TeamManagementService,
     TeamService,
 };
-use crate::hooks::{EventBroadcaster, HookRegistry};
 use crate::observability::Observability;
 use crate::registry::{load_from_workspace, RegistryConfig};
 use crate::runtime::ToolRuntime;
@@ -52,12 +51,6 @@ pub struct AppState {
 
     /// Team manager for team runtime
     pub team_manager: Arc<TeamManager>,
-
-    /// Hook registry for webhook and event hooks
-    hook_registry: Arc<HookRegistry>,
-
-    /// Event broadcaster for system events
-    event_broadcaster: Arc<EventBroadcaster>,
 
     /// Registry configuration for push/pull operations
     registry_config: Arc<RwLock<RegistryConfig>>,
@@ -275,8 +268,6 @@ impl AppState {
             host,
             config,
             team_manager,
-            hook_registry: Arc::new(HookRegistry::new()),
-            event_broadcaster: Arc::new(EventBroadcaster::new()),
             registry_config: Arc::new(RwLock::new(RegistryConfig::default())),
             observability: Arc::new(Observability::new("api")),
             config_service,
@@ -368,18 +359,6 @@ impl AppState {
     pub async fn request_shutdown(&self, _force: bool) {
         // Note: force parameter reserved for future use
         let _ = self.shutdown_tx.send(());
-    }
-
-    /// Get the hook registry
-    #[must_use]
-    pub fn hook_registry(&self) -> Arc<HookRegistry> {
-        self.hook_registry.clone()
-    }
-
-    /// Get the event broadcaster
-    #[must_use]
-    pub fn event_broadcaster(&self) -> Arc<EventBroadcaster> {
-        self.event_broadcaster.clone()
     }
 
     /// Get the observability hub

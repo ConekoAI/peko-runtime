@@ -85,15 +85,6 @@ impl HookContext {
         }
     }
 
-    /// Get input as system event if applicable
-    #[must_use]
-    pub fn as_system_event(&self) -> Option<&crate::hooks::SystemEvent> {
-        match &self.input {
-            HookInput::SystemEvent(event) => Some(event),
-            _ => None,
-        }
-    }
-
     /// Get input as session state if applicable
     #[must_use]
     pub fn as_session_state(&self) -> Option<&crate::extensions::types::SessionSnapshot> {

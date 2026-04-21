@@ -355,7 +355,6 @@ impl HookHandler for GeneralHandler {
                     "tools": access.tools
                 })))
             }
-            HookInput::SystemEvent(event) => HookResult::Continue(HookOutput::Event(event)),
             HookInput::PromptBuild(_) => HookResult::Continue(HookOutput::Text(format!(
                 "General extension {} handler {}",
                 self.extension_id.0, self.handler_name

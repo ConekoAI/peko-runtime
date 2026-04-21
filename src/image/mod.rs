@@ -29,7 +29,7 @@ pub mod manifest;
 pub mod registry;
 
 pub use builder::{BuildOptions, BuildProgress, ImageBuilder};
-pub use config::{AgentConfig, BaseImage, CapabilityConfig, Hook, ProviderConfig, Resources};
+pub use config::{AgentConfig, BaseImage, CapabilityConfig, Trigger, ProviderConfig, Resources};
 pub use manifest::{ImageDigest, ImageManifest, Layer, LayerType};
 pub use registry::{ImageRegistry, RegistryConfig};
 

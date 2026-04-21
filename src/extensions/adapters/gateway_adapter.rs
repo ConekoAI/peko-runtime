@@ -267,7 +267,6 @@ impl HookHandler for GatewayHookHandler {
         // Gateway handlers pass through by default
         // In a real implementation, this would dispatch to gateway-specific logic
         match ctx.input {
-            HookInput::SystemEvent(event) => HookResult::Continue(HookOutput::Event(event)),
             HookInput::ToolRegistry(access) => {
                 HookResult::Continue(HookOutput::Json(serde_json::json!({
                     "tools": access.tools

@@ -1,150 +1,86 @@
 # Issue 001: Dual Hook/Extension Registries — Competing Abstractions
 
 **Severity:** CRITICAL  
-**Status:** Open  
+**Status:** ✅ **Closed / Archived**  
 **Labels:** `architecture`, `naming-collision`, `adr-017`, `milestone-8`, `refactor`  
 **Reported:** 2026-04-21  
+**Resolved:** 2026-04-21  
 
 ---
 
 ## Summary
 
-The codebase contains two entirely different `HookRegistry` types with overlapping names but completely different semantics. This creates naming collision, developer confusion, and an unclear boundary between the legacy external-trigger system (Milestone 8) and the future extension framework (ADR-017).
+The codebase contained two entirely different `HookRegistry` types with overlapping names but completely different semantics. The legacy `hooks` module (Milestone 8 external triggers) was found to be entirely orphaned — instantiated but never wired into the running system. It has been removed. The extension framework's `HookRegistry` (ADR-017) is now the sole registry.
 
 ---
 
-## Systems Involved
+## Resolution
 
-| System | Location | Purpose |
-|--------|----------|---------|
-| `hooks::HookRegistry` | `src/hooks/registry.rs` | Webhook / cron / file-watch / event-bus hooks (external triggers) |
-| `extensions::core::HookRegistry` | `src/extensions/core/hook_registry.rs` | Extension framework hooks (plugin lifecycle: tool execution, prompt injection) |
+### Decision
 
----
+**Option D — Deprecate and remove the orphaned legacy system.**
 
-## Evidence
+The Milestone 8 `hooks/` machinery was a sophisticated skeleton that was never wired up. The real event infrastructure (`cron::events::SystemEvent`, `session::events::SystemEvent`) evolved separately. There was no value in preserving, renaming, or merging dead code.
 
-### 1. Two `RegisteredHook` structs with different fields
+### What Was Removed
 
-**`src/hooks/mod.rs` (lines 28–42):**
-```rust
-pub struct RegisteredHook {
-    pub id: String,
-    pub instance_id: String,
-    pub hook_type: HookType,   // Cron | Webhook | Event | FileWatch
-    pub action: HookAction,    // Run { message }
-    pub session_target: SessionTarget,
-    pub enabled: bool,
-}
-```
+| File | Lines | What It Was |
+|------|-------|-------------|
+| `src/hooks/registry.rs` | 478 | `HookRegistry` for external triggers |
+| `src/hooks/trigger.rs` | 356 | `HookTrigger`, `TriggerSource`, `HookTriggerProcessor` |
+| `src/hooks/event_bus.rs` | 374 | `EventBusHookIntegration` |
+| `src/hooks/file_watch.rs` | 320 | `FileWatchHookManager` |
+| `src/hooks/lifecycle.rs` | 339 | `LifecycleEmitter` |
+| `src/hooks/mod.rs` | 453 | Module root + event types (`SystemEvent`, etc.) |
+| `src/system_events.rs` | — | *Created then deleted* — extracted event taxonomy that nobody emitted or consumed |
 
-**`src/extensions/core/hook_registry.rs` (lines 18–40):**
-```rust
-pub struct RegisteredHook {
-    pub id: HookId,
-    pub extension_id: ExtensionId,
-    pub point: HookPoint,      // ToolExecute | PromptSystemSection | AgentInit ...
-    pub handler: Arc<dyn HookHandler>,
-    pub priority: HookPriority,
-    pub enabled: bool,
-    pub tool_metadata: Option<ToolMetadata>,
-}
-```
+### What Was Modified
 
-### 2. Two `HookRegistry` structs with `register()` / `unregister()`
+- **`src/daemon/state.rs`** — Removed dead `hook_registry` and `event_broadcaster` fields/methods
+- **`src/image/config.rs`** — Renamed `Hook` → `Trigger`, `HookType` → `TriggerType` for config-serialization types
+- **`src/image/mod.rs`** — Updated re-export
+- **`src/extensions/types.rs`** — Removed `HookOutput::Event` and `HookInput::SystemEvent` variants (bridge to nowhere)
+- **`src/extensions/core/context.rs`** — Removed `as_system_event()` accessor
+- **`src/extensions/adapters/gateway_adapter.rs`** — Removed `SystemEvent` passthrough arm
+- **`src/extensions/adapters/general_adapter.rs`** — Removed `SystemEvent` passthrough arm
+- **`src/lib.rs`** — Removed `hooks` and `system_events` module declarations
 
-**`src/hooks/registry.rs` (lines 12–21):**
-```rust
-pub struct HookRegistry {
-    hooks: Arc<RwLock<HashMap<String, RegisteredHook>>>,
-    webhooks: Arc<RwLock<HashMap<(String, String), String>>>,
-    event_hooks: Arc<RwLock<HashMap<String, Vec<String>>>>,
-    file_watches: Arc<RwLock<HashMap<(String, String), String>>>,
-}
-```
+### Verification
 
-**`src/extensions/core/hook_registry.rs` (lines 104–117):**
-```rust
-pub struct HookRegistry {
-    hooks: RwLock<HashMap<HookId, RegisteredHook>>,
-    hooks_by_point: RwLock<HashMap<String, Vec<HookId>>>,
-    services: Arc<ExtensionServices>,
-    globally_enabled: RwLock<bool>,
-}
-```
-
-### 3. Overlapping type names
-
-| Name | In `hooks` module | In `extensions` module |
-|------|-------------------|------------------------|
-| `RegisteredHook` | ✅ | ✅ |
-| `HookRegistry` | ✅ | ✅ |
-| `HookType` | ✅ (external trigger types) | — |
-| `HookAction` | ✅ (`Run { message }`) | — |
-| `HookPoint` | — | ✅ (extension lifecycle points) |
-| `HookResult` | — | ✅ (`Continue` / `PassThrough` / `Handled` / `Replace` / `Error`) |
+- `cargo check` ✅ — compiles cleanly
+- `cargo test` ✅ — **834 passed, 0 failed, 23 ignored**
+- Net change: **−2,422 lines** of dead code removed
 
 ---
 
-## Impact
+## Aftermath
 
-1. **Developer confusion:** Importing `HookRegistry` is ambiguous without a module prefix. IDEs and grep results conflate the two.
-2. **No clear boundary:** The `hooks` module manages external triggers (webhooks, cron, file watches). The `extensions` module manages plugin lifecycle hooks (tool execution, prompt injection). Both use the word "hook" but mean different things.
-3. **Maintenance burden:** Any change to hook semantics must be evaluated against both systems, even though they are unrelated.
-4. **Future migration risk:** The extensions system is the intended future, but `hooks` is still actively used for system events. There is no documented plan for convergence or deprecation.
+### What remains
 
----
+| Component | Location | Status |
+|-----------|----------|--------|
+| `extensions::core::HookRegistry` | `src/extensions/core/hook_registry.rs` | ✅ **Sole `HookRegistry`** — actively used for tool registration, prompt injection, etc. |
+| `cron::events::SystemEvent` | `src/cron/events.rs` | ✅ **Active event system** — File/Webhook/Internal/Timer for scheduler |
+| `session::events::SystemEvent` | `src/session/events.rs` | ✅ **Active event system** — Session event stream |
+| `image::config::Trigger` / `TriggerType` | `src/image/config.rs` | ✅ **Config types** — external trigger declarations in `config.toml` |
 
-## Root Cause
+### If external triggers are needed in the future
 
-- The `hooks` module was introduced for **Milestone 8** (outbound hooks and system events) before the extension framework (ADR-017) existed.
-- ADR-017 introduced its own `HookRegistry` without renaming or reconciling with the existing one.
-- No architectural decision record documents the coexistence strategy.
+Rebuild them as **ADR-017 extensions** using the existing `HookPoint` taxonomy:
+- `EventSubscribe { topic_pattern }` — subscribe to system events
+- `EventEmit` — emit custom events
+- `ChannelInput` / `ChannelOutput` — gateway-style I/O
 
----
-
-## Proposed Resolution
-
-### Option A: Rename the legacy system (Recommended — low risk)
-
-Rename the `hooks` module types to use "trigger" or "event" terminology, reserving "hook" for the extension framework:
-
-| Current | Proposed |
-|---------|----------|
-| `hooks::HookRegistry` | `hooks::TriggerRegistry` |
-| `hooks::RegisteredHook` | `hooks::RegisteredTrigger` |
-| `hooks::HookType` | `hooks::TriggerType` |
-| `hooks::HookAction` | `hooks::TriggerAction` |
-
-This is a pure rename with no behavioral change. It immediately eliminates the naming collision.
-
-### Option B: Merge into a unified registry (High risk)
-
-Create a single registry that can handle both external triggers and extension lifecycle hooks. This is architecturally cleaner but requires significant design work to reconcile the different semantics (instance-scoped external triggers vs. extension-scoped handlers).
-
-### Option C: Document the boundary (Minimal effort)
-
-Add module-level documentation and ADR amendment clearly stating:
-- `hooks::*` = external event triggers (webhook, cron, file watch, event bus)
-- `extensions::core::*` = extension lifecycle hooks (tool execution, prompt injection, agent init)
-
-This does not fix the collision but reduces confusion.
-
----
-
-## Acceptance Criteria
-
-- [ ] A decision is recorded in an ADR or architecture doc.
-- [ ] The naming collision is resolved (either by rename, merge, or namespace isolation).
-- [ ] All imports, tests, and documentation are updated to reflect the chosen naming.
-- [ ] A deprecation timeline is established if one system is intended to replace the other.
+Do not reintroduce a parallel trigger registry.
 
 ---
 
 ## Related
 
-- `src/hooks/mod.rs`
-- `src/hooks/registry.rs`
-- `src/extensions/core/hook_registry.rs`
 - ADR-017 (Extension Framework)
-- Milestone 8: Outbound Hooks and System Events
+- Milestone 8: Outbound Hooks and System Events (deprecated)
+- `src/extensions/core/hook_registry.rs`
+- `src/extensions/core/registry.rs`
+- `src/cron/events.rs`
+- `src/session/events.rs`
+- `src/image/config.rs`

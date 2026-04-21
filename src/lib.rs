@@ -115,8 +115,8 @@ pub mod identity;
 /// Cron job scheduling
 pub(crate) mod cron;
 
-/// Hook registry and management (Milestone 8)
-pub mod hooks;
+/// Hook registry and management (Milestone 8 — deprecated, see Issue 001)
+// pub mod hooks; // Removed per Issue 001 — use extensions::core instead
 
 /// Daemon mode for background execution
 pub(crate) mod daemon;

@@ -191,9 +191,6 @@ pub enum HookOutput {
     /// Tool registration
     Tool(crate::providers::ToolDefinition),
 
-    /// Event emission
-    Event(crate::hooks::SystemEvent),
-
     /// Message transformation
     Message(crate::types::message::ContentBlock),
 
@@ -326,9 +323,6 @@ pub enum HookInput {
 
     /// Async task cancellation request
     TaskCancel { task_id: String, tool_name: String },
-
-    /// System event
-    SystemEvent(crate::hooks::SystemEvent),
 
     /// Session snapshot
     SessionState(SessionSnapshot),
