@@ -65,6 +65,10 @@ pub use registry::{
     global_core, init_global_core, BuiltinExtensionInfo, ExtensionCore, RegisteredHook,
 };
 
+// Re-export sub-registries
+pub use hook_registry::HookRegistry;
+pub use tool_registry::ToolRegistry;
+
 // Re-export tool registry types
 pub use crate::extensions::types::{ToolMetadata, ToolSource};
 
@@ -78,7 +82,9 @@ pub use crate::extensions::services::{
 pub mod async_adapter;
 pub mod context;
 pub mod hook_points;
+pub mod hook_registry;
 pub mod registry;
+pub mod tool_registry;
 
 #[cfg(test)]
 mod integration_tests {

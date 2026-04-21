@@ -1,165 +1,79 @@
 //! Extension Core registry
 //!
-//! This module implements the central registry for all hook handlers.
-//! It manages registration, enable/disable, and invocation of hooks.
+//! This module implements the central facade for extension hooks and tools.
+//! It composes `HookRegistry` and `ToolRegistry` to provide a unified interface.
 
 use crate::extensions::core::context::{ExtensionServices, HookContext};
 use crate::extensions::core::hook_points::HookPoint;
+use crate::extensions::core::hook_registry::HookRegistry;
+use crate::extensions::core::tool_registry::ToolRegistry;
 use crate::extensions::types::{
-    ExtensionId, HookId, HookInput, HookOutput, HookPriority, HookResult, ToolMetadata,
+    ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata,
 };
 use anyhow::Result;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, instrument, trace, warn};
 
-/// A registered hook handler
-#[derive(Debug, Clone)]
-pub struct RegisteredHook {
-    /// Unique registration ID
-    pub id: HookId,
+// Re-export types from sub-registries for backward compatibility
+pub use crate::extensions::core::hook_registry::{BuiltinExtensionInfo, RegisteredHook};
 
-    /// Extension that owns this hook
-    pub extension_id: ExtensionId,
-
-    /// The hook point
-    pub point: HookPoint,
-
-    /// The handler implementation
-    pub handler: Arc<dyn super::context::HookHandler>,
-
-    /// Priority (higher = earlier execution)
-    pub priority: HookPriority,
-
-    /// Whether currently enabled
-    pub enabled: bool,
-
-    /// Tool metadata (only populated for `ToolRegister` hooks)
-    pub tool_metadata: Option<ToolMetadata>,
-}
-
-impl RegisteredHook {
-    /// Create a new registered hook
-    pub fn new(
-        id: HookId,
-        extension_id: ExtensionId,
-        point: HookPoint,
-        handler: Arc<dyn super::context::HookHandler>,
-        priority: HookPriority,
-    ) -> Self {
-        Self {
-            id,
-            extension_id,
-            point,
-            handler,
-            priority,
-            enabled: true,
-            tool_metadata: None,
-        }
-    }
-
-    /// Create a new registered hook with tool metadata
-    pub fn with_tool_metadata(
-        id: HookId,
-        extension_id: ExtensionId,
-        point: HookPoint,
-        handler: Arc<dyn super::context::HookHandler>,
-        priority: HookPriority,
-        tool_metadata: ToolMetadata,
-    ) -> Self {
-        Self {
-            id,
-            extension_id,
-            point,
-            handler,
-            priority,
-            enabled: true,
-            tool_metadata: Some(tool_metadata),
-        }
-    }
-}
-
-/// Information about a built-in extension
+/// Central facade for extension hooks and tools
 ///
-/// Built-in extensions are compiled into the binary and register hooks
-/// with `ExtensionCore` under IDs like `builtin:tool:shell`.
-#[derive(Debug, Clone)]
-pub struct BuiltinExtensionInfo {
-    /// Full extension ID (e.g., "builtin:tool:shell")
-    pub id: String,
-    /// Extension type (e.g., "tool", "gateway")
-    pub ext_type: String,
-    /// Short name (e.g., "shell")
-    pub name: String,
-    /// Whether any hook for this extension is enabled
-    pub enabled: bool,
-    /// Which hook points are registered
-    pub capabilities: Vec<String>,
-}
-
-/// Central registry for extension hooks
-///
-/// This is the core component that manages all hook registrations and
-/// provides the invocation mechanism.
+/// `ExtensionCore` composes `HookRegistry` and `ToolRegistry` to provide
+/// a unified interface for hook and tool management. All hook-related
+/// operations are delegated to `HookRegistry`, and all tool index/policy
+/// operations are delegated to `ToolRegistry`.
 #[derive(Debug)]
 pub struct ExtensionCore {
-    /// All registered hooks, keyed by `HookId`
-    hooks: RwLock<HashMap<HookId, RegisteredHook>>,
+    /// Hook registry
+    hook_registry: Arc<HookRegistry>,
 
-    /// Hooks indexed by hook point for faster lookup
-    hooks_by_point: RwLock<HashMap<String, Vec<HookId>>>,
-
-    /// Tool index: maps tool name to hook ID for O(1) lookup
-    tool_index: RwLock<HashMap<String, HookId>>,
+    /// Tool registry
+    tool_registry: Arc<ToolRegistry>,
 
     /// Extension services shared across all handlers
     services: Arc<ExtensionServices>,
-
-    /// Global enable/disable flag
-    globally_enabled: RwLock<bool>,
-
-    /// Tool configuration (whitelist, per-tool settings)
-    tool_config: RwLock<crate::types::agent::ToolConfig>,
 }
 
 impl ExtensionCore {
     /// Create a new Extension Core
     #[must_use]
     pub fn new() -> Self {
+        let services = Arc::new(ExtensionServices::new());
         Self {
-            hooks: RwLock::new(HashMap::new()),
-            hooks_by_point: RwLock::new(HashMap::new()),
-            tool_index: RwLock::new(HashMap::new()),
-            services: Arc::new(ExtensionServices::new()),
-            globally_enabled: RwLock::new(true),
-            tool_config: RwLock::new(crate::types::agent::ToolConfig::default()),
+            hook_registry: Arc::new(HookRegistry::with_services(services.clone())),
+            tool_registry: Arc::new(ToolRegistry::new()),
+            services,
         }
     }
 
     /// Create a new Extension Core with custom services
     pub fn with_services(services: Arc<ExtensionServices>) -> Self {
         Self {
-            hooks: RwLock::new(HashMap::new()),
-            hooks_by_point: RwLock::new(HashMap::new()),
-            tool_index: RwLock::new(HashMap::new()),
+            hook_registry: Arc::new(HookRegistry::with_services(services.clone())),
+            tool_registry: Arc::new(ToolRegistry::new()),
             services,
-            globally_enabled: RwLock::new(true),
-            tool_config: RwLock::new(crate::types::agent::ToolConfig::default()),
         }
+    }
+
+    /// Get the hook registry
+    pub fn hook_registry(&self) -> Arc<HookRegistry> {
+        self.hook_registry.clone()
+    }
+
+    /// Get the tool registry
+    pub fn tool_registry(&self) -> Arc<ToolRegistry> {
+        self.tool_registry.clone()
     }
 
     /// Set the tool configuration (whitelist, etc.)
     pub async fn set_tool_config(&self, config: crate::types::agent::ToolConfig) {
-        let mut tool_config = self.tool_config.write().await;
-        *tool_config = config;
-        debug!("Updated tool configuration");
+        self.tool_registry.set_tool_config(config).await;
     }
 
     /// Check if a tool is enabled according to whitelist
     pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        let config = self.tool_config.read().await;
-        config.is_tool_enabled(tool_name)
+        self.tool_registry.is_tool_enabled(tool_name).await
     }
 
     /// Wait for background async tasks to complete
@@ -183,43 +97,7 @@ impl ExtensionCore {
         handler: Arc<dyn super::context::HookHandler>,
         extension_id: &ExtensionId,
     ) -> Result<RegisteredHook> {
-        let hook_id = HookId::new();
-        let priority = handler.priority();
-
-        let registration = RegisteredHook::new(
-            hook_id,
-            extension_id.clone(),
-            point.clone(),
-            handler,
-            priority,
-        );
-
-        // Add to hooks map
-        {
-            let mut hooks = self.hooks.write().await;
-            hooks.insert(hook_id, registration.clone());
-        }
-
-        // Add to point index
-        {
-            let mut by_point = self.hooks_by_point.write().await;
-            let point_name = point.name();
-            let entry = by_point.entry(point_name).or_insert_with(Vec::new);
-            entry.push(hook_id);
-
-            // Sort by priority (higher first)
-            let hooks = self.hooks.read().await;
-            entry.sort_by_key(|id| hooks.get(id).map_or(0, |h| -h.priority));
-        }
-
-        debug!(
-            hook_id = %hook_id,
-            point = %point,
-            priority = priority,
-            "Registered hook handler"
-        );
-
-        Ok(registration)
+        self.hook_registry.register_hook(point, handler, extension_id).await
     }
 
     /// Unregister a hook handler
@@ -228,79 +106,39 @@ impl ExtensionCore {
     /// * `hook_id` - The ID of the hook to unregister
     #[instrument(skip(self), fields(hook_id = %hook_id))]
     pub async fn unregister_hook(&self, hook_id: &HookId) -> Result<()> {
-        // Remove from hooks map
-        let point_name = {
-            let mut hooks = self.hooks.write().await;
-            hooks.remove(hook_id).map(|h| h.point.name())
-        };
-
-        // Remove from point index
-        if let Some(point_name) = point_name {
-            let mut by_point = self.hooks_by_point.write().await;
-            if let Some(entry) = by_point.get_mut(&point_name) {
-                entry.retain(|id| id != hook_id);
-                if entry.is_empty() {
-                    by_point.remove(&point_name);
-                }
-            }
-        }
-
-        debug!(hook_id = %hook_id, "Unregistered hook handler");
-        Ok(())
+        self.hook_registry.unregister_hook(hook_id).await
     }
 
     /// Enable a hook handler
     #[instrument(skip(self), fields(hook_id = %hook_id))]
     pub async fn enable_hook(&self, hook_id: &HookId) -> Result<()> {
-        let mut hooks = self.hooks.write().await;
-        if let Some(hook) = hooks.get_mut(hook_id) {
-            hook.enabled = true;
-            debug!(hook_id = %hook_id, "Enabled hook handler");
-        } else {
-            warn!(hook_id = %hook_id, "Attempted to enable unknown hook");
-        }
-        Ok(())
+        self.hook_registry.enable_hook(hook_id).await
     }
 
     /// Disable a hook handler
     #[instrument(skip(self), fields(hook_id = %hook_id))]
     pub async fn disable_hook(&self, hook_id: &HookId) -> Result<()> {
-        let mut hooks = self.hooks.write().await;
-        if let Some(hook) = hooks.get_mut(hook_id) {
-            hook.enabled = false;
-            debug!(hook_id = %hook_id, "Disabled hook handler");
-        } else {
-            warn!(hook_id = %hook_id, "Attempted to disable unknown hook");
-        }
-        Ok(())
+        self.hook_registry.disable_hook(hook_id).await
     }
 
     /// Globally enable/disable all hooks
     pub async fn set_globally_enabled(&self, enabled: bool) {
-        let mut globally_enabled = self.globally_enabled.write().await;
-        *globally_enabled = enabled;
-        debug!(enabled = enabled, "Set global hook enable state");
+        self.hook_registry.set_globally_enabled(enabled).await;
     }
 
     /// Check if hooks are globally enabled
     pub async fn is_globally_enabled(&self) -> bool {
-        *self.globally_enabled.read().await
+        self.hook_registry.is_globally_enabled().await
     }
 
     /// Get all hooks for a specific extension
     pub async fn get_hooks_for_extension(&self, extension_id: &ExtensionId) -> Vec<RegisteredHook> {
-        let hooks = self.hooks.read().await;
-        hooks
-            .values()
-            .filter(|h| h.extension_id == *extension_id)
-            .cloned()
-            .collect()
+        self.hook_registry.get_hooks_for_extension(extension_id).await
     }
 
     /// Get all registered hooks
     pub async fn get_all_hooks(&self) -> Vec<RegisteredHook> {
-        let hooks = self.hooks.read().await;
-        hooks.values().cloned().collect()
+        self.hook_registry.get_all_hooks().await
     }
 
     /// List all built-in extensions registered with this core
@@ -309,40 +147,7 @@ impl ExtensionCore {
     /// This is type-agnostic — it will return tools, gateways, skills, or any
     /// future built-in extension type that registers hooks.
     pub async fn list_builtin_extensions(&self) -> Vec<BuiltinExtensionInfo> {
-        let hooks = self.hooks.read().await;
-        let mut groups: HashMap<String, Vec<&RegisteredHook>> = HashMap::new();
-
-        for hook in hooks.values() {
-            let ext_id = &hook.extension_id.0;
-            if ext_id.starts_with("builtin:") {
-                groups.entry(ext_id.clone()).or_default().push(hook);
-            }
-        }
-
-        let mut results = Vec::new();
-        for (ext_id, hooks) in groups {
-            // Parse builtin:{type}:{name}
-            let parts: Vec<&str> = ext_id.splitn(3, ':').collect();
-            if parts.len() == 3 {
-                let ext_type = parts[1].to_string();
-                let name = parts[2].to_string();
-                let enabled = hooks.iter().any(|h| h.enabled);
-                let mut capabilities: Vec<String> = hooks.iter().map(|h| h.point.name()).collect();
-                capabilities.sort_unstable();
-                capabilities.dedup();
-
-                results.push(BuiltinExtensionInfo {
-                    id: ext_id,
-                    ext_type,
-                    name,
-                    enabled,
-                    capabilities,
-                });
-            }
-        }
-
-        results.sort_by(|a, b| a.ext_type.cmp(&b.ext_type).then(a.name.cmp(&b.name)));
-        results
+        self.hook_registry.list_builtin_extensions().await
     }
 
     /// Get hooks for a specific hook point
@@ -351,68 +156,7 @@ impl ExtensionCore {
     /// is not found, checks for wildcard patterns (e.g., "mcp:identity:*" matches
     /// "`mcp:identity:echo_identity`").
     pub async fn get_hooks_for_point(&self, point: &HookPoint) -> Vec<RegisteredHook> {
-        let by_point = self.hooks_by_point.read().await;
-        let hooks = self.hooks.read().await;
-        let point_name = point.name();
-
-        // First try exact match
-        if let Some(ids) = by_point.get(&point_name) {
-            return ids
-                .iter()
-                .filter_map(|id| hooks.get(id).cloned())
-                .filter(|h| h.enabled)
-                .collect();
-        }
-
-        // For tool execution hooks, try wildcard matching
-        // e.g., "tool.execute.mcp:identity:echo_identity" should match "tool.execute.mcp:identity:*"
-        if let HookPoint::ToolExecute { tool_name }
-        | HookPoint::ToolExecuteAsync { tool_name }
-        | HookPoint::ToolCheckStatus { tool_name }
-        | HookPoint::ToolCancel { tool_name } = point
-        {
-            for (registered_name, ids) in by_point.iter() {
-                // Check if this is a tool execution hook with a wildcard pattern
-                if let Some(prefix) = registered_name.strip_prefix("tool.execute.") {
-                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
-                        return ids
-                            .iter()
-                            .filter_map(|id| hooks.get(id).cloned())
-                            .filter(|h| h.enabled)
-                            .collect();
-                    }
-                }
-                if let Some(prefix) = registered_name.strip_prefix("tool.execute_async.") {
-                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
-                        return ids
-                            .iter()
-                            .filter_map(|id| hooks.get(id).cloned())
-                            .filter(|h| h.enabled)
-                            .collect();
-                    }
-                }
-                if let Some(prefix) = registered_name.strip_prefix("tool.check_status.") {
-                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
-                        return ids
-                            .iter()
-                            .filter_map(|id| hooks.get(id).cloned())
-                            .filter(|h| h.enabled)
-                            .collect();
-                    }
-                }
-                if let Some(prefix) = registered_name.strip_prefix("tool.cancel.") {
-                    if prefix.ends_with('*') && tool_name.starts_with(&prefix[..prefix.len() - 1]) {
-                        return ids
-                            .iter()
-                            .filter_map(|id| hooks.get(id).cloned())
-                            .filter(|h| h.enabled)
-                            .collect();
-                    }
-                }
-            }
-        }
-
-        Vec::new()
+        self.hook_registry.get_hooks_for_point(point).await
     }
 
     /// Invoke hooks for a specific point
@@ -429,7 +173,7 @@ impl ExtensionCore {
     #[instrument(skip(self, input), fields(point = %point))]
     pub async fn invoke_hook(&self, point: HookPoint, input: HookInput) -> HookResult {
         // Check global enable
-        if !self.is_globally_enabled().await {
+        if !self.hook_registry.is_globally_enabled().await {
             trace!("Hooks globally disabled, returning PassThrough");
             return HookResult::PassThrough;
         }
@@ -437,7 +181,7 @@ impl ExtensionCore {
         // ADR-019 Phase 1: Tool permission check at ExtensionCore layer
         // This ensures ALL tools (built-in, MCP, Universal) are checked consistently
         if let HookPoint::ToolExecute { ref tool_name } = point {
-            if !self.is_tool_enabled(tool_name).await {
+            if !self.tool_registry.is_tool_enabled(tool_name).await {
                 warn!(tool_name = %tool_name, "Tool execution blocked: tool is not enabled");
                 return HookResult::Error(anyhow::anyhow!(
                     "Tool '{tool_name}' is currently disabled. Enable it in agent config to use it."
@@ -446,86 +190,12 @@ impl ExtensionCore {
             trace!(tool_name = %tool_name, "Tool execution permitted");
         }
 
-        let handlers = self.get_hooks_for_point(&point).await;
-
-        if handlers.is_empty() {
-            trace!("No handlers registered for hook point");
-            return HookResult::PassThrough;
-        }
-
-        trace!(handler_count = handlers.len(), "Invoking hooks");
-
-        let mut outputs = Vec::new();
-
-        for handler in handlers {
-            let hook_id = handler.id;
-            let start = std::time::Instant::now();
-
-            // Create context
-            let ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
-
-            // Invoke handler
-            trace!(handler_id = %hook_id, "Calling handler");
-            let result = handler.handler.handle(ctx).await;
-
-            // Record telemetry
-            let duration_ms = start.elapsed().as_millis() as u64;
-            self.services
-                .record_invocation(&hook_id, &point, duration_ms);
-
-            // Process result
-            match result {
-                HookResult::Continue(output) => {
-                    trace!(handler_id = %hook_id, "Handler continued with output");
-                    outputs.push(output);
-                }
-                HookResult::PassThrough => {
-                    trace!(handler_id = %hook_id, "Handler passed through");
-                }
-                HookResult::Handled => {
-                    trace!(handler_id = %hook_id, "Handler consumed event");
-                    return HookResult::Handled;
-                }
-                HookResult::Replace(output) => {
-                    trace!(handler_id = %hook_id, "Handler replaced output");
-                    return HookResult::Replace(output);
-                }
-                HookResult::Error(e) => {
-                    debug!(handler_id = %hook_id, error = %e, "Handler error");
-                    return HookResult::Error(e);
-                }
-            }
-        }
-
-        // Combine outputs
-        if outputs.is_empty() {
-            HookResult::PassThrough
-        } else if outputs.len() == 1 {
-            HookResult::Continue(outputs.into_iter().next().unwrap())
-        } else {
-            HookResult::Continue(HookOutput::combine(outputs))
-        }
+        self.hook_registry.invoke_hook(point, input).await
     }
 
     /// Invoke hooks and return text output (convenience for prompt hooks)
     pub async fn invoke_hook_text(&self, point: HookPoint, input: HookInput) -> Option<String> {
-        match self.invoke_hook(point, input).await {
-            HookResult::Continue(HookOutput::Text(text)) => Some(text),
-            HookResult::Replace(HookOutput::Text(text)) => Some(text),
-            HookResult::Continue(HookOutput::Vec(outputs)) => {
-                // Concatenate text outputs
-                let texts: Vec<String> = outputs
-                    .into_iter()
-                    .filter_map(|o| o.as_text().map(std::string::ToString::to_string))
-                    .collect();
-                if texts.is_empty() {
-                    None
-                } else {
-                    Some(texts.join("\n"))
-                }
-            }
-            _ => None,
-        }
+        self.hook_registry.invoke_hook_text(point, input).await
     }
 
     /// Invoke hooks and return JSON output (convenience for data hooks)
@@ -534,21 +204,17 @@ impl ExtensionCore {
         point: HookPoint,
         input: HookInput,
     ) -> Option<serde_json::Value> {
-        match self.invoke_hook(point, input).await {
-            HookResult::Continue(HookOutput::Json(value)) => Some(value),
-            HookResult::Replace(HookOutput::Json(value)) => Some(value),
-            _ => None,
-        }
+        self.hook_registry.invoke_hook_json(point, input).await
     }
 
     /// Get the number of registered hooks
     pub async fn hook_count(&self) -> usize {
-        self.hooks.read().await.len()
+        self.hook_registry.hook_count().await
     }
 
     /// Get the number of registered hooks for a specific point
     pub async fn hook_count_for_point(&self, point: &HookPoint) -> usize {
-        self.get_hooks_for_point(point).await.len()
+        self.hook_registry.hook_count_for_point(point).await
     }
 
     // ==================== UNIFIED TOOL REGISTRY (ADR-018b) ====================
@@ -596,29 +262,26 @@ impl ExtensionCore {
             metadata,
         );
 
-        // Add to hooks map
+        // Register the hook in the hook registry
         {
-            let mut hooks = self.hooks.write().await;
+            let mut hooks = self.hook_registry.hooks.write().await;
             hooks.insert(hook_id, registration.clone());
         }
 
         // Index by the handler's hook point for execution lookup
         {
-            let mut by_point = self.hooks_by_point.write().await;
+            let mut by_point = self.hook_registry.hooks_by_point.write().await;
             let exec_point_name = exec_point.name();
             let entry = by_point.entry(exec_point_name).or_insert_with(Vec::new);
             entry.push(hook_id);
 
             // Sort by priority (higher first)
-            let hooks = self.hooks.read().await;
+            let hooks = self.hook_registry.hooks.read().await;
             entry.sort_by_key(|id| hooks.get(id).map_or(0, |h| -h.priority));
         }
 
         // Add to tool index for O(1) lookup
-        {
-            let mut tool_index = self.tool_index.write().await;
-            tool_index.insert(tool_name.clone(), hook_id);
-        }
+        self.tool_registry.register_tool(&tool_name, hook_id).await?;
 
         debug!(
             hook_id = %hook_id,
@@ -639,13 +302,9 @@ impl ExtensionCore {
     /// # Returns
     /// The tool metadata if found, None otherwise
     pub async fn get_tool_metadata(&self, tool_name: &str) -> Option<ToolMetadata> {
-        let tool_index = self.tool_index.read().await;
-        let hooks = self.hooks.read().await;
-
-        tool_index
-            .get(tool_name)
-            .and_then(|hook_id| hooks.get(hook_id))
-            .and_then(|hook| hook.tool_metadata.clone())
+        let hook_id = self.tool_registry.get_tool_hook_id(tool_name).await?;
+        let hooks = self.hook_registry.hooks.read().await;
+        hooks.get(&hook_id)?.tool_metadata.clone()
     }
 
     /// Get the hook ID for a tool by name
@@ -656,8 +315,7 @@ impl ExtensionCore {
     /// # Returns
     /// The hook ID if found, None otherwise
     pub async fn get_tool_hook_id(&self, tool_name: &str) -> Option<HookId> {
-        let tool_index = self.tool_index.read().await;
-        tool_index.get(tool_name).copied()
+        self.tool_registry.get_tool_hook_id(tool_name).await
     }
 
     /// List all registered tools
@@ -667,8 +325,8 @@ impl ExtensionCore {
     /// Note: This returns ALL registered tools regardless of the agent's whitelist.
     /// The whitelist is enforced at execution time via `invoke_hook`.
     pub async fn list_tools(&self) -> Vec<ToolMetadata> {
-        let tool_index = self.tool_index.read().await;
-        let hooks = self.hooks.read().await;
+        let tool_index = self.tool_registry.tool_index.read().await;
+        let hooks = self.hook_registry.hooks.read().await;
 
         tool_index
             .values()
@@ -696,14 +354,11 @@ impl ExtensionCore {
     /// * `tool_name` - The name of the tool to unregister
     #[instrument(skip(self), fields(tool_name = %tool_name))]
     pub async fn unregister_tool(&self, tool_name: &str) -> Result<()> {
-        let hook_id = {
-            let mut tool_index = self.tool_index.write().await;
-            tool_index.remove(tool_name)
-        };
+        let hook_id = self.tool_registry.unregister_tool(tool_name).await?;
 
         if let Some(hook_id) = hook_id {
             // Also unregister from hooks
-            self.unregister_hook(&hook_id).await?;
+            self.hook_registry.unregister_hook(&hook_id).await?;
             debug!(tool_name = %tool_name, "Unregistered tool");
         } else {
             warn!(tool_name = %tool_name, "Attempted to unregister unknown tool");
@@ -714,7 +369,7 @@ impl ExtensionCore {
 
     /// Get the number of registered tools
     pub async fn tool_count(&self) -> usize {
-        self.tool_index.read().await.len()
+        self.tool_registry.tool_count().await
     }
 }
 

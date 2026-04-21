@@ -10,6 +10,10 @@
 mod agent;
 pub use agent::Agent;
 
+// Agent execution orchestrator
+mod executor;
+pub use executor::AgentExecutor;
+
 // Stateless manager (primary architecture)
 pub mod stateless_manager;
 pub use stateless_manager::{StatelessAgentManager, StatelessManagerEvent};
