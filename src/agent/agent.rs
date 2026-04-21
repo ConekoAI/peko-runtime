@@ -43,8 +43,10 @@ impl Agent {
     /// Initialize built-in tools and register them with `ExtensionCore`.
     ///
     /// This asynchronous version loads Universal Tools from extensions directory
-    /// and registers only built-in tools with `ExtensionCore`. Extension tools
-    /// (Universal and MCP) are already registered via `ExtensionManager` hooks.
+    /// and registers only agent-specific built-in tools with `ExtensionCore`.
+    /// Common built-in tools (shell, read_file, write_file, etc.) are already
+    /// registered by the daemon's `AppState` startup via `ToolRuntime`.
+    /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::session_introspection::AgentSessionRegistry;
         use crate::tools::{
@@ -52,11 +54,17 @@ impl Agent {
             SessionsSendTool, Tool,
         };
 
-        // ADR-020 Phase 0: Delegate common built-in tool registration to ToolRuntime
-        // This eliminates duplication between Agent and daemon tool initialization.
-        let path_resolver = crate::common::paths::PathResolver::new();
-        crate::runtime::ToolRuntime::register_builtins(&self.extension_core, &path_resolver)
-            .await?;
+        // Defensive check: common built-ins must be pre-registered by the daemon startup path.
+        // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
+        // all common built-ins on the global ExtensionCore before any Agent is created.
+        let has_shell = self.extension_core.get_tool_metadata("shell").await.is_some();
+        if !has_shell {
+            tracing::error!(
+                "Built-in tools not pre-registered on ExtensionCore. \
+                 This indicates a startup ordering bug — AppState should initialize \
+                 ToolRuntime before StatelessAgentService."
+            );
+        }
 
         // Agent-specific tools (not part of ToolRuntime::register_builtins)
         let mut tools: Vec<Arc<dyn Tool>> = vec![];

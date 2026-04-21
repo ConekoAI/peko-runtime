@@ -230,7 +230,15 @@ impl AppState {
 
         // ADR-021: Initialize global ExtensionCore FIRST so ToolRuntime can register
         // tools with it, and Agent::new() can find them later.
-        let global_core = {
+        //
+        // If main.rs already initialized the global core (e.g. for the async router),
+        // reuse it and register tools on that instance. Otherwise create a new one.
+        // This prevents a race where main.rs sets an empty core and AppState's
+        // tool-filled core gets discarded by the OnceLock.
+        let global_core = if let Some(existing) = crate::extensions::core::global_core() {
+            tracing::info!("Reusing global ExtensionCore initialized by main.rs");
+            existing
+        } else {
             use crate::extensions::core::{init_global_core, ExtensionCore, ExtensionServices};
             use crate::extensions::services::AsyncExecutionRouter;
             let router = AsyncExecutionRouter::with_transport(
@@ -248,7 +256,7 @@ impl AppState {
             ToolRuntime::with_workspace_and_core(
                 path_resolver_clone.clone(),
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                global_core,
+                Arc::clone(&global_core),
             )
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create tool runtime: {e}"))?,
@@ -508,5 +516,80 @@ mod tests {
 
         // Initially no active executions
         assert_eq!(state.active_execution_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_appstate_has_registered_tools() {
+        let state = create_test_state().await;
+
+        // ToolRuntime should have registered built-in tools
+        let tool_runtime = state.tool_runtime.clone();
+        assert!(tool_runtime.has_tool("shell").await, "shell tool not registered");
+        assert!(tool_runtime.has_tool("read_file").await, "read_file tool not registered");
+        assert!(tool_runtime.has_tool("write_file").await, "write_file tool not registered");
+        assert!(tool_runtime.has_tool("glob").await, "glob tool not registered");
+        assert!(tool_runtime.has_tool("grep").await, "grep tool not registered");
+        assert!(tool_runtime.has_tool("str_replace_file").await, "str_replace_file tool not registered");
+
+        // ExtensionCore should list the tools
+        let core = tool_runtime.extension_core();
+        let tools = core.list_tools().await;
+        assert!(!tools.is_empty(), "No tools in ExtensionCore");
+
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        assert!(tool_names.contains(&"shell".to_string()));
+        assert!(tool_names.contains(&"grep".to_string()));
+
+        // Tool definitions should be available for LLM API
+        let defs = core.list_tool_definitions().await;
+        assert!(!defs.is_empty(), "No tool definitions available");
+    }
+
+    #[tokio::test]
+    async fn test_agent_init_preserves_pre_registered_tools() {
+        use crate::agent::Agent;
+        use crate::extensions::core::{init_global_core, ExtensionCore};
+        use crate::extensions::{HookInput, HookPoint};
+        use crate::types::agent::AgentConfig;
+        use crate::types::provider::{ProviderConfig, ProviderType};
+        use std::sync::Arc;
+
+        let state = create_test_state().await;
+        let global_core = state.tool_runtime.extension_core().clone();
+
+        // Simulate what Agent::new() does
+        init_global_core(global_core.clone());
+
+        let config = AgentConfig {
+            name: "test-agent".to_string(),
+            provider: ProviderConfig {
+                provider_type: ProviderType::Ollama,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let agent = Agent::new(config).await.expect("Failed to create agent");
+
+        // init_builtins_async should find pre-registered tools
+        agent.init_builtins_async().await.expect("Failed to init builtins");
+
+        // Tools should still be available after agent init
+        let core = agent.extension_core();
+        let tools: Vec<crate::extensions::types::ToolMetadata> = core.list_tools().await;
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        assert!(tool_names.contains(&"shell".to_string()), "shell missing after agent init");
+        assert!(tool_names.contains(&"grep".to_string()), "grep missing after agent init");
+
+        // Prompt section should return tool descriptions
+        let prompt: Option<String> = core.invoke_hook_text(
+            HookPoint::PromptSystemSection { section: "tools".to_string(), priority: 100 },
+            HookInput::Unit,
+        ).await;
+        assert!(prompt.is_some(), "Prompt section returned None");
+        let prompt_text = prompt.unwrap();
+        assert!(!prompt_text.is_empty(), "Prompt section is empty");
+        assert!(prompt_text.contains("shell"), "Prompt doesn't mention shell");
+        assert!(prompt_text.contains("grep"), "Prompt doesn't mention grep");
     }
 }

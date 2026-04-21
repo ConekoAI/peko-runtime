@@ -25,8 +25,6 @@ use tracing::{debug, info, warn};
 
 // Extension Core imports for skill loading and tool execution
 use crate::extensions::adapters::skill_adapter::{register_skills_with_core, SkillAdapter};
-use crate::extensions::core::HookPointBuilder;
-use crate::extensions::{HookInput, HookOutput, HookResult};
 
 /// Result of running the agentic loop
 #[derive(Debug, Clone)]
@@ -700,103 +698,37 @@ impl AgenticLoop {
                         // Execute tool via ExtensionCore for unified execution (ADR-018a)
                         let start_time = std::time::Instant::now();
 
-                        // Check if tool is registered in ExtensionCore
-                        let tool_in_extension =
-                            self.extension_core.get_tool_metadata(name).await.is_some();
+                        let workspace = self
+                            .agent
+                            .config
+                            .workspace
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string());
 
-                        let (tool_result_str, tool_result_json, success) = if tool_in_extension {
-                            // Route through ExtensionCore for unified execution with panic isolation
-                            let hook_point = HookPointBuilder::tool_execute(name);
-                            let hook_input = HookInput::ToolCall {
-                                tool_name: name.clone(),
-                                params: arguments.clone(),
-                                workspace: self
-                                    .agent
-                                    .config
-                                    .workspace
-                                    .as_ref()
-                                    .map(|p| p.to_string_lossy().to_string()),
-                            };
-
-                            match self
-                                .extension_core
-                                .invoke_hook(hook_point, hook_input)
-                                .await
+                        let (tool_result_str, tool_result_json, success) =
+                            match crate::runtime::execute_tool_via_core(
+                                &self.extension_core,
+                                name,
+                                arguments.clone(),
+                                workspace,
+                            )
+                            .await
                             {
-                                HookResult::Continue(HookOutput::Json(result)) => {
-                                    info!(
-                                        "Tool '{}' executed successfully via ExtensionCore",
-                                        name
-                                    );
-                                    let s = result.to_string();
-                                    (s.clone(), result, true)
-                                }
-                                HookResult::Continue(HookOutput::Text(result)) => {
-                                    info!(
-                                        "Tool '{}' executed successfully via ExtensionCore",
-                                        name
-                                    );
-                                    (result.clone(), serde_json::Value::String(result), true)
-                                }
-                                HookResult::Continue(HookOutput::Vec(outputs)) => {
-                                    let result = outputs.iter().find_map(|o| match o {
-                                        HookOutput::Json(v) => Some((v.to_string(), v.clone())),
-                                        HookOutput::Text(t) => {
-                                            Some((t.clone(), serde_json::Value::String(t.clone())))
-                                        }
-                                        _ => None,
-                                    });
-                                    if let Some((s, v)) = result {
-                                        info!("Tool '{}' executed successfully via ExtensionCore (from {} outputs)", name, outputs.len());
-                                        (s, v, true)
-                                    } else {
-                                        warn!(
-                                            "Tool '{}' returned Vec with no Json/Text: {:?}",
-                                            name, outputs
+                                Ok((s, v, ok)) => {
+                                    if ok {
+                                        info!(
+                                            "Tool '{}' executed successfully via ExtensionCore",
+                                            name
                                         );
-                                        let s =
-                                            "Error: Unexpected Vec output from tool".to_string();
-                                        (s.clone(), serde_json::Value::String(s), false)
                                     }
+                                    (s, v, ok)
                                 }
-                                HookResult::Continue(other) => {
-                                    warn!(
-                                        "Tool '{}' returned non-Json/Text output: {:?}",
-                                        name,
-                                        std::mem::discriminant(&other)
-                                    );
-                                    let s = "Error: Unexpected output type from tool".to_string();
-                                    (s.clone(), serde_json::Value::String(s), false)
-                                }
-                                HookResult::PassThrough => {
-                                    warn!("Tool '{}' not handled by ExtensionCore", name);
-                                    let s = format!("Tool '{name}' not available");
-                                    (s.clone(), serde_json::Value::String(s), false)
-                                }
-                                HookResult::Error(e) => {
-                                    info!("Tool '{}' failed via ExtensionCore: {}", name, e);
+                                Err(e) => {
+                                    warn!("Tool '{}' failed via ExtensionCore: {}", name, e);
                                     let s = format!("Error: {e}");
                                     (s.clone(), serde_json::Value::String(s), false)
                                 }
-                                HookResult::Handled => {
-                                    warn!("Hook result for tool '{}' was Handled (consumed)", name);
-                                    let s =
-                                        "Error: Tool execution was consumed by handler".to_string();
-                                    (s.clone(), serde_json::Value::String(s), false)
-                                }
-                                HookResult::Replace(output) => {
-                                    warn!(
-                                        "Hook result for tool '{}' was Replace: {:?}",
-                                        name, output
-                                    );
-                                    let s = "Error: Tool execution was replaced".to_string();
-                                    (s.clone(), serde_json::Value::String(s), false)
-                                }
-                            }
-                        } else {
-                            let s = format!("Tool '{name}' not found");
-                            (s.clone(), serde_json::Value::String(s), false)
-                        };
+                            };
 
                         let duration_ms = start_time.elapsed().as_millis() as u64;
 

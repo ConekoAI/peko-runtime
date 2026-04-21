@@ -105,13 +105,31 @@ pub trait Tool: Send + Sync {
         })
     }
 
-    /// Execute the tool with parameters
+    /// Execute the tool with parameters.
+    ///
+    /// ⚠️ **TEST-ONLY IN PRODUCTION CONTEXTS**
+    ///
+    /// Production code must route tool execution through `ExtensionCore::invoke_hook`
+    /// (or `ToolRuntime::execute_tool`) to ensure consistent behavior:
+    /// - Workspace injection
+    /// - Reserved parameter validation/injection
+    /// - Tool permission checks (ADR-019)
+    /// - Abort/timeout handling
+    /// - Progress reporting
+    /// - Metrics collection
+    ///
+    /// Direct calls to this method are appropriate for:
+    /// - Unit tests of individual tools
+    /// - The `BuiltinToolAdapter` wrapper (which bridges into ExtensionCore)
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value>;
 
-    /// Execute with full context (abort signal + progress callbacks)
+    /// Execute with full context (abort signal + progress callbacks).
     ///
-    /// Default implementation delegates to `execute` for backward compatibility.
-    /// Tools that want to support abort/updates should override this.
+    /// This is the canonical execution method on the trait. The default implementation
+    /// delegates to `execute` for backward compatibility, but tools that support progress
+    /// reporting should override this.
+    ///
+    /// ⚠️ **TEST-ONLY IN PRODUCTION CONTEXTS** — see note on `execute`.
     ///
     /// # Arguments
     /// * `params` - Tool parameters from the LLM

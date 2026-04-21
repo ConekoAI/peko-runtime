@@ -6,7 +6,7 @@
 use crate::common::paths::PathResolver;
 use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
 use crate::extensions::core::{ExtensionCore, ExtensionServices};
-use crate::extensions::types::HookInput;
+use crate::extensions::types::{tool_result_from_hook, HookInput};
 use crate::extensions::HookPoint;
 use crate::tools::{
     GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, Tool, WriteFileTool,
@@ -15,6 +15,32 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
+
+/// Canonical tool execution via ExtensionCore.
+///
+/// All production code should call this (or `ToolRuntime::execute_tool`) to ensure
+/// consistent behavior: workspace injection, reserved params, permission checks,
+/// abort/timeout handling, progress reporting, and metrics.
+///
+/// Returns a triplet of `(display_string, json_value, success)`.
+pub async fn execute_tool_via_core(
+    core: &ExtensionCore,
+    tool_name: &str,
+    params: serde_json::Value,
+    workspace: Option<String>,
+) -> Result<(String, serde_json::Value, bool)> {
+    let point = HookPoint::ToolExecute {
+        tool_name: tool_name.to_string(),
+    };
+    let input = HookInput::ToolCall {
+        tool_name: tool_name.to_string(),
+        params,
+        workspace,
+    };
+
+    let result = core.invoke_hook(point, input).await;
+    Ok(tool_result_from_hook(result, tool_name))
+}
 
 /// Standalone tool execution environment
 ///
@@ -197,36 +223,26 @@ impl ToolRuntime {
         params: serde_json::Value,
         workspace: &std::path::Path,
     ) -> Result<serde_json::Value> {
-        let point = HookPoint::ToolExecute {
-            tool_name: tool_name.to_string(),
-        };
-        let input = HookInput::ToolCall {
-            tool_name: tool_name.to_string(),
+        let (display, json, success) = execute_tool_via_core(
+            &self.extension_core,
+            tool_name,
             params,
-            workspace: Some(workspace.to_string_lossy().to_string()),
-        };
+            Some(workspace.to_string_lossy().to_string()),
+        )
+        .await?;
 
-        let result = self.extension_core.invoke_hook(point, input).await;
+        if !success {
+            return Err(anyhow::anyhow!(display));
+        }
 
-        match result {
-            crate::extensions::types::HookResult::Continue(output)
-            | crate::extensions::types::HookResult::Replace(output) => match output {
-                crate::extensions::types::HookOutput::Json(v) => Ok(v),
-                crate::extensions::types::HookOutput::Text(t) => {
-                    Ok(serde_json::json!({"result": t}))
-                }
-                _ => anyhow::bail!("Unexpected output type from tool '{}'", tool_name),
-            },
-            crate::extensions::types::HookResult::Error(e) => {
-                Err(e).with_context(|| format!("Tool execution failed for '{}'", tool_name))
-            }
-            crate::extensions::types::HookResult::PassThrough => {
-                anyhow::bail!("No handler found for tool '{}'", tool_name)
-            }
-            crate::extensions::types::HookResult::Handled => {
-                anyhow::bail!("Tool '{}' execution was handled without output", tool_name)
+        // For backward compatibility: if the result is a simple string, wrap it
+        if let Some(s) = json.as_str() {
+            if s == display {
+                return Ok(serde_json::json!({"result": s}));
             }
         }
+
+        Ok(json)
     }
 
     /// List all registered tools

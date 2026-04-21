@@ -552,6 +552,60 @@ impl ToolMetadata {
     }
 }
 
+/// Convert a `HookResult` from tool execution into a structured triplet.
+///
+/// Returns `(display_string, json_value, success)` where:
+/// - `display_string` is the human-readable result (for LLM consumption)
+/// - `json_value` is the structured result (for session storage)
+/// - `success` indicates whether execution succeeded
+///
+/// This is the single place where `HookResult`→tool output semantics are defined,
+/// ensuring `AgenticLoop` and `ToolRuntime` behave identically.
+pub fn tool_result_from_hook(result: HookResult, tool_name: &str) -> (String, serde_json::Value, bool) {
+    match result {
+        HookResult::Continue(HookOutput::Json(result)) => {
+            let s = result.to_string();
+            (s, result, true)
+        }
+        HookResult::Continue(HookOutput::Text(result)) => {
+            (result.clone(), serde_json::Value::String(result), true)
+        }
+        HookResult::Continue(HookOutput::Vec(outputs)) => {
+            let result = outputs.iter().find_map(|o| match o {
+                HookOutput::Json(v) => Some((v.to_string(), v.clone())),
+                HookOutput::Text(t) => Some((t.clone(), serde_json::Value::String(t.clone()))),
+                _ => None,
+            });
+            if let Some((s, v)) = result {
+                (s, v, true)
+            } else {
+                let s = format!("Error: Unexpected Vec output from tool '{tool_name}'");
+                (s.clone(), serde_json::Value::String(s), false)
+            }
+        }
+        HookResult::Continue(other) => {
+            let s = format!("Error: Unexpected output type from tool '{tool_name}'");
+            (s.clone(), serde_json::Value::String(s), false)
+        }
+        HookResult::PassThrough => {
+            let s = format!("Tool '{tool_name}' not available");
+            (s.clone(), serde_json::Value::String(s), false)
+        }
+        HookResult::Error(e) => {
+            let s = format!("Error: {e}");
+            (s.clone(), serde_json::Value::String(s), false)
+        }
+        HookResult::Handled => {
+            let s = format!("Error: Tool '{tool_name}' execution was consumed by handler");
+            (s.clone(), serde_json::Value::String(s), false)
+        }
+        HookResult::Replace(output) => {
+            let s = format!("Error: Tool '{tool_name}' execution was replaced: {output:?}");
+            (s.clone(), serde_json::Value::String(s), false)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

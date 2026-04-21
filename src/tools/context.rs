@@ -108,6 +108,28 @@ impl ToolContext {
         }
     }
 
+    /// Create a minimal tool context for use when no abort/progress is needed.
+    ///
+    /// Used by `BuiltinToolAdapter` to ensure `execute_with_context` gets
+    /// consistent metrics/timeout handling even when invoked through the hook system.
+    pub fn default_for_tool(tool_name: impl Into<String>) -> Self {
+        let (_tx, abort_rx) = tokio::sync::watch::channel(false);
+        Self {
+            run_id: "hook".to_string(),
+            tool_id: "hook".to_string(),
+            tool_name: tool_name.into(),
+            event_tx: None,
+            abort_rx,
+            progress_throttle_ms: 500,
+            last_progress_update: Arc::new(tokio::sync::Mutex::new(None)),
+            timeout: None,
+            agent_id: None,
+            session_id: None,
+            peer_id: None,
+            workspace: None,
+        }
+    }
+
     /// Create a new tool context with event channel
     pub fn with_events(
         run_id: impl Into<String>,
@@ -478,7 +500,8 @@ impl<T: super::Tool + Send + Sync> ToolWithContext for ToolAdapter<T> {
         let start_time = std::time::Instant::now();
         ctx.check_timeout(start_time)?;
 
-        // Execute the basic tool (no progress updates possible)
+        // Delegate to the inner Tool::execute.
+        // This is a trait adapter, not a production execution path.
         let result = self.inner.execute(params).await;
 
         // Check abort after completion

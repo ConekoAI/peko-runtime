@@ -104,6 +104,7 @@ impl HookHandler for BuiltinExecuteHandler {
         let tool = self.tool.clone();
         let tool_name = tool.name().to_string();
         let tool_name_for_preproc = tool_name.clone();
+        let tool_name_for_ctx = tool_name.clone();
 
         let exec_config =
             crate::extensions::services::ToolExecutionConfig::with_schema(self.tool.parameters());
@@ -152,7 +153,13 @@ impl HookHandler for BuiltinExecuteHandler {
                 ),
                 move |p| {
                     let tool = tool.clone();
-                    async move { tool.execute(p).await }
+                    async move {
+                        // Use execute_with_context for consistent metrics/timeout/abort handling.
+                        // In the future, HookContext can be extended to carry abort signals and
+                        // progress callbacks, which would be passed through here.
+                        let ctx = crate::tools::context::ToolContext::default_for_tool(&tool_name_for_ctx);
+                        tool.execute_with_context(p, &ctx).await
+                    }
                 },
             )
             .await
