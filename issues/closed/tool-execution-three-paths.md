@@ -1,4 +1,4 @@
-# Issue 002: Tool Execution — Three Competing Paths
+# Issue Tool Execution — Three Competing Paths
 
 **Severity:** CRITICAL  
 **Status:** Closed ✅  
