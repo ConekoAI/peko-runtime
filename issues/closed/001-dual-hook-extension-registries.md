@@ -1,4 +1,4 @@
-# Issue Dual Hook/Extension Registries — Competing Abstractions
+# Issue 001: Dual Hook/Extension Registries — Competing Abstractions
 
 **Severity:** CRITICAL  
 **Status:** ✅ **Closed / Archived**  
