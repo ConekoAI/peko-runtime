@@ -145,6 +145,23 @@ impl HookHandler for BuiltinExecuteHandler {
                                             );
                                         }
                                     }
+                                    "write_file" | "read_file" | "str_replace_file" => {
+                                        if let Some(path_val) = obj.get("path") {
+                                            if let Some(path_str) = path_val.as_str() {
+                                                let path_buf = std::path::PathBuf::from(path_str);
+                                                if !path_buf.is_absolute() {
+                                                    let resolved = std::path::PathBuf::from(ws)
+                                                        .join(path_str);
+                                                    obj.insert(
+                                                        "path".to_string(),
+                                                        serde_json::Value::String(
+                                                            resolved.to_string_lossy().to_string(),
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
