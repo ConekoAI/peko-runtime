@@ -1407,12 +1407,9 @@ impl AgenticLoopV4 {
                     {
                         info!("Executing tool: {} (id: {})", name, id);
 
-                        on_event(AgenticEvent::ToolStart {
-                            run_id: run_id.clone(),
-                            tool_id: id.clone(),
-                            name: name.clone(),
-                            params: arguments.clone(),
-                        });
+                        // Note: ToolStart was already emitted by StreamOrchestrator
+                        // when processing StreamEvent::ToolCallEnd during streaming.
+                        // Do NOT emit it again here to avoid duplicate "[Running tool: X]" output.
 
                         // Execute tool via ExtensionCore for unified execution (ADR-018a)
                         let start_time = std::time::Instant::now();
