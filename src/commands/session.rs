@@ -440,7 +440,10 @@ async fn show_session(
             println!("   Parent Session: {parent}");
         }
 
-        if let Some(events) = history_events {
+        if let Some(mut events) = history_events {
+            // Reverse to chronological order (oldest first) for display
+            events.reverse();
+
             println!();
             println!("📜 Message History ({} events):", events.len());
             println!();
