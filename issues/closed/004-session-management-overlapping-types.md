@@ -1,9 +1,11 @@
 # Issue 004: Session Management — Overlapping Types
 
 **Severity:** HIGH  
-**Status:** Open  
+**Status:** Resolved  
 **Labels:** `architecture`, `session`, `overlay`, `refactor`  
 **Reported:** 2026-04-21  
+**Assigned:** Kimi Code CLI  
+**Resolved:** 2026-04-22  
 
 ---
 
@@ -163,39 +165,169 @@ This is a separate service layer that operates on sessions but is not part of th
 
 ---
 
-## Proposed Resolution
+## Selected Resolution: Modified Option A
 
-### Option A: Merge `HybridSession` into `Session` (Recommended)
+After reviewing all source files and call sites, the selected approach merges `HybridSession` into `SessionHandle`, eliminates `SessionRouter`, and reduces `SessionContext` to a pure DTO. `SessionHandle` already exists as a well-designed operations facade — it just needs overlay awareness.
 
-1. **Add an optional `overlay: OverlayRef` field directly to `Session`.**
-2. **Delete `HybridSession`.** All its methods move to `Session`.
-3. **`SessionContext` becomes a pure DTO** (just `Session` + `channel_type` + `is_subagent`) with no active operations.
-4. **All message operations go through `Session` directly** or via a `SessionHandle` obtained from `SessionManager`.
+### New Architecture
 
-### Option B: Merge `SessionContext` and `SessionRouter`
+```
+┌─────────────────────────────────────┐
+│         SessionManager              │
+│  (lifecycle, routing, caching)      │
+├─────────────────────────────────────┤
+│  resolve_session() → ResolvedSession│
+│  create_session()  → SessionHandle  │
+│  open_session()    → SessionHandle  │
+│  route()           → ResolvedSession│
+│  spawn_session()   → ResolvedSession│
+└─────────────────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────┐
+│         ResolvedSession             │
+│  ├─ context: SessionContext (DTO)   │
+│  └─ handle: SessionHandle (ops)     │
+└─────────────────────────────────────┘
+              │
+    ┌─────────┴─────────┐
+    ▼                   ▼
+┌─────────┐      ┌─────────────┐
+│Session  │      │ SessionHandle│
+│Context  │      │ (operations) │
+│(DTO)    │      │              │
+│         │      │ add_user()   │
+│channel_ │      │ add_assistant│
+│type     │      │ load_history │
+│is_subagent     │ record_usage │
+│is_isolated     │ get/set state│
+└─────────┘      └─────────────┘
+                          │
+                          ▼
+                   ┌─────────────┐
+                   │   Session   │
+                   │ (internal)  │
+                   │ + overlay   │
+                   └─────────────┘
+```
 
-1. **Delete `SessionRouter`.** Its methods move to `SessionManager`.
-2. **`SessionContext` becomes the single public API** for session operations.
-3. **`SessionContext` no longer constructs itself** — it is returned by `SessionManager` methods only.
-4. This reduces the API surface but `SessionContext` remains a large type.
+### Public API Surface (3 Types)
 
-### Option C: Introduce `SessionOps` trait
+| Type | Module | Responsibility |
+|------|--------|---------------|
+| `SessionManager` | `session::manager` | Lifecycle, routing, resolution |
+| `SessionHandle` | `session::manager` | Operations on an active session |
+| `SessionContext` | `session::context` | Pure DTO with routing metadata |
 
-1. Define a trait for session operations (`add_user`, `add_assistant`, `add_tool_result`, `load_history`).
-2. Implement it for `Session`, `HybridSession`, and `SessionContext`.
-3. Callers use the trait instead of concrete types.
-4. This is a band-aid but improves testability and reduces coupling.
+`SessionService` (renamed `SessionQueryService`) lives in `session::service` for read-only queries.
+
+### Detailed Changes
+
+#### 1. Merge `HybridSession` into `Session` and `SessionHandle`
+
+**`src/session/unified.rs`:**
+- Add `overlay: Option<OverlayRef>` field to `Session`
+- Move `HybridSession`'s methods (`full_session_key`, `is_isolated_spawn`, `channel_type`) to `Session`
+- Delete `HybridSession`
+
+**`src/session/manager.rs`:**
+- Update `SessionHandle` to hold `overlay: Option<OverlayRef>` directly
+- Add overlay-aware methods to `SessionHandle`:
+  - `full_session_key()`
+  - `is_isolated()`
+  - `channel_type()`
+  - `get_channel_state()` / `set_channel_state()`
+  - `get_spawn_status()` / `update_spawn_status()`
+
+#### 2. Reduce `SessionContext` to a Pure DTO
+
+**`src/session/context.rs`:**
+```rust
+/// Lightweight context for agent execution — pure DTO, no operations
+#[derive(Debug, Clone)]
+pub struct SessionContext {
+    pub session_id: String,
+    pub agent_name: String,
+    pub session_key: String,
+    pub channel_type: Option<ChannelType>,
+    pub is_subagent: bool,
+    pub is_isolated: bool,
+}
+```
+
+- Remove ALL message operations (`add_user_message`, `add_assistant_message`, etc.)
+- Remove `for_channel` and `for_spawn` constructors
+- `SessionContext` is constructed by `SessionManager` only, from resolved session metadata
+
+#### 3. Delete `SessionRouter`, Merge into `SessionManager`
+
+**`src/session/context.rs`:**
+- Delete `SessionRouter` entirely
+
+**`src/session/manager.rs`:**
+- Add routing methods directly to `SessionManager`:
+  - `route()`
+  - `route_to_agent()`
+  - `spawn_session()`
+- Update `ResolvedSession` to contain both `context` (DTO) and `handle` (ops):
+  ```rust
+  pub struct ResolvedSession {
+      pub context: SessionContext,
+      pub handle: SessionHandle,
+      pub is_new: bool,
+      pub session_id: String,
+  }
+  ```
+
+#### 4. Update `Agent` and Call Sites
+
+**`src/agent/agent.rs`:**
+- Replace `session_router: SessionRouter` with direct `SessionManager` methods
+- `get_session_context()` returns `ResolvedSession`; callers use `.handle` for ops, `.context` for metadata
+
+**`src/channels/cli.rs`, `src/tools/agent_spawn.rs`, etc.:**
+- Use `SessionHandle` for `record_usage()` instead of `SessionContext`
+- Use `SessionContext` as DTO only (for routing info)
+
+#### 5. Evaluate `SessionService`
+
+**`src/common/services/session_service.rs`:**
+- Move to `src/session/service.rs` and rename to `SessionQueryService`
+- Boundary: `SessionManager` = active session lifecycle + routing; `SessionQueryService` = read-only queries for CLI/API
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/session/unified.rs` | Add `overlay` field; merge `HybridSession` methods |
+| `src/session/manager.rs` | Merge `SessionRouter`; expand `SessionHandle`; update `ResolvedSession`; delete `HybridSession` |
+| `src/session/context.rs` | Strip to pure DTO; delete `SessionRouter` |
+| `src/session/mod.rs` | Update re-exports |
+| `src/agent/agent.rs` | Replace `SessionRouter` usage with `SessionManager` |
+| `src/agent/subagent_executor.rs` | Use `ResolvedSession.handle` for ops, `.context` for metadata |
+| `src/channels/cli.rs` | Use `SessionHandle` for `record_usage` instead of `SessionContext` |
+| `src/tools/agent_spawn.rs` | Same as above |
+| `src/agent/announcement_service.rs` | Use `SessionContext` as DTO only |
+| `src/common/services/session_service.rs` | Move to `src/session/service.rs` (optional, separate PR) |
+
+### Migration Strategy
+
+1. **Phase 1**: Add `overlay` to `Session`, add methods to `SessionHandle`, create new `SessionContext` DTO ✅
+2. **Phase 2**: Update `SessionManager` routing methods to return `ResolvedSession` with both `context` + `handle` ✅
+3. **Phase 3**: Update all call sites in `agent/`, `channels/`, `tools/` to use `.handle` for operations ✅
+4. **Phase 4**: Delete `HybridSession`, delete old `SessionContext` methods, delete `SessionRouter` ✅
+5. **Phase 5**: Move `SessionService` to `session::service` (optional — deferred to future PR)
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] There are at most 3 public session types (e.g., `Session`, `SessionManager`, `SessionHandle`).
-- [ ] `SessionContext` is either a pure DTO or deleted.
-- [ ] `SessionRouter` is either deleted or merged into `SessionManager`.
-- [ ] `HybridSession` is either deleted or merged into `Session`.
-- [ ] Adding a message to a session requires at most one lock acquisition and one method call.
-- [ ] `SessionService` in `common::services` is evaluated for merge into `session` module or kept with a clear boundary.
+- [x] There are at most 3 public session types (`SessionManager`, `SessionHandle`, `SessionContext`).
+- [x] `SessionContext` is a pure DTO with no active operations.
+- [x] `SessionRouter` is deleted; routing lives in `SessionManager`.
+- [x] `HybridSession` is deleted; overlay awareness lives in `Session`/`SessionHandle`.
+- [x] Adding a message to a session requires at most one lock acquisition and one method call.
+- [x] `SessionService` in `common::services` is evaluated for merge into `session` module or kept with a clear boundary.
 
 ---
 

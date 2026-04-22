@@ -5,7 +5,7 @@ use crate::common::paths::PathResolver;
 use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
 use crate::extensions::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
-use crate::session::context::{SessionContext, SessionRouter};
+use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::{ChannelType, Peer};
 use crate::tools::agent_spawn::DynamicSessionKeyProvider;
@@ -27,8 +27,6 @@ pub struct Agent {
     provider: Option<Arc<crate::providers::Provider>>,
     /// Session manager for overlay lifecycle
     session_manager: Arc<TokioRwLock<SessionManager>>,
-    /// Session router for message routing
-    session_router: SessionRouter,
     /// Subagent executor for background task execution
     subagent_executor: Arc<SubagentExecutor>,
     /// Dynamic session key provider for `agent_spawn` tool
@@ -51,7 +49,6 @@ impl Clone for Agent {
             },
             provider: self.provider.clone(),
             session_manager: Arc::clone(&self.session_manager),
-            session_router: self.session_router.clone(),
             subagent_executor: Arc::clone(&self.subagent_executor),
             session_key_provider: Arc::clone(&self.session_key_provider),
             current_session_id: Arc::clone(&self.current_session_id),
@@ -222,11 +219,8 @@ impl Agent {
             .with_path_resolver(path_resolver, &config.name, config.team.as_deref())
             .await?;
         let session_manager = Arc::new(TokioRwLock::new(session_manager));
-        let session_router = SessionRouter::new(Arc::clone(&session_manager), config.name.clone());
-
         // Initialize subagent executor
         let subagent_executor_base = SubagentExecutor::new(
-            session_router.clone(),
             Arc::clone(&session_manager),
             config.name.clone(),
             5, // max_concurrent
@@ -255,7 +249,6 @@ impl Agent {
             identity,
             provider,
             session_manager,
-            session_router,
             subagent_executor,
             session_key_provider,
             current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
@@ -558,12 +551,6 @@ impl Agent {
         Arc::clone(&self.session_manager)
     }
 
-    /// Get the session router
-    #[must_use]
-    pub fn session_router(&self) -> &SessionRouter {
-        &self.session_router
-    }
-
     /// Get or create a session context for a peer and channel
     ///
     /// This is the primary method for channels to get a session.
@@ -574,9 +561,11 @@ impl Agent {
         channel_type: ChannelType,
         channel_id: &str,
     ) -> Result<SessionContext> {
-        self.session_router
+        let mut manager = self.session_manager.write().await;
+        let resolved = manager
             .route(peer, channel_type, channel_id, Some(&self.config.name))
-            .await
+            .await?;
+        Ok(resolved.context)
     }
 
     /// Get or create a session context for the default user
@@ -600,8 +589,9 @@ impl Agent {
         parent_session_key: &str,
         timeout_seconds: Option<u64>,
     ) -> Result<SessionContext> {
-        self.session_router
-            .spawn(
+        let mut manager = self.session_manager.write().await;
+        let resolved = manager
+            .spawn_session(
                 &self.config.name,
                 peer,
                 task,
@@ -609,7 +599,8 @@ impl Agent {
                 parent_session_key,
                 timeout_seconds,
             )
-            .await
+            .await?;
+        Ok(resolved.context)
     }
 
     // Session management commands (CLI integration)
@@ -954,7 +945,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_session_router() {
+    async fn test_agent_session_routing() {
         use crate::extensions::core::ExtensionCore;
         use crate::session::types::{ChannelType, Peer};
         use crate::types::provider::{ProviderConfig, ProviderType};
@@ -973,14 +964,13 @@ mod tests {
         };
 
         let agent = Agent::new(config).await.unwrap();
-        let router = agent.session_router();
 
-        // Router should be able to route to sessions
+        // Session manager should be able to route to sessions
         let peer = Peer::User("test_user".to_string());
-        let ctx = router.route(&peer, ChannelType::Cli, "default", None).await;
+        let ctx = agent.get_session_context(&peer, ChannelType::Cli, "default").await;
 
         // Should succeed (requires filesystem in full test)
-        // This just verifies the router is properly initialized
+        // This just verifies routing is properly initialized
         assert!(ctx.is_ok() || ctx.is_err()); // Either is fine for this test
     }
 
@@ -1034,7 +1024,7 @@ mod tests {
             .get_session_context(&peer, crate::session::types::ChannelType::Cli, "default")
             .await
             .unwrap();
-        let parent_key = parent_ctx.full_session_key().await;
+        let parent_key = parent_ctx.full_session_key.clone();
 
         // Spawn a child session with shared context
         let spawn_ctx = agent
@@ -1044,6 +1034,6 @@ mod tests {
         assert!(spawn_ctx.is_ok());
         let spawn_ctx = spawn_ctx.unwrap();
         assert!(spawn_ctx.is_subagent);
-        assert!(!spawn_ctx.is_isolated().await);
+        assert!(!spawn_ctx.is_isolated);
     }
 }

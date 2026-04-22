@@ -368,7 +368,7 @@ For framework-level async control, use:
         } else if let Some(ref provider) = self.session_provider {
             provider.current_session_key()
         } else if let Some(ref ctx) = self.current_session {
-            ctx.full_session_key().await
+            ctx.full_session_key.clone()
         } else {
             return Err(anyhow::anyhow!(
                 "AgentSpawnTool requires a parent_session_key parameter, session provider, or session context. \
@@ -542,8 +542,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_tool_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let router = crate::session::context::SessionRouter::new(manager.clone(), "test_agent");
-        let executor = Arc::new(SubagentExecutor::new(router, manager, "test_agent", 5));
+        let executor = Arc::new(SubagentExecutor::new(manager, "test_agent", 5));
         let tool = AgentSpawnTool::new(executor);
 
         assert_eq!(tool.name(), "agent_spawn");
@@ -552,8 +551,7 @@ mod tests {
     #[tokio::test]
     async fn test_spawn_tool_with_session_provider() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let router = crate::session::context::SessionRouter::new(manager.clone(), "test_agent");
-        let executor = Arc::new(SubagentExecutor::new(router, manager, "test_agent", 5));
+        let executor = Arc::new(SubagentExecutor::new(manager, "test_agent", 5));
 
         let provider = Box::new(StaticSessionKeyProvider::new("test:session:key"));
         let tool = AgentSpawnTool::with_session_provider(executor, provider);

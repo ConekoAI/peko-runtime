@@ -16,7 +16,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::session::context::SessionRouter;
 use crate::session::manager::SessionManager;
 use crate::tools::Tool;
 
@@ -66,8 +65,6 @@ impl std::error::Error for SessionsSendError {}
 
 /// Sessions Send tool for A2A messaging with cross-team blocking
 pub struct SessionsSendTool {
-    /// Session router for resolving agent sessions
-    session_router: Option<SessionRouter>,
     /// Session manager for accessing sessions
     session_manager: Option<Arc<RwLock<SessionManager>>>,
     /// Current session key (for result routing)
@@ -83,7 +80,6 @@ impl SessionsSendTool {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            session_router: None,
             session_manager: None,
             current_session_key: None,
             current_agent_name: None,
@@ -107,13 +103,6 @@ impl SessionsSendTool {
     ) -> Self {
         self.current_session_key = Some(session_key.into());
         self.current_agent_name = Some(agent_name.into());
-        self
-    }
-
-    /// Configure with session router for agent resolution
-    #[must_use]
-    pub fn with_session_router(mut self, router: SessionRouter) -> Self {
-        self.session_router = Some(router);
         self
     }
 

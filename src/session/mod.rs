@@ -42,7 +42,7 @@ pub mod types;
 pub mod unified;
 
 // Re-export Session (replaces both BaseSession and SimpleSession)
-pub use context::{SessionContext, SessionRouter};
+pub use context::SessionContext;
 pub use events::{
     generate_event_id, generate_message_id, generate_tool_call_id, A2aMessageType,
     A2aReceivedEvent, A2aSentEvent, EventEnvelope, HookTriggerEvent, HookType, MessageSource,
@@ -74,8 +74,8 @@ pub use overlay::{ChannelContext, ChannelOverlay, ChannelOverlayData, SessionOve
 pub use spawn::{SpawnOverlay, SpawnOverlayData, SpawnResult, SpawnStatus};
 
 pub use manager::{
-    HybridSession, OverlayRef, ResolutionStrategy, ResolvedSession, SessionCreateOptions,
-    SessionManager,
+    OverlayRef, ResolutionStrategy, ResolvedSession, SessionCreateOptions,
+    SessionHandle, SessionManager,
 };
 
 // Re-export recovery

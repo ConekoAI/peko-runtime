@@ -69,13 +69,13 @@ impl AnnouncementService {
             );
 
             // Get parent session context
-            let parent_ctx = self.get_parent_context(&run.parent_session_key).await;
+            let parent_handle = self.get_parent_handle(&run.parent_session_key).await;
 
-            match parent_ctx {
-                Some(ctx) => {
+            match parent_handle {
+                Some(handle) => {
                     // Announce to parent
                     if let Err(e) =
-                        crate::agent::subagent_announce::announce_to_parent(&ctx, &run).await
+                        crate::agent::subagent_announce::announce_to_parent(&handle, &run).await
                     {
                         error!(
                             "Failed to announce to parent: run_id={} error={}",
@@ -110,8 +110,8 @@ impl AnnouncementService {
         Ok(())
     }
 
-    /// Get parent session context by key
-    async fn get_parent_context(&self, parent_key: &str) -> Option<SessionContext> {
+    /// Get parent session handle by key
+    async fn get_parent_handle(&self, parent_key: &str) -> Option<crate::session::manager::SessionHandle> {
         // Parse the parent key to get agent and peer info
         let parsed = crate::session::key::parse_session_key_v2(parent_key)?;
 
@@ -130,17 +130,17 @@ impl AnnouncementService {
             .await
             .ok()?;
 
-        // Create a hybrid session with no overlay (this is the parent)
-        let hybrid = crate::session::manager::HybridSession {
-            base,
-            overlay: crate::session::manager::OverlayRef::None,
+        let session_id = {
+            let base_read = base.read().await;
+            base_read.id.clone()
         };
 
-        Some(SessionContext {
-            hybrid,
-            channel_type: None,
-            is_subagent: false,
-        })
+        Some(crate::session::manager::SessionHandle::new(
+            session_id,
+            base,
+            Some(crate::session::manager::OverlayRef::None),
+            manager.metadata_controller().clone(),
+        ))
     }
 
     /// Run announcement processing once (for testing)
@@ -192,14 +192,14 @@ impl ChannelAnnouncementService {
                 completed.run.run_id
             );
 
-            // Get parent context
-            let parent_ctx = self.get_parent_context(&completed.parent_session_key).await;
+            // Get parent handle
+            let parent_handle = self.get_parent_handle(&completed.parent_session_key).await;
 
-            match parent_ctx {
-                Some(ctx) => {
+            match parent_handle {
+                Some(handle) => {
                     // Add the announcement message directly
-                    if let Err(e) = ctx
-                        .add_assistant_message(&completed.announcement, None, None)
+                    if let Err(e) = handle
+                        .add_assistant(&completed.announcement, None, None)
                         .await
                     {
                         error!(
@@ -233,8 +233,8 @@ impl ChannelAnnouncementService {
         info!("Channel-based announcement service stopped");
     }
 
-    /// Get parent session context by key
-    async fn get_parent_context(&self, parent_key: &str) -> Option<SessionContext> {
+    /// Get parent session handle by key
+    async fn get_parent_handle(&self, parent_key: &str) -> Option<crate::session::manager::SessionHandle> {
         let parsed = crate::session::key::parse_session_key_v2(parent_key)?;
 
         let peer = match parsed.peer_type.as_str() {
@@ -249,16 +249,17 @@ impl ChannelAnnouncementService {
             .await
             .ok()?;
 
-        let hybrid = crate::session::manager::HybridSession {
-            base,
-            overlay: crate::session::manager::OverlayRef::None,
+        let session_id = {
+            let base_read = base.read().await;
+            base_read.id.clone()
         };
 
-        Some(SessionContext {
-            hybrid,
-            channel_type: None,
-            is_subagent: false,
-        })
+        Some(crate::session::manager::SessionHandle::new(
+            session_id,
+            base,
+            Some(crate::session::manager::OverlayRef::None),
+            manager.metadata_controller().clone(),
+        ))
     }
 }
 
@@ -273,7 +274,6 @@ mod tests {
     async fn test_announcement_service_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
         let executor = Arc::new(crate::agent::subagent_executor::SubagentExecutor::new(
-            crate::session::context::SessionRouter::new(manager.clone(), "test"),
             manager.clone(),
             "test",
             5,

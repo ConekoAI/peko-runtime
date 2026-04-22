@@ -9,35 +9,33 @@
 
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::agent::subagent_registry::{SharedSubagentRegistry, SubagentRegistry, SubagentStatus};
-use crate::session::context::SessionRouter;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 
-/// Test helper to create a test session manager and router
+/// Test helper to create a test session manager and registry
 async fn create_test_components() -> (
     Arc<RwLock<SessionManager>>,
-    SessionRouter,
     SharedSubagentRegistry,
 ) {
     let session_manager = Arc::new(RwLock::new(SessionManager::new()));
-    let session_router = SessionRouter::new(session_manager.clone(), "test_agent");
     let registry = Arc::new(RwLock::new(SubagentRegistry::new()));
 
-    (session_manager, session_router, registry)
+    (session_manager, registry)
 }
 
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_e2e_spawn_and_complete() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     // Create a parent session context
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -45,13 +43,12 @@ async fn test_e2e_spawn_and_complete() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     // Setup executor
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -60,7 +57,7 @@ async fn test_e2e_spawn_and_complete() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig::default(),
@@ -87,12 +84,13 @@ async fn test_e2e_spawn_and_complete() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_spawn_depth_limit() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     // Create a parent session context
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -100,13 +98,12 @@ async fn test_spawn_depth_limit() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     // Create executor with max_depth = 1 (only one level allowed)
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -121,7 +118,7 @@ async fn test_spawn_depth_limit() {
     let run_id1 = executor
         .spawn_and_execute(
             "First task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             config.clone(),
@@ -151,7 +148,7 @@ async fn test_spawn_depth_limit() {
 
     // Let's spawn from child_key to show it works at depth 1
     let result = executor
-        .spawn_and_execute("Nested task", Some(&parent_ctx), false, &child_key, config)
+        .spawn_and_execute("Nested task", Some(&resolved.context), false, &child_key, config)
         .await;
 
     // This succeeds because no prior runs for child_key (parent_depth = 0, child_depth = 1)
@@ -174,11 +171,12 @@ async fn test_spawn_depth_limit() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_isolated_vs_shared_session() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -186,13 +184,12 @@ async fn test_isolated_vs_shared_session() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     // Use higher max_depth since we're spawning multiple runs
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -206,7 +203,7 @@ async fn test_isolated_vs_shared_session() {
     let isolated_run_id = executor
         .spawn_and_execute(
             "Isolated task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             true,
             &parent_key,
             config.clone(),
@@ -219,7 +216,7 @@ async fn test_isolated_vs_shared_session() {
 
     // Test shared spawn
     let shared_run_id = executor
-        .spawn_and_execute("Shared task", Some(&parent_ctx), false, &parent_key, config)
+        .spawn_and_execute("Shared task", Some(&resolved.context), false, &parent_key, config)
         .await
         .unwrap();
 
@@ -249,11 +246,12 @@ async fn test_isolated_vs_shared_session() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_result_format_in_registry() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -261,12 +259,11 @@ async fn test_result_format_in_registry() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -274,7 +271,7 @@ async fn test_result_format_in_registry() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig::default(),
@@ -294,11 +291,12 @@ async fn test_result_format_in_registry() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_list_runs_functionality() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -306,12 +304,11 @@ async fn test_list_runs_functionality() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -327,7 +324,7 @@ async fn test_list_runs_functionality() {
         let run_id = executor
             .spawn_and_execute(
                 &format!("Task {}", i),
-                Some(&parent_ctx),
+                Some(&resolved.context),
                 false,
                 &parent_key,
                 config.clone(),
@@ -368,11 +365,12 @@ async fn test_list_runs_functionality() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_cleanup_policy_tracking() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -380,12 +378,11 @@ async fn test_cleanup_policy_tracking() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -399,7 +396,7 @@ async fn test_cleanup_policy_tracking() {
     let keep_run_id = executor
         .spawn_and_execute(
             "Keep task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             config.clone(),
@@ -411,7 +408,7 @@ async fn test_cleanup_policy_tracking() {
     let delete_run_id = executor
         .spawn_and_execute(
             "Delete task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig {
@@ -437,11 +434,12 @@ async fn test_cleanup_policy_tracking() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_parent_child_relationship() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -449,12 +447,11 @@ async fn test_parent_child_relationship() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -462,7 +459,7 @@ async fn test_parent_child_relationship() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig::default(),
@@ -484,36 +481,43 @@ async fn test_parent_child_relationship() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_runs_by_parent_filtering() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer1 = Peer::User("alice".to_string());
-    let parent_ctx1 = session_router
-        .route(
-            &peer1,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key1 = parent_ctx1.full_session_key().await;
+    let parent_ctx1 = {
+        let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
+                &peer1,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        resolved.context
+    };
+    let parent_key1 = parent_ctx1.full_session_key.clone();
 
     let peer2 = Peer::User("bob".to_string());
-    let parent_ctx2 = session_router
-        .route(
-            &peer2,
-            crate::session::types::ChannelType::Cli,
-            "default",
-            None,
-        )
-        .await
-        .unwrap();
-    let parent_key2 = parent_ctx2.full_session_key().await;
+    let parent_ctx2 = {
+        let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
+                &peer2,
+                crate::session::types::ChannelType::Cli,
+                "default",
+                None,
+            )
+            .await
+            .unwrap();
+        resolved.context
+    };
+    let parent_key2 = parent_ctx2.full_session_key.clone();
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -571,11 +575,12 @@ async fn test_runs_by_parent_filtering() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_concurrent_runs_counting() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -583,7 +588,7 @@ async fn test_concurrent_runs_counting() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     // Initially no active runs in registry
     {
@@ -594,8 +599,7 @@ async fn test_concurrent_runs_counting() {
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -608,7 +612,7 @@ async fn test_concurrent_runs_counting() {
 
     // Create a run with long timeout
     let _run_id = executor
-        .spawn_and_execute("Long task", Some(&parent_ctx), false, &parent_key, config)
+        .spawn_and_execute("Long task", Some(&resolved.context), false, &parent_key, config)
         .await
         .unwrap();
 
@@ -634,11 +638,12 @@ async fn test_concurrent_runs_counting() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_executor_get_status() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -646,12 +651,11 @@ async fn test_executor_get_status() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -659,7 +663,7 @@ async fn test_executor_get_status() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig::default(),
@@ -683,11 +687,12 @@ async fn test_executor_get_status() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_executor_get_run() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -695,12 +700,11 @@ async fn test_executor_get_run() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -708,7 +712,7 @@ async fn test_executor_get_run() {
     let run_id = executor
         .spawn_and_execute(
             "Test task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig::default(),
@@ -725,11 +729,12 @@ async fn test_executor_get_run() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_executor_cancel() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -737,12 +742,11 @@ async fn test_executor_cancel() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         5,
     ));
@@ -750,7 +754,7 @@ async fn test_executor_cancel() {
     let run_id = executor
         .spawn_and_execute(
             "Long task",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig {
@@ -774,11 +778,12 @@ async fn test_executor_cancel() {
 #[tokio::test]
 #[ignore = "Requires ~/.pekobot agent directory setup"]
 async fn test_max_concurrent_limit() {
-    let (session_manager, session_router, registry) = create_test_components().await;
+    let (session_manager, registry) = create_test_components().await;
 
     let peer = Peer::User("alice".to_string());
-    let parent_ctx = session_router
-        .route(
+    let mut manager = session_manager.write().await;
+        let resolved = manager
+            .route(
             &peer,
             crate::session::types::ChannelType::Cli,
             "default",
@@ -786,13 +791,12 @@ async fn test_max_concurrent_limit() {
         )
         .await
         .unwrap();
-    let parent_key = parent_ctx.full_session_key().await;
+    let parent_key = resolved.context.full_session_key.clone();
 
     // Create executor with max_concurrent = 1
     let executor = Arc::new(SubagentExecutor::with_registry(
         registry.clone(),
-        session_router.clone(),
-        session_manager.clone(),
+                session_manager.clone(),
         "test_agent",
         1, // Only 1 concurrent
     ));
@@ -801,7 +805,7 @@ async fn test_max_concurrent_limit() {
     let result1 = executor
         .spawn_and_execute(
             "Task 1",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig {
@@ -818,7 +822,7 @@ async fn test_max_concurrent_limit() {
     let _result2 = executor
         .spawn_and_execute(
             "Task 2",
-            Some(&parent_ctx),
+            Some(&resolved.context),
             false,
             &parent_key,
             ExecutionConfig::default(),

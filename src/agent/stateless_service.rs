@@ -448,7 +448,7 @@ impl StatelessAgentService {
         };
 
         // Get base session for execution
-        let base_session = resolved.context.hybrid.base.clone();
+        let base_session = resolved.handle.base().clone();
 
         // Execute streaming - directly returns EventStream
         let event_stream = self

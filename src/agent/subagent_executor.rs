@@ -24,7 +24,7 @@ use crate::agent::subagent_announce::{build_subagent_system_prompt, build_subage
 use crate::agent::subagent_registry::{
     create_shared_registry, SharedSubagentRegistry, SubagentResult, SubagentRun, SubagentStatus,
 };
-use crate::session::context::{SessionContext, SessionRouter};
+use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
 use crate::types::agent::AgentConfig;
@@ -77,8 +77,6 @@ pub struct SubagentExecutor {
     registry: SharedSubagentRegistry,
     /// Unified async executor for background task execution
     unified_executor: AsyncExecutor,
-    /// Session router for creating sessions
-    session_router: SessionRouter,
     /// Agent name for the executor
     agent_name: String,
     /// Maximum concurrent runs
@@ -97,7 +95,6 @@ impl SubagentExecutor {
     /// Create a new subagent executor
     #[must_use]
     pub fn new(
-        session_router: SessionRouter,
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
@@ -110,7 +107,6 @@ impl SubagentExecutor {
         Self {
             registry: create_shared_registry(),
             unified_executor,
-            session_router,
             agent_name: agent_name.into(),
             max_concurrent,
             announcement_tx: None,
@@ -124,7 +120,6 @@ impl SubagentExecutor {
     #[must_use]
     pub fn with_registry(
         registry: SharedSubagentRegistry,
-        session_router: SessionRouter,
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
@@ -137,7 +132,6 @@ impl SubagentExecutor {
         Self {
             registry,
             unified_executor,
-            session_router,
             agent_name: agent_name.into(),
             max_concurrent,
             announcement_tx: None,
@@ -152,7 +146,6 @@ impl SubagentExecutor {
     pub fn with_async_framework(
         registry: SharedSubagentRegistry,
         async_registry: SharedAsyncTaskRegistry,
-        session_router: SessionRouter,
         session_manager: Arc<RwLock<SessionManager>>,
         async_queue_manager: SharedAsyncResultQueueManager,
         agent_name: impl Into<String>,
@@ -164,7 +157,6 @@ impl SubagentExecutor {
         Self {
             registry,
             unified_executor,
-            session_router,
             agent_name: agent_name.into(),
             max_concurrent,
             announcement_tx: None,
@@ -263,20 +255,22 @@ impl SubagentExecutor {
 
         // Create spawn session
         let peer = Peer::Agent(format!("spawn_{}", uuid::Uuid::new_v4().simple()));
-        let spawn_ctx = self
-            .session_router
-            .spawn(
-                &self.agent_name,
-                &peer,
-                task,
-                isolated,
-                parent_session_key,
-                Some(config.timeout_seconds),
-            )
-            .await
-            .context("Failed to create spawn session")?;
+        let spawn_resolved = {
+            let mut manager = self.session_manager.write().await;
+            manager
+                .spawn_session(
+                    &self.agent_name,
+                    &peer,
+                    task,
+                    isolated,
+                    parent_session_key,
+                    Some(config.timeout_seconds),
+                )
+                .await
+                .context("Failed to create spawn session")?
+        };
 
-        let child_session_key = spawn_ctx.full_session_key().await;
+        let child_session_key = spawn_resolved.context.full_session_key.clone();
 
         // Register the run
         let run = SubagentRun::new(
@@ -620,7 +614,7 @@ impl Clone for SubagentExecutor {
         Self {
             registry: self.registry.clone(),
             unified_executor: self.unified_executor.clone(),
-            session_router: self.session_router.clone(),
+
             agent_name: self.agent_name.clone(),
             max_concurrent: self.max_concurrent,
             announcement_tx: self.announcement_tx.clone(),
@@ -768,8 +762,7 @@ mod tests {
     #[tokio::test]
     async fn test_executor_creation() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let router = SessionRouter::new(manager.clone(), "test_agent");
-        let executor = SubagentExecutor::new(router, manager, "test_agent", 5);
+        let executor = SubagentExecutor::new(manager, "test_agent", 5);
 
         assert_eq!(executor.agent_name, "test_agent");
     }
@@ -787,8 +780,7 @@ mod tests {
     #[tokio::test]
     async fn test_registry_operations() {
         let manager = Arc::new(RwLock::new(SessionManager::new()));
-        let router = SessionRouter::new(manager.clone(), "test_agent");
-        let executor = SubagentExecutor::new(router, manager, "test_agent", 5);
+        let executor = SubagentExecutor::new(manager, "test_agent", 5);
 
         // Initially empty
         assert_eq!(executor.count_active_runs().await, 0);

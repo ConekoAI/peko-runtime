@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
-use crate::session::context::SessionContext;
+use crate::session::manager::SessionHandle;
 use crate::session::types::{ChannelType, Peer};
 
 /// CLI channel operating mode
@@ -261,7 +261,7 @@ impl CliChannel {
 pub async fn process_events(
     mut event_rx: tokio::sync::mpsc::Receiver<crate::engine::AgenticEvent>,
     agent_name: &str,
-    session_ctx: Option<&crate::session::context::SessionContext>,
+    session_handle: Option<&SessionHandle>,
 ) -> Result<String> {
     use crate::engine::{AgenticEvent, ChannelAction, EventProcessor, LifecyclePhase};
 
@@ -278,8 +278,8 @@ pub async fn process_events(
             ..
         } = &event
         {
-            if let Some(ctx) = session_ctx {
-                if let Err(e) = ctx
+            if let Some(handle) = session_handle {
+                if let Err(e) = handle
                     .record_usage(
                         *total_tokens as usize,
                         *prompt_tokens as usize,
@@ -367,10 +367,10 @@ pub async fn send_single_message_with_session(
 ) -> Result<String> {
     let agent_name = agent.name().to_string();
 
-    // Get or create session context
-    let session_ctx = if new_session {
+    // Get or create session handle
+    let session_handle = if new_session {
         info!("Starting new CLI session (explicit --new flag)");
-        // Create new context (replaces any existing)
+        // Create new handle (replaces any existing)
         let peer = Peer::User("default".to_string());
         let manager = agent.session_manager();
         let mut manager_guard = manager.write().await;
@@ -395,34 +395,38 @@ pub async fn send_single_message_with_session(
             info!("Created new session via registry: {}", sid);
         }
 
-        let hybrid = manager_guard
+        manager_guard
             .get_session_for_channel(&agent_name, &peer, ChannelType::Cli, "default")
-            .await?;
-
-        SessionContext::new(hybrid).await
+            .await?
     } else {
-        // Use agent's method to get context
-        match agent.get_default_session_context().await {
+        // Use agent's method to get context, then get handle from manager
+        let ctx = match agent.get_default_session_context().await {
             Ok(ctx) => ctx,
             Err(e) => {
                 warn!("Failed to get session context: {}. Starting fresh.", e);
                 agent.get_default_session_context().await?
             }
-        }
+        };
+        // Open the session to get a handle
+        let manager = agent.session_manager();
+        let mut manager_guard = manager.write().await;
+        manager_guard
+            .open_session(&ctx.session_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", ctx.session_id))?
     };
 
     // Load history (will be empty for new sessions)
     // CRITICAL: Use filter to convert empty history to None, so the engine
     // knows to add the system prompt for fresh sessions
-    let history = session_ctx
+    let history = session_handle
         .load_history()
         .await
         .ok()
         .filter(|h| !h.is_empty());
 
-    // Get the session from context to pass to engine
-    // The engine will use the same session through the Arc<RwLock<>>
-    let base_session = session_ctx.hybrid.base.clone();
+    // Get the base session from handle to pass to engine
+    let base_session = session_handle.base().clone();
 
     // Execute with streaming - use channel to collect events
     // Create channel for events
@@ -439,7 +443,7 @@ pub async fn send_single_message_with_session(
         .await;
 
     // Process events from the channel
-    let process_result = process_events(event_rx, &agent_name, Some(&session_ctx)).await;
+    let process_result = process_events(event_rx, &agent_name, Some(&session_handle)).await;
 
     // Note: Async tasks are now submitted to the daemon via HTTP (ADR-020).
     // The daemon owns task execution, so the CLI can exit immediately

@@ -4,7 +4,7 @@
 //! When a subagent completes, its result is added as a message to the parent's base session.
 
 use crate::agent::subagent_registry::{SubagentRun, SubagentStatus};
-use crate::session::context::SessionContext;
+use crate::session::manager::SessionHandle;
 use anyhow::{Context, Result};
 
 /// Format a subagent result as an announcement message
@@ -62,7 +62,7 @@ pub fn format_announcement(run: &SubagentRun) -> String {
 /// Announce a subagent result to its parent session
 ///
 /// This adds the result as an assistant message to the parent's base session.
-pub async fn announce_to_parent(parent_ctx: &SessionContext, run: &SubagentRun) -> Result<()> {
+pub async fn announce_to_parent(parent_handle: &SessionHandle, run: &SubagentRun) -> Result<()> {
     if !run.announce_completion {
         tracing::debug!(
             "Skipping announcement for run {} (announce_completion=false)",
@@ -74,8 +74,8 @@ pub async fn announce_to_parent(parent_ctx: &SessionContext, run: &SubagentRun) 
     let announcement = format_announcement(run);
 
     // Add the announcement as an assistant message to the parent session
-    parent_ctx
-        .add_assistant_message(&announcement, None, None)
+    parent_handle
+        .add_assistant(&announcement, None, None)
         .await
         .with_context(|| {
             format!(
@@ -183,12 +183,12 @@ pub async fn handle_cleanup(
 /// This is called when a subagent finishes (successfully or not).
 /// It handles both the announcement to the parent and session cleanup.
 pub async fn on_subagent_complete(
-    parent_ctx: &SessionContext,
+    parent_handle: &SessionHandle,
     run: &SubagentRun,
     cleanup_fn: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     // First, announce the result to the parent
-    announce_to_parent(parent_ctx, run).await?;
+    announce_to_parent(parent_handle, run).await?;
 
     // Then, handle cleanup if needed
     handle_cleanup(run, cleanup_fn).await?;

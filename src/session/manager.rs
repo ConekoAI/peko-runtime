@@ -3,7 +3,7 @@
 //! The `SessionManager` is responsible for SESSION LIFECYCLE only:
 //! - Managing base sessions (create, open, cache)
 //! - Creating and tracking overlays (channel, spawn)
-//! - Providing `HybridSession` views
+//! - Providing `SessionHandle` views with overlay awareness
 //! - Cross-channel session sharing
 //! - Session branching, switching, and deletion
 //!
@@ -40,7 +40,6 @@
 //! The `MetadataController` is the SOLE authority for session metadata.
 //! All session listings are verified for consistency.
 
-use super::context::SessionContext;
 use super::index::{SessionEntry, SessionIndex};
 use super::jsonl::SessionStorage;
 use super::key::{derive_base_session_key, derive_overlay_key};
@@ -107,95 +106,6 @@ impl OverlayRef {
     }
 }
 
-/// A hybrid session combining base + active overlay
-///
-/// This is the primary interface for working with sessions in the overlay
-/// architecture. It provides access to the shared base session context
-/// and the overlay-specific state.
-#[derive(Debug, Clone)]
-pub struct HybridSession {
-    /// Base session (shared across all overlays for a peer)
-    pub base: Arc<RwLock<Session>>,
-    /// Active overlay (channel or spawn)
-    pub overlay: OverlayRef,
-}
-
-impl HybridSession {
-    /// Create a new hybrid session
-    pub fn new(base: Arc<RwLock<Session>>, overlay: OverlayRef) -> Self {
-        Self { base, overlay }
-    }
-
-    /// Create a hybrid session with no overlay
-    pub fn base_only(base: Arc<RwLock<Session>>) -> Self {
-        Self {
-            base,
-            overlay: OverlayRef::None,
-        }
-    }
-
-    /// Check if this session has a channel overlay
-    #[must_use]
-    pub fn has_channel_overlay(&self) -> bool {
-        self.overlay.is_channel()
-    }
-
-    /// Check if this session has a spawn overlay
-    #[must_use]
-    pub fn has_spawn_overlay(&self) -> bool {
-        self.overlay.is_spawn()
-    }
-
-    /// Check if this is an isolated spawn
-    pub async fn is_isolated_spawn(&self) -> bool {
-        if let OverlayRef::Spawn(spawn_arc) = &self.overlay {
-            let spawn = spawn_arc.read().await;
-            spawn.isolated
-        } else {
-            false
-        }
-    }
-
-    /// Get the base session key
-    pub async fn base_session_key(&self) -> String {
-        let base = self.base.read().await;
-        base.session_key.clone()
-    }
-
-    /// Get the full session key (including overlay if present)
-    pub async fn full_session_key(&self) -> String {
-        let base_key = self.base_session_key().await;
-
-        match &self.overlay {
-            OverlayRef::Channel(channel_arc) => {
-                let channel = channel_arc.read().await;
-                derive_overlay_key(&base_key, "channel", &channel.overlay_id)
-            }
-            OverlayRef::Spawn(spawn_arc) => {
-                let spawn = spawn_arc.read().await;
-                derive_overlay_key(&base_key, "spawn", &spawn.spawn_id)
-            }
-            OverlayRef::None => base_key,
-        }
-    }
-
-    /// Get the peer
-    pub async fn peer(&self) -> Peer {
-        let base = self.base.read().await;
-        base.peer.clone()
-    }
-
-    /// Get channel type if this is a channel overlay
-    pub async fn channel_type(&self) -> Option<ChannelType> {
-        if let OverlayRef::Channel(channel_arc) = &self.overlay {
-            let channel = channel_arc.read().await;
-            Some(channel.channel_type)
-        } else {
-            None
-        }
-    }
-}
-
 /// Opaque handle to a managed session
 ///
 /// External code uses this handle to interact with sessions.
@@ -213,7 +123,7 @@ pub struct SessionHandle {
 
 impl SessionHandle {
     /// Create a new session handle
-    fn new(
+    pub(crate) fn new(
         session_id: impl Into<String>,
         base: Arc<RwLock<Session>>,
         overlay: Option<OverlayRef>,
@@ -238,10 +148,120 @@ impl SessionHandle {
         &self.base
     }
 
+    /// Get the overlay reference (for internal/test access)
+    pub(crate) fn overlay(&self) -> Option<&OverlayRef> {
+        self.overlay.as_ref()
+    }
+
     /// Check if this handle has an overlay
     #[must_use]
     pub fn has_overlay(&self) -> bool {
         self.overlay.is_some()
+    }
+
+    /// Check if this handle has a channel overlay
+    #[must_use]
+    pub fn has_channel_overlay(&self) -> bool {
+        matches!(&self.overlay, Some(OverlayRef::Channel(_)))
+    }
+
+    /// Check if this handle has a spawn overlay
+    #[must_use]
+    pub fn has_spawn_overlay(&self) -> bool {
+        matches!(&self.overlay, Some(OverlayRef::Spawn(_)))
+    }
+
+    /// Get the base session key
+    pub async fn base_session_key(&self) -> String {
+        let base = self.base.read().await;
+        base.session_key.clone()
+    }
+
+    /// Get the full session key (including overlay if present)
+    pub async fn full_session_key(&self) -> String {
+        let base_key = self.base_session_key().await;
+        match &self.overlay {
+            Some(OverlayRef::Channel(channel_arc)) => {
+                let channel = channel_arc.read().await;
+                derive_overlay_key(&base_key, "channel", &channel.overlay_id)
+            }
+            Some(OverlayRef::Spawn(spawn_arc)) => {
+                let spawn = spawn_arc.read().await;
+                derive_overlay_key(&base_key, "spawn", &spawn.spawn_id)
+            }
+            _ => base_key,
+        }
+    }
+
+    /// Get the peer
+    pub async fn peer(&self) -> Peer {
+        let base = self.base.read().await;
+        base.peer.clone()
+    }
+
+    /// Get channel type if this has a channel overlay
+    pub async fn channel_type(&self) -> Option<ChannelType> {
+        if let Some(OverlayRef::Channel(channel_arc)) = &self.overlay {
+            let channel = channel_arc.read().await;
+            Some(channel.channel_type)
+        } else {
+            None
+        }
+    }
+
+    /// Check if this is an isolated spawn
+    pub async fn is_isolated(&self) -> bool {
+        if let Some(OverlayRef::Spawn(spawn_arc)) = &self.overlay {
+            let spawn = spawn_arc.read().await;
+            spawn.isolated
+        } else {
+            false
+        }
+    }
+
+    /// Get channel-specific state (if channel overlay)
+    pub async fn get_channel_state(&self, key: &str) -> Option<serde_json::Value> {
+        if let Some(OverlayRef::Channel(channel_arc)) = &self.overlay {
+            let channel = channel_arc.read().await;
+            channel.get(key).cloned()
+        } else {
+            None
+        }
+    }
+
+    /// Set channel-specific state (if channel overlay)
+    pub async fn set_channel_state(&self, key: impl Into<String>, value: serde_json::Value) -> bool {
+        if let Some(OverlayRef::Channel(channel_arc)) = &self.overlay {
+            let mut channel = channel_arc.write().await;
+            channel.set(key, value);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get spawn status (if spawn overlay)
+    pub async fn get_spawn_status(&self) -> Option<super::spawn::SpawnStatus> {
+        if let Some(OverlayRef::Spawn(spawn_arc)) = &self.overlay {
+            let spawn = spawn_arc.read().await;
+            Some(spawn.status)
+        } else {
+            None
+        }
+    }
+
+    /// Update spawn status (if spawn overlay)
+    pub async fn update_spawn_status<F>(&self, f: F) -> bool
+    where
+        F: FnOnce(&mut super::spawn::SpawnOverlay),
+    {
+        if let Some(OverlayRef::Spawn(spawn_arc)) = &self.overlay {
+            let mut spawn = spawn_arc.write().await;
+            f(&mut spawn);
+            true
+        } else {
+            false
+        }
     }
 
     /// Add a user message to the session
@@ -388,8 +408,10 @@ pub enum ResolutionStrategy {
 /// Result of session resolution
 #[derive(Debug)]
 pub struct ResolvedSession {
-    /// The session context
-    pub context: SessionContext,
+    /// The session context (DTO)
+    pub context: super::context::SessionContext,
+    /// The session handle (operations)
+    pub handle: SessionHandle,
     /// Whether this is a new session
     pub is_new: bool,
     /// The session ID
@@ -554,6 +576,12 @@ impl SessionManager {
         &self.user
     }
 
+    /// Get the metadata controller (for internal use)
+    #[must_use]
+    pub(crate) fn metadata_controller(&self) -> &Arc<RwLock<MetadataController>> {
+        &self.metadata_controller
+    }
+
     /// Get the path resolver if available
     #[must_use]
     pub fn path_resolver(&self) -> Option<&PathResolver> {
@@ -592,7 +620,7 @@ impl SessionManager {
     /// * `force_new` - Force creation of a new session
     ///
     /// # Returns
-    /// A `ResolvedSession` containing the context, session ID, and whether it's new
+    /// A `ResolvedSession` containing the context, handle, and whether it's new
     pub async fn resolve_session(
         &mut self,
         agent_name: &str,
@@ -617,22 +645,24 @@ impl SessionManager {
 
         match strategy {
             ResolutionStrategy::ForceNew => {
-                let (ctx, session_id) = self
+                let (ctx, handle, session_id) = self
                     .create_fresh_session(agent_name, team, channel, channel_id)
                     .await?;
                 Ok(ResolvedSession {
                     context: ctx,
+                    handle,
                     is_new: true,
                     session_id,
                 })
             }
             ResolutionStrategy::Specific => {
                 let sid = session_id.unwrap();
-                let ctx = self
+                let (ctx, handle) = self
                     .resume_specific_session(agent_name, team, channel, channel_id, &sid)
                     .await?;
                 Ok(ResolvedSession {
                     context: ctx,
+                    handle,
                     is_new: false,
                     session_id: sid,
                 })
@@ -675,11 +705,12 @@ impl SessionManager {
                 "Found active session '{}' for peer_key '{}'",
                 session_id, peer_key
             );
-            let ctx = self
+            let (ctx, handle) = self
                 .resume_specific_session(agent_name, team, channel, channel_id, &session_id)
                 .await?;
             return Ok(ResolvedSession {
                 context: ctx,
+                handle,
                 is_new: false,
                 session_id,
             });
@@ -690,11 +721,12 @@ impl SessionManager {
             "No active session found for agent '{}' (peer_key: {}), creating new",
             agent_name, peer_key
         );
-        let (ctx, session_id) = self
+        let (ctx, handle, session_id) = self
             .create_fresh_session(agent_name, team, channel, channel_id)
             .await?;
         Ok(ResolvedSession {
             context: ctx,
+            handle,
             is_new: true,
             session_id,
         })
@@ -710,7 +742,7 @@ impl SessionManager {
         _team: Option<&str>,
         channel: ChannelType,
         channel_id: &str,
-    ) -> Result<(SessionContext, String)> {
+    ) -> Result<(super::context::SessionContext, SessionHandle, String)> {
         info!("Creating fresh session for agent '{}'", agent_name);
 
         let peer = Peer::User(self.user.clone());
@@ -726,17 +758,17 @@ impl SessionManager {
         // Create channel overlay on the new base session
         // Note: channel_id is used for overlay identification, peer is used for session isolation
         let base = handle.base().clone();
-        let hybrid = self
-            .create_channel_overlay_on_base(base, &peer, channel, channel_id)
+        let handle = self
+            .create_channel_overlay_on_base_as_handle(base, &peer, channel, channel_id)
             .await?;
 
-        let ctx = SessionContext::new(hybrid).await;
+        let ctx = build_session_context(&handle, Some(channel), false).await;
 
         info!(
             "Created fresh session '{}' for agent '{}'",
             session_id, agent_name
         );
-        Ok((ctx, session_id))
+        Ok((ctx, handle, session_id))
     }
 
     /// Resume a specific session by ID
@@ -747,7 +779,7 @@ impl SessionManager {
         channel: ChannelType,
         channel_id: &str,
         session_id: &str,
-    ) -> Result<SessionContext> {
+    ) -> Result<(super::context::SessionContext, SessionHandle)> {
         info!(
             "Resuming specific session '{}' for agent '{}'",
             session_id, agent_name
@@ -766,14 +798,83 @@ impl SessionManager {
 
         // Create channel overlay on the opened base session
         // Note: channel_id is used for overlay identification, peer is used for session isolation
-        let hybrid = self
-            .create_channel_overlay_on_base(base, &peer, channel, channel_id)
+        let handle = self
+            .create_channel_overlay_on_base_as_handle(base, &peer, channel, channel_id)
             .await?;
 
-        let ctx = SessionContext::new(hybrid).await;
+        let ctx = build_session_context(&handle, Some(channel), false).await;
 
         info!("Successfully resumed session '{}'", session_id);
-        Ok(ctx)
+        Ok((ctx, handle))
+    }
+
+    // ====================================================================================
+    // Routing methods (ported from SessionRouter)
+    // ====================================================================================
+
+    /// Route a message to a session
+    ///
+    /// This creates or retrieves the appropriate session for the given
+    /// peer and channel, enabling cross-channel context sharing.
+    pub async fn route(
+        &mut self,
+        peer: &Peer,
+        channel_type: ChannelType,
+        channel_id: &str,
+        agent: Option<&str>,
+    ) -> Result<ResolvedSession> {
+        let agent_name = agent
+            .map(|a| a.to_string())
+            .or_else(|| self.agent_name.clone())
+            .unwrap_or_else(|| "default".to_string());
+        self.resolve_session(&agent_name, None, channel_type, channel_id, None, false)
+            .await
+    }
+
+    /// Route to a specific agent
+    pub async fn route_to_agent(
+        &mut self,
+        agent: &str,
+        peer: &Peer,
+        channel_type: ChannelType,
+        channel_id: &str,
+    ) -> Result<ResolvedSession> {
+        self.resolve_session(agent, None, channel_type, channel_id, None, false)
+            .await
+    }
+
+    /// Create a spawn session
+    pub async fn spawn_session(
+        &mut self,
+        agent: &str,
+        peer: &Peer,
+        task: &str,
+        isolated: bool,
+        parent_session_key: &str,
+        timeout_seconds: Option<u64>,
+    ) -> Result<ResolvedSession> {
+        let handle = self
+            .create_spawn_overlay_with_config(
+                agent,
+                peer,
+                task,
+                isolated,
+                parent_session_key,
+                timeout_seconds,
+                SpawnCleanupPolicy::default(),
+                0,
+            )
+            .await?;
+
+        let session_id = handle.session_id().to_string();
+        let ctx = build_session_context(&handle, None, true).await;
+
+        Ok(ResolvedSession {
+            context: ctx,
+            handle,
+            is_new: true,
+            session_id,
+        })
     }
 
     // ====================================================================================
@@ -1267,34 +1368,11 @@ impl SessionManager {
         peer: &Peer,
         channel_type: ChannelType,
         channel_id: &str,
-    ) -> Result<HybridSession> {
+    ) -> Result<SessionHandle> {
         // Get or create the base session
         let base = self.get_or_create_base(agent, peer).await?;
-
-        let base_key = {
-            let base_read = base.read().await;
-            base_read.session_key.clone()
-        };
-
-        // Generate overlay key
-        let overlay_id = format!("{}:{}", channel_type.as_str(), channel_id);
-        let overlay_key = derive_overlay_key(&base_key, "channel", &overlay_id);
-
-        // Check if overlay already exists
-        if let Some(overlay) = self.channel_overlays.get(&overlay_key) {
-            return Ok(HybridSession::new(
-                base,
-                OverlayRef::Channel(overlay.clone()),
-            ));
-        }
-
-        // Create new overlay
-        let overlay = ChannelOverlay::new(&base_key, peer.clone(), channel_type, channel_id);
-        let overlay_arc = Arc::new(RwLock::new(overlay));
-        self.channel_overlays
-            .insert(overlay_key, overlay_arc.clone());
-
-        Ok(HybridSession::new(base, OverlayRef::Channel(overlay_arc)))
+        self.create_channel_overlay_on_base_as_handle(base, peer, channel_type, channel_id)
+            .await
     }
 
     /// Create a channel overlay on an existing base session
@@ -1307,7 +1385,19 @@ impl SessionManager {
         peer: &Peer,
         channel_type: ChannelType,
         channel_id: &str,
-    ) -> Result<HybridSession> {
+    ) -> Result<SessionHandle> {
+        self.create_channel_overlay_on_base_as_handle(base, peer, channel_type, channel_id)
+            .await
+    }
+
+    /// Internal: create a channel overlay on base and return a SessionHandle
+    async fn create_channel_overlay_on_base_as_handle(
+        &mut self,
+        base: Arc<RwLock<Session>>,
+        peer: &Peer,
+        channel_type: ChannelType,
+        channel_id: &str,
+    ) -> Result<SessionHandle> {
         let base_key = {
             let base_read = base.read().await;
             base_read.session_key.clone()
@@ -1319,9 +1409,15 @@ impl SessionManager {
 
         // Check if overlay already exists
         if let Some(overlay) = self.channel_overlays.get(&overlay_key) {
-            return Ok(HybridSession::new(
+            let session_id = {
+                let base_read = base.read().await;
+                base_read.id.clone()
+            };
+            return Ok(SessionHandle::new(
+                session_id,
                 base,
-                OverlayRef::Channel(overlay.clone()),
+                Some(OverlayRef::Channel(overlay.clone())),
+                self.metadata_controller.clone(),
             ));
         }
 
@@ -1331,7 +1427,16 @@ impl SessionManager {
         self.channel_overlays
             .insert(overlay_key, overlay_arc.clone());
 
-        Ok(HybridSession::new(base, OverlayRef::Channel(overlay_arc)))
+        let session_id = {
+            let base_read = base.read().await;
+            base_read.id.clone()
+        };
+        Ok(SessionHandle::new(
+            session_id,
+            base,
+            Some(OverlayRef::Channel(overlay_arc)),
+            self.metadata_controller.clone(),
+        ))
     }
 
     /// Get an existing channel overlay
@@ -1352,7 +1457,7 @@ impl SessionManager {
         task: &str,
         isolated: bool,
         parent_session_key: &str,
-    ) -> Result<HybridSession> {
+    ) -> Result<SessionHandle> {
         // Always create a new base session for the child
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
         let spawn_peer = Peer::Agent(spawn_id);
@@ -1380,9 +1485,15 @@ impl SessionManager {
         let overlay_arc = Arc::new(RwLock::new(overlay));
         self.spawn_overlays.insert(overlay_key, overlay_arc.clone());
 
-        Ok(HybridSession::new(
+        let session_id = {
+            let base_read = child_base.read().await;
+            base_read.id.clone()
+        };
+        Ok(SessionHandle::new(
+            session_id,
             child_base,
-            OverlayRef::Spawn(overlay_arc),
+            Some(OverlayRef::Spawn(overlay_arc)),
+            self.metadata_controller.clone(),
         ))
     }
 
@@ -1400,7 +1511,7 @@ impl SessionManager {
         timeout_seconds: Option<u64>,
         cleanup: SpawnCleanupPolicy,
         depth: u32,
-    ) -> Result<HybridSession> {
+    ) -> Result<SessionHandle> {
         // Always create a new base session for the child (no shared JSONL file)
         let spawn_id = format!("spawn_{}", uuid::Uuid::new_v4());
         let spawn_peer = Peer::Agent(spawn_id);
@@ -1438,9 +1549,15 @@ impl SessionManager {
         let overlay_arc = Arc::new(RwLock::new(overlay));
         self.spawn_overlays.insert(overlay_key, overlay_arc.clone());
 
-        Ok(HybridSession::new(
+        let session_id = {
+            let base_read = child_base.read().await;
+            base_read.id.clone()
+        };
+        Ok(SessionHandle::new(
+            session_id,
             child_base,
-            OverlayRef::Spawn(overlay_arc),
+            Some(OverlayRef::Spawn(overlay_arc)),
+            self.metadata_controller.clone(),
         ))
     }
 
@@ -1492,7 +1609,7 @@ impl SessionManager {
         peer: &Peer,
         channel_type: ChannelType,
         channel_id: &str,
-    ) -> Result<HybridSession> {
+    ) -> Result<SessionHandle> {
         self.create_channel_overlay(agent, peer, channel_type, channel_id)
             .await
     }
@@ -1784,6 +1901,25 @@ impl Default for SessionManager {
     }
 }
 
+/// Build a `SessionContext` DTO from a `SessionHandle`
+async fn build_session_context(
+    handle: &SessionHandle,
+    channel_type: Option<ChannelType>,
+    is_subagent: bool,
+) -> super::context::SessionContext {
+    let base = handle.base().read().await;
+    super::context::SessionContext::new(
+        handle.session_id().to_string(),
+        base.agent_name.clone(),
+        base.session_key.clone(),
+        handle.full_session_key().await,
+        base.peer.clone(),
+        channel_type,
+        is_subagent,
+        handle.is_isolated().await,
+    )
+}
+
 /// Copy conversation context from parent base session to child base session
 ///
 /// This is used for shared-context spawns where the child should start with
@@ -1931,15 +2067,15 @@ mod tests {
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
-        let hybrid = manager
+        let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
             .await
             .unwrap();
 
-        assert!(hybrid.has_channel_overlay());
-        assert!(!hybrid.has_spawn_overlay());
+        assert!(handle.has_channel_overlay());
+        assert!(!handle.has_spawn_overlay());
 
-        let channel_type = hybrid.channel_type().await;
+        let channel_type = handle.channel_type().await;
         assert_eq!(channel_type, Some(ChannelType::Discord));
 
         assert_eq!(manager.channel_overlay_count(), 1);
@@ -1962,7 +2098,7 @@ mod tests {
 
         // Add a message via CLI base session
         {
-            let mut base = cli.base.write().await;
+            let mut base = cli.base().write().await;
             base.add_user("Hello from CLI").await.unwrap();
         }
 
@@ -1973,11 +2109,11 @@ mod tests {
             .unwrap();
 
         // Should share the same base session
-        assert!(Arc::ptr_eq(&cli.base, &discord.base));
+        assert!(Arc::ptr_eq(cli.base(), discord.base()));
 
         // Discord should see the message from CLI
         let history = {
-            let base = discord.base.read().await;
+            let base = discord.base().read().await;
             base.load_history().await.unwrap()
         };
         assert!(!history.is_empty()); // At least the message we added
@@ -1992,14 +2128,14 @@ mod tests {
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
-        let hybrid = manager
+        let handle = manager
             .create_spawn_overlay("test_agent", &peer, "Research task", false, "parent_key")
             .await
             .unwrap();
 
-        assert!(hybrid.has_spawn_overlay());
-        assert!(!hybrid.has_channel_overlay());
-        assert!(!hybrid.is_isolated_spawn().await);
+        assert!(handle.has_spawn_overlay());
+        assert!(!handle.has_channel_overlay());
+        assert!(!handle.is_isolated().await);
 
         assert_eq!(manager.spawn_overlay_count(), 1);
     }
@@ -2026,8 +2162,8 @@ mod tests {
             .unwrap();
 
         // Should have different base sessions
-        assert!(!Arc::ptr_eq(&parent, &spawn.base));
-        assert!(spawn.is_isolated_spawn().await);
+        assert!(!Arc::ptr_eq(&parent, spawn.base()));
+        assert!(spawn.is_isolated().await);
     }
 
     #[tokio::test]
@@ -2052,8 +2188,8 @@ mod tests {
             .unwrap();
 
         // Should share the same base session
-        assert!(Arc::ptr_eq(&parent, &spawn.base));
-        assert!(!spawn.is_isolated_spawn().await);
+        assert!(Arc::ptr_eq(&parent, spawn.base()));
+        assert!(!spawn.is_isolated().await);
     }
 
     #[tokio::test]
@@ -2065,7 +2201,7 @@ mod tests {
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
-        let hybrid = manager
+        let handle = manager
             .create_spawn_overlay_with_config(
                 "test_agent",
                 &peer,
@@ -2079,7 +2215,7 @@ mod tests {
             .await
             .unwrap();
 
-        if let OverlayRef::Spawn(spawn_arc) = &hybrid.overlay {
+        if let Some(OverlayRef::Spawn(spawn_arc)) = handle.overlay() {
             let spawn = spawn_arc.read().await;
             assert_eq!(spawn.timeout_seconds, Some(300));
             assert_eq!(spawn.cleanup, SpawnCleanupPolicy::Delete);
@@ -2098,12 +2234,12 @@ mod tests {
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
-        let hybrid = manager
+        let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
             .await
             .unwrap();
 
-        let base_key = hybrid.base_session_key().await;
+        let base_key = handle.base_session_key().await;
         let overlays = manager.get_overlays_for_base(&base_key);
 
         assert_eq!(overlays.len(), 1);
@@ -2118,12 +2254,12 @@ mod tests {
         let mut manager = SessionManager::new().with_sessions_dir_internal(temp.path());
         let peer = Peer::User("alice".to_string());
 
-        let hybrid = manager
+        let handle = manager
             .create_channel_overlay("test_agent", &peer, ChannelType::Discord, "guild123")
             .await
             .unwrap();
 
-        let full_key = hybrid.full_session_key().await;
+        let full_key = handle.full_session_key().await;
         assert!(full_key.contains("overlay:channel:discord:guild123"));
     }
 
