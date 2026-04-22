@@ -39,6 +39,27 @@ pub struct Agent {
     extension_core: Arc<ExtensionCore>,
 }
 
+impl Clone for Agent {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            state: Arc::clone(&self.state),
+            identity: Identity {
+                did: self.identity.did.clone(),
+                document: self.identity.document.clone(),
+                keypair: None, // Don't clone keypair for security
+            },
+            provider: self.provider.clone(),
+            session_manager: Arc::clone(&self.session_manager),
+            session_router: self.session_router.clone(),
+            subagent_executor: Arc::clone(&self.subagent_executor),
+            session_key_provider: Arc::clone(&self.session_key_provider),
+            current_session_id: Arc::clone(&self.current_session_id),
+            extension_core: Arc::clone(&self.extension_core),
+        }
+    }
+}
+
 impl Agent {
     /// Initialize built-in tools and register them with `ExtensionCore`.
     ///
@@ -287,7 +308,7 @@ impl Agent {
         *current = state;
     }
 
-    /// Get the provider as an `Arc` (for use by `AgentExecutor`)
+    /// Get the provider as an `Arc`.
     #[must_use]
     pub fn provider_arc(&self) -> Option<Arc<crate::providers::Provider>> {
         self.provider.clone()
@@ -299,7 +320,7 @@ impl Agent {
         Arc::clone(&self.extension_core)
     }
 
-    /// Get the current session ID lock (for use by `AgentExecutor`)
+    /// Get the current session ID lock.
     #[must_use]
     pub fn current_session_id(&self) -> Arc<tokio::sync::RwLock<Option<String>>> {
         Arc::clone(&self.current_session_id)
@@ -307,7 +328,7 @@ impl Agent {
 
     /// Execute a task with the LLM provider using the unified callback API.
     ///
-    /// Delegates to `AgentExecutor` for backward compatibility.
+    /// Directly creates an `AgenticLoop` and runs it — no intermediate layers.
     pub async fn execute(
         &self,
         prompt: &str,
@@ -316,17 +337,44 @@ impl Agent {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
-        let executor = crate::agent::executor::AgentExecutor::new(
-            Arc::new(self.as_executor_agent()),
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        if let Err(e) = self.prepare_execution().await {
+            self.set_state(AgentState::Idle);
+            return Err(e);
+        }
+
+        let agent_arc = Arc::new(self.clone());
+        let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
+            agent_arc,
             provider,
             self.extension_core(),
-        );
-        executor.execute(prompt, on_event).await
+        )
+        .await;
+
+        let result = match loop_.run(prompt, on_event).await {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                error!("Agentic loop error: {}", e);
+                Err(e)
+            }
+        };
+
+        self.set_state(AgentState::Idle);
+        result
     }
 
     /// Execute with a specific session and history.
     ///
-    /// Delegates to `AgentExecutor` for backward compatibility.
+    /// Directly creates an `AgenticLoop` and runs it with session resumption.
     pub async fn execute_with_session(
         &self,
         prompt: &str,
@@ -337,17 +385,51 @@ impl Agent {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
-        let executor = crate::agent::executor::AgentExecutor::new(
-            Arc::new(self.as_executor_agent()),
+
+        if self.state() != AgentState::Idle {
+            return Err(anyhow::anyhow!(
+                "Agent is not idle (current state: {:?})",
+                self.state()
+            ));
+        }
+
+        self.set_state(AgentState::Busy);
+
+        // Initialize tool config on ExtensionCore
+        let tool_config = self.config.tools.clone().unwrap_or_default();
+        self.extension_core.set_tool_config(tool_config).await;
+
+        if let Err(e) = self.prepare_execution().await {
+            self.set_state(AgentState::Idle);
+            return Err(e);
+        }
+
+        let agent_arc = Arc::new(self.clone());
+        let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
+            agent_arc,
             provider,
             self.extension_core(),
-        );
-        executor.execute_with_session(prompt, session, history, on_event).await
+        )
+        .await;
+
+        let result = match loop_
+            .run_with_resume(prompt, on_event, session, history)
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(e) => {
+                error!("Agentic loop error: {}", e);
+                Err(e)
+            }
+        };
+
+        self.set_state(AgentState::Idle);
+        result
     }
 
     /// Execute with a channel-based event interface.
     ///
-    /// Delegates to `AgentExecutor` for backward compatibility.
+    /// Directly creates an `AgenticLoop` and returns a receiver for async streaming.
     pub async fn execute_streaming(
         &self,
         prompt: &str,
@@ -355,17 +437,39 @@ impl Agent {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
-        let executor = crate::agent::executor::AgentExecutor::new(
-            Arc::new(self.as_executor_agent()),
-            provider,
-            self.extension_core(),
-        );
-        executor.execute_streaming(prompt).await
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<crate::engine::AgenticEvent>(10000);
+        let prompt = prompt.to_string();
+
+        self.prepare_execution().await?;
+
+        let agent_arc = Arc::new(self.clone());
+        let event_tx_clone = event_tx.clone();
+        let extension_core = self.extension_core();
+
+        tokio::task::spawn_local(async move {
+            let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
+                agent_arc,
+                provider,
+                extension_core,
+            )
+            .await;
+
+            let _result = loop_
+                .run(&prompt, move |event| {
+                    if event_tx_clone.try_send(event).is_err() {
+                        warn!("Agent event dropped (channel full)");
+                    }
+                })
+                .await;
+        });
+
+        Ok(event_rx)
     }
 
     /// Execute with streaming support using the provided session.
     ///
-    /// Delegates to `AgentExecutor` for backward compatibility.
+    /// Directly creates an `AgenticLoop` with live streaming delivery mode.
     pub async fn execute_streaming_with_session<F>(
         &self,
         prompt: &str,
@@ -379,47 +483,54 @@ impl Agent {
         let Some(provider) = self.provider_arc() else {
             return Err(anyhow::anyhow!("No provider configured"));
         };
-        let executor = crate::agent::executor::AgentExecutor::new(
-            Arc::new(self.as_executor_agent()),
+
+        // Initialize tool config on ExtensionCore
+        let tool_config = self.config.tools.clone().unwrap_or_default();
+        self.extension_core.set_tool_config(tool_config).await;
+
+        // Capture current session ID so session_status can look it up
+        {
+            let session_id = session.read().await.id.clone();
+            let mut current = self.current_session_id.write().await;
+            *current = Some(session_id);
+        }
+
+        self.prepare_execution().await?;
+
+        let agent_arc = Arc::new(self.clone());
+        let loop_ = crate::engine::agentic_loop::AgenticLoop::new(
+            agent_arc,
             provider,
             self.extension_core(),
-        );
-        executor.execute_streaming_with_session(prompt, session, history, on_event).await
+        )
+        .await;
+
+        let streaming_config = crate::engine::OrchestratorConfig::live();
+
+        loop_
+            .run_streaming_with_resume(prompt, on_event, session, history, streaming_config)
+            .await
     }
 
-    /// Helper to create a shallow `Agent` reference suitable for passing to `AgentExecutor`.
-    ///
-    /// Since `AgentExecutor` takes `Arc<Agent>`, we need to produce an `Agent` value
-    /// that shares the same identity and state. This is a lightweight clone that
-    /// avoids duplicating the provider (which is passed separately).
-    fn as_executor_agent(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-            state: Arc::clone(&self.state),
-            identity: Identity {
-                did: self.identity.did.clone(),
-                document: self.identity.document.clone(),
-                keypair: None, // Don't clone keypair to avoid security issues
-            },
-            provider: None, // Provider passed separately to avoid double-Arc
-            session_manager: Arc::clone(&self.session_manager),
-            session_router: SessionRouter::new(
-                Arc::clone(&self.session_manager),
-                self.config.name.clone(),
-            ),
-            subagent_executor: Arc::new(
-                SubagentExecutor::new(
-                    SessionRouter::new(Arc::clone(&self.session_manager), self.config.name.clone()),
-                    Arc::clone(&self.session_manager),
-                    self.config.name.clone(),
-                    5,
-                )
-                .with_agent_config(self.config.clone()),
-            ),
-            session_key_provider: Arc::clone(&self.session_key_provider),
-            current_session_id: Arc::clone(&self.current_session_id),
-            extension_core: Arc::clone(&self.extension_core),
+    /// Prepare agent for execution by initializing built-in tools and invoking `AgentInit` hooks.
+    async fn prepare_execution(&self) -> anyhow::Result<()> {
+        if let Err(e) = self.init_builtins_async().await {
+            return Err(anyhow::anyhow!("Failed to initialize tools: {e}"));
         }
+
+        let init_result = self
+            .extension_core
+            .invoke_hook(
+                crate::extensions::core::HookPoint::AgentInit,
+                crate::extensions::types::HookInput::Unit,
+            )
+            .await;
+        tracing::info!(
+            "AgentInit hook result: {:?}",
+            std::mem::discriminant(&init_result)
+        );
+
+        Ok(())
     }
 
     /// Wait for background async tasks to complete
