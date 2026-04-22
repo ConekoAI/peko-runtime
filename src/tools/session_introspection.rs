@@ -2,9 +2,9 @@
 //!
 //! Tools for listing sessions, viewing history, and checking session status.
 
+use crate::common::registry::SimpleRegistry;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tracing::debug;
 
 use crate::tools::traits::Tool;
@@ -363,13 +363,16 @@ impl Tool for SessionStatusTool {
     }
 }
 
-/// Session registry backed by the real `SessionManager`.
-pub struct AgentSessionRegistry {
+/// Session introspector backed by the real `SessionManager`.
+///
+/// Wraps `SessionManager` to provide the [`SessionRegistry`] trait for
+/// session introspection tools (list, status, history).
+pub struct SessionIntrospector {
     session_manager: std::sync::Arc<tokio::sync::RwLock<crate::session::SessionManager>>,
     current_session_id: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
-impl AgentSessionRegistry {
+impl SessionIntrospector {
     #[must_use]
     pub fn new(
         session_manager: std::sync::Arc<tokio::sync::RwLock<crate::session::SessionManager>>,
@@ -383,7 +386,7 @@ impl AgentSessionRegistry {
 }
 
 #[async_trait]
-impl SessionRegistry for AgentSessionRegistry {
+impl SessionRegistry for SessionIntrospector {
     async fn list_sessions(
         &self,
         _kinds: Option<&[String]>,
@@ -422,7 +425,7 @@ impl SessionRegistry for AgentSessionRegistry {
         _include_tools: bool,
     ) -> anyhow::Result<Vec<HistoryMessage>> {
         // TODO: implement history loading via SessionManager
-        debug!("AgentSessionRegistry::get_history not yet implemented");
+        debug!("SessionIntrospector::get_history not yet implemented");
         Ok(vec![])
     }
 
@@ -467,57 +470,54 @@ impl SessionRegistry for AgentSessionRegistry {
     }
 }
 
-/// Simple in-memory implementation for testing
-pub struct InMemorySessionRegistry {
+/// In-memory session cache for testing and placeholder use.
+///
+/// Replaces the previous `InMemorySessionRegistry` which used 3 separate
+/// `Mutex<HashMap>` fields. This version uses [`SimpleRegistry`] for
+/// zero-overhead storage and eliminates lock boilerplate.
+#[derive(Debug)]
+pub struct SessionCache {
     current_session: String,
-    sessions: std::sync::Mutex<HashMap<String, SessionInfo>>,
-    histories: std::sync::Mutex<HashMap<String, Vec<HistoryMessage>>>,
-    statuses: std::sync::Mutex<HashMap<String, SessionStatusResult>>,
+    sessions: SimpleRegistry<String, SessionInfo>,
+    histories: SimpleRegistry<String, Vec<HistoryMessage>>,
+    statuses: SimpleRegistry<String, SessionStatusResult>,
 }
 
-impl InMemorySessionRegistry {
+impl SessionCache {
+    /// Create a new in-memory session cache.
     #[must_use]
-    pub fn new(current_session: String) -> Self {
+    pub fn new(current_session: impl Into<String>) -> Self {
         Self {
-            current_session,
-            sessions: std::sync::Mutex::new(HashMap::new()),
-            histories: std::sync::Mutex::new(HashMap::new()),
-            statuses: std::sync::Mutex::new(HashMap::new()),
+            current_session: current_session.into(),
+            sessions: SimpleRegistry::new(),
+            histories: SimpleRegistry::new(),
+            statuses: SimpleRegistry::new(),
         }
     }
 
+    /// Add a session with its history and status.
     pub fn add_session(
-        &self,
+        &mut self,
         key: String,
         info: SessionInfo,
         history: Vec<HistoryMessage>,
         status: SessionStatusResult,
     ) {
-        if let Ok(mut sessions) = self.sessions.lock() {
-            sessions.insert(key.clone(), info);
-        }
-        if let Ok(mut histories) = self.histories.lock() {
-            histories.insert(key.clone(), history);
-        }
-        if let Ok(mut statuses) = self.statuses.lock() {
-            statuses.insert(key, status);
-        }
+        self.sessions.insert(key.clone(), info);
+        self.histories.insert(key.clone(), history);
+        self.statuses.insert(key, status);
     }
 }
 
 #[async_trait]
-impl SessionRegistry for InMemorySessionRegistry {
+impl SessionRegistry for SessionCache {
     async fn list_sessions(
         &self,
         _kinds: Option<&[String]>,
         _limit: usize,
         _active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
-        let sessions = self
-            .sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
-        Ok(sessions.values().cloned().collect())
+        Ok(self.sessions.values().cloned().collect())
     }
 
     async fn get_history(
@@ -526,21 +526,17 @@ impl SessionRegistry for InMemorySessionRegistry {
         limit: usize,
         _include_tools: bool,
     ) -> anyhow::Result<Vec<HistoryMessage>> {
-        let histories = self
+        let history = self
             .histories
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
-        let history = histories.get(session_key).cloned().unwrap_or_default();
+            .get(&session_key.to_string())
+            .cloned()
+            .unwrap_or_default();
         Ok(history.into_iter().take(limit).collect())
     }
 
     async fn get_status(&self, session_key: &str) -> anyhow::Result<SessionStatusResult> {
-        let statuses = self
-            .statuses
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock error: {e}"))?;
-        statuses
-            .get(session_key)
+        self.statuses
+            .get(&session_key.to_string())
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Session not found: {session_key}"))
     }
@@ -550,12 +546,16 @@ impl SessionRegistry for InMemorySessionRegistry {
     }
 }
 
+// Backward compatibility alias
+#[deprecated(since = "0.2.0", note = "Use SessionCache instead")]
+pub type InMemorySessionRegistry = SessionCache;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn create_test_registry() -> InMemorySessionRegistry {
-        let registry = InMemorySessionRegistry::new("main".to_string());
+    fn create_test_registry() -> SessionCache {
+        let mut registry = SessionCache::new("main");
 
         let session = SessionInfo {
             session_key: "test-session".to_string(),
@@ -666,7 +666,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_status_defaults_to_current() {
-        let registry = InMemorySessionRegistry::new("current-session".to_string());
+        let mut registry = SessionCache::new("current-session");
 
         // Add current session
         let status = SessionStatusResult {

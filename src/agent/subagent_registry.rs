@@ -2,10 +2,13 @@
 //!
 //! Tracks active subagent runs, their status, and results.
 //! Used by the agent spawn tool to manage subagent lifecycle.
+//!
+//! Built on [`crate::common::registry::SimpleRegistry`] to avoid hand-rolling
+//! `HashMap<K, V>` wrapper patterns.
 
+use crate::common::registry::SimpleRegistry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -143,10 +146,13 @@ impl SubagentRun {
     }
 }
 
-/// Registry for tracking subagent runs
+/// Registry for tracking subagent runs.
+///
+/// Wraps a [`SimpleRegistry`] to provide domain-specific query methods
+/// while delegating storage to the generic infrastructure.
 #[derive(Debug, Default)]
 pub struct SubagentRegistry {
-    runs: HashMap<String, SubagentRun>,
+    runs: SimpleRegistry<String, SubagentRun>,
 }
 
 impl SubagentRegistry {
@@ -154,7 +160,7 @@ impl SubagentRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            runs: HashMap::new(),
+            runs: SimpleRegistry::new(),
         }
     }
 
@@ -173,18 +179,18 @@ impl SubagentRegistry {
     /// Get a run by ID
     #[must_use]
     pub fn get(&self, run_id: &str) -> Option<&SubagentRun> {
-        self.runs.get(run_id)
+        self.runs.get(&run_id.to_string())
     }
 
     /// Get a mutable run by ID
     #[must_use]
     pub fn get_mut(&mut self, run_id: &str) -> Option<&mut SubagentRun> {
-        self.runs.get_mut(run_id)
+        self.runs.get_mut(&run_id.to_string())
     }
 
     /// Update a run's status
     pub fn update_status(&mut self, run_id: &str, status: SubagentStatus) -> Option<()> {
-        let run = self.runs.get_mut(run_id)?;
+        let run = self.runs.get_mut(&run_id.to_string())?;
         run.status = status;
         if status.is_terminal() {
             run.completed_at = Some(Utc::now());
@@ -194,7 +200,7 @@ impl SubagentRegistry {
 
     /// Complete a run with a result
     pub fn complete(&mut self, run_id: &str, result: SubagentResult) -> Option<()> {
-        let run = self.runs.get_mut(run_id)?;
+        let run = self.runs.get_mut(&run_id.to_string())?;
         run.complete(result);
         tracing::info!(
             "Completed subagent run: {} (status: {})",
@@ -206,7 +212,7 @@ impl SubagentRegistry {
 
     /// Remove a run from the registry
     pub fn remove(&mut self, run_id: &str) -> Option<SubagentRun> {
-        self.runs.remove(run_id)
+        self.runs.remove(&run_id.to_string())
     }
 
     /// Count active (non-terminal) runs for a parent session

@@ -654,13 +654,13 @@ impl Unpackager {
     ) -> anyhow::Result<Vec<String>> {
         let mut installed = Vec::new();
 
-        if manifest.tool_registry.required.is_empty() {
+        if manifest.tool_sources.required.is_empty() {
             return Ok(installed);
         }
 
-        // TODO: Implement tool registry client installation
+        // TODO: Implement tool source client installation
         // For now, just log the tools that would be installed
-        for tool_ref in &manifest.tool_registry.required {
+        for tool_ref in &manifest.tool_sources.required {
             tracing::info!(
                 "Tool registry install: {} @ {} from {}",
                 tool_ref.name,

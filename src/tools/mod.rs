@@ -55,10 +55,17 @@ pub use grep::GrepTool;
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};
 pub use read_file::ReadFileTool;
 pub use session_introspection::{
-    AgentSessionRegistry, InMemorySessionRegistry, SessionInfo,
+    SessionCache, SessionInfo, SessionIntrospector,
     SessionRegistry as SessionIntrospectionRegistry, SessionStatusTool, SessionsHistoryTool,
     SessionsListTool,
 };
+
+/// Backward-compatible alias for `SessionIntrospector`.
+#[deprecated(since = "0.2.0", note = "Use SessionIntrospector instead")]
+pub use session_introspection::SessionIntrospector as AgentSessionRegistry;
+// Backward compatibility — deprecated, use SessionCache
+#[allow(deprecated)]
+pub use session_introspection::InMemorySessionRegistry;
 pub use shell::ShellTool;
 pub use str_replace_file::StrReplaceFileTool;
 pub use traits::{Tool, ToolError, ToolResult};

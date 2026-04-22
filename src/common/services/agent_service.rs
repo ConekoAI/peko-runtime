@@ -596,7 +596,7 @@ impl AgentService {
             include_sessions: true,
             include_workspace: true,
             include_mcp: true,
-            include_tool_registry: true,
+            include_tool_sources: true,
             rotate_keys: false,
             description: Some(format!("Exported agent {agent_name} from team {team}")),
             output_path: Some(output_path.to_string_lossy().to_string()),

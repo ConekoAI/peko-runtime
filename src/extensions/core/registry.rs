@@ -325,12 +325,19 @@ impl ExtensionCore {
     /// Note: This returns ALL registered tools regardless of the agent's whitelist.
     /// The whitelist is enforced at execution time via `invoke_hook`.
     pub async fn list_tools(&self) -> Vec<ToolMetadata> {
-        let tool_index = self.tool_registry.tool_index.read().await;
+        // Collect hook IDs from tool index first
+        let hook_ids: Vec<HookId> = self
+            .tool_registry
+            .tool_index
+            .read(|tool_index| tool_index.values().copied().collect())
+            .await;
+
+        // Then look up metadata in hooks registry
         let hooks = self.hook_registry.hooks.read().await;
 
-        tool_index
-            .values()
-            .filter_map(|hook_id| hooks.get(hook_id))
+        hook_ids
+            .into_iter()
+            .filter_map(|hook_id| hooks.get(&hook_id))
             .filter(|hook| hook.enabled)
             .filter_map(|hook| hook.tool_metadata.clone())
             .collect()

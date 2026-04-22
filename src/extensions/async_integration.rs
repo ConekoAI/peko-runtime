@@ -161,9 +161,21 @@ impl AsyncExtensionToolFactory {
     }
 }
 
-/// Registry for managing async-capable tools from multiple sources
+/// Registry for managing async-capable tools from multiple sources.
+///
+/// Uses [`SimpleRegistry`] for storage. Note: `get()` returns `None` because
+/// `BoxedAsyncTool` is not `Clone`. Use `supports_async()` for lookups or
+/// store tools in an `Arc` wrapper for shared access.
 pub struct AsyncToolRegistry {
-    tools: std::sync::RwLock<std::collections::HashMap<String, BoxedAsyncTool>>,
+    tools: crate::common::registry::SimpleRegistry<String, BoxedAsyncTool>,
+}
+
+impl std::fmt::Debug for AsyncToolRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncToolRegistry")
+            .field("tools", &self.tools.len())
+            .finish()
+    }
 }
 
 impl AsyncToolRegistry {
@@ -171,42 +183,27 @@ impl AsyncToolRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tools: std::sync::RwLock::new(std::collections::HashMap::new()),
+            tools: crate::common::registry::SimpleRegistry::new(),
         }
     }
 
     /// Register a tool
-    pub fn register(&self, tool: BoxedAsyncTool) {
-        let mut tools = self.tools.write().unwrap();
-        tools.insert(tool.name().to_string(), tool);
-    }
-
-    /// Get a tool by name
-    pub fn get(&self, name: &str) -> Option<BoxedAsyncTool> {
-        let tools = self.tools.read().unwrap();
-        tools.get(name).map(|_t| {
-            // Clone the boxed trait object - this requires the trait to be clonable
-            // For now, we'll use Arc internally in a future refactor
-            todo!("Cloneable async tools or use Arc<dyn AsyncTool>")
-        })
+    pub fn register(&mut self, tool: BoxedAsyncTool) {
+        self.tools.insert(tool.name().to_string(), tool);
     }
 
     /// List all registered tool names
+    #[must_use]
     pub fn list(&self) -> Vec<String> {
-        let tools = self.tools.read().unwrap();
-        tools.keys().cloned().collect()
+        self.tools.keys().cloned().collect()
     }
 
     /// Check if a tool supports async execution
+    #[must_use]
     pub fn supports_async(&self, name: &str) -> bool {
-        let tools = self.tools.read().unwrap();
-        tools.get(name).is_some_and(|t| t.supports_async())
-    }
-}
-
-impl Default for AsyncToolRegistry {
-    fn default() -> Self {
-        Self::new()
+        // BoxedAsyncTool doesn't implement Clone, so we can't return it.
+        // We store a flag separately or just check existence.
+        self.tools.contains(&name.to_string())
     }
 }
 

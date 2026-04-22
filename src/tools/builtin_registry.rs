@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 /// Configuration for built-in tool registration
 #[derive(Debug, Clone)]
-pub struct BuiltinRegistryConfig {
+pub struct BuiltinToolRegistrarConfig {
     /// Workspace directory for tools
     pub workspace_dir: PathBuf,
     /// Enable granular filesystem tools (`read_file`, `write_file`, glob, grep, `str_replace_file`)
@@ -42,7 +42,7 @@ pub struct BuiltinRegistryConfig {
     pub disabled_tools: Vec<String>,
 }
 
-impl Default for BuiltinRegistryConfig {
+impl Default for BuiltinToolRegistrarConfig {
     fn default() -> Self {
         Self {
             workspace_dir: PathBuf::from("."),
@@ -61,9 +61,9 @@ impl Default for BuiltinRegistryConfig {
 /// Built-in tool registry
 ///
 /// Centralizes registration of all built-in tools with `ExtensionCore`.
-pub struct BuiltinRegistry;
+pub struct BuiltinToolRegistrar;
 
-impl BuiltinRegistry {
+impl BuiltinToolRegistrar {
     /// Register all enabled built-in tools with `ExtensionCore`
     ///
     /// This is the single entry point for registering built-in tools.
@@ -71,7 +71,7 @@ impl BuiltinRegistry {
     /// discoverable via `ToolRegister` hook and executable via `ToolExecute` hook.
     pub async fn register(
         core: &ExtensionCore,
-        config: &BuiltinRegistryConfig,
+        config: &BuiltinToolRegistrarConfig,
     ) -> anyhow::Result<()> {
         let disabled_set: HashSet<String> = config
             .disabled_tools
@@ -125,19 +125,19 @@ impl BuiltinRegistry {
         // Session introspection tools
         if config.enable_session_tools {
             if !disabled_set.contains("sessions_list") {
-                let registry = crate::tools::InMemorySessionRegistry::new("main".to_string());
+                let registry = crate::tools::SessionCache::new("main");
                 let tool = Arc::new(SessionsListTool::new(Box::new(registry)));
                 BuiltinToolAdapter::register_tool(core, tool).await?;
             }
 
             if !disabled_set.contains("sessions_history") {
-                let registry = crate::tools::InMemorySessionRegistry::new("main".to_string());
+                let registry = crate::tools::SessionCache::new("main");
                 let tool = Arc::new(SessionsHistoryTool::new(Box::new(registry)));
                 BuiltinToolAdapter::register_tool(core, tool).await?;
             }
 
             if !disabled_set.contains("session_status") {
-                let registry = crate::tools::InMemorySessionRegistry::new("main".to_string());
+                let registry = crate::tools::SessionCache::new("main");
                 let tool = Arc::new(SessionStatusTool::new(Box::new(registry)));
                 BuiltinToolAdapter::register_tool(core, tool).await?;
             }
@@ -193,16 +193,22 @@ mod tests {
 
     #[test]
     fn test_is_builtin() {
-        assert!(BuiltinRegistry::is_builtin("shell"));
-        assert!(BuiltinRegistry::is_builtin("read_file"));
-        assert!(BuiltinRegistry::is_builtin("SHELL")); // case insensitive
-        assert!(!BuiltinRegistry::is_builtin("unknown_tool"));
+        assert!(BuiltinToolRegistrar::is_builtin("shell"));
+        assert!(BuiltinToolRegistrar::is_builtin("read_file"));
+        assert!(BuiltinToolRegistrar::is_builtin("SHELL")); // case insensitive
+        assert!(!BuiltinToolRegistrar::is_builtin("unknown_tool"));
     }
 
     #[test]
     fn test_all_tool_names() {
-        let names = BuiltinRegistry::all_tool_names();
+        let names = BuiltinToolRegistrar::all_tool_names();
         assert!(names.contains(&"shell"));
         assert!(names.contains(&"read_file"));
     }
 }
+
+// Backward compatibility aliases — deprecated, use BuiltinToolRegistrar
+#[deprecated(since = "0.2.0", note = "Use BuiltinToolRegistrar instead")]
+pub type BuiltinRegistry = BuiltinToolRegistrar;
+#[deprecated(since = "0.2.0", note = "Use BuiltinToolRegistrarConfig instead")]
+pub type BuiltinRegistryConfig = BuiltinToolRegistrarConfig;

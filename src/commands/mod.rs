@@ -170,7 +170,7 @@ pub struct GlobalPaths {
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
     resolver: crate::common::paths::PathResolver,
-    services: crate::common::services::ServiceRegistry,
+    services: crate::common::services::ServiceContainer,
     user: String,
 }
 
@@ -207,7 +207,7 @@ impl GlobalPaths {
             cache_dir.clone(),
         );
 
-        let services = crate::common::services::ServiceRegistry::new(resolver.clone());
+        let services = crate::common::services::ServiceContainer::new(resolver.clone());
 
         let user = cli.user.clone().unwrap_or_else(|| "default".to_string());
 
@@ -227,9 +227,9 @@ impl GlobalPaths {
         &self.resolver
     }
 
-    /// Get the service registry
+    /// Get the service container
     #[must_use]
-    pub fn services(&self) -> &crate::common::services::ServiceRegistry {
+    pub fn services(&self) -> &crate::common::services::ServiceContainer {
         &self.services
     }
 

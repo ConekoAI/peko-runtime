@@ -352,19 +352,19 @@ impl ToolFactory {
         if config.enable_session_tools {
             registry.register("sessions_list", true, || {
                 Arc::new(SessionsListTool::new(Box::new(
-                    crate::tools::InMemorySessionRegistry::new("main".to_string()),
+                    crate::tools::SessionCache::new("main"),
                 )))
             });
 
             registry.register("sessions_history", true, || {
                 Arc::new(SessionsHistoryTool::new(Box::new(
-                    crate::tools::InMemorySessionRegistry::new("main".to_string()),
+                    crate::tools::SessionCache::new("main"),
                 )))
             });
 
             registry.register("session_status", true, || {
                 Arc::new(SessionStatusTool::new(Box::new(
-                    crate::tools::InMemorySessionRegistry::new("main".to_string()),
+                    crate::tools::SessionCache::new("main"),
                 )))
             });
         }

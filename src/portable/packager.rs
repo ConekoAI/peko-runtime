@@ -4,7 +4,7 @@
 
 use crate::identity::Identity;
 use crate::mcp::config::{McpConfig, TransportType};
-use crate::portable::manifest::{AgentManifest, McpManifestEntry, ToolRegistryRef};
+use crate::portable::manifest::{AgentManifest, McpManifestEntry, ToolSourceRef};
 use crate::types::agent::AgentConfig;
 use anyhow::Context;
 use std::collections::HashMap;
@@ -32,8 +32,8 @@ pub struct ExportOptions {
     pub include_workspace: bool,
     /// Include MCP servers (bundle binaries if configured)
     pub include_mcp: bool,
-    /// Include tool registry references for Universal Tools
-    pub include_tool_registry: bool,
+    /// Include tool source references for Universal Tools
+    pub include_tool_sources: bool,
     /// Rotate keys on import (create new DID)
     pub rotate_keys: bool,
     /// Description for the package
@@ -55,7 +55,7 @@ impl Default for ExportOptions {
             include_sessions: false,     // Off by default (can be large)
             include_workspace: true,     // On by default (essential files)
             include_mcp: true,           // Bundle MCP servers by default
-            include_tool_registry: true, // Include tool registry refs by default
+            include_tool_sources: true, // Include tool source refs by default
             rotate_keys: false,
             description: None,
             output_path: None,
@@ -192,10 +192,10 @@ impl Packager {
         }
 
         // 9. Build tool registry references (if enabled)
-        if options.include_tool_registry {
-            self.build_tool_registry_refs(&mut manifest, &options)
+        if options.include_tool_sources {
+            self.build_tool_source_refs(&mut manifest, &options)
                 .await
-                .context("Failed to build tool registry references")?;
+                .context("Failed to build tool source references")?;
         }
 
         // 10. Sign manifest
@@ -490,8 +490,8 @@ impl Packager {
         }
     }
 
-    /// Build tool registry references for Universal Tools
-    async fn build_tool_registry_refs(
+    /// Build tool source references for Universal Tools
+    async fn build_tool_source_refs(
         &self,
         manifest: &mut AgentManifest,
         options: &ExportOptions,
@@ -533,7 +533,7 @@ impl Packager {
                         };
 
                         let tool_name_for_log = tool_name.clone();
-                        manifest.add_tool_registry_ref(ToolRegistryRef {
+                        manifest.add_tool_source_ref(ToolSourceRef {
                             name: tool_name,
                             version,
                             source: "default".to_string(),
@@ -550,7 +550,7 @@ impl Packager {
             for tool_name in &tools.enabled {
                 // Skip if already added from tools_dir discovery
                 if manifest
-                    .tool_registry
+                    .tool_sources
                     .required
                     .iter()
                     .any(|r| r.name == *tool_name)
@@ -558,7 +558,7 @@ impl Packager {
                     continue;
                 }
 
-                manifest.add_tool_registry_ref(ToolRegistryRef {
+                manifest.add_tool_source_ref(ToolSourceRef {
                     name: tool_name.clone(),
                     version: "*".to_string(),
                     source: "default".to_string(),
@@ -694,7 +694,7 @@ mod tests {
         assert!(!opts.include_sessions); // Default: false (large)
         assert!(opts.include_workspace); // Default: true (essential)
         assert!(opts.include_mcp); // Default: true
-        assert!(opts.include_tool_registry); // Default: true
+        assert!(opts.include_tool_sources); // Default: true
         assert!(!opts.rotate_keys);
     }
 }

@@ -8,6 +8,7 @@
 //! Design inspired by `OpenClaw`'s subagent announcement queue, but generalized
 //! for any async tool operation.
 
+use crate::common::registry::SimpleRegistry;
 use crate::tools::traits::ToolResult;
 use anyhow::Result;
 use serde::{de::Error as DeError, ser::SerializeMap, Deserialize, Serialize};
@@ -564,10 +565,13 @@ pub struct AsyncTaskCompletionEvent {
     pub label: Option<String>,
 }
 
-/// Registry for tracking async tasks
+/// Registry for tracking async tasks.
+///
+/// Wraps a [`SimpleRegistry`] for task storage while keeping the
+/// `pending_announcements` queue as a separate field.
 #[derive(Debug, Default)]
 pub struct AsyncTaskRegistry {
-    tasks: HashMap<AsyncTaskId, AsyncTaskEntry>,
+    tasks: SimpleRegistry<AsyncTaskId, AsyncTaskEntry>,
     /// Queue of completed tasks waiting to be announced to parent sessions
     pending_announcements: HashMap<String, Vec<AsyncTaskId>>, // session_key -> task_ids
 }
@@ -576,7 +580,7 @@ impl AsyncTaskRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tasks: HashMap::new(),
+            tasks: SimpleRegistry::new(),
             pending_announcements: HashMap::new(),
         }
     }
@@ -1762,17 +1766,19 @@ impl AsyncResultQueue {
     }
 }
 
-/// Manager for async result queues per session
+/// Manager for async result queues per session.
+///
+/// Uses [`SimpleRegistry`] for queue storage to avoid hand-rolled `HashMap` patterns.
 #[derive(Debug, Default)]
 pub struct AsyncResultQueueManager {
-    queues: HashMap<String, AsyncResultQueue>,
+    queues: SimpleRegistry<String, AsyncResultQueue>,
 }
 
 impl AsyncResultQueueManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            queues: HashMap::new(),
+            queues: SimpleRegistry::new(),
         }
     }
 
@@ -1787,7 +1793,7 @@ impl AsyncResultQueueManager {
     }
 
     pub fn set_parent_busy(&mut self, session_key: &str, busy: bool) {
-        if let Some(queue) = self.queues.get_mut(session_key) {
+        if let Some(queue) = self.queues.get_mut(&session_key.to_string()) {
             queue.set_parent_busy(busy);
         }
     }
@@ -1802,7 +1808,7 @@ impl AsyncResultQueueManager {
 
     pub fn process_queue(&mut self, session_key: &str) -> Vec<AsyncTaskCompletionEvent> {
         self.queues
-            .get_mut(session_key)
+            .get_mut(&session_key.to_string())
             .map(AsyncResultQueue::process)
             .unwrap_or_default()
     }

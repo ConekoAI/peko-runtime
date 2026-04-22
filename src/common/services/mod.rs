@@ -24,6 +24,10 @@ pub use session_service::{
 pub use team_management_service::TeamManagementService;
 pub use team_service::TeamService;
 
+/// Backward-compatible alias for `ServiceContainer`.
+#[deprecated(since = "0.2.0", note = "Use ServiceContainer instead")]
+pub type ServiceRegistry = ServiceContainer;
+
 // Note: ConfigSource is now exported from config_authority module above
 // For backward compatibility, config_registry::ConfigSource is re-exported via agent::mod.rs
 
@@ -35,15 +39,15 @@ use std::sync::Arc;
 /// This provides a convenient way to access all services from a single struct,
 /// useful for dependency injection in both CLI and API contexts.
 #[derive(Debug, Clone)]
-pub struct ServiceRegistry {
+pub struct ServiceContainer {
     agent: AgentService,
     agent_config: ConfigAuthorityImpl,
     team: TeamService,
     team_management: Option<TeamManagementService>,
 }
 
-impl ServiceRegistry {
-    /// Create a new service registry with the given path resolver
+impl ServiceContainer {
+    /// Create a new service container with the given path resolver
     ///
     /// This is the CLI entry point - it doesn't include runtime services.
     #[must_use]
@@ -56,7 +60,7 @@ impl ServiceRegistry {
         }
     }
 
-    /// Create a new service registry with runtime services
+    /// Create a new service container with runtime services
     ///
     /// This is the API entry point - it includes runtime services like `TeamManager`.
     #[must_use]
@@ -93,7 +97,7 @@ impl ServiceRegistry {
 
     /// Get the team management service (unified operations)
     ///
-    /// Returns None if the registry was created without runtime support.
+    /// Returns None if the container was created without runtime support.
     pub fn team_management(&self) -> Option<&TeamManagementService> {
         self.team_management.as_ref()
     }

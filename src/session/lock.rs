@@ -218,17 +218,20 @@ impl Drop for FileLock {
     }
 }
 
-/// Lock manager for coordinating access to multiple session files
+/// Lock manager for coordinating access to multiple session files.
+///
+/// Uses [`SimpleRegistry`] for tracking held locks to avoid hand-rolled
+/// `Mutex<HashMap>` patterns.
 pub struct LockManager {
     // Track held locks to prevent double-locking in the same process
-    held: Mutex<HashMap<PathBuf, u32>>, // path -> count
+    held: Mutex<crate::common::registry::SimpleRegistry<PathBuf, u32>>,
 }
 
 impl LockManager {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            held: Mutex::new(HashMap::new()),
+            held: Mutex::new(crate::common::registry::SimpleRegistry::new()),
         }
     }
 
@@ -243,7 +246,7 @@ impl LockManager {
         // Check if we already hold this lock
         {
             let held = self.held.lock().unwrap();
-            if held.contains_key(&path) {
+            if held.contains(&path) {
                 // Increment reference count
                 drop(held);
                 let mut held = self.held.lock().unwrap();

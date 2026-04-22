@@ -66,7 +66,7 @@ impl Agent {
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
-        use crate::tools::session_introspection::AgentSessionRegistry;
+        use crate::tools::session_introspection::SessionIntrospector;
         use crate::tools::{
             AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, SessionStatusTool,
             SessionsSendTool, Tool,
@@ -88,7 +88,7 @@ impl Agent {
         let mut tools: Vec<Arc<dyn Tool>> = vec![];
 
         // Add session introspection tools backed by the real session manager
-        let session_registry = AgentSessionRegistry::new(
+        let session_registry = SessionIntrospector::new(
             self.session_manager.clone(),
             self.current_session_id.clone(),
         );

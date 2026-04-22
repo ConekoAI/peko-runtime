@@ -28,9 +28,9 @@ pub struct McpManifestEntry {
     pub bundle_path: Option<String>,
 }
 
-/// Tool registry reference for Universal Tools
+/// Tool source reference for Universal Tools
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolRegistryRef {
+pub struct ToolSourceRef {
     /// Tool name
     pub name: String,
     /// Required version (semver range)
@@ -44,6 +44,14 @@ fn default_registry() -> String {
     "default".to_string()
 }
 
+/// Backward-compatible alias for `ToolSourceRef`.
+#[deprecated(since = "0.2.0", note = "Use ToolSourceRef instead")]
+pub type ToolRegistryRef = ToolSourceRef;
+
+/// Backward-compatible alias for `ToolSourceConfig`.
+#[deprecated(since = "0.2.0", note = "Use ToolSourceConfig instead")]
+pub type ToolRegistryConfig = ToolSourceConfig;
+
 /// MCP configuration section in manifest
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpManifestConfig {
@@ -52,12 +60,12 @@ pub struct McpManifestConfig {
     pub servers: Vec<McpManifestEntry>,
 }
 
-/// Tool registry configuration section
+/// Tool source configuration section
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ToolRegistryConfig {
+pub struct ToolSourceConfig {
     /// Tools to fetch from registry on import
     #[serde(default)]
-    pub required: Vec<ToolRegistryRef>,
+    pub required: Vec<ToolSourceRef>,
 }
 
 /// Agent manifest - defines metadata for a portable agent package
@@ -76,9 +84,9 @@ pub struct AgentManifest {
     /// MCP servers configuration
     #[serde(default)]
     pub mcp: McpManifestConfig,
-    /// Tool registry references for Universal Tools
-    #[serde(default)]
-    pub tool_registry: ToolRegistryConfig,
+    /// Tool source references for Universal Tools
+    #[serde(default, alias = "tool_registry")]
+    pub tool_sources: ToolSourceConfig,
     /// Packaging metadata
     pub packaging: PackagingMetadata,
     /// Digital signatures
@@ -220,7 +228,7 @@ impl AgentManifest {
                 optional: None,
             },
             mcp: McpManifestConfig::default(),
-            tool_registry: ToolRegistryConfig::default(),
+            tool_sources: ToolSourceConfig::default(),
             packaging: PackagingMetadata {
                 files: Vec::new(),
                 checksums: HashMap::new(),
@@ -239,9 +247,15 @@ impl AgentManifest {
         self.mcp.servers.push(entry);
     }
 
-    /// Add a tool registry reference
-    pub fn add_tool_registry_ref(&mut self, tool_ref: ToolRegistryRef) {
-        self.tool_registry.required.push(tool_ref);
+    /// Add a tool source reference
+    pub fn add_tool_source_ref(&mut self, tool_ref: ToolSourceRef) {
+        self.tool_sources.required.push(tool_ref);
+    }
+
+    /// Backward-compatible wrapper for `add_tool_source_ref`.
+    #[deprecated(since = "0.2.0", note = "Use add_tool_source_ref instead")]
+    pub fn add_tool_registry_ref(&mut self, tool_ref: ToolSourceRef) {
+        self.add_tool_source_ref(tool_ref);
     }
 
     /// Serialize to TOML string

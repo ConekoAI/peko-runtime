@@ -25,7 +25,6 @@ pub mod lifecycle;
 pub use lifecycle::{ExecutionRecord, LifecycleManager};
 
 pub mod registry;
-pub use registry::{CapabilityRecord, LocalRegistry};
 
 // Manager submodules
 pub mod context;
