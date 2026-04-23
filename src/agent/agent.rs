@@ -114,20 +114,32 @@ impl Agent {
             &self.config.name,
         )));
 
-        // Filter based on agent config whitelist
-        if let Some(ref tool_config) = self.config.tools {
+        // Filter based on agent config extension whitelist
+        let whitelist = self.config.extension_whitelist();
+        if !whitelist.is_empty() {
             let before_count = tools.len();
-            tools.retain(|tool| tool_config.is_tool_enabled(tool.name()));
+            tools.retain(|tool| {
+                whitelist.iter().any(|pattern: &String| {
+                    if pattern.eq_ignore_ascii_case(tool.name()) {
+                        return true;
+                    }
+                    if pattern.ends_with('*') {
+                        let prefix = &pattern[..pattern.len() - 1];
+                        return tool.name().to_lowercase().starts_with(&prefix.to_lowercase());
+                    }
+                    false
+                })
+            });
             tracing::debug!("Filtered {} tools to {}", before_count, tools.len());
         }
 
         // ADR-020: Set tool config on ExtensionCore before registering tools
-        // so that permission checks pass during registration
-        if let Some(ref tool_config) = self.config.tools {
-            self.extension_core
-                .set_tool_config(tool_config.clone())
-                .await;
-        }
+        // so that permission checks pass during registration.
+        let mut ext_config = self.config.extensions.clone().unwrap_or_default();
+        ext_config.enabled = self.config.extension_whitelist();
+        self.extension_core
+            .set_tool_config(ext_config)
+            .await;
 
         // Load Universal Tools from extensions directory (where `pekobot ext install` puts them)
         let extensions_dir = crate::common::paths::default_data_dir().join("extensions");
@@ -389,8 +401,9 @@ impl Agent {
         self.set_state(AgentState::Busy);
 
         // Initialize tool config on ExtensionCore
-        let tool_config = self.config.tools.clone().unwrap_or_default();
-        self.extension_core.set_tool_config(tool_config).await;
+        let mut ext_config = self.config.extensions.clone().unwrap_or_default();
+        ext_config.enabled = self.config.extension_whitelist();
+        self.extension_core.set_tool_config(ext_config).await;
 
         if let Err(e) = self.prepare_execution().await {
             self.set_state(AgentState::Idle);
@@ -478,8 +491,9 @@ impl Agent {
         };
 
         // Initialize tool config on ExtensionCore
-        let tool_config = self.config.tools.clone().unwrap_or_default();
-        self.extension_core.set_tool_config(tool_config).await;
+        let mut ext_config = self.config.extensions.clone().unwrap_or_default();
+        ext_config.enabled = self.config.extension_whitelist();
+        self.extension_core.set_tool_config(ext_config).await;
 
         // Capture current session ID so session_status can look it up
         {

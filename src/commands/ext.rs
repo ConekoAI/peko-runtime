@@ -36,6 +36,12 @@ pub enum ExtCommands {
         /// Filter by extension type
         #[arg(long)]
         r#type: Option<String>,
+        /// Show access for a specific agent (format: team/agent or just agent)
+        #[arg(long, value_name = "AGENT")]
+        agent: Option<String>,
+        /// Show access for all agents in a specific team
+        #[arg(long, value_name = "TEAM", conflicts_with = "agent")]
+        team: Option<String>,
     },
 
     /// Enable an extension or built-in capability
@@ -216,7 +222,9 @@ pub async fn handle_ext_command(command: ExtCommands, paths: &GlobalPaths) -> an
                 ExtCommands::List {
                     enabled_only,
                     r#type,
-                } => handle_list(&manager, enabled_only, r#type).await,
+                    agent,
+                    team,
+                } => handle_list(&manager, paths, enabled_only, r#type, agent, team).await,
                 ExtCommands::Enable { id, target } => {
                     handle_enable(&mut manager, paths, id, target).await
                 }
@@ -271,10 +279,16 @@ async fn handle_install(
 ///
 /// Shows both installed extensions and built-in extensions registered with
 /// `ExtensionCore`. Built-ins are compiled into the binary and always available.
+///
+/// When `--agent` or `--team` is provided, shows access permissions for the
+/// specified agent(s) by checking their `tools.enabled` whitelist.
 async fn handle_list(
     manager: &ExtensionManager,
+    paths: &GlobalPaths,
     _enabled_only: bool, // Kept for CLI compatibility, but ignored
     ext_type: Option<String>,
+    agent_filter: Option<String>,
+    team_filter: Option<String>,
 ) -> anyhow::Result<()> {
     let extensions = manager.list_extensions();
 
@@ -316,22 +330,67 @@ async fn handle_list(
         return Ok(());
     }
 
-    println!("{:<24} {:<14} {:<18} SOURCE", "ID", "TYPE", "NAME");
-    println!("{}", "-".repeat(72));
+    // Determine if we're showing permissions
+    let show_permissions = agent_filter.is_some() || team_filter.is_some();
+
+    // Collect agent configs to check permissions against
+    let agent_configs: Vec<(String, String, crate::types::agent::ToolConfig)> = if show_permissions {
+        collect_agent_extension_configs(paths, agent_filter.as_deref(), team_filter.as_deref()).await?
+    } else {
+        Vec::new()
+    };
+
+    if show_permissions {
+        // Print header with access columns
+        let access_header = if agent_configs.len() == 1 {
+            format!("ACCESS ({}/{})", agent_configs[0].0, agent_configs[0].1)
+        } else {
+            "ACCESS".to_string()
+        };
+        println!(
+            "{:<24} {:<14} {:<18} {:<10} {}",
+            "ID", "TYPE", "NAME", "SOURCE", access_header
+        );
+        println!("{}", "-".repeat(90));
+    } else {
+        println!("{:<24} {:<14} {:<18} SOURCE", "ID", "TYPE", "NAME");
+        println!("{}", "-".repeat(72));
+    }
 
     for b in &filtered_builtins {
         let status = if b.enabled { "" } else { " [disabled]" };
-        println!(
-            "{:<24} {:<14} {:<18} built-in{}",
-            b.id, b.ext_type, b.name, status
-        );
+        let source = format!("built-in{status}");
+
+        if show_permissions {
+            let access = format_access_for_agent_configs(b.name.as_str(), &agent_configs);
+            println!(
+                "{:<24} {:<14} {:<18} {:<10} {}",
+                b.id, b.ext_type, b.name, source, access
+            );
+        } else {
+            println!(
+                "{:<24} {:<14} {:<18} {}",
+                b.id, b.ext_type, b.name, source
+            );
+        }
     }
 
     for ext in &filtered_installed {
-        println!(
-            "{:<24} {:<14} {:<18} installed",
-            ext.manifest.id, ext.extension_type, ext.manifest.name
-        );
+        let source = "installed";
+        let tool_name = ext.manifest.name.as_str();
+
+        if show_permissions {
+            let access = format_access_for_agent_configs(tool_name, &agent_configs);
+            println!(
+                "{:<24} {:<14} {:<18} {:<10} {}",
+                ext.manifest.id, ext.extension_type, ext.manifest.name, source, access
+            );
+        } else {
+            println!(
+                "{:<24} {:<14} {:<18} {}",
+                ext.manifest.id, ext.extension_type, ext.manifest.name, source
+            );
+        }
     }
 
     println!();
@@ -339,12 +398,101 @@ async fn handle_list(
         "Total: {} extension(s)",
         filtered_installed.len() + filtered_builtins.len()
     );
+
+    if show_permissions {
+        if agent_configs.len() > 1 {
+            println!();
+            println!("Access legend:");
+            for (team, agent, _) in &agent_configs {
+                println!("  ✓ {team}/{agent} = allowed");
+                println!("  ✗ {team}/{agent} = denied");
+            }
+        } else if agent_configs.len() == 1 {
+            println!();
+            println!("  ✓ = allowed  |  ✗ = denied");
+        }
+    }
+
     if !filtered_builtins.is_empty() {
+        println!();
         println!("Note: Built-in extensions are compiled into the binary.");
         println!("      Installed extensions are loaded from disk.");
     }
 
     Ok(())
+}
+
+/// Collect agent extension configurations for permission checking
+async fn collect_agent_extension_configs(
+    paths: &GlobalPaths,
+    agent_filter: Option<&str>,
+    team_filter: Option<&str>,
+) -> anyhow::Result<Vec<(String, String, crate::types::agent::ExtensionConfig)>> {
+    let mut result = Vec::new();
+    let config_service = paths.services().agent_config();
+
+    if let Some(agent_id) = agent_filter {
+        // Single agent mode
+        let (team, agent_name) = crate::common::paths::resolve_team_agent(agent_id)?;
+        let config_path = paths.resolver().agent_config(&agent_name, Some(&team));
+        if config_path.exists() {
+            let content = std::fs::read_to_string(&config_path)?;
+            let config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
+            let ext_config = config.extensions.unwrap_or_default();
+            result.push((team, agent_name, ext_config));
+        } else {
+            anyhow::bail!("Agent '{agent_name}' not found in team '{team}'");
+        }
+    } else if let Some(team) = team_filter {
+        // All agents in a team
+        let agents_dir = paths.resolver().agents_dir(Some(team));
+        if !agents_dir.exists() {
+            anyhow::bail!("Team '{team}' not found (no agents directory)");
+        }
+
+        for entry in std::fs::read_dir(&agents_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let agent_name = entry.file_name().to_string_lossy().to_string();
+            let config_path = paths.resolver().agent_config(&agent_name, Some(team));
+            if config_path.exists() {
+                let content = std::fs::read_to_string(&config_path)?;
+                let config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
+                let ext_config = config.extensions.unwrap_or_default();
+                result.push((team.to_string(), agent_name, ext_config));
+            }
+        }
+
+        if result.is_empty() {
+            println!("No agents found in team '{team}'.");
+        }
+    }
+
+    Ok(result)
+}
+
+/// Format access status for a tool against multiple agent configs
+fn format_access_for_agent_configs(
+    tool_name: &str,
+    agent_configs: &[(String, String, crate::types::agent::ExtensionConfig)],
+) -> String {
+    if agent_configs.len() == 1 {
+        let (_, _, ext) = &agent_configs[0];
+        if ext.is_extension_enabled(tool_name) {
+            "✓".to_string()
+        } else {
+            "✗".to_string()
+        }
+    } else {
+        let mut parts = Vec::new();
+        for (team, agent, ext) in agent_configs {
+            let symbol = if ext.is_extension_enabled(tool_name) { "✓" } else { "✗" };
+            parts.push(format!("{symbol}:{team}/{agent}"));
+        }
+        parts.join(" ")
+    }
 }
 
 /// Handle enable command
@@ -396,8 +544,6 @@ async fn handle_enable(
                         whitelist_entry,
                         e
                     );
-                } else {
-                    println!("Added '{whitelist_entry}' to agent '{target}' tool whitelist");
                 }
             }
 

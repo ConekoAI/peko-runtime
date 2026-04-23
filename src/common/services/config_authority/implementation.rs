@@ -330,7 +330,7 @@ impl ConfigAuthority for ConfigAuthorityImpl {
 }
 
 impl ConfigAuthorityImpl {
-    /// Enable a tool in an agent's config whitelist (synchronous)
+    /// Enable an extension in an agent's config whitelist (synchronous)
     pub fn enable_tool_sync(
         &self,
         agent_name: &str,
@@ -345,13 +345,13 @@ impl ConfigAuthorityImpl {
         let content = std::fs::read_to_string(&config_path)?;
         let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
 
-        let tools = config.tools.get_or_insert_with(Default::default);
-        if !tools
+        let extensions = config.extensions.get_or_insert_with(Default::default);
+        if !extensions
             .enabled
             .iter()
-            .any(|e| e.eq_ignore_ascii_case(tool_name))
+            .any(|e: &String| e.eq_ignore_ascii_case(tool_name))
         {
-            tools.enabled.push(tool_name.to_string());
+            extensions.enabled.push(tool_name.to_string());
         }
 
         let updated = toml::to_string_pretty(&config)?;
@@ -363,7 +363,7 @@ impl ConfigAuthorityImpl {
         Ok(())
     }
 
-    /// Disable a tool in an agent's config whitelist (synchronous)
+    /// Disable an extension in an agent's config whitelist (synchronous)
     pub fn disable_tool_sync(
         &self,
         agent_name: &str,
@@ -378,8 +378,11 @@ impl ConfigAuthorityImpl {
         let content = std::fs::read_to_string(&config_path)?;
         let mut config: crate::types::agent::AgentConfig = toml::from_str(&content)?;
 
-        let tools = config.tools.get_or_insert_with(Default::default);
-        tools.enabled.retain(|e| !e.eq_ignore_ascii_case(tool_name));
+        if let Some(ref mut extensions) = config.extensions {
+            extensions
+                .enabled
+                .retain(|e: &String| !e.eq_ignore_ascii_case(tool_name));
+        }
 
         let updated = toml::to_string_pretty(&config)?;
         std::fs::write(&config_path, updated)?;

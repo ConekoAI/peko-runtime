@@ -23,8 +23,9 @@ pub struct AgentConfig {
     pub capabilities: Vec<AgentCapability>,
     /// LLM provider configuration
     pub provider: super::provider::ProviderConfig,
-    /// Tool configurations
-    pub tools: Option<ToolConfig>,
+    /// Extension configurations — unified whitelist and settings for all extension types
+    /// (tools, skills, MCP servers, universal tools, etc.)
+    pub extensions: Option<ExtensionConfig>,
     /// Channel configurations
     pub channels: Option<ChannelConfig>,
     /// Auto-accept quotes (for trusted agents)
@@ -43,6 +44,44 @@ fn default_config_version() -> String {
     "1.0".to_string()
 }
 
+impl AgentConfig {
+    /// Get the extension whitelist.
+    #[must_use]
+    pub fn extension_whitelist(&self) -> Vec<String> {
+        self.extensions
+            .as_ref()
+            .map(|e| e.enabled.clone())
+            .unwrap_or_default()
+    }
+
+    /// Check if an extension is enabled according to the whitelist.
+    #[must_use]
+    pub fn is_extension_enabled(&self, name: &str) -> bool {
+        let Some(ref extensions) = self.extensions else {
+            return false;
+        };
+
+        // Check whitelist (case-insensitive, supports wildcards)
+        let in_whitelist = extensions.enabled.iter().any(|pattern| {
+            if pattern.eq_ignore_ascii_case(name) {
+                return true;
+            }
+            if pattern.ends_with('*') {
+                let prefix = &pattern[..pattern.len() - 1];
+                return name.to_lowercase().starts_with(&prefix.to_lowercase());
+            }
+            false
+        });
+
+        // Get per-extension settings if they exist
+        let per_extension_enabled = extensions
+            .get_extension_settings(name)
+            .is_none_or(|s| s.enabled);
+
+        in_whitelist && per_extension_enabled
+    }
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -53,7 +92,7 @@ impl Default for AgentConfig {
             tenant: None,
             capabilities: vec![],
             provider: super::provider::ProviderConfig::default(),
-            tools: Some(ToolConfig::default()), // Default tool whitelist
+            extensions: Some(ExtensionConfig::default()),
             channels: None,
             auto_accept_trusted: false,
             approval_threshold: Some(100.0),
@@ -182,47 +221,46 @@ impl std::fmt::Display for AgentState {
     }
 }
 
-/// Per-tool settings for granular control
+/// Per-extension settings for granular control
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ToolSettings {
-    /// Whether this tool is enabled
+pub struct ExtensionSettings {
+    /// Whether this extension is enabled
     pub enabled: bool,
 }
 
-impl Default for ToolSettings {
+impl Default for ExtensionSettings {
     fn default() -> Self {
         Self { enabled: true }
     }
 }
 
-/// Tool configuration
+/// Extension configuration — unified config for all extension types
+/// (tools, skills, MCP servers, universal tools, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ToolConfig {
-    /// Enabled built-in tools (whitelist)
-    /// If empty, NO tools are allowed (secure by default)
+pub struct ExtensionConfig {
+    /// Enabled extensions (whitelist)
+    /// If empty, NO extensions are allowed (secure by default)
     pub enabled: Vec<String>,
-    /// Enabled skills for this agent (whitelist)
-    pub skills: Vec<String>,
     /// HTTP tool settings
     pub http: Option<HttpToolConfig>,
     /// Custom tool definitions
     pub custom: Option<HashMap<String, serde_json::Value>>,
-    /// Per-tool settings (`snake_case` keys like "`str_replace_file`", "`write_file`", etc.)
+    /// Per-extension settings (snake_case keys like "str_replace_file", "write_file", etc.)
     #[serde(default)]
-    pub read_file: Option<ToolSettings>,
+    pub read_file: Option<ExtensionSettings>,
     #[serde(default)]
-    pub write_file: Option<ToolSettings>,
+    pub write_file: Option<ExtensionSettings>,
     #[serde(default)]
-    pub glob: Option<ToolSettings>,
+    pub glob: Option<ExtensionSettings>,
     #[serde(default)]
-    pub grep: Option<ToolSettings>,
+    pub grep: Option<ExtensionSettings>,
     #[serde(default)]
-    pub str_replace_file: Option<ToolSettings>,
+    pub str_replace_file: Option<ExtensionSettings>,
 }
 
-impl Default for ToolConfig {
+impl Default for ExtensionConfig {
     fn default() -> Self {
         Self {
             // Default: enable all common built-in tools so agents work out of the box
@@ -234,7 +272,6 @@ impl Default for ToolConfig {
                 "grep".to_string(),
                 "str_replace_file".to_string(),
             ],
-            skills: vec![],
             http: None,
             custom: None,
             read_file: None,
@@ -246,45 +283,40 @@ impl Default for ToolConfig {
     }
 }
 
-impl ToolConfig {
-    /// Check if a tool is enabled according to the whitelist
+impl ExtensionConfig {
+    /// Check if an extension is enabled according to the whitelist
     ///
-    /// - If whitelist has entries: only listed tools are allowed (unless per-tool enabled=true)
-    /// - If whitelist is empty: NO tools allowed (secure by default)
-    /// - Supports wildcard patterns like "mcp:identity:*" which matches full tool names
-    ///
-    /// Tools must be referenced by their full names (e.g., "`mcp:identity:echo_identity`")
-    /// for consistent identification across extension types.
+    /// - If whitelist has entries: only listed extensions are allowed
+    /// - If whitelist is empty: NO extensions allowed (secure by default)
+    /// - Supports wildcard patterns like "mcp:identity:*"
     #[must_use]
-    pub fn is_tool_enabled(&self, tool_name: &str) -> bool {
-        // Check if tool is in the whitelist (case-insensitive, supports wildcards)
+    pub fn is_extension_enabled(&self, name: &str) -> bool {
+        // Check if extension is in the whitelist (case-insensitive, supports wildcards)
         let in_whitelist = self.enabled.iter().any(|pattern| {
             // Direct match (case-insensitive)
-            if pattern.eq_ignore_ascii_case(tool_name) {
+            if pattern.eq_ignore_ascii_case(name) {
                 return true;
             }
 
             // Support wildcard patterns like "mcp:identity:*"
-            // This matches full names like "mcp:identity:echo_identity"
             if pattern.ends_with('*') {
                 let prefix = &pattern[..pattern.len() - 1];
-                return tool_name.to_lowercase().starts_with(&prefix.to_lowercase());
+                return name.to_lowercase().starts_with(&prefix.to_lowercase());
             }
             false
         });
 
-        // Get per-tool settings if they exist
-        let per_tool_enabled = self.get_tool_settings(tool_name).is_none_or(|s| s.enabled);
+        // Get per-extension settings if they exist
+        let per_extension_enabled = self.get_extension_settings(name).is_none_or(|s| s.enabled);
 
-        // Tool is enabled if it's in the whitelist AND not explicitly disabled via per-tool config
-        // OR if it's explicitly enabled via per-tool config (even if not in whitelist)
-        in_whitelist && per_tool_enabled
+        // Extension is enabled if it's in the whitelist AND not explicitly disabled
+        in_whitelist && per_extension_enabled
     }
 
-    /// Get per-tool settings for a specific tool (by `snake_case` name)
+    /// Get per-extension settings for a specific extension (by snake_case name)
     #[must_use]
-    pub fn get_tool_settings(&self, tool_name: &str) -> Option<&ToolSettings> {
-        match tool_name {
+    pub fn get_extension_settings(&self, name: &str) -> Option<&ExtensionSettings> {
+        match name {
             "read_file" => self.read_file.as_ref(),
             "write_file" => self.write_file.as_ref(),
             "glob" => self.glob.as_ref(),
@@ -365,6 +397,10 @@ pub struct TlsConfig {
     pub key_path: String,
 }
 
+/// Tool configuration (deprecated — use `ExtensionConfig` instead)
+/// Kept for backward compatibility during deserialization of old configs.
+pub type ToolConfig = ExtensionConfig;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,8 +444,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_config_default_whitelist() {
-        let config = ToolConfig::default();
+    fn test_extension_config_default_whitelist() {
+        let config = ExtensionConfig::default();
 
         // Default whitelist enables common built-in tools so agents work out of the box
         assert!(!config.enabled.is_empty());
@@ -418,8 +454,8 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_config_is_tool_enabled() {
-        let config = ToolConfig {
+    fn test_extension_config_is_extension_enabled() {
+        let config = ExtensionConfig {
             enabled: vec![
                 "shell".to_string(),
                 "read_file".to_string(),
@@ -435,32 +471,31 @@ mod tests {
             ..Default::default()
         };
 
-        // All whitelisted tools should be enabled
-        assert!(config.is_tool_enabled("shell"));
-        assert!(config.is_tool_enabled("read_file"));
-        assert!(config.is_tool_enabled("write_file"));
-        assert!(config.is_tool_enabled("glob"));
-        assert!(config.is_tool_enabled("grep"));
-        assert!(config.is_tool_enabled("str_replace_file"));
-        assert!(config.is_tool_enabled("sessions_list"));
-        assert!(config.is_tool_enabled("sessions_history"));
-        assert!(config.is_tool_enabled("session_status"));
-        assert!(config.is_tool_enabled("cron"));
+        // All whitelisted extensions should be enabled
+        assert!(config.is_extension_enabled("shell"));
+        assert!(config.is_extension_enabled("read_file"));
+        assert!(config.is_extension_enabled("write_file"));
+        assert!(config.is_extension_enabled("glob"));
+        assert!(config.is_extension_enabled("grep"));
+        assert!(config.is_extension_enabled("str_replace_file"));
+        assert!(config.is_extension_enabled("sessions_list"));
+        assert!(config.is_extension_enabled("sessions_history"));
+        assert!(config.is_extension_enabled("session_status"));
+        assert!(config.is_extension_enabled("cron"));
 
         // Case-insensitive matching
-        assert!(config.is_tool_enabled("SHELL"));
-        assert!(config.is_tool_enabled("Session_Status"));
+        assert!(config.is_extension_enabled("SHELL"));
+        assert!(config.is_extension_enabled("Session_Status"));
 
-        // Unknown tools should not be enabled
-        assert!(!config.is_tool_enabled("unknown_tool"));
+        // Unknown extensions should not be enabled
+        assert!(!config.is_extension_enabled("unknown_tool"));
     }
 
     #[test]
-    fn test_tool_config_empty_whitelist_disallows_all() {
-        // Empty whitelist should disallow ALL tools (secure by default)
-        let config = ToolConfig {
+    fn test_extension_config_empty_whitelist_disallows_all() {
+        // Empty whitelist should disallow ALL extensions (secure by default)
+        let config = ExtensionConfig {
             enabled: vec![],
-            skills: Vec::new(),
             http: None,
             custom: None,
             read_file: None,
@@ -470,17 +505,16 @@ mod tests {
             str_replace_file: None,
         };
 
-        assert!(!config.is_tool_enabled("shell"));
-        assert!(!config.is_tool_enabled("read_file"));
-        assert!(!config.is_tool_enabled("any_tool"));
+        assert!(!config.is_extension_enabled("shell"));
+        assert!(!config.is_extension_enabled("read_file"));
+        assert!(!config.is_extension_enabled("any_tool"));
     }
 
     #[test]
-    fn test_tool_config_custom_whitelist() {
+    fn test_extension_config_custom_whitelist() {
         // Custom whitelist
-        let config = ToolConfig {
+        let config = ExtensionConfig {
             enabled: vec!["read_file".to_string(), "write_file".to_string()],
-            skills: Vec::new(),
             http: None,
             custom: None,
             read_file: None,
@@ -490,25 +524,25 @@ mod tests {
             str_replace_file: None,
         };
 
-        assert!(config.is_tool_enabled("read_file"));
-        assert!(config.is_tool_enabled("write_file"));
-        assert!(!config.is_tool_enabled("shell"));
+        assert!(config.is_extension_enabled("read_file"));
+        assert!(config.is_extension_enabled("write_file"));
+        assert!(!config.is_extension_enabled("shell"));
     }
 
     #[test]
-    fn test_agent_config_has_default_tools() {
+    fn test_agent_config_has_default_extensions() {
         let config = AgentConfig::default();
 
-        // Default tool config exists with common built-in tools enabled
-        assert!(config.tools.is_some());
-        let tools = config.tools.unwrap();
-        assert!(!tools.enabled.is_empty());
-        assert!(tools.enabled.contains(&"shell".to_string()));
+        // Default extension config exists with common built-in tools enabled
+        assert!(config.extensions.is_some());
+        let extensions = config.extensions.unwrap();
+        assert!(!extensions.enabled.is_empty());
+        assert!(extensions.enabled.contains(&"shell".to_string()));
     }
 
     #[test]
-    fn test_tool_config_toml_serialization() {
-        let config = ToolConfig {
+    fn test_extension_config_toml_serialization() {
+        let config = ExtensionConfig {
             enabled: vec!["shell".to_string(), "read_file".to_string()],
             ..Default::default()
         };

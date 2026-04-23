@@ -32,12 +32,12 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tool_index: SharedRegistry::new(),
-            tool_config: RwLock::new(crate::types::agent::ToolConfig::default()),
+            tool_config: RwLock::new(crate::types::agent::ExtensionConfig::default()),
         }
     }
 
     /// Set the tool configuration (whitelist, etc.)
-    pub async fn set_tool_config(&self, config: crate::types::agent::ToolConfig) {
+    pub async fn set_tool_config(&self, config: crate::types::agent::ExtensionConfig) {
         let mut tool_config = self.tool_config.write().await;
         *tool_config = config;
         debug!("Updated tool configuration");
@@ -46,7 +46,7 @@ impl ToolRegistry {
     /// Check if a tool is enabled according to whitelist
     pub async fn is_tool_enabled(&self, tool_name: &str) -> bool {
         let config = self.tool_config.read().await;
-        config.is_tool_enabled(tool_name)
+        config.is_extension_enabled(tool_name)
     }
 
     /// Register a tool in the index

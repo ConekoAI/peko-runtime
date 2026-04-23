@@ -545,25 +545,24 @@ impl Packager {
             }
         }
 
-        // Also add references from config.tools.enabled (whitelisted tools)
-        if let Some(ref tools) = self.config.tools {
-            for tool_name in &tools.enabled {
-                // Skip if already added from tools_dir discovery
-                if manifest
-                    .tool_sources
-                    .required
-                    .iter()
-                    .any(|r| r.name == *tool_name)
-                {
-                    continue;
-                }
-
-                manifest.add_tool_source_ref(ToolSourceRef {
-                    name: tool_name.clone(),
-                    version: "*".to_string(),
-                    source: "default".to_string(),
-                });
+        // Also add references from config.extensions.enabled (whitelisted tools)
+        let whitelist = self.config.extension_whitelist();
+        for tool_name in &whitelist {
+            // Skip if already added from tools_dir discovery
+            if manifest
+                .tool_sources
+                .required
+                .iter()
+                .any(|r| r.name == *tool_name)
+            {
+                continue;
             }
+
+            manifest.add_tool_source_ref(ToolSourceRef {
+                name: tool_name.clone(),
+                version: "*".to_string(),
+                source: "default".to_string(),
+            });
         }
 
         Ok(())

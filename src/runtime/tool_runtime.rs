@@ -155,9 +155,8 @@ impl ToolRuntime {
 
         // Enable all built-in tools by default in the daemon context
         let tool_names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
-        let tool_config = crate::types::agent::ToolConfig {
+        let ext_config = crate::types::agent::ExtensionConfig {
             enabled: tool_names.clone(),
-            skills: vec![],
             http: None,
             custom: None,
             read_file: None,
@@ -166,7 +165,7 @@ impl ToolRuntime {
             grep: None,
             str_replace_file: None,
         };
-        extension_core.set_tool_config(tool_config).await;
+        extension_core.set_tool_config(ext_config).await;
 
         for tool in &tools {
             if let Err(e) = BuiltinToolAdapter::register_tool(extension_core, tool.clone()).await {

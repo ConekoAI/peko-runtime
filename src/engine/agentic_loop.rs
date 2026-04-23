@@ -1142,12 +1142,13 @@ async fn build_system_prompt(
 
     // Load enabled skills from the skills directory using ExtensionCore
     let path_resolver = crate::common::paths::PathResolver::new();
-    let enabled_skills = agent
+    // Skills are now tracked in extensions.enabled alongside other extensions
+    let enabled_skills: Vec<String> = agent
         .config
-        .tools
+        .extensions
         .as_ref()
-        .map_or(&vec![], |t| &t.skills)
-        .clone();
+        .map(|e| e.enabled.clone())
+        .unwrap_or_default();
 
     // Load and register skills with ExtensionCore
     let _skills_loaded = load_and_register_skills(

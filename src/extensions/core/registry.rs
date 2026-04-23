@@ -67,7 +67,7 @@ impl ExtensionCore {
     }
 
     /// Set the tool configuration (whitelist, etc.)
-    pub async fn set_tool_config(&self, config: crate::types::agent::ToolConfig) {
+    pub async fn set_tool_config(&self, config: crate::types::agent::ExtensionConfig) {
         self.tool_registry.set_tool_config(config).await;
     }
 
