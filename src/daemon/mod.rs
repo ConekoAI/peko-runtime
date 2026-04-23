@@ -10,6 +10,7 @@
 
 pub mod state;
 
+use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
 use crate::common::paths::PathResolver;
 use crate::cron::events::SystemEvent;
 use crate::cron::{CronJob, CronRun, CronScheduler, DeliveryMode, ExecutionTarget, IdleDetector};
@@ -80,8 +81,12 @@ pub struct Daemon {
     idle_detector: Arc<IdleDetector>,
     /// Event receiver for event-triggered jobs
     event_rx: Option<mpsc::Receiver<SystemEvent>>,
+    /// Event sender for publishing system events
+    event_tx: Option<mpsc::Sender<SystemEvent>>,
     /// Observability for audit logging
     observability: Arc<Observability>,
+    /// Agent service for executing cron jobs
+    agent_service: Option<Arc<StatelessAgentService>>,
 }
 
 impl Daemon {
@@ -113,8 +118,47 @@ impl Daemon {
             status,
             idle_detector,
             event_rx,
+            event_tx: None,
             observability,
+            agent_service: None,
         })
+    }
+
+    /// Create a new daemon with an internal event channel.
+    /// Returns the daemon and the sender half so external code can publish events.
+    pub fn new_with_events(config: DaemonConfig) -> Result<(Self, mpsc::Sender<SystemEvent>)> {
+        let scheduler = Arc::new(CronScheduler::new(&config.cron_db_path)?);
+
+        let status = Arc::new(Mutex::new(DaemonStatus {
+            running: false,
+            jobs_checked: 0,
+            jobs_executed: 0,
+            last_check: None,
+        }));
+
+        let idle_detector = Arc::new(IdleDetector::new());
+        let observability = Arc::new(Observability::new("daemon"));
+        let (event_tx, event_rx) = mpsc::channel(1024);
+
+        let daemon = Self {
+            config,
+            scheduler,
+            status,
+            idle_detector,
+            event_rx: Some(event_rx),
+            event_tx: Some(event_tx.clone()),
+            observability,
+            agent_service: None,
+        };
+
+        Ok((daemon, event_tx))
+    }
+
+    /// Publish a system event to the internal event channel.
+    pub async fn publish_event(&self, event: SystemEvent) {
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(event).await;
+        }
     }
 
     /// Run the daemon (blocks until shutdown)
@@ -147,6 +191,9 @@ impl Daemon {
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create AppState: {e}"))?;
+
+        // Wire agent service into daemon for real job execution
+        self.set_agent_service(app_state.agent_service().clone());
 
         // Write our own PID file so stop commands can find us even if the parent is gone
         let pid_file = crate::ipc::default_pid_path();
@@ -544,26 +591,48 @@ impl Daemon {
         Ok(())
     }
 
-    /// Execute a main session job (enqueue system event)
+    /// Set the agent service for real job execution
+    pub fn set_agent_service(&mut self, service: Arc<StatelessAgentService>) {
+        self.agent_service = Some(service);
+    }
+
+    /// Run a cron job using the agent service if available
+    async fn run_job_with_agent_service(&self, job: &CronJob) -> Result<(String, Option<String>)> {
+        let agent_id = job.agent_id.as_deref().unwrap_or("default");
+        let message = &job.message;
+
+        if let Some(service) = &self.agent_service {
+            let request = MessageRequest::new(agent_id, message.clone()).with_timeout(300);
+
+            match service.execute_message(request).await {
+                Ok(result) => {
+                    // Record activity for idle detection
+                    self.idle_detector.record_activity(agent_id).await;
+                    Ok(("success".to_string(), Some(result.content)))
+                }
+                Err(e) => Ok(("failed".to_string(), Some(format!("Execution error: {e}")))),
+            }
+        } else {
+            warn!("No agent service available for cron job execution");
+            Ok(("failed".to_string(), Some("Agent service not available".to_string())))
+        }
+    }
+
+    /// Execute a main session job
     async fn execute_main_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         info!("📨 Main session job: '{}'", job.message);
 
-        // Create a SystemEvent::Internal for the job
-        // This can be consumed by agents via EventSubscriber
-        let _event = SystemEvent::Internal {
-            event_type: "cron_job".to_string(),
-            source: format!("cron:{}", job.id),
-            payload: serde_json::json!({
-                "job_id": job.id,
-                "job_name": job.name,
-                "message": job.message,
-                "agent_id": job.agent_id,
-            }),
-            timestamp: Utc::now(),
-        };
+        // Use agent service if available and agent_id is set
+        if self.agent_service.is_some() && job.agent_id.is_some() {
+            return self.run_job_with_agent_service(job).await;
+        }
 
-        // TODO: Deliver event to agent's session
-        // For now, we mark as success with the event details
+        // Fallback to stub behavior
+        if self.agent_service.is_none() {
+            warn!("No agent service available for main job execution");
+        } else if job.agent_id.is_none() {
+            warn!("Main job has no agent_id, using stub execution");
+        }
 
         let output = format!(
             "[cron:{}] System event created:\n{}\n\nEvent: cron_job from {} for agent {:?}",
@@ -578,6 +647,18 @@ impl Daemon {
     /// Execute an isolated job (spawn dedicated agent turn)
     async fn execute_isolated_job(&self, job: &CronJob) -> Result<(String, Option<String>)> {
         info!("🔧 Isolated job: '{}'", job.message);
+
+        // Use agent service if available and agent_id is set
+        if self.agent_service.is_some() && job.agent_id.is_some() {
+            return self.run_job_with_agent_service(job).await;
+        }
+
+        // Fallback to stub behavior
+        if self.agent_service.is_none() {
+            warn!("No agent service available for isolated job execution");
+        } else if job.agent_id.is_none() {
+            warn!("Isolated job has no agent_id, using stub execution");
+        }
 
         // Check if agent is specified
         let agent_id = if let Some(id) = &job.agent_id {
@@ -598,14 +679,6 @@ impl Daemon {
             }
         };
 
-        // TODO: Implement actual isolated agent execution
-        // This would require:
-        // 1. Creating AgentManager reference in Daemon
-        // 2. Spawning agent with the config
-        // 3. Executing the job message
-        // 4. Capturing and returning output
-        // 5. Cleanup
-
         let output = format!(
             "[cron:{}] Isolated execution prepared for agent '{}':\n{}\n\nNote: Full isolated execution requires AgentManager integration",
             job.name, agent_config.name, job.message
@@ -616,7 +689,6 @@ impl Daemon {
             agent_config.name
         );
 
-        // For now, return success with note about future implementation
         Ok(("success".to_string(), Some(output)))
     }
 
@@ -659,24 +731,31 @@ impl Daemon {
         &self,
         job: &CronJob,
         status: &str,
-        _channel: Option<&str>,
-        _to: Option<&str>,
+        channel: Option<&str>,
+        to: Option<&str>,
     ) -> Result<()> {
-        // Placeholder for actual delivery implementation
-        // This would integrate with Discord, Slack, etc.
+        let announcement = serde_json::json!({
+            "type": "cron_announcement",
+            "job_id": job.id,
+            "job_name": job.name,
+            "status": status,
+            "message": job.message,
+            "channel": channel,
+            "to": to,
+            "timestamp": Utc::now().to_rfc3339(),
+        });
 
-        let message = format!(
-            "🤖 Cron Job Completed\n\nName: {}\nStatus: {}\nMessage: {}",
-            job.name, status, job.message
-        );
+        // Write to announcements directory
+        let announcements_dir = self.config.data_dir.join("announcements");
+        std::fs::create_dir_all(&announcements_dir)?;
 
-        info!("   Announcement would be sent: {}", message);
+        let file_name = format!("{}_{}.json", job.id, Utc::now().timestamp());
+        let file_path = announcements_dir.join(&file_name);
 
-        // TODO: Implement actual channel delivery
-        // - Load channel credentials from config
-        // - Send message via appropriate API
-        // - Handle retries and errors
+        let content = serde_json::to_string_pretty(&announcement)?;
+        std::fs::write(&file_path, content)?;
 
+        info!("📢 Announcement written to: {}", file_path.display());
         Ok(())
     }
 

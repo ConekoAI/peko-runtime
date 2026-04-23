@@ -505,6 +505,40 @@ impl CronScheduler {
             .filter(|j| matches!(j.schedule, ScheduleKind::Event { .. }))
             .collect())
     }
+
+    /// Find jobs that are due but have never run (missed during downtime)
+    pub fn missed_jobs(&self, now: DateTime<Utc>) -> Result<Vec<CronJob>> {
+        let conn = Connection::open(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, schedule_kind, schedule_data, target, agent_id,
+                    message, delivery_mode, delivery_data, delete_after_run,
+                    enabled, created_at, next_run, last_run, last_status, run_count
+             FROM cron_jobs 
+             WHERE enabled = 1 AND next_run <= ?1 AND last_run IS NULL
+             ORDER BY next_run ASC",
+        )?;
+
+        let rows = stmt.query_map(params![now.to_rfc3339()], parse_job_from_row)?;
+
+        let mut jobs = Vec::new();
+        for row in rows {
+            jobs.push(row?);
+        }
+        Ok(jobs)
+    }
+
+    /// Recalculate and update next_run for a job based on its schedule
+    pub fn recalculate_next_run(&self, job_id: &str, after: DateTime<Utc>) -> Result<DateTime<Utc>> {
+        let job = self.get_job(job_id)?
+            .ok_or_else(|| anyhow::anyhow!("Job not found: {job_id}"))?;
+        let next_run = self.calculate_next_run(&job.schedule, after)?;
+        let conn = Connection::open(&self.db_path)?;
+        conn.execute(
+            "UPDATE cron_jobs SET next_run = ?1 WHERE id = ?2",
+            params![next_run.to_rfc3339(), job_id],
+        )?;
+        Ok(next_run)
+    }
 }
 
 // Helper functions
@@ -706,5 +740,86 @@ mod tests {
         let due = scheduler.due_jobs(Utc::now()).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].name, "Past Job");
+    }
+
+    #[test]
+    fn test_missed_jobs_recovery() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cron.db");
+        let scheduler = CronScheduler::new(&db_path).unwrap();
+
+        // Add a past job (missed)
+        let past_job = CronJob {
+            id: Uuid::new_v4().to_string(),
+            name: "Missed Job".to_string(),
+            schedule: ScheduleKind::At { at: (Utc::now() - chrono::Duration::hours(2)).to_rfc3339() },
+            target: ExecutionTarget::Main,
+            agent_id: None,
+            message: "Test".to_string(),
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() - chrono::Duration::hours(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+        };
+        scheduler.add_job(&past_job).unwrap();
+
+        // Add a future job (not missed)
+        let future_job = CronJob {
+            id: Uuid::new_v4().to_string(),
+            name: "Future Job".to_string(),
+            schedule: ScheduleKind::Every { every_ms: 3600000 },
+            target: ExecutionTarget::Main,
+            agent_id: None,
+            message: "Test".to_string(),
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now() + chrono::Duration::hours(1),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+        };
+        scheduler.add_job(&future_job).unwrap();
+
+        let missed = scheduler.missed_jobs(Utc::now()).unwrap();
+        assert_eq!(missed.len(), 1);
+        assert_eq!(missed[0].name, "Missed Job");
+    }
+
+    #[test]
+    fn test_recalculate_next_run() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cron.db");
+        let scheduler = CronScheduler::new(&db_path).unwrap();
+
+        let job = CronJob {
+            id: Uuid::new_v4().to_string(),
+            name: "Recurring".to_string(),
+            schedule: ScheduleKind::Every { every_ms: 60000 },
+            target: ExecutionTarget::Main,
+            agent_id: None,
+            message: "Test".to_string(),
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+        };
+        scheduler.add_job(&job).unwrap();
+
+        let after = Utc::now();
+        let next_run = scheduler.recalculate_next_run(&job.id, after).unwrap();
+        
+        // Should be about 60 seconds after `after`
+        let diff = (next_run - after).num_milliseconds().abs();
+        assert!(diff >= 59000 && diff <= 61000, "Expected ~60s, got {}ms", diff);
     }
 }

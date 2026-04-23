@@ -148,7 +148,7 @@ impl BuiltinToolRegistrar {
             let db_path = config
                 .cron_db_path
                 .clone()
-                .unwrap_or_else(|| workspace.join("cron.json"));
+                .unwrap_or_else(|| workspace.join("cron.db"));
             let instance_id = config
                 .instance_id
                 .clone()

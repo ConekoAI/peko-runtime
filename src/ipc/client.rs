@@ -179,6 +179,82 @@ impl DaemonClient {
             _ => false,
         }
     }
+
+    // ------------------------------------------------------------------
+    // Cron management
+    // ------------------------------------------------------------------
+
+    /// List cron jobs
+    pub async fn cron_list(&self, include_disabled: bool) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CronList {
+            request_id,
+            include_disabled,
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Cron list stream closed unexpectedly"),
+        }
+    }
+
+    /// Add a cron job
+    pub async fn cron_add(&self, job: crate::cron::CronJob) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CronAdd { request_id, job };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Cron add stream closed unexpectedly"),
+        }
+    }
+
+    /// Remove a cron job
+    pub async fn cron_remove(&self, job_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CronRemove {
+            request_id,
+            job_id: job_id.into(),
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Cron remove stream closed unexpectedly"),
+        }
+    }
+
+    /// Run a cron job immediately
+    pub async fn cron_run(&self, job_id: impl Into<String>) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CronRun {
+            request_id,
+            job_id: job_id.into(),
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Cron run stream closed unexpectedly"),
+        }
+    }
+
+    /// Get cron job run history
+    pub async fn cron_history(
+        &self,
+        job_id: impl Into<String>,
+        limit: usize,
+    ) -> anyhow::Result<ResponsePacket> {
+        let request_id = self.next_id();
+        let packet = RequestPacket::CronHistory {
+            request_id,
+            job_id: job_id.into(),
+            limit,
+        };
+        let mut stream = self.send_request(packet).await?;
+        match stream.next().await {
+            Some(packet) => Ok(packet),
+            None => anyhow::bail!("Cron history stream closed unexpectedly"),
+        }
+    }
 }
 
 #[cfg(test)]

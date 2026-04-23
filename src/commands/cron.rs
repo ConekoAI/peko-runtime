@@ -1,7 +1,16 @@
 //! Cron Job Management Commands
+//!
+//! All operations are delegated to the daemon via IPC.
+//! The daemon owns the SQLite cron database and the execution engine.
 
 use crate::commands::GlobalPaths;
+use crate::cron::{CronJob, DeliveryMode, ExecutionTarget, ScheduleKind};
+use crate::ipc::{DaemonClient, ResponsePacket};
+use anyhow::{Context, Result};
+use chrono::Utc;
 use clap::Subcommand;
+use std::str::FromStr;
+use uuid::Uuid;
 
 /// Cron management subcommands
 ///
@@ -41,7 +50,7 @@ pub enum CronCommands {
         /// Schedule expression (cron format: "0 9 * * *")
         #[arg(short, long)]
         schedule: String,
-        /// Timezone (e.g., "`America/Los_Angeles`")
+        /// Timezone (e.g., "America/Los_Angeles")
         #[arg(short, long)]
         timezone: Option<String>,
         /// Agent to run as
@@ -85,9 +94,9 @@ pub enum CronCommands {
         /// Job name
         #[arg(short, long)]
         name: String,
-        /// Interval (e.g., "5m", "1h", "30s")
+        /// Interval in milliseconds
         #[arg(short, long)]
-        interval: String,
+        interval_ms: u64,
         /// Agent to run as
         #[arg(short, long)]
         agent: Option<String>,
@@ -165,24 +174,54 @@ pub enum CronCommands {
     },
 }
 
+/// Connect to daemon or return a clear error
+async fn connect_daemon() -> Result<DaemonClient> {
+    DaemonClient::connect()
+        .await
+        .context("Daemon is not running. Start it with: pekobot daemon start")
+}
+
 /// Handle cron commands
-pub async fn handle_cron(
-    cmd: CronCommands,
-    _paths: &GlobalPaths,
-    _json: bool,
-) -> anyhow::Result<()> {
+pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) -> Result<()> {
     match cmd {
-        CronCommands::List { all, json } => {
-            if json {
-                println!("{{\"jobs\": []}}");
-            } else {
-                println!("🕒 Cron Jobs:");
-                if all {
-                    println!("  (Including disabled)");
+        CronCommands::List { all, json: cmd_json } => {
+            let client = connect_daemon().await?;
+            let use_json = cmd_json || json;
+            match client.cron_list(all).await? {
+                ResponsePacket::CronList { jobs, .. } => {
+                    if use_json {
+                        println!("{}", serde_json::to_string_pretty(&jobs)?);
+                    } else if jobs.is_empty() {
+                        println!("🕒 No cron jobs found.");
+                    } else {
+                        println!("🕒 Cron Jobs:");
+                        for job in jobs {
+                            let status = if job.enabled { "✅" } else { "⏸️" };
+                            let schedule = job.schedule.display();
+                            let agent = job
+                                .agent_id
+                                .as_deref()
+                                .unwrap_or("default");
+                            println!(
+                                "  {} {} | {} | agent: {} | next: {}",
+                                status,
+                                job.id,
+                                schedule,
+                                agent,
+                                job.next_run.to_rfc3339()
+                            );
+                            println!("     └─ {}", job.message);
+                        }
+                    }
+                    Ok(())
                 }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to list jobs: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
             }
-            Ok(())
         }
+
         CronCommands::Add {
             name,
             schedule,
@@ -193,23 +232,68 @@ pub async fn handle_cron(
             announce,
             delete_after_run,
         } => {
-            println!("➕ Adding job '{name}' with schedule '{schedule}'");
-            if let Some(tz) = timezone {
-                println!("  Timezone: {tz}");
+            let client = connect_daemon().await?;
+
+            // Validate cron expression
+            let _ = cron::Schedule::from_str(&schedule)
+                .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
+
+            let schedule_kind = ScheduleKind::Cron {
+                expr: schedule.clone(),
+                tz: timezone.clone(),
+            };
+
+            let target = match execution.as_str() {
+                "isolated" => ExecutionTarget::Isolated,
+                _ => ExecutionTarget::Main,
+            };
+
+            let delivery = if announce {
+                DeliveryMode::Announce {
+                    channel: None,
+                    to: None,
+                    best_effort: true,
+                }
+            } else {
+                DeliveryMode::None
+            };
+
+            // Compute next run
+            let tmp_scheduler = crate::cron::CronScheduler::new(":memory:")?;
+            let next_run = tmp_scheduler.calculate_next_run(&schedule_kind, Utc::now())?;
+
+            let job = CronJob {
+                id: format!("cron_{}", Uuid::new_v4().simple()),
+                name,
+                schedule: schedule_kind,
+                target,
+                agent_id: agent,
+                message,
+                delivery,
+                delete_after_run,
+                enabled: true,
+                created_at: Utc::now(),
+                next_run,
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            };
+
+            match client.cron_add(job).await? {
+                ResponsePacket::CronAdded { job_id, .. } => {
+                    println!("✅ Added cron job {job_id} with schedule '{schedule}'");
+                    if let Some(tz) = timezone {
+                        println!("   Timezone: {tz}");
+                    }
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to add job: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
             }
-            if let Some(a) = agent {
-                println!("  Agent: {a}");
-            }
-            println!("  Execution: {execution}");
-            println!("  Message: {message}");
-            if announce {
-                println!("  Announce: enabled");
-            }
-            if delete_after_run {
-                println!("  One-shot: yes");
-            }
-            Ok(())
         }
+
         CronCommands::At {
             name,
             at,
@@ -217,49 +301,184 @@ pub async fn handle_cron(
             message,
             announce,
         } => {
-            println!("➕ Adding one-shot job '{name}' at {at}");
-            if let Some(a) = agent {
-                println!("  Agent: {a}");
+            let client = connect_daemon().await?;
+
+            let at_time = chrono::DateTime::parse_from_rfc3339(&at)
+                .map_err(|e| anyhow::anyhow!("Invalid timestamp (use RFC3339): {e}"))?;
+
+            let delivery = if announce {
+                DeliveryMode::Announce {
+                    channel: None,
+                    to: None,
+                    best_effort: true,
+                }
+            } else {
+                DeliveryMode::None
+            };
+
+            let job = CronJob {
+                id: format!("cron_{}", Uuid::new_v4().simple()),
+                name,
+                schedule: ScheduleKind::At {
+                    at: at_time.to_rfc3339(),
+                },
+                target: ExecutionTarget::Main,
+                agent_id: agent,
+                message,
+                delivery,
+                delete_after_run: true,
+                enabled: true,
+                created_at: Utc::now(),
+                next_run: at_time.with_timezone(&Utc),
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            };
+
+            match client.cron_add(job).await? {
+                ResponsePacket::CronAdded { job_id, .. } => {
+                    println!("✅ Added one-shot job {job_id} at {at}");
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to add job: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
             }
-            println!("  Message: {message}");
-            if announce {
-                println!("  Announce: enabled");
-            }
-            Ok(())
         }
+
         CronCommands::Every {
             name,
-            interval,
+            interval_ms,
             agent,
             message,
             announce,
         } => {
-            println!("➕ Adding recurring job '{name}' every {interval}");
-            if let Some(a) = agent {
-                println!("  Agent: {a}");
-            }
-            println!("  Message: {message}");
-            if announce {
-                println!("  Announce: enabled");
-            }
-            Ok(())
-        }
-        CronCommands::Remove { job_id, force } => {
-            if force {
-                println!("🗑️  Removing job '{job_id}'...");
+            let client = connect_daemon().await?;
+
+            let delivery = if announce {
+                DeliveryMode::Announce {
+                    channel: None,
+                    to: None,
+                    best_effort: true,
+                }
             } else {
-                println!("🗑️  Removing job '{job_id}' (use --force to skip confirmation)...");
+                DeliveryMode::None
+            };
+
+            let schedule_kind = ScheduleKind::Every { every_ms: interval_ms };
+            let tmp_scheduler = crate::cron::CronScheduler::new(":memory:")?;
+            let next_run = tmp_scheduler.calculate_next_run(&schedule_kind, Utc::now())?;
+
+            let job = CronJob {
+                id: format!("cron_{}", Uuid::new_v4().simple()),
+                name,
+                schedule: schedule_kind,
+                target: ExecutionTarget::Main,
+                agent_id: agent,
+                message,
+                delivery,
+                delete_after_run: false,
+                enabled: true,
+                created_at: Utc::now(),
+                next_run,
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            };
+
+            match client.cron_add(job).await? {
+                ResponsePacket::CronAdded { job_id, .. } => {
+                    let secs = interval_ms / 1000;
+                    let interval_str = if secs < 60 {
+                        format!("{secs}s")
+                    } else if secs < 3600 {
+                        format!("{}m", secs / 60)
+                    } else {
+                        format!("{}h", secs / 3600)
+                    };
+                    println!("✅ Added recurring job {job_id} every {interval_str}");
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to add job: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
             }
-            Ok(())
         }
+
+        CronCommands::Remove { job_id, force } => {
+            if !force {
+                println!("🗑️  Removing job '{job_id}'... (use --force to skip confirmation)");
+            }
+            let client = connect_daemon().await?;
+            match client.cron_remove(&job_id).await? {
+                ResponsePacket::CronRemoved { job_id: removed_id, .. } => {
+                    println!("✅ Removed job '{removed_id}'");
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to remove job: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+            }
+        }
+
         CronCommands::Run { job_id } => {
-            println!("▶️  Running job '{job_id}'...");
-            Ok(())
+            let client = connect_daemon().await?;
+            match client.cron_run(&job_id).await? {
+                ResponsePacket::CronRunStarted {
+                    job_id: run_job_id,
+                    run_id,
+                    ..
+                } => {
+                    println!("▶️  Triggered job '{run_job_id}' (run_id: {run_id})");
+                    println!("   The daemon will execute it on the next poll cycle.");
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to run job: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+            }
         }
+
         CronCommands::History { job_id, limit } => {
-            println!("📜 History for job '{job_id}' (limit: {limit})");
-            Ok(())
+            let client = connect_daemon().await?;
+            match client.cron_history(&job_id, limit).await? {
+                ResponsePacket::CronHistory { runs, .. } => {
+                    if runs.is_empty() {
+                        println!("📜 No history for job '{job_id}'");
+                    } else {
+                        println!("📜 History for job '{job_id}':");
+                        for run in runs {
+                            let status_icon = match run.status.as_str() {
+                                "success" => "✅",
+                                "failed" => "❌",
+                                "running" => "🔄",
+                                _ => "⏸️",
+                            };
+                            println!(
+                                "  {} {} | started: {} | status: {}",
+                                status_icon,
+                                run.id,
+                                run.started_at.to_rfc3339(),
+                                run.status
+                            );
+                            if let Some(ref err) = run.error {
+                                println!("     └─ Error: {err}");
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to get history: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
+            }
         }
+
         CronCommands::AddIdle {
             name,
             minutes,
@@ -267,20 +486,56 @@ pub async fn handle_cron(
             message,
             announce,
         } => {
-            println!("➕ Adding idle-triggered job '{name}'");
-            println!("  Idle threshold: {minutes} minutes");
-            if let Some(a) = &agent {
-                println!("  Monitor agent: {a}");
+            let client = connect_daemon().await?;
+
+            let delivery = if announce {
+                DeliveryMode::Announce {
+                    channel: None,
+                    to: None,
+                    best_effort: true,
+                }
             } else {
-                println!("  Monitor: any agent");
+                DeliveryMode::None
+            };
+
+            let job = CronJob {
+                id: format!("cron_{}", Uuid::new_v4().simple()),
+                name,
+                schedule: ScheduleKind::Idle {
+                    minutes,
+                    agent_id: agent.clone(),
+                },
+                target: ExecutionTarget::Main,
+                agent_id: agent.clone(),
+                message,
+                delivery,
+                delete_after_run: false,
+                enabled: true,
+                created_at: Utc::now(),
+                next_run: Utc::now() + chrono::Duration::days(365 * 100),
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            };
+
+            match client.cron_add(job).await? {
+                ResponsePacket::CronAdded { job_id, .. } => {
+                    println!("✅ Added idle-triggered job {job_id}");
+                    println!("   Idle threshold: {minutes} minutes");
+                    if let Some(a) = &agent {
+                        println!("   Monitor agent: {a}");
+                    } else {
+                        println!("   Monitor: any agent");
+                    }
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to add job: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
             }
-            println!("  Message: {message}");
-            if announce {
-                println!("  Announce: enabled");
-            }
-            println!("\nNote: Idle detection requires daemon with active agent pool");
-            Ok(())
         }
+
         CronCommands::AddEvent {
             name,
             event_type,
@@ -289,19 +544,53 @@ pub async fn handle_cron(
             message,
             announce,
         } => {
-            println!("➕ Adding event-triggered job '{name}'");
-            println!("  Event type: {event_type}");
-            if let Some(f) = &filter {
-                println!("  Filter: {f}");
+            let client = connect_daemon().await?;
+
+            let filter_val = filter
+                .map(|f| serde_json::from_str(&f).ok())
+                .flatten();
+
+            let delivery = if announce {
+                DeliveryMode::Announce {
+                    channel: None,
+                    to: None,
+                    best_effort: true,
+                }
+            } else {
+                DeliveryMode::None
+            };
+
+            let job = CronJob {
+                id: format!("cron_{}", Uuid::new_v4().simple()),
+                name,
+                schedule: ScheduleKind::Event {
+                    event_type,
+                    filter: filter_val,
+                    once,
+                },
+                target: ExecutionTarget::Main,
+                agent_id: None,
+                message,
+                delivery,
+                delete_after_run: once,
+                enabled: true,
+                created_at: Utc::now(),
+                next_run: Utc::now() + chrono::Duration::days(365 * 100),
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            };
+
+            match client.cron_add(job).await? {
+                ResponsePacket::CronAdded { job_id, .. } => {
+                    println!("✅ Added event-triggered job {job_id}");
+                    Ok(())
+                }
+                ResponsePacket::Error { message, .. } => {
+                    Err(anyhow::anyhow!("Failed to add job: {message}"))
+                }
+                other => Err(anyhow::anyhow!("Unexpected response: {other:?}")),
             }
-            if once {
-                println!("  Mode: one-time (will disable after first trigger)");
-            }
-            println!("  Message: {message}");
-            if announce {
-                println!("  Announce: enabled");
-            }
-            Ok(())
         }
     }
 }

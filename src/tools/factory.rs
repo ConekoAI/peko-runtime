@@ -374,7 +374,7 @@ impl ToolFactory {
             let db_path = config
                 .cron_db_path
                 .clone()
-                .unwrap_or_else(|| config.workspace_dir.join("cron.json"));
+                .unwrap_or_else(|| config.workspace_dir.join("cron.db"));
             let instance_id = config
                 .instance_id
                 .clone()

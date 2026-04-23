@@ -1,100 +1,26 @@
-//! Cron tool for agents - spec-compliant implementation
+//! Cron tool for agents - SQLite-backed implementation
 //!
 //! Implements `CAPABILITY_INTERFACE.md` §3.13, §8
 //! - Sub-commands: at, every, cron, idle, event, list, cancel
-//! - Persistence to cron.json (atomic writes)
+//! - Persistence via `crate::cron::CronScheduler` (SQLite)
 //! - Missed job handling on restart
 
+use crate::cron::{CronJob, CronScheduler, DeliveryMode, ExecutionTarget, ScheduleKind};
 use crate::tools::traits::Tool;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// Cron tool for agent use
 pub struct CronTool {
-    storage: Arc<RwLock<CronStorage>>,
-    instance_id: String,
-}
-
-/// Cron storage backed by JSON file
-pub struct CronStorage {
+    scheduler: Arc<CronScheduler>,
     db_path: PathBuf,
-    jobs: HashMap<String, CronJob>,
-}
-
-/// Cron job - spec compliant
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CronJob {
-    pub job_id: String,
-    pub label: String,
-    pub sub_command: SubCommand,
-    pub task: String,
-    pub status: JobStatus,
-    pub created_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_run_at: Option<DateTime<Utc>>,
-    pub next_run_at: DateTime<Utc>,
-    pub run_count: u32,
-    pub error_count: u32,
-    // Schedule-specific fields
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub time: Option<String>, // for 'at'
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub interval_ms: Option<u64>, // for 'every'
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<String>, // for 'cron'
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<String>, // for 'cron'
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub idle_ms: Option<u64>, // for 'idle'
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repeat: Option<bool>, // for 'idle'
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub topic: Option<String>, // for 'event'
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filter: Option<serde_json::Value>, // for 'event'
-}
-
-/// Sub-command types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SubCommand {
-    At,
-    Every,
-    Cron,
-    Idle,
-    Event,
-}
-
-impl std::fmt::Display for SubCommand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SubCommand::At => write!(f, "at"),
-            SubCommand::Every => write!(f, "every"),
-            SubCommand::Cron => write!(f, "cron"),
-            SubCommand::Idle => write!(f, "idle"),
-            SubCommand::Event => write!(f, "event"),
-        }
-    }
-}
-
-/// Job status
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobStatus {
-    Active,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
 }
 
 /// Cron tool arguments
@@ -137,118 +63,22 @@ pub struct CronArgs {
     pub cancel_label: Option<String>,
 }
 
-impl CronStorage {
-    /// Create new storage at given path
-    pub fn new(db_path: impl AsRef<Path>) -> Self {
-        Self {
-            db_path: db_path.as_ref().to_path_buf(),
-            jobs: HashMap::new(),
-        }
-    }
-
-    /// Load from disk
-    pub fn load(&mut self) -> Result<()> {
-        if !self.db_path.exists() {
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&self.db_path)
-            .with_context(|| format!("Failed to read cron.json: {}", self.db_path.display()))?;
-
-        let data: CronData =
-            serde_json::from_str(&content).with_context(|| "Failed to parse cron.json")?;
-
-        self.jobs = data
-            .jobs
-            .into_iter()
-            .map(|j| (j.job_id.clone(), j))
-            .collect();
-        Ok(())
-    }
-
-    /// Save to disk (atomic write)
-    pub fn save(&self, instance_id: &str) -> Result<()> {
-        // Ensure parent directory exists
-        if let Some(parent) = self.db_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let data = CronData {
-            schema_version: 1,
-            instance_id: instance_id.to_string(),
-            jobs: self.jobs.values().cloned().collect(),
-        };
-
-        let content = serde_json::to_string_pretty(&data)?;
-
-        // Atomic write: write to temp file, then rename
-        let temp_path = self.db_path.with_extension("tmp");
-        std::fs::write(&temp_path, content)
-            .with_context(|| format!("Failed to write temp file: {}", temp_path.display()))?;
-
-        std::fs::rename(&temp_path, &self.db_path).with_context(|| {
-            format!("Failed to rename temp file to: {}", self.db_path.display())
-        })?;
-
-        Ok(())
-    }
-
-    /// Add or update job
-    pub fn upsert(&mut self, job: CronJob) {
-        self.jobs.insert(job.job_id.clone(), job);
-    }
-
-    /// Get job by ID
-    #[must_use]
-    pub fn get(&self, job_id: &str) -> Option<&CronJob> {
-        self.jobs.get(job_id)
-    }
-
-    /// Get job by label
-    #[must_use]
-    pub fn get_by_label(&self, label: &str) -> Option<&CronJob> {
-        self.jobs.values().find(|j| j.label == label)
-    }
-
-    /// Remove job
-    pub fn remove(&mut self, job_id: &str) -> bool {
-        self.jobs.remove(job_id).is_some()
-    }
-
-    /// List all jobs
-    #[must_use]
-    pub fn list(&self) -> Vec<&CronJob> {
-        self.jobs.values().collect()
-    }
-
-    /// Get mutable reference to job
-    pub fn get_mut(&mut self, job_id: &str) -> Option<&mut CronJob> {
-        self.jobs.get_mut(job_id)
-    }
-}
-
-/// Data structure for cron.json
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CronData {
-    pub schema_version: u32,
-    pub instance_id: String,
-    pub jobs: Vec<CronJob>,
-}
-
 impl CronTool {
     /// Create new cron tool
-    pub fn new(db_path: impl AsRef<Path>, instance_id: String) -> Self {
-        let storage = Arc::new(RwLock::new(CronStorage::new(db_path)));
+    pub fn new(db_path: impl AsRef<Path>, _instance_id: String) -> Self {
+        let db_path = db_path.as_ref().to_path_buf();
+        // Scheduler will be initialized in `init()`
+        let scheduler = Arc::new(CronScheduler::new(&db_path).expect("Failed to create CronScheduler"));
         Self {
-            storage,
-            instance_id,
+            scheduler,
+            db_path,
         }
     }
 
     /// Initialize and load existing jobs
     pub async fn init(&self) -> Result<()> {
-        let mut storage = self.storage.write().await;
-        storage.load()
+        // Scheduler is already initialized in `new`; this method exists for API compatibility.
+        Ok(())
     }
 
     /// Create and initialize in one call
@@ -273,26 +103,26 @@ impl CronTool {
         // Parse time
         let at_time = DateTime::parse_from_rfc3339(&time_str)
             .map_err(|e| anyhow::anyhow!("Invalid time format (use RFC3339): {e}"))?;
+        let at_time = at_time.with_timezone(&Utc);
+
+        let schedule = ScheduleKind::At { at: time_str };
+        let next_run = self.scheduler.calculate_next_run(&schedule, Utc::now())?;
 
         let job = CronJob {
-            job_id: format!("cron_{}", Uuid::new_v4().simple()),
-            label,
-            sub_command: SubCommand::At,
-            task,
-            status: JobStatus::Active,
+            id: format!("cron_{}", Uuid::new_v4().simple()),
+            name: label.clone(),
+            schedule,
+            target: ExecutionTarget::Main,
+            agent_id: None,
+            message: task,
+            delivery: DeliveryMode::None,
+            delete_after_run: true,
+            enabled: true,
             created_at: Utc::now(),
-            last_run_at: None,
-            next_run_at: at_time.with_timezone(&Utc),
+            next_run,
+            last_run: None,
+            last_status: None,
             run_count: 0,
-            error_count: 0,
-            time: Some(time_str),
-            interval_ms: None,
-            schedule: None,
-            timezone: None,
-            idle_ms: None,
-            repeat: None,
-            topic: None,
-            filter: None,
         };
 
         let response = self.register_job(job).await?;
@@ -311,34 +141,32 @@ impl CronTool {
             .label
             .unwrap_or_else(|| format!("every-{}", Uuid::new_v4().simple()));
 
-        // Calculate next run
-        let start_at = args.start_at.and_then(|s| {
-            DateTime::parse_from_rfc3339(&s)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc))
-        });
+        let schedule = ScheduleKind::Every { every_ms: interval_ms };
 
-        let next_run = start_at.unwrap_or_else(Utc::now);
+        // Calculate next run
+        let next_run = if let Some(start_at) = args.start_at {
+            DateTime::parse_from_rfc3339(&start_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now())
+        } else {
+            self.scheduler.calculate_next_run(&schedule, Utc::now())?
+        };
 
         let job = CronJob {
-            job_id: format!("cron_{}", Uuid::new_v4().simple()),
-            label,
-            sub_command: SubCommand::Every,
-            task,
-            status: JobStatus::Active,
+            id: format!("cron_{}", Uuid::new_v4().simple()),
+            name: label.clone(),
+            schedule,
+            target: ExecutionTarget::Main,
+            agent_id: None,
+            message: task,
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
             created_at: Utc::now(),
-            last_run_at: None,
-            next_run_at: next_run,
+            next_run,
+            last_run: None,
+            last_status: None,
             run_count: 0,
-            error_count: 0,
-            time: None,
-            interval_ms: Some(interval_ms),
-            schedule: None,
-            timezone: None,
-            idle_ms: None,
-            repeat: None,
-            topic: None,
-            filter: None,
         };
 
         let response = self.register_job(job).await?;
@@ -347,7 +175,7 @@ impl CronTool {
 
     /// Handle 'cron' sub-command (crontab schedule)
     async fn handle_cron(&self, args: CronArgs) -> Result<serde_json::Value> {
-        let schedule = args
+        let expr = args
             .schedule
             .ok_or_else(|| anyhow::anyhow!("schedule is required for 'cron' sub-command"))?;
         let task = args
@@ -358,32 +186,30 @@ impl CronTool {
             .unwrap_or_else(|| format!("cron-{}", Uuid::new_v4().simple()));
 
         // Validate cron expression
-        let _ = cron::Schedule::from_str(&schedule)
+        let _ = cron::Schedule::from_str(&expr)
             .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
 
-        // Calculate next run
-        let schedule = cron::Schedule::from_str(&schedule).unwrap();
-        let next_run = schedule.upcoming(Utc).next().unwrap_or_else(Utc::now);
+        let schedule = ScheduleKind::Cron {
+            expr,
+            tz: args.timezone,
+        };
+        let next_run = self.scheduler.calculate_next_run(&schedule, Utc::now())?;
 
         let job = CronJob {
-            job_id: format!("cron_{}", Uuid::new_v4().simple()),
-            label,
-            sub_command: SubCommand::Cron,
-            task,
-            status: JobStatus::Active,
+            id: format!("cron_{}", Uuid::new_v4().simple()),
+            name: label.clone(),
+            schedule,
+            target: ExecutionTarget::Main,
+            agent_id: None,
+            message: task,
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
             created_at: Utc::now(),
-            last_run_at: None,
-            next_run_at: next_run,
+            next_run,
+            last_run: None,
+            last_status: None,
             run_count: 0,
-            error_count: 0,
-            time: None,
-            interval_ms: None,
-            schedule: Some(schedule.to_string()),
-            timezone: args.timezone,
-            idle_ms: None,
-            repeat: None,
-            topic: None,
-            filter: None,
         };
 
         let response = self.register_job(job).await?;
@@ -402,25 +228,28 @@ impl CronTool {
             .label
             .unwrap_or_else(|| format!("idle-{}", Uuid::new_v4().simple()));
 
+        let minutes = idle_ms / 60000;
+        let schedule = ScheduleKind::Idle {
+            minutes: minutes.max(1),
+            agent_id: None,
+        };
+        let next_run = self.scheduler.calculate_next_run(&schedule, Utc::now())?;
+
         let job = CronJob {
-            job_id: format!("cron_{}", Uuid::new_v4().simple()),
-            label,
-            sub_command: SubCommand::Idle,
-            task,
-            status: JobStatus::Active,
+            id: format!("cron_{}", Uuid::new_v4().simple()),
+            name: label.clone(),
+            schedule,
+            target: ExecutionTarget::Main,
+            agent_id: None,
+            message: task,
+            delivery: DeliveryMode::None,
+            delete_after_run: !args.repeat.unwrap_or(false),
+            enabled: true,
             created_at: Utc::now(),
-            last_run_at: None,
-            next_run_at: Utc::now() + chrono::Duration::days(365 * 100), // Far future
+            next_run,
+            last_run: None,
+            last_status: None,
             run_count: 0,
-            error_count: 0,
-            time: None,
-            interval_ms: None,
-            schedule: None,
-            timezone: None,
-            idle_ms: Some(idle_ms),
-            repeat: Some(args.repeat.unwrap_or(false)),
-            topic: None,
-            filter: None,
         };
 
         let response = self.register_job(job).await?;
@@ -439,25 +268,28 @@ impl CronTool {
             .label
             .unwrap_or_else(|| format!("event-{}", Uuid::new_v4().simple()));
 
-        let job = CronJob {
-            job_id: format!("cron_{}", Uuid::new_v4().simple()),
-            label,
-            sub_command: SubCommand::Event,
-            task,
-            status: JobStatus::Active,
-            created_at: Utc::now(),
-            last_run_at: None,
-            next_run_at: Utc::now() + chrono::Duration::days(365 * 100), // Far future
-            run_count: 0,
-            error_count: 0,
-            time: None,
-            interval_ms: None,
-            schedule: None,
-            timezone: None,
-            idle_ms: None,
-            repeat: None,
-            topic: Some(topic),
+        let schedule = ScheduleKind::Event {
+            event_type: topic,
             filter: args.filter,
+            once: false,
+        };
+        let next_run = self.scheduler.calculate_next_run(&schedule, Utc::now())?;
+
+        let job = CronJob {
+            id: format!("cron_{}", Uuid::new_v4().simple()),
+            name: label.clone(),
+            schedule,
+            target: ExecutionTarget::Main,
+            agent_id: None,
+            message: task,
+            delivery: DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: Utc::now(),
+            next_run,
+            last_run: None,
+            last_status: None,
+            run_count: 0,
         };
 
         let response = self.register_job(job).await?;
@@ -466,51 +298,56 @@ impl CronTool {
 
     /// Handle 'list' sub-command
     async fn handle_list(&self) -> Result<serde_json::Value> {
-        let storage = self.storage.read().await;
-        let jobs: Vec<_> = storage
-            .list()
+        let jobs = self.scheduler.list_jobs(true)?;
+
+        let jobs_json: Vec<_> = jobs
             .into_iter()
             .map(|j| {
+                let sub_command = match &j.schedule {
+                    ScheduleKind::At { .. } => "at",
+                    ScheduleKind::Every { .. } => "every",
+                    ScheduleKind::Cron { .. } => "cron",
+                    ScheduleKind::Idle { .. } => "idle",
+                    ScheduleKind::Event { .. } => "event",
+                };
+                let status = if j.enabled { "active" } else { "disabled" };
                 json!({
-                    "job_id": j.job_id,
-                    "label": j.label,
-                    "sub_command": j.sub_command.to_string(),
-                    "task": j.task,
-                    "status": format!("{:?}", j.status).to_lowercase(),
-                    "next_run_at": j.next_run_at.to_rfc3339(),
+                    "job_id": j.id,
+                    "label": j.name,
+                    "sub_command": sub_command,
+                    "task": j.message,
+                    "status": status,
+                    "next_run_at": j.next_run.to_rfc3339(),
                     "run_count": j.run_count,
                 })
             })
             .collect();
 
         Ok(json!({
-            "jobs": jobs,
-            "count": jobs.len(),
+            "jobs": jobs_json,
+            "count": jobs_json.len(),
         }))
     }
 
     /// Handle 'cancel' sub-command
     async fn handle_cancel(&self, args: CronArgs) -> Result<serde_json::Value> {
-        let mut storage = self.storage.write().await;
-
         let job_id = if let Some(id) = args.job_id {
             id
         } else if let Some(label) = args.cancel_label {
-            storage
-                .get_by_label(&label)
+            let jobs = self.scheduler.list_jobs(true)?;
+            jobs.into_iter()
+                .find(|j| j.name == label)
                 .ok_or_else(|| anyhow::anyhow!("Job with label '{label}' not found"))?
-                .job_id
-                .clone()
+                .id
         } else {
             return Err(anyhow::anyhow!(
                 "Either job_id or label is required for cancel"
             ));
         };
 
-        let removed = storage.remove(&job_id);
+        let removed = self.scheduler.delete_job(&job_id)?;
 
         if removed {
-            storage.save(&self.instance_id)?;
             Ok(json!({
                 "cancelled": true,
                 "job_id": job_id,
@@ -522,13 +359,11 @@ impl CronTool {
 
     /// Register a job and persist
     async fn register_job(&self, job: CronJob) -> Result<serde_json::Value> {
-        let next_run = job.next_run_at;
-        let job_id = job.job_id.clone();
-        let label = job.label.clone();
+        let next_run = job.next_run;
+        let job_id = job.id.clone();
+        let label = job.name.clone();
 
-        let mut storage = self.storage.write().await;
-        storage.upsert(job);
-        storage.save(&self.instance_id)?;
+        self.scheduler.add_job(&job)?;
 
         Ok(json!({
             "job_id": job_id,
@@ -541,18 +376,16 @@ impl CronTool {
     /// Handle missed jobs on restart
     pub async fn handle_missed_jobs(&self) -> Result<Vec<CronJob>> {
         let now = Utc::now();
-        let storage = self.storage.read().await;
+        let jobs = self.scheduler.list_jobs(false)?;
 
-        let missed: Vec<CronJob> = storage
-            .list()
+        let missed: Vec<CronJob> = jobs
             .into_iter()
             .filter(|j| {
-                matches!(j.status, JobStatus::Active)
-                    && j.next_run_at <= now
-                    && j.last_run_at.is_none()
-                    && matches!(j.sub_command, SubCommand::At)
+                j.enabled
+                    && j.next_run <= now
+                    && j.last_run.is_none()
+                    && matches!(j.schedule, ScheduleKind::At { .. })
             })
-            .cloned()
             .collect();
 
         Ok(missed)
@@ -566,7 +399,7 @@ impl Tool for CronTool {
     }
 
     fn description(&self) -> String {
-        "Manage scheduled jobs: at, every, cron, idle, event, list, cancel. Persisted to cron.json."
+        "Manage scheduled jobs: at, every, cron, idle, event, list, cancel. Persisted to cron.db."
             .to_string()
     }
 
@@ -650,33 +483,32 @@ impl Tool for CronTool {
                     .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
                 self.handle_cancel(args).await
             }
-            _ => {
+            "at" => {
                 let args: CronArgs = serde_json::from_value(params)
                     .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
-                let sub = SubCommand::from_str(&args.sub_command_str).ok_or_else(|| {
-                    anyhow::anyhow!("Unknown sub_command: {}", args.sub_command_str)
-                })?;
-                match sub {
-                    SubCommand::At => self.handle_at(args).await,
-                    SubCommand::Every => self.handle_every(args).await,
-                    SubCommand::Cron => self.handle_cron(args).await,
-                    SubCommand::Idle => self.handle_idle(args).await,
-                    SubCommand::Event => self.handle_event(args).await,
-                }
+                self.handle_at(args).await
             }
-        }
-    }
-}
-
-impl SubCommand {
-    fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "at" => Some(SubCommand::At),
-            "every" => Some(SubCommand::Every),
-            "cron" => Some(SubCommand::Cron),
-            "idle" => Some(SubCommand::Idle),
-            "event" => Some(SubCommand::Event),
-            _ => None,
+            "every" => {
+                let args: CronArgs = serde_json::from_value(params)
+                    .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+                self.handle_every(args).await
+            }
+            "cron" => {
+                let args: CronArgs = serde_json::from_value(params)
+                    .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+                self.handle_cron(args).await
+            }
+            "idle" => {
+                let args: CronArgs = serde_json::from_value(params)
+                    .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+                self.handle_idle(args).await
+            }
+            "event" => {
+                let args: CronArgs = serde_json::from_value(params)
+                    .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
+                self.handle_event(args).await
+            }
+            _ => Err(anyhow::anyhow!("Unknown sub_command: {sub_command}")),
         }
     }
 }
@@ -689,7 +521,7 @@ mod tests {
 
     async fn create_test_tool() -> (CronTool, TempDir) {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.json");
+        let db_path = tmp.path().join("cron.db");
         let tool = CronTool::new(db_path, "test-instance".to_string());
         tool.init().await.unwrap();
         (tool, tmp)
@@ -816,7 +648,7 @@ mod tests {
     #[tokio::test]
     async fn test_persistence() {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.json");
+        let db_path = tmp.path().join("cron.db");
 
         // Create tool and add job
         {

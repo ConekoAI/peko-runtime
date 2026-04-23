@@ -64,6 +64,26 @@ pub enum RequestPacket {
     /// Request graceful daemon shutdown
     #[serde(rename = "shutdown")]
     Shutdown { request_id: u64, force: bool },
+
+    /// List cron jobs
+    #[serde(rename = "cron_list")]
+    CronList { request_id: u64, include_disabled: bool },
+
+    /// Add a cron job
+    #[serde(rename = "cron_add")]
+    CronAdd { request_id: u64, job: crate::cron::CronJob },
+
+    /// Remove a cron job
+    #[serde(rename = "cron_remove")]
+    CronRemove { request_id: u64, job_id: String },
+
+    /// Run a cron job immediately
+    #[serde(rename = "cron_run")]
+    CronRun { request_id: u64, job_id: String },
+
+    /// Get cron job history
+    #[serde(rename = "cron_history")]
+    CronHistory { request_id: u64, job_id: String, limit: usize },
 }
 
 impl RequestPacket {
@@ -75,7 +95,12 @@ impl RequestPacket {
             | Self::AsyncSpawn { request_id, .. }
             | Self::AsyncCancel { request_id, .. }
             | Self::Ping { request_id }
-            | Self::Shutdown { request_id, .. } => *request_id,
+            | Self::Shutdown { request_id, .. }
+            | Self::CronList { request_id, .. }
+            | Self::CronAdd { request_id, .. }
+            | Self::CronRemove { request_id, .. }
+            | Self::CronRun { request_id, .. }
+            | Self::CronHistory { request_id, .. } => *request_id,
         }
     }
 
@@ -151,6 +176,26 @@ pub enum ResponsePacket {
     /// Shutdown acknowledgement
     #[serde(rename = "shutting_down")]
     ShuttingDown { request_id: u64 },
+
+    /// Cron job list response
+    #[serde(rename = "cron_list")]
+    CronList { request_id: u64, jobs: Vec<crate::cron::CronJob> },
+
+    /// Cron job added response
+    #[serde(rename = "cron_added")]
+    CronAdded { request_id: u64, job_id: String },
+
+    /// Cron job removed response
+    #[serde(rename = "cron_removed")]
+    CronRemoved { request_id: u64, job_id: String },
+
+    /// Cron job run started response
+    #[serde(rename = "cron_run_started")]
+    CronRunStarted { request_id: u64, job_id: String, run_id: String },
+
+    /// Cron job history response
+    #[serde(rename = "cron_history")]
+    CronHistory { request_id: u64, runs: Vec<crate::cron::CronRun> },
 }
 
 impl ResponsePacket {
@@ -164,7 +209,12 @@ impl ResponsePacket {
             | Self::Error { request_id, .. }
             | Self::Pong { request_id, .. }
             | Self::Heartbeat { request_id }
-            | Self::ShuttingDown { request_id } => *request_id,
+            | Self::ShuttingDown { request_id }
+            | Self::CronList { request_id, .. }
+            | Self::CronAdded { request_id, .. }
+            | Self::CronRemoved { request_id, .. }
+            | Self::CronRunStarted { request_id, .. }
+            | Self::CronHistory { request_id, .. } => *request_id,
         }
     }
 
@@ -279,5 +329,318 @@ mod tests {
             chunk: huge_chunk,
         };
         assert!(resp.to_bytes().is_err());
+    }
+
+    #[test]
+    fn test_cron_list_request_roundtrip() {
+        let req = RequestPacket::CronList {
+            request_id: 100,
+            include_disabled: true,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CronList {
+                request_id,
+                include_disabled,
+            } => {
+                assert_eq!(request_id, 100);
+                assert!(include_disabled);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_add_request_roundtrip() {
+        let job = crate::cron::CronJob {
+            id: "job-1".to_string(),
+            name: "Test Job".to_string(),
+            schedule: crate::cron::ScheduleKind::Every { every_ms: 60000 },
+            target: crate::cron::ExecutionTarget::Main,
+            agent_id: None,
+            message: "Hello cron".to_string(),
+            delivery: crate::cron::DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            next_run: chrono::Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+        };
+        let req = RequestPacket::CronAdd {
+            request_id: 101,
+            job,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CronAdd { request_id, job } => {
+                assert_eq!(request_id, 101);
+                assert_eq!(job.id, "job-1");
+                assert_eq!(job.name, "Test Job");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_remove_request_roundtrip() {
+        let req = RequestPacket::CronRemove {
+            request_id: 102,
+            job_id: "job-1".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CronRemove { request_id, job_id } => {
+                assert_eq!(request_id, 102);
+                assert_eq!(job_id, "job-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_run_request_roundtrip() {
+        let req = RequestPacket::CronRun {
+            request_id: 103,
+            job_id: "job-1".to_string(),
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CronRun { request_id, job_id } => {
+                assert_eq!(request_id, 103);
+                assert_eq!(job_id, "job-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_history_request_roundtrip() {
+        let req = RequestPacket::CronHistory {
+            request_id: 104,
+            job_id: "job-1".to_string(),
+            limit: 10,
+        };
+        let bytes = req.to_bytes().unwrap();
+        let decoded = RequestPacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            RequestPacket::CronHistory {
+                request_id,
+                job_id,
+                limit,
+            } => {
+                assert_eq!(request_id, 104);
+                assert_eq!(job_id, "job-1");
+                assert_eq!(limit, 10);
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_list_response_roundtrip() {
+        let job = crate::cron::CronJob {
+            id: "job-1".to_string(),
+            name: "Test Job".to_string(),
+            schedule: crate::cron::ScheduleKind::Every { every_ms: 60000 },
+            target: crate::cron::ExecutionTarget::Main,
+            agent_id: None,
+            message: "Hello cron".to_string(),
+            delivery: crate::cron::DeliveryMode::None,
+            delete_after_run: false,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            next_run: chrono::Utc::now(),
+            last_run: None,
+            last_status: None,
+            run_count: 0,
+        };
+        let resp = ResponsePacket::CronList {
+            request_id: 200,
+            jobs: vec![job],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CronList { request_id, jobs } => {
+                assert_eq!(request_id, 200);
+                assert_eq!(jobs.len(), 1);
+                assert_eq!(jobs[0].id, "job-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_added_response_roundtrip() {
+        let resp = ResponsePacket::CronAdded {
+            request_id: 201,
+            job_id: "job-1".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CronAdded { request_id, job_id } => {
+                assert_eq!(request_id, 201);
+                assert_eq!(job_id, "job-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_removed_response_roundtrip() {
+        let resp = ResponsePacket::CronRemoved {
+            request_id: 202,
+            job_id: "job-1".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CronRemoved { request_id, job_id } => {
+                assert_eq!(request_id, 202);
+                assert_eq!(job_id, "job-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_run_started_response_roundtrip() {
+        let resp = ResponsePacket::CronRunStarted {
+            request_id: 203,
+            job_id: "job-1".to_string(),
+            run_id: "run-1".to_string(),
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CronRunStarted {
+                request_id,
+                job_id,
+                run_id,
+            } => {
+                assert_eq!(request_id, 203);
+                assert_eq!(job_id, "job-1");
+                assert_eq!(run_id, "run-1");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_history_response_roundtrip() {
+        let run = crate::cron::CronRun {
+            id: "run-1".to_string(),
+            job_id: "job-1".to_string(),
+            started_at: chrono::Utc::now(),
+            finished_at: None,
+            status: "running".to_string(),
+            output: None,
+            error: None,
+        };
+        let resp = ResponsePacket::CronHistory {
+            request_id: 204,
+            runs: vec![run],
+        };
+        let bytes = resp.to_bytes().unwrap();
+        let decoded = ResponsePacket::from_bytes(&bytes).unwrap();
+        match decoded {
+            ResponsePacket::CronHistory { request_id, runs } => {
+                assert_eq!(request_id, 204);
+                assert_eq!(runs.len(), 1);
+                assert_eq!(runs[0].id, "run-1");
+                assert_eq!(runs[0].status, "running");
+            }
+            _ => panic!("Wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_cron_request_ids() {
+        let req_list = RequestPacket::CronList {
+            request_id: 1,
+            include_disabled: false,
+        };
+        assert_eq!(req_list.request_id(), 1);
+
+        let req_add = RequestPacket::CronAdd {
+            request_id: 2,
+            job: crate::cron::CronJob {
+                id: "j".to_string(),
+                name: "n".to_string(),
+                schedule: crate::cron::ScheduleKind::Every { every_ms: 1000 },
+                target: crate::cron::ExecutionTarget::Main,
+                agent_id: None,
+                message: "m".to_string(),
+                delivery: crate::cron::DeliveryMode::None,
+                delete_after_run: false,
+                enabled: true,
+                created_at: chrono::Utc::now(),
+                next_run: chrono::Utc::now(),
+                last_run: None,
+                last_status: None,
+                run_count: 0,
+            },
+        };
+        assert_eq!(req_add.request_id(), 2);
+
+        let req_remove = RequestPacket::CronRemove {
+            request_id: 3,
+            job_id: "j".to_string(),
+        };
+        assert_eq!(req_remove.request_id(), 3);
+
+        let req_run = RequestPacket::CronRun {
+            request_id: 4,
+            job_id: "j".to_string(),
+        };
+        assert_eq!(req_run.request_id(), 4);
+
+        let req_history = RequestPacket::CronHistory {
+            request_id: 5,
+            job_id: "j".to_string(),
+            limit: 5,
+        };
+        assert_eq!(req_history.request_id(), 5);
+    }
+
+    #[test]
+    fn test_cron_response_ids() {
+        let resp_list = ResponsePacket::CronList {
+            request_id: 10,
+            jobs: vec![],
+        };
+        assert_eq!(resp_list.request_id(), 10);
+
+        let resp_added = ResponsePacket::CronAdded {
+            request_id: 11,
+            job_id: "j".to_string(),
+        };
+        assert_eq!(resp_added.request_id(), 11);
+
+        let resp_removed = ResponsePacket::CronRemoved {
+            request_id: 12,
+            job_id: "j".to_string(),
+        };
+        assert_eq!(resp_removed.request_id(), 12);
+
+        let resp_run_started = ResponsePacket::CronRunStarted {
+            request_id: 13,
+            job_id: "j".to_string(),
+            run_id: "r".to_string(),
+        };
+        assert_eq!(resp_run_started.request_id(), 13);
+
+        let resp_history = ResponsePacket::CronHistory {
+            request_id: 14,
+            runs: vec![],
+        };
+        assert_eq!(resp_history.request_id(), 14);
     }
 }

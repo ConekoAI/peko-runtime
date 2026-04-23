@@ -260,6 +260,131 @@ impl IpcServer {
             } => {
                 Self::handle_async_cancel(request_id, task_id, state, socket, addr).await?;
             }
+
+            RequestPacket::CronList { request_id, include_disabled } => {
+                let cron_db = state.data_dir.join("cron.db");
+                match crate::cron::CronScheduler::new(&cron_db) {
+                    Ok(scheduler) => {
+                        match scheduler.list_jobs(include_disabled) {
+                            Ok(jobs) => {
+                                let response = ResponsePacket::CronList { request_id, jobs };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Failed to list jobs: {e}") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CronAdd { request_id, job } => {
+                let cron_db = state.data_dir.join("cron.db");
+                match crate::cron::CronScheduler::new(&cron_db) {
+                    Ok(scheduler) => {
+                        match scheduler.add_job(&job) {
+                            Ok(()) => {
+                                let response = ResponsePacket::CronAdded { request_id, job_id: job.id };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Failed to add job: {e}") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CronRemove { request_id, job_id } => {
+                let cron_db = state.data_dir.join("cron.db");
+                match crate::cron::CronScheduler::new(&cron_db) {
+                    Ok(scheduler) => {
+                        match scheduler.delete_job(&job_id) {
+                            Ok(true) => {
+                                let response = ResponsePacket::CronRemoved { request_id, job_id };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                            Ok(false) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Job {job_id} not found") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Failed to remove job: {e}") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CronRun { request_id, job_id } => {
+                let cron_db = state.data_dir.join("cron.db");
+                match crate::cron::CronScheduler::new(&cron_db) {
+                    Ok(scheduler) => {
+                        match scheduler.get_job(&job_id) {
+                            Ok(Some(_job)) => {
+                                let now = chrono::Utc::now();
+                                if let Err(e) = scheduler.update_job_after_run(&job_id, "triggered", now) {
+                                    let response = ResponsePacket::Error { request_id, message: format!("Failed to trigger job: {e}") };
+                                    Self::send_packet(&socket, response, addr).await?;
+                                } else {
+                                    let run_id = uuid::Uuid::new_v4().to_string();
+                                    let response = ResponsePacket::CronRunStarted { request_id, job_id, run_id };
+                                    Self::send_packet(&socket, response, addr).await?;
+                                }
+                            }
+                            Ok(None) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Job {job_id} not found") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Failed to get job: {e}") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
+
+            RequestPacket::CronHistory { request_id, job_id, limit } => {
+                let cron_db = state.data_dir.join("cron.db");
+                match crate::cron::CronScheduler::new(&cron_db) {
+                    Ok(scheduler) => {
+                        match scheduler.get_run_history(&job_id, limit) {
+                            Ok(runs) => {
+                                let response = ResponsePacket::CronHistory { request_id, runs };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                            Err(e) => {
+                                let response = ResponsePacket::Error { request_id, message: format!("Failed to get history: {e}") };
+                                Self::send_packet(&socket, response, addr).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let response = ResponsePacket::Error { request_id, message: format!("Cron DB error: {e}") };
+                        Self::send_packet(&socket, response, addr).await?;
+                    }
+                }
+            }
         }
 
         Ok(())
