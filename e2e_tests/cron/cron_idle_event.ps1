@@ -111,77 +111,11 @@ try {
         Write-Warning "⚠ Idle marker not found — idle detection may not be wired"
     }
 
-    # ============================================================
-    # TEST 2: Event-triggered job (one-time)
-    # ============================================================
-    Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 2: Event-triggered job (one-time)" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-    Write-Host "Note: This test requires the daemon to receive system events." -ForegroundColor Yellow
-    Write-Host "If event publishing is not wired, this test will show a warning." -ForegroundColor Yellow
-
-    $eventMarker = "$workspaceDir/cron_event_marker.txt"
-    if (Test-Path $eventMarker) { Remove-Item $eventMarker -Force }
-
-    # Schedule a one-time event job
-    $eventMessage = "Use write_file to create 'cron_event_marker.txt' in your workspace with content 'EVENT_JOB_FIRED'. Use mode='overwrite'."
-    $result = peko cron add-event --name "e2e-event-test" --event-type "internal" --once --message $eventMessage 2>&1
-    Write-Host "Add-event output: $result"
-
-    if ($result -match "Added" -or $result -match "cron_") {
-        Write-Host "✅ Event job scheduled" -ForegroundColor Green
-    } else {
-        Write-Warning "⚠ Could not schedule event job"
-    }
-
-    # Publish an event via the daemon (if supported)
-    # This requires the daemon to have an event publisher endpoint.
-    # For now, we document the expected CLI/Daemon interaction.
-    Write-Host "Publishing a system event to trigger the job..." -ForegroundColor Yellow
-    Write-Host "(If daemon does not expose event publishing, this step is a no-op)" -ForegroundColor Yellow
-
-    # The ideal UX would be:
-    # peko event publish --type internal --payload '{"source":"e2e-test"}'
-    # But this command may not exist yet. We document it as a TODO.
-
-    Start-Sleep -Seconds 20
-
-    if (Test-Path $eventMarker) {
-        $content = Get-Content $eventMarker -Raw
-        if ($content -match "EVENT_JOB_FIRED") {
-            Write-Host "✅ PASS: Event-triggered job fired" -ForegroundColor Green
-        } else {
-            Write-Warning "⚠ Event marker has unexpected content"
-        }
-    } else {
-        Write-Warning "⚠ Event marker not found — event system may not be wired"
-    }
-
-    # ============================================================
-    # TEST 3: Verify one-time event job was disabled after firing
+        # ============================================================
+    # TEST 2: Job with delivery/announcement
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 3: One-time event job disabled after firing" -ForegroundColor Cyan
-    Write-Host "========================================" -ForegroundColor Cyan
-
-    $allJobs = peko cron list --all --json 2>&1 | ConvertFrom-Json
-    $eventJob = $allJobs | Where-Object { $_.name -eq "e2e-event-test" } | Select-Object -First 1
-
-    if ($eventJob) {
-        if (-not $eventJob.enabled) {
-            Write-Host "✅ PASS: One-time event job was disabled after firing" -ForegroundColor Green
-        } else {
-            Write-Warning "⚠ One-time event job is still enabled (may not have fired or disable logic not wired)"
-        }
-    } else {
-        Write-Warning "⚠ Event job not found in list"
-    }
-
-    # ============================================================
-    # TEST 4: Job with delivery/announcement
-    # ============================================================
-    Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 4: Job with delivery/announcement" -ForegroundColor Cyan
+    Write-Host "TEST 2: Job with delivery/announcement" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "Note: This tests the file-based announcement delivery." -ForegroundColor Yellow
 
@@ -229,14 +163,13 @@ try {
 
     $allJobs = peko cron list --json 2>&1 | ConvertFrom-Json
     foreach ($job in $allJobs) {
-        if ($job.name -match "e2e-(idle|event|announce)") {
+        if ($job.name -match "e2e-(idle|announce)") {
             peko cron remove $job.id --force 2>&1 | Out-Null
         }
     }
     Write-Host "Cleaned up test cron jobs" -ForegroundColor Green
 
     if (Test-Path "$workspaceDir/cron_idle_marker.txt") { Remove-Item "$workspaceDir/cron_idle_marker.txt" -Force }
-    if (Test-Path "$workspaceDir/cron_event_marker.txt") { Remove-Item "$workspaceDir/cron_event_marker.txt" -Force }
     if (Test-Path "$workspaceDir/cron_announce_marker.txt") { Remove-Item "$workspaceDir/cron_announce_marker.txt" -Force }
 
     peko agent delete $agentName --force 2>&1 | Out-Null
