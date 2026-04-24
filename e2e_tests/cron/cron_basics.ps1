@@ -113,7 +113,7 @@ try {
     Write-Host "TEST 4: Add cron-expression job" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $result = peko cron add --name "e2e-cron-test" --schedule "0 * * * *" --agent $agentName --message "Write 'cron-job-fired' to /tmp/cron_expr_test.txt" 2>&1
+    $result = peko cron add --name "e2e-cron-test" --schedule "0 0 * * * *" --agent $agentName --message "Write 'cron-job-fired' to /tmp/cron_expr_test.txt" 2>&1
     Write-Host "Output: $result"
     if ($result -match "Added" -or $result -match "cron_") {
         Write-Host "✅ PASS: Cron-expression job added successfully" -ForegroundColor Green
