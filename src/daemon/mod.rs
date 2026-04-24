@@ -53,7 +53,7 @@ impl Default for DaemonConfig {
         let data_dir = dirs::data_dir().map_or_else(|| config_dir.clone(), |d| d.join("pekobot"));
 
         Self {
-            cron_db_path: data_dir.join("cron.db"),
+            cron_db_path: data_dir.join("cron.json"),
             poll_interval: Duration::from_secs(15),
             config_dir,
             data_dir,
@@ -863,7 +863,7 @@ mod tests {
     async fn test_daemon_creation() {
         let tmp = TempDir::new().unwrap();
         let config = DaemonConfig {
-            cron_db_path: tmp.path().join("cron.db"),
+            cron_db_path: tmp.path().join("cron.json"),
             poll_interval: Duration::from_secs(1),
             config_dir: tmp.path().join("config"),
             data_dir: tmp.path().join("data"),

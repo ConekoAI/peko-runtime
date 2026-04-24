@@ -845,7 +845,7 @@ pekobot cron add \
 
 ### Storage
 
-- Jobs stored in SQLite at `~/.local/share/pekobot/cron.db`
+- Jobs stored in JSON at `~/.local/share/pekobot/cron.json`
 - Run history preserved for auditing
 - One-shot jobs auto-delete after successful execution
 - Jobs survive daemon restarts

@@ -259,8 +259,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             };
 
             // Compute next run
-            let tmp_scheduler = crate::cron::CronScheduler::new(":memory:")?;
-            let next_run = tmp_scheduler.calculate_next_run(&schedule_kind, Utc::now())?;
+            let next_run = crate::cron::calculate_next_run(&schedule_kind, Utc::now())?;
 
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),
@@ -367,8 +366,7 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
             };
 
             let schedule_kind = ScheduleKind::Every { every_ms: interval_ms };
-            let tmp_scheduler = crate::cron::CronScheduler::new(":memory:")?;
-            let next_run = tmp_scheduler.calculate_next_run(&schedule_kind, Utc::now())?;
+            let next_run = crate::cron::calculate_next_run(&schedule_kind, Utc::now())?;
 
             let job = CronJob {
                 id: format!("cron_{}", Uuid::new_v4().simple()),

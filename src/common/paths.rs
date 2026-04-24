@@ -22,7 +22,7 @@
 //! ```text
 //! {data_dir}/
 //! ├── tools/                           # Downloaded/installed tools
-//! ├── cron.db                         # Cron job database
+//! ├── cron.json                       # Cron job database
 //! ├── sessions/                       # Session history (*.jsonl)
 //! │   └── {team}/
 //! │       └── {agent}/

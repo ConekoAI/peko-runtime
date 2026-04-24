@@ -1,6 +1,6 @@
 //! Cron scheduler for periodic task execution
 //!
-//! Stores cron jobs in `SQLite` and provides scheduling functionality.
+//! Stores cron jobs in a JSON file and provides scheduling functionality.
 //! Supports both main session (system event) and isolated execution modes.
 //!
 //! Includes idle detection and event-based triggers.
@@ -14,7 +14,6 @@ pub mod idle;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use cron::Schedule;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -150,6 +149,27 @@ pub struct CronRun {
     pub error: Option<String>,
 }
 
+/// On-disk representation of the cron database
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CronDatabase {
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    jobs: Vec<CronJob>,
+    #[serde(default)]
+    runs: Vec<CronRun>,
+}
+
+impl Default for CronDatabase {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            jobs: Vec::new(),
+            runs: Vec::new(),
+        }
+    }
+}
+
 /// Cron scheduler manages scheduled jobs
 pub struct CronScheduler {
     db_path: PathBuf,
@@ -165,7 +185,7 @@ impl CronScheduler {
         Ok(scheduler)
     }
 
-    /// Initialize the database schema
+    /// Initialize the database file if it does not exist
     fn init_db(&self) -> Result<()> {
         if let Some(parent) = self.db_path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -173,82 +193,59 @@ impl CronScheduler {
             })?;
         }
 
-        let conn = Connection::open(&self.db_path)
-            .with_context(|| format!("Failed to open cron DB: {}", self.db_path.display()))?;
+        if !self.db_path.exists() {
+            let db = CronDatabase::default();
+            self.write_db(&db)?;
+        }
 
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS cron_jobs (
-                id               TEXT PRIMARY KEY,
-                name             TEXT NOT NULL,
-                schedule_kind    TEXT NOT NULL,
-                schedule_data    TEXT NOT NULL,
-                target           TEXT NOT NULL DEFAULT 'main',
-                agent_id         TEXT,
-                message          TEXT NOT NULL,
-                delivery_mode    TEXT NOT NULL DEFAULT 'none',
-                delivery_data    TEXT,
-                delete_after_run INTEGER NOT NULL DEFAULT 0,
-                enabled          INTEGER NOT NULL DEFAULT 1,
-                created_at       TEXT NOT NULL,
-                next_run         TEXT NOT NULL,
-                last_run         TEXT,
-                last_status      TEXT,
-                run_count        INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_cron_jobs_next_run ON cron_jobs(next_run);
-            CREATE INDEX IF NOT EXISTS idx_cron_jobs_enabled ON cron_jobs(enabled);
+        Ok(())
+    }
 
-            CREATE TABLE IF NOT EXISTS cron_runs (
-                id           TEXT PRIMARY KEY,
-                job_id       TEXT NOT NULL,
-                started_at   TEXT NOT NULL,
-                finished_at  TEXT,
-                status       TEXT NOT NULL,
-                output       TEXT,
-                error        TEXT,
-                FOREIGN KEY (job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_cron_runs_job_id ON cron_runs(job_id);",
-        )
-        .context("Failed to initialize cron schema")?;
+    /// Read the database from disk
+    fn read_db(&self) -> Result<CronDatabase> {
+        if !self.db_path.exists() {
+            return Ok(CronDatabase::default());
+        }
+
+        let content = std::fs::read_to_string(&self.db_path)
+            .with_context(|| format!("Failed to read cron DB: {}", self.db_path.display()))?;
+
+        if content.trim().is_empty() {
+            return Ok(CronDatabase::default());
+        }
+
+        let db: CronDatabase = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse cron DB: {}", self.db_path.display()))?;
+
+        Ok(db)
+    }
+
+    /// Write the database to disk atomically
+    fn write_db(&self, db: &CronDatabase) -> Result<()> {
+        let json = serde_json::to_string_pretty(db)
+            .context("Failed to serialize cron database")?;
+
+        // Write to a temp file first, then rename for atomicity
+        let tmp_path = self.db_path.with_extension("tmp");
+        std::fs::write(&tmp_path, json)
+            .with_context(|| format!("Failed to write cron temp file: {}", tmp_path.display()))?;
+
+        std::fs::rename(&tmp_path, &self.db_path)
+            .with_context(|| format!("Failed to finalize cron DB: {}", self.db_path.display()))?;
 
         Ok(())
     }
 
     /// Add a new cron job
     pub fn add_job(&self, job: &CronJob) -> Result<()> {
-        let conn = Connection::open(&self.db_path)?;
+        let mut db = self.read_db()?;
 
-        let schedule_data = serde_json::to_string(&job.schedule)?;
-        let delivery_data = match &job.delivery {
-            DeliveryMode::None => None,
-            DeliveryMode::Announce { .. } => Some(serde_json::to_string(&job.delivery)?),
-        };
+        if db.jobs.iter().any(|j| j.id == job.id) {
+            anyhow::bail!("Cron job with id '{}' already exists", job.id);
+        }
 
-        conn.execute(
-            "INSERT INTO cron_jobs (
-                id, name, schedule_kind, schedule_data, target, agent_id,
-                message, delivery_mode, delivery_data, delete_after_run,
-                enabled, created_at, next_run, run_count
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            params![
-                &job.id,
-                &job.name,
-                schedule_kind_str(&job.schedule),
-                schedule_data,
-                target_str(&job.target),
-                &job.agent_id,
-                &job.message,
-                delivery_mode_str(&job.delivery),
-                delivery_data,
-                i32::from(job.delete_after_run),
-                i32::from(job.enabled),
-                job.created_at.to_rfc3339(),
-                job.next_run.to_rfc3339(),
-                job.run_count as i32,
-            ],
-        )
-        .context("Failed to insert cron job")?;
+        db.jobs.push(job.clone());
+        self.write_db(&db)?;
 
         info!(
             "Added cron job {}: '{}' with schedule {}",
@@ -262,64 +259,31 @@ impl CronScheduler {
 
     /// Get a job by ID
     pub fn get_job(&self, job_id: &str) -> Result<Option<CronJob>> {
-        let conn = Connection::open(&self.db_path)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, name, schedule_kind, schedule_data, target, agent_id,
-                    message, delivery_mode, delivery_data, delete_after_run,
-                    enabled, created_at, next_run, last_run, last_status, run_count
-             FROM cron_jobs WHERE id = ?1",
-        )?;
-
-        let job = stmt
-            .query_row(params![job_id], parse_job_from_row)
-            .optional()?;
-
-        Ok(job)
+        let db = self.read_db()?;
+        Ok(db.jobs.into_iter().find(|j| j.id == job_id))
     }
 
     /// List all cron jobs
     pub fn list_jobs(&self, include_disabled: bool) -> Result<Vec<CronJob>> {
-        let conn = Connection::open(&self.db_path)?;
-        let sql = if include_disabled {
-            "SELECT id, name, schedule_kind, schedule_data, target, agent_id,
-                    message, delivery_mode, delivery_data, delete_after_run,
-                    enabled, created_at, next_run, last_run, last_status, run_count
-             FROM cron_jobs ORDER BY next_run ASC"
+        let db = self.read_db()?;
+        let mut jobs: Vec<CronJob> = if include_disabled {
+            db.jobs
         } else {
-            "SELECT id, name, schedule_kind, schedule_data, target, agent_id,
-                    message, delivery_mode, delivery_data, delete_after_run,
-                    enabled, created_at, next_run, last_run, last_status, run_count
-             FROM cron_jobs WHERE enabled = 1 ORDER BY next_run ASC"
+            db.jobs.into_iter().filter(|j| j.enabled).collect()
         };
-
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([], parse_job_from_row)?;
-
-        let mut jobs = Vec::new();
-        for row in rows {
-            jobs.push(row?);
-        }
+        jobs.sort_by(|a, b| a.next_run.cmp(&b.next_run));
         Ok(jobs)
     }
 
     /// Get jobs that are due to run
     pub fn due_jobs(&self, now: DateTime<Utc>) -> Result<Vec<CronJob>> {
-        let conn = Connection::open(&self.db_path)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, name, schedule_kind, schedule_data, target, agent_id,
-                    message, delivery_mode, delivery_data, delete_after_run,
-                    enabled, created_at, next_run, last_run, last_status, run_count
-             FROM cron_jobs 
-             WHERE enabled = 1 AND next_run <= ?1 
-             ORDER BY next_run ASC",
-        )?;
-
-        let rows = stmt.query_map(params![now.to_rfc3339()], parse_job_from_row)?;
-
-        let mut jobs = Vec::new();
-        for row in rows {
-            jobs.push(row?);
-        }
+        let db = self.read_db()?;
+        let mut jobs: Vec<CronJob> = db
+            .jobs
+            .into_iter()
+            .filter(|j| j.enabled && j.next_run <= now)
+            .collect();
+        jobs.sort_by(|a, b| a.next_run.cmp(&b.next_run));
         Ok(jobs)
     }
 
@@ -330,115 +294,73 @@ impl CronScheduler {
         status: &str,
         next_run: DateTime<Utc>,
     ) -> Result<()> {
-        let conn = Connection::open(&self.db_path)?;
-        conn.execute(
-            "UPDATE cron_jobs 
-             SET last_run = ?1, last_status = ?2, next_run = ?3, run_count = run_count + 1
-             WHERE id = ?4",
-            params![
-                Utc::now().to_rfc3339(),
-                status,
-                next_run.to_rfc3339(),
-                job_id
-            ],
-        )?;
+        let mut db = self.read_db()?;
+
+        if let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) {
+            job.last_run = Some(Utc::now());
+            job.last_status = Some(status.to_string());
+            job.next_run = next_run;
+            job.run_count += 1;
+            self.write_db(&db)?;
+        }
+
         Ok(())
     }
 
     /// Delete a job
     pub fn delete_job(&self, job_id: &str) -> Result<bool> {
-        let conn = Connection::open(&self.db_path)?;
-        let changed = conn.execute("DELETE FROM cron_jobs WHERE id = ?1", params![job_id])?;
-        if changed > 0 {
+        let mut db = self.read_db()?;
+        let before = db.jobs.len();
+        db.jobs.retain(|j| j.id != job_id);
+        let deleted = db.jobs.len() < before;
+
+        if deleted {
+            // Also clean up associated runs
+            db.runs.retain(|r| r.job_id != job_id);
+            self.write_db(&db)?;
             info!("Deleted cron job {}", job_id);
         }
-        Ok(changed > 0)
+
+        Ok(deleted)
     }
 
     /// Enable/disable a job
     pub fn set_job_enabled(&self, job_id: &str, enabled: bool) -> Result<bool> {
-        let conn = Connection::open(&self.db_path)?;
-        let changed = conn.execute(
-            "UPDATE cron_jobs SET enabled = ?1 WHERE id = ?2",
-            params![i32::from(enabled), job_id],
-        )?;
-        Ok(changed > 0)
+        let mut db = self.read_db()?;
+
+        if let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) {
+            job.enabled = enabled;
+            self.write_db(&db)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     /// Record a job run
     pub fn record_run(&self, run: &CronRun) -> Result<()> {
-        let conn = Connection::open(&self.db_path)?;
-        conn.execute(
-            "INSERT INTO cron_runs (id, job_id, started_at, finished_at, status, output, error)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                &run.id,
-                &run.job_id,
-                run.started_at.to_rfc3339(),
-                run.finished_at.map(|t| t.to_rfc3339()),
-                &run.status,
-                &run.output,
-                &run.error,
-            ],
-        )?;
+        let mut db = self.read_db()?;
+        db.runs.push(run.clone());
+        // Keep only the last 1000 runs to prevent unbounded growth
+        const MAX_RUNS: usize = 1000;
+        if db.runs.len() > MAX_RUNS {
+            db.runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+            db.runs.truncate(MAX_RUNS);
+        }
+        self.write_db(&db)?;
         Ok(())
     }
 
     /// Get run history for a job
     pub fn get_run_history(&self, job_id: &str, limit: usize) -> Result<Vec<CronRun>> {
-        let conn = Connection::open(&self.db_path)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, job_id, started_at, finished_at, status, output, error
-             FROM cron_runs 
-             WHERE job_id = ?1 
-             ORDER BY started_at DESC 
-             LIMIT ?2",
-        )?;
-
-        let rows = stmt.query_map(params![job_id, limit as i64], |row| {
-            let started_at_raw: String = row.get(2)?;
-            let finished_at_raw: Option<String> = row.get(3)?;
-
-            let started_at = DateTime::parse_from_rfc3339(&started_at_raw)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        2,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?;
-
-            let finished_at = match finished_at_raw {
-                Some(s) => Some(
-                    DateTime::parse_from_rfc3339(&s)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                3,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?,
-                ),
-                None => None,
-            };
-
-            Ok(CronRun {
-                id: row.get(0)?,
-                job_id: row.get(1)?,
-                started_at,
-                finished_at,
-                status: row.get(4)?,
-                output: row.get(5)?,
-                error: row.get(6)?,
-            })
-        })?;
-
-        let mut runs = Vec::new();
-        for row in rows {
-            runs.push(row?);
-        }
+        let db = self.read_db()?;
+        let mut runs: Vec<CronRun> = db
+            .runs
+            .into_iter()
+            .filter(|r| r.job_id == job_id)
+            .collect();
+        runs.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        runs.truncate(limit);
         Ok(runs)
     }
 
@@ -448,44 +370,7 @@ impl CronScheduler {
         schedule: &ScheduleKind,
         after: DateTime<Utc>,
     ) -> Result<DateTime<Utc>> {
-        match schedule {
-            ScheduleKind::At { at } => {
-                let dt = DateTime::parse_from_rfc3339(at)
-                    .map_err(|e| anyhow::anyhow!("Invalid timestamp: {e}"))?;
-                Ok(dt.with_timezone(&Utc))
-            }
-            ScheduleKind::Every { every_ms } => {
-                Ok(after + chrono::Duration::milliseconds(*every_ms as i64))
-            }
-            ScheduleKind::Cron { expr, tz } => {
-                let schedule = Schedule::from_str(expr)
-                    .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
-
-                if let Some(tz_str) = tz {
-                    let tz: chrono_tz::Tz = tz_str
-                        .parse()
-                        .map_err(|e| anyhow::anyhow!("Invalid timezone: {e}"))?;
-                    let local_after = after.with_timezone(&tz);
-                    if let Some(next) = schedule.after(&local_after).next() {
-                        Ok(next.with_timezone(&Utc))
-                    } else {
-                        Err(anyhow::anyhow!("No next occurrence found"))
-                    }
-                } else if let Some(next) = schedule.after(&after).next() {
-                    Ok(next)
-                } else {
-                    Err(anyhow::anyhow!("No next occurrence found"))
-                }
-            }
-            // Idle and Event triggers don't have a predictable next run time
-            // They return a far-future date to avoid being picked up by due_jobs
-            ScheduleKind::Idle { .. } => {
-                Ok(after + chrono::Duration::days(365 * 100)) // 100 years in the future
-            }
-            ScheduleKind::Event { .. } => {
-                Ok(after + chrono::Duration::days(365 * 100)) // 100 years in the future
-            }
-        }
+        calculate_next_run(schedule, after)
     }
 
     /// Get idle-triggered jobs
@@ -508,22 +393,13 @@ impl CronScheduler {
 
     /// Find jobs that are due but have never run (missed during downtime)
     pub fn missed_jobs(&self, now: DateTime<Utc>) -> Result<Vec<CronJob>> {
-        let conn = Connection::open(&self.db_path)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, name, schedule_kind, schedule_data, target, agent_id,
-                    message, delivery_mode, delivery_data, delete_after_run,
-                    enabled, created_at, next_run, last_run, last_status, run_count
-             FROM cron_jobs 
-             WHERE enabled = 1 AND next_run <= ?1 AND last_run IS NULL
-             ORDER BY next_run ASC",
-        )?;
-
-        let rows = stmt.query_map(params![now.to_rfc3339()], parse_job_from_row)?;
-
-        let mut jobs = Vec::new();
-        for row in rows {
-            jobs.push(row?);
-        }
+        let db = self.read_db()?;
+        let mut jobs: Vec<CronJob> = db
+            .jobs
+            .into_iter()
+            .filter(|j| j.enabled && j.next_run <= now && j.last_run.is_none())
+            .collect();
+        jobs.sort_by(|a, b| a.next_run.cmp(&b.next_run));
         Ok(jobs)
     }
 
@@ -531,131 +407,58 @@ impl CronScheduler {
     pub fn recalculate_next_run(&self, job_id: &str, after: DateTime<Utc>) -> Result<DateTime<Utc>> {
         let job = self.get_job(job_id)?
             .ok_or_else(|| anyhow::anyhow!("Job not found: {job_id}"))?;
-        let next_run = self.calculate_next_run(&job.schedule, after)?;
-        let conn = Connection::open(&self.db_path)?;
-        conn.execute(
-            "UPDATE cron_jobs SET next_run = ?1 WHERE id = ?2",
-            params![next_run.to_rfc3339(), job_id],
-        )?;
+        let next_run = calculate_next_run(&job.schedule, after)?;
+        let mut db = self.read_db()?;
+        if let Some(job) = db.jobs.iter_mut().find(|j| j.id == job_id) {
+            job.next_run = next_run;
+            self.write_db(&db)?;
+        }
         Ok(next_run)
     }
 }
 
-// Helper functions
-
-fn parse_job_from_row(row: &rusqlite::Row) -> rusqlite::Result<CronJob> {
-    let schedule_kind: String = row.get(2)?;
-    let schedule_data: String = row.get(3)?;
-    let delivery_mode: String = row.get(7)?;
-    let delivery_data: Option<String> = row.get(8)?;
-
-    let schedule = match schedule_kind.as_str() {
-        "at" => serde_json::from_str(&schedule_data)
-            .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
-        "every" => serde_json::from_str(&schedule_data)
-            .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
-        "cron" => serde_json::from_str(&schedule_data)
-            .unwrap_or(ScheduleKind::Every { every_ms: 3600000 }),
-        "idle" => serde_json::from_str(&schedule_data).unwrap_or(ScheduleKind::Idle {
-            minutes: 5,
-            agent_id: None,
-        }),
-        "event" => serde_json::from_str(&schedule_data).unwrap_or(ScheduleKind::Event {
-            event_type: "webhook".to_string(),
-            filter: None,
-            once: false,
-        }),
-        _ => ScheduleKind::Every { every_ms: 3600000 },
-    };
-
-    let delivery = if delivery_mode == "announce" {
-        delivery_data
-            .and_then(|d| serde_json::from_str(&d).ok())
-            .unwrap_or(DeliveryMode::None)
-    } else {
-        DeliveryMode::None
-    };
-
-    Ok(CronJob {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        schedule,
-        target: match row.get::<_, String>(4)?.as_str() {
-            "isolated" => ExecutionTarget::Isolated,
-            _ => ExecutionTarget::Main,
-        },
-        agent_id: row.get(5)?,
-        message: row.get(6)?,
-        delivery,
-        delete_after_run: row.get::<_, i32>(9)? != 0,
-        enabled: row.get::<_, i32>(10)? != 0,
-        created_at: {
-            let s: String = row.get(11)?;
-            DateTime::parse_from_rfc3339(&s)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        11,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?
-        },
-        next_run: {
-            let s: String = row.get(12)?;
-            DateTime::parse_from_rfc3339(&s)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        12,
-                        rusqlite::types::Type::Text,
-                        Box::new(e),
-                    )
-                })?
-        },
-        last_run: {
-            let opt: Option<String> = row.get(13)?;
-            match opt {
-                Some(s) => Some(
-                    DateTime::parse_from_rfc3339(&s)
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .map_err(|e| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                13,
-                                rusqlite::types::Type::Text,
-                                Box::new(e),
-                            )
-                        })?,
-                ),
-                None => None,
-            }
-        },
-        last_status: row.get(14)?,
-        run_count: row.get::<_, i32>(15)? as u32,
-    })
-}
-
-fn schedule_kind_str(schedule: &ScheduleKind) -> &'static str {
+/// Calculate next run time for a schedule (standalone, no storage needed)
+pub fn calculate_next_run(
+    schedule: &ScheduleKind,
+    after: DateTime<Utc>,
+) -> Result<DateTime<Utc>> {
     match schedule {
-        ScheduleKind::At { .. } => "at",
-        ScheduleKind::Every { .. } => "every",
-        ScheduleKind::Cron { .. } => "cron",
-        ScheduleKind::Idle { .. } => "idle",
-        ScheduleKind::Event { .. } => "event",
-    }
-}
+        ScheduleKind::At { at } => {
+            let dt = DateTime::parse_from_rfc3339(at)
+                .map_err(|e| anyhow::anyhow!("Invalid timestamp: {e}"))?;
+            Ok(dt.with_timezone(&Utc))
+        }
+        ScheduleKind::Every { every_ms } => {
+            Ok(after + chrono::Duration::milliseconds(*every_ms as i64))
+        }
+        ScheduleKind::Cron { expr, tz } => {
+            let schedule = Schedule::from_str(expr)
+                .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
 
-fn target_str(target: &ExecutionTarget) -> &'static str {
-    match target {
-        ExecutionTarget::Main => "main",
-        ExecutionTarget::Isolated => "isolated",
-    }
-}
-
-fn delivery_mode_str(delivery: &DeliveryMode) -> &'static str {
-    match delivery {
-        DeliveryMode::None => "none",
-        DeliveryMode::Announce { .. } => "announce",
+            if let Some(tz_str) = tz {
+                let tz: chrono_tz::Tz = tz_str
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("Invalid timezone: {e}"))?;
+                let local_after = after.with_timezone(&tz);
+                if let Some(next) = schedule.after(&local_after).next() {
+                    Ok(next.with_timezone(&Utc))
+                } else {
+                    Err(anyhow::anyhow!("No next occurrence found"))
+                }
+            } else if let Some(next) = schedule.after(&after).next() {
+                Ok(next)
+            } else {
+                Err(anyhow::anyhow!("No next occurrence found"))
+            }
+        }
+        // Idle and Event triggers don't have a predictable next run time
+        // They return a far-future date to avoid being picked up by due_jobs
+        ScheduleKind::Idle { .. } => {
+            Ok(after + chrono::Duration::days(365 * 100)) // 100 years in the future
+        }
+        ScheduleKind::Event { .. } => {
+            Ok(after + chrono::Duration::days(365 * 100)) // 100 years in the future
+        }
     }
 }
 
@@ -668,7 +471,7 @@ mod tests {
     #[test]
     fn test_add_and_list_job() {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.db");
+        let db_path = tmp.path().join("cron.json");
         let scheduler = CronScheduler::new(&db_path).unwrap();
 
         let job = CronJob {
@@ -697,7 +500,7 @@ mod tests {
     #[test]
     fn test_due_jobs() {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.db");
+        let db_path = tmp.path().join("cron.json");
         let scheduler = CronScheduler::new(&db_path).unwrap();
 
         let past_job = CronJob {
@@ -745,7 +548,7 @@ mod tests {
     #[test]
     fn test_missed_jobs_recovery() {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.db");
+        let db_path = tmp.path().join("cron.json");
         let scheduler = CronScheduler::new(&db_path).unwrap();
 
         // Add a past job (missed)
@@ -794,7 +597,7 @@ mod tests {
     #[test]
     fn test_recalculate_next_run() {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.db");
+        let db_path = tmp.path().join("cron.json");
         let scheduler = CronScheduler::new(&db_path).unwrap();
 
         let job = CronJob {
@@ -821,5 +624,47 @@ mod tests {
         // Should be about 60 seconds after `after`
         let diff = (next_run - after).num_milliseconds().abs();
         assert!(diff >= 59000 && diff <= 61000, "Expected ~60s, got {}ms", diff);
+    }
+
+    #[test]
+    fn test_json_persistence() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cron.json");
+
+        // Create and add a job
+        {
+            let scheduler = CronScheduler::new(&db_path).unwrap();
+            let job = CronJob {
+                id: "test-123".to_string(),
+                name: "Persisted Job".to_string(),
+                schedule: ScheduleKind::Every { every_ms: 60000 },
+                target: ExecutionTarget::Main,
+                agent_id: None,
+                message: "Hello".to_string(),
+                delivery: DeliveryMode::None,
+                delete_after_run: false,
+                enabled: true,
+                created_at: Utc::now(),
+                next_run: Utc::now(),
+                last_run: None,
+                last_status: None,
+                run_count: 42,
+            };
+            scheduler.add_job(&job).unwrap();
+        }
+
+        // Verify JSON file exists and is readable
+        assert!(db_path.exists());
+        let content = std::fs::read_to_string(&db_path).unwrap();
+        assert!(content.contains("Persisted Job"));
+        assert!(content.contains("test-123"));
+
+        // Re-open and verify data is intact
+        {
+            let scheduler = CronScheduler::new(&db_path).unwrap();
+            let job = scheduler.get_job("test-123").unwrap().expect("job should exist");
+            assert_eq!(job.name, "Persisted Job");
+            assert_eq!(job.run_count, 42);
+        }
     }
 }

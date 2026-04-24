@@ -262,7 +262,7 @@ impl IpcServer {
             }
 
             RequestPacket::CronList { request_id, include_disabled } => {
-                let cron_db = state.data_dir.join("cron.db");
+                let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
                     Ok(scheduler) => {
                         match scheduler.list_jobs(include_disabled) {
@@ -284,7 +284,7 @@ impl IpcServer {
             }
 
             RequestPacket::CronAdd { request_id, job } => {
-                let cron_db = state.data_dir.join("cron.db");
+                let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
                     Ok(scheduler) => {
                         match scheduler.add_job(&job) {
@@ -306,7 +306,7 @@ impl IpcServer {
             }
 
             RequestPacket::CronRemove { request_id, job_id } => {
-                let cron_db = state.data_dir.join("cron.db");
+                let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
                     Ok(scheduler) => {
                         match scheduler.delete_job(&job_id) {
@@ -332,7 +332,7 @@ impl IpcServer {
             }
 
             RequestPacket::CronRun { request_id, job_id } => {
-                let cron_db = state.data_dir.join("cron.db");
+                let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
                     Ok(scheduler) => {
                         match scheduler.get_job(&job_id) {
@@ -365,7 +365,7 @@ impl IpcServer {
             }
 
             RequestPacket::CronHistory { request_id, job_id, limit } => {
-                let cron_db = state.data_dir.join("cron.db");
+                let cron_db = state.data_dir.join("cron.json");
                 match crate::cron::CronScheduler::new(&cron_db) {
                     Ok(scheduler) => {
                         match scheduler.get_run_history(&job_id, limit) {

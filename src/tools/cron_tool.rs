@@ -399,7 +399,7 @@ impl Tool for CronTool {
     }
 
     fn description(&self) -> String {
-        "Manage scheduled jobs: at, every, cron, idle, event, list, cancel. Persisted to cron.db."
+        "Manage scheduled jobs: at, every, cron, idle, event, list, cancel. Persisted to cron.json."
             .to_string()
     }
 
@@ -521,7 +521,7 @@ mod tests {
 
     async fn create_test_tool() -> (CronTool, TempDir) {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.db");
+        let db_path = tmp.path().join("cron.json");
         let tool = CronTool::new(db_path, "test-instance".to_string());
         tool.init().await.unwrap();
         (tool, tmp)
@@ -648,7 +648,7 @@ mod tests {
     #[tokio::test]
     async fn test_persistence() {
         let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("cron.db");
+        let db_path = tmp.path().join("cron.json");
 
         // Create tool and add job
         {

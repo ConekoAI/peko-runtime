@@ -330,8 +330,7 @@ pekobot cron list
 pekobot cron history --id <job-id>
 
 # Count jobs by status
-sqlite3 ~/.local/share/pekobot/cron.db \
-  "SELECT last_status, COUNT(*) FROM cron_jobs GROUP BY last_status;"
+cat ~/.local/share/pekobot/cron.json | jq '.jobs | group_by(.last_status) | map({status: .[0].last_status, count: length})'
 ```
 
 ### Logging
@@ -346,7 +345,7 @@ Log levels:
 - `error` - Job failures, daemon errors
 - `warn` - Stale PID files, delivery failures
 - `info` - Job execution, daemon start/stop
-- `debug` - Polling details, SQL queries
+- `debug` - Polling details, JSON operations
 - `trace` - Full execution trace
 
 ## Troubleshooting
@@ -392,7 +391,7 @@ pekobot cron run --id <job-id>
 
 **Database inspection:**
 ```bash
-sqlite3 ~/.local/share/pekobot/cron.db "SELECT * FROM cron_jobs WHERE enabled=1;"
+cat ~/.local/share/pekobot/cron.json | jq '.jobs | map(select(.enabled == true))'
 ```
 
 ### High CPU Usage

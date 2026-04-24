@@ -87,7 +87,7 @@ pub async fn handle_daemon(
             }
 
             let config = DaemonConfig {
-                cron_db_path: paths.data_dir.join("cron.db"),
+                cron_db_path: paths.data_dir.join("cron.json"),
                 poll_interval: std::time::Duration::from_secs(interval),
                 config_dir: paths.config_dir.clone(),
                 data_dir: paths.data_dir.clone(),
