@@ -145,15 +145,7 @@ impl BuiltinToolRegistrar {
 
         // Cron tool
         if config.enable_cron && !disabled_set.contains("cron") {
-            let db_path = config
-                .cron_db_path
-                .clone()
-                .unwrap_or_else(|| workspace.join("cron.json"));
-            let instance_id = config
-                .instance_id
-                .clone()
-                .unwrap_or_else(|| "default".to_string());
-            let tool = Arc::new(CronTool::new(db_path, instance_id));
+            let tool = Arc::new(CronTool::new());
             BuiltinToolAdapter::register_tool(core, tool).await?;
         }
 

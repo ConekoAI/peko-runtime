@@ -371,15 +371,7 @@ impl ToolFactory {
 
         // Cron tool for scheduled jobs
         registry.register("cron", config.enable_cron, || {
-            let db_path = config
-                .cron_db_path
-                .clone()
-                .unwrap_or_else(|| config.workspace_dir.join("cron.json"));
-            let instance_id = config
-                .instance_id
-                .clone()
-                .unwrap_or_else(|| "default".to_string());
-            Arc::new(CronTool::new(db_path, instance_id))
+            Arc::new(CronTool::new())
         });
 
         let (tools, disabled) = registry.build();

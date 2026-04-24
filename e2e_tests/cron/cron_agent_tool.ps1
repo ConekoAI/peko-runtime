@@ -84,6 +84,7 @@ try {
 You have access to a cron tool. Use it to schedule a one-time job (sub_command: "at") that will run at $futureTime.
 The task should be: "Use write_file to create 'cron_tool_marker.txt' in your workspace with content 'AGENT_CRON_SUCCESS'. Use mode='overwrite'."
 Label the job "agent-scheduled-test".
+Set agent_id to "$agentName" so the daemon knows which agent should run the job.
 
 After scheduling, use the cron tool's "list" sub_command to verify the job was added.
 Respond with TOOL_SUCCESS if you see the job in the list, otherwise TOOL_FAILED.
@@ -171,7 +172,7 @@ Otherwise respond LIST_FAILED.
     $farFuture = (Get-Date).AddHours(1).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     $addPrompt = @"
 Use the cron tool with sub_command "at" to schedule a job at $farFuture.
-Label it "to-cancel-test". Task: "echo hello".
+Label it "to-cancel-test". Task: "echo hello". Set agent_id to "$agentName".
 Then use sub_command "list" to find its job_id.
 Then use sub_command "cancel" with that job_id to remove it.
 Finally use "list" again to confirm it's gone.

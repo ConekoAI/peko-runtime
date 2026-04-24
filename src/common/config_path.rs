@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_get_array() {
         let config = AgentConfig::default();
-        let value = get_config_value(&config, "tools.enabled").unwrap();
+        let value = get_config_value(&config, "extensions.enabled").unwrap();
         // Default whitelist enables common built-in tools
         assert!(value.is_array());
         let arr = value.as_array().unwrap();
@@ -186,9 +186,9 @@ mod tests {
     #[test]
     fn test_set_array_value() {
         let mut config = AgentConfig::default();
-        set_config_value(&mut config, "tools.enabled", r#"["shell","read_file"]"#).unwrap();
+        set_config_value(&mut config, "extensions.enabled", r#"["shell","read_file"]"#).unwrap();
         assert_eq!(
-            config.tools.as_ref().unwrap().enabled,
+            config.extensions.as_ref().unwrap().enabled,
             vec!["shell", "read_file"]
         );
     }

@@ -271,6 +271,7 @@ impl Default for ExtensionConfig {
                 "glob".to_string(),
                 "grep".to_string(),
                 "str_replace_file".to_string(),
+                "cron".to_string(),
             ],
             http: None,
             custom: None,
