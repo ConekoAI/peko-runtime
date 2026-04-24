@@ -90,7 +90,10 @@ Respond with TOOL_SUCCESS if you see the job in the list, otherwise TOOL_FAILED.
 "@
 
     Write-Host "Sending request to agent to schedule a cron job..." -ForegroundColor Yellow
-    $response = peko send $agentName $prompt --no-stream 2>&1
+    $promptFile = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($promptFile, $prompt)
+    $response = peko send $agentName --file $promptFile --no-stream 2>&1
+    Remove-Item $promptFile -Force
     Write-Host "Agent response: $response"
 
     # Wait a moment for the agent to finish tool calls
@@ -124,7 +127,10 @@ Otherwise respond LIST_FAILED.
 "@
 
     Write-Host "Asking agent to list cron jobs..." -ForegroundColor Yellow
-    $response2 = peko send $agentName $prompt2 --no-stream 2>&1
+    $prompt2File = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($prompt2File, $prompt2)
+    $response2 = peko send $agentName --file $prompt2File --no-stream 2>&1
+    Remove-Item $prompt2File -Force
     Write-Host "Agent response: $response2"
 
     if ($response2 -match "LIST_SUCCESS") {
@@ -173,7 +179,10 @@ Respond CANCEL_SUCCESS if the job was removed, CANCEL_FAILED otherwise.
 "@
 
     Write-Host "Asking agent to schedule and cancel a job..." -ForegroundColor Yellow
-    $response3 = peko send $agentName $addPrompt --no-stream 2>&1
+    $addPromptFile = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($addPromptFile, $addPrompt)
+    $response3 = peko send $agentName --file $addPromptFile --no-stream 2>&1
+    Remove-Item $addPromptFile -Force
     Write-Host "Agent response: $response3"
 
     if ($response3 -match "CANCEL_SUCCESS") {
