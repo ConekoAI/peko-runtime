@@ -19,6 +19,22 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::info;
 
+/// Normalize a 5-field cron expression to the 7-field format required by the `cron` crate.
+///
+/// The `cron` crate v0.12 expects: `sec min hour day month weekday year`
+/// Standard crontab uses: `min hour day month weekday`
+///
+/// This helper adds `0` for seconds and `*` for year when a 5-field expression is detected.
+/// Expressions with 6 or 7 fields are left unchanged.
+pub fn normalize_cron_expr(expr: &str) -> String {
+    let trimmed = expr.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    match parts.len() {
+        5 => format!("0 {trimmed} *"),
+        _ => trimmed.to_string(),
+    }
+}
+
 pub use idle::IdleDetector;
 
 /// Schedule kinds for cron jobs
@@ -432,7 +448,8 @@ pub fn calculate_next_run(
             Ok(after + chrono::Duration::milliseconds(*every_ms as i64))
         }
         ScheduleKind::Cron { expr, tz } => {
-            let schedule = Schedule::from_str(expr)
+            let normalized = normalize_cron_expr(expr);
+            let schedule = Schedule::from_str(&normalized)
                 .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
 
             if let Some(tz_str) = tz {
@@ -624,6 +641,24 @@ mod tests {
         // Should be about 60 seconds after `after`
         let diff = (next_run - after).num_milliseconds().abs();
         assert!(diff >= 59000 && diff <= 61000, "Expected ~60s, got {}ms", diff);
+    }
+
+    #[test]
+    fn test_normalize_cron_expr() {
+        // 5-field expressions should be normalized to 7-field
+        assert_eq!(normalize_cron_expr("0 0 * * *"), "0 0 0 * * * *");
+        assert_eq!(normalize_cron_expr("*/5 * * * *"), "0 */5 * * * * *");
+        assert_eq!(normalize_cron_expr("30 9 * * 1"), "0 30 9 * * 1 *");
+
+        // 7-field expressions should remain unchanged
+        assert_eq!(
+            normalize_cron_expr("0 30 9,12,15 1,15 May-Aug Mon,Wed,Fri 2018/2"),
+            "0 30 9,12,15 1,15 May-Aug Mon,Wed,Fri 2018/2"
+        );
+
+        // Verify normalized expressions parse successfully with the cron crate
+        let normalized = normalize_cron_expr("0 0 * * *");
+        assert!(Schedule::from_str(&normalized).is_ok());
     }
 
     #[test]

@@ -234,8 +234,9 @@ pub async fn handle_cron(cmd: CronCommands, _paths: &GlobalPaths, json: bool) ->
         } => {
             let client = connect_daemon().await?;
 
-            // Validate cron expression
-            let _ = cron::Schedule::from_str(&schedule)
+            // Validate cron expression (normalize 5-field to 7-field for the cron crate)
+            let normalized = crate::cron::normalize_cron_expr(&schedule);
+            let _ = cron::Schedule::from_str(&normalized)
                 .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
 
             let schedule_kind = ScheduleKind::Cron {

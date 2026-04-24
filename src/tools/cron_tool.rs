@@ -112,7 +112,8 @@ impl CronTool {
             .label
             .unwrap_or_else(|| format!("cron-{}", Uuid::new_v4().simple()));
 
-        let _ = cron::Schedule::from_str(&expr)
+        let normalized = crate::cron::normalize_cron_expr(&expr);
+        let _ = cron::Schedule::from_str(&normalized)
             .map_err(|e| anyhow::anyhow!("Invalid cron expression: {e}"))?;
 
         let schedule = ScheduleKind::Cron {
