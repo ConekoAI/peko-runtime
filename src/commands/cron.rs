@@ -138,13 +138,13 @@ pub enum CronCommands {
         #[arg(short, long)]
         name: String,
         /// Idle threshold in minutes
-        #[arg(short, long)]
+        #[arg(short = 't', long)]
         minutes: u64,
         /// Specific agent to monitor (omit for any agent)
         #[arg(short, long)]
         agent: Option<String>,
         /// Message/prompt to execute
-        #[arg(short, long)]
+        #[arg(short = 'm', long)]
         message: String,
         /// Announce results
         #[arg(long)]
