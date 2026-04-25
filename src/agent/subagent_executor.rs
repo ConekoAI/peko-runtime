@@ -586,7 +586,7 @@ impl SubagentExecutor {
     /// Get the current depth for a parent session
     async fn get_parent_depth(&self, parent_session_key: &str) -> u32 {
         let registry = self.registry.read().await;
-        registry.get_max_depth_for_parent(parent_session_key)
+        registry.get_depth_for_session(parent_session_key)
     }
 
     /// Count total active runs
@@ -786,18 +786,6 @@ async fn execute_subagent_task(
         }
     };
 
-    // Add system prompt and task message to the child session
-    {
-        let mut session_write = child_session.write().await;
-        if let Err(e) = session_write.add_system(system_prompt).await {
-            tracing::warn!("Failed to add system prompt to child session: {}", e);
-        }
-        if let Err(e) = session_write.add_user(task_message).await {
-            tracing::warn!("Failed to add user message to child session: {}", e);
-        }
-        info!("Added system prompt and task to child session");
-    }
-
     // Build agent config for the subagent
     let config = agent_config.unwrap_or_else(|| {
         let mut cfg = AgentConfig::default();
@@ -850,8 +838,8 @@ async fn execute_subagent_task(
         shared_executor.clone(),
         session_key_provider,
     ));
-    let status_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnStatusTool::new(shared_executor.clone()));
-    let list_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnListTool::new(shared_executor.registry().clone()));
+    let status_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnStatusTool::with_registry(shared_executor.registry().clone()));
+    let list_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnListTool::with_registry(shared_executor.registry().clone()));
 
     if let Some(core) = crate::extensions::core::global_core() {
         for tool in [spawn_tool, status_tool, list_tool] {
@@ -861,17 +849,56 @@ async fn execute_subagent_task(
         }
     }
 
+    // Build history for the subagent that includes the subagent context.
+    // We pass this as `history` to execute_with_session so the agentic loop
+    // sends the subagent context to the LLM instead of creating fresh messages.
+    let subagent_history = vec![
+        crate::providers::ChatMessage {
+            role: crate::providers::MessageRole::System,
+            content: vec![crate::types::message::ContentBlock::Text {
+                text: system_prompt.to_string(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+        },
+        crate::providers::ChatMessage {
+            role: crate::providers::MessageRole::User,
+            content: vec![crate::types::message::ContentBlock::Text {
+                text: task_message.to_string(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    ];
+
+    // Also add these messages to the child session for persistence
+    {
+        let mut session_write = child_session.write().await;
+        if let Err(e) = session_write.add_system(system_prompt).await {
+            tracing::warn!("Failed to add system prompt to child session: {}", e);
+        }
+        if let Err(e) = session_write.add_user(task_message).await {
+            tracing::warn!("Failed to add user message to child session: {}", e);
+        }
+    }
+
     // Execute the agentic loop with the child session
     info!(
         "Starting AgenticLoop for subagent: agent={} session={}",
         agent_name, session_key
     );
 
+    // Clone child_session for potential recovery after execution
+    let child_session_for_recovery = child_session.clone();
+
+    // Pass empty prompt since the task is already included in subagent_history.
+    // The agentic loop adds the prompt as a user message, so if we passed
+    // task_message here, it would appear twice in the conversation.
     let result = subagent
         .execute_with_session(
-            task_message,
+            "", // Empty prompt - task is already in history
             child_session,
-            None, // No prior history — session already has system + user messages
+            Some(subagent_history), // Pass subagent context as history
             |_event| {
                 // Non-streaming: ignore events
             },
@@ -880,15 +907,127 @@ async fn execute_subagent_task(
 
     match result {
         Ok(agentic_result) => {
+            let mut final_answer = agentic_result.final_answer;
+
+            // If the final answer is empty, try to recover from the session history.
+            // This can happen when the LLM only makes tool calls without producing
+            // text (accumulated_text is empty), or when the final assistant message
+            // has empty text content.
+            if final_answer.trim().is_empty() {
+                match child_session_for_recovery.read().await.load_history().await {
+                    Ok(history) => {
+                        // First, try to find the last assistant message with non-empty text
+                        let mut recovered = false;
+                        for msg in history.iter().rev() {
+                            if matches!(msg.role, crate::providers::MessageRole::Assistant) {
+                                let text: String = msg
+                                    .content
+                                    .iter()
+                                    .filter_map(|c| {
+                                        if let crate::types::message::ContentBlock::Text { text } = c {
+                                            Some(text.as_str())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect();
+                                if !text.trim().is_empty() {
+                                    final_answer = text;
+                                    recovered = true;
+                                    info!(
+                                        "Recovered subagent answer from assistant message: {} chars",
+                                        final_answer.len()
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+
+                        // If no assistant text found, try to extract from tool results
+                        if !recovered {
+                            let mut tool_results: Vec<String> = Vec::new();
+                            for msg in history.iter().rev() {
+                                if matches!(msg.role, crate::providers::MessageRole::Tool) {
+                                    let mut msg_text = String::new();
+                                    for c in &msg.content {
+                                        match c {
+                                            crate::types::message::ContentBlock::Text { text } => {
+                                                msg_text.push_str(text);
+                                            }
+                                            crate::types::message::ContentBlock::ToolResult { content, .. } => {
+                                                for nc in content {
+                                                    if let crate::types::message::ContentBlock::Text { text } = nc {
+                                                        msg_text.push_str(text);
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if !msg_text.trim().is_empty() {
+                                        tool_results.push(msg_text);
+                                    }
+                                }
+                            }
+                            if !tool_results.is_empty() {
+                                // Reverse to get chronological order and join
+                                tool_results.reverse();
+                                
+                                // Try to extract human-readable content from JSON tool results
+                                let processed_results: Vec<String> = tool_results
+                                    .iter()
+                                    .map(|raw| {
+                                        // Try to parse as JSON and extract common content fields
+                                        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(raw) {
+                                            // For read_file results: extract "content" field
+                                            if let Some(content) = json_val.get("content").and_then(|v| v.as_str()) {
+                                                return content.to_string();
+                                            }
+                                            // For shell results: extract "stdout" field
+                                            if let Some(stdout) = json_val.get("stdout").and_then(|v| v.as_str()) {
+                                                return stdout.to_string();
+                                            }
+                                            // For grep results: extract "matches" array
+                                            if let Some(matches) = json_val.get("matches").and_then(|v| v.as_array()) {
+                                                let lines: Vec<String> = matches
+                                                    .iter()
+                                                    .filter_map(|m| m.get("line").and_then(|v| v.as_str()).map(String::from))
+                                                    .collect();
+                                                if !lines.is_empty() {
+                                                    return lines.join("\n");
+                                                }
+                                            }
+                                        }
+                                        // Fallback: return raw text
+                                        raw.clone()
+                                    })
+                                    .collect();
+                                
+                                final_answer = processed_results.join("\n\n");
+                                info!(
+                                    "Recovered subagent answer from tool results: {} chars",
+                                    final_answer.len()
+                                );
+                            } else {
+                                info!("Subagent fallback: no tool results found in history");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Subagent fallback: failed to load history: {}", e);
+                    }
+                }
+            }
+
             info!(
                 "Subagent task completed: agent={} session={} success={} iterations={} output_len={}",
                 agent_name,
                 session_key,
                 agentic_result.success,
                 agentic_result.iterations,
-                agentic_result.final_answer.len()
+                final_answer.len()
             );
-            Ok(agentic_result.final_answer)
+            Ok(final_answer)
         }
         Err(e) => {
             error!(

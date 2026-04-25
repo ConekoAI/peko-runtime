@@ -12,7 +12,9 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::agent::subagent_registry::SharedSubagentRegistry;
+use crate::agent::subagent_registry::{
+    find_run_across_all_registries, list_all_runs_across_all_registries, SharedSubagentRegistry,
+};
 use crate::session::context::SessionContext;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::Tool;
@@ -479,13 +481,35 @@ Examples:
 ///
 /// Allows checking the status of a previously spawned subagent.
 pub struct AgentSpawnStatusTool {
-    executor: Arc<SubagentExecutor>,
+    /// Optional bound registry for per-agent usage.
+    /// When `None`, the tool searches across all agent registries (global mode).
+    registry: Option<SharedSubagentRegistry>,
 }
 
 impl AgentSpawnStatusTool {
+    /// Create a status tool bound to a specific agent's registry.
     #[must_use]
-    pub fn new(executor: Arc<SubagentExecutor>) -> Self {
-        Self { executor }
+    pub fn with_registry(registry: SharedSubagentRegistry) -> Self {
+        Self {
+            registry: Some(registry),
+        }
+    }
+
+    /// Create a global status tool that searches across all agent registries.
+    #[must_use]
+    pub fn global() -> Self {
+        Self { registry: None }
+    }
+
+    /// Look up a run by ID, either in the bound registry or across all registries.
+    async fn lookup_run(&self, run_id: &str) -> Option<crate::agent::subagent_registry::SubagentRun> {
+        match &self.registry {
+            Some(registry) => {
+                let reg = registry.read().await;
+                reg.get(run_id).cloned()
+            }
+            None => find_run_across_all_registries(run_id).await,
+        }
     }
 }
 
@@ -524,7 +548,7 @@ Returns the current status and result if complete."
             .and_then(|r| r.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing required 'run_id' parameter"))?;
 
-        match self.executor.get_run(run_id).await {
+        match self.lookup_run(run_id).await {
             Some(run) => {
                 let status_str = run.status.as_str();
                 let is_terminal = run.status.is_terminal();
@@ -577,13 +601,35 @@ Returns the current status and result if complete."
 ///
 /// Shows all subagents spawned from the current session.
 pub struct AgentSpawnListTool {
-    registry: SharedSubagentRegistry,
+    /// Optional bound registry for per-agent usage.
+    /// When `None`, the tool lists runs across all agent registries (global mode).
+    registry: Option<SharedSubagentRegistry>,
 }
 
 impl AgentSpawnListTool {
+    /// Create a list tool bound to a specific agent's registry.
     #[must_use]
-    pub fn new(registry: SharedSubagentRegistry) -> Self {
-        Self { registry }
+    pub fn with_registry(registry: SharedSubagentRegistry) -> Self {
+        Self {
+            registry: Some(registry),
+        }
+    }
+
+    /// Create a global list tool that searches across all agent registries.
+    #[must_use]
+    pub fn global() -> Self {
+        Self { registry: None }
+    }
+
+    /// List runs, either from the bound registry or across all registries.
+    async fn list_runs(&self) -> Vec<crate::agent::subagent_registry::SubagentRun> {
+        match &self.registry {
+            Some(registry) => {
+                let reg = registry.read().await;
+                reg.list_all().into_iter().cloned().collect()
+            }
+            None => list_all_runs_across_all_registries().await,
+        }
     }
 }
 
@@ -605,9 +651,8 @@ impl Tool for AgentSpawnListTool {
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let registry = self.registry.read().await;
-        let runs: Vec<_> = registry
-            .list_all()
+        let runs = self.list_runs().await;
+        let run_jsons: Vec<_> = runs
             .into_iter()
             .map(|run| {
                 json!({
@@ -622,9 +667,9 @@ impl Tool for AgentSpawnListTool {
             .collect();
 
         Ok(json!({
-            "total": runs.len(),
-            "active": runs.iter().filter(|r| !r["status"].as_str().unwrap_or("").eq("completed") && !r["status"].as_str().unwrap_or("").eq("failed") && !r["status"].as_str().unwrap_or("").eq("cancelled") && !r["status"].as_str().unwrap_or("").eq("timed_out")).count(),
-            "runs": runs
+            "total": run_jsons.len(),
+            "active": run_jsons.iter().filter(|r| !r["status"].as_str().unwrap_or("").eq("completed") && !r["status"].as_str().unwrap_or("").eq("failed") && !r["status"].as_str().unwrap_or("").eq("cancelled") && !r["status"].as_str().unwrap_or("").eq("timed_out")).count(),
+            "runs": run_jsons
         }))
     }
 }

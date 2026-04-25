@@ -125,7 +125,8 @@ You are running as a subagent (depth {depth}/{max_depth}).
 2. Do NOT spawn additional subagents unless absolutely necessary (you are at depth {depth} of {max_depth} max)
 3. Complete your task efficiently and provide clear output
 4. Do NOT busy-poll for status - the system will handle result announcement automatically
-5. Return your results as normal assistant responses - they will be captured and announced
+5. ALWAYS respond with text output after completing your task - empty responses cannot be captured
+6. Return your results as normal assistant text responses - they will be captured and announced
 
 **Result Announcement:**
 When you complete your work, the result will be automatically sent back to your requester. You do not need to do anything special for this to happen.

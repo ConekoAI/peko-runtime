@@ -12,8 +12,9 @@
 use crate::extensions::adapters::BuiltinToolAdapter;
 use crate::extensions::core::ExtensionCore;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, SessionStatusTool, SessionsHistoryTool,
-    SessionsListTool, ShellTool, StrReplaceFileTool, WriteFileTool,
+    AgentSpawnListTool, AgentSpawnStatusTool, CronTool, GlobTool, GrepTool, ReadFileTool,
+    SessionStatusTool, SessionsHistoryTool, SessionsListTool, ShellTool, StrReplaceFileTool,
+    WriteFileTool,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -34,6 +35,8 @@ pub struct BuiltinToolRegistrarConfig {
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
+    /// Enable subagent spawn status/list tools
+    pub enable_subagent_tools: bool,
     /// Path to cron database
     pub cron_db_path: Option<PathBuf>,
     /// Instance ID for cron persistence
@@ -51,6 +54,7 @@ impl Default for BuiltinToolRegistrarConfig {
             enable_shell: true,
             enable_session_tools: true,
             enable_cron: true,
+            enable_subagent_tools: true,
             cron_db_path: None,
             instance_id: None,
             disabled_tools: Vec::new(),
@@ -149,6 +153,21 @@ impl BuiltinToolRegistrar {
             BuiltinToolAdapter::register_tool(core, tool).await?;
         }
 
+        // Subagent spawn status and list tools (global registrations)
+        // These are registered globally so they're available even before an agent
+        // is created. They search across all per-agent registries at runtime.
+        if config.enable_subagent_tools {
+            if !disabled_set.contains("agent_spawn_status") {
+                let tool = Arc::new(AgentSpawnStatusTool::global());
+                BuiltinToolAdapter::register_tool(core, tool).await?;
+            }
+
+            if !disabled_set.contains("agent_spawn_list") {
+                let tool = Arc::new(AgentSpawnListTool::global());
+                BuiltinToolAdapter::register_tool(core, tool).await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -166,6 +185,8 @@ impl BuiltinToolRegistrar {
             "sessions_history",
             "session_status",
             "cron",
+            "agent_spawn_status",
+            "agent_spawn_list",
         ]
     }
 

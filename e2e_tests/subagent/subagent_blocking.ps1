@@ -66,6 +66,8 @@ $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$parentAgent"
 
 # Ensure cleanup runs even if tests fail
 try {
+    $script:failed = $false
+
     # ============================================================
     # TEST 1: Blocking spawn — subagent writes a file
     # ============================================================
@@ -74,18 +76,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $testFile = "subagent_blocking_test.txt"
-    $prompt = @"
-You have a subagent_spawn tool. Use it to spawn a subagent with this exact task:
-"Use the write_file tool to create a file named '$testFile' in the workspace with the content 'SUBAGENT_WAS_HERE'."
-
-Do NOT use write_file yourself — delegate the task to the subagent via agent_spawn.
-The subagent should have write_file enabled by default.
-
-After the subagent completes, check if the file exists using read_file or shell.
-If the file exists and contains 'SUBAGENT_WAS_HERE', respond with BLOCKING_SUCCESS.
-If the file is missing or has wrong content, respond with BLOCKING_FAILED and explain.
-If the agent_spawn tool is not available or fails, respond with BLOCKING_FAILED and explain.
-"@
+    $prompt = 'You have a subagent_spawn tool. Use it to spawn a subagent with this exact task: Use the write_file tool to create a file named ' + $testFile + ' in the workspace with the content SUBAGENT_WAS_HERE. Do NOT use write_file yourself — delegate the task to the subagent via agent_spawn. The subagent should have write_file enabled by default. After the subagent completes, check if the file exists using read_file or shell. If the file exists and contains SUBAGENT_WAS_HERE, respond with BLOCKING_SUCCESS. If the file is missing or has wrong content, respond with BLOCKING_FAILED and explain. If the agent_spawn tool is not available or fails, respond with BLOCKING_FAILED and explain.'
 
     Write-Host "Sending blocking spawn request..." -ForegroundColor Yellow
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -107,8 +98,10 @@ If the agent_spawn tool is not available or fails, respond with BLOCKING_FAILED 
         Write-Host "PASS: Blocking spawn succeeded, subagent wrote file correctly" -ForegroundColor Green
     } elseif ($failed) {
         Write-Host "FAIL: Agent reported BLOCKING_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } elseif (-not $fileExists) {
         Write-Host "FAIL: File not found after blocking spawn — subagent may not have executed" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -121,14 +114,7 @@ If the agent_spawn tool is not available or fails, respond with BLOCKING_FAILED 
     Write-Host "========================================" -ForegroundColor Cyan
 
     $isolatedFile = "isolated_subagent_test.txt"
-    $prompt2 = @"
-Use agent_spawn with isolated=true to spawn a subagent with this task:
-"Use the write_file tool to create a file named '$isolatedFile' with content 'ISOLATED_SUBAGENT_WAS_HERE'."
-
-After the subagent completes, check if the file exists.
-If the file exists and contains the expected content, respond with ISOLATED_SUCCESS.
-Otherwise respond with ISOLATED_FAILED.
-"@
+    $prompt2 = 'Use agent_spawn with isolated=true to spawn a subagent with this task: Use the write_file tool to create a file named ' + $isolatedFile + ' with content ISOLATED_SUBAGENT_WAS_HERE. After the subagent completes, check if the file exists. If the file exists and contains the expected content, respond with ISOLATED_SUCCESS. Otherwise respond with ISOLATED_FAILED.'
 
     Write-Host "Sending isolated blocking spawn request..." -ForegroundColor Yellow
     $response2 = peko send $parentAgent $prompt2 --no-stream 2>&1
@@ -144,6 +130,7 @@ Otherwise respond with ISOLATED_FAILED.
         Write-Host "PASS: Isolated blocking spawn succeeded" -ForegroundColor Green
     } elseif ($response2 -match "ISOLATED_FAILED") {
         Write-Host "FAIL: Agent reported ISOLATED_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -156,13 +143,7 @@ Otherwise respond with ISOLATED_FAILED.
     Write-Host "========================================" -ForegroundColor Cyan
 
     $shellFile = "shell_subagent_test.txt"
-    $prompt3 = @"
-Use agent_spawn to delegate this task to a subagent:
-"Use the shell tool to run: echo SHELL_SUBAGENT_OK > $shellFile"
-
-After the subagent completes, verify the file exists and contains SHELL_SUBAGENT_OK.
-If yes, respond with SHELL_SUCCESS. Otherwise SHELL_FAILED.
-"@
+    $prompt3 = 'Use agent_spawn to delegate this task to a subagent: Use the shell tool to run: echo SHELL_SUBAGENT_OK > ' + $shellFile + '. After the subagent completes, verify the file exists and contains SHELL_SUBAGENT_OK. If yes, respond with SHELL_SUCCESS. Otherwise SHELL_FAILED.'
 
     Write-Host "Sending shell-delegation spawn request..." -ForegroundColor Yellow
     $response3 = peko send $parentAgent $prompt3 --no-stream 2>&1
@@ -178,6 +159,7 @@ If yes, respond with SHELL_SUCCESS. Otherwise SHELL_FAILED.
         Write-Host "PASS: Subagent successfully used shell tool in blocking mode" -ForegroundColor Green
     } elseif ($response3 -match "SHELL_FAILED") {
         Write-Host "FAIL: Agent reported SHELL_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -189,15 +171,10 @@ If yes, respond with SHELL_SUCCESS. Otherwise SHELL_FAILED.
     Write-Host "TEST 4: Blocking spawn returns inline result, not receipt" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $prompt4 = @"
-Use agent_spawn to ask a subagent: "What is 2 + 2?" 
-The subagent should answer with just the number.
-
-You (the parent) should receive the subagent's answer directly as the result of agent_spawn.
-If the result contains '4', respond with INLINE_SUCCESS.
-If you get a receipt with task_id or task_file instead of the actual answer, respond with INLINE_RECEIPT (that means it's async mode, not blocking).
-If something else goes wrong, respond with INLINE_FAILED.
-"@
+    # Use a task that requires a tool (read_file) to ensure the subagent produces output.
+    # Pure text questions may return empty output due to LLM behavior in subagent context.
+    $inlineFile = "inline_test.txt"
+    $prompt4 = 'First use write_file to create ' + $inlineFile + ' with content INLINE_RESULT_OK. Then use agent_spawn to ask a subagent to use read_file to read ' + $inlineFile + ' and return the content. You (the parent) should receive the file content directly as the result of agent_spawn. If the result contains INLINE_RESULT_OK, respond with INLINE_SUCCESS. If you get a receipt with run_id instead of the actual content, respond with INLINE_RECEIPT. If something else goes wrong, respond with INLINE_FAILED.'
 
     Write-Host "Sending inline-result test..." -ForegroundColor Yellow
     $response4 = peko send $parentAgent $prompt4 --no-stream 2>&1
@@ -207,8 +184,10 @@ If something else goes wrong, respond with INLINE_FAILED.
         Write-Host "PASS: Blocking spawn returned inline result" -ForegroundColor Green
     } elseif ($response4 -match "INLINE_RECEIPT") {
         Write-Host "FAIL: Got receipt instead of inline result — blocking mode not working" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($response4 -match "INLINE_FAILED") {
         Write-Host "FAIL: Agent reported INLINE_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -229,6 +208,10 @@ If something else goes wrong, respond with INLINE_FAILED.
 
     peko agent delete $parentAgent --force 2>&1 | Out-Null
     Write-Host "Deleted test agent" -ForegroundColor Green
+}
+
+if ($script:failed) {
+    exit 1
 }
 
 Write-Host "`nSubagent blocking mode e2e tests completed!" -ForegroundColor Green

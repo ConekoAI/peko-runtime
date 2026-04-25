@@ -63,6 +63,8 @@ $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$parentAgent"
 
 # Ensure cleanup runs even if tests fail
 try {
+    $script:failed = $false
+
     # ============================================================
     # TEST 1: agent_spawn_status returns correct status
     # ============================================================
@@ -71,17 +73,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $statusFile = "status_test.txt"
-    $prompt = @"
-Use agent_spawn with `_async: true` to delegate this task:
-"Use shell to run: Start-Sleep 8; echo STATUS_TEST_DONE > $statusFile"
-
-You should get a receipt with a run_id. 
-Then IMMEDIATELY (don't wait) use the agent_spawn_status tool with that run_id to check the status.
-
-If agent_spawn_status shows status "running" or "pending", respond with STATUS_RUNNING_OK.
-If it shows "completed" immediately (which would be unexpected for an 8s task), respond with STATUS_ALREADY_DONE.
-If the tool is unavailable or fails, respond with STATUS_TOOL_FAILED.
-"@
+    $prompt = 'Use agent_spawn with _async=true to delegate this task: Use shell to run: Start-Sleep 8; echo STATUS_TEST_DONE > ' + $statusFile + '. You will get a receipt. Extract the run_id from the receipt and use agent_spawn_status with that run_id to check the status. If status is running or pending, respond with STATUS_RUNNING_OK. If completed immediately, respond with STATUS_ALREADY_DONE. If the tool fails, respond with STATUS_TOOL_FAILED.'
 
     Write-Host "Sending status check test..." -ForegroundColor Yellow
     $response = peko send $parentAgent $prompt --no-stream 2>&1
@@ -93,6 +85,7 @@ If the tool is unavailable or fails, respond with STATUS_TOOL_FAILED.
         Write-Host "UNEXPECTED: Task completed immediately — async may not be working" -ForegroundColor Yellow
     } elseif ($response -match "STATUS_TOOL_FAILED") {
         Write-Host "FAIL: agent_spawn_status tool unavailable or failed" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -107,15 +100,7 @@ If the tool is unavailable or fails, respond with STATUS_TOOL_FAILED.
     Write-Host "Waiting for async task to complete (8s)..." -ForegroundColor Yellow
     Start-Sleep 8
 
-    $prompt2 = @"
-Use the agent_spawn_status tool again with the same run_id from the previous task.
-Also check if the file '$statusFile' exists.
-
-If agent_spawn_status shows status "completed" and the file exists with STATUS_TEST_DONE, respond with STATUS_COMPLETE_OK.
-If status is still "running", respond with STATUS_STILL_RUNNING.
-If status shows "failed" or "timed_out", respond with STATUS_COMPLETE_FAILED.
-If the tool is unavailable, respond with STATUS_TOOL_MISSING.
-"@
+    $prompt2 = 'Use the agent_spawn_status tool again with the same run_id from the previous task. Also check if the file ' + $statusFile + ' exists. If agent_spawn_status shows status completed and the file exists with STATUS_TEST_DONE, respond with STATUS_COMPLETE_OK. If status is still running, respond with STATUS_STILL_RUNNING. If status shows failed or timed_out, respond with STATUS_COMPLETE_FAILED. If the tool is unavailable, respond with STATUS_TOOL_MISSING.'
 
     Write-Host "Sending completion check..." -ForegroundColor Yellow
     $response2 = peko send $parentAgent $prompt2 --no-stream 2>&1
@@ -132,8 +117,10 @@ If the tool is unavailable, respond with STATUS_TOOL_MISSING.
         Write-Host "IN_PROGRESS: Task still running" -ForegroundColor Yellow
     } elseif ($response2 -match "STATUS_COMPLETE_FAILED") {
         Write-Host "FAIL: Task failed or timed out" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($response2 -match "STATUS_TOOL_MISSING") {
         Write-Host "FAIL: agent_spawn_status tool not available" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -145,18 +132,7 @@ If the tool is unavailable, respond with STATUS_TOOL_MISSING.
     Write-Host "TEST 3: agent_spawn_list tool" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $prompt3 = @"
-Launch TWO async subagents concurrently:
-1. "Use shell to run: Start-Sleep 10; echo done1"
-2. "Use shell to run: Start-Sleep 10; echo done2"
-
-Immediately after getting both receipts, use the agent_spawn_list tool to list all active runs.
-
-If agent_spawn_list shows at least 2 active runs, respond with LIST_OK and the count.
-If it shows fewer than 2, respond with LIST_LOW_COUNT.
-If the tool is unavailable, respond with LIST_TOOL_MISSING.
-If something else goes wrong, respond with LIST_FAILED.
-"@
+    $prompt3 = 'Launch TWO async subagents concurrently: 1. Use shell to run: Start-Sleep 10; echo done1. 2. Use shell to run: Start-Sleep 10; echo done2. Immediately after getting both receipts, use the agent_spawn_list tool to list all active runs. If agent_spawn_list shows at least 2 active runs, respond with LIST_OK and the count. If it shows fewer than 2, respond with LIST_LOW_COUNT. If the tool is unavailable, respond with LIST_TOOL_MISSING. If something else goes wrong, respond with LIST_FAILED.'
 
     Write-Host "Sending list test..." -ForegroundColor Yellow
     $response3 = peko send $parentAgent $prompt3 --no-stream 2>&1
@@ -166,10 +142,13 @@ If something else goes wrong, respond with LIST_FAILED.
         Write-Host "PASS: agent_spawn_list showed multiple active runs" -ForegroundColor Green
     } elseif ($response3 -match "LIST_LOW_COUNT") {
         Write-Host "FAIL: agent_spawn_list showed fewer runs than expected" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($response3 -match "LIST_TOOL_MISSING") {
         Write-Host "FAIL: agent_spawn_list tool not available" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($response3 -match "LIST_FAILED") {
         Write-Host "FAIL: Agent reported LIST_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -192,6 +171,10 @@ If something else goes wrong, respond with LIST_FAILED.
 
     peko agent delete $parentAgent --force 2>&1 | Out-Null
     Write-Host "Deleted test agent" -ForegroundColor Green
+}
+
+if ($script:failed) {
+    exit 1
 }
 
 Write-Host "`nSubagent status & list e2e tests completed!" -ForegroundColor Green

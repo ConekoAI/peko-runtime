@@ -66,6 +66,8 @@ $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$parentAgent"
 
 # Ensure cleanup runs even if tests fail
 try {
+    $script:failed = $false
+
     # ============================================================
     # TEST 1: Async spawn returns a receipt with task_file
     # ============================================================
@@ -74,17 +76,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $asyncFile = "async_subagent_result.txt"
-    $prompt = @"
-Use agent_spawn with `_async: true` to delegate this task to a subagent:
-"Use the shell tool to run: Start-Sleep 15; echo ASYNC_TASK_COMPLETE > $asyncFile"
-
-The agent_spawn tool should return a JSON receipt immediately (not wait 15 seconds).
-Read that receipt carefully. It should contain a 'task_file' path.
-
-If you got a receipt with a task_file path, respond with ASYNC_RECEIPT_OK and include the task_file path.
-If you got the result immediately (no receipt), respond with ASYNC_NO_RECEIPT.
-If the tool failed or is unavailable, respond with ASYNC_FAILED and explain.
-"@
+    $prompt = 'Use agent_spawn with _async=true to delegate this task to a subagent: Use the shell tool to run: Start-Sleep 15; echo ASYNC_TASK_COMPLETE > ' + $asyncFile + '. The agent_spawn tool should return a JSON receipt immediately (not wait 15 seconds). Read that receipt carefully. It should contain a task_file path. If you got a receipt with a task_file path, respond with ASYNC_RECEIPT_OK and include the task_file path. If you got the result immediately (no receipt), respond with ASYNC_NO_RECEIPT. If the tool failed or is unavailable, respond with ASYNC_FAILED and explain.'
 
     Write-Host "Sending async spawn request..." -ForegroundColor Yellow
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -96,6 +88,7 @@ If the tool failed or is unavailable, respond with ASYNC_FAILED and explain.
     # Verify the agent returned quickly (less than 10s) — proves it didn't block on the 15s background task
     if ($stopwatch.Elapsed.TotalSeconds -gt 10) {
         Write-Host "FAIL: Agent took $($stopwatch.Elapsed.TotalSeconds.ToString('F1'))s to respond — it may have blocked on the background task" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "PASS: Agent returned in $($stopwatch.Elapsed.TotalSeconds.ToString('F1'))s — did not block on background task" -ForegroundColor Green
     }
@@ -108,8 +101,10 @@ If the tool failed or is unavailable, respond with ASYNC_FAILED and explain.
         Write-Host "PASS: Agent received async receipt with task_file" -ForegroundColor Green
     } elseif ($noReceipt) {
         Write-Host "FAIL: Agent did not get a receipt — async mode may not be working" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($failed) {
         Write-Host "FAIL: Agent reported ASYNC_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -124,15 +119,7 @@ If the tool failed or is unavailable, respond with ASYNC_FAILED and explain.
     Write-Host "Waiting for async task to complete (15s)..." -ForegroundColor Yellow
     Start-Sleep 15
 
-    $prompt2 = @"
-Check the task_file path from the async receipt you received earlier.
-Read the task_file using read_file or shell to see if the subagent task is complete.
-
-If the task_file shows status "completed" and the result contains "ASYNC_TASK_COMPLETE", respond with POLLING_SUCCESS and include the result.
-If the task_file shows status "running" or "pending", respond with POLLING_STILL_RUNNING.
-If the task_file shows "failed" or "timed_out", respond with POLLING_FAILED and explain.
-If you cannot find or read the task_file, respond with POLLING_ERROR.
-"@
+    $prompt2 = 'Check the task_file path from the async receipt you received earlier. Read the task_file using read_file or shell to see if the subagent task is complete. If the task_file shows status completed and the result contains ASYNC_TASK_COMPLETE, respond with POLLING_SUCCESS and include the result. If the task_file shows status running or pending, respond with POLLING_STILL_RUNNING. If the task_file shows failed or timed_out, respond with POLLING_FAILED and explain. If you cannot find or read the task_file, respond with POLLING_ERROR.'
 
     Write-Host "Sending polling request..." -ForegroundColor Yellow
     $response2 = peko send $parentAgent $prompt2 --no-stream 2>&1
@@ -155,6 +142,7 @@ If you cannot find or read the task_file, respond with POLLING_ERROR.
         Write-Host "IN_PROGRESS: Task still running according to agent's polling" -ForegroundColor Yellow
     } elseif ($pollingFailed) {
         Write-Host "FAIL: Agent reported task failed according to task_file" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($pollingError) {
         Write-Host "EXPECTED FAIL (feature may be stubbed): Agent could not access task_file" -ForegroundColor Yellow
     } else {
@@ -168,17 +156,7 @@ If you cannot find or read the task_file, respond with POLLING_ERROR.
     Write-Host "TEST 3: Async spawn with _timeout" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $prompt3 = @"
-Use agent_spawn with `_async: true` and `_timeout: 2` to delegate this task:
-"Use the shell tool to run: Start-Sleep 10; echo 'should not reach here'"
-
-This task should time out after 2 seconds because the sleep is 10 seconds.
-Get the receipt, wait about 5 seconds, then read the task_file.
-
-If the task_file shows status "timed_out" or "failed" due to timeout, respond with TIMEOUT_SUCCESS.
-If the task completed successfully (status "completed"), respond with TIMEOUT_FAILED.
-If something else goes wrong, respond with TIMEOUT_ERROR.
-"@
+    $prompt3 = 'Use agent_spawn with _async=true and _timeout=2 to delegate this task: Use the shell tool to run: Start-Sleep 10; echo should not reach here. This task should time out after 2 seconds because the sleep is 10 seconds. Get the receipt, wait about 5 seconds, then read the task_file. If the task_file shows status timed_out or failed due to timeout, respond with TIMEOUT_SUCCESS. If the task completed successfully (status completed), respond with TIMEOUT_FAILED. If something else goes wrong, respond with TIMEOUT_ERROR.'
 
     Write-Host "Sending async timeout test..." -ForegroundColor Yellow
     $response3 = peko send $parentAgent $prompt3 --no-stream 2>&1
@@ -192,6 +170,7 @@ If something else goes wrong, respond with TIMEOUT_ERROR.
         Write-Host "PASS: Async subagent correctly timed out" -ForegroundColor Green
     } elseif ($timeoutFailed) {
         Write-Host "FAIL: Subagent did not time out as expected" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($timeoutError) {
         Write-Host "EXPECTED FAIL (feature may be stubbed): Agent could not verify timeout" -ForegroundColor Yellow
     } else {
@@ -205,20 +184,7 @@ If something else goes wrong, respond with TIMEOUT_ERROR.
     Write-Host "TEST 4: Multiple concurrent async spawns" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $prompt4 = @"
-Launch TWO async subagents concurrently using agent_spawn with `_async: true`:
-
-Subagent A task: "Use shell to run: Start-Sleep 5; echo CONCURRENT_A > concurrent_a.txt"
-Subagent B task: "Use shell to run: Start-Sleep 5; echo CONCURRENT_B > concurrent_b.txt"
-
-You should get TWO receipts immediately (the parent should not wait 5 seconds).
-Collect both task_file paths. Wait about 10 seconds, then read both task_files.
-
-If both tasks completed successfully and both files exist, respond with CONCURRENT_SUCCESS.
-If you only got one receipt or one task failed, respond with CONCURRENT_PARTIAL.
-If the parent blocked and you didn't get receipts, respond with CONCURRENT_BLOCKED.
-If something else goes wrong, respond with CONCURRENT_FAILED.
-"@
+    $prompt4 = 'Launch TWO async subagents concurrently using agent_spawn with _async=true. Subagent A task: Use shell to run: Start-Sleep 5; echo CONCURRENT_A > concurrent_a.txt. Subagent B task: Use shell to run: Start-Sleep 5; echo CONCURRENT_B > concurrent_b.txt. You should get TWO receipts immediately (the parent should not wait 5 seconds). Collect both task_file paths. Wait about 10 seconds, then read both task_files. If both tasks completed successfully and both files exist, respond with CONCURRENT_SUCCESS. If you only got one receipt or one task failed, respond with CONCURRENT_PARTIAL. If the parent blocked and you did not get receipts, respond with CONCURRENT_BLOCKED. If something else goes wrong, respond with CONCURRENT_FAILED.'
 
     Write-Host "Sending concurrent async spawn test..." -ForegroundColor Yellow
     $stopwatch4 = [System.Diagnostics.Stopwatch]::StartNew()
@@ -243,10 +209,12 @@ If something else goes wrong, respond with CONCURRENT_FAILED.
         Write-Host "PASS: Both concurrent async spawns completed successfully" -ForegroundColor Green
     } elseif ($concurrentBlocked) {
         Write-Host "FAIL: Parent blocked instead of returning receipts immediately" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($concurrentPartial) {
         Write-Host "PARTIAL: Only some concurrent spawns succeeded" -ForegroundColor Yellow
     } elseif ($concurrentFailed) {
         Write-Host "FAIL: Agent reported CONCURRENT_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -267,6 +235,10 @@ If something else goes wrong, respond with CONCURRENT_FAILED.
 
     peko agent delete $parentAgent --force 2>&1 | Out-Null
     Write-Host "Deleted test agent" -ForegroundColor Green
+}
+
+if ($script:failed) {
+    exit 1
 }
 
 Write-Host "`nSubagent async mode e2e tests completed!" -ForegroundColor Green

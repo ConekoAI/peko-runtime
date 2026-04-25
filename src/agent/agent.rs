@@ -100,11 +100,11 @@ impl Agent {
             Box::new(self.session_key_provider.clone()),
         )));
 
-        // Add spawn status and list tools
-        tools.push(Arc::new(AgentSpawnStatusTool::new(
-            self.subagent_executor.clone(),
+        // Add spawn status and list tools (bound to this agent's shared registry)
+        tools.push(Arc::new(AgentSpawnStatusTool::with_registry(
+            self.subagent_executor.registry().clone(),
         )));
-        tools.push(Arc::new(AgentSpawnListTool::new(
+        tools.push(Arc::new(AgentSpawnListTool::with_registry(
             self.subagent_executor.registry().clone(),
         )));
 

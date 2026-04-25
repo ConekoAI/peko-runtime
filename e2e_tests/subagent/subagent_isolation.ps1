@@ -64,6 +64,8 @@ $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$parentAgent"
 
 # Ensure cleanup runs even if tests fail
 try {
+    $script:failed = $false
+
     # ============================================================
     # TEST 1: Shared context — subagent can see parent's file
     # ============================================================
@@ -80,14 +82,7 @@ try {
     Start-Sleep -Milliseconds 500
 
     # Now spawn a subagent (isolated=false, default) and ask it to read the file
-    $prompt = @"
-Use agent_spawn with isolated=false (or no isolated param) to delegate this task:
-"Use read_file to read the file '$sharedFile' in the workspace. Return its contents."
-
-After the subagent completes, if it successfully read 'SHARED_CONTEXT_SECRET', respond with SHARED_OK.
-If the subagent could not find the file, respond with SHARED_NOT_FOUND.
-If something else goes wrong, respond with SHARED_FAILED.
-"@
+    $prompt = 'Use agent_spawn with isolated=false to delegate this task: Use read_file to read the file ' + $sharedFile + ' in the workspace. Return its contents. After the subagent completes, if it successfully read SHARED_CONTEXT_SECRET, respond with SHARED_OK. If the subagent could not find the file, respond with SHARED_NOT_FOUND. If something else goes wrong, respond with SHARED_FAILED.'
 
     Write-Host "Sending shared-context test..." -ForegroundColor Yellow
     $response = peko send $parentAgent $prompt --no-stream 2>&1
@@ -97,8 +92,10 @@ If something else goes wrong, respond with SHARED_FAILED.
         Write-Host "PASS: Subagent in shared mode could access parent's workspace file" -ForegroundColor Green
     } elseif ($response -match "SHARED_NOT_FOUND") {
         Write-Host "FAIL: Subagent could not find parent's file in shared mode" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($response -match "SHARED_FAILED") {
         Write-Host "FAIL: Agent reported SHARED_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -111,15 +108,7 @@ If something else goes wrong, respond with SHARED_FAILED.
     Write-Host "========================================" -ForegroundColor Cyan
 
     $isoFile = "isolated_marker.txt"
-    $prompt2 = @"
-Use agent_spawn with isolated=true to delegate this task:
-"Use write_file to create '$isoFile' with content 'ISOLATED_SUBAGENT_MARKER'. Then use read_file to verify it exists. Return the content."
-
-After the subagent completes, check if the file exists in the workspace.
-If the file exists and contains the expected content, respond with ISOLATED_OK.
-If the file is missing, respond with ISOLATED_MISSING.
-If something else goes wrong, respond with ISOLATED_FAILED.
-"@
+    $prompt2 = 'Use agent_spawn with isolated=true to delegate this task: Use write_file to create ' + $isoFile + ' with content ISOLATED_SUBAGENT_MARKER. Then use read_file to verify it exists. Return the content. After the subagent completes, check if the file exists in the workspace. If the file exists and contains the expected content, respond with ISOLATED_OK. If the file is missing, respond with ISOLATED_MISSING. If something else goes wrong, respond with ISOLATED_FAILED.'
 
     Write-Host "Sending isolated-context test..." -ForegroundColor Yellow
     $response2 = peko send $parentAgent $prompt2 --no-stream 2>&1
@@ -133,8 +122,10 @@ If something else goes wrong, respond with ISOLATED_FAILED.
         Write-Host "PASS: Isolated subagent created its own file successfully" -ForegroundColor Green
     } elseif ($response2 -match "ISOLATED_MISSING") {
         Write-Host "FAIL: Isolated subagent's file not found" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($response2 -match "ISOLATED_FAILED") {
         Write-Host "FAIL: Agent reported ISOLATED_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -149,20 +140,7 @@ If something else goes wrong, respond with ISOLATED_FAILED.
     $keepFile = "keep_marker.txt"
     $deleteFile = "delete_marker.txt"
 
-    $prompt3 = @"
-Do two agent_spawn calls:
-
-1. With cleanup="keep" (or default): "Use write_file to create '$keepFile' with content 'KEEP_ME'"
-2. With cleanup="delete": "Use write_file to create '$deleteFile' with content 'DELETE_ME'"
-
-After both complete, verify both files exist immediately.
-Then wait 5 seconds and check again.
-
-If the keep file still exists but the delete file is gone, respond with CLEANUP_OK.
-If both still exist, respond with CLEANUP_BOTH_EXIST.
-If both are gone, respond with CLEANUP_BOTH_GONE.
-If something else goes wrong, respond with CLEANUP_FAILED.
-"@
+    $prompt3 = 'Do two agent_spawn calls: 1. With cleanup=keep (or default): Use write_file to create ' + $keepFile + ' with content KEEP_ME. 2. With cleanup=delete: Use write_file to create ' + $deleteFile + ' with content DELETE_ME. After both complete, verify both files exist immediately. Then wait 5 seconds and check again. If the keep file still exists but the delete file is gone, respond with CLEANUP_OK. If both still exist, respond with CLEANUP_BOTH_EXIST. If both are gone, respond with CLEANUP_BOTH_GONE. If something else goes wrong, respond with CLEANUP_FAILED.'
 
     Write-Host "Sending cleanup policy test..." -ForegroundColor Yellow
     $response3 = peko send $parentAgent $prompt3 --no-stream 2>&1
@@ -180,6 +158,7 @@ If something else goes wrong, respond with CLEANUP_FAILED.
         Write-Host "EXPECTED (cleanup may not be implemented yet): Both files still exist" -ForegroundColor Yellow
     } elseif ($response3 -match "CLEANUP_FAILED") {
         Write-Host "FAIL: Agent reported CLEANUP_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -199,6 +178,10 @@ If something else goes wrong, respond with CLEANUP_FAILED.
 
     peko agent delete $parentAgent --force 2>&1 | Out-Null
     Write-Host "Deleted test agent" -ForegroundColor Green
+}
+
+if ($script:failed) {
+    exit 1
 }
 
 Write-Host "`nSubagent isolation e2e tests completed!" -ForegroundColor Green

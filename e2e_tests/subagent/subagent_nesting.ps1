@@ -64,6 +64,8 @@ $workspaceDir = "$env:APPDATA/pekobot/workspaces/default/$parentAgent"
 
 # Ensure cleanup runs even if tests fail
 try {
+    $script:failed = $false
+
     # ============================================================
     # TEST 1: Single nesting — parent spawns subagent that spawns another
     # ============================================================
@@ -72,19 +74,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $nestFile = "nesting_depth2.txt"
-    $prompt = @"
-You are the parent agent (depth 0).
-
-Use agent_spawn to delegate this task to Subagent-A:
-"You are Subagent-A (depth 1). Use agent_spawn to delegate this task to Subagent-B:
-'You are Subagent-B (depth 2). Use the write_file tool to create a file named "$nestFile" with content "DEPTH_2_REACHED". Then respond with DONE.'
-
-After Subagent-B completes, return its response to me."
-
-After Subagent-A completes, return its response to me.
-If the final result indicates depth 2 was reached and the file exists, respond with NESTING_SUCCESS.
-If any level fails or depth limit is hit, respond with NESTING_FAILED and explain.
-"@
+    $prompt = 'You are the parent agent (depth 0). Use agent_spawn to delegate this task to Subagent-A: You are Subagent-A (depth 1). Use agent_spawn to delegate this task to Subagent-B: You are Subagent-B (depth 2). Use the write_file tool to create a file named ' + $nestFile + ' with content DEPTH_2_REACHED. Then respond with DONE. After Subagent-B completes, return its response to me. After Subagent-A completes, return its response to me. If the final result indicates depth 2 was reached and the file exists, respond with NESTING_SUCCESS. If any level fails or depth limit is hit, respond with NESTING_FAILED and explain.'
 
     Write-Host "Sending nesting test (depth 2)..." -ForegroundColor Yellow
     $response = peko send $parentAgent $prompt --no-stream 2>&1
@@ -100,6 +90,7 @@ If any level fails or depth limit is hit, respond with NESTING_FAILED and explai
         Write-Host "PASS: Nesting to depth 2 succeeded" -ForegroundColor Green
     } elseif ($response -match "NESTING_FAILED") {
         Write-Host "FAIL: Agent reported NESTING_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -111,15 +102,7 @@ If any level fails or depth limit is hit, respond with NESTING_FAILED and explai
     Write-Host "TEST 2: Depth limit enforcement" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $prompt2 = @"
-Try to create a very deep chain of subagents by having each one spawn another.
-Start by spawning a subagent with this task:
-"Keep spawning subagents, each telling the next to spawn another. Stop when you hit a depth limit error. Report back the maximum depth you reached."
-
-If you get a depth-limit error (forbidden, max depth exceeded, etc.), respond with DEPTH_LIMIT_HIT and report the depth reached.
-If it keeps going without limit, respond with DEPTH_NO_LIMIT.
-If something else goes wrong, respond with DEPTH_ERROR.
-"@
+    $prompt2 = 'Try to create a very deep chain of subagents by having each one spawn another. Start by spawning a subagent with this task: Keep spawning subagents, each telling the next to spawn another. Stop when you hit a depth limit error. Report back the maximum depth you reached. If you get a depth-limit error (forbidden, max depth exceeded, etc.), respond with DEPTH_LIMIT_HIT and report the depth reached. If it keeps going without limit, respond with DEPTH_NO_LIMIT. If something else goes wrong, respond with DEPTH_ERROR.'
 
     Write-Host "Sending depth limit test..." -ForegroundColor Yellow
     $response2 = peko send $parentAgent $prompt2 --no-stream 2>&1
@@ -129,8 +112,10 @@ If something else goes wrong, respond with DEPTH_ERROR.
         Write-Host "PASS: Depth limit was enforced" -ForegroundColor Green
     } elseif ($response2 -match "DEPTH_NO_LIMIT") {
         Write-Host "FAIL: No depth limit detected — potential infinite recursion risk" -ForegroundColor Red
+        $script:failed = $true
     } elseif ($response2 -match "DEPTH_ERROR") {
         Write-Host "FAIL: Agent reported DEPTH_ERROR" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -142,15 +127,9 @@ If something else goes wrong, respond with DEPTH_ERROR.
     Write-Host "TEST 3: Results bubble up through nesting chain" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    $prompt3 = @"
-Create a 2-level nesting chain where each subagent adds to a result:
-
-Spawn Subagent-A with: "Return the string 'Level1'"
-Then spawn Subagent-B with: "Return the string 'Level2'"
-
-Combine their results as "Level1:Level2" and respond with BUBBLE_OK if both results are present.
-If any result is missing, respond with BUBBLE_FAILED.
-"@
+    # Use tool-based tasks to ensure subagents produce output (pure text tasks may return empty due to LLM behavior).
+    $bubbleFile = "bubble_test.txt"
+    $prompt3 = 'Create a 2-level nesting chain: First, use write_file to create ' + $bubbleFile + ' with content LEVEL_0. Then spawn Subagent-A with: Use read_file to read ' + $bubbleFile + ' and return the content. After Subagent-A completes, spawn Subagent-B with: Use read_file to read ' + $bubbleFile + ' and return the content. If both subagents return LEVEL_0, respond with BUBBLE_OK. If any result is missing, respond with BUBBLE_FAILED.'
 
     Write-Host "Sending bubble-up test..." -ForegroundColor Yellow
     $response3 = peko send $parentAgent $prompt3 --no-stream 2>&1
@@ -160,6 +139,7 @@ If any result is missing, respond with BUBBLE_FAILED.
         Write-Host "PASS: Results bubbled up through nesting chain" -ForegroundColor Green
     } elseif ($response3 -match "BUBBLE_FAILED") {
         Write-Host "FAIL: Agent reported BUBBLE_FAILED" -ForegroundColor Red
+        $script:failed = $true
     } else {
         Write-Host "Result unclear - manual review needed" -ForegroundColor Yellow
     }
@@ -178,6 +158,10 @@ If any result is missing, respond with BUBBLE_FAILED.
 
     peko agent delete $parentAgent --force 2>&1 | Out-Null
     Write-Host "Deleted test agent" -ForegroundColor Green
+}
+
+if ($script:failed) {
+    exit 1
 }
 
 Write-Host "`nSubagent nesting e2e tests completed!" -ForegroundColor Green

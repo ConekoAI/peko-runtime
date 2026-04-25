@@ -251,14 +251,18 @@ impl SubagentRegistry {
             .collect()
     }
 
-    /// Get the maximum depth of runs for a parent
+    /// Get the spawn depth of a session.
+    ///
+    /// This looks up the run where the given `session_key` was the *child*
+    /// session key, and returns that run's depth. This gives the actual
+    /// nesting depth of the session in the spawn tree, which is used to
+    /// compute the depth of any children it spawns.
     #[must_use]
-    pub fn get_max_depth_for_parent(&self, parent_session_key: &str) -> u32 {
+    pub fn get_depth_for_session(&self, session_key: &str) -> u32 {
         self.runs
             .values()
-            .filter(|run| run.parent_session_key == parent_session_key)
+            .find(|run| run.child_session_key == session_key)
             .map(|run| run.depth)
-            .max()
             .unwrap_or(0)
     }
 
@@ -340,6 +344,45 @@ pub fn get_or_create_registry_for_agent(agent_name: &str) -> SharedSubagentRegis
     map.entry(agent_name.to_string())
         .or_insert_with(create_shared_registry)
         .clone()
+}
+
+/// Look up a subagent run by ID across all agent registries.
+///
+/// This is used by the globally-registered `agent_spawn_status` tool
+/// which does not have a bound agent name at registration time.
+pub async fn find_run_across_all_registries(run_id: &str) -> Option<SubagentRun> {
+    // Collect registry clones while holding the lock, then drop the lock before awaiting.
+    let registries: Vec<SharedSubagentRegistry> = {
+        let map = global_registries().lock().unwrap();
+        map.values().cloned().collect()
+    };
+    for registry in registries {
+        let reg = registry.read().await;
+        if let Some(run) = reg.get(run_id) {
+            return Some(run.clone());
+        }
+    }
+    None
+}
+
+/// List all subagent runs across all agent registries.
+///
+/// This is used by the globally-registered `agent_spawn_list` tool
+/// which does not have a bound agent name at registration time.
+pub async fn list_all_runs_across_all_registries() -> Vec<SubagentRun> {
+    // Collect registry clones while holding the lock, then drop the lock before awaiting.
+    let registries: Vec<SharedSubagentRegistry> = {
+        let map = global_registries().lock().unwrap();
+        map.values().cloned().collect()
+    };
+    let mut all_runs = Vec::new();
+    for registry in registries {
+        let reg = registry.read().await;
+        for run in reg.list_all() {
+            all_runs.push(run.clone());
+        }
+    }
+    all_runs
 }
 
 #[cfg(test)]
