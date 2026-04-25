@@ -33,8 +33,13 @@ pub mod types;
 // Subagent support
 pub mod announcement_service;
 pub mod subagent_announce;
+pub mod subagent_error;
 pub mod subagent_executor;
+pub mod subagent_recovery;
 pub mod subagent_registry;
+
+// Re-export typed spawn error
+pub use subagent_error::SpawnError;
 
 // Async tool framework
 pub mod async_tool_framework;

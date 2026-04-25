@@ -286,6 +286,47 @@ impl Agent {
         Ok(agent)
     }
 
+    /// Create a new agent with an existing session manager and a shared subagent executor.
+    ///
+    /// Used for subagent execution where the child must share the parent's
+    /// session manager AND subagent registry (for proper depth tracking).
+    pub async fn new_with_shared_executor(
+        config: AgentConfig,
+        session_manager: Arc<TokioRwLock<SessionManager>>,
+        subagent_executor: Arc<SubagentExecutor>,
+    ) -> Result<Self> {
+        info!("Creating agent with shared executor: {}", config.name);
+
+        let identity = Self::load_or_create_identity(&config).await?;
+        let provider = Self::init_provider(&config).await?;
+
+        let session_key_provider = Arc::new(DynamicSessionKeyProvider::new(format!(
+            "agent:{}:cli:default",
+            config.name
+        )));
+
+        let extension_core = global_core().expect("Global ExtensionCore not initialized");
+
+        let agent = Self {
+            config,
+            state: Arc::new(RwLock::new(AgentState::Idle)),
+            identity,
+            provider,
+            session_manager,
+            subagent_executor,
+            session_key_provider,
+            current_session_id: Arc::new(tokio::sync::RwLock::new(None)),
+            extension_core,
+        };
+
+        info!(
+            "Agent {} initialized with DID: {}",
+            agent.config.name, agent.identity.did
+        );
+
+        Ok(agent)
+    }
+
     /// Start the agent
     pub async fn start(&self) -> Result<()> {
         info!(

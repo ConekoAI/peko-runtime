@@ -21,6 +21,7 @@ use crate::agent::async_tool_framework::{
     WaitResult,
 };
 use crate::agent::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
+use crate::agent::subagent_error::SpawnError;
 use crate::agent::subagent_registry::{
     create_shared_registry, SharedSubagentRegistry, SubagentResult, SubagentRun, SubagentStatus,
 };
@@ -72,6 +73,7 @@ impl Default for ExecutionConfig {
 }
 
 /// Executor for subagent tasks
+#[derive(Clone)]
 pub struct SubagentExecutor {
     /// Registry for tracking runs (subagent-specific)
     registry: SharedSubagentRegistry,
@@ -239,21 +241,19 @@ impl SubagentExecutor {
         let child_depth = parent_depth + 1;
 
         if config.max_depth > 0 && child_depth > config.max_depth {
-            return Err(anyhow::anyhow!(
-                "Maximum spawn depth exceeded: {} (max: {})",
-                child_depth,
-                config.max_depth
-            ));
+            return Err(anyhow::anyhow!(SpawnError::DepthLimitExceeded {
+                current: child_depth,
+                max: config.max_depth,
+            }));
         }
 
         // Check concurrent run limits
         let active_count = self.count_active_runs().await;
         if active_count >= self.max_concurrent {
-            return Err(anyhow::anyhow!(
-                "Maximum concurrent subagent runs exceeded: {} (max: {})",
-                active_count,
-                self.max_concurrent
-            ));
+            return Err(anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded {
+                current: active_count,
+                max: self.max_concurrent,
+            }));
         }
 
         // Generate run ID
@@ -377,9 +377,9 @@ impl SubagentExecutor {
                                     "Subagent timed out: run_id={} timeout={}s",
                                     run_id_clone, timeout
                                 );
-                                Err(anyhow::anyhow!(
-                                    "Subagent execution timed out after {timeout} seconds"
-                                ))
+                                Err(anyhow::anyhow!(SpawnError::Timeout {
+                                    seconds: timeout,
+                                }))
                             }
                         }
                     } else {
@@ -435,44 +435,16 @@ impl SubagentExecutor {
                     if cleanup_policy_clone == SpawnCleanupPolicy::Delete {
                         info!("Cleaning up subagent session: run_id={} session_key={}", run_id_clone, child_session_key_clone);
                         let mut manager = session_manager_for_cleanup.write().await;
-                        // The child_session_key is the full session key which is also the overlay key
-                        if manager.remove_spawn_overlay(&child_session_key_clone).is_some() {
-                            info!("Removed spawn overlay for session: {}", child_session_key_clone);
-                            // Also remove the base session - parse the base key from the overlay key
-                            // Format: agent:{agent}:peer:{type}:{id}:overlay:spawn:{spawn_id}
-                            // Base key: agent:{agent}:peer:{type}:{id}
-                            if let Some(base_key_end) = child_session_key_clone.rfind(":overlay:spawn:") {
-                                let base_key = &child_session_key_clone[..base_key_end];
-                                if let Some(peer_idx) = base_key.rfind(":peer:") {
-                                    let agent = &base_key[6..peer_idx]; // after "agent:"
-                                    let peer_str = &base_key[peer_idx + 6..]; // after ":peer:"
-                                    // Parse peer type and id
-                                    if let Some(type_idx) = peer_str.find(':') {
-                                        let peer_type = &peer_str[..type_idx];
-                                        let peer_id = &peer_str[type_idx + 1..];
-                                        let peer = match peer_type {
-                                            "agent" => crate::session::types::Peer::Agent(peer_id.to_string()),
-                                            "user" => crate::session::types::Peer::User(peer_id.to_string()),
-                                            _ => crate::session::types::Peer::Agent(peer_id.to_string()),
-                                        };
-                                        if manager.remove_base_session(agent, &peer).is_some() {
-                                            info!("Removed base session for agent={} peer={:?}", agent, peer);
-                                        }
-                                        // Also clear from session index (peers.json) if available
-                                        if let Some(ref mut index) = manager.index_mut() {
-                                            if let Err(e) = index.clear_active_for_peer(base_key).await {
-                                                warn!("Failed to clear peer from index: {}", e);
-                                            } else if let Err(e) = index.save_peers().await {
-                                                warn!("Failed to save peers index: {}", e);
-                                            } else {
-                                                info!("Cleared peer from session index: {}", base_key);
-                                            }
-                                        }
-                                    }
-                                }
+                        match manager.cleanup_spawn(&child_session_key_clone).await {
+                            Ok(true) => {
+                                info!("Cleaned up spawn session: {}", child_session_key_clone);
                             }
-                        } else {
-                            warn!("Failed to remove spawn overlay for session: {}", child_session_key_clone);
+                            Ok(false) => {
+                                warn!("Spawn overlay not found for cleanup: {}", child_session_key_clone);
+                            }
+                            Err(e) => {
+                                warn!("Failed to clean up spawn session: {}", e);
+                            }
                         }
                     }
 
@@ -699,22 +671,6 @@ impl SubagentExecutor {
     }
 }
 
-impl Clone for SubagentExecutor {
-    fn clone(&self) -> Self {
-        Self {
-            registry: self.registry.clone(),
-            unified_executor: self.unified_executor.clone(),
-
-            agent_name: self.agent_name.clone(),
-            max_concurrent: self.max_concurrent,
-            announcement_tx: self.announcement_tx.clone(),
-            provider: self.provider.clone(),
-            agent_config: self.agent_config.clone(),
-            session_manager: self.session_manager.clone(),
-        }
-    }
-}
-
 /// Execute a subagent task
 ///
 /// This is the core execution function that runs in a background task.
@@ -793,15 +749,30 @@ async fn execute_subagent_task(
         cfg
     });
 
-    // Create a subagent that shares the parent's session manager.
-    // This ensures the subagent can access the same sessions and spawn
-    // further subagents with proper depth tracking (shared registry).
-    let subagent = crate::agent::Agent::new_with_session_manager(config, session_manager)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
+    // Create a shared executor with the parent's registry so nested spawn depth
+    // is tracked correctly across the whole tree.
+    let shared_executor = Arc::new(
+        SubagentExecutor::with_registry(
+            registry,
+            Arc::clone(&session_manager),
+            agent_name,
+            5,
+        )
+        .with_provider(provider.clone())
+        .with_agent_config(config.clone()),
+    );
+
+    // Create a subagent that shares the parent's session manager and executor registry.
+    let subagent = crate::agent::Agent::new_with_shared_executor(
+        config,
+        session_manager,
+        shared_executor,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
 
     // If we have an extension core, ensure the subagent uses it.
-    // (new_with_session_manager already pulls from global_core(), so this
+    // (new_with_shared_executor already pulls from global_core(), so this
     // should be the same one the parent uses.)
     let _extension_core = extension_core;
 
@@ -809,45 +780,6 @@ async fn execute_subagent_task(
     subagent
         .session_key_provider()
         .set_session_key(session_key);
-
-    // Replace the subagent's executor with one that shares the parent's registry
-    // so nested spawn depth is tracked correctly across the whole tree.
-    //
-    // Note: We create a new SubagentExecutor with the shared registry.
-    // The Agent's subagent_executor is an Arc, so we can't directly replace it.
-    // However, the AgentSpawnTool registered during init_builtins_async will
-    // use the Agent's subagent_executor. To share the registry, we need to
-    // re-register the tool with the shared executor.
-    let shared_executor = Arc::new(
-        SubagentExecutor::with_registry(
-            registry,
-            subagent.session_manager(),
-            agent_name,
-            5,
-        )
-        .with_provider(provider.clone())
-        .with_agent_config(subagent.config.clone()),
-    );
-
-    // Re-register agent_spawn tool with the shared executor on ExtensionCore
-    use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
-    use crate::tools::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool};
-
-    let session_key_provider = Box::new(subagent.session_key_provider());
-    let spawn_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnTool::with_session_provider(
-        shared_executor.clone(),
-        session_key_provider,
-    ));
-    let status_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnStatusTool::with_registry(shared_executor.registry().clone()));
-    let list_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnListTool::with_registry(shared_executor.registry().clone()));
-
-    if let Some(core) = crate::extensions::core::global_core() {
-        for tool in [spawn_tool, status_tool, list_tool] {
-            if let Err(e) = BuiltinToolAdapter::register_tool(&core, tool).await {
-                tracing::warn!("Failed to register subagent tool: {}", e);
-            }
-        }
-    }
 
     // Build history for the subagent that includes the subagent context.
     // We pass this as `history` to execute_with_session so the agentic loop
@@ -914,108 +846,8 @@ async fn execute_subagent_task(
             // text (accumulated_text is empty), or when the final assistant message
             // has empty text content.
             if final_answer.trim().is_empty() {
-                match child_session_for_recovery.read().await.load_history().await {
-                    Ok(history) => {
-                        // First, try to find the last assistant message with non-empty text
-                        let mut recovered = false;
-                        for msg in history.iter().rev() {
-                            if matches!(msg.role, crate::providers::MessageRole::Assistant) {
-                                let text: String = msg
-                                    .content
-                                    .iter()
-                                    .filter_map(|c| {
-                                        if let crate::types::message::ContentBlock::Text { text } = c {
-                                            Some(text.as_str())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect();
-                                if !text.trim().is_empty() {
-                                    final_answer = text;
-                                    recovered = true;
-                                    info!(
-                                        "Recovered subagent answer from assistant message: {} chars",
-                                        final_answer.len()
-                                    );
-                                    break;
-                                }
-                            }
-                        }
-
-                        // If no assistant text found, try to extract from tool results
-                        if !recovered {
-                            let mut tool_results: Vec<String> = Vec::new();
-                            for msg in history.iter().rev() {
-                                if matches!(msg.role, crate::providers::MessageRole::Tool) {
-                                    let mut msg_text = String::new();
-                                    for c in &msg.content {
-                                        match c {
-                                            crate::types::message::ContentBlock::Text { text } => {
-                                                msg_text.push_str(text);
-                                            }
-                                            crate::types::message::ContentBlock::ToolResult { content, .. } => {
-                                                for nc in content {
-                                                    if let crate::types::message::ContentBlock::Text { text } = nc {
-                                                        msg_text.push_str(text);
-                                                    }
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    if !msg_text.trim().is_empty() {
-                                        tool_results.push(msg_text);
-                                    }
-                                }
-                            }
-                            if !tool_results.is_empty() {
-                                // Reverse to get chronological order and join
-                                tool_results.reverse();
-                                
-                                // Try to extract human-readable content from JSON tool results
-                                let processed_results: Vec<String> = tool_results
-                                    .iter()
-                                    .map(|raw| {
-                                        // Try to parse as JSON and extract common content fields
-                                        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(raw) {
-                                            // For read_file results: extract "content" field
-                                            if let Some(content) = json_val.get("content").and_then(|v| v.as_str()) {
-                                                return content.to_string();
-                                            }
-                                            // For shell results: extract "stdout" field
-                                            if let Some(stdout) = json_val.get("stdout").and_then(|v| v.as_str()) {
-                                                return stdout.to_string();
-                                            }
-                                            // For grep results: extract "matches" array
-                                            if let Some(matches) = json_val.get("matches").and_then(|v| v.as_array()) {
-                                                let lines: Vec<String> = matches
-                                                    .iter()
-                                                    .filter_map(|m| m.get("line").and_then(|v| v.as_str()).map(String::from))
-                                                    .collect();
-                                                if !lines.is_empty() {
-                                                    return lines.join("\n");
-                                                }
-                                            }
-                                        }
-                                        // Fallback: return raw text
-                                        raw.clone()
-                                    })
-                                    .collect();
-                                
-                                final_answer = processed_results.join("\n\n");
-                                info!(
-                                    "Recovered subagent answer from tool results: {} chars",
-                                    final_answer.len()
-                                );
-                            } else {
-                                info!("Subagent fallback: no tool results found in history");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Subagent fallback: failed to load history: {}", e);
-                    }
+                if let Some(recovered) = crate::agent::subagent_recovery::ResultRecovery::recover_from_session(&child_session_for_recovery).await {
+                    final_answer = recovered;
                 }
             }
 
@@ -1152,31 +984,12 @@ mod tests {
             assert_eq!(mgr.spawn_overlay_count(), 1);
         }
 
-        // Simulate cleanup: remove overlay and base session
+        // Simulate cleanup using cleanup_spawn
         {
             let mut mgr = manager.write().await;
-            let overlay = mgr.remove_spawn_overlay(&child_session_key);
-            assert!(overlay.is_some(), "remove_spawn_overlay should return the overlay");
-
-            // Parse base key and remove base session
-            if let Some(base_key_end) = child_session_key.rfind(":overlay:spawn:") {
-                let base_key = &child_session_key[..base_key_end];
-                if let Some(peer_idx) = base_key.rfind(":peer:") {
-                    let agent = &base_key[6..peer_idx];
-                    let peer_str = &base_key[peer_idx + 6..];
-                    if let Some(type_idx) = peer_str.find(':') {
-                        let peer_type = &peer_str[..type_idx];
-                        let peer_id = &peer_str[type_idx + 1..];
-                        let peer = match peer_type {
-                            "agent" => Peer::Agent(peer_id.to_string()),
-                            "user" => Peer::User(peer_id.to_string()),
-                            _ => Peer::Agent(peer_id.to_string()),
-                        };
-                        let removed = mgr.remove_base_session(agent, &peer);
-                        assert!(removed.is_some(), "remove_base_session should return the base session");
-                    }
-                }
-            }
+            let cleaned = mgr.cleanup_spawn(&child_session_key).await;
+            assert!(cleaned.is_ok(), "cleanup_spawn should succeed");
+            assert!(cleaned.unwrap(), "cleanup_spawn should return true");
         }
 
         // Verify cleanup

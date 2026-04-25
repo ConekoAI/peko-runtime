@@ -112,35 +112,8 @@ impl AnnouncementService {
 
     /// Get parent session handle by key
     async fn get_parent_handle(&self, parent_key: &str) -> Option<crate::session::manager::SessionHandle> {
-        // Parse the parent key to get agent and peer info
-        let parsed = crate::session::key::parse_session_key_v2(parent_key)?;
-
-        let peer = match parsed.peer_type.as_str() {
-            "user" => crate::session::types::Peer::User(parsed.peer_id.clone()),
-            "agent" => crate::session::types::Peer::Agent(parsed.peer_id.clone()),
-            _ => return None,
-        };
-
-        // Get session from manager
         let mut manager = self.session_manager.write().await;
-
-        // Try to get existing base session
-        let base = manager
-            .get_or_create_base(&parsed.agent, &peer)
-            .await
-            .ok()?;
-
-        let session_id = {
-            let base_read = base.read().await;
-            base_read.id.clone()
-        };
-
-        Some(crate::session::manager::SessionHandle::new(
-            session_id,
-            base,
-            Some(crate::session::manager::OverlayRef::None),
-            manager.metadata_controller().clone(),
-        ))
+        resolve_parent_handle(parent_key, &mut manager).await
     }
 
     /// Run announcement processing once (for testing)
@@ -235,32 +208,42 @@ impl ChannelAnnouncementService {
 
     /// Get parent session handle by key
     async fn get_parent_handle(&self, parent_key: &str) -> Option<crate::session::manager::SessionHandle> {
-        let parsed = crate::session::key::parse_session_key_v2(parent_key)?;
-
-        let peer = match parsed.peer_type.as_str() {
-            "user" => crate::session::types::Peer::User(parsed.peer_id.clone()),
-            "agent" => crate::session::types::Peer::Agent(parsed.peer_id.clone()),
-            _ => return None,
-        };
-
         let mut manager = self.session_manager.write().await;
-        let base = manager
-            .get_or_create_base(&parsed.agent, &peer)
-            .await
-            .ok()?;
-
-        let session_id = {
-            let base_read = base.read().await;
-            base_read.id.clone()
-        };
-
-        Some(crate::session::manager::SessionHandle::new(
-            session_id,
-            base,
-            Some(crate::session::manager::OverlayRef::None),
-            manager.metadata_controller().clone(),
-        ))
+        resolve_parent_handle(parent_key, &mut manager).await
     }
+}
+
+/// Resolve a parent session key to a `SessionHandle`
+///
+/// Shared helper used by both `AnnouncementService` and `ChannelAnnouncementService`.
+async fn resolve_parent_handle(
+    parent_key: &str,
+    manager: &mut SessionManager,
+) -> Option<crate::session::manager::SessionHandle> {
+    let parsed = crate::session::key::parse_session_key_v2(parent_key)?;
+
+    let peer = match parsed.peer_type.as_str() {
+        "user" => crate::session::types::Peer::User(parsed.peer_id),
+        "agent" => crate::session::types::Peer::Agent(parsed.peer_id),
+        _ => return None,
+    };
+
+    let base = manager
+        .get_or_create_base(&parsed.agent, &peer)
+        .await
+        .ok()?;
+
+    let session_id = {
+        let base_read = base.read().await;
+        base_read.id.clone()
+    };
+
+    Some(crate::session::manager::SessionHandle::new(
+        session_id,
+        base,
+        Some(crate::session::manager::OverlayRef::None),
+        manager.metadata_controller().clone(),
+    ))
 }
 
 #[cfg(test)]

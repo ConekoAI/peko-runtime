@@ -11,11 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+use crate::agent::subagent_error::SpawnError;
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::agent::subagent_registry::{
     find_run_across_all_registries, list_all_runs_across_all_registries, SharedSubagentRegistry,
 };
-use crate::session::context::SessionContext;
 use crate::session::types::SpawnCleanupPolicy;
 use crate::tools::Tool;
 
@@ -126,8 +126,6 @@ pub struct AgentSpawnTool {
     executor: Arc<SubagentExecutor>,
     /// Session key provider to get current session at execution time
     session_provider: Option<Box<dyn SessionKeyProvider>>,
-    /// Current session context (optional, for context inheritance)
-    current_session: Option<SessionContext>,
     /// Maximum spawn depth allowed
     max_depth: u32,
     /// Maximum concurrent runs
@@ -141,7 +139,6 @@ impl AgentSpawnTool {
         Self {
             executor,
             session_provider: None,
-            current_session: None,
             max_depth: DEFAULT_MAX_SPAWN_DEPTH,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
         }
@@ -156,19 +153,6 @@ impl AgentSpawnTool {
         Self {
             executor,
             session_provider: Some(provider),
-            current_session: None,
-            max_depth: DEFAULT_MAX_SPAWN_DEPTH,
-            max_concurrent: DEFAULT_MAX_CONCURRENT,
-        }
-    }
-
-    /// Create a spawn tool with current session context
-    #[must_use]
-    pub fn with_session(executor: Arc<SubagentExecutor>, current_session: SessionContext) -> Self {
-        Self {
-            executor,
-            session_provider: None,
-            current_session: Some(current_session),
             max_depth: DEFAULT_MAX_SPAWN_DEPTH,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
         }
@@ -211,7 +195,7 @@ impl AgentSpawnTool {
             .executor
             .spawn_and_execute(
                 task,
-                self.current_session.as_ref(),
+                None,
                 isolated,
                 parent_session_key,
                 config,
@@ -242,10 +226,7 @@ impl AgentSpawnTool {
                     }
                 }))
             }
-            Err(e) => {
-                let error_msg = e.to_string();
-                Self::format_error_response(error_msg)
-            }
+            Err(e) => Self::format_error_response(&e),
         }
     }
 
@@ -265,7 +246,7 @@ impl AgentSpawnTool {
             .executor
             .execute_and_wait(
                 task,
-                self.current_session.as_ref(),
+                None,
                 isolated,
                 parent_session_key,
                 config,
@@ -304,40 +285,62 @@ impl AgentSpawnTool {
 
                 Ok(result)
             }
-            Err(e) => {
-                let error_msg = e.to_string();
-                Self::format_error_response(error_msg)
-            }
+            Err(e) => Self::format_error_response(&e),
         }
     }
 
     /// Format error response
-    fn format_error_response(error_msg: String) -> anyhow::Result<serde_json::Value> {
+    ///
+    /// Classifies the error using a typed [`SpawnError`] when available,
+    /// falling back to string matching only for untyped errors.
+    fn format_error_response(error: &anyhow::Error) -> anyhow::Result<serde_json::Value> {
+        // Try typed classification first
+        if let Some(spawn_err) = error.downcast_ref::<SpawnError>() {
+            return match spawn_err {
+                SpawnError::DepthLimitExceeded { .. } => Ok(json!({
+                    "status": "forbidden",
+                    "error": spawn_err.to_string(),
+                    "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
+                })),
+                SpawnError::ConcurrentLimitExceeded { .. } => Ok(json!({
+                    "status": "forbidden",
+                    "error": spawn_err.to_string(),
+                    "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
+                })),
+                SpawnError::Timeout { .. } => Ok(json!({
+                    "status": "timeout",
+                    "error": spawn_err.to_string(),
+                    "note": "Subagent execution timed out."
+                })),
+                SpawnError::ExecutionFailed(msg) => Ok(json!({
+                    "status": "error",
+                    "error": msg,
+                })),
+            };
+        }
+
+        // Fallback to string matching for untyped errors
+        let error_msg = error.to_string();
         let lower_msg = error_msg.to_lowercase();
-        // Check for specific error types
         if lower_msg.contains("depth") {
-            // Depth limit exceeded
             Ok(json!({
                 "status": "forbidden",
                 "error": error_msg,
                 "note": "Maximum spawn depth exceeded. Cannot create nested subagents at this depth."
             }))
         } else if lower_msg.contains("concurrent") {
-            // Max concurrent runs exceeded
             Ok(json!({
                 "status": "forbidden",
                 "error": error_msg,
                 "note": "Maximum concurrent subagent runs exceeded. Please wait for existing runs to complete."
             }))
         } else if lower_msg.contains("timeout") || lower_msg.contains("timed out") {
-            // Timeout
             Ok(json!({
                 "status": "timeout",
                 "error": error_msg,
                 "note": "Subagent execution timed out."
             }))
         } else {
-            // Other error
             Ok(json!({
                 "status": "error",
                 "error": error_msg
@@ -427,16 +430,14 @@ Examples:
             }
         });
 
-        // Get parent session key - from params, session provider, or current session context
+        // Get parent session key - from params or session provider
         let parent_session_key = if let Some(key) = args.parent_session_key {
             key
         } else if let Some(ref provider) = self.session_provider {
             provider.current_session_key()
-        } else if let Some(ref ctx) = self.current_session {
-            ctx.full_session_key.clone()
         } else {
             return Err(anyhow::anyhow!(
-                "AgentSpawnTool requires a parent_session_key parameter, session provider, or session context. \
+                "AgentSpawnTool requires a parent_session_key parameter or session provider. \
                 Please provide parent_session_key in the tool parameters."
             ));
         };
@@ -713,24 +714,42 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_mode_error_response_formatting() {
-        // Test depth error
-        let response =
-            AgentSpawnTool::format_error_response("Maximum spawn depth exceeded: 5".to_string())
-                .unwrap();
+        // Test typed depth error
+        let depth_err = anyhow::anyhow!(SpawnError::DepthLimitExceeded {
+            current: 4,
+            max: 3,
+        });
+        let response = AgentSpawnTool::format_error_response(&depth_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("depth"));
+        assert!(response["error"].as_str().unwrap().contains("4"));
 
-        // Test concurrent error
-        let response =
-            AgentSpawnTool::format_error_response("Maximum concurrent runs exceeded".to_string())
-                .unwrap();
+        // Test typed concurrent error
+        let concurrent_err = anyhow::anyhow!(SpawnError::ConcurrentLimitExceeded {
+            current: 5,
+            max: 5,
+        });
+        let response = AgentSpawnTool::format_error_response(&concurrent_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "forbidden");
         assert!(response["note"].as_str().unwrap().contains("concurrent"));
 
-        // Test timeout error
-        let response =
-            AgentSpawnTool::format_error_response("Execution timed out".to_string()).unwrap();
+        // Test typed timeout error
+        let timeout_err = anyhow::anyhow!(SpawnError::Timeout { seconds: 30 });
+        let response = AgentSpawnTool::format_error_response(&timeout_err).unwrap();
         assert_eq!(response["status"].as_str().unwrap(), "timeout");
+        assert!(response["error"].as_str().unwrap().contains("30"));
+
+        // Test typed execution failed error
+        let exec_err = anyhow::anyhow!(SpawnError::ExecutionFailed("something went wrong".to_string()));
+        let response = AgentSpawnTool::format_error_response(&exec_err).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "error");
+        assert!(response["error"].as_str().unwrap().contains("something went wrong"));
+
+        // Test fallback string matching for untyped errors
+        let untyped = anyhow::anyhow!("Some random depth-related failure");
+        let response = AgentSpawnTool::format_error_response(&untyped).unwrap();
+        assert_eq!(response["status"].as_str().unwrap(), "forbidden");
+        assert!(response["note"].as_str().unwrap().contains("depth"));
     }
 
     #[test]

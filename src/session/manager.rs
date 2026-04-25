@@ -1689,6 +1689,53 @@ impl SessionManager {
         self.index.as_mut()
     }
 
+    /// Clean up a spawn session (overlay + base session + index entry)
+    ///
+    /// This is the unified cleanup path for subagent spawn sessions.
+    /// It removes the spawn overlay, the underlying base session, and
+    /// clears the peer from the session index if available.
+    ///
+    /// # Arguments
+    /// * `child_session_key` - The full overlay session key (e.g. `agent:{agent}:peer:{type}:{id}:overlay:spawn:{spawn_id}`)
+    ///
+    /// # Returns
+    /// `Ok(true)` if cleanup occurred, `Ok(false)` if the overlay was not found
+    pub async fn cleanup_spawn(&mut self, child_session_key: &str) -> Result<bool> {
+        // Remove the spawn overlay
+        if self.remove_spawn_overlay(child_session_key).is_none() {
+            return Ok(false);
+        }
+
+        // Extract base key from overlay key
+        let base_key = crate::session::key::base_key_from_overlay(child_session_key)
+            .unwrap_or_else(|| child_session_key.to_string());
+
+        // Parse the base key to get agent and peer
+        if let Some(parsed) = crate::session::key::parse_session_key_v2(&base_key) {
+            let peer = match parsed.peer_type.as_str() {
+                "agent" => Peer::Agent(parsed.peer_id),
+                "user" => Peer::User(parsed.peer_id),
+                _ => Peer::Agent(parsed.peer_id),
+            };
+
+            // Remove the base session
+            self.remove_base_session(&parsed.agent, &peer);
+
+            // Clear peer from session index if available
+            if let Some(ref mut index) = self.index_mut() {
+                if let Err(e) = index.clear_active_for_peer(&base_key).await {
+                    tracing::warn!("Failed to clear peer from index: {}", e);
+                } else if let Err(e) = index.save_peers().await {
+                    tracing::warn!("Failed to save peers index: {}", e);
+                } else {
+                    tracing::info!("Cleared peer from session index: {}", base_key);
+                }
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Get base session count
     #[must_use]
     pub fn base_session_count(&self) -> usize {
