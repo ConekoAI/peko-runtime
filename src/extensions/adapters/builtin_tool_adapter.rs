@@ -117,9 +117,20 @@ impl HookHandler for BuiltinExecuteHandler {
                 &exec_config,
                 Some(
                     move |params: &mut serde_json::Value, workspace: Option<&str>| {
-                        // Inject agent workspace into tool parameters for filesystem tools.
-                        if let Some(ws) = workspace {
-                            if let Some(obj) = params.as_object_mut() {
+                        if let Some(obj) = params.as_object_mut() {
+                            // Subagent spawn inherently takes longer than simple tools because
+                            // the subagent runs a full agentic loop with its own LLM calls.
+                            // Inject a longer default timeout for blocking agent_spawn if none
+                            // is provided by the caller.
+                            if tool_name_for_preproc == "agent_spawn" && !obj.contains_key("_timeout") {
+                                obj.insert(
+                                    "_timeout".to_string(),
+                                    serde_json::Value::Number(300.into()),
+                                );
+                            }
+
+                            // Inject agent workspace into tool parameters for filesystem tools.
+                            if let Some(ws) = workspace {
                                 match tool_name_for_preproc.as_str() {
                                     "glob" => {
                                         if !obj.contains_key("directory") {

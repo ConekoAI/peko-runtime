@@ -316,6 +316,32 @@ pub fn create_shared_registry() -> SharedSubagentRegistry {
     Arc::new(RwLock::new(SubagentRegistry::new()))
 }
 
+// ================================================================================
+// Global per-agent registry cache
+// ================================================================================
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+static GLOBAL_SUBAGENT_REGISTRIES: std::sync::OnceLock<Mutex<HashMap<String, SharedSubagentRegistry>>> =
+    std::sync::OnceLock::new();
+
+fn global_registries() -> &'static Mutex<HashMap<String, SharedSubagentRegistry>> {
+    GLOBAL_SUBAGENT_REGISTRIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Get or create a shared subagent registry for a given agent name.
+///
+/// This ensures that all `Agent` instances for the same agent name share
+/// the same registry, making `agent_spawn_status` and `agent_spawn_list`
+/// work across stateless requests.
+pub fn get_or_create_registry_for_agent(agent_name: &str) -> SharedSubagentRegistry {
+    let mut map = global_registries().lock().unwrap();
+    map.entry(agent_name.to_string())
+        .or_insert_with(create_shared_registry)
+        .clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

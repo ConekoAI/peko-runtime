@@ -104,10 +104,16 @@ impl SubagentExecutor {
         let unified_executor =
             AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
+        let agent_name = agent_name.into();
+        // Use a global per-agent registry so that agent_spawn_status and
+        // agent_spawn_list work across stateless requests (each request creates
+        // a new Agent instance, but the registry must persist).
+        let registry = crate::agent::subagent_registry::get_or_create_registry_for_agent(&agent_name);
+
         Self {
-            registry: create_shared_registry(),
+            registry,
             unified_executor,
-            agent_name: agent_name.into(),
+            agent_name,
             max_concurrent,
             announcement_tx: None,
             provider: None,
@@ -299,6 +305,7 @@ impl SubagentExecutor {
 
         // Clone values for the execution closure
         let registry_clone = self.registry.clone();
+        let registry_for_task = self.registry.clone();
         let child_session_key_clone = child_session_key.clone();
         let parent_session_key_clone = parent_session_key.to_string();
         let task_clone = task.to_string();
@@ -309,6 +316,9 @@ impl SubagentExecutor {
         let provider_clone = self.provider.clone();
         let agent_config_clone = self.agent_config.clone();
         let session_manager_clone = self.session_manager.clone();
+        let session_manager_for_cleanup = self.session_manager.clone();
+        let extension_core_clone = crate::extensions::core::global_core();
+        let cleanup_policy_clone = config.cleanup;
 
         // Use unified executor for background execution
         self.unified_executor
@@ -343,42 +353,37 @@ impl SubagentExecutor {
                         build_subagent_task_message(&task_clone, child_depth, config.max_depth);
 
                     // Execute with timeout
+                    let exec_fut = execute_subagent_task(
+                        &agent_name,
+                        &child_session_key_clone,
+                        &system_prompt,
+                        &task_message,
+                        provider_clone,
+                        agent_config_clone,
+                        session_manager_clone,
+                        registry_for_task,
+                        extension_core_clone,
+                    );
                     let result = if timeout > 0 {
-                        if let Ok(r) = tokio::time::timeout(
+                        match tokio::time::timeout(
                             tokio::time::Duration::from_secs(timeout),
-                            execute_subagent_task(
-                                &agent_name,
-                                &child_session_key_clone,
-                                &system_prompt,
-                                &task_message,
-                                provider_clone,
-                                agent_config_clone,
-                                session_manager_clone,
-                            ),
+                            exec_fut,
                         )
                         .await
                         {
-                            r
-                        } else {
-                            warn!(
-                                "Subagent timed out: run_id={} timeout={}s",
-                                run_id_clone, timeout
-                            );
-                            Err(anyhow::anyhow!(
-                                "Subagent execution timed out after {timeout} seconds"
-                            ))
+                            Ok(r) => r,
+                            Err(_) => {
+                                warn!(
+                                    "Subagent timed out: run_id={} timeout={}s",
+                                    run_id_clone, timeout
+                                );
+                                Err(anyhow::anyhow!(
+                                    "Subagent execution timed out after {timeout} seconds"
+                                ))
+                            }
                         }
                     } else {
-                        execute_subagent_task(
-                            &agent_name,
-                            &child_session_key_clone,
-                            &system_prompt,
-                            &task_message,
-                            provider_clone,
-                            agent_config_clone,
-                            session_manager_clone,
-                        )
-                        .await
+                        exec_fut.await
                     };
 
                     // Process result and update subagent registry
@@ -426,6 +431,51 @@ impl SubagentExecutor {
                         parent_session_key_clone, run_id_clone
                     );
 
+                    // Clean up session if cleanup policy is Delete
+                    if cleanup_policy_clone == SpawnCleanupPolicy::Delete {
+                        info!("Cleaning up subagent session: run_id={} session_key={}", run_id_clone, child_session_key_clone);
+                        let mut manager = session_manager_for_cleanup.write().await;
+                        // The child_session_key is the full session key which is also the overlay key
+                        if manager.remove_spawn_overlay(&child_session_key_clone).is_some() {
+                            info!("Removed spawn overlay for session: {}", child_session_key_clone);
+                            // Also remove the base session - parse the base key from the overlay key
+                            // Format: agent:{agent}:peer:{type}:{id}:overlay:spawn:{spawn_id}
+                            // Base key: agent:{agent}:peer:{type}:{id}
+                            if let Some(base_key_end) = child_session_key_clone.rfind(":overlay:spawn:") {
+                                let base_key = &child_session_key_clone[..base_key_end];
+                                if let Some(peer_idx) = base_key.rfind(":peer:") {
+                                    let agent = &base_key[6..peer_idx]; // after "agent:"
+                                    let peer_str = &base_key[peer_idx + 6..]; // after ":peer:"
+                                    // Parse peer type and id
+                                    if let Some(type_idx) = peer_str.find(':') {
+                                        let peer_type = &peer_str[..type_idx];
+                                        let peer_id = &peer_str[type_idx + 1..];
+                                        let peer = match peer_type {
+                                            "agent" => crate::session::types::Peer::Agent(peer_id.to_string()),
+                                            "user" => crate::session::types::Peer::User(peer_id.to_string()),
+                                            _ => crate::session::types::Peer::Agent(peer_id.to_string()),
+                                        };
+                                        if manager.remove_base_session(agent, &peer).is_some() {
+                                            info!("Removed base session for agent={} peer={:?}", agent, peer);
+                                        }
+                                        // Also clear from session index (peers.json) if available
+                                        if let Some(ref mut index) = manager.index_mut() {
+                                            if let Err(e) = index.clear_active_for_peer(base_key).await {
+                                                warn!("Failed to clear peer from index: {}", e);
+                                            } else if let Err(e) = index.save_peers().await {
+                                                warn!("Failed to save peers index: {}", e);
+                                            } else {
+                                                info!("Cleared peer from session index: {}", base_key);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            warn!("Failed to remove spawn overlay for session: {}", child_session_key_clone);
+                        }
+                    }
+
                     // Return unified async task result
                     Ok(AsyncTaskResult::Subagent {
                         output,
@@ -464,12 +514,52 @@ impl SubagentExecutor {
             .spawn_and_execute(task, parent_ctx, isolated, parent_session_key, config)
             .await?;
 
-        // Wait for completion using the async registry
+        // Wait for completion using the async registry.
+        // IMPORTANT: Do NOT hold the read lock while sleeping, as the background
+        // task needs to acquire a write lock to update status. Holding the read
+        // lock continuously would starve the writer and deadlock.
         let wait_result = {
-            let registry = self.async_registry().read().await;
-            registry
-                .wait_for_completion(&run_id, Duration::from_secs(timeout_secs))
-                .await
+            let start = tokio::time::Instant::now();
+            let timeout = Duration::from_secs(timeout_secs);
+            loop {
+                // Check status with a brief lock acquisition
+                let status = {
+                    let registry = self.async_registry().read().await;
+                    registry.check_status(&run_id)
+                };
+
+                match status {
+                    Some(s) if s.is_terminal() => {
+                        let result = match s {
+                            crate::agent::async_tool_framework::AsyncTaskStatus::Completed { result } => {
+                                WaitResult::Completed { result }
+                            }
+                            crate::agent::async_tool_framework::AsyncTaskStatus::Failed { error } => {
+                                WaitResult::Failed { error }
+                            }
+                            crate::agent::async_tool_framework::AsyncTaskStatus::Cancelled => {
+                                WaitResult::Cancelled
+                            }
+                            _ => WaitResult::Timeout,
+                        };
+                        break Ok(result);
+                    }
+                    None => {
+                        break Err(anyhow::anyhow!(
+                            "Run {run_id} not found in async registry"
+                        ));
+                    }
+                    _ => {
+                        // Still running, sleep and poll again
+                    }
+                }
+
+                if start.elapsed() >= timeout {
+                    break Ok(WaitResult::Timeout);
+                }
+
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         };
 
         // Get the final run state
@@ -630,18 +720,19 @@ impl Clone for SubagentExecutor {
 /// This is the core execution function that runs in a background task.
 /// It:
 /// 1. Loads the child session
-/// 2. Adds system prompt and user task message
-/// 3. Creates a minimal agent with tools
-/// 4. Runs `AgenticLoop` to execute the task
-/// 5. Returns the assistant's response
+/// 2. Creates a subagent Agent sharing the parent's session manager and registry
+/// 3. Runs the full `AgenticLoop` via `Agent::execute_with_session`
+/// 4. Returns the assistant's final answer
 async fn execute_subagent_task(
     agent_name: &str,
     session_key: &str,
     system_prompt: &str,
     task_message: &str,
     provider: Option<Arc<crate::providers::Provider>>,
-    _agent_config: Option<AgentConfig>,
+    agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
+    registry: SharedSubagentRegistry,
+    extension_core: Option<Arc<crate::extensions::ExtensionCore>>,
 ) -> Result<String> {
     info!(
         "Executing subagent task: agent={} session={}",
@@ -649,71 +740,164 @@ async fn execute_subagent_task(
     );
 
     // If no provider, we can't do real execution
-    let _provider = match provider {
+    let provider = match provider {
         Some(p) => p,
         None => {
-            // Fallback to simplified response
             return Ok(format!(
                 "# Subagent Task\n\n**Task:** {task_message}\n\n**Status:** Completed (no provider configured)\n\nThe subagent executed without an LLM provider."
             ));
         }
     };
 
-    // Add messages to the child session
     // Get the base session key from the session key
     let base_key = crate::session::key::base_key_from_overlay(session_key)
         .unwrap_or_else(|| session_key.to_string());
 
-    // Parse to get agent and peer
-    let parts: Vec<&str> = base_key.split(':').collect();
-    if parts.len() >= 5 {
-        if let Some(peer_idx) = parts.iter().position(|&p| p == "peer") {
-            let agent = parts.get(1).unwrap_or(&agent_name);
-            let peer_type = parts.get(peer_idx + 1).unwrap_or(&"agent");
-            let peer_id = parts.get(peer_idx + 2).unwrap_or(&"spawn");
-            let peer = match *peer_type {
-                "agent" => Peer::Agent(peer_id.to_string()),
-                _ => Peer::User(peer_id.to_string()),
-            };
+    // Parse to get agent and peer, then find the child session
+    let child_session: Option<Arc<RwLock<crate::session::Session>>> = {
+        let parts: Vec<&str> = base_key.split(':').collect();
+        if parts.len() >= 5 {
+            if let Some(peer_idx) = parts.iter().position(|&p| p == "peer") {
+                let agent = parts.get(1).unwrap_or(&agent_name);
+                let peer_type = parts.get(peer_idx + 1).unwrap_or(&"agent");
+                let peer_id = parts.get(peer_idx + 2).unwrap_or(&"spawn");
+                let peer = match *peer_type {
+                    "agent" => Peer::Agent(peer_id.to_string()),
+                    _ => Peer::User(peer_id.to_string()),
+                };
 
-            // Get the base session and add messages
-            let manager = session_manager.read().await;
-            if let Some(base) = manager.get_existing_base(agent, &peer) {
-                // Add system prompt and task to the session
-                // Note: We need to drop the read lock before getting write lock
-                drop(manager);
+                let manager = session_manager.read().await;
+                manager.get_existing_base(agent, &peer)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
 
-                if let Ok(mut base_write) = base.try_write() {
-                    // Add system prompt
-                    if let Err(e) = base_write.add_system(system_prompt).await {
-                        tracing::warn!("Failed to add system prompt: {}", e);
-                    }
-                    // Add task as user message
-                    if let Err(e) = base_write.add_user(task_message).await {
-                        tracing::warn!("Failed to add user message: {}", e);
-                    }
-                    info!("Added system prompt and task to child session");
-                }
+    let child_session = match child_session {
+        Some(s) => s,
+        None => {
+            return Err(anyhow::anyhow!(
+                "Could not find child session for key: {}",
+                session_key
+            ));
+        }
+    };
+
+    // Add system prompt and task message to the child session
+    {
+        let mut session_write = child_session.write().await;
+        if let Err(e) = session_write.add_system(system_prompt).await {
+            tracing::warn!("Failed to add system prompt to child session: {}", e);
+        }
+        if let Err(e) = session_write.add_user(task_message).await {
+            tracing::warn!("Failed to add user message to child session: {}", e);
+        }
+        info!("Added system prompt and task to child session");
+    }
+
+    // Build agent config for the subagent
+    let config = agent_config.unwrap_or_else(|| {
+        let mut cfg = AgentConfig::default();
+        cfg.name = agent_name.to_string();
+        cfg
+    });
+
+    // Create a subagent that shares the parent's session manager.
+    // This ensures the subagent can access the same sessions and spawn
+    // further subagents with proper depth tracking (shared registry).
+    let subagent = crate::agent::Agent::new_with_session_manager(config, session_manager)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create subagent: {e}"))?;
+
+    // If we have an extension core, ensure the subagent uses it.
+    // (new_with_session_manager already pulls from global_core(), so this
+    // should be the same one the parent uses.)
+    let _extension_core = extension_core;
+
+    // Update the subagent's session key provider so nested spawns know their parent
+    subagent
+        .session_key_provider()
+        .set_session_key(session_key);
+
+    // Replace the subagent's executor with one that shares the parent's registry
+    // so nested spawn depth is tracked correctly across the whole tree.
+    //
+    // Note: We create a new SubagentExecutor with the shared registry.
+    // The Agent's subagent_executor is an Arc, so we can't directly replace it.
+    // However, the AgentSpawnTool registered during init_builtins_async will
+    // use the Agent's subagent_executor. To share the registry, we need to
+    // re-register the tool with the shared executor.
+    let shared_executor = Arc::new(
+        SubagentExecutor::with_registry(
+            registry,
+            subagent.session_manager(),
+            agent_name,
+            5,
+        )
+        .with_provider(provider.clone())
+        .with_agent_config(subagent.config.clone()),
+    );
+
+    // Re-register agent_spawn tool with the shared executor on ExtensionCore
+    use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
+    use crate::tools::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool};
+
+    let session_key_provider = Box::new(subagent.session_key_provider());
+    let spawn_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnTool::with_session_provider(
+        shared_executor.clone(),
+        session_key_provider,
+    ));
+    let status_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnStatusTool::new(shared_executor.clone()));
+    let list_tool: std::sync::Arc<dyn crate::tools::Tool> = Arc::new(AgentSpawnListTool::new(shared_executor.registry().clone()));
+
+    if let Some(core) = crate::extensions::core::global_core() {
+        for tool in [spawn_tool, status_tool, list_tool] {
+            if let Err(e) = BuiltinToolAdapter::register_tool(&core, tool).await {
+                tracing::warn!("Failed to register subagent tool: {}", e);
             }
         }
     }
 
-    // TODO: Full agent execution with AgenticLoop
-    // For now, return a placeholder that shows the task was received
-    // This will be implemented in a follow-up to avoid complex Send issues
-    let output = format!(
-        "# Subagent Task Received\n\n**Task:** {}\n\n**Status:** Task queued for execution\n\n**Note:** Messages added to session. Full LLM execution to be implemented.",
-        task_message.lines().next().unwrap_or("Task")
-    );
-
+    // Execute the agentic loop with the child session
     info!(
-        "Subagent task completed: agent={} session={} output_len={}",
-        agent_name,
-        session_key,
-        output.len()
+        "Starting AgenticLoop for subagent: agent={} session={}",
+        agent_name, session_key
     );
 
-    Ok(output)
+    let result = subagent
+        .execute_with_session(
+            task_message,
+            child_session,
+            None, // No prior history — session already has system + user messages
+            |_event| {
+                // Non-streaming: ignore events
+            },
+        )
+        .await;
+
+    match result {
+        Ok(agentic_result) => {
+            info!(
+                "Subagent task completed: agent={} session={} success={} iterations={} output_len={}",
+                agent_name,
+                session_key,
+                agentic_result.success,
+                agentic_result.iterations,
+                agentic_result.final_answer.len()
+            );
+            Ok(agentic_result.final_answer)
+        }
+        Err(e) => {
+            error!(
+                "Subagent task failed: agent={} session={} error={}",
+                agent_name, session_key, e
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Background task manager for the executor
@@ -784,5 +968,82 @@ mod tests {
 
         // Initially empty
         assert_eq!(executor.count_active_runs().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_cleanup_delete_policy() {
+        use crate::common::PathResolver;
+        use crate::session::types::Peer;
+
+        // Create a session manager with path resolver
+        let path_resolver = PathResolver::new();
+        let manager = SessionManager::new()
+            .with_path_resolver(path_resolver, "test_agent", None)
+            .await
+            .unwrap();
+        let manager = Arc::new(RwLock::new(manager));
+
+        // Create a parent session
+        let parent_peer = Peer::User("parent".to_string());
+        {
+            let mut mgr = manager.write().await;
+            let parent_handle = mgr.get_or_create_base("test_agent", &parent_peer).await.unwrap();
+            let parent_key = {
+                let base = parent_handle.read().await;
+                base.session_key.clone()
+            };
+            assert!(parent_key.contains("peer:user:parent"));
+        }
+
+        // Create a spawn overlay (simulating what spawn_and_execute does)
+        let child_session_key = {
+            let mut mgr = manager.write().await;
+            let handle = mgr
+                .create_spawn_overlay("test_agent", &Peer::Agent("child".to_string()), "test task", false, "agent:test_agent:peer:user:parent")
+                .await
+                .unwrap();
+            handle.full_session_key().await
+        };
+        assert!(child_session_key.contains("overlay:spawn:"));
+
+        // Verify overlay exists
+        {
+            let mgr = manager.read().await;
+            assert!(mgr.get_spawn_overlay(&child_session_key).is_some());
+            assert_eq!(mgr.spawn_overlay_count(), 1);
+        }
+
+        // Simulate cleanup: remove overlay and base session
+        {
+            let mut mgr = manager.write().await;
+            let overlay = mgr.remove_spawn_overlay(&child_session_key);
+            assert!(overlay.is_some(), "remove_spawn_overlay should return the overlay");
+
+            // Parse base key and remove base session
+            if let Some(base_key_end) = child_session_key.rfind(":overlay:spawn:") {
+                let base_key = &child_session_key[..base_key_end];
+                if let Some(peer_idx) = base_key.rfind(":peer:") {
+                    let agent = &base_key[6..peer_idx];
+                    let peer_str = &base_key[peer_idx + 6..];
+                    if let Some(type_idx) = peer_str.find(':') {
+                        let peer_type = &peer_str[..type_idx];
+                        let peer_id = &peer_str[type_idx + 1..];
+                        let peer = match peer_type {
+                            "agent" => Peer::Agent(peer_id.to_string()),
+                            "user" => Peer::User(peer_id.to_string()),
+                            _ => Peer::Agent(peer_id.to_string()),
+                        };
+                        let removed = mgr.remove_base_session(agent, &peer);
+                        assert!(removed.is_some(), "remove_base_session should return the base session");
+                    }
+                }
+            }
+        }
+
+        // Verify cleanup
+        {
+            let mgr = manager.read().await;
+            assert_eq!(mgr.spawn_overlay_count(), 0);
+        }
     }
 }

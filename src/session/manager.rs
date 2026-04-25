@@ -1684,6 +1684,11 @@ impl SessionManager {
         &self.spawn_overlays
     }
 
+    /// Get mutable access to the session index (for cleanup operations)
+    pub fn index_mut(&mut self) -> Option<&mut SessionIndex> {
+        self.index.as_mut()
+    }
+
     /// Get base session count
     #[must_use]
     pub fn base_session_count(&self) -> usize {

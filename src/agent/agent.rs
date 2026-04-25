@@ -217,6 +217,23 @@ impl Agent {
 
     /// Create a new agent with the given configuration
     pub async fn new(config: AgentConfig) -> Result<Self> {
+        // Initialize session manager with path resolver
+        let path_resolver = PathResolver::new();
+        let session_manager = SessionManager::new()
+            .with_path_resolver(path_resolver, &config.name, config.team.as_deref())
+            .await?;
+        let session_manager = Arc::new(TokioRwLock::new(session_manager));
+        Self::new_with_session_manager(config, session_manager).await
+    }
+
+    /// Create a new agent with an existing session manager.
+    ///
+    /// Used for subagent execution where the child must share the parent's
+    /// session manager (and therefore session storage and context).
+    pub async fn new_with_session_manager(
+        config: AgentConfig,
+        session_manager: Arc<TokioRwLock<SessionManager>>,
+    ) -> Result<Self> {
         info!("Creating agent: {}", config.name);
 
         // Load or create identity
@@ -225,12 +242,6 @@ impl Agent {
         // Initialize provider if configured
         let provider = Self::init_provider(&config).await?;
 
-        // Initialize session manager with path resolver
-        let path_resolver = PathResolver::new();
-        let session_manager = SessionManager::new()
-            .with_path_resolver(path_resolver, &config.name, config.team.as_deref())
-            .await?;
-        let session_manager = Arc::new(TokioRwLock::new(session_manager));
         // Initialize subagent executor
         let subagent_executor_base = SubagentExecutor::new(
             Arc::clone(&session_manager),
@@ -329,6 +340,12 @@ impl Agent {
     #[must_use]
     pub fn current_session_id(&self) -> Arc<tokio::sync::RwLock<Option<String>>> {
         Arc::clone(&self.current_session_id)
+    }
+
+    /// Get the session key provider for agent_spawn tool.
+    #[must_use]
+    pub fn session_key_provider(&self) -> Arc<DynamicSessionKeyProvider> {
+        Arc::clone(&self.session_key_provider)
     }
 
     /// Execute a task with the LLM provider using the unified callback API.

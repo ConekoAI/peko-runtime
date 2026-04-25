@@ -192,8 +192,8 @@ impl AgentSpawnTool {
         &self.executor
     }
 
-    /// Execute subagent spawn
-    async fn execute_spawn(
+    /// Execute subagent spawn in async mode (returns receipt)
+    async fn execute_spawn_async(
         &self,
         task: &str,
         isolated: bool,
@@ -225,12 +225,12 @@ impl AgentSpawnTool {
 
                 let child_session_key = run.child_session_key.clone();
 
-                // Return OpenClaw-style response
+                // Return receipt-style response for async mode
                 Ok(json!({
                     "status": "accepted",
                     "childSessionKey": child_session_key,
                     "runId": run_id,
-                    "note": "auto-announces on completion, do not poll/sleep. The response will be sent back as an agent message.",
+                    "note": "Subagent is running in the background. Use agent_spawn_status with the runId to check progress.",
                     "label": label,
                     "isolated": isolated,
                     "timeout_seconds": timeout_seconds,
@@ -239,6 +239,68 @@ impl AgentSpawnTool {
                         SpawnCleanupPolicy::Delete => "delete",
                     }
                 }))
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                Self::format_error_response(error_msg)
+            }
+        }
+    }
+
+    /// Execute subagent spawn in blocking mode (waits for completion, returns inline result)
+    async fn execute_spawn_blocking(
+        &self,
+        task: &str,
+        isolated: bool,
+        parent_session_key: &str,
+        config: ExecutionConfig,
+        label: Option<String>,
+        cleanup: SpawnCleanupPolicy,
+    ) -> anyhow::Result<serde_json::Value> {
+        let timeout_seconds = config.timeout_seconds;
+
+        match self
+            .executor
+            .execute_and_wait(
+                task,
+                self.current_session.as_ref(),
+                isolated,
+                parent_session_key,
+                config,
+                timeout_seconds,
+            )
+            .await
+        {
+            Ok(run) => {
+                // Return inline result — the subagent's output is available immediately
+                let status_str = run.status.as_str();
+                let success = run.status == crate::agent::subagent_registry::SubagentStatus::Completed;
+
+                let mut result = json!({
+                    "status": status_str,
+                    "run_id": run.run_id,
+                    "child_session_key": run.child_session_key,
+                    "success": success,
+                    "label": label,
+                    "isolated": isolated,
+                    "timeout_seconds": timeout_seconds,
+                    "cleanup": match cleanup {
+                        SpawnCleanupPolicy::Keep => "keep",
+                        SpawnCleanupPolicy::Delete => "delete",
+                    }
+                });
+
+                // Include output or error if available
+                if let Some(ref subagent_result) = run.result {
+                    if let Some(ref output) = subagent_result.output {
+                        result["output"] = json!(output);
+                    }
+                    if let Some(ref error) = subagent_result.error {
+                        result["error"] = json!(error);
+                    }
+                }
+
+                Ok(result)
             }
             Err(e) => {
                 let error_msg = e.to_string();
@@ -289,11 +351,11 @@ impl Tool for AgentSpawnTool {
     }
 
     fn description(&self) -> String {
-        r#"Spawn a sub-agent run in an isolated session.
+        r#"Spawn a sub-agent run in an isolated or shared session.
 
-Results are announced back to the parent via the event system when complete.
+Default mode (blocking): The parent waits for the subagent to complete its agentic loop and returns the result inline.
 
-This creates a spawn overlay - either isolated (new base session) or shared (inherits parent's base session).
+Async mode: Use `_async: true` to spawn the subagent in the background. A receipt is returned immediately. Use `agent_spawn_status` with the runId to check progress.
 
 Parameters:
 - task: Description of the task to execute (required)
@@ -303,19 +365,14 @@ Parameters:
 - parent_session_key: Parent session key (optional - auto-detected if not provided)
 
 Examples:
-// Basic spawn - shared context
-{"task": "Continue research on Rust", "isolated": false}
+// Blocking spawn (default) - parent waits for result
+{"task": "Use write_file to create report.txt with a summary"}
 
-// Spawn with label
-{"task": "Long running analysis", "label": "analysis"}
+// Async spawn - background execution
+{"task": "Long running analysis", "_async": true, "_timeout": 300}
 
 // Isolated context - fresh session
-{"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}
-
-## Async Execution
-
-For framework-level async control, use:
-{"task": "Long task", "_async": true, "_timeout": 300}"#
+{"task": "Analyze confidential data", "isolated": true, "cleanup": "delete"}"#
             .to_string()
     }
 
@@ -350,8 +407,14 @@ For framework-level async control, use:
         })
     }
 
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        // Parse parameters
+    async fn execute(&self, mut params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        // Check for _async reserved parameter (extracted by AsyncExecutionRouter,
+        // but we also check here for direct tool calls that bypass the router)
+        let async_mode = params.get("_async")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Parse parameters (after _async extraction, the rest are tool-specific)
         let args: AgentSpawnArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
@@ -385,16 +448,30 @@ For framework-level async control, use:
             max_depth: self.max_depth,
         };
 
-        // Execute spawn
-        self.execute_spawn(
-            &args.task,
-            args.isolated,
-            &parent_session_key,
-            config,
-            args.label,
-            cleanup,
-        )
-        .await
+        // Route based on async mode
+        if async_mode {
+            // Async mode: spawn in background, return receipt
+            self.execute_spawn_async(
+                &args.task,
+                args.isolated,
+                &parent_session_key,
+                config,
+                args.label,
+                cleanup,
+            )
+            .await
+        } else {
+            // Blocking mode (default): wait for subagent to complete, return inline result
+            self.execute_spawn_blocking(
+                &args.task,
+                args.isolated,
+                &parent_session_key,
+                config,
+                args.label,
+                cleanup,
+            )
+            .await
+        }
     }
 }
 
@@ -426,6 +503,19 @@ Parameters:
 
 Returns the current status and result if complete."
             .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "The run ID returned by agent_spawn (required)"
+                }
+            },
+            "required": ["run_id"]
+        })
     }
 
     async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -505,6 +595,13 @@ impl Tool for AgentSpawnListTool {
 
     fn description(&self) -> String {
         "List all active subagent runs for the current session.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {}
+        })
     }
 
     async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
