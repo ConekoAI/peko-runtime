@@ -612,7 +612,7 @@ impl SessionStorage {
             .and_then(|l| l.strip_prefix("# checksum: "))
             .unwrap_or("");
         if actual_checksum != expected_checksum {
-            warn!(
+            debug!(
                 "Context cache checksum mismatch for {} (expected {}, got {})",
                 session_id, expected_checksum, actual_checksum
             );
@@ -625,7 +625,7 @@ impl SessionStorage {
             .and_then(|n| n.parse::<usize>().ok())
             .unwrap_or(0);
         if actual_entries != expected_entry_count {
-            warn!(
+            debug!(
                 "Context cache entry count mismatch for {} (expected {}, got {})",
                 session_id, expected_entry_count, actual_entries
             );
