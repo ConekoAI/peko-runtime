@@ -9,6 +9,12 @@
 //! Based on pi_agent_rust compaction algorithm.
 
 pub mod background;
+pub mod registry;
+pub mod summary_format;
+pub mod turn_boundaries;
+
+#[cfg(test)]
+mod integration_tests;
 
 use crate::providers::{ChatMessage, MessageRole};
 use crate::types::message::ContentBlock;
@@ -98,22 +104,62 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
     /// Enable auto-compaction
+    #[serde(default = "default_enabled")]
     pub enabled: bool,
-    /// Context window size (tokens)
-    pub context_window_tokens: usize,
-    /// Reserve tokens (keep this many free)
+    /// Auto-compaction trigger threshold as percent of context window (0-100)
+    #[serde(default = "default_auto_threshold_percent")]
+    pub auto_threshold_percent: u8,
+    /// Tokens to reserve for LLM response headroom
+    #[serde(default = "default_reserve_tokens")]
     pub reserve_tokens: usize,
-    /// Keep this many recent tokens intact
+    /// Minimum recent conversation to preserve during compaction
+    #[serde(default = "default_keep_recent_tokens")]
     pub keep_recent_tokens: usize,
+    /// Maximum compactions per session (quota)
+    #[serde(default = "default_max_compactions_per_session")]
+    pub max_compactions_per_session: usize,
+    /// Cooldown between compactions in seconds
+    #[serde(default = "default_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+    /// Per-provider/per-model context window overrides
+    #[serde(default)]
+    pub model_limits: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn default_auto_threshold_percent() -> u8 {
+    85
+}
+
+fn default_reserve_tokens() -> usize {
+    16_384
+}
+
+fn default_keep_recent_tokens() -> usize {
+    20_000
+}
+
+fn default_max_compactions_per_session() -> usize {
+    100
+}
+
+fn default_cooldown_seconds() -> u64 {
+    60
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            context_window_tokens: 128_000, // Default to kimi context
-            reserve_tokens: 16_384,
-            keep_recent_tokens: 20_000,
+            enabled: default_enabled(),
+            auto_threshold_percent: default_auto_threshold_percent(),
+            reserve_tokens: default_reserve_tokens(),
+            keep_recent_tokens: default_keep_recent_tokens(),
+            max_compactions_per_session: default_max_compactions_per_session(),
+            cooldown_seconds: default_cooldown_seconds(),
+            model_limits: std::collections::HashMap::new(),
         }
     }
 }
@@ -135,6 +181,9 @@ pub struct CompactionEntry {
     pub tokens_after: usize,
     /// Compaction number (1st, 2nd, etc.)
     pub compaction_number: usize,
+    /// Tracked file operations from compacted messages
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<summary_format::CompactionDetails>,
 }
 
 /// Tracks compaction state for a session
@@ -146,6 +195,30 @@ pub struct CompactionState {
     pub total_tokens_saved: usize,
     /// Last compaction timestamp
     pub last_compaction_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Detailed token usage estimate with breakdown.
+#[derive(Debug, Clone)]
+pub struct ContextUsageEstimate {
+    /// Total estimated tokens
+    pub tokens: usize,
+    /// Tokens from the last assistant usage record
+    pub usage_tokens: usize,
+    /// Tokens estimated for trailing messages after last usage
+    pub trailing_tokens: usize,
+    /// Index of the last assistant message with usage data
+    pub last_usage_index: Option<usize>,
+}
+
+/// Find the last assistant message with usage data.
+/// Returns `(usage, index)` if found.
+///
+/// TODO: Wire this up when ChatMessage carries usage metadata from provider responses.
+/// For now, always returns None, causing fallback to heuristic estimation.
+fn find_last_assistant_usage(
+    _messages: &[ChatMessage],
+) -> Option<(crate::providers::TokenUsage, usize)> {
+    None
 }
 
 /// Result of a compaction operation
@@ -203,7 +276,7 @@ impl Compactor {
         self.previous_summary.as_ref()
     }
 
-    /// Estimate token count for messages
+    /// Estimate token count for messages using simple heuristic.
     #[must_use]
     pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         messages
@@ -222,73 +295,83 @@ impl Compactor {
             .sum()
     }
 
-    /// Check if compaction is needed based on current token count
+    /// Hybrid token estimation using the last assistant usage when available.
+    ///
+    /// Walks backward through messages to find the last assistant message with
+    /// valid usage data. Uses that as a baseline and adds char/4 heuristic for
+    /// trailing messages.
+    ///
+    /// Returns `ContextUsageEstimate` with detailed breakdown.
     #[must_use]
-    pub fn should_compact(&self, estimated_tokens: usize) -> bool {
+    pub fn estimate_context_tokens(messages: &[ChatMessage]) -> ContextUsageEstimate {
+        // Find last assistant message with usage data
+        if let Some((usage, index)) = find_last_assistant_usage(messages) {
+            let usage_tokens = usage.input + usage.output;
+            let trailing_tokens: usize = messages[index + 1..]
+                .iter()
+                .map(|m| {
+                    let content_len: usize = m
+                        .content
+                        .iter()
+                        .map(|b| match b {
+                            ContentBlock::Text { text } => text.len(),
+                            _ => 50,
+                        })
+                        .sum();
+                    (content_len + 20) / CHARS_PER_TOKEN + 4
+                })
+                .sum();
+            ContextUsageEstimate {
+                tokens: (usage_tokens as usize) + trailing_tokens,
+                usage_tokens: usage_tokens as usize,
+                trailing_tokens,
+                last_usage_index: Some(index),
+            }
+        } else {
+            // No usage available — fall back to heuristic for all messages
+            let estimated = Self::estimate_tokens(messages);
+            ContextUsageEstimate {
+                tokens: estimated,
+                usage_tokens: 0,
+                trailing_tokens: estimated,
+                last_usage_index: None,
+            }
+        }
+    }
+
+    /// Check if compaction is needed based on current token count.
+    ///
+    /// Uses the dual-threshold logic from ADR-022:
+    /// - Ratio threshold: `context_window * auto_threshold_percent / 100`
+    /// - Reserved threshold: `context_window - reserve_tokens`
+    ///
+    /// Compaction triggers when **either** threshold is met.
+    #[must_use]
+    pub fn should_compact(&self, estimated_tokens: usize, context_window: usize) -> bool {
+        registry::should_auto_compact(estimated_tokens, context_window, &self.config)
+    }
+
+    /// Legacy check using a hard-coded context window (deprecated).
+    /// Prefer `should_compact(estimated_tokens, context_window)`.
+    #[must_use]
+    pub fn should_compact_legacy(&self, estimated_tokens: usize) -> bool {
         if !self.config.enabled {
             return false;
         }
-
-        // Calculate threshold: context window minus reserve and keep_recent
-        let threshold = self
-            .config
-            .context_window_tokens
+        let threshold = 128_000usize
             .saturating_sub(self.config.reserve_tokens + self.config.keep_recent_tokens);
-
-        debug!(
-            "Checking compaction: {} tokens, threshold: {}, window: {}",
-            estimated_tokens, threshold, self.config.context_window_tokens
-        );
-
         estimated_tokens >= threshold
     }
 
-    /// Select messages to compact vs keep (system messages should be pre-filtered)
-    /// Returns (`messages_to_compact`, `messages_to_keep`)
-    fn select_messages(&self, messages: &[ChatMessage]) -> (Vec<ChatMessage>, Vec<ChatMessage>) {
-        if messages.len() < 3 {
-            return (vec![], messages.to_vec());
-        }
-
-        // Strategy: Keep recent messages that fit within keep_recent_tokens
-        // Start from the end and work backwards
-        let mut keep_count = 0usize;
-        let mut keep_tokens = 0usize;
-
-        for msg in messages.iter().rev() {
-            let content_len: usize = msg
-                .content
-                .iter()
-                .map(|b| match b {
-                    ContentBlock::Text { text } => text.len(),
-                    _ => 50,
-                })
-                .sum();
-            let msg_tokens = (content_len + 20) / CHARS_PER_TOKEN + 4;
-
-            if keep_tokens + msg_tokens > self.config.keep_recent_tokens {
-                break;
-            }
-
-            keep_tokens += msg_tokens;
-            keep_count += 1;
-        }
-
-        // Always keep at least the last 2 messages (user + assistant)
-        keep_count = keep_count.max(2).min(messages.len());
-
-        let split_point = messages.len() - keep_count;
-        let to_compact = messages[..split_point].to_vec();
-        let to_keep = messages[split_point..].to_vec();
-
-        info!(
-            "Selected {} messages to compact, keeping {} messages (~{} tokens)",
-            to_compact.len(),
-            to_keep.len(),
-            keep_tokens
-        );
-
-        (to_compact, to_keep)
+    /// Select messages to compact vs keep, respecting turn boundaries.
+    ///
+    /// Never cuts at tool results — they must stay paired with their tool call.
+    /// Returns (`messages_to_compact`, `messages_to_keep`, `is_split_turn`).
+    fn select_messages(&self, messages: &[ChatMessage]) -> (Vec<ChatMessage>, Vec<ChatMessage>, bool) {
+        turn_boundaries::select_messages_respecting_boundaries(
+            messages,
+            self.config.keep_recent_tokens,
+        )
     }
 
     /// Format messages for summarization prompt
@@ -407,27 +490,52 @@ impl Compactor {
             };
 
         // Select from conversation messages only (includes runtime system messages)
-        let (to_compact, to_keep_conversation) = self.select_messages(&conversation_msgs);
+        let (to_compact, to_keep_conversation, is_split_turn) =
+            self.select_messages(&conversation_msgs);
 
-        if to_compact.is_empty() {
+        if to_compact.is_empty() && !is_split_turn {
             return Err(anyhow::anyhow!(
                 "No messages selected for compaction (conversation too short)"
             ));
         }
 
         // Generate LLM summary (cumulative if previous exists)
-        let summary = self
-            .generate_summary_with_llm(&to_compact, provider)
-            .await?;
+        // For split turns, generate two summaries and merge them
+        let summary = if is_split_turn && !to_compact.is_empty() {
+            // Split turn: generate history summary + turn prefix summary
+            let turn_prefix = turn_boundaries::extract_turn_prefix(&conversation_msgs, conversation_msgs.len() - to_keep_conversation.len())
+                .unwrap_or_default();
+            let history_summary = self.generate_summary_with_llm(&to_compact, provider).await?;
+            let prefix_summary = if !turn_prefix.is_empty() {
+                self.generate_summary_with_llm(&turn_prefix, provider).await?
+            } else {
+                String::new()
+            };
+            if prefix_summary.is_empty() {
+                history_summary
+            } else {
+                format!("{}\n\n---\n\n**Turn Context (split turn):**\n\n{}", history_summary, prefix_summary)
+            }
+        } else {
+            self.generate_summary_with_llm(&to_compact, provider).await?
+        };
+
+        // Track file operations from messages being summarized
+        let file_ops = summary_format::extract_file_ops_from_messages(&to_compact);
+        let cumulative_details = summary_format::compute_cumulative_details(
+            None, // TODO: pass previous details when available
+            &to_compact,
+        );
 
         // Update previous summary for future cumulative updates
         self.previous_summary = Some(summary.clone());
 
-        // Create summary message (as a system message after original system prompts)
+        // Create summary message with structured format and file operations
+        let summary_with_ops = summary_format::format_summary_with_file_ops(&summary, &cumulative_details);
         let summary_content = format!(
             "[Conversation Summary - {} messages]:\n{}",
             to_compact.len(),
-            summary
+            summary_with_ops
         );
         let summary_message = ChatMessage {
             role: MessageRole::System,
@@ -460,6 +568,7 @@ impl Compactor {
             tokens_before,
             tokens_after,
             compaction_number: self.state.compaction_count,
+            details: Some(cumulative_details),
         };
 
         info!(
@@ -482,8 +591,8 @@ impl Compactor {
 
     /// Quick check if compaction would help
     #[must_use]
-    pub fn would_help(&self, estimated_tokens: usize) -> bool {
-        self.config.enabled && estimated_tokens > self.config.context_window_tokens / 2
+    pub fn would_help(&self, estimated_tokens: usize, context_window: usize) -> bool {
+        self.config.enabled && estimated_tokens > context_window / 2
     }
 
     /// Get a status summary
@@ -554,11 +663,11 @@ mod tests {
     fn test_should_compact() {
         let compactor = Compactor::new();
 
-        // Should compact when near threshold
-        assert!(compactor.should_compact(100_000)); // Near 128k window with reserves
+        // Should compact when near threshold (128k window, 85% = 108.8k)
+        assert!(compactor.should_compact(110_000, 128_000));
 
         // Should not compact when well under
-        assert!(!compactor.should_compact(50_000));
+        assert!(!compactor.should_compact(50_000, 128_000));
     }
 
     #[test]
@@ -570,9 +679,124 @@ mod tests {
         assert!(tokens < 5000);
     }
 
-    // TODO: Fix test_select_messages - compaction logic changed
-    // #[test]
-    // fn test_select_messages() { ... }
+    #[test]
+    fn test_select_messages() {
+        // Create many long messages to force compaction
+        let mut messages = vec![ChatMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text {
+                text: "You are a helpful assistant.".to_string(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+
+        // Add 30 very long messages to exceed keep_recent_tokens (20_000)
+        // Each message: 3000 chars ≈ 750 tokens. 30 messages ≈ 22,500 tokens.
+        for i in 0..30 {
+            let text = "x".repeat(3000); // ~750 tokens each
+            if i % 2 == 0 {
+                messages.push(ChatMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text { text: format!("User {i}: {text}") }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            } else {
+                messages.push(ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentBlock::Text { text: format!("Assistant {i}: {text}") }],
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+        }
+
+        let compactor = Compactor::new();
+        let conversation = &messages[1..]; // skip system
+        let (to_compact, to_keep, is_split) = compactor.select_messages(conversation);
+
+        // Should keep at least 2 messages
+        assert!(
+            to_keep.len() >= 2,
+            "Should keep at least 2 messages, got {}",
+            to_keep.len()
+        );
+        // With many long messages, we should have some to compact
+        assert!(!to_compact.is_empty(), "Should have messages to compact");
+        assert!(!is_split, "Normal conversation should not be split turn when to_compact has users");
+        assert_eq!(
+            to_compact.len() + to_keep.len(),
+            conversation.len(),
+            "Compact + keep should equal total"
+        );
+    }
+
+    #[test]
+    fn test_select_messages_respects_tool_boundaries() {
+        use crate::types::message::ContentBlock;
+
+        let compactor = Compactor::new();
+        let mut messages = vec![
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text { text: "User 1".to_string() }],
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text { text: "Assistant 1".to_string() }],
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text { text: "User 2".to_string() }],
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text { text: "I'll use a tool".to_string() }],
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            ChatMessage {
+                role: MessageRole::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_call_id: "tc1".to_string(),
+                    name: "read_file".to_string(),
+                    content: vec![ContentBlock::Text { text: "file content".to_string() }],
+                    is_error: false,
+                }],
+                tool_calls: None,
+                tool_call_id: Some("tc1".to_string()),
+            },
+        ];
+
+        let (to_compact, to_keep, _is_split) = compactor.select_messages(&messages);
+
+        // If tool result is in keep, assistant must also be in keep
+        if to_keep.iter().any(|m| m.role == MessageRole::Tool) {
+            let tool_idx = to_keep.iter().position(|m| m.role == MessageRole::Tool).unwrap();
+            assert!(
+                tool_idx > 0 && to_keep[tool_idx - 1].role == MessageRole::Assistant,
+                "Tool result must follow assistant in kept messages"
+            );
+        }
+    }
+
+    #[test]
+    fn test_estimate_context_tokens_fallback() {
+        let messages = create_test_messages(5);
+        let estimate = Compactor::estimate_context_tokens(&messages);
+
+        // Since find_last_assistant_usage returns None, this should fallback
+        assert_eq!(estimate.usage_tokens, 0);
+        assert_eq!(estimate.trailing_tokens, estimate.tokens);
+        assert!(estimate.last_usage_index.is_none());
+    }
 
     #[test]
     fn test_format_history() {
@@ -589,8 +813,8 @@ mod tests {
     fn test_would_help() {
         let compactor = Compactor::new();
 
-        assert!(compactor.would_help(100_000)); // Over half window
-        assert!(!compactor.would_help(30_000)); // Well under half
+        assert!(compactor.would_help(100_000, 128_000)); // Over half window
+        assert!(!compactor.would_help(30_000, 128_000)); // Well under half
     }
 
     #[test]

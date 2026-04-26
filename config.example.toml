@@ -106,6 +106,26 @@ sandbox_level = "standard"
 level = "info"  # error, warn, info, debug, trace
 format = "pretty"  # pretty, json, compact
 
+# ============================================
+# SESSION COMPACTION (ADR-022)
+# ============================================
+# Automatically summarize conversation history when approaching
+# the LLM's context window limit.
+
+[compaction]
+enabled = true
+auto_threshold_percent = 85       # trigger at 85% of model limit
+reserve_tokens = 16384            # tokens to reserve for LLM response
+keep_recent_tokens = 20000        # minimum recent conversation to preserve
+max_compactions_per_session = 100 # quota limit
+cooldown_seconds = 60             # minimum seconds between compactions
+
+# Optional: override model context window limits
+# [compaction.model_limits]
+# openai.gpt-4o = 128000
+# kimi.K2.6 = 262144
+# minimax.M2.7 = 204800
+
 [debug]
 # Enable for troubleshooting
 show_tool_calls = false

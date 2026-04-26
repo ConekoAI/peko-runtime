@@ -134,6 +134,15 @@ pub enum HookPoint {
     /// Handlers return: `HookOutput::Json` (modified context)
     SessionContextBuild,
 
+    /// Post-compaction augmentation
+    ///
+    /// Called AFTER compaction completes (whether by built-in or extension).
+    /// Extensions may augment, validate, or log the compacted result.
+    ///
+    /// Handlers receive: `HookInput::SessionState`
+    /// Handlers return: `HookOutput::MessageVec` (replace final message list)
+    SessionCompactionPost,
+
     // ═══════════════════════════════════════════════════════════════════════════
     // I/O LIFECYCLE
     // ═══════════════════════════════════════════════════════════════════════════
@@ -238,9 +247,10 @@ impl HookPoint {
             | Self::ToolCancel { .. }
             | Self::ToolResultTransform => "tool",
 
-            Self::SessionStateChange | Self::SessionCompaction | Self::SessionContextBuild => {
-                "session"
-            }
+            Self::SessionStateChange
+            | Self::SessionCompaction
+            | Self::SessionContextBuild
+            | Self::SessionCompactionPost => "session",
 
             Self::ChannelInput
             | Self::ChannelOutput
@@ -281,6 +291,7 @@ impl HookPoint {
             Self::SessionStateChange => "session.state_change".to_string(),
             Self::SessionCompaction => "session.compaction".to_string(),
             Self::SessionContextBuild => "session.context_build".to_string(),
+            Self::SessionCompactionPost => "session.compaction_post".to_string(),
 
             Self::ChannelInput => "io.channel_input".to_string(),
             Self::ChannelOutput => "io.channel_output".to_string(),
@@ -631,5 +642,15 @@ mod tests {
 
         let hp = HookPointBuilder::tool_cancel("my_async_tool");
         assert!(matches!(hp, HookPoint::ToolCancel { tool_name } if tool_name == "my_async_tool"));
+    }
+
+    #[test]
+    fn test_session_compaction_post_hook_point() {
+        let hp = HookPoint::SessionCompactionPost;
+        assert_eq!(hp.name(), "session.compaction_post");
+        assert_eq!(hp.category(), "session");
+        assert!(hp.matches("session.compaction_post"));
+        assert!(hp.matches("session.*"));
+        assert!(!hp.matches("session.compaction"));
     }
 }

@@ -8,6 +8,7 @@
 //! - In-flight compaction tracking
 //! - Result notification via callback
 
+use crate::compaction::registry::should_auto_compact;
 use crate::compaction::{CompactionConfig, CompactionResult, Compactor};
 use crate::providers::ChatMessage;
 use anyhow::Result;
@@ -168,6 +169,19 @@ impl BackgroundCompactor {
         }
     }
 
+    /// Create with custom config, quota, and an explicit context window.
+    /// The context window is passed through to the compactor for threshold checks.
+    pub fn with_config_and_window(
+        provider: Arc<crate::providers::Provider>,
+        config: CompactionConfig,
+        quota: CompactionQuota,
+        _context_window: usize,
+    ) -> Self {
+        // For now, the context window is used by the caller when calling
+        // should_request(). The compactor itself uses the config values.
+        Self::with_config(provider, config, quota)
+    }
+
     /// Request compaction (non-blocking)
     /// Returns receiver for result
     pub async fn request_compaction(
@@ -192,39 +206,42 @@ impl BackgroundCompactor {
     }
 
     /// Check if compaction should be requested (quota check)
-    pub async fn should_request(&self, estimated_tokens: usize, config: &CompactionConfig) -> bool {
+    pub async fn should_request(
+        &self,
+        estimated_tokens: usize,
+        context_window: usize,
+        config: &CompactionConfig,
+    ) -> bool {
         // First check if enabled and over threshold
         if !config.enabled {
             return false;
         }
 
-        let threshold = config
-            .context_window_tokens
-            .saturating_sub(config.reserve_tokens + config.keep_recent_tokens);
-
-        if estimated_tokens < threshold {
+        if !should_auto_compact(estimated_tokens, context_window, config) {
             return false;
         }
 
         // Check quotas
         let state = self.state.lock().await;
 
-        // Check max compactions per session
-        if state.compaction_count >= self.quota.max_compactions_per_session {
+        // Check max compactions per session (prefer config value, fall back to quota)
+        let max_compactions = config.max_compactions_per_session;
+        if state.compaction_count >= max_compactions {
             warn!(
                 "Compaction quota exceeded: {} >= {}",
-                state.compaction_count, self.quota.max_compactions_per_session
+                state.compaction_count, max_compactions
             );
             return false;
         }
 
-        // Check cooldown
+        // Check cooldown (prefer config value, fall back to quota)
+        let cooldown = config.cooldown_seconds;
         if let Some(last) = state.last_compaction {
             let elapsed = last.elapsed().as_secs();
-            if elapsed < self.quota.cooldown_seconds {
+            if elapsed < cooldown {
                 debug!(
                     "Compaction on cooldown: {}s remaining",
-                    self.quota.cooldown_seconds - elapsed
+                    cooldown - elapsed
                 );
                 return false;
             }
@@ -311,13 +328,11 @@ async fn process_compaction_request_with_config(
         });
     });
 
-    // Check if compaction is actually needed
+    // Check if compaction is actually needed.
+    // The caller is responsible for passing the correct context_window to
+    // should_request(). Here we just verify the message list is long enough.
     let estimated_tokens = Compactor::estimate_tokens(&request.messages);
-    let threshold = config
-        .context_window_tokens
-        .saturating_sub(config.reserve_tokens + config.keep_recent_tokens);
-
-    if estimated_tokens < threshold {
+    if request.messages.len() < 4 {
         let _ = request.response_tx.send(CompactionResponse::NotNeeded);
         return Ok(());
     }

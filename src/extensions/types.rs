@@ -208,6 +208,9 @@ pub enum HookOutput {
 
     /// Boolean result (for operations like cancel)
     Bool(bool),
+
+    /// Vector of ChatMessages (for compaction/context hooks)
+    MessageVec(Vec<crate::providers::ChatMessage>),
 }
 
 impl HookOutput {
@@ -295,6 +298,12 @@ impl HookOutput {
     pub fn bool(value: bool) -> Self {
         Self::Bool(value)
     }
+
+    /// Create a message vector output
+    #[must_use]
+    pub fn message_vec(messages: Vec<crate::providers::ChatMessage>) -> Self {
+        Self::MessageVec(messages)
+    }
 }
 
 /// Input to a hook handler
@@ -326,6 +335,46 @@ pub enum HookInput {
 
     /// Session snapshot
     SessionState(SessionSnapshot),
+
+    /// Compaction preparation data (pre-compaction hook)
+    CompactionPreparation {
+        /// Messages that will be summarized
+        messages_to_summarize: Vec<crate::providers::ChatMessage>,
+        /// Recent messages preserved intact (turn prefix for split turns)
+        turn_prefix_messages: Vec<crate::providers::ChatMessage>,
+        /// Whether the cut landed mid-turn
+        is_split_turn: bool,
+        /// Previous compaction summary (for cumulative updates)
+        previous_summary: Option<String>,
+        /// File operations extracted from messages
+        file_ops: crate::compaction::summary_format::CompactionDetails,
+        /// Estimated tokens in the current context
+        estimated_tokens: usize,
+        /// Threshold tokens that triggered compaction
+        threshold_tokens: usize,
+        /// Model context window limit
+        model_context_limit: usize,
+        /// Compaction settings
+        settings: crate::compaction::CompactionConfig,
+    },
+
+    /// Compaction result data (post-compaction hook)
+    CompactionResult {
+        /// Summary text from the compaction
+        summary: String,
+        /// Number of messages that were compacted
+        messages_compacted: usize,
+        /// Tokens before compaction
+        tokens_before: usize,
+        /// Tokens after compaction
+        tokens_after: usize,
+        /// Compaction number (1st, 2nd, etc.)
+        compaction_number: usize,
+        /// Tracked file operations from compacted messages
+        details: Option<crate::compaction::summary_format::CompactionDetails>,
+        /// Messages after compaction (summary + kept messages)
+        messages_after: Vec<crate::providers::ChatMessage>,
+    },
 
     /// Message envelope
     Message(MessageEnvelope),
@@ -661,5 +710,32 @@ mod tests {
 
         assert_eq!(envelope.source, Some("user".to_string()));
         assert_eq!(envelope.target, Some("agent".to_string()));
+    }
+
+    #[test]
+    fn test_hook_output_message_vec() {
+        let messages = vec![
+            crate::providers::ChatMessage {
+                role: crate::providers::MessageRole::System,
+                content: vec![crate::types::message::ContentBlock::Text {
+                    text: "System".to_string(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            crate::providers::ChatMessage {
+                role: crate::providers::MessageRole::User,
+                content: vec![crate::types::message::ContentBlock::Text {
+                    text: "User".to_string(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+        let output = HookOutput::message_vec(messages);
+        match output {
+            HookOutput::MessageVec(msgs) => assert_eq!(msgs.len(), 2),
+            _ => panic!("Expected MessageVec variant"),
+        }
     }
 }

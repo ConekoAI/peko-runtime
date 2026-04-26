@@ -28,6 +28,7 @@ use crate::session::types::Peer;
 use crate::types::ContentBlock;
 use anyhow::Result;
 use chrono::Utc;
+use tracing::warn;
 // ====================================================================================
 // Message Conversion Functions (Phase 4a: Extracted from Session)
 // ====================================================================================
@@ -48,6 +49,54 @@ pub(crate) fn event_to_chat_message(event: &SessionEvent) -> Option<ChatMessage>
 
     // Non-message events return None
     None
+}
+
+/// Convert a `NormalizedEntry` to a `ChatMessage`
+///
+/// Used by `build_context()` to reconstruct the LLM message list from
+/// normalized session entries.
+pub(crate) fn normalized_entry_to_chat_message(entry: &NormalizedEntry) -> Option<ChatMessage> {
+    use crate::providers::MessageRole;
+    use crate::types::ContentBlock;
+
+    match entry {
+        NormalizedEntry::UserMessage { content, .. } => Some(ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text { text: content.clone() }],
+            tool_calls: None,
+            tool_call_id: None,
+        }),
+        NormalizedEntry::AssistantMessage { content, .. } => Some(ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Text { text: content.clone() }],
+            tool_calls: None,
+            tool_call_id: None,
+        }),
+        NormalizedEntry::SystemMessage { content, .. } => Some(ChatMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text { text: content.clone() }],
+            tool_calls: None,
+            tool_call_id: None,
+        }),
+        NormalizedEntry::ToolResult {
+            tool_call_id,
+            tool_name,
+            content,
+            is_error,
+        } => Some(ChatMessage {
+            role: MessageRole::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: tool_call_id.clone(),
+                name: tool_name.clone(),
+                content: vec![ContentBlock::Text { text: content.clone() }],
+                is_error: *is_error,
+            }],
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.clone()),
+        }),
+        // Session header, compaction, model change, custom — not chat messages
+        _ => None,
+    }
 }
 
 /// Convert a slice of `NormalizedEntry` to context text
@@ -672,6 +721,7 @@ impl Session {
         tokens_before: usize,
         tokens_after: usize,
         compaction_number: usize,
+        details: Option<&crate::compaction::summary_format::CompactionDetails>,
     ) -> Result<()> {
         self.storage
             .append_compaction(
@@ -682,6 +732,7 @@ impl Session {
                 tokens_before,
                 tokens_after,
                 compaction_number,
+                details,
             )
             .await?;
         Ok(())
@@ -702,6 +753,141 @@ impl Session {
         }
 
         Ok(None)
+    }
+
+    // ============================================================
+    // ADR-022: Single-File Session + Derived Context Cache
+    // ============================================================
+
+    /// Append a generic event to the source-of-truth JSONL file.
+    ///
+    /// This is the low-level append operation. All higher-level methods
+    /// (`add_user`, `add_assistant`, `record_compaction`, etc.) should
+    /// ideally delegate through here for consistency.
+    pub async fn append_event(&mut self, event: &SessionEvent) -> Result<()> {
+        self.storage.append_event(&self.id, event).await?;
+        Ok(())
+    }
+
+    /// Build the current LLM context from the source-of-truth JSONL entries.
+    ///
+    /// This applies compaction entries in-memory: when a `Compaction` normalized
+    /// entry is encountered, only messages from that point forward are included,
+    /// preceded by a system message containing the compaction summary.
+    ///
+    /// This is called once at session load; the result is kept in memory for the run.
+    pub async fn build_context(&self) -> Result<Vec<ChatMessage>> {
+        use crate::session::NormalizedEntry;
+
+        let entries = self.storage.load_normalized(&self.id).await?;
+        let mut messages = Vec::new();
+
+        // Find the latest compaction entry
+        let mut latest_compaction: Option<&NormalizedEntry> = None;
+        for entry in entries.iter().rev() {
+            if let NormalizedEntry::Compaction { .. } = entry {
+                latest_compaction = Some(entry);
+                break;
+            }
+        }
+
+        if let Some(NormalizedEntry::Compaction {
+            summary,
+            messages_compacted,
+            tokens_before,
+            tokens_after,
+            compaction_number,
+            ..
+        }) = latest_compaction
+        {
+            // Emit summary as a system message
+            let summary_text = format!(
+                "[Conversation Summary #{} — {} messages compacted, saved {} tokens]\n\n{}",
+                compaction_number,
+                messages_compacted,
+                tokens_before.saturating_sub(*tokens_after),
+                summary
+            );
+            messages.push(ChatMessage {
+                role: crate::providers::MessageRole::System,
+                content: vec![crate::types::ContentBlock::Text { text: summary_text }],
+                tool_calls: None,
+                tool_call_id: None,
+            });
+
+            // Find the position of the compaction entry
+            let compaction_idx = entries
+                .iter()
+                .position(|e| matches!(e, NormalizedEntry::Compaction { compaction_number: n, .. } if n == compaction_number))
+                .unwrap_or(0);
+
+            // Emit messages AFTER the compaction entry
+            for entry in &entries[compaction_idx + 1..] {
+                if let Some(msg) = normalized_entry_to_chat_message(entry) {
+                    messages.push(msg);
+                }
+            }
+        } else {
+            // No compaction — emit all messages
+            for entry in &entries {
+                if let Some(msg) = normalized_entry_to_chat_message(entry) {
+                    messages.push(msg);
+                }
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// Load current context via derived cache for fast resume.
+    ///
+    /// Falls back to `build_context()` if the cache is stale or missing,
+    /// then writes a fresh cache for next time.
+    pub async fn load_context_fast(&self) -> Result<Vec<ChatMessage>> {
+        // Compute checksum and entry count from JSONL
+        let checksum = self.storage.compute_jsonl_checksum(&self.id).await?;
+        let entry_count = self.storage.count_jsonl_entries(&self.id).await?;
+
+        // Try to load from cache
+        if let Some(cached) = self
+            .storage
+            .load_context_cache(&self.id, &checksum, entry_count)
+            .await?
+        {
+            return Ok(cached);
+        }
+
+        // Cache miss or stale — build from source of truth
+        let messages = self.build_context().await?;
+
+        // Write cache for next time
+        if let Err(e) = self
+            .storage
+            .write_context_cache(&self.id, &messages, &checksum, entry_count)
+            .await
+        {
+            warn!("Failed to write context cache for {}: {}", self.id, e);
+        }
+
+        Ok(messages)
+    }
+
+    /// Rewrite the derived cache after compaction.
+    ///
+    /// Call this after compaction produces a new message list. The cache
+    /// is invalidated and rewritten with the latest JSONL checksum.
+    pub async fn update_context_cache(&self, messages: &[ChatMessage]) -> Result<()> {
+        let checksum = self.storage.compute_jsonl_checksum(&self.id).await?;
+        let entry_count = self.storage.count_jsonl_entries(&self.id).await?;
+        self.storage
+            .write_context_cache(&self.id, messages, &checksum, entry_count)
+            .await?;
+        Ok(())
+    }
+
+    /// Invalidate the derived cache (e.g., before external modifications).
+    pub async fn invalidate_context_cache(&self) -> Result<()> {
+        self.storage.invalidate_context_cache(&self.id).await
     }
 
     // ============================================================
@@ -1008,5 +1194,308 @@ mod tests {
                 }]
             );
         }
+    }
+
+    // ============================================================
+    // ADR-022: build_context and load_context_fast Tests
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_build_context_without_compaction() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = crate::session::types::Peer::User("default".to_string());
+        let session_id = "test-build-context";
+
+        // Create session and add messages
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_system("You are helpful.").await.unwrap();
+        session.add_user("Hello").await.unwrap();
+        session.add_assistant("Hi there", None, None).await.unwrap();
+
+        let context = session.build_context().await.unwrap();
+        assert_eq!(context.len(), 3);
+        assert_eq!(context[0].role, crate::providers::MessageRole::System);
+        assert_eq!(context[1].role, crate::providers::MessageRole::User);
+        assert_eq!(context[2].role, crate::providers::MessageRole::Assistant);
+    }
+
+    #[tokio::test]
+    async fn test_build_context_with_compaction() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        let peer = crate::session::types::Peer::User("default".to_string());
+        let session_id = "test-build-context-compact";
+
+        storage.create_session(session_id, None).await.unwrap();
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_system("You are helpful.").await.unwrap();
+        session.add_user("Old message 1").await.unwrap();
+        session.add_assistant("Old reply", None, None).await.unwrap();
+
+        // Record compaction
+        session
+            .record_compaction("Summary of old messages", 2, 100, 20, 1, None)
+            .await
+            .unwrap();
+
+        session.add_user("New message").await.unwrap();
+        session.add_assistant("New reply", None, None).await.unwrap();
+
+        let context = session.build_context().await.unwrap();
+
+        // Should have: summary system message + new user + new assistant
+        assert_eq!(context.len(), 3, "Expected summary + 2 messages after compaction");
+        assert_eq!(context[0].role, crate::providers::MessageRole::System);
+        let summary_text = match &context[0].content[0] {
+            crate::types::ContentBlock::Text { text } => text.as_str(),
+            _ => "",
+        };
+        assert!(summary_text.contains("Summary of old messages"));
+        assert_eq!(context[1].role, crate::providers::MessageRole::User);
+        assert_eq!(context[2].role, crate::providers::MessageRole::Assistant);
+    }
+
+    #[tokio::test]
+    async fn test_load_context_fast_uses_cache() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let peer = crate::session::types::Peer::User("default".to_string());
+        let session_id = "test-fast-context";
+
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        storage.create_session(session_id, None).await.unwrap();
+
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_system("You are helpful.").await.unwrap();
+        session.add_user("Hello").await.unwrap();
+
+        // First call builds from JSONL and writes cache
+        let context1 = session.load_context_fast().await.unwrap();
+        assert_eq!(context1.len(), 2);
+
+        // Second call should read from cache
+        let context2 = session.load_context_fast().await.unwrap();
+        assert_eq!(context2.len(), 2);
+
+        // Verify cache file exists
+        assert!(session.storage.context_cache_path(session_id).exists());
+    }
+
+    #[tokio::test]
+    async fn test_load_context_fast_invalidates_on_change() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let peer = crate::session::types::Peer::User("default".to_string());
+        let session_id = "test-fast-context-invalidate";
+
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        storage.create_session(session_id, None).await.unwrap();
+
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        session.add_system("You are helpful.").await.unwrap();
+        session.add_user("Hello").await.unwrap();
+
+        // First call writes cache
+        let context1 = session.load_context_fast().await.unwrap();
+        assert_eq!(context1.len(), 2);
+
+        // Add another message (changes JSONL checksum)
+        session.add_assistant("Hi!", None, None).await.unwrap();
+
+        // Should detect stale cache and rebuild
+        let context2 = session.load_context_fast().await.unwrap();
+        assert_eq!(context2.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_update_context_cache() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let peer = crate::session::types::Peer::User("default".to_string());
+        let session_id = "test-update-cache";
+
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        storage.create_session(session_id, None).await.unwrap();
+
+        let session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        let compacted_messages = vec![
+            crate::providers::ChatMessage {
+                role: crate::providers::MessageRole::System,
+                content: vec![crate::types::ContentBlock::Text {
+                    text: "Summary message".to_string(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            crate::providers::ChatMessage {
+                role: crate::providers::MessageRole::User,
+                content: vec![crate::types::ContentBlock::Text {
+                    text: "Recent user msg".to_string(),
+                }],
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        session.update_context_cache(&compacted_messages).await.unwrap();
+
+        // Cache should be loadable
+        let checksum = session.storage.compute_jsonl_checksum(session_id).await.unwrap();
+        let entry_count = session.storage.count_jsonl_entries(session_id).await.unwrap();
+        let cached = session
+            .storage
+            .load_context_cache(session_id, &checksum, entry_count)
+            .await
+            .unwrap();
+
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap().len(), 2);
+    }
+
+    // ============================================================
+    // ADR-022: End-to-End Compaction Flow Test
+    // ============================================================
+
+    #[tokio::test]
+    async fn test_full_compaction_flow() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let peer = crate::session::types::Peer::User("default".to_string());
+        let session_id = "test-full-compaction";
+
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        storage.create_session(session_id, None).await.unwrap();
+
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        // 1. Build up conversation history
+        session.add_system("You are helpful.").await.unwrap();
+        session.add_user("Message 1").await.unwrap();
+        session.add_assistant("Reply 1", None, None).await.unwrap();
+        session.add_user("Message 2").await.unwrap();
+        session.add_assistant("Reply 2", None, None).await.unwrap();
+        session.add_user("Message 3").await.unwrap();
+        session.add_assistant("Reply 3", None, None).await.unwrap();
+
+        // 2. Load context — should have all messages
+        let context_before = session.build_context().await.unwrap();
+        assert_eq!(context_before.len(), 7); // system + 6 messages
+
+        // 3. Record a compaction
+        session
+            .record_compaction("Summary of old messages", 4, 500, 100, 1, None)
+            .await
+            .unwrap();
+
+        // 4. Add more messages after compaction
+        session.add_user("Message 4").await.unwrap();
+        session.add_assistant("Reply 4", None, None).await.unwrap();
+
+        // 5. Build context — should show summary + messages after compaction
+        let context_after = session.build_context().await.unwrap();
+
+        // Should have: summary system message + 2 new messages
+        assert_eq!(
+            context_after.len(),
+            3,
+            "Expected summary + 2 messages after compaction"
+        );
+        assert_eq!(
+            context_after[0].role,
+            crate::providers::MessageRole::System,
+            "First message should be summary"
+        );
+        let summary_text = match &context_after[0].content[0] {
+            crate::types::ContentBlock::Text { text } => text.as_str(),
+            _ => "",
+        };
+        assert!(
+            summary_text.contains("Summary of old messages"),
+            "Summary should contain compaction text"
+        );
+
+        // 6. Verify context cache works after compaction
+        session.update_context_cache(&context_after).await.unwrap();
+        let cached = session
+            .storage
+            .load_context_cache(
+                session_id,
+                &session.storage.compute_jsonl_checksum(session_id).await.unwrap(),
+                session.storage.count_jsonl_entries(session_id).await.unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(cached.is_some(), "Cache should be valid after compaction");
+        assert_eq!(cached.unwrap().len(), 3, "Cached context should have 3 messages");
+    }
+
+    #[tokio::test]
+    async fn test_append_event_and_build_context() {
+        use tempfile::TempDir;
+        use crate::session::events::{EventEnvelope, SessionCreatedEvent, SessionTrigger};
+        use chrono::Utc;
+
+        let temp_dir = TempDir::new().unwrap();
+        let peer = crate::session::types::Peer::User("default".to_string());
+        let session_id = "test-append-event";
+
+        let storage = crate::session::jsonl::SessionStorage::new(temp_dir.path().to_path_buf());
+        storage.create_session(session_id, None).await.unwrap();
+
+        let mut session =
+            Session::open_by_id("test-agent", session_id, temp_dir.path(), Some(&peer))
+                .await
+                .unwrap();
+
+        // Append a custom event via the low-level API
+        let event = crate::session::events::SessionEvent::SessionCreated(SessionCreatedEvent {
+            envelope: EventEnvelope {
+                id: "test-event".to_string(),
+                ts: Utc::now(),
+            },
+            instance_id: session_id.to_string(),
+            image_digest: "sha256:test".to_string(),
+            parent_session_id: None,
+            trigger: SessionTrigger::User,
+        });
+
+        session.append_event(&event).await.unwrap();
+
+        // Build context — SessionCreated should be ignored
+        let context = session.build_context().await.unwrap();
+        assert_eq!(context.len(), 0, "SessionCreated events should not appear in context");
     }
 }

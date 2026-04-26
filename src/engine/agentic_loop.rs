@@ -23,6 +23,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+// ADR-022 Phase 3: Extension hook imports for compaction
+use crate::extensions::core::hook_points::HookPoint;
+use crate::extensions::types::{HookInput, SessionSnapshot};
+
 // Extension Core imports for skill loading and tool execution
 use crate::extensions::adapters::skill_adapter::{register_skills_with_core, SkillAdapter};
 
@@ -264,7 +268,7 @@ impl AgenticLoop {
         use futures::StreamExt;
 
         // Get session_id once at start
-        let _session_id = {
+        let session_id = {
             let s = session.read().await;
             s.id.clone()
         };
@@ -276,6 +280,10 @@ impl AgenticLoop {
 
             let mut s = session.write().await;
             s.set_model(&provider_name, model_name);
+            // Record model change event in session JSONL for normalization
+            if let Err(e) = s.record_model_change(&provider_name, model_name).await {
+                warn!("Failed to record model change event: {}", e);
+            }
         }
 
         let mut iteration = 0;
@@ -301,6 +309,21 @@ impl AgenticLoop {
 
         // Initialize compactor config for quota checks
         let compaction_config = crate::compaction::CompactionConfig::default();
+        let mut registry = crate::compaction::registry::ModelContextRegistry::new();
+        // Merge any model_limits overrides from compaction_config
+        let override_registry = crate::compaction::registry::ModelContextRegistry {
+            default_limit: registry.default_limit,
+            limits: compaction_config.model_limits.clone(),
+        };
+        registry.merge(&override_registry);
+        let provider_str = self.agent.config.provider.provider_type.to_string();
+        let context_window = registry.get(&provider_str, &self.agent.config.provider.default_model);
+
+        // ADR-022 Phase 3: Track whether compaction was performed this iteration
+        let mut compaction_performed = false;
+
+        // Track the last compaction result for the post-hook
+        let mut last_compaction_result: Option<crate::compaction::CompactionResult> = None;
 
         loop {
             iteration += 1;
@@ -321,41 +344,109 @@ impl AgenticLoop {
                 };
             }
 
-            // Check if compaction is needed before LLM call (background)
+            // ============================================================
+            // ADR-022 Phase 3: Compaction with Extension Hooks
+            // ============================================================
+
+            // Check if compaction is needed before LLM call
             let estimated_tokens = crate::compaction::Compactor::estimate_tokens(&messages);
 
             // Start background compaction if needed and not already running
             if pending_compaction.is_none()
                 && background_compactor
-                    .should_request(estimated_tokens, &compaction_config)
+                    .should_request(estimated_tokens, context_window, &compaction_config)
                     .await
             {
                 info!(
-                    "Context window approaching limit ({} tokens), starting background compaction...",
+                    "Context window approaching limit ({} tokens), checking compaction...",
                     estimated_tokens
                 );
                 on_event(AgenticEvent::Thinking {
                     run_id: run_id.clone(),
-                    text: "Session is getting long. Summarizing older messages in background..."
-                        .to_string(),
+                    text: "Session is getting long. Summarizing older messages...".to_string(),
                     is_delta: false,
                     is_final: false,
                     signature: None,
                 });
 
+                // 1. Invoke SessionCompaction hook — extensions get first shot
+                use crate::extensions::core::hook_points::HookPoint;
+                use crate::extensions::types::HookInput;
+
+                // Build compaction preparation using turn boundaries
+                let threshold_tokens = context_window
+                    .saturating_sub(compaction_config.reserve_tokens);
+                let keep_recent_tokens = compaction_config.keep_recent_tokens;
+
+                let (messages_to_summarize, messages_to_keep, is_split_turn) =
+                    crate::compaction::turn_boundaries::select_messages_respecting_boundaries(
+                        &messages,
+                        keep_recent_tokens,
+                    );
+
+                let turn_prefix_messages = if is_split_turn {
+                    let split_point = messages_to_summarize.len();
+                    crate::compaction::turn_boundaries::extract_turn_prefix(&messages, split_point)
+                        .unwrap_or_default()
+                } else {
+                    vec![]
+                };
+
                 let prev_summary = {
                     let s = session.read().await;
                     s.load_previous_compaction_summary().await.ok().flatten()
                 };
-                match background_compactor
-                    .request_compaction(messages.clone(), prev_summary)
-                    .await
-                {
-                    Ok(receiver) => {
-                        pending_compaction = Some(receiver);
+
+                let file_ops = crate::compaction::summary_format::extract_file_ops_from_messages(
+                    &messages_to_summarize,
+                );
+
+                let hook_input = HookInput::CompactionPreparation {
+                    messages_to_summarize,
+                    turn_prefix_messages,
+                    is_split_turn,
+                    previous_summary: prev_summary.clone(),
+                    file_ops,
+                    estimated_tokens,
+                    threshold_tokens,
+                    model_context_limit: context_window,
+                    settings: compaction_config.clone(),
+                };
+                let hook_result = self
+                    .extension_core
+                    .invoke_hook(HookPoint::SessionCompaction, hook_input)
+                    .await;
+
+                match hook_result {
+                    crate::extensions::types::HookResult::Replace(
+                        crate::extensions::types::HookOutput::MessageVec(custom_messages),
+                    ) => {
+                        // Extension provided custom compacted messages
+                        info!(
+                            "SessionCompaction hook replaced messages: {} → {}",
+                            messages.len(),
+                            custom_messages.len()
+                        );
+                        messages = custom_messages;
+                        compaction_performed = true;
                     }
-                    Err(e) => {
-                        warn!("Failed to start background compaction: {}", e);
+                    crate::extensions::types::HookResult::Handled => {
+                        // Extension cancelled compaction
+                        info!("SessionCompaction hook cancelled compaction");
+                    }
+                    _ => {
+                        // PassThrough or other — run built-in background compactor
+                        match background_compactor
+                            .request_compaction(messages.clone(), prev_summary)
+                            .await
+                        {
+                            Ok(receiver) => {
+                                pending_compaction = Some(receiver);
+                            }
+                            Err(e) => {
+                                warn!("Failed to start background compaction: {}", e);
+                            }
+                        }
                     }
                 }
             }
@@ -369,7 +460,9 @@ impl AgenticLoop {
                             crate::compaction::background::CompactionResponse::Completed(
                                 result,
                             ) => {
-                                messages = result.messages;
+                                messages = result.messages.clone();
+                                compaction_performed = true;
+                                last_compaction_result = Some(result.clone());
                                 info!(
                                     "Background compaction #{} complete: {} messages → summary, saved {} tokens ({} → {})",
                                     result.entry.compaction_number,
@@ -389,6 +482,7 @@ impl AgenticLoop {
                                             result.entry.tokens_before,
                                             result.entry.tokens_after,
                                             result.entry.compaction_number,
+                                            result.entry.details.as_ref(),
                                         )
                                         .await
                                     {
@@ -416,6 +510,58 @@ impl AgenticLoop {
                         // Timeout - compaction still in progress, continue with LLM call
                     }
                 }
+            }
+
+            // 3. Post-compaction hook — augment/validate/log the result
+            if compaction_performed {
+                // Build CompactionResult input for the post hook
+                let post_input = if let Some(ref result) = last_compaction_result {
+                    HookInput::CompactionResult {
+                        summary: result.entry.summary.clone(),
+                        messages_compacted: result.entry.messages_compacted,
+                        tokens_before: result.entry.tokens_before,
+                        tokens_after: result.entry.tokens_after,
+                        compaction_number: result.entry.compaction_number,
+                        details: result.entry.details.clone(),
+                        messages_after: messages.clone(),
+                    }
+                } else {
+                    // Fallback: should not happen since compaction_performed is true,
+                    // but provide a safe default
+                    HookInput::SessionState(SessionSnapshot {
+                        session_id: session_id.clone(),
+                        message_count: messages.len(),
+                        context_tokens: crate::compaction::Compactor::estimate_tokens(&messages),
+                        metadata: std::collections::HashMap::new(),
+                    })
+                };
+                let post_result = self
+                    .extension_core
+                    .invoke_hook(HookPoint::SessionCompactionPost, post_input)
+                    .await;
+
+                if let crate::extensions::types::HookResult::Replace(
+                    crate::extensions::types::HookOutput::MessageVec(modified),
+                ) = post_result
+                {
+                    info!(
+                        "SessionCompactionPost hook modified messages: {} → {}",
+                        messages.len(),
+                        modified.len()
+                    );
+                    messages = modified;
+                }
+
+                // Update context cache after compaction
+                {
+                    let s = session.read().await;
+                    if let Err(e) = s.update_context_cache(&messages).await {
+                        warn!("Failed to update context cache: {}", e);
+                    }
+                }
+
+                compaction_performed = false;
+                last_compaction_result = None;
             }
 
             if iteration > self.max_iterations {

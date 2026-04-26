@@ -1,6 +1,7 @@
 //! Pekobot global configuration
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Global Pekobot configuration
@@ -16,6 +17,9 @@ pub struct PekobotConfig {
     pub logging: LogConfig,
     /// Orchestration layer configuration
     pub orchestration: OrchestrationConfig,
+    /// Session compaction configuration
+    #[serde(default)]
+    pub compaction: CompactionConfig,
 }
 
 impl Default for PekobotConfig {
@@ -26,6 +30,7 @@ impl Default for PekobotConfig {
             network: NetworkConfig::default(),
             logging: LogConfig::default(),
             orchestration: OrchestrationConfig::default(),
+            compaction: CompactionConfig::default(),
         }
     }
 }
@@ -370,6 +375,74 @@ pub struct ExternalSource {
     pub transform: Option<serde_json::Value>,
 }
 
+// ============================================================================
+// Compaction Configuration (ADR-022)
+// ============================================================================
+
+/// Session compaction configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    /// Enable auto-compaction
+    #[serde(default = "default_compaction_enabled")]
+    pub enabled: bool,
+    /// Auto-compaction trigger threshold as percent of context window (0-100)
+    #[serde(default = "default_auto_threshold_percent")]
+    pub auto_threshold_percent: u8,
+    /// Tokens to reserve for LLM response headroom
+    #[serde(default = "default_reserve_tokens")]
+    pub reserve_tokens: usize,
+    /// Minimum recent conversation to preserve during compaction
+    #[serde(default = "default_keep_recent_tokens")]
+    pub keep_recent_tokens: usize,
+    /// Maximum compactions per session (quota)
+    #[serde(default = "default_max_compactions_per_session")]
+    pub max_compactions_per_session: usize,
+    /// Cooldown between compactions in seconds
+    #[serde(default = "default_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+    /// Per-provider/per-model context window overrides
+    #[serde(default)]
+    pub model_limits: HashMap<String, HashMap<String, usize>>,
+}
+
+fn default_compaction_enabled() -> bool {
+    true
+}
+
+fn default_auto_threshold_percent() -> u8 {
+    85
+}
+
+fn default_reserve_tokens() -> usize {
+    16_384
+}
+
+fn default_keep_recent_tokens() -> usize {
+    20_000
+}
+
+fn default_max_compactions_per_session() -> usize {
+    100
+}
+
+fn default_cooldown_seconds() -> u64 {
+    60
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_compaction_enabled(),
+            auto_threshold_percent: default_auto_threshold_percent(),
+            reserve_tokens: default_reserve_tokens(),
+            keep_recent_tokens: default_keep_recent_tokens(),
+            max_compactions_per_session: default_max_compactions_per_session(),
+            cooldown_seconds: default_cooldown_seconds(),
+            model_limits: HashMap::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +463,34 @@ mod tests {
 
         assert_eq!(parsed.app_name, config.app_name);
         assert_eq!(parsed.network.port, config.network.port);
+    }
+
+    #[test]
+    fn test_compaction_config_defaults() {
+        let config = CompactionConfig::default();
+        assert!(config.enabled);
+        assert_eq!(config.auto_threshold_percent, 85);
+        assert_eq!(config.reserve_tokens, 16_384);
+        assert_eq!(config.keep_recent_tokens, 20_000);
+        assert_eq!(config.max_compactions_per_session, 100);
+        assert_eq!(config.cooldown_seconds, 60);
+        assert!(config.model_limits.is_empty());
+    }
+
+    #[test]
+    fn test_compaction_config_toml_roundtrip() {
+        let config = CompactionConfig::default();
+        let toml = toml::to_string(&config).unwrap();
+        let parsed: CompactionConfig = toml::from_str(&toml).unwrap();
+        assert_eq!(parsed.enabled, config.enabled);
+        assert_eq!(parsed.auto_threshold_percent, config.auto_threshold_percent);
+        assert_eq!(parsed.reserve_tokens, config.reserve_tokens);
+    }
+
+    #[test]
+    fn test_pekobot_config_with_compaction() {
+        let config = PekobotConfig::default();
+        assert!(config.compaction.enabled);
+        assert_eq!(config.compaction.auto_threshold_percent, 85);
     }
 }
