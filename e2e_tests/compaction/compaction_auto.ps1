@@ -90,11 +90,7 @@ try {
         "Write a detailed essay about Rust programming (at least 500 words) and save it to rust_essay.txt",
         "Write a detailed essay about Python programming (at least 500 words) and save it to python_essay.txt",
         "Write a detailed essay about Go programming (at least 500 words) and save it to go_essay.txt",
-        "Write a detailed essay about TypeScript programming (at least 500 words) and save it to ts_essay.txt",
-        "Write a detailed essay about Zig programming (at least 500 words) and save it to zig_essay.txt",
-        "Write a detailed essay about Haskell programming (at least 500 words) and save it to haskell_essay.txt",
-        "Write a detailed essay about OCaml programming (at least 500 words) and save it to ocaml_essay.txt",
-        "Write a detailed essay about Elixir programming (at least 500 words) and save it to elixir_essay.txt"
+        "Write a detailed essay about TypeScript programming (at least 500 words) and save it to ts_essay.txt"
     )
 
     $turnIndex = 0
@@ -114,7 +110,7 @@ try {
     }
 
     # Get session ID and inspect JSONL
-    $sessionId = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json | Select-Object -ExpandProperty sessions | Select-Object -First 1 -ExpandProperty id
+    $sessionId = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json | Select-Object -ExpandProperty sessions | Select-Object -First 1 -ExpandProperty session_id
     Write-Host "`nActive session ID: $sessionId" -ForegroundColor Cyan
 
     $jsonlFile = Get-ChildItem -Path $sessionsDir -Filter "*.jsonl" | Select-Object -First 1
@@ -267,7 +263,6 @@ try {
 
     # Remove test files
     @("rust_essay.txt", "python_essay.txt", "go_essay.txt", "ts_essay.txt",
-      "zig_essay.txt", "haskell_essay.txt", "ocaml_essay.txt", "elixir_essay.txt",
       "resume_test.txt") | ForEach-Object {
         $f = "$workspaceDir/$_"
         if (Test-Path $f) { Remove-Item $f -Force }

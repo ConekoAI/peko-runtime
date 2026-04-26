@@ -112,7 +112,7 @@ try {
     }
 
     # Get the active session ID
-    $sessionId = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json | Select-Object -ExpandProperty sessions | Select-Object -First 1 -ExpandProperty id
+    $sessionId = pekobot session list $agentName --json 2>&1 | ConvertFrom-Json | Select-Object -ExpandProperty sessions | Select-Object -First 1 -ExpandProperty session_id
     Write-Host "Active session ID: $sessionId" -ForegroundColor Cyan
 
     # Find the session JSONL file
@@ -216,12 +216,14 @@ try {
     if ($cacheFile) {
         Write-Host "Context cache found: $($cacheFile.FullName)" -ForegroundColor Cyan
         $cacheContent = Get-Content $cacheFile.FullName -Raw
-        $cacheJson = $cacheContent | ConvertFrom-Json
-        $cacheMessages = $cacheJson.messages
+        # Cache file starts with comment lines; skip them to get the JSON
+        $cacheLines = $cacheContent -split "`n" | Where-Object { -not $_.StartsWith("#") }
+        $cacheJson = $cacheLines -join "`n" | ConvertFrom-Json
+        $cacheMessages = $cacheJson
         # After compaction, cache should have: system prompt + summary + kept messages
         # The summary is a system message containing "Conversation Summary"
         $hasSummaryInCache = $cacheMessages | Where-Object {
-            $_.role -eq "system" -and ($_.content | Out-String) -match "Conversation Summary"
+            $_.role -eq "system" -and ($_.content | ForEach-Object { if ($_.type -eq "text") { $_.text } }) -match "Conversation Summary"
         }
         if ($hasSummaryInCache) {
             Write-Host "PASS: Context cache contains compaction summary" -ForegroundColor Green
@@ -275,7 +277,9 @@ try {
     $customCompactOutput = pekobot session compact $agentName --instruction "Focus on file operations" --json 2>&1
     Write-Host "Custom compact output: $customCompactOutput" -ForegroundColor Gray
 
-    $customJson = $customCompactOutput | ConvertFrom-Json
+    # Extract only the JSON line (filter out any log lines)
+    $customJsonLine = $customCompactOutput | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1
+    $customJson = $customJsonLine | ConvertFrom-Json
     if ($customJson.success -eq $true) {
         # Verify the instruction appears in the summary
         $jsonlAfterCustom = Get-Content $jsonlFile.FullName -Raw
@@ -311,7 +315,7 @@ try {
 
     # Verify compaction_number increments
     $compactionEvents = $jsonlFinal -split "`n" | Where-Object { $_ -match '"event"\s*:\s*"compaction"' } | ForEach-Object { $_ | ConvertFrom-Json }
-    $numbers = $compactionEvents | ForEach-Object { $_.detail.compaction_number }
+    $numbers = @($compactionEvents | ForEach-Object { $_.detail.compaction_number })
     $isIncremental = $true
     for ($i = 1; $i -lt $numbers.Count; $i++) {
         if ($numbers[$i] -le $numbers[$i - 1]) {
@@ -322,7 +326,7 @@ try {
     if ($isIncremental -and $numbers.Count -eq $totalCompactions) {
         Write-Host "PASS: Compaction numbers are incremental ($($numbers -join ', '))" -ForegroundColor Green
     } else {
-        Write-Host "FAIL: Compaction numbers not incremental" -ForegroundColor Red
+        Write-Host "FAIL: Compaction numbers not incremental (found: $($numbers -join ', '))" -ForegroundColor Red
         $script:failed = $true
     }
 

@@ -964,11 +964,19 @@ async fn compact_session(
     let tokens_after = crate::compaction::Compactor::estimate_tokens(&compacted);
     let tokens_saved = estimated_tokens.saturating_sub(tokens_after);
 
-    // Update context cache
-    session
-        .update_context_cache(&compacted)
+    // Determine the next compaction number by counting existing compaction events
+    let storage = crate::session::jsonl::SessionStorage::new(loc.sessions_dir.clone());
+    let existing_compactions = storage
+        .load_normalized(session_id)
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to update context cache: {e}"))?;
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|e| matches!(e, crate::session::NormalizedEntry::Compaction { .. }))
+                .count()
+        })
+        .unwrap_or(0);
+    let compaction_number = existing_compactions + 1;
 
     // Record compaction in session
     let entry = crate::compaction::CompactionEntry {
@@ -978,13 +986,10 @@ async fn compact_session(
         messages_compacted: to_compact.len(),
         tokens_before: estimated_tokens,
         tokens_after,
-        compaction_number: 1, // TODO: track compaction count in session
+        compaction_number,
         details: None,
     };
 
-    // We need a mutable session to record compaction, but Session::open_by_id returns an owned Session.
-    // We can use SessionStorage directly for the append operation.
-    let storage = crate::session::jsonl::SessionStorage::new(loc.sessions_dir.clone());
     storage
         .append_compaction(
             session_id,
@@ -998,6 +1003,12 @@ async fn compact_session(
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to record compaction: {e}"))?;
+
+    // Update context cache after compaction event is recorded so checksum matches
+    session
+        .update_context_cache(&compacted)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to update context cache: {e}"))?;
 
     if json {
         println!(
