@@ -32,7 +32,7 @@ pub use protocol::{
 
 // Re-export Extension Architecture integration (Phase 3)
 pub use crate::extensions::adapters::universal_tool_adapter::{
-    load_and_register_tools, load_tools_from_directory, register_tools_with_core,
+    load_and_register_tools, load_tools_from_directory,
     DiscoveredUniversalTool, UniversalToolAdapter as ExtensionUniversalToolAdapter,
 };
 

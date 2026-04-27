@@ -67,13 +67,12 @@ pub use skill_adapter::{
 
 // Re-export universal tool adapter types
 pub use universal_tool_adapter::{
-    load_tools_from_directory, register_tools_with_core, DiscoveredUniversalTool,
-    UniversalToolAdapter,
+    load_tools_from_directory, DiscoveredUniversalTool, UniversalToolAdapter,
 };
 
 // Re-export MCP adapter types
 pub use mcp_adapter::{
-    load_servers_from_directory, register_servers_with_core, DiscoveredMcpServer, McpAdapter,
+    load_servers_from_directory, DiscoveredMcpServer, McpAdapter,
 };
 
 // Re-export gateway adapter types
@@ -149,6 +148,30 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
     /// Default implementation returns true.
     async fn is_healthy(&self, _state: &ExtensionState) -> bool {
         true
+    }
+
+    /// Register tools provided by this extension with the unified registry.
+    ///
+    /// Called by `ExtensionManager` **after** `initialize()` and after
+    /// `resolve_hooks()` have been registered.  Adapters that provide tools
+    /// (built-in, universal, MCP) should implement this to call
+    /// `ExtensionCore::register_tool()` for each tool.
+    ///
+    /// The default implementation returns `Ok(0)` (no tools registered),
+    /// which is correct for non-tool extensions such as skills.
+    ///
+    /// # Arguments
+    /// * `core` - The `ExtensionCore` to register tools with
+    /// * `manifest` - The extension manifest
+    ///
+    /// # Returns
+    /// Number of tools successfully registered
+    async fn register_tools(
+        &self,
+        _core: &crate::extensions::core::ExtensionCore,
+        _manifest: &crate::extensions::ExtensionManifest,
+    ) -> anyhow::Result<usize> {
+        Ok(0)
     }
 
     /// Parse a manifest file for this extension type

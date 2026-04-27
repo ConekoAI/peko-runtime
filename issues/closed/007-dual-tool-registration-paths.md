@@ -1,7 +1,9 @@
 # Issue 007: Dual Tool Registration Paths — Incomplete ADR-018b Migration
 
 **Severity:** CRITICAL  
-**Status:** 🟡 **Open**  
+**Status:** 🔒 **CLOSED**  
+**Closed:** 2026-04-27  
+**Commits:** See git log for Issue-007  
 **Labels:** `architecture`, `tool-registry`, `adr-018b`, `refactor`, `extensions`  
 **Reported:** 2026-04-27  
 
@@ -79,7 +81,6 @@ pub async fn register_tool(
     &self,
     core: &ExtensionCore,
     manifest: &ExtensionManifest,
-    tool: &UniversalToolManifest,
 ) -> Result<()> {
     let metadata = ToolMetadata { ... };
     core.register_tool(metadata, Arc::new(handler), &manifest.id).await?;
@@ -131,33 +132,47 @@ pub async fn register_tools_with_core(
 
 ---
 
-## Proposed Resolution
+## Resolution
 
-**Option A: Complete the migration (Recommended)**
+**Option A implemented:** Complete ADR-018b migration.
 
-1. **Rewrite `register_tools_with_core()` in `universal_tool_adapter.rs`** to call `core.register_tool()` for each tool instead of manual hook registration.
-2. **Rewrite `register_servers_with_core()` in `mcp_adapter.rs`** similarly.
-3. **Delete the 6-handler-per-tool boilerplate** — the handler structs/factories for individual hooks become unnecessary if `register_tool()` handles everything.
-4. **Verify** that `BuiltinToolAdapter`, `UniversalToolAdapter`, and `McpAdapter` all use the same registration path.
+### Changes Made
 
-**Option B: Remove unified registry and standardize on manual hooks**
+1. **`src/extensions/core/tool_registration.rs` (NEW)** — `ToolRegistration` composite + auto-generated handlers (`AutoPromptHandler`, `AutoAsyncHandler`, `AutoStatusHandler`, `AutoCancelHandler`) that provide sensible defaults for all companion hooks.
 
-Deprecate `ExtensionCore::register_tool()` and make manual hook registration the canonical path. This is worse because it loses centralized metadata and enable/disable policy.
+2. **`src/extensions/core/registry.rs`** — `register_tool()` enhanced to perform atomic composite registration: execution hook (adapter-provided) + 4 auto-generated companion hooks. `unregister_tool()` now cleans up all companion hooks atomically via `companion_hook_ids` stored in `ToolMetadata`.
 
-**Option C: Make `register_tool()` a code-generated wrapper**
+3. **`src/extensions/types.rs`** — Added `companion_hook_ids: Option<Vec<HookId>>` to `ToolMetadata` for atomic cleanup tracking.
 
-Keep manual hooks as the low-level API, but have `register_tool()` generate the 6 hooks automatically. This preserves flexibility while eliminating boilerplate.
+4. **`src/extensions/adapters/mod.rs`** — Added `register_tools()` to `ExtensionTypeAdapter` trait (default no-op).
+
+5. **`src/extensions/manager/mod.rs`** — Replaced ~70 lines of special-case dual registration with a single generic `adapter.register_tools(&core, &manifest).await` call.
+
+6. **`src/extensions/adapters/universal_tool_adapter.rs`** — Deleted `register_tools_with_core()` and all 5 factory/handler pairs (~400 lines). `resolve_hooks()` now returns `vec![]` for tool hooks. `register_tools()` delegates to `register_tool()`.
+
+7. **`src/extensions/adapters/mcp_adapter.rs`** — Deleted `register_servers_with_core()` and all tool-specific factory/handler pairs (~350 lines). `resolve_hooks()` now returns only lifecycle hooks (`AgentInit`, `AgentShutdown`). `register_tools()` delegates to `register_server_tools()`.
+
+8. **`src/extensions/adapters/builtin_tool_adapter.rs`** — Removed redundant manual `PromptSystemSection` hook registration.
+
+9. **Re-exports updated** — Removed deleted functions from `mod.rs` and `tools/universal/mod.rs`.
+
+### Net Result
+
+- **~750 lines deleted**, ~200 lines added = **~550 lines net reduction**.
+- All 900 tests pass.
+- Zero special-case logic in `ExtensionManager`.
+- Single canonical path: `ExtensionCore::register_tool()`.
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] All tool adapters (`BuiltinToolAdapter`, `UniversalToolAdapter`, `McpAdapter`) use the **same** registration path.
-- [ ] `register_tools_with_core()` in Universal adapter delegates to `register_tool()` or is deleted.
-- [ ] `register_servers_with_core()` in MCP adapter delegates to `register_tool()` or is deleted.
-- [ ] No tool is registered via both paths simultaneously.
-- [ ] Tool metadata (schema, description, enable/disable) is centralized in `ToolRegistry` for all tool types.
-- [ ] All existing tests pass.
+- [x] All tool adapters (`BuiltinToolAdapter`, `UniversalToolAdapter`, `McpAdapter`) use the **same** registration path.
+- [x] `register_tools_with_core()` deleted from Universal adapter.
+- [x] `register_servers_with_core()` deleted from MCP adapter.
+- [x] No tool is registered via both paths simultaneously.
+- [x] Tool metadata (schema, description, enable/disable) is centralized in `ToolRegistry` for all tool types.
+- [x] All existing tests pass (900 passed, 19 ignored).
 
 ---
 

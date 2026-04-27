@@ -28,39 +28,26 @@ impl BuiltinToolAdapter {
     /// Register a built-in tool with the `ExtensionCore`
     ///
     /// Uses the unified tool registry (ADR-018b) for single source of truth.
-    /// Registers:
-    /// - Tool metadata via `register_tool()` (includes name, description, parameters, source)
-    /// - Execution handler for direct trait calls
-    /// - Prompt section handler for system prompt
+    /// `ExtensionCore::register_tool()` auto-generates all companion hooks
+    /// (prompt, async, status, cancel) from the metadata; this method only
+    /// supplies the execution handler.
     pub async fn register_tool(core: &ExtensionCore, tool: Arc<dyn Tool>) -> Result<()> {
         let tool_name = tool.name().to_string();
         let ext_id = ExtensionId::new(format!("builtin:tool:{tool_name}"));
 
         // Create tool metadata for unified registry
-        let metadata = ToolMetadata {
-            name: tool_name.clone(),
-            description: tool.description(), // Use LLM-optimized description
-            parameters: tool.parameters(),
-            source: ToolSource::BuiltIn,
-            reserved_params: ReservedParamsConfig::new(), // Built-in tools get default reserved params
-        };
+        let metadata = ToolMetadata::new(
+            tool_name.clone(),
+            tool.description(),
+            tool.parameters(),
+            ToolSource::BuiltIn,
+        );
 
         // Create execution handler
-        let exec_handler = Arc::new(BuiltinExecuteHandler::new(tool.clone()));
+        let exec_handler = Arc::new(BuiltinExecuteHandler::new(tool));
 
-        // 1. Register tool in unified registry (metadata + execution handler)
+        // Register with unified registry (auto-generates all companion hooks)
         core.register_tool(metadata, exec_handler, &ext_id).await?;
-
-        // 2. Register prompt section (still via hook for prompt injection)
-        core.register_hook(
-            HookPoint::PromptSystemSection {
-                section: "tools".to_string(),
-                priority: 100, // Built-ins get standard priority
-            },
-            Arc::new(BuiltinPromptHandler::new(tool)),
-            &ext_id,
-        )
-        .await?;
 
         Ok(())
     }

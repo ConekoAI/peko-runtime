@@ -3,12 +3,12 @@
 //! This module implements the central facade for extension hooks and tools.
 //! It composes `HookRegistry` and `ToolRegistry` to provide a unified interface.
 
-use crate::extensions::core::context::{ExtensionServices, HookContext};
+use crate::extensions::core::context::{ExtensionServices, HookContext, HookHandler};
 use crate::extensions::core::hook_points::HookPoint;
 use crate::extensions::core::hook_registry::HookRegistry;
 use crate::extensions::core::tool_registry::ToolRegistry;
 use crate::extensions::types::{
-    ExtensionId, HookId, HookInput, HookOutput, HookResult, ToolMetadata,
+    ExtensionId, HookId, HookInput, HookResult, ToolMetadata,
 };
 use anyhow::Result;
 use std::sync::Arc;
@@ -219,26 +219,39 @@ impl ExtensionCore {
 
     // ==================== UNIFIED TOOL REGISTRY (ADR-018b) ====================
 
-    /// Register a tool with the unified registry
+    /// Register a tool with the unified registry.
     ///
-    /// This method registers both the tool metadata and its execution handler.
-    /// It enforces the whitelist at registration time.
+    /// This is the **single canonical path** for tool registration.  It performs an
+    /// atomic composite operation:
+    ///
+    /// 1. Registers the adapter-supplied **execution handler**.
+    /// 2. Auto-generates companion hooks (prompt, async, status, cancel) from the
+    ///    [`ToolMetadata`].
+    /// 3. Indexes the tool in [`ToolRegistry`] for O(1) metadata lookup.
+    ///
+    /// If the tool was previously registered, it is unregistered first (idempotent).
     ///
     /// # Arguments
-    /// * `metadata` - Tool metadata (name, description, parameters, etc.)
-    /// * `handler` - The handler implementation for tool execution
+    /// * `metadata` - Tool metadata (name, description, parameters, source, etc.)
+    /// * `handler` - The adapter's execution handler (`HookPoint::ToolExecute`)
     /// * `extension_id` - ID of the extension that owns this tool
     ///
     /// # Returns
-    /// The registration information
+    /// A [`ToolRegistration`] composite containing all hook IDs created.
     #[instrument(skip(self, handler, metadata), fields(extension_id = %extension_id, tool_name = %metadata.name))]
     pub async fn register_tool(
         &self,
         metadata: ToolMetadata,
         handler: Arc<dyn super::context::HookHandler>,
         extension_id: &ExtensionId,
-    ) -> Result<RegisteredHook> {
+    ) -> Result<super::tool_registration::ToolRegistration> {
+        use super::tool_registration::{
+            AutoAsyncHandler, AutoCancelHandler, AutoPromptHandler, AutoStatusHandler,
+            ToolRegistration,
+        };
+
         let tool_name = metadata.name.clone();
+        let priority = handler.priority();
 
         // ADR-019: Allow re-registration for dynamic enable/disable
         // If tool already registered, unregister it first (idempotent)
@@ -246,52 +259,91 @@ impl ExtensionCore {
             let _ = self.unregister_tool(&tool_name).await;
         }
 
-        let hook_id = HookId::new();
-        let priority = handler.priority();
+        let mut hook_ids: Vec<HookId> = Vec::with_capacity(5);
 
-        // Get the handler's actual hook point (should be ToolExecute)
+        // ── 1. Execution hook (adapter-provided business logic) ─────────────────
         let exec_point = handler.hook_point();
+        let exec_hook_id = HookId::new();
 
-        // Create registration with the handler's actual hook point
-        let registration = RegisteredHook::with_tool_metadata(
-            hook_id,
+        let exec_registration = RegisteredHook::with_tool_metadata(
+            exec_hook_id,
             extension_id.clone(),
-            exec_point.clone(), // Use actual execution point, not ToolRegister
+            exec_point.clone(),
             handler.clone(),
             priority,
-            metadata,
+            metadata.clone(),
         );
 
-        // Register the hook in the hook registry
         {
             let mut hooks = self.hook_registry.hooks.write().await;
-            hooks.insert(hook_id, registration.clone());
+            hooks.insert(exec_hook_id, exec_registration);
         }
 
-        // Index by the handler's hook point for execution lookup
         {
             let mut by_point = self.hook_registry.hooks_by_point.write().await;
             let exec_point_name = exec_point.name();
             let entry = by_point.entry(exec_point_name).or_insert_with(Vec::new);
-            entry.push(hook_id);
-
-            // Sort by priority (higher first)
+            entry.push(exec_hook_id);
             let hooks = self.hook_registry.hooks.read().await;
             entry.sort_by_key(|id| hooks.get(id).map_or(0, |h| -h.priority));
         }
 
-        // Add to tool index for O(1) lookup
-        self.tool_registry.register_tool(&tool_name, hook_id).await?;
+        hook_ids.push(exec_hook_id);
+
+        // ── 2. Prompt section hook (auto-generated) ─────────────────────────────
+        let prompt_handler = Arc::new(AutoPromptHandler::from_metadata(&metadata, priority));
+        let prompt_point = prompt_handler.hook_point();
+        let prompt_reg = self
+            .register_hook(prompt_point, prompt_handler, extension_id)
+            .await?;
+        hook_ids.push(prompt_reg.id);
+
+        // ── 3. Async execution hook (auto-generated) ────────────────────────────
+        let async_handler = Arc::new(AutoAsyncHandler::from_metadata(&metadata, priority));
+        let async_point = async_handler.hook_point();
+        let async_reg = self
+            .register_hook(async_point, async_handler, extension_id)
+            .await?;
+        hook_ids.push(async_reg.id);
+
+        // ── 4. Check status hook (auto-generated) ───────────────────────────────
+        let status_handler = Arc::new(AutoStatusHandler::from_metadata(&metadata, priority));
+        let status_point = status_handler.hook_point();
+        let status_reg = self
+            .register_hook(status_point, status_handler, extension_id)
+            .await?;
+        hook_ids.push(status_reg.id);
+
+        // ── 5. Cancel hook (auto-generated) ─────────────────────────────────────
+        let cancel_handler = Arc::new(AutoCancelHandler::from_metadata(&metadata, priority));
+        let cancel_point = cancel_handler.hook_point();
+        let cancel_reg = self
+            .register_hook(cancel_point, cancel_handler, extension_id)
+            .await?;
+        hook_ids.push(cancel_reg.id);
+
+        // ── 6. Store companion hook IDs in the primary registration's metadata ──
+        //        so that unregister_tool() can clean them up atomically.
+        {
+            let mut hooks = self.hook_registry.hooks.write().await;
+            if let Some(primary) = hooks.get_mut(&exec_hook_id) {
+                if let Some(ref mut meta) = primary.tool_metadata {
+                    meta.companion_hook_ids = Some(hook_ids[1..].to_vec());
+                }
+            }
+        }
+
+        // ── 7. Index in ToolRegistry for O(1) lookup ────────────────────────────
+        self.tool_registry.register_tool(&tool_name, exec_hook_id).await?;
 
         debug!(
-            hook_id = %hook_id,
             tool_name = %tool_name,
             extension_id = %extension_id,
-            exec_point = %exec_point,
-            "Registered tool"
+            hook_count = hook_ids.len(),
+            "Registered tool with unified registry"
         );
 
-        Ok(registration)
+        Ok(ToolRegistration::new(tool_name, hook_ids, extension_id.clone()))
     }
 
     /// Get tool metadata by name (O(1) lookup)
@@ -355,7 +407,10 @@ impl ExtensionCore {
             .collect()
     }
 
-    /// Unregister a tool by name
+    /// Unregister a tool by name.
+    ///
+    /// Removes **all** hooks associated with the tool (execution, prompt, async,
+    /// status, cancel) atomically.
     ///
     /// # Arguments
     /// * `tool_name` - The name of the tool to unregister
@@ -363,10 +418,26 @@ impl ExtensionCore {
     pub async fn unregister_tool(&self, tool_name: &str) -> Result<()> {
         let hook_id = self.tool_registry.unregister_tool(tool_name).await?;
 
-        if let Some(hook_id) = hook_id {
-            // Also unregister from hooks
-            self.hook_registry.unregister_hook(&hook_id).await?;
-            debug!(tool_name = %tool_name, "Unregistered tool");
+        if let Some(primary_hook_id) = hook_id {
+            // Unregister companion hooks stored in the primary registration's metadata
+            let companion_ids: Vec<HookId> = {
+                let hooks = self.hook_registry.hooks.read().await;
+                hooks
+                    .get(&primary_hook_id)
+                    .and_then(|h| h.tool_metadata.as_ref())
+                    .and_then(|m| m.companion_hook_ids.clone())
+                    .unwrap_or_default()
+            };
+
+            for companion_id in companion_ids {
+                if let Err(e) = self.hook_registry.unregister_hook(&companion_id).await {
+                    debug!(companion_id = %companion_id, error = %e, "Failed to unregister companion hook");
+                }
+            }
+
+            // Unregister the primary execution hook
+            self.hook_registry.unregister_hook(&primary_hook_id).await?;
+            debug!(tool_name = %tool_name, "Unregistered tool and all companion hooks");
         } else {
             warn!(tool_name = %tool_name, "Attempted to unregister unknown tool");
         }

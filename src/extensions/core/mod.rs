@@ -65,6 +65,9 @@ pub use registry::{
     global_core, init_global_core, BuiltinExtensionInfo, ExtensionCore, RegisteredHook,
 };
 
+// Re-export tool registration composite
+pub use tool_registration::ToolRegistration;
+
 // Re-export sub-registries
 pub use hook_registry::HookRegistry;
 pub use tool_registry::ToolRegistry;
@@ -84,6 +87,7 @@ pub mod context;
 pub mod hook_points;
 pub mod hook_registry;
 pub mod registry;
+pub mod tool_registration;
 pub mod tool_registry;
 
 #[cfg(test)]

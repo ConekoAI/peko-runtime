@@ -303,83 +303,16 @@ impl ExtensionManager {
             hook_ids.push(registration.id);
         }
 
+        // Register tools via the unified registry (single canonical path)
+        let tool_count = adapter.register_tools(&self.core, &manifest).await.unwrap_or(0);
+
         info!(
-            "Loaded extension '{}' ({}) with {} hooks",
+            "Loaded extension '{}' ({}) with {} hooks and {} tools",
             extension_id,
             ext_type,
-            hook_ids.len()
+            hook_ids.len(),
+            tool_count,
         );
-
-        // For universal tools, also register with the unified registry (ADR-018b)
-        // This ensures tools appear in list_tool_definitions() queries
-        if ext_type == "universal-tool" {
-            use crate::extensions::adapters::universal_tool_adapter::UniversalToolAdapter;
-            let adapter = UniversalToolAdapter::new();
-            info!(
-                "Registering universal tool '{}' with unified registry...",
-                extension_id
-            );
-            if let Err(e) = adapter.register_tool(&self.core, &manifest).await {
-                warn!(
-                    "Failed to register universal tool '{}' with unified registry: {}",
-                    extension_id, e
-                );
-            } else {
-                info!(
-                    "Successfully registered universal tool '{}' with unified registry",
-                    extension_id
-                );
-                // Verify registration
-                let count = self.core.tool_count().await;
-                info!("Unified registry now has {} tools", count);
-            }
-        }
-
-        // For MCP servers, ensure config is loaded and register tools with unified registry
-        if ext_type == "mcp" {
-            use crate::extensions::adapters::mcp_adapter::McpAdapter;
-
-            // Get config path from manifest and ensure server config is loaded
-            if let Some(config_path) = manifest.get("config_path").and_then(|v| v.as_str()) {
-                // Use MCP adapter with global shared manager
-                let adapter = McpAdapter::with_default_manager();
-
-                // First, ensure the server config is loaded into the MCP manager
-                if let Err(e) = adapter.ensure_server_config(config_path).await {
-                    warn!(
-                        "Failed to load MCP server config for '{}': {}",
-                        extension_id, e
-                    );
-                } else {
-                    info!(
-                        "Registering MCP server '{}' tools with unified registry...",
-                        extension_id
-                    );
-                    if let Err(e) = adapter
-                        .register_server_tools(&self.core, &manifest.name)
-                        .await
-                    {
-                        warn!(
-                            "Failed to register MCP server '{}' tools with unified registry: {}",
-                            extension_id, e
-                        );
-                    } else {
-                        info!(
-                            "Successfully registered MCP server '{}' tools with unified registry",
-                            extension_id
-                        );
-                        // Verify registration
-                        let count = self.core.tool_count().await;
-                        info!("Unified registry now has {} tools", count);
-                    }
-                }
-            } else {
-                warn!(
-                    "MCP extension '{}' missing config_path in manifest",
-                    extension_id
-                );
-            }
-        }
 
         // Store state after hooks are registered (so self can be borrowed mutably after)
         if !state.is_unit() {

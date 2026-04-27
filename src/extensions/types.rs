@@ -560,6 +560,11 @@ pub struct ToolMetadata {
     pub source: ToolSource,
     /// Reserved parameters configuration
     pub reserved_params: crate::extensions::services::reserved_params::ReservedParamsConfig,
+    /// Companion hook IDs registered alongside the primary execution hook.
+    /// Populated by `ExtensionCore::register_tool()` and used during
+    /// `unregister_tool()` for atomic cleanup.
+    #[serde(skip)]
+    pub companion_hook_ids: Option<Vec<HookId>>,
 }
 
 impl ToolMetadata {
@@ -577,6 +582,7 @@ impl ToolMetadata {
             source,
             reserved_params:
                 crate::extensions::services::reserved_params::ReservedParamsConfig::new(),
+            companion_hook_ids: None,
         }
     }
 
@@ -587,6 +593,13 @@ impl ToolMetadata {
         config: crate::extensions::services::reserved_params::ReservedParamsConfig,
     ) -> Self {
         self.reserved_params = config;
+        self
+    }
+
+    /// Set companion hook IDs (used internally by `ExtensionCore::register_tool`).
+    #[must_use]
+    pub fn with_companion_hook_ids(mut self, ids: Vec<HookId>) -> Self {
+        self.companion_hook_ids = Some(ids);
         self
     }
 
