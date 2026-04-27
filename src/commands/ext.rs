@@ -162,8 +162,8 @@ pub enum ExtCommands {
 /// Create an `ExtensionManager` with all default adapters registered
 async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> ExtensionManager {
     use crate::extensions::adapters::{
-        mcp_adapter::McpAdapter, skill_adapter::SkillAdapter,
-        universal_tool_adapter::UniversalToolAdapter,
+        general_adapter::GeneralExtensionAdapter, mcp_adapter::McpAdapter,
+        skill_adapter::SkillAdapter, universal_tool_adapter::UniversalToolAdapter,
     };
     use crate::extensions::core::global_core;
     use crate::tools::builtin_registry::{BuiltinToolRegistrar, BuiltinToolRegistrarConfig};
@@ -191,6 +191,7 @@ async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> Exte
     manager.register_adapter(Box::new(SkillAdapter::new()));
     manager.register_adapter(Box::new(McpAdapter::with_default_manager()));
     manager.register_adapter(Box::new(UniversalToolAdapter::new()));
+    manager.register_adapter(Box::new(GeneralExtensionAdapter::new()));
 
     manager
 }

@@ -1,0 +1,18 @@
+---
+id: custom-compactor-test
+name: Custom Compaction Test Extension
+version: "1.0.0"
+description: A test extension that registers session compaction hooks for E2E verification
+hooks:
+  - point: session.compaction
+    handler: custom_compaction_handler
+  - point: session.compaction_post
+    handler: post_compaction_handler
+---
+# Custom Compactor Test Extension
+
+This extension registers hooks for:
+- `session.compaction` — called before built-in compaction
+- `session.compaction_post` — called after compaction completes
+
+Used by the ADR-022 E2E test suite to verify extension hook wiring.

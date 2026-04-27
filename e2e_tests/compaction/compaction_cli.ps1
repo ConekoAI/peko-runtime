@@ -26,16 +26,26 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
-pushd "$PSScriptRoot/../.."
-$env:RUSTFLAGS = "-A warnings"
-cargo build --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Build failed"
-    exit 1
+# Build pekobot (skip if daemon is running since binary is locked)
+$daemonRunning = $false
+try {
+    $daemonStatus = peko daemon status 2>&1
+    $daemonRunning = $daemonStatus -match "Running"
+} catch { }
+
+if (-not $daemonRunning) {
+    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    pushd "$PSScriptRoot/../.."
+    $env:RUSTFLAGS = "-A warnings"
+    cargo build --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Build failed"
+        exit 1
+    }
+    popd
+} else {
+    Write-Host "Daemon is running — skipping build (binary locked)" -ForegroundColor Yellow
 }
-popd
 
 # Reset pekobot config data
 $pekobotDir = "$env:USERPROFILE/.pekobot"

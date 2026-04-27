@@ -2,16 +2,12 @@
 # ADR-022: Session Compaction — Auto-Compaction E2E Test
 #
 # Tests that the agentic loop automatically triggers compaction when a session
-# approaches the context window limit. Since real auto-compaction requires a very
-# long conversation (thousands of tokens), this test uses a two-pronged approach:
+# approaches the context window limit.
 #
-# 1. VERIFICATION PATH: Manually verify the compaction pipeline by inspecting
-#    session JSONL after a long conversation. We send many messages and check
-#    if compaction events appear.
-#
-# 2. SIMULATION PATH: Use a small model context limit (if configurable) or
-#    verify the hook infrastructure is wired correctly by checking that the
-#    SessionCompaction hook is invoked.
+# Deterministic approach: Write a global config.toml with a very low
+# auto_threshold_percent (5%) and a small model context window override
+# for the test provider. This ensures compaction triggers after just a few
+# turns instead of requiring 100K+ tokens.
 #
 # All operations assume the daemon is already running.
 
@@ -31,16 +27,26 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
-pushd "$PSScriptRoot/../.."
-$env:RUSTFLAGS = "-A warnings"
-cargo build --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Build failed"
-    exit 1
+# Build pekobot (skip if daemon is running since binary is locked)
+$daemonRunning = $false
+try {
+    $daemonStatus = peko daemon status 2>&1
+    $daemonRunning = $daemonStatus -match "Running"
+} catch { }
+
+if (-not $daemonRunning) {
+    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    pushd "$PSScriptRoot/../.."
+    $env:RUSTFLAGS = "-A warnings"
+    cargo build --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Build failed"
+        exit 1
+    }
+    popd
+} else {
+    Write-Host "Daemon is running — skipping build (binary locked)" -ForegroundColor Yellow
 }
-popd
 
 # Reset pekobot config data
 $pekobotDir = "$env:USERPROFILE/.pekobot"
@@ -53,6 +59,31 @@ if (Test-Path $DataDir) {
     Remove-Item -Recurse -Force $DataDir
     Write-Host "Reset data directory" -ForegroundColor Yellow
 }
+
+# ============================================================
+# DETERMINISTIC SETUP: Write global config with low threshold
+# ============================================================
+# This ensures auto-compaction triggers after just a few turns.
+# We override the provider/model context window to 4_000 tokens
+# and set auto_threshold_percent to 5% (triggers at ~200 tokens).
+$modelName = "default"
+
+$globalConfig = @"
+[compaction]
+enabled = true
+auto_threshold_percent = 5
+reserve_tokens = 500
+keep_recent_tokens = 1000
+max_compactions_per_session = 100
+cooldown_seconds = 0
+
+[compaction.model_limits]
+$Provider = { "$modelName" = 4000 }
+"@
+
+New-Item -ItemType Directory -Force -Path $pekobotDir | Out-Null
+$globalConfig | Out-File -FilePath "$pekobotDir/config.toml" -Encoding utf8
+Write-Host "Wrote global config with low compaction threshold (5% of 4K tokens)" -ForegroundColor Green
 
 # Set API key
 peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
@@ -77,35 +108,29 @@ try {
     $script:failed = $false
 
     # ============================================================
-    # TEST 1: Long conversation - verify compaction infrastructure
+    # TEST 1: Short conversation triggers auto-compaction
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 1: Long conversation triggers compaction infrastructure" -ForegroundColor Cyan
+    Write-Host "TEST 1: Conversation triggers auto-compaction" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    # Send many messages to build up context. Each turn adds user message + assistant response.
-    # With tool calls, each turn is even larger. We aim for enough turns that the compactor
-    # would consider compaction (even if it doesn't actually trigger due to model limits).
-    $longPrompts = @(
-        "Write a detailed essay about Rust programming (at least 500 words) and save it to rust_essay.txt",
-        "Write a detailed essay about Python programming (at least 500 words) and save it to python_essay.txt",
-        "Write a detailed essay about Go programming (at least 500 words) and save it to go_essay.txt",
-        "Write a detailed essay about TypeScript programming (at least 500 words) and save it to ts_essay.txt"
+    # Send several messages to build up context. With the 4K context window
+    # override and 5% threshold, compaction should trigger after ~3-4 turns.
+    $prompts = @(
+        "Write a detailed essay about Rust programming (at least 400 words) and save it to rust_essay.txt. Respond with RUST_DONE.",
+        "Write a detailed essay about Python programming (at least 400 words) and save it to python_essay.txt. Respond with PYTHON_DONE.",
+        "Write a detailed essay about Go programming (at least 400 words) and save it to go_essay.txt. Respond with GO_DONE.",
+        "Write a detailed essay about TypeScript programming (at least 400 words) and save it to ts_essay.txt. Respond with TS_DONE."
     )
 
     $turnIndex = 0
-    foreach ($prompt in $longPrompts) {
+    foreach ($prompt in $prompts) {
         $turnIndex++
-        Write-Host "Turn $($turnIndex): Sending long message..." -ForegroundColor Yellow
+        Write-Host "Turn $($turnIndex): Sending message..." -ForegroundColor Yellow
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $response = peko send $agentName $prompt --no-stream 2>&1
         $stopwatch.Stop()
         Write-Host "  Response time: $($stopwatch.Elapsed.ToString('hh\:mm\:ss'))" -ForegroundColor Gray
-
-        # Check if agent reported any compaction-related thinking
-        if ($response -match "summarizing|compaction|context window|getting long" -or $response -match "Summarizing|Compaction") {
-            Write-Host "  → Agent mentioned compaction/thinking during response!" -ForegroundColor Green
-        }
         Start-Sleep -Milliseconds 300
     }
 
@@ -114,61 +139,66 @@ try {
     Write-Host "`nActive session ID: $sessionId" -ForegroundColor Cyan
 
     $jsonlFile = Get-ChildItem -Path $sessionsDir -Filter "*.jsonl" | Select-Object -First 1
-    if ($jsonlFile) {
-        $jsonlContent = Get-Content $jsonlFile.FullName -Raw
-        $lineCount = ($jsonlContent -split "`n" | Where-Object { $_.Trim().Length -gt 0 }).Count
-        Write-Host "Session JSONL has $lineCount lines" -ForegroundColor Cyan
-
-        # Count compaction events
-        $compactionCount = ([regex]::Matches($jsonlContent, '"event"\s*:\s*"compaction"')).Count
-        if ($compactionCount -gt 0) {
-            Write-Host "PASS: Found $compactionCount auto-compaction event(s) in session JSONL" -ForegroundColor Green
-        } else {
-            Write-Host "INFO: No auto-compaction events found (context may not have reached threshold yet)" -ForegroundColor Yellow
-            Write-Host "      This is expected for models with large context windows (>100K tokens)." -ForegroundColor Yellow
-            Write-Host "      The compaction infrastructure is still verified by the hook wiring." -ForegroundColor Yellow
-        }
-
-        # Count total messages (user + assistant + tool calls)
-        $messageCount = ([regex]::Matches($jsonlContent, '"type"\s*:\s*"message.v2"')).Count
-        $toolCallCount = ([regex]::Matches($jsonlContent, '"type"\s*:\s*"tool.call"')).Count
-        $toolResultCount = ([regex]::Matches($jsonlContent, '"type"\s*:\s*"tool.result"')).Count
-        Write-Host "Session stats: $messageCount messages, $toolCallCount tool calls, $toolResultCount tool results" -ForegroundColor Cyan
+    if (-not $jsonlFile) {
+        Write-Host "FAIL: No JSONL file found" -ForegroundColor Red
+        $script:failed = $true
+        exit 1
     }
 
+    $jsonlContent = Get-Content $jsonlFile.FullName -Raw
+    $lineCount = ($jsonlContent -split "`n" | Where-Object { $_.Trim().Length -gt 0 }).Count
+    Write-Host "Session JSONL has $lineCount lines" -ForegroundColor Cyan
+
+    # Count compaction events — this MUST be > 0 for the test to pass
+    $compactionCount = ([regex]::Matches($jsonlContent, '"event"\s*:\s*"compaction"')).Count
+    if ($compactionCount -gt 0) {
+        Write-Host "PASS: Found $compactionCount auto-compaction event(s) in session JSONL" -ForegroundColor Green
+    } else {
+        Write-Host "FAIL: No auto-compaction events found (threshold config may not be applied)" -ForegroundColor Red
+        $script:failed = $true
+    }
+
+    # Count total messages (user + assistant + tool calls)
+    $messageCount = ([regex]::Matches($jsonlContent, '"type"\s*:\s*"message.v2"')).Count
+    $toolCallCount = ([regex]::Matches($jsonlContent, '"type"\s*:\s*"tool.call"')).Count
+    $toolResultCount = ([regex]::Matches($jsonlContent, '"type"\s*:\s*"tool.result"')).Count
+    Write-Host "Session stats: $messageCount messages, $toolCallCount tool calls, $toolResultCount tool results" -ForegroundColor Cyan
+
     # ============================================================
-    # TEST 2: Verify agent remains coherent after potential compaction
+    # TEST 2: Verify compaction event structure
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 2: Agent coherence after long conversation" -ForegroundColor Cyan
+    Write-Host "TEST 2: Compaction event structure" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    # Ask the agent to recall something from an early turn
-    $recallPrompt = "Earlier in our conversation, I asked you to write essays about several programming languages. One of them was about Rust. What filename did you save the Rust essay to? Respond with RECALL_SUCCESS and the filename, or RECALL_FAILED if you don't remember."
-    $recallResponse = peko send $agentName $recallPrompt --no-stream 2>&1
-    Write-Host "Recall response: $recallResponse" -ForegroundColor Gray
+    if ($compactionCount -gt 0) {
+        $compactionLines = $jsonlContent -split "`n" | Where-Object { $_ -match '"event"\s*:\s*"compaction"' }
+        $latestCompaction = $compactionLines | Select-Object -Last 1 | ConvertFrom-Json
+        $detail = $latestCompaction.detail
 
-    $recallSuccess = $recallResponse -match "RECALL_SUCCESS"
-    $recallHasFilename = $recallResponse -match "rust_essay\.txt"
+        $hasSummary = $detail.summary -and ($detail.summary.Length -gt 0)
+        $hasTokensBefore = $detail.tokens_before -gt 0
+        $hasTokensAfter = $detail.tokens_after -ge 0
+        $hasCompactionNumber = $detail.compaction_number -ge 1
 
-    if ($recallSuccess -and $recallHasFilename) {
-        Write-Host "PASS: Agent correctly recalled information from early in the conversation" -ForegroundColor Green
-    } elseif ($recallSuccess) {
-        Write-Host "PARTIAL: Agent reported success but didn't mention rust_essay.txt" -ForegroundColor Yellow
+        if ($hasSummary -and $hasTokensBefore -and $hasTokensAfter -and $hasCompactionNumber) {
+            Write-Host "PASS: Compaction event has all required fields" -ForegroundColor Green
+        } else {
+            Write-Host "FAIL: Compaction event missing required fields" -ForegroundColor Red
+            $script:failed = $true
+        }
     } else {
-        Write-Host "INFO: Agent could not recall early conversation (may be due to compaction or model behavior)" -ForegroundColor Yellow
+        Write-Host "SKIP: No compaction events to verify" -ForegroundColor Yellow
     }
 
     # ============================================================
-    # TEST 3: Verify turn boundary preservation
+    # TEST 3: Turn boundary preservation after auto-compaction
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
     Write-Host "TEST 3: Turn boundary preservation" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    # If compaction occurred, verify that tool call + tool result pairs are never split
-    # This is a structural check on the JSONL
-    if ($compactionCount -gt 0 -and $jsonlFile) {
+    if ($compactionCount -gt 0) {
         $lines = Get-Content $jsonlFile.FullName | Where-Object { $_.Trim().Length -gt 0 }
         $toolCallIds = @()
         $toolResultIds = @()
@@ -185,14 +215,13 @@ try {
             }
         }
 
-        # Every tool call should have a matching tool result
         $orphanedCalls = $toolCallIds | Where-Object { $_ -notin $toolResultIds }
         $orphanedResults = $toolResultIds | Where-Object { $_ -notin $toolCallIds }
 
         if ($orphanedCalls.Count -eq 0 -and $orphanedResults.Count -eq 0) {
             Write-Host "PASS: All tool calls have matching results (no orphaned pairs)" -ForegroundColor Green
         } else {
-            Write-Host "FAIL: Found orphaned tool calls/results - turn boundaries may have been violated" -ForegroundColor Red
+            Write-Host "FAIL: Found orphaned tool calls/results - turn boundaries violated" -ForegroundColor Red
             Write-Host "  Orphaned calls: $($orphanedCalls -join ', ')" -ForegroundColor Red
             Write-Host "  Orphaned results: $($orphanedResults -join ', ')" -ForegroundColor Red
             $script:failed = $true
@@ -202,55 +231,63 @@ try {
     }
 
     # ============================================================
-    # TEST 4: Session resume after compaction
+    # TEST 4: Agent coherence after auto-compaction
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 4: Session resume after compaction" -ForegroundColor Cyan
+    Write-Host "TEST 4: Agent coherence after auto-compaction" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    # First, manually compact to ensure we have a compaction event
-    $compactOutput = pekobot session compact $agentName --json 2>&1
-    $compactJson = $compactOutput | ConvertFrom-Json
-    if ($compactJson.success -eq $true) {
-        Write-Host "Manual compaction performed before resume test" -ForegroundColor Green
+    $recallPrompt = "Earlier in our conversation, I asked you to write essays about several programming languages. One of them was about Rust. What filename did you save the Rust essay to? Respond with RECALL_SUCCESS and the filename, or RECALL_FAILED if you don't remember."
+    $recallResponse = peko send $agentName $recallPrompt --no-stream 2>&1
+    Write-Host "Recall response: $recallResponse" -ForegroundColor Gray
 
-        # Send one more message to verify the session is still functional
-        $resumePrompt = "Write a file named resume_test.txt with content RESUME_OK. Then respond with RESUME_SUCCESS."
-        $resumeResponse = peko send $agentName $resumePrompt --no-stream 2>&1
-        Write-Host "Resume response: $resumeResponse" -ForegroundColor Gray
+    $recallSuccess = $recallResponse -match "RECALL_SUCCESS"
+    $recallHasFilename = $recallResponse -match "rust_essay\.txt"
 
-        $resumeFile = "$workspaceDir/resume_test.txt"
-        Start-Sleep -Milliseconds 500
-        $resumeExists = Test-Path $resumeFile
-        $resumeContent = if ($resumeExists) { Get-Content $resumeFile -Raw } else { "<missing>" }
-        $resumeSuccess = $resumeResponse -match "RESUME_SUCCESS"
-
-        if ($resumeExists -and $resumeContent -match "RESUME_OK" -and $resumeSuccess) {
-            Write-Host "PASS: Session fully functional after compaction and resume" -ForegroundColor Green
-        } else {
-            Write-Host "FAIL: Session not functional after compaction" -ForegroundColor Red
-            $script:failed = $true
-        }
+    if ($recallSuccess -and $recallHasFilename) {
+        Write-Host "PASS: Agent correctly recalled information from early in the conversation" -ForegroundColor Green
     } else {
-        Write-Host "FAIL: Could not compact session for resume test" -ForegroundColor Red
+        Write-Host "FAIL: Agent could not recall early conversation after compaction" -ForegroundColor Red
         $script:failed = $true
     }
 
     # ============================================================
-    # TEST 5: Verify model_change event recorded in JSONL
+    # TEST 5: Session resume after compaction
     # ============================================================
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "TEST 5: Model change event in session JSONL" -ForegroundColor Cyan
+    Write-Host "TEST 5: Session resume after compaction" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
 
-    if ($jsonlFile) {
-        $jsonlAll = Get-Content $jsonlFile.FullName -Raw
-        $modelChangeCount = ([regex]::Matches($jsonlAll, '"event"\s*:\s*"model_change"')).Count
-        if ($modelChangeCount -ge 1) {
-            Write-Host "PASS: Found $modelChangeCount model_change event(s) in JSONL" -ForegroundColor Green
-        } else {
-            Write-Host "INFO: No model_change events found (agentic loop may not record on startup)" -ForegroundColor Yellow
-        }
+    $resumePrompt = "Write a file named resume_test.txt with content RESUME_OK. Then respond with RESUME_SUCCESS."
+    $resumeResponse = peko send $agentName $resumePrompt --no-stream 2>&1
+    Write-Host "Resume response: $resumeResponse" -ForegroundColor Gray
+
+    $resumeFile = "$workspaceDir/resume_test.txt"
+    Start-Sleep -Milliseconds 500
+    $resumeExists = Test-Path $resumeFile
+    $resumeContent = if ($resumeExists) { Get-Content $resumeFile -Raw } else { "<missing>" }
+    $resumeSuccess = $resumeResponse -match "RESUME_SUCCESS"
+
+    if ($resumeExists -and $resumeContent -match "RESUME_OK" -and $resumeSuccess) {
+        Write-Host "PASS: Session fully functional after compaction and resume" -ForegroundColor Green
+    } else {
+        Write-Host "FAIL: Session not functional after compaction" -ForegroundColor Red
+        $script:failed = $true
+    }
+
+    # ============================================================
+    # TEST 6: Model change event in session JSONL
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "TEST 6: Model change event in session JSONL" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    $jsonlAll = Get-Content $jsonlFile.FullName -Raw
+    $modelChangeCount = ([regex]::Matches($jsonlAll, '"event"\s*:\s*"model_change"')).Count
+    if ($modelChangeCount -ge 1) {
+        Write-Host "PASS: Found $modelChangeCount model_change event(s) in JSONL" -ForegroundColor Green
+    } else {
+        Write-Host "INFO: No model_change events found" -ForegroundColor Yellow
     }
 
 } finally {
@@ -270,6 +307,12 @@ try {
 
     peko agent delete $agentName --force 2>&1 | Out-Null
     Write-Host "Deleted test agent: $agentName" -ForegroundColor Green
+
+    # Remove global config
+    if (Test-Path "$pekobotDir/config.toml") {
+        Remove-Item "$pekobotDir/config.toml" -Force
+        Write-Host "Removed test global config" -ForegroundColor Green
+    }
 }
 
 if ($script:failed) {

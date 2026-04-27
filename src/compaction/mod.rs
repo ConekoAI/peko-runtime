@@ -829,4 +829,31 @@ mod tests {
             Some(&"Initial summary".to_string())
         );
     }
+
+    #[test]
+    fn test_compaction_config_from_toml_section() {
+        let toml_str = r#"
+[compaction]
+enabled = true
+auto_threshold_percent = 5
+reserve_tokens = 500
+keep_recent_tokens = 1000
+max_compactions_per_session = 100
+cooldown_seconds = 0
+
+[compaction.model_limits]
+minimax = { "M2.7" = 4000 }
+"#;
+        let root = toml::from_str::<toml::Value>(toml_str).unwrap();
+        let compaction_table = root.get("compaction").expect("compaction section should exist");
+        let cfg: CompactionConfig = compaction_table.clone().try_into().expect("should parse");
+
+        assert!(cfg.enabled);
+        assert_eq!(cfg.auto_threshold_percent, 5);
+        assert_eq!(cfg.reserve_tokens, 500);
+        assert_eq!(cfg.keep_recent_tokens, 1000);
+        assert_eq!(cfg.max_compactions_per_session, 100);
+        assert_eq!(cfg.cooldown_seconds, 0);
+        assert_eq!(cfg.model_limits.get("minimax").unwrap().get("M2.7"), Some(&4000));
+    }
 }

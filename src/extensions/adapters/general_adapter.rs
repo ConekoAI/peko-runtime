@@ -163,6 +163,7 @@ impl GeneralExtensionAdapter {
             // Session lifecycle
             "session.state_change" => Some(HookPoint::SessionStateChange),
             "session.compaction" => Some(HookPoint::SessionCompaction),
+            "session.compaction_post" => Some(HookPoint::SessionCompactionPost),
             "session.context_build" => Some(HookPoint::SessionContextBuild),
 
             // I/O lifecycle
@@ -216,6 +217,20 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
             required_fields: vec!["id", "name", "hooks"],
             file_name: "manifest.yaml",
         }
+    }
+
+    fn parse_manifest(
+        &self,
+        path: &std::path::Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        use anyhow::Context;
+        let (frontmatter, _) = super::parsing::parse_yaml_frontmatter(content)
+            .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&frontmatter)
+            .with_context(|| format!("Failed to parse YAML in {path:?}"))?;
+        super::parsing::build_manifest_from_yaml(&yaml, GENERAL_EXTENSION_TYPE, path)
+            .with_context(|| format!("Failed to build manifest from YAML in {path:?}"))
     }
 
     fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding> {

@@ -308,7 +308,41 @@ impl AgenticLoop {
         > = None;
 
         // Initialize compactor config for quota checks
-        let compaction_config = crate::compaction::CompactionConfig::default();
+        // Load from global config file if present, otherwise use defaults
+        let compaction_config = {
+            let config_path = dirs::home_dir()
+                .map(|h| h.join(".pekobot").join("config.toml"))
+                .filter(|p| p.exists());
+            if let Some(path) = config_path {
+                match std::fs::read_to_string(&path) {
+                    Ok(contents) => {
+                        // Parse the full TOML and extract the [compaction] section
+                        match toml::from_str::<toml::Value>(&contents) {
+                            Ok(root) => {
+                                if let Some(compaction_table) = root.get("compaction") {
+                                    match compaction_table.clone().try_into::<crate::compaction::CompactionConfig>() {
+                                        Ok(cfg) => cfg,
+                                        Err(e) => {
+                                            crate::compaction::CompactionConfig::default()
+                                        }
+                                    }
+                                } else {
+                                    crate::compaction::CompactionConfig::default()
+                                }
+                            }
+                            Err(e) => {
+                                crate::compaction::CompactionConfig::default()
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::compaction::CompactionConfig::default()
+                    }
+                }
+            } else {
+                crate::compaction::CompactionConfig::default()
+            }
+        };
         let mut registry = crate::compaction::registry::ModelContextRegistry::new();
         // Merge any model_limits overrides from compaction_config
         let override_registry = crate::compaction::registry::ModelContextRegistry {
@@ -318,6 +352,20 @@ impl AgenticLoop {
         registry.merge(&override_registry);
         let provider_str = self.agent.config.provider.provider_type.to_string();
         let context_window = registry.get(&provider_str, &self.agent.config.provider.default_model);
+
+        // DEBUG: Write compaction config state to a marker file for e2e verification
+        let marker_path = std::path::PathBuf::from(r"C:\Users\Megad\AppData\Roaming\pekobot\compaction_debug.marker");
+        let _ = std::fs::write(
+            &marker_path,
+            format!("context_window={}\nauto_threshold={}\nreserve={}\nmodel_limits_keys={:?}\nprovider={}\nmodel={}\n",
+                context_window,
+                compaction_config.auto_threshold_percent,
+                compaction_config.reserve_tokens,
+                compaction_config.model_limits.keys().collect::<Vec<_>>(),
+                provider_str,
+                self.agent.config.provider.default_model
+            ),
+        );
 
         // ADR-022 Phase 3: Track whether compaction was performed this iteration
         let mut compaction_performed = false;

@@ -45,6 +45,20 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
+
+# ============================================================
+# Test 3: Custom Compaction Extension
+# ============================================================
+Write-Host "Running custom compaction extension tests..." -ForegroundColor Cyan
+& "$PSScriptRoot/compaction_extension.ps1" -Provider $Provider
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Custom compaction extension tests FAILED" -ForegroundColor Red
+    $script:overallFailed = $true
+} else {
+    Write-Host "Custom compaction extension tests PASSED" -ForegroundColor Green
+}
+
+Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 if ($script:overallFailed) {
     Write-Host "SOME TESTS FAILED" -ForegroundColor Red
