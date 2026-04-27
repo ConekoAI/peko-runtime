@@ -7,57 +7,17 @@
 //! `HashMap<K, V>` wrapper patterns.
 
 use crate::common::registry::SimpleRegistry;
+use crate::tools::async_executor::AsyncTaskStatus;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Status of a subagent run
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SubagentStatus {
-    /// Run is currently executing
-    Running,
-    /// Run completed successfully
-    Completed,
-    /// Run failed with an error
-    Failed,
-    /// Run was cancelled
-    Cancelled,
-    /// Run timed out
-    TimedOut,
-}
-
-impl SubagentStatus {
-    /// Check if the status is terminal (completed, failed, cancelled, or timed out)
-    #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            SubagentStatus::Completed
-                | SubagentStatus::Failed
-                | SubagentStatus::Cancelled
-                | SubagentStatus::TimedOut
-        )
-    }
-
-    /// Convert status to string representation
-    #[must_use]
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SubagentStatus::Running => "running",
-            SubagentStatus::Completed => "completed",
-            SubagentStatus::Failed => "failed",
-            SubagentStatus::Cancelled => "cancelled",
-            SubagentStatus::TimedOut => "timed_out",
-        }
-    }
-}
-
-impl std::fmt::Display for SubagentStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
+/// Status of a subagent run.
+///
+/// Unified with `AsyncTaskStatus` — single source of truth for all async
+/// task status tracking (see Issue 006).
+pub type SubagentStatus = AsyncTaskStatus;
 
 /// Result of a subagent run
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,7 +93,7 @@ impl SubagentRun {
 
     /// Mark the run as completed
     pub fn complete(&mut self, result: SubagentResult) {
-        self.status = result.status;
+        self.status = result.status.clone();
         self.result = Some(result);
         self.completed_at = Some(Utc::now());
     }
@@ -190,9 +150,10 @@ impl SubagentRegistry {
 
     /// Update a run's status
     pub fn update_status(&mut self, run_id: &str, status: SubagentStatus) -> Option<()> {
+        let is_terminal = status.is_terminal();
         let run = self.runs.get_mut(&run_id.to_string())?;
         run.status = status;
-        if status.is_terminal() {
+        if is_terminal {
             run.completed_at = Some(Utc::now());
         }
         Some(())
@@ -392,10 +353,10 @@ mod tests {
     #[test]
     fn test_subagent_status_is_terminal() {
         assert!(!SubagentStatus::Running.is_terminal());
-        assert!(SubagentStatus::Completed.is_terminal());
-        assert!(SubagentStatus::Failed.is_terminal());
+        assert!(SubagentStatus::Completed { result: crate::tools::ToolResult::success(serde_json::json!({})) }.is_terminal());
+        assert!(SubagentStatus::Failed { error: "test".to_string() }.is_terminal());
         assert!(SubagentStatus::Cancelled.is_terminal());
-        assert!(SubagentStatus::TimedOut.is_terminal());
+        assert!(SubagentStatus::TimedOut { error: "test".to_string() }.is_terminal());
     }
 
     #[test]
@@ -445,7 +406,7 @@ mod tests {
             None,
             1,
         );
-        run2.status = SubagentStatus::Completed;
+        run2.status = SubagentStatus::Completed { result: crate::tools::ToolResult::success(serde_json::json!({})) };
         registry.register(run2);
 
         assert_eq!(registry.count_active_for_parent("parent_key"), 1);
@@ -468,7 +429,7 @@ mod tests {
         assert!(run.completed_at.is_none());
 
         let result = SubagentResult {
-            status: SubagentStatus::Completed,
+            status: SubagentStatus::Completed { result: crate::tools::ToolResult::success(serde_json::json!({})) },
             output: Some("Success".to_string()),
             error: None,
             token_usage: Some((10, 20, 30)),
@@ -477,7 +438,7 @@ mod tests {
 
         run.complete(result);
 
-        assert_eq!(run.status, SubagentStatus::Completed);
+        assert!(matches!(run.status, SubagentStatus::Completed { .. }));
         assert!(run.completed_at.is_some());
         assert!(run.result.is_some());
     }

@@ -597,7 +597,7 @@ impl IpcServer {
         socket: ServerSocket,
         addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<()> {
-        use crate::agent::async_tool_framework::{AsyncTaskId, AsyncTaskResult, AsyncToolConfig};
+        use crate::tools::async_executor::{AsyncTaskId, AsyncTaskResult, AsyncToolConfig};
 
         let tool_runtime = state.tool_runtime.clone();
         let executor = state.async_task_executor.clone();
@@ -619,7 +619,7 @@ impl IpcServer {
                     let p = params.clone();
                     Box::pin(async move {
                         match runtime.execute_tool_with_workspace(&name, p, &ws).await {
-                            Ok(value) => Ok(AsyncTaskResult::Generic { data: value }),
+                            Ok(value) => Ok(value),
                             Err(e) => Err(e),
                         }
                     })

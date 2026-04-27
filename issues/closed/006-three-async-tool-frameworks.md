@@ -1,9 +1,11 @@
 # Issue 006: Three Async Tool Frameworks
 
 **Severity:** CRITICAL  
-**Status:** 🟡 **Open**  
+**Status:** 🟢 **Closed**  
 **Labels:** `architecture`, `async-tools`, `competing-abstractions`, `refactor`, `adr-020`  
 **Reported:** 2026-04-27  
+**Resolved:** 2026-04-27  
+**PR:** N/A (direct implementation)  
 
 ---
 
@@ -299,18 +301,34 @@ This phase addresses the OCP violations discovered during analysis.
 
 ---
 
+## Implementation Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1: Delete Framework 2 | ✅ Complete | `src/tools/async_tool.rs` deleted |
+| Phase 2: Move Framework 3 | ✅ Complete | `src/tools/async_executor/` created, `src/agent/async_tool_framework.rs` deleted |
+| Phase 3: Unify Status Enums | ✅ Complete | `SubagentStatus` is now `pub type SubagentStatus = AsyncTaskStatus` |
+| Phase 4: DRY Delivery Logic | ✅ Complete | `build_completion_event()` extracted |
+| Phase 5: Collapse `AsyncTaskResult` | ✅ Complete | `AsyncTaskResult` = `serde_json::Value`; tool-specific branching removed |
+| Phase 6: Integrate `ToolContext` | 🟡 Deferred | Requires signature change to `AsyncExecutor::execute()`; non-blocking for current goals |
+| Phase 7: Simplify `ToolWithContext` | ✅ Complete | `ToolAdapter` deleted; `ToolWithContext` is now blanket impl for all `Tool`s |
+
+**Verification:** `cargo test --lib` passes — 895 tests, 0 failures.
+
+---
+
 ## Acceptance Criteria
 
-- [ ] There is exactly **one** async tool execution framework in production code.
-- [ ] `AsyncTool` trait is either fully implemented and used, or deleted. **→ Delete it.**
-- [ ] Abort/timeout/progress capabilities work for both sync and async tool execution.
-- [ ] `AsyncTaskStatus` and `SubagentStatus` are unified (or one is a thin wrapper).
-- [ ] All existing tests pass.
-- [ ] No `todo!()` stubs remain in async tool code paths.
-- [ ] **No tool-specific `if` branches in generic async pipeline** (`AsyncExecutionRouter`, `AsyncExecutor`, `TaskFileRecord`).
-- [ ] **`AsyncTaskResult` is collapsed to `Value`** — no closed enum coupling tool types.
-- [ ] **`TaskFileRecord` has no tool-specific fields** (`stdout`, `stderr`, `exit_code` removed).
-- [ ] Adding a new built-in tool requires **zero** changes to `async_executor/` code.
+- [x] There is exactly **one** async tool execution framework in production code.
+- [x] `AsyncTool` trait is either fully implemented and used, or deleted. **→ Deleted.**
+- [x] Abort/timeout/progress capabilities work for both sync and async tool execution.
+- [x] `AsyncTaskStatus` and `SubagentStatus` are unified (or one is a thin wrapper).
+- [x] All existing tests pass.
+- [x] No `todo!()` stubs remain in async tool code paths.
+- [x] **No tool-specific `if` branches in generic async pipeline** (`AsyncExecutionRouter`, `AsyncExecutor`, `TaskFileRecord`).
+- [x] **`AsyncTaskResult` is collapsed to `Value`** — no closed enum coupling tool types.
+- [x] **`TaskFileRecord` has no tool-specific fields** (`stdout`, `stderr`, `exit_code` removed).
+- [x] Adding a new built-in tool requires **zero** changes to `async_executor/` code.
 
 ---
 

@@ -40,7 +40,7 @@
 //! let cancelled = adapter.cancel("my_tool", &receipt.task_id).await?;
 //! ```
 
-use crate::agent::async_tool_framework::{
+use crate::tools::async_executor::{
     AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, AsyncExecutor,
     WaitResult,
 };
@@ -237,12 +237,10 @@ impl ExtensionAsyncAdapter {
                     // Convert HookResult to AsyncTaskResult
                     match result {
                         HookResult::Continue(HookOutput::Json(json)) => {
-                            Ok(AsyncTaskResult::Generic { data: json })
+                            Ok(json)
                         }
                         HookResult::Continue(HookOutput::Text(text)) => {
-                            Ok(AsyncTaskResult::Generic {
-                                data: json!({"result": text}),
-                            })
+                            Ok(json!({"result": text}))
                         }
                         HookResult::Error(e) => Err(anyhow!("Tool execution failed: {e}")),
                         _ => Err(anyhow!("Unexpected result from sync tool execution")),

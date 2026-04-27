@@ -411,125 +411,22 @@ impl Default for AbortSignal {
     }
 }
 
-/// Wrapper for tools that adds abort signal support
-///
-/// Similar to `OpenClaw`'s `wrapToolWithAbortSignal`, this wrapper
-/// intercepts tool execution and passes an abort signal to the tool.
-pub struct AbortableTool<T: ToolWithContext> {
-    abort_signal: AbortSignal,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T: ToolWithContext> AbortableTool<T> {
-    /// Create a new abortable tool wrapper
-    pub fn new(_inner: T) -> Self {
-        Self {
-            abort_signal: AbortSignal::new(),
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Get the abort signal for this tool
-    #[must_use]
-    pub fn abort_signal(&self) -> AbortSignal {
-        self.abort_signal.clone()
-    }
-
-    /// Abort the tool execution
-    pub fn abort(&self) {
-        self.abort_signal.abort();
-    }
-}
-
 /// Trait for tools that support context-aware execution
 ///
-/// This is an extension of the base `Tool` trait that adds support for:
-/// - Abort signals
-/// - Progress updates
-/// - Timeout handling
+/// This is a marker trait for types that are natively context-aware.
+/// All `Tool` implementations already have `execute_with_context` via
+/// the default implementation on the `Tool` trait.
 #[async_trait::async_trait]
-pub trait ToolWithContext: Send + Sync {
-    fn name(&self) -> &str;
-    fn description(&self) -> String;
-
-    /// Execute with full context (abort signal + progress callbacks)
-    async fn execute_with_context(
-        &self,
-        params: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> anyhow::Result<serde_json::Value>;
-
+pub trait ToolWithContext: super::Tool {
     /// Check if this tool supports progress updates
     fn supports_progress(&self) -> bool {
         true
     }
 }
 
-/// Adapter to wrap a basic Tool as a `ToolWithContext`
-pub struct ToolAdapter<T> {
-    inner: T,
-}
-
-impl<T: super::Tool> ToolAdapter<T> {
-    pub fn new(inner: T) -> Self {
-        Self { inner }
-    }
-}
-
+// Blanket implementation: all Tools are ToolWithContext
 #[async_trait::async_trait]
-impl<T: super::Tool + Send + Sync> ToolWithContext for ToolAdapter<T> {
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-
-    fn description(&self) -> String {
-        self.inner.description()
-    }
-
-    async fn execute_with_context(
-        &self,
-        params: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> anyhow::Result<serde_json::Value> {
-        // Check abort before starting
-        if ctx.is_aborted() {
-            return Err(ToolError::Aborted.into());
-        }
-
-        // Check timeout before starting
-        let start_time = std::time::Instant::now();
-        ctx.check_timeout(start_time)?;
-
-        // Delegate to the inner Tool::execute.
-        // This is a trait adapter, not a production execution path.
-        let result = self.inner.execute(params).await;
-
-        // Check abort after completion
-        if ctx.is_aborted() {
-            return Err(ToolError::Aborted.into());
-        }
-
-        // Check timeout after completion
-        ctx.check_timeout(start_time)?;
-
-        result
-    }
-
-    fn supports_progress(&self) -> bool {
-        false
-    }
-}
-
-/// Wrap a basic tool with abort signal support
-///
-/// This is the Pekobot equivalent of `OpenClaw`'s `wrapToolWithAbortSignal`.
-/// It returns a tuple of (`AbortableTool`, `AbortSignal`) where the signal
-/// can be used to abort the tool from outside.
-pub fn wrap_tool<T: ToolWithContext>(tool: T) -> (AbortableTool<T>, AbortSignal) {
-    let abortable = AbortableTool::new(tool);
-    let signal = abortable.abort_signal();
-    (abortable, signal)
-}
+impl<T: super::Tool + Send + Sync> ToolWithContext for T {}
 
 #[cfg(test)]
 mod tests {

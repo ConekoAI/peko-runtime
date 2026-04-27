@@ -13,7 +13,7 @@ pub mod builtin_registry;
 
 pub mod agent_management;
 pub mod agent_spawn;
-pub mod async_tool;
+pub mod async_executor;
 pub mod context;
 pub mod cron_tool;
 pub mod factory;
@@ -45,9 +45,7 @@ pub use sessions_send::SessionsSendTool;
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
 pub use agent_spawn::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool};
-pub use context::{
-    wrap_tool, AbortSignal, AbortableTool, ToolAdapter, ToolContext, ToolWithContext,
-};
+pub use context::{AbortSignal, ToolContext, ToolWithContext};
 pub use cron_tool::CronTool;
 pub use factory::{McpDiscoveryResult, McpFactoryConfig, ToolFactory, ToolFactoryConfig};
 pub use glob::GlobTool;
@@ -72,17 +70,12 @@ pub use traits::{Tool, ToolError, ToolResult};
 pub use write_file::WriteFileTool;
 
 // Async tool trait re-exports
-pub use async_tool::{
-    into_async_tool, BoxedAsyncTool, SyncToAsyncAdapter, ToolAsyncExt, AsyncTool,
-};
-// ToolWrapper and wrapper.rs removed in ADR-019 cleanup.
-// Reserved parameter handling is now unified in ExtensionCore execution hooks.
-
 // Async tool framework re-exports
-pub use crate::agent::async_tool_framework::{
-    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEventBus,
-    AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
-    CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery, ResultDelivery,
-    SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
-    AsyncExecutor, WaitResult,
+pub use async_executor::{
+    AsyncExecutor, AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent,
+    AsyncTaskEntry, AsyncTaskEventBus, AsyncTaskId, AsyncTaskReceipt, AsyncTaskRegistry,
+    AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, CallbackDelivery, ChannelDelivery,
+    DefaultResultFormatter, DeliveryTarget, FormatterRegistry, QueueDelivery, ResultDelivery,
+    ResultFormatter, SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
+    TaskFileRecord, TaskFileWriter, WaitResult,
 };

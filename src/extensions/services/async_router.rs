@@ -15,7 +15,7 @@
 //! ).await?;
 //! ```
 
-use crate::agent::async_tool_framework::{
+use crate::tools::async_executor::{
     AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget,
 };
 use crate::extensions::core::HookContext;
@@ -204,7 +204,7 @@ impl AsyncExecutionRouter {
     /// Create a new async execution router with default timeouts (local transport)
     #[must_use]
     pub fn new() -> Self {
-        use crate::agent::async_tool_framework::AsyncExecutor;
+        use crate::tools::async_executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
             default_sync_timeout: Duration::from_secs(120),
@@ -216,7 +216,7 @@ impl AsyncExecutionRouter {
     /// Create with custom timeouts (local transport)
     #[must_use]
     pub fn with_timeouts(sync_secs: u64, async_secs: u64) -> Self {
-        use crate::agent::async_tool_framework::AsyncExecutor;
+        use crate::tools::async_executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
             default_sync_timeout: Duration::from_secs(sync_secs),
@@ -238,7 +238,7 @@ impl AsyncExecutionRouter {
     /// Create with a shared local async executor (for sharing registries across routers)
     #[must_use]
     pub fn with_executor(
-        async_executor: crate::agent::async_tool_framework::AsyncExecutor,
+        async_executor: crate::tools::async_executor::AsyncExecutor,
     ) -> Self {
         Self {
             default_sync_timeout: Duration::from_secs(120),
@@ -397,7 +397,6 @@ impl AsyncExecutionRouter {
             "Executing tool asynchronously via transport"
         );
 
-        let tool_name_owned = tool_name.to_string();
         let params_clone = params.clone();
         let workspace = std::path::PathBuf::from(&tool_context.workspace);
         let receipt = self
@@ -412,29 +411,8 @@ impl AsyncExecutionRouter {
                 Box::new(move || {
                     Box::pin(async move {
                         match sync_executor(params_clone).await {
-                            Ok(result) => {
-                                // Convert shell tool results to Process variant for task file
-                                if tool_name_owned == "shell" {
-                                    if let (Some(stdout), Some(stderr), Some(exit_code)) = (
-                                        result.get("stdout").and_then(|v| v.as_str()),
-                                        result.get("stderr").and_then(|v| v.as_str()),
-                                        result.get("exit_code").and_then(|v| v.as_i64()),
-                                    ) {
-                                        Ok(AsyncTaskResult::Process {
-                                            stdout: stdout.to_string(),
-                                            stderr: stderr.to_string(),
-                                            exit_code: exit_code as i32,
-                                        })
-                                    } else {
-                                        Ok(AsyncTaskResult::Generic { data: result })
-                                    }
-                                } else {
-                                    Ok(AsyncTaskResult::Generic { data: result })
-                                }
-                            }
-                            Err(e) => Ok(AsyncTaskResult::Generic {
-                                data: serde_json::json!({"error": e.to_string()}),
-                            }),
+                            Ok(result) => Ok(result),
+                            Err(e) => Ok(serde_json::json!({"error": e.to_string()})),
                         }
                     })
                 }),

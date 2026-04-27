@@ -4,16 +4,18 @@
 //! `AsyncExecutionRouter` can work identically whether it is running inside the
 //! daemon (local execution) or inside the CLI (HTTP submission to daemon).
 
-use crate::agent::async_tool_framework::{
+use crate::tools::async_executor::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
 };
 use anyhow::Result;
 use serde_json::Value;
 
 /// Boxed async execution closure type
+///
+/// Returns `Value` directly — tool-specific formatting is handled at delivery time.
 pub type BoxedExecutionFn = Box<
     dyn FnOnce() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<AsyncTaskResult>> + Send>,
+            Box<dyn std::future::Future<Output = Result<Value>> + Send>,
         > + Send,
 >;
 
@@ -76,7 +78,7 @@ pub trait AsyncTaskTransport: Send + Sync {
 // LocalAsyncTransport — used inside the daemon
 // ================================================================================
 
-use crate::agent::async_tool_framework::AsyncExecutor;
+use crate::tools::async_executor::AsyncExecutor;
 use std::sync::Arc;
 
 /// Local transport that executes tasks in-process via `AsyncExecutor`

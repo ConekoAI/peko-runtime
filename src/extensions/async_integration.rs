@@ -1,21 +1,19 @@
-//! Integration between `ExtensionAsyncAdapter` and `AsyncTool` trait
+//! Integration between `ExtensionAsyncAdapter` and the async executor framework
 //!
-//! This module provides the bridge between the extension-based async system
-//! and the `AsyncTool` trait for seamless async tool execution.
+//! This module provides helpers for using `ExtensionAsyncAdapter` with the
+//! unified async executor. The `AsyncTool` trait (Framework 2) has been
+//! deleted per Issue 006.
 
-use crate::agent::async_tool_framework::{
-    AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
-};
 use crate::extensions::core::ExtensionAsyncAdapter;
-use crate::tools::{BoxedAsyncTool, AsyncTool};
+use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Extension-based implementation of `AsyncTool`
+/// Extension-based tool wrapper that implements `Tool`.
 ///
-/// This adapter wraps an `ExtensionAsyncAdapter` to implement the `AsyncTool` trait,
-/// allowing extension-based tools to be used interchangeably with native async tools.
+/// Sync execution delegates to the extension's `ToolExecute` hook via
+/// `ExtensionAsyncAdapter::execute_async` fallback path.
 pub struct ExtensionAsyncTool {
     adapter: ExtensionAsyncAdapter,
     tool_name: String,
@@ -24,7 +22,7 @@ pub struct ExtensionAsyncTool {
 }
 
 impl ExtensionAsyncTool {
-    /// Create a new extension-based async tool
+    /// Create a new extension-based tool wrapper
     pub fn new(
         adapter: ExtensionAsyncAdapter,
         tool_name: impl Into<String>,
@@ -56,7 +54,7 @@ impl std::fmt::Debug for ExtensionAsyncTool {
 }
 
 #[async_trait]
-impl crate::tools::Tool for ExtensionAsyncTool {
+impl Tool for ExtensionAsyncTool {
     fn name(&self) -> &str {
         &self.tool_name
     }
@@ -69,164 +67,31 @@ impl crate::tools::Tool for ExtensionAsyncTool {
         self.parameters.clone()
     }
 
-    async fn execute(&self, _params: Value) -> Result<Value> {
-        // For sync execution of extension-based tools, we would need to:
-        // 1. Use ExtensionCore to invoke ToolExecute hook
-        // 2. Process the result
-        //
-        // For now, return an error indicating this path needs implementation
-        // The async path (execute_async) is the primary use case
-        Err(anyhow::anyhow!(
-            "Sync execution not implemented for ExtensionAsyncTool. Use execute_async instead."
-        ))
-    }
-}
-
-#[async_trait]
-impl AsyncTool for ExtensionAsyncTool {
-    fn supports_async(&self) -> bool {
-        // Check if the extension has async hooks registered
-        // This is a simplified check - in practice, we'd query the extension capabilities
-        true
-    }
-
-    fn supports_status_check(&self) -> bool {
-        true
-    }
-
-    fn supports_cancel(&self) -> bool {
-        // Extensions may or may not support cancellation
-        // We'll attempt cancel but gracefully handle unsupported cases
-        true
-    }
-
-    async fn execute_async(
-        &self,
-        params: Value,
-        _config: AsyncToolConfig,
-    ) -> Result<AsyncTaskReceipt> {
-        self.adapter
+    async fn execute(&self, params: Value) -> Result<Value> {
+        // Fallback: use the adapter's async path and wait for completion
+        let receipt = self
+            .adapter
             .execute_async(&self.tool_name, params, "default_session")
-            .await
-    }
+            .await?;
 
-    async fn check_status(&self, task_id: &AsyncTaskId) -> Result<AsyncTaskStatus> {
-        self.adapter.check_status(&self.tool_name, task_id).await
-    }
+        // Wait for the task to complete
+        let result = self
+            .adapter
+            .wait_for_completion(&receipt.task_id, std::time::Duration::from_secs(300))
+            .await?;
 
-    async fn cancel(&self, task_id: &AsyncTaskId) -> Result<bool> {
-        self.adapter.cancel(&self.tool_name, task_id).await
-    }
-
-    fn status_check_tool_name(&self) -> String {
-        format!("{}_status", self.tool_name)
-    }
-
-    fn estimated_async_duration_secs(&self, _params: &Value) -> Option<u64> {
-        // Could be enhanced to read from extension metadata
-        None
-    }
-}
-
-/// Factory for creating async tools from extensions
-pub struct AsyncExtensionToolFactory {
-    adapter: ExtensionAsyncAdapter,
-}
-
-impl AsyncExtensionToolFactory {
-    /// Create a new factory
-    #[must_use]
-    pub fn new(adapter: ExtensionAsyncAdapter) -> Self {
-        Self { adapter }
-    }
-
-    /// Create an async tool for the given tool name
-    ///
-    /// # Arguments
-    /// * `tool_name` - The name of the tool
-    /// * `description` - Tool description for LLM
-    /// * `parameters` - JSON schema for tool parameters
-    ///
-    /// # Returns
-    /// A boxed `AsyncTool` that wraps the extension
-    pub fn create_tool(
-        &self,
-        tool_name: impl Into<String>,
-        description: impl Into<String>,
-        parameters: Value,
-    ) -> BoxedAsyncTool {
-        let tool =
-            ExtensionAsyncTool::new(self.adapter.clone(), tool_name, description, parameters);
-        Box::new(tool)
-    }
-}
-
-/// Registry for managing async-capable tools from multiple sources.
-///
-/// Uses [`SimpleRegistry`] for storage. Note: `get()` returns `None` because
-/// `BoxedAsyncTool` is not `Clone`. Use `supports_async()` for lookups or
-/// store tools in an `Arc` wrapper for shared access.
-pub struct AsyncToolRegistry {
-    tools: crate::common::registry::SimpleRegistry<String, BoxedAsyncTool>,
-}
-
-impl std::fmt::Debug for AsyncToolRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AsyncToolRegistry")
-            .field("tools", &self.tools.len())
-            .finish()
-    }
-}
-
-impl AsyncToolRegistry {
-    /// Create a new empty registry
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            tools: crate::common::registry::SimpleRegistry::new(),
+        match result {
+            crate::tools::async_executor::WaitResult::Completed { result } => Ok(result.to_json()),
+            crate::tools::async_executor::WaitResult::Failed { error } => {
+                Err(anyhow::anyhow!("Async execution failed: {error}"))
+            }
+            crate::tools::async_executor::WaitResult::Cancelled => {
+                Err(anyhow::anyhow!("Async execution was cancelled"))
+            }
+            crate::tools::async_executor::WaitResult::Timeout => {
+                Err(anyhow::anyhow!("Async execution timed out"))
+            }
         }
-    }
-
-    /// Register a tool
-    pub fn register(&mut self, tool: BoxedAsyncTool) {
-        self.tools.insert(tool.name().to_string(), tool);
-    }
-
-    /// List all registered tool names
-    #[must_use]
-    pub fn list(&self) -> Vec<String> {
-        self.tools.keys().cloned().collect()
-    }
-
-    /// Check if a tool supports async execution
-    #[must_use]
-    pub fn supports_async(&self, name: &str) -> bool {
-        // BoxedAsyncTool doesn't implement Clone, so we can't return it.
-        // We store a flag separately or just check existence.
-        self.tools.contains(&name.to_string())
-    }
-}
-
-/// Extension trait for `ExtensionAsyncAdapter` to add `AsyncTool` integration
-pub trait ExtensionAsyncAdapterExt {
-    /// Wrap this adapter as a `AsyncTool` for the given tool
-    fn as_async_tool(
-        &self,
-        tool_name: impl Into<String>,
-        description: impl Into<String>,
-        parameters: Value,
-    ) -> BoxedAsyncTool;
-}
-
-impl ExtensionAsyncAdapterExt for ExtensionAsyncAdapter {
-    fn as_async_tool(
-        &self,
-        tool_name: impl Into<String>,
-        description: impl Into<String>,
-        parameters: Value,
-    ) -> BoxedAsyncTool {
-        let tool = ExtensionAsyncTool::new(self.clone(), tool_name, description, parameters);
-        Box::new(tool)
     }
 }
 
@@ -252,16 +117,5 @@ mod tests {
         );
 
         assert_eq!(tool.tool_name, "test_tool");
-        assert!(tool.supports_async());
-    }
-
-    #[test]
-    fn test_async_tool_registry() {
-        let registry = AsyncToolRegistry::new();
-
-        // Initially empty
-        assert!(registry.list().is_empty());
-
-        // TODO: Test registration once we have cloneable tools
     }
 }

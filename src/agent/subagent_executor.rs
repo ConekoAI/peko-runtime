@@ -15,7 +15,7 @@ use chrono::Utc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
-use crate::agent::async_tool_framework::{
+use crate::tools::async_executor::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskRegistry, AsyncTaskResult,
     AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, AsyncExecutor,
     WaitResult,
@@ -390,11 +390,13 @@ impl SubagentExecutor {
                     let (status, output, error) = match result {
                         Ok(output) => {
                             info!("Subagent completed successfully: run_id={}", run_id_clone);
-                            (SubagentStatus::Completed, Some(output), None)
+                            (SubagentStatus::Completed {
+                                result: crate::tools::ToolResult::success(serde_json::json!({"output": &output})),
+                            }, Some(output), None)
                         }
                         Err(e) => {
                             error!("Subagent failed: run_id={} error={}", run_id_clone, e);
-                            (SubagentStatus::Failed, None, Some(e.to_string()))
+                            (SubagentStatus::Failed { error: e.to_string() }, None, Some(e.to_string()))
                         }
                     };
 
@@ -402,17 +404,17 @@ impl SubagentExecutor {
                     {
                         let mut registry = registry_clone.write().await;
                         if let Some(existing_run) = registry.get(&run_id_clone) {
-                            if existing_run.status == SubagentStatus::Cancelled {
+                            if matches!(existing_run.status, SubagentStatus::Cancelled) {
                                 // Run was cancelled, don't overwrite status
                                 info!(
                                     "Subagent run {} was cancelled, skipping completion update",
                                     run_id_clone
                                 );
-                                return Ok(AsyncTaskResult::Subagent {
-                                    output: None,
-                                    error: Some("Cancelled".to_string()),
-                                    token_usage: None,
-                                });
+                                return Ok(serde_json::json!({
+                                    "output": null,
+                                    "error": "Cancelled",
+                                    "token_usage": null,
+                                }));
                             }
                         }
 
@@ -448,12 +450,12 @@ impl SubagentExecutor {
                         }
                     }
 
-                    // Return unified async task result
-                    Ok(AsyncTaskResult::Subagent {
-                        output,
-                        error,
-                        token_usage: None,
-                    })
+                    // Return async task result as opaque Value
+                    Ok(serde_json::json!({
+                        "output": output,
+                        "error": error,
+                        "token_usage": null,
+                    }))
                 },
             )
             .await?;
@@ -503,13 +505,13 @@ impl SubagentExecutor {
                 match status {
                     Some(s) if s.is_terminal() => {
                         let result = match s {
-                            crate::agent::async_tool_framework::AsyncTaskStatus::Completed { result } => {
+                            crate::tools::async_executor::AsyncTaskStatus::Completed { result } => {
                                 WaitResult::Completed { result }
                             }
-                            crate::agent::async_tool_framework::AsyncTaskStatus::Failed { error } => {
+                            crate::tools::async_executor::AsyncTaskStatus::Failed { error } => {
                                 WaitResult::Failed { error }
                             }
-                            crate::agent::async_tool_framework::AsyncTaskStatus::Cancelled => {
+                            crate::tools::async_executor::AsyncTaskStatus::Cancelled => {
                                 WaitResult::Cancelled
                             }
                             _ => WaitResult::Timeout,
@@ -574,7 +576,7 @@ impl SubagentExecutor {
     /// Get status of a run
     pub async fn get_run_status(&self, run_id: &str) -> Option<SubagentStatus> {
         let registry = self.registry.read().await;
-        registry.get(run_id).map(|run| run.status)
+        registry.get(run_id).map(|run| run.status.clone())
     }
 
     /// Get a run by ID

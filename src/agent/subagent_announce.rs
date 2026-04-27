@@ -18,35 +18,37 @@ pub fn format_announcement(run: &SubagentRun) -> String {
 
     let header = format!("## Subagent Result{label_part}\n\n");
 
-    let status_emoji = match run.status {
-        SubagentStatus::Completed => "✅",
-        SubagentStatus::Failed => "❌",
+    let status_emoji = match &run.status {
+        SubagentStatus::Completed { .. } => "✅",
+        SubagentStatus::Failed { .. } => "❌",
         SubagentStatus::Cancelled => "🚫",
-        SubagentStatus::TimedOut => "⏱️",
+        SubagentStatus::TimedOut { .. } => "⏱️",
         SubagentStatus::Running => "🔄",
+        _ => "❓",
     };
 
-    let status_line = format!("**Status:** {} {}\n\n", status_emoji, run.status);
+    let status_line = format!("**Status:** {} {}\n\n", status_emoji, run.status.as_str());
 
     let content = match &run.result {
-        Some(result) => match run.status {
-            SubagentStatus::Completed => {
+        Some(result) => match &run.status {
+            SubagentStatus::Completed { .. } => {
                 if let Some(output) = &result.output {
                     format!("**Output:**\n\n{output}\n")
                 } else {
                     "**Output:** (no content)\n".to_string()
                 }
             }
-            SubagentStatus::Failed => {
+            SubagentStatus::Failed { .. } => {
                 if let Some(error) = &result.error {
                     format!("**Error:** {error}\n")
                 } else {
                     "**Error:** Unknown error occurred\n".to_string()
                 }
             }
-            SubagentStatus::TimedOut => "**Error:** Subagent timed out\n".to_string(),
+            SubagentStatus::TimedOut { .. } => "**Error:** Subagent timed out\n".to_string(),
             SubagentStatus::Cancelled => "**Info:** Subagent was cancelled\n".to_string(),
             SubagentStatus::Running => "**Info:** Subagent is still running\n".to_string(),
+            _ => "**Info:** Unknown status\n".to_string(),
         },
         None => "**Info:** No result available\n".to_string(),
     };
@@ -210,13 +212,13 @@ mod tests {
             child_session_key: "child_key".to_string(),
             parent_session_key: "parent_key".to_string(),
             task: "Test task".to_string(),
-            status: SubagentStatus::Completed,
+            status: SubagentStatus::Completed { result: crate::tools::ToolResult::success(serde_json::json!({})) },
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),
             cleanup: crate::session::types::SpawnCleanupPolicy::Keep,
             label: Some("my_label".to_string()),
             result: Some(SubagentResult {
-                status: SubagentStatus::Completed,
+                status: SubagentStatus::Completed { result: crate::tools::ToolResult::success(serde_json::json!({})) },
                 output: Some("Success output".to_string()),
                 error: None,
                 token_usage: Some((10, 20, 30)),
@@ -241,13 +243,13 @@ mod tests {
             child_session_key: "child_key".to_string(),
             parent_session_key: "parent_key".to_string(),
             task: "Test task".to_string(),
-            status: SubagentStatus::Failed,
+            status: SubagentStatus::Failed { error: "Something went wrong".to_string() },
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),
             cleanup: crate::session::types::SpawnCleanupPolicy::Keep,
             label: None,
             result: Some(SubagentResult {
-                status: SubagentStatus::Failed,
+                status: SubagentStatus::Failed { error: "Something went wrong".to_string() },
                 output: None,
                 error: Some("Something went wrong".to_string()),
                 token_usage: None,

@@ -26,7 +26,7 @@
 //! - `AgentInit` - Starts the MCP server connection
 //! - `AgentShutdown` - Stops the MCP server connection
 
-use crate::agent::async_tool_framework::AsyncTaskStatus;
+use crate::tools::async_executor::AsyncTaskStatus;
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
     ExtensionCore,

@@ -257,7 +257,7 @@ impl AgentSpawnTool {
             Ok(run) => {
                 // Return inline result — the subagent's output is available immediately
                 let status_str = run.status.as_str();
-                let success = run.status == crate::agent::subagent_registry::SubagentStatus::Completed;
+                let success = matches!(run.status, crate::agent::subagent_registry::SubagentStatus::Completed { .. });
 
                 let mut result = json!({
                     "status": status_str,

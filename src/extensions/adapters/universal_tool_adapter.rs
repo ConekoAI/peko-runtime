@@ -26,7 +26,7 @@
 //! - `PromptSystemSection { section: "tools" }` - Adds tool descriptions to prompt
 //! - `ToolExecute { tool_name }` - Handles tool execution
 
-use crate::agent::async_tool_framework::AsyncTaskStatus;
+use crate::tools::async_executor::AsyncTaskStatus;
 use crate::extensions::adapters::{ExtensionTypeAdapter, ManifestFormat};
 use crate::extensions::core::{
     ExtensionCore,
