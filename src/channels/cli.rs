@@ -399,21 +399,14 @@ pub async fn send_single_message_with_session(
             .get_session_for_channel(&agent_name, &peer, ChannelType::Cli, "default")
             .await?
     } else {
-        // Use agent's method to get context, then get handle from manager
-        let ctx = match agent.get_default_session_context().await {
-            Ok(ctx) => ctx,
+        // Resolve session directly — get both context (metadata) and handle (ops) in one call
+        match agent.resolve_default_session().await {
+            Ok(resolved) => resolved.handle,
             Err(e) => {
-                warn!("Failed to get session context: {}. Starting fresh.", e);
-                agent.get_default_session_context().await?
+                warn!("Failed to resolve session: {}. Starting fresh.", e);
+                agent.resolve_default_session().await?.handle
             }
-        };
-        // Open the session to get a handle
-        let manager = agent.session_manager();
-        let mut manager_guard = manager.write().await;
-        manager_guard
-            .open_session(&ctx.session_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", ctx.session_id))?
+        }
     };
 
     // Load history (will be empty for new sessions)

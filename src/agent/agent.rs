@@ -6,7 +6,7 @@ use crate::extensions::adapters::builtin_tool_adapter::BuiltinToolAdapter;
 use crate::extensions::core::{global_core, ExtensionCore};
 use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::context::SessionContext;
-use crate::session::manager::SessionManager;
+use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::{ChannelType, Peer};
 use crate::tools::agent_spawn::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
@@ -623,29 +623,32 @@ impl Agent {
         Arc::clone(&self.session_manager)
     }
 
-    /// Get or create a session context for a peer and channel
+    /// Resolve a session for a peer and channel
     ///
     /// This is the primary method for channels to get a session.
     /// It ensures cross-channel context sharing for the same peer.
-    pub async fn get_session_context(
+    ///
+    /// Returns a `ResolvedSession` containing both the metadata DTO (`context`)
+    /// and the operations handle (`handle`). Use `context` for read-only metadata
+    /// and `handle` for all session operations.
+    pub async fn resolve_session(
         &self,
         peer: &Peer,
         channel_type: ChannelType,
         channel_id: &str,
-    ) -> Result<SessionContext> {
+    ) -> Result<ResolvedSession> {
         let mut manager = self.session_manager.write().await;
-        let resolved = manager
+        manager
             .route(peer, channel_type, channel_id, Some(&self.config.name))
-            .await?;
-        Ok(resolved.context)
+            .await
     }
 
-    /// Get or create a session context for the default user
+    /// Resolve a session for the default user
     ///
-    /// Convenience method for CLI and simple channels
-    pub async fn get_default_session_context(&self) -> Result<SessionContext> {
+    /// Convenience method for CLI and simple channels.
+    pub async fn resolve_default_session(&self) -> Result<ResolvedSession> {
         let peer = Peer::User("default".to_string());
-        self.get_session_context(&peer, ChannelType::Cli, "default")
+        self.resolve_session(&peer, ChannelType::Cli, "default")
             .await
     }
 
@@ -653,6 +656,9 @@ impl Agent {
     ///
     /// Creates a new spawn overlay for isolated task execution.
     /// Use `isolated=true` for tasks that should not share context.
+    ///
+    /// Returns a `ResolvedSession` containing both the metadata DTO (`context`)
+    /// and the operations handle (`handle`).
     pub async fn spawn_session(
         &self,
         peer: &Peer,
@@ -660,9 +666,9 @@ impl Agent {
         isolated: bool,
         parent_session_key: &str,
         timeout_seconds: Option<u64>,
-    ) -> Result<SessionContext> {
+    ) -> Result<ResolvedSession> {
         let mut manager = self.session_manager.write().await;
-        let resolved = manager
+        manager
             .spawn_session(
                 &self.config.name,
                 peer,
@@ -671,8 +677,7 @@ impl Agent {
                 parent_session_key,
                 timeout_seconds,
             )
-            .await?;
-        Ok(resolved.context)
+            .await
     }
 
     // Session management commands (CLI integration)
@@ -1039,16 +1044,16 @@ mod tests {
 
         // Session manager should be able to route to sessions
         let peer = Peer::User("test_user".to_string());
-        let ctx = agent.get_session_context(&peer, ChannelType::Cli, "default").await;
+        let resolved = agent.resolve_session(&peer, ChannelType::Cli, "default").await;
 
         // Should succeed (requires filesystem in full test)
         // This just verifies routing is properly initialized
-        assert!(ctx.is_ok() || ctx.is_err()); // Either is fine for this test
+        assert!(resolved.is_ok() || resolved.is_err()); // Either is fine for this test
     }
 
     #[tokio::test]
     #[ignore = "requires filesystem access and provider setup"]
-    async fn test_agent_get_session_context() {
+    async fn test_agent_resolve_session() {
         use crate::session::types::{ChannelType, Peer};
         use crate::types::provider::{ProviderConfig, ProviderType};
 
@@ -1064,13 +1069,13 @@ mod tests {
         let agent = Agent::new(config).await.unwrap();
         let peer = Peer::User("alice".to_string());
 
-        let ctx = agent
-            .get_session_context(&peer, ChannelType::Cli, "default")
+        let resolved = agent
+            .resolve_session(&peer, ChannelType::Cli, "default")
             .await;
 
-        assert!(ctx.is_ok());
-        let ctx = ctx.unwrap();
-        assert_eq!(ctx.channel_type, Some(ChannelType::Cli));
+        assert!(resolved.is_ok());
+        let resolved = resolved.unwrap();
+        assert_eq!(resolved.context.channel_type, Some(ChannelType::Cli));
     }
 
     #[tokio::test]
@@ -1092,20 +1097,20 @@ mod tests {
         let peer = Peer::User("bob".to_string());
 
         // Create a parent session first
-        let parent_ctx = agent
-            .get_session_context(&peer, crate::session::types::ChannelType::Cli, "default")
+        let parent_resolved = agent
+            .resolve_session(&peer, crate::session::types::ChannelType::Cli, "default")
             .await
             .unwrap();
-        let parent_key = parent_ctx.full_session_key.clone();
+        let parent_key = parent_resolved.context.full_session_key.clone();
 
         // Spawn a child session with shared context
-        let spawn_ctx = agent
+        let spawn_resolved = agent
             .spawn_session(&peer, "test task", false, &parent_key, Some(300))
             .await;
 
-        assert!(spawn_ctx.is_ok());
-        let spawn_ctx = spawn_ctx.unwrap();
-        assert!(spawn_ctx.is_subagent);
-        assert!(!spawn_ctx.is_isolated);
+        assert!(spawn_resolved.is_ok());
+        let spawn_resolved = spawn_resolved.unwrap();
+        assert!(spawn_resolved.context.is_subagent);
+        assert!(!spawn_resolved.context.is_isolated);
     }
 }

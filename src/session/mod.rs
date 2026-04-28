@@ -24,6 +24,7 @@
 pub mod context;
 pub mod directory;
 pub mod events;
+pub mod message_conversion;
 mod index;
 pub mod jsonl;
 pub mod key;

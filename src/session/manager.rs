@@ -406,15 +406,40 @@ pub enum ResolutionStrategy {
 }
 
 /// Result of session resolution
+///
+/// This is the canonical return type for all session resolution operations.
+/// It clearly separates read-only routing metadata (`context`) from the
+/// operations facade (`handle`), eliminating the ambiguity that previously
+/// existed between `SessionContext` and `SessionHandle`.
+///
+/// ## Usage
+///
+/// ```rust,ignore
+/// let resolved = manager.resolve_session(...).await?;
+///
+/// // Read-only metadata access
+/// let session_id = resolved.context.session_id;
+/// let is_subagent = resolved.context.is_subagent;
+///
+/// // All session operations go through the handle
+/// resolved.handle.add_user("Hello").await?;
+/// let history = resolved.handle.load_history().await?;
+/// ```
 #[derive(Debug)]
 pub struct ResolvedSession {
-    /// The session context (DTO)
+    /// Routing metadata DTO — read-only, no operations.
+    ///
+    /// Use this for: session identification, routing decisions, logging,
+    /// and any code that needs lightweight metadata without acquiring locks.
     pub context: super::context::SessionContext,
-    /// The session handle (operations)
+    /// Operations facade — the SOLE authority for session mutations.
+    ///
+    /// Use this for: adding messages, loading history, recording usage,
+    /// updating overlay state, and all other session mutations.
     pub handle: SessionHandle,
-    /// Whether this is a new session
+    /// Whether this is a newly created session
     pub is_new: bool,
-    /// The session ID
+    /// The session ID (convenience alias for `context.session_id`)
     pub session_id: String,
 }
 

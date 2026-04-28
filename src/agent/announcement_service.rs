@@ -8,7 +8,6 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use crate::agent::subagent_executor::{AnnouncementReceiver, SubagentExecutor};
-use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 
 /// Service for announcing subagent results to parent sessions
