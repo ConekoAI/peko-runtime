@@ -3,13 +3,13 @@
 //! Handles announcing subagent results back to parent sessions.
 //! When a subagent completes, its result is added as a message to the parent's base session.
 
-use crate::agent::subagent_registry::{SubagentRun, SubagentStatus};
+use crate::agent::subagent_types::{SubagentRunView, SubagentStatus};
 use crate::session::manager::SessionHandle;
 use anyhow::{Context, Result};
 
 /// Format a subagent result as an announcement message
 #[must_use]
-pub fn format_announcement(run: &SubagentRun) -> String {
+pub fn format_announcement(run: &SubagentRunView) -> String {
     let label_part = run
         .label
         .as_ref()
@@ -64,7 +64,7 @@ pub fn format_announcement(run: &SubagentRun) -> String {
 /// Announce a subagent result to its parent session
 ///
 /// This adds the result as an assistant message to the parent's base session.
-pub async fn announce_to_parent(parent_handle: &SessionHandle, run: &SubagentRun) -> Result<()> {
+pub async fn announce_to_parent(parent_handle: &SessionHandle, run: &SubagentRunView) -> Result<()> {
     if !run.announce_completion {
         tracing::debug!(
             "Skipping announcement for run {} (announce_completion=false)",
@@ -153,7 +153,7 @@ Remember: You are running as a subagent (depth {depth}/{max_depth}). Results aut
 
 /// Handle cleanup of a subagent session based on policy
 pub async fn handle_cleanup(
-    run: &SubagentRun,
+    run: &SubagentRunView,
     cleanup_fn: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     match run.cleanup {
@@ -187,7 +187,7 @@ pub async fn handle_cleanup(
 /// It handles both the announcement to the parent and session cleanup.
 pub async fn on_subagent_complete(
     parent_handle: &SessionHandle,
-    run: &SubagentRun,
+    run: &SubagentRunView,
     cleanup_fn: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     // First, announce the result to the parent
@@ -202,31 +202,42 @@ pub async fn on_subagent_complete(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::subagent_registry::{SubagentResult, SubagentRun, SubagentStatus};
+    use crate::agent::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
     use chrono::Utc;
 
-    #[test]
-    fn test_format_announcement_completed() {
-        let run = SubagentRun {
+    fn make_test_view(status: SubagentStatus, result: Option<SubagentResult>) -> SubagentRunView {
+        SubagentRunView {
             run_id: "run_123".to_string(),
             child_session_key: "child_key".to_string(),
             parent_session_key: "parent_key".to_string(),
             task: "Test task".to_string(),
-            status: SubagentStatus::Completed { result: crate::tools::ToolResult::success(serde_json::json!({})) },
+            status,
             started_at: Utc::now(),
             completed_at: Some(Utc::now()),
             cleanup: crate::session::types::SpawnCleanupPolicy::Keep,
             label: Some("my_label".to_string()),
-            result: Some(SubagentResult {
-                status: SubagentStatus::Completed { result: crate::tools::ToolResult::success(serde_json::json!({})) },
+            result,
+            depth: 1,
+            announce_completion: true,
+        }
+    }
+
+    #[test]
+    fn test_format_announcement_completed() {
+        let run = make_test_view(
+            SubagentStatus::Completed {
+                result: crate::tools::ToolResult::success(serde_json::json!({})),
+            },
+            Some(SubagentResult {
+                status: SubagentStatus::Completed {
+                    result: crate::tools::ToolResult::success(serde_json::json!({})),
+                },
                 output: Some("Success output".to_string()),
                 error: None,
                 token_usage: Some((10, 20, 30)),
                 completed_at: Utc::now(),
             }),
-            depth: 1,
-            announce_completion: true,
-        };
+        );
 
         let announcement = format_announcement(&run);
         assert!(announcement.contains("Subagent Result [my_label]"));
@@ -238,26 +249,20 @@ mod tests {
 
     #[test]
     fn test_format_announcement_failed() {
-        let run = SubagentRun {
-            run_id: "run_456".to_string(),
-            child_session_key: "child_key".to_string(),
-            parent_session_key: "parent_key".to_string(),
-            task: "Test task".to_string(),
-            status: SubagentStatus::Failed { error: "Something went wrong".to_string() },
-            started_at: Utc::now(),
-            completed_at: Some(Utc::now()),
-            cleanup: crate::session::types::SpawnCleanupPolicy::Keep,
-            label: None,
-            result: Some(SubagentResult {
-                status: SubagentStatus::Failed { error: "Something went wrong".to_string() },
+        let run = make_test_view(
+            SubagentStatus::Failed {
+                error: "Something went wrong".to_string(),
+            },
+            Some(SubagentResult {
+                status: SubagentStatus::Failed {
+                    error: "Something went wrong".to_string(),
+                },
                 output: None,
                 error: Some("Something went wrong".to_string()),
                 token_usage: None,
                 completed_at: Utc::now(),
             }),
-            depth: 1,
-            announce_completion: true,
-        };
+        );
 
         let announcement = format_announcement(&run);
         assert!(announcement.contains("❌"));

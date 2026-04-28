@@ -1,14 +1,69 @@
 //! Registry for tracking async tasks
 
-use super::delivery::FormatterRegistry;
 use super::event_bus::AsyncTaskCompletionEvent;
 use super::types::{AsyncTaskId, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use crate::common::registry::SimpleRegistry;
-use crate::tools::traits::ToolResult;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+
+// ================================================================================
+// Domain metadata extensions
+// ================================================================================
+
+/// Domain-specific metadata extensions for async task entries.
+///
+/// This enum keeps the generic `AsyncTaskEntry` clean while allowing
+/// domain modules (subagents, shell commands, etc.) to attach their
+/// own structured data. The registry ignores this field — it is
+/// owned by the domain module that creates the task.
+#[derive(Debug, Clone, Default)]
+pub enum TaskMetadata {
+    /// No additional metadata (generic async tool)
+    #[default]
+    None,
+    /// Subagent-specific metadata
+    Subagent(SubagentMetadata),
+    // Future variants: ShellCommand, FileWatcher, etc.
+}
+
+/// Subagent-specific metadata attached to an `AsyncTaskEntry`.
+///
+/// This replaces the fields from the deleted `SubagentRun` struct
+/// that were not already present in `AsyncTaskEntry`.
+#[derive(Debug, Clone)]
+pub struct SubagentMetadata {
+    pub child_session_key: String,
+    pub cleanup: crate::session::types::SpawnCleanupPolicy,
+    pub depth: u32,
+    pub announce_completion: bool,
+    /// The subagent result (output, error, token_usage) —
+    /// distinct from the generic `AsyncTaskEntry.result` which is
+    /// the raw JSON returned by the execution closure.
+    pub subagent_result: Option<SubagentResult>,
+}
+
+/// Result of a subagent run
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentResult {
+    /// Final status
+    pub status: AsyncTaskStatus,
+    /// Output content (if successful)
+    pub output: Option<String>,
+    /// Error message (if failed)
+    pub error: Option<String>,
+    /// Token usage (input, output, total)
+    pub token_usage: Option<(usize, usize, usize)>,
+    /// Completion timestamp
+    pub completed_at: chrono::DateTime<chrono::Utc>,
+}
+
+// ================================================================================
+// AsyncTaskEntry
+// ================================================================================
 
 /// An async task entry stored in the registry
 #[derive(Debug)]
@@ -25,6 +80,8 @@ pub struct AsyncTaskEntry {
     pub config: AsyncToolConfig,
     /// The formatted result message ready for delivery (cached from result)
     pub formatted_result: Option<String>,
+    /// Domain-specific metadata extension
+    pub metadata: TaskMetadata,
     /// Completion notification channel for sync waiting
     completion_tx: Option<mpsc::Sender<AsyncTaskStatus>>,
 }
@@ -42,6 +99,7 @@ impl Clone for AsyncTaskEntry {
             completed_at: self.completed_at,
             config: self.config.clone(),
             formatted_result: self.formatted_result.clone(),
+            metadata: self.metadata.clone(),
             completion_tx: None,
         }
     }
@@ -68,6 +126,33 @@ impl AsyncTaskEntry {
             completed_at: None,
             config,
             formatted_result: None,
+            metadata: TaskMetadata::None,
+            completion_tx: None,
+        }
+    }
+
+    /// Create a new async task entry with metadata
+    #[must_use]
+    pub fn with_metadata(
+        task_id: AsyncTaskId,
+        tool_name: String,
+        params: Value,
+        parent_session_key: String,
+        config: AsyncToolConfig,
+        metadata: TaskMetadata,
+    ) -> Self {
+        Self {
+            task_id,
+            tool_name,
+            params,
+            status: AsyncTaskStatus::Pending,
+            result: None,
+            parent_session_key,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+            config,
+            formatted_result: None,
+            metadata,
             completion_tx: None,
         }
     }
@@ -102,6 +187,10 @@ impl AsyncTaskEntry {
         }
     }
 }
+
+// ================================================================================
+// AsyncTaskRegistry
+// ================================================================================
 
 /// Registry for tracking async tasks.
 ///
@@ -293,6 +382,162 @@ impl AsyncTaskRegistry {
 
         to_remove.len()
     }
+
+    // ================================================================================
+    // Subagent-specific query methods
+    // ================================================================================
+
+    /// Get all tasks with `TaskMetadata::Subagent` for a parent session.
+    #[must_use]
+    pub fn list_subagents_for_parent(&self, parent_session_key: &str) -> Vec<&AsyncTaskEntry> {
+        self.tasks
+            .values()
+            .filter(|e| e.parent_session_key == parent_session_key)
+            .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
+            .collect()
+    }
+
+    /// Count active (non-terminal) subagents for a parent session.
+    #[must_use]
+    pub fn count_active_subagents_for_parent(&self, parent_session_key: &str) -> usize {
+        self.tasks
+            .values()
+            .filter(|e| e.parent_session_key == parent_session_key)
+            .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
+            .filter(|e| !e.status.is_terminal())
+            .count()
+    }
+
+    /// Count total subagents for a parent session.
+    #[must_use]
+    pub fn count_subagents_for_parent(&self, parent_session_key: &str) -> usize {
+        self.tasks
+            .values()
+            .filter(|e| e.parent_session_key == parent_session_key)
+            .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
+            .count()
+    }
+
+    /// Get the spawn depth of a session by looking up where it was a child.
+    #[must_use]
+    pub fn get_subagent_depth_for_session(&self, session_key: &str) -> u32 {
+        self.tasks
+            .values()
+            .filter_map(|e| match &e.metadata {
+                TaskMetadata::Subagent(m) if m.child_session_key == session_key => Some(m.depth),
+                _ => None,
+            })
+            .next()
+            .unwrap_or(0)
+    }
+
+    /// Get subagent-specific result data (if any).
+    #[must_use]
+    pub fn get_subagent_result(&self, task_id: &AsyncTaskId) -> Option<SubagentResult> {
+        self.tasks.get(task_id).and_then(|e| match &e.metadata {
+            TaskMetadata::Subagent(m) => m.subagent_result.clone(),
+            _ => None,
+        })
+    }
+
+    /// Clean up terminal subagent runs older than a given duration
+    pub fn cleanup_old_subagents(&mut self, max_age: chrono::Duration) -> usize {
+        let now = chrono::Utc::now();
+        let to_remove: Vec<String> = self
+            .tasks
+            .values()
+            .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
+            .filter(|e| {
+                e.status.is_terminal()
+                    && e.completed_at
+                        .is_some_and(|t| now.signed_duration_since(t) > max_age)
+            })
+            .map(|e| e.task_id.clone())
+            .collect();
+
+        let count = to_remove.len();
+        for task_id in to_remove {
+            self.tasks.remove(&task_id);
+        }
+
+        if count > 0 {
+            tracing::info!("Cleaned up {} old subagent runs from registry", count);
+        }
+        count
+    }
 }
 
 pub type SharedAsyncTaskRegistry = Arc<tokio::sync::RwLock<AsyncTaskRegistry>>;
+
+// ================================================================================
+// Global per-agent registry cache
+// ================================================================================
+
+static GLOBAL_ASYNC_TASK_REGISTRIES: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, SharedAsyncTaskRegistry>>,
+> = std::sync::OnceLock::new();
+
+fn global_registries() -> &'static std::sync::Mutex<HashMap<String, SharedAsyncTaskRegistry>> {
+    GLOBAL_ASYNC_TASK_REGISTRIES.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Get or create a shared async task registry for a given agent name.
+///
+/// This ensures that all `Agent` instances for the same agent name share
+/// the same registry, making status queries and result delivery work
+/// across stateless requests.
+pub fn get_or_create_registry_for_agent(agent_name: &str) -> SharedAsyncTaskRegistry {
+    let mut map = global_registries().lock().unwrap();
+    map.entry(agent_name.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(AsyncTaskRegistry::new())))
+        .clone()
+}
+
+/// Look up a task by ID across all agent registries.
+pub async fn find_task_across_all_registries(task_id: &str) -> Option<AsyncTaskEntry> {
+    let task_id = task_id.to_string();
+    let registries: Vec<SharedAsyncTaskRegistry> = {
+        let map = global_registries().lock().unwrap();
+        map.values().cloned().collect()
+    };
+    for registry in registries {
+        let reg = registry.read().await;
+        if let Some(entry) = reg.get(&task_id) {
+            return Some(entry.clone());
+        }
+    }
+    None
+}
+
+/// List all tasks across all agent registries.
+pub async fn list_all_tasks_across_all_registries() -> Vec<AsyncTaskEntry> {
+    let registries: Vec<SharedAsyncTaskRegistry> = {
+        let map = global_registries().lock().unwrap();
+        map.values().cloned().collect()
+    };
+    let mut all = Vec::new();
+    for registry in registries {
+        let reg = registry.read().await;
+        for entry in reg.list_tasks(None) {
+            all.push(entry);
+        }
+    }
+    all
+}
+
+/// Look up a subagent run by ID across all agent registries.
+///
+/// This is a convenience wrapper for subagent-specific lookups.
+pub async fn find_run_across_all_registries(run_id: &str) -> Option<AsyncTaskEntry> {
+    find_task_across_all_registries(run_id).await
+}
+
+/// List all subagent runs across all agent registries.
+///
+/// This is a convenience wrapper for subagent-specific listings.
+pub async fn list_all_runs_across_all_registries() -> Vec<AsyncTaskEntry> {
+    let all = list_all_tasks_across_all_registries().await;
+    all.into_iter()
+        .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
+        .collect()
+}

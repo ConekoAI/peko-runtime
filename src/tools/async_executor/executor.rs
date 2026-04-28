@@ -2,10 +2,12 @@
 
 use super::delivery::{QueueDelivery, ResultDelivery};
 use super::queue::{AsyncResultQueueManager, SharedAsyncResultQueueManager};
-use super::registry::{AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry};
+use super::registry::{
+    AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, TaskMetadata,
+};
 use super::task_file::{TaskFileRecord, TaskFileWriter};
 use super::types::{
-    AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
+    AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
     DeliveryTarget, WaitResult,
 };
 use crate::tools::traits::ToolResult;
@@ -119,7 +121,7 @@ impl AsyncExecutor {
         &self.queue_manager
     }
 
-    /// Execute an async task with the unified executor
+    /// Execute an async task with the unified executor (internal)
     async fn execute_inner(
         &self,
         task_id: AsyncTaskId,
@@ -127,6 +129,7 @@ impl AsyncExecutor {
         params: Value,
         parent_session_key: String,
         config: AsyncToolConfig,
+        metadata: TaskMetadata,
         execution_fn: Box<
             dyn FnOnce() -> std::pin::Pin<
                     Box<dyn std::future::Future<Output = Result<Value>> + Send>,
@@ -152,14 +155,25 @@ impl AsyncExecutor {
             }
         }
 
-        // Create task entry
-        let entry = AsyncTaskEntry::new(
-            task_id.clone(),
-            tool_name.clone(),
-            params.clone(),
-            parent_session_key.clone(),
-            config.clone(),
-        );
+        // Create task entry (with metadata if provided)
+        let entry = if matches!(metadata, TaskMetadata::None) {
+            AsyncTaskEntry::new(
+                task_id.clone(),
+                tool_name.clone(),
+                params.clone(),
+                parent_session_key.clone(),
+                config.clone(),
+            )
+        } else {
+            AsyncTaskEntry::with_metadata(
+                task_id.clone(),
+                tool_name.clone(),
+                params.clone(),
+                parent_session_key.clone(),
+                config.clone(),
+                metadata,
+            )
+        };
 
         // Register task
         {
@@ -330,8 +344,56 @@ impl AsyncExecutor {
                 > + Send,
         > = Box::new(move || Box::pin(execution_fn()));
 
-        self.execute_inner(task_id, tool_name, params, parent_session_key, config, boxed_fn)
-            .await
+        self.execute_inner(
+            task_id,
+            tool_name,
+            params,
+            parent_session_key,
+            config,
+            TaskMetadata::None,
+            boxed_fn,
+        )
+        .await
+    }
+
+    /// Execute an async task with metadata attached to the registry entry.
+    ///
+    /// This is used by domain-specific executors (e.g., `SubagentExecutor`)
+    /// to attach structured metadata to a task without the generic executor
+    /// needing to know about domain types.
+    pub async fn execute_with_metadata<F, Fut>(
+        &self,
+        task_id: AsyncTaskId,
+        tool_name: impl Into<String>,
+        params: Value,
+        parent_session_key: impl Into<String>,
+        config: AsyncToolConfig,
+        metadata: TaskMetadata,
+        execution_fn: F,
+    ) -> Result<AsyncTaskReceipt>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
+    {
+        let tool_name = tool_name.into();
+        let parent_session_key = parent_session_key.into();
+
+        let boxed_fn: Box<
+            dyn FnOnce() -> std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<Value>> + Send>,
+                > + Send,
+        > = Box::new(move || Box::pin(execution_fn()));
+
+        self.execute_inner(
+            task_id,
+            tool_name,
+            params,
+            parent_session_key,
+            config,
+            metadata,
+            boxed_fn,
+        )
+        .await
     }
 
     /// Execute an async task with a boxed future
@@ -351,8 +413,16 @@ impl AsyncExecutor {
         let tool_name = tool_name.into();
         let parent_session_key = parent_session_key.into();
 
-        self.execute_inner(task_id, tool_name, params, parent_session_key, config, execution_fn)
-            .await
+        self.execute_inner(
+            task_id,
+            tool_name,
+            params,
+            parent_session_key,
+            config,
+            TaskMetadata::None,
+            execution_fn,
+        )
+        .await
     }
 
     /// Wait for a task to complete (sync mode)

@@ -8,9 +8,12 @@
 //! - List functionality
 
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::agent::subagent_registry::{SharedSubagentRegistry, SubagentRegistry, SubagentStatus};
+use crate::agent::subagent_types::SubagentStatus;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
+use crate::tools::async_executor::{
+    get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
@@ -18,10 +21,10 @@ use tokio::time::{sleep, Duration};
 /// Test helper to create a test session manager and registry
 async fn create_test_components() -> (
     Arc<RwLock<SessionManager>>,
-    SharedSubagentRegistry,
+    SharedAsyncTaskRegistry,
 ) {
     let session_manager = Arc::new(RwLock::new(SessionManager::new()));
-    let registry = Arc::new(RwLock::new(SubagentRegistry::new()));
+    let registry = get_or_create_registry_for_agent("test_agent");
 
     (session_manager, registry)
 }
@@ -73,11 +76,11 @@ async fn test_e2e_spawn_and_complete() {
 
     // Verify run is in registry as completed
     let registry_guard = registry.read().await;
-    let run = registry_guard.get(&run_id).unwrap();
+    let entry = registry_guard.get(&run_id).unwrap();
     assert!(
-        run.status.is_terminal(),
+        entry.status.is_terminal(),
         "Run should be in terminal state: {:?}",
-        run.status
+        entry.status
     );
 }
 
@@ -132,10 +135,12 @@ async fn test_spawn_depth_limit() {
     // Get the child session key from first spawn
     let child_key = {
         let registry_guard = registry.read().await;
-        let first_run = registry_guard.get(&run_id1).unwrap();
+        let entry = registry_guard.get(&run_id1).unwrap();
+        let view = crate::agent::subagent_types::SubagentRunView::from_entry(entry)
+            .expect("Should be a subagent entry");
         // Verify first run completed at depth 1
-        assert_eq!(first_run.depth, 1, "First run should be at depth 1");
-        first_run.child_session_key.clone()
+        assert_eq!(view.depth, 1, "First run should be at depth 1");
+        view.child_session_key.clone()
     };
 
     // The depth check works based on runs registered for a parent session.
@@ -161,9 +166,11 @@ async fn test_spawn_depth_limit() {
     sleep(Duration::from_millis(300)).await;
     let registry_guard = registry.read().await;
     let nested_run_id = result.unwrap();
-    let nested_run = registry_guard.get(&nested_run_id).unwrap();
+    let nested_entry = registry_guard.get(&nested_run_id).unwrap();
+    let nested_view = crate::agent::subagent_types::SubagentRunView::from_entry(nested_entry)
+        .expect("Should be a subagent entry");
     assert_eq!(
-        nested_run.depth, 1,
+        nested_view.depth, 1,
         "Nested run at depth 1 (no prior runs for child_key)"
     );
 }
@@ -224,23 +231,27 @@ async fn test_isolated_vs_shared_session() {
 
     let registry_guard = registry.read().await;
 
-    let isolated_run = registry_guard.get(&isolated_run_id).unwrap();
-    let shared_run = registry_guard.get(&shared_run_id).unwrap();
+    let isolated_entry = registry_guard.get(&isolated_run_id).unwrap();
+    let shared_entry = registry_guard.get(&shared_run_id).unwrap();
 
     // Both should complete
     assert!(
-        isolated_run.status.is_terminal(),
+        isolated_entry.status.is_terminal(),
         "Isolated run should be terminal: {:?}",
-        isolated_run.status
+        isolated_entry.status
     );
     assert!(
-        shared_run.status.is_terminal(),
+        shared_entry.status.is_terminal(),
         "Shared run should be terminal: {:?}",
-        shared_run.status
+        shared_entry.status
     );
 
     // Verify child session keys are different
-    assert_ne!(isolated_run.child_session_key, shared_run.child_session_key);
+    let isolated_view = crate::agent::subagent_types::SubagentRunView::from_entry(isolated_entry)
+        .expect("Should be a subagent entry");
+    let shared_view = crate::agent::subagent_types::SubagentRunView::from_entry(shared_entry)
+        .expect("Should be a subagent entry");
+    assert_ne!(isolated_view.child_session_key, shared_view.child_session_key);
 }
 
 #[tokio::test]
@@ -283,9 +294,11 @@ async fn test_result_format_in_registry() {
 
     // Check the result format
     let registry_guard = registry.read().await;
-    let run = registry_guard.get(&run_id).unwrap();
+    let entry = registry_guard.get(&run_id).unwrap();
+    let view = crate::agent::subagent_types::SubagentRunView::from_entry(entry)
+        .expect("Should be a subagent entry");
 
-    assert!(run.result.is_some());
+    assert!(view.result.is_some());
 }
 
 #[tokio::test]
@@ -336,12 +349,16 @@ async fn test_list_runs_functionality() {
 
     // List all runs
     let registry_guard = registry.read().await;
-    let all_runs = registry_guard.list_all();
+    let all_entries = registry_guard.list_tasks(None);
+    let all_runs: Vec<_> = all_entries
+        .iter()
+        .filter_map(|e| crate::agent::subagent_types::SubagentRunView::from_entry(e))
+        .collect();
     assert_eq!(all_runs.len(), 3);
 
     // List active runs for parent
     // Note: runs may complete before we check, so we just verify at least one exists
-    let active_runs = registry_guard.get_active_for_parent(&parent_key);
+    let active_runs = registry_guard.list_subagents_for_parent(&parent_key);
     // Runs complete very quickly in tests, so we might not catch them all as active
     assert!(
         !active_runs.is_empty() || all_runs.len() == 3,
@@ -353,8 +370,9 @@ async fn test_list_runs_functionality() {
     sleep(Duration::from_millis(800)).await;
 
     let registry_guard = registry.read().await;
-    let active_runs = registry_guard.get_active_for_parent(&parent_key);
-    assert_eq!(active_runs.len(), 0, "All runs should be completed");
+    let active_runs = registry_guard.list_subagents_for_parent(&parent_key);
+    let active_count = active_runs.iter().filter(|e| !e.status.is_terminal()).count();
+    assert_eq!(active_count, 0, "All runs should be completed");
 
     // Verify all run_ids are present
     for run_id in &run_ids {
@@ -424,11 +442,16 @@ async fn test_cleanup_policy_tracking() {
 
     let registry_guard = registry.read().await;
 
-    let keep_run = registry_guard.get(&keep_run_id).unwrap();
-    let delete_run = registry_guard.get(&delete_run_id).unwrap();
+    let keep_entry = registry_guard.get(&keep_run_id).unwrap();
+    let delete_entry = registry_guard.get(&delete_run_id).unwrap();
 
-    assert_eq!(keep_run.cleanup, SpawnCleanupPolicy::Keep);
-    assert_eq!(delete_run.cleanup, SpawnCleanupPolicy::Delete);
+    let keep_view = crate::agent::subagent_types::SubagentRunView::from_entry(keep_entry)
+        .expect("Should be a subagent entry");
+    let delete_view = crate::agent::subagent_types::SubagentRunView::from_entry(delete_entry)
+        .expect("Should be a subagent entry");
+
+    assert_eq!(keep_view.cleanup, SpawnCleanupPolicy::Keep);
+    assert_eq!(delete_view.cleanup, SpawnCleanupPolicy::Delete);
 }
 
 #[tokio::test]
@@ -470,12 +493,14 @@ async fn test_parent_child_relationship() {
     sleep(Duration::from_millis(500)).await;
 
     let registry_guard = registry.read().await;
-    let run = registry_guard.get(&run_id).unwrap();
+    let entry = registry_guard.get(&run_id).unwrap();
+    let view = crate::agent::subagent_types::SubagentRunView::from_entry(entry)
+        .expect("Should be a subagent entry");
 
-    assert_eq!(run.parent_session_key, parent_key);
-    assert!(!run.child_session_key.is_empty());
+    assert_eq!(view.parent_session_key, parent_key);
+    assert!(!view.child_session_key.is_empty());
     // Session key format includes "overlay:spawn:" for spawn sessions
-    assert!(run.child_session_key.contains(":overlay:spawn:"));
+    assert!(view.child_session_key.contains(":overlay:spawn:"));
 }
 
 #[tokio::test]
@@ -560,16 +585,16 @@ async fn test_runs_by_parent_filtering() {
     let registry_guard = registry.read().await;
 
     // Check runs for parent 1
-    let runs1 = registry_guard.get_for_parent(&parent_key1);
+    let runs1 = registry_guard.list_subagents_for_parent(&parent_key1);
     assert_eq!(runs1.len(), 2);
-    let ids1: std::collections::HashSet<_> = runs1.iter().map(|r| r.run_id.clone()).collect();
+    let ids1: std::collections::HashSet<_> = runs1.iter().map(|e| e.task_id.clone()).collect();
     assert!(ids1.contains(&run1));
     assert!(ids1.contains(&run2));
 
     // Check runs for parent 2
-    let runs2 = registry_guard.get_for_parent(&parent_key2);
+    let runs2 = registry_guard.list_subagents_for_parent(&parent_key2);
     assert_eq!(runs2.len(), 1);
-    assert_eq!(runs2[0].run_id, run3);
+    assert_eq!(runs2[0].task_id, run3);
 }
 
 #[tokio::test]
@@ -593,7 +618,8 @@ async fn test_concurrent_runs_counting() {
     // Initially no active runs in registry
     {
         let registry_guard = registry.read().await;
-        let active_count = registry_guard.get_active_for_parent(&parent_key).len();
+        let active_count = registry_guard.list_subagents_for_parent(&parent_key)
+            .iter().filter(|e| !e.status.is_terminal()).count();
         assert_eq!(active_count, 0);
     }
 
@@ -618,7 +644,8 @@ async fn test_concurrent_runs_counting() {
 
     // Should have at most 1 active run (immediately after spawn)
     let registry_guard = registry.read().await;
-    let active_count = registry_guard.get_active_for_parent(&parent_key).len();
+    let active_count = registry_guard.list_subagents_for_parent(&parent_key)
+        .iter().filter(|e| !e.status.is_terminal()).count();
     assert!(
         active_count <= 1,
         "Should have at most 1 active run, got {}",
@@ -631,7 +658,8 @@ async fn test_concurrent_runs_counting() {
 
     // Should have 0 active runs
     let registry_guard = registry.read().await;
-    let active_count = registry_guard.get_active_for_parent(&parent_key).len();
+    let active_count = registry_guard.list_subagents_for_parent(&parent_key)
+        .iter().filter(|e| !e.status.is_terminal()).count();
     assert_eq!(active_count, 0);
 }
 
@@ -771,8 +799,8 @@ async fn test_executor_cancel() {
     sleep(Duration::from_millis(100)).await;
 
     let registry_guard = registry.read().await;
-    let run = registry_guard.get(&run_id).unwrap();
-    assert!(matches!(run.status, SubagentStatus::Cancelled));
+    let entry = registry_guard.get(&run_id).unwrap();
+    assert!(matches!(entry.status, SubagentStatus::Cancelled));
 }
 
 #[tokio::test]

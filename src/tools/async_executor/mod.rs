@@ -21,7 +21,12 @@ pub use delivery::{
 pub use event_bus::{AsyncTaskCompletionEvent, AsyncTaskEventBus};
 pub use executor::AsyncExecutor;
 pub use queue::{AsyncResultQueue, AsyncResultQueueManager, SharedAsyncResultQueueManager};
-pub use registry::{AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry};
+pub use registry::{
+    AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, SubagentMetadata, SubagentResult,
+    TaskMetadata, find_run_across_all_registries, find_task_across_all_registries,
+    get_or_create_registry_for_agent, list_all_runs_across_all_registries,
+    list_all_tasks_across_all_registries,
+};
 pub use task_file::{TaskFileRecord, TaskFileWriter};
 pub use types::{
     AsyncResultDeliveryMode, AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus,

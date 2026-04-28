@@ -3,9 +3,12 @@
 //! Async task executor for subagents. Handles:
 //! - Spawning subagent sessions
 //! - Executing agents in those sessions
-//! - Tracking run status
+//! - Tracking run status via the unified async task registry
 //! - Announcing results back to parents
 //! - Timeout and cancellation handling
+//!
+//! All state is stored in the unified `AsyncTaskRegistry` (see Issue 008).
+//! This module no longer maintains a separate `SubagentRegistry`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,19 +18,18 @@ use chrono::Utc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
-use crate::tools::async_executor::{
-    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskRegistry, AsyncTaskResult,
-    AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, AsyncExecutor,
-    WaitResult,
-};
 use crate::agent::subagent_announce::{build_subagent_system_prompt, build_subagent_task_message};
 use crate::agent::subagent_error::SpawnError;
-use crate::agent::subagent_registry::{
-    create_shared_registry, SharedSubagentRegistry, SubagentResult, SubagentRun, SubagentStatus,
-};
+use crate::agent::subagent_types::{SubagentResult, SubagentRunView, SubagentStatus};
 use crate::session::context::SessionContext;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
+use crate::tools::async_executor::{
+    AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskStatus,
+    AsyncToolConfig, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry, AsyncExecutor,
+    SubagentMetadata, TaskMetadata, WaitResult,
+    get_or_create_registry_for_agent,
+};
 use crate::types::agent::AgentConfig;
 
 /// Channel for announcing completed subagent runs
@@ -37,8 +39,8 @@ pub type AnnouncementReceiver = mpsc::Receiver<CompletedRun>;
 /// A completed subagent run ready for announcement
 #[derive(Debug, Clone)]
 pub struct CompletedRun {
-    /// The run that completed
-    pub run: SubagentRun,
+    /// The run that completed (view projected from unified registry)
+    pub run: SubagentRunView,
     /// The parent session key
     pub parent_session_key: String,
     /// The announcement message
@@ -73,10 +75,12 @@ impl Default for ExecutionConfig {
 }
 
 /// Executor for subagent tasks
+///
+/// All task state lives in the unified `AsyncTaskRegistry`. This struct
+/// orchestrates subagent-specific logic (session creation, depth tracking,
+/// result formatting) but delegates all state storage to the framework.
 #[derive(Clone)]
 pub struct SubagentExecutor {
-    /// Registry for tracking runs (subagent-specific)
-    registry: SharedSubagentRegistry,
     /// Unified async executor for background task execution
     unified_executor: AsyncExecutor,
     /// Agent name for the executor
@@ -95,25 +99,22 @@ pub struct SubagentExecutor {
 
 impl SubagentExecutor {
     /// Create a new subagent executor
+    ///
+    /// Uses the global per-agent async task registry so that status queries
+    /// and result delivery work across stateless requests.
     #[must_use]
     pub fn new(
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
     ) -> Self {
-        let async_registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
+        let agent_name = agent_name.into();
+        let async_registry = get_or_create_registry_for_agent(&agent_name);
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
         let unified_executor =
             AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
-        let agent_name = agent_name.into();
-        // Use a global per-agent registry so that agent_spawn_status and
-        // agent_spawn_list work across stateless requests (each request creates
-        // a new Agent instance, but the registry must persist).
-        let registry = crate::agent::subagent_registry::get_or_create_registry_for_agent(&agent_name);
-
         Self {
-            registry,
             unified_executor,
             agent_name,
             max_concurrent,
@@ -124,21 +125,19 @@ impl SubagentExecutor {
         }
     }
 
-    /// Create an executor with shared registries
+    /// Create an executor with an explicit registry (for testing and nested spawns)
     #[must_use]
     pub fn with_registry(
-        registry: SharedSubagentRegistry,
+        async_registry: SharedAsyncTaskRegistry,
         session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
     ) -> Self {
-        let async_registry = Arc::new(RwLock::new(AsyncTaskRegistry::new()));
         let async_queue_manager = Arc::new(RwLock::new(AsyncResultQueueManager::new()));
         let unified_executor =
             AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
         Self {
-            registry,
             unified_executor,
             agent_name: agent_name.into(),
             max_concurrent,
@@ -152,18 +151,15 @@ impl SubagentExecutor {
     /// Create an executor with full async framework integration
     #[must_use]
     pub fn with_async_framework(
-        registry: SharedSubagentRegistry,
         async_registry: SharedAsyncTaskRegistry,
-        session_manager: Arc<RwLock<SessionManager>>,
         async_queue_manager: SharedAsyncResultQueueManager,
+        session_manager: Arc<RwLock<SessionManager>>,
         agent_name: impl Into<String>,
         max_concurrent: usize,
     ) -> Self {
-        let unified_executor =
-            AsyncExecutor::with_registries(async_registry, async_queue_manager);
+        let unified_executor = AsyncExecutor::with_registries(async_registry, async_queue_manager);
 
         Self {
-            registry,
             unified_executor,
             agent_name: agent_name.into(),
             max_concurrent,
@@ -201,15 +197,9 @@ impl SubagentExecutor {
         mpsc::channel(100)
     }
 
-    /// Get a reference to the registry
+    /// Get a reference to the async task registry (unified)
     #[must_use]
-    pub fn registry(&self) -> &SharedSubagentRegistry {
-        &self.registry
-    }
-
-    /// Get a reference to the async task registry
-    #[must_use]
-    pub fn async_registry(&self) -> &SharedAsyncTaskRegistry {
+    pub fn registry(&self) -> &SharedAsyncTaskRegistry {
         self.unified_executor.registry()
     }
 
@@ -278,23 +268,16 @@ impl SubagentExecutor {
 
         let child_session_key = spawn_resolved.context.full_session_key.clone();
 
-        // Register the run
-        let run = SubagentRun::new(
-            run_id.clone(),
-            child_session_key.clone(),
-            parent_session_key.to_string(),
-            task.to_string(),
-            config.cleanup,
-            config.label.clone(),
-            child_depth,
-        );
+        // Build the metadata extension that carries subagent-specific data
+        let metadata = TaskMetadata::Subagent(SubagentMetadata {
+            child_session_key: child_session_key.clone(),
+            cleanup: config.cleanup,
+            depth: child_depth,
+            announce_completion: config.announce_completion,
+            subagent_result: None,
+        });
 
-        {
-            let mut registry = self.registry.write().await;
-            registry.register(run);
-        }
-
-        // Execute using unified async executor
+        // Execute using unified async executor — this is the ONLY registration point
         let async_config = AsyncToolConfig {
             delivery_mode: AsyncResultDeliveryMode::QueueWhenBusy,
             delivery_target: None,
@@ -304,8 +287,8 @@ impl SubagentExecutor {
         };
 
         // Clone values for the execution closure
-        let registry_clone = self.registry.clone();
-        let registry_for_task = self.registry.clone();
+        let registry_for_task = self.registry().clone();
+        let registry_for_completion = self.registry().clone();
         let child_session_key_clone = child_session_key.clone();
         let parent_session_key_clone = parent_session_key.to_string();
         let task_clone = task.to_string();
@@ -320,9 +303,8 @@ impl SubagentExecutor {
         let extension_core_clone = crate::extensions::core::global_core();
         let cleanup_policy_clone = config.cleanup;
 
-        // Use unified executor for background execution
         self.unified_executor
-            .execute(
+            .execute_with_metadata(
                 run_id.clone(),
                 "agent_spawn",
                 serde_json::json!({
@@ -333,6 +315,7 @@ impl SubagentExecutor {
                 }),
                 parent_session_key.to_string(),
                 async_config,
+                metadata,
                 move || async move {
                     info!(
                         "Starting subagent execution: run_id={} session={}",
@@ -386,26 +369,39 @@ impl SubagentExecutor {
                         exec_fut.await
                     };
 
-                    // Process result and update subagent registry
+                    // Process result
                     let (status, output, error) = match result {
                         Ok(output) => {
                             info!("Subagent completed successfully: run_id={}", run_id_clone);
-                            (SubagentStatus::Completed {
-                                result: crate::tools::ToolResult::success(serde_json::json!({"output": &output})),
-                            }, Some(output), None)
+                            (
+                                AsyncTaskStatus::Completed {
+                                    result: crate::tools::ToolResult::success(
+                                        serde_json::json!({"output": &output}),
+                                    ),
+                                },
+                                Some(output),
+                                None,
+                            )
                         }
                         Err(e) => {
                             error!("Subagent failed: run_id={} error={}", run_id_clone, e);
-                            (SubagentStatus::Failed { error: e.to_string() }, None, Some(e.to_string()))
+                            (
+                                AsyncTaskStatus::Failed {
+                                    error: e.to_string(),
+                                },
+                                None,
+                                Some(e.to_string()),
+                            )
                         }
                     };
 
-                    // Complete the run in subagent registry (if not already cancelled)
+                    // Update the unified registry with the subagent result.
+                    // This is the ONLY state update — no dual registry sync.
                     {
-                        let mut registry = registry_clone.write().await;
-                        if let Some(existing_run) = registry.get(&run_id_clone) {
-                            if matches!(existing_run.status, SubagentStatus::Cancelled) {
-                                // Run was cancelled, don't overwrite status
+                        let mut registry = registry_for_completion.write().await;
+                        if let Some(entry) = registry.get_mut(&run_id_clone) {
+                            // Respect cancellation — don't overwrite if already cancelled
+                            if matches!(entry.status, AsyncTaskStatus::Cancelled) {
                                 info!(
                                     "Subagent run {} was cancelled, skipping completion update",
                                     run_id_clone
@@ -416,16 +412,20 @@ impl SubagentExecutor {
                                     "token_usage": null,
                                 }));
                             }
-                        }
 
-                        let subagent_result = SubagentResult {
-                            status,
-                            output: output.clone(),
-                            error: error.clone(),
-                            token_usage: None, // TODO: Track token usage
-                            completed_at: Utc::now(),
-                        };
-                        registry.complete(&run_id_clone, subagent_result);
+                            // Update subagent-specific result in metadata
+                            if let TaskMetadata::Subagent(ref mut meta) = entry.metadata {
+                                meta.subagent_result = Some(SubagentResult {
+                                    status: status.clone(),
+                                    output: output.clone(),
+                                    error: error.clone(),
+                                    token_usage: None, // TODO: Track token usage
+                                    completed_at: Utc::now(),
+                                });
+                            }
+                        }
+                        // Update status (this also sets completed_at)
+                        registry.update_status(&run_id_clone, status);
                     }
 
                     info!(
@@ -435,14 +435,20 @@ impl SubagentExecutor {
 
                     // Clean up session if cleanup policy is Delete
                     if cleanup_policy_clone == SpawnCleanupPolicy::Delete {
-                        info!("Cleaning up subagent session: run_id={} session_key={}", run_id_clone, child_session_key_clone);
+                        info!(
+                            "Cleaning up subagent session: run_id={} session_key={}",
+                            run_id_clone, child_session_key_clone
+                        );
                         let mut manager = session_manager_for_cleanup.write().await;
                         match manager.cleanup_spawn(&child_session_key_clone).await {
                             Ok(true) => {
                                 info!("Cleaned up spawn session: {}", child_session_key_clone);
                             }
                             Ok(false) => {
-                                warn!("Spawn overlay not found for cleanup: {}", child_session_key_clone);
+                                warn!(
+                                    "Spawn overlay not found for cleanup: {}",
+                                    child_session_key_clone
+                                );
                             }
                             Err(e) => {
                                 warn!("Failed to clean up spawn session: {}", e);
@@ -473,7 +479,7 @@ impl SubagentExecutor {
     /// This is similar to `spawn_and_execute` but blocks until the subagent
     /// completes or times out. Used for sequential decomposition patterns.
     ///
-    /// Returns the completed run on success, or an error if the run fails or times out.
+    /// Returns the completed run view on success, or an error if the run fails or times out.
     pub async fn execute_and_wait(
         &self,
         task: &str,
@@ -482,13 +488,13 @@ impl SubagentExecutor {
         parent_session_key: &str,
         config: ExecutionConfig,
         timeout_secs: u64,
-    ) -> Result<SubagentRun> {
+    ) -> Result<SubagentRunView> {
         // Start the subagent (async mode initially)
         let run_id = self
             .spawn_and_execute(task, parent_ctx, isolated, parent_session_key, config)
             .await?;
 
-        // Wait for completion using the async registry.
+        // Wait for completion using the unified registry.
         // IMPORTANT: Do NOT hold the read lock while sleeping, as the background
         // task needs to acquire a write lock to update status. Holding the read
         // lock continuously would starve the writer and deadlock.
@@ -498,22 +504,18 @@ impl SubagentExecutor {
             loop {
                 // Check status with a brief lock acquisition
                 let status = {
-                    let registry = self.async_registry().read().await;
+                    let registry = self.registry().read().await;
                     registry.check_status(&run_id)
                 };
 
                 match status {
                     Some(s) if s.is_terminal() => {
                         let result = match s {
-                            crate::tools::async_executor::AsyncTaskStatus::Completed { result } => {
+                            AsyncTaskStatus::Completed { result } => {
                                 WaitResult::Completed { result }
                             }
-                            crate::tools::async_executor::AsyncTaskStatus::Failed { error } => {
-                                WaitResult::Failed { error }
-                            }
-                            crate::tools::async_executor::AsyncTaskStatus::Cancelled => {
-                                WaitResult::Cancelled
-                            }
+                            AsyncTaskStatus::Failed { error } => WaitResult::Failed { error },
+                            AsyncTaskStatus::Cancelled => WaitResult::Cancelled,
                             _ => WaitResult::Timeout,
                         };
                         break Ok(result);
@@ -559,94 +561,90 @@ impl SubagentExecutor {
 
     /// Get the current depth for a parent session
     async fn get_parent_depth(&self, parent_session_key: &str) -> u32 {
-        let registry = self.registry.read().await;
-        registry.get_depth_for_session(parent_session_key)
+        let registry = self.registry().read().await;
+        registry.get_subagent_depth_for_session(parent_session_key)
     }
 
-    /// Count total active runs
+    /// Count total active subagent runs
     async fn count_active_runs(&self) -> usize {
-        let registry = self.registry.read().await;
+        let registry = self.registry().read().await;
         registry
-            .list_all()
+            .list_tasks(None)
             .into_iter()
-            .filter(|run| !run.status.is_terminal())
+            .filter(|e| e.tool_name == "agent_spawn" && !e.status.is_terminal())
             .count()
     }
 
     /// Get status of a run
     pub async fn get_run_status(&self, run_id: &str) -> Option<SubagentStatus> {
-        let registry = self.registry.read().await;
-        registry.get(run_id).map(|run| run.status.clone())
+        let registry = self.registry().read().await;
+        registry.check_status(&run_id.to_string())
     }
 
-    /// Get a run by ID
-    pub async fn get_run(&self, run_id: &str) -> Option<SubagentRun> {
-        let registry = self.registry.read().await;
-        registry.get(run_id).cloned()
+    /// Get a run by ID (projected view from unified registry)
+    pub async fn get_run(&self, run_id: &str) -> Option<SubagentRunView> {
+        let registry = self.registry().read().await;
+        registry.get(&run_id.to_string()).and_then(SubagentRunView::from_entry)
     }
 
     /// Cancel a running subagent
+    ///
+    /// Single registry update — no dual sync needed.
     pub async fn cancel(&self, run_id: &str) -> Result<()> {
-        // Cancel via unified executor
-        self.unified_executor.cancel(&run_id.to_string()).await.ok();
-
-        // Update subagent registry
-        {
-            let mut registry = self.registry.write().await;
-            registry.update_status(run_id, SubagentStatus::Cancelled);
-        }
-
+        self.unified_executor.cancel(&run_id.to_string()).await?;
         info!("Cancelled subagent task: run_id={}", run_id);
         Ok(())
     }
 
     /// Clean up completed tasks and old registry entries
     pub async fn cleanup(&self) -> usize {
-        // Clean up old registry entries (older than 1 hour)
-        let mut registry = self.registry.write().await;
-        registry.cleanup_old(chrono::Duration::hours(1))
+        let mut registry = self.registry().write().await;
+        registry.cleanup_old_subagents(chrono::Duration::hours(1))
     }
 
     /// Shutdown the executor, cancelling all running tasks
     pub async fn shutdown(&self) {
         info!("Shutting down subagent executor...");
 
-        // Note: AsyncExecutor doesn't track all task handles externally,
-        // so we rely on the registry to know what might be running
-        // In practice, the async task registry handles cleanup internally
+        // Cancel all non-terminal subagent tasks in the unified registry
+        let mut registry = self.registry().write().await;
+        let active_runs: Vec<String> = registry
+            .list_tasks(None)
+            .into_iter()
+            .filter(|e| e.tool_name == "agent_spawn" && !e.status.is_terminal())
+            .map(|e| e.task_id.clone())
+            .collect();
 
-        // Update all non-terminal runs to cancelled status
-        {
-            let mut registry = self.registry.write().await;
-            let active_runs: Vec<String> = registry
-                .list_all()
-                .into_iter()
-                .filter(|run| !run.status.is_terminal())
-                .map(|run| run.run_id.clone())
-                .collect();
-
-            for run_id in active_runs {
-                registry.update_status(&run_id, SubagentStatus::Cancelled);
-                info!(
-                    "Marked subagent as cancelled during shutdown: run_id={}",
-                    run_id
-                );
-            }
+        for run_id in active_runs {
+            registry.update_status(&run_id, AsyncTaskStatus::Cancelled);
+            info!(
+                "Marked subagent as cancelled during shutdown: run_id={}",
+                run_id
+            );
         }
 
         info!("Subagent executor shutdown complete");
     }
 
     /// Get completed runs that need announcement
-    pub async fn get_completed_for_announcement(&self) -> Vec<SubagentRun> {
-        let registry = self.registry.read().await;
+    pub async fn get_completed_for_announcement(&self) -> Vec<SubagentRunView> {
+        let registry = self.registry().read().await;
         registry
-            .list_all()
+            .list_tasks(None)
             .into_iter()
-            .filter(|run| {
-                run.status.is_terminal() && run.announce_completion && run.result.is_some()
+            .filter(|e| {
+                e.tool_name == "agent_spawn"
+                    && e.status.is_terminal()
+                    && e.result.is_some()
             })
-            .cloned()
+            .filter_map(|e| {
+                let view = SubagentRunView::from_entry(&e)?;
+                if view.announce_completion {
+                    Some(view)
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -657,7 +655,7 @@ impl SubagentExecutor {
     }
 
     /// Send announcement for a completed run
-    pub async fn send_announcement(&self, run: &SubagentRun) -> anyhow::Result<()> {
+    pub async fn send_announcement(&self, run: &SubagentRunView) -> anyhow::Result<()> {
         if let Some(ref tx) = self.announcement_tx {
             let announcement = crate::agent::subagent_announce::format_announcement(run);
             let completed = CompletedRun {
@@ -678,7 +676,7 @@ impl SubagentExecutor {
 /// This is the core execution function that runs in a background task.
 /// It:
 /// 1. Loads the child session
-/// 2. Creates a subagent Agent sharing the parent's session manager and registry
+/// 2. Creates a subagent Agent sharing the parent's session manager
 /// 3. Runs the full `AgenticLoop` via `Agent::execute_with_session`
 /// 4. Returns the assistant's final answer
 async fn execute_subagent_task(
@@ -689,7 +687,7 @@ async fn execute_subagent_task(
     provider: Option<Arc<crate::providers::Provider>>,
     agent_config: Option<AgentConfig>,
     session_manager: Arc<RwLock<SessionManager>>,
-    registry: SharedSubagentRegistry,
+    async_registry: SharedAsyncTaskRegistry,
     extension_core: Option<Arc<crate::extensions::ExtensionCore>>,
 ) -> Result<String> {
     info!(
@@ -755,7 +753,7 @@ async fn execute_subagent_task(
     // is tracked correctly across the whole tree.
     let shared_executor = Arc::new(
         SubagentExecutor::with_registry(
-            registry,
+            async_registry,
             Arc::clone(&session_manager),
             agent_name,
             5,

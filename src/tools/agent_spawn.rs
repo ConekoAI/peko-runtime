@@ -13,10 +13,12 @@ use std::sync::Arc;
 
 use crate::agent::subagent_error::SpawnError;
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::agent::subagent_registry::{
-    find_run_across_all_registries, list_all_runs_across_all_registries, SharedSubagentRegistry,
-};
+use crate::agent::subagent_types::SubagentRunView;
 use crate::session::types::SpawnCleanupPolicy;
+use crate::tools::async_executor::{
+    find_run_across_all_registries, list_all_runs_across_all_registries,
+    SharedAsyncTaskRegistry, TaskMetadata,
+};
 use crate::tools::Tool;
 
 /// Maximum allowed spawn depth (safety limit)
@@ -205,11 +207,14 @@ impl AgentSpawnTool {
             Ok(run_id) => {
                 // Get the run info to return the child session key
                 let registry = self.executor.registry().read().await;
-                let run = registry.get(&run_id).ok_or_else(|| {
+                let entry = registry.get(&run_id).ok_or_else(|| {
                     anyhow::anyhow!("Run {run_id} not found in registry after spawn")
                 })?;
 
-                let child_session_key = run.child_session_key.clone();
+                let child_session_key = match &entry.metadata {
+                    TaskMetadata::Subagent(m) => m.child_session_key.clone(),
+                    _ => String::new(),
+                };
 
                 // Return receipt-style response for async mode
                 Ok(json!({
@@ -257,7 +262,7 @@ impl AgentSpawnTool {
             Ok(run) => {
                 // Return inline result — the subagent's output is available immediately
                 let status_str = run.status.as_str();
-                let success = matches!(run.status, crate::agent::subagent_registry::SubagentStatus::Completed { .. });
+                let success = matches!(run.status, crate::tools::async_executor::AsyncTaskStatus::Completed { .. });
 
                 let mut result = json!({
                     "status": status_str,
@@ -412,7 +417,7 @@ Examples:
         })
     }
 
-    async fn execute(&self, mut params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // Check for _async reserved parameter (extracted by AsyncExecutionRouter,
         // but we also check here for direct tool calls that bypass the router)
         let async_mode = params.get("_async")
@@ -484,13 +489,13 @@ Examples:
 pub struct AgentSpawnStatusTool {
     /// Optional bound registry for per-agent usage.
     /// When `None`, the tool searches across all agent registries (global mode).
-    registry: Option<SharedSubagentRegistry>,
+    registry: Option<SharedAsyncTaskRegistry>,
 }
 
 impl AgentSpawnStatusTool {
     /// Create a status tool bound to a specific agent's registry.
     #[must_use]
-    pub fn with_registry(registry: SharedSubagentRegistry) -> Self {
+    pub fn with_registry(registry: SharedAsyncTaskRegistry) -> Self {
         Self {
             registry: Some(registry),
         }
@@ -503,13 +508,17 @@ impl AgentSpawnStatusTool {
     }
 
     /// Look up a run by ID, either in the bound registry or across all registries.
-    async fn lookup_run(&self, run_id: &str) -> Option<crate::agent::subagent_registry::SubagentRun> {
+    async fn lookup_run(&self, run_id: &str) -> Option<SubagentRunView> {
+        let run_id = run_id.to_string();
         match &self.registry {
             Some(registry) => {
                 let reg = registry.read().await;
-                reg.get(run_id).cloned()
+                reg.get(&run_id).and_then(SubagentRunView::from_entry)
             }
-            None => find_run_across_all_registries(run_id).await,
+            None => {
+                let entry = find_run_across_all_registries(&run_id).await?;
+                SubagentRunView::from_entry(&entry)
+            }
         }
     }
 }
@@ -604,13 +613,13 @@ Returns the current status and result if complete."
 pub struct AgentSpawnListTool {
     /// Optional bound registry for per-agent usage.
     /// When `None`, the tool lists runs across all agent registries (global mode).
-    registry: Option<SharedSubagentRegistry>,
+    registry: Option<SharedAsyncTaskRegistry>,
 }
 
 impl AgentSpawnListTool {
     /// Create a list tool bound to a specific agent's registry.
     #[must_use]
-    pub fn with_registry(registry: SharedSubagentRegistry) -> Self {
+    pub fn with_registry(registry: SharedAsyncTaskRegistry) -> Self {
         Self {
             registry: Some(registry),
         }
@@ -623,14 +632,22 @@ impl AgentSpawnListTool {
     }
 
     /// List runs, either from the bound registry or across all registries.
-    async fn list_runs(&self) -> Vec<crate::agent::subagent_registry::SubagentRun> {
-        match &self.registry {
+    async fn list_runs(&self) -> Vec<SubagentRunView> {
+        let entries = match &self.registry {
             Some(registry) => {
                 let reg = registry.read().await;
-                reg.list_all().into_iter().cloned().collect()
+                reg.list_tasks(None)
+                    .into_iter()
+                    .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
+                    .collect()
             }
             None => list_all_runs_across_all_registries().await,
-        }
+        };
+
+        entries
+            .into_iter()
+            .filter_map(|e| SubagentRunView::from_entry(&e))
+            .collect()
     }
 }
 
