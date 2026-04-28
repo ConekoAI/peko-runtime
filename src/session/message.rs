@@ -11,7 +11,7 @@
 //! role-specific concerns while reusing the existing `LlmMessage` from `types::message`.
 
 use crate::session::events::EventEnvelope;
-use crate::types::message::{ContentBlock, LlmMessage, MessageRole};
+use crate::types::message::{ContentBlock, LlmMessage, MessageRole, TokenUsage};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -30,14 +30,6 @@ pub enum MessageSource {
     A2a,
     /// From spawning parent
     SpawnParent,
-}
-
-/// Token usage statistics
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub input_tokens: u32,
-    pub output_tokens: u32,
-    pub total_tokens: u32,
 }
 
 /// Role-specific metadata - SRP-compliant separation of concerns
@@ -122,6 +114,7 @@ impl SessionMessage {
                 content,
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
+                tool_call_id: None,
             },
             message_id: generate_message_id(),
             role_metadata: RoleMetadata::Assistant {
@@ -146,9 +139,9 @@ impl SessionMessage {
                 provider: provider.into(),
                 model: model.into(),
                 usage: TokenUsage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    total_tokens: 0,
+                    input: 0,
+                    output: 0,
+                    total: 0,
                 },
             },
         }
@@ -186,6 +179,7 @@ impl SessionMessage {
                 }],
                 timestamp: Utc::now(),
                 metadata: HashMap::new(),
+                tool_call_id: Some(tool_call_id_str.clone()),
             },
             message_id: generate_message_id(),
             role_metadata: RoleMetadata::Tool {
@@ -265,20 +259,21 @@ impl SessionMessage {
         }
     }
 
-    /// Convert to `ChatMessage` for provider API
+    /// Convert to `LlmMessage` for provider API
     #[must_use]
-    pub fn to_chat_message(&self) -> crate::providers::ChatMessage {
-        crate::providers::ChatMessage {
-            role: match self.role() {
-                MessageRole::System => crate::providers::MessageRole::System,
-                MessageRole::User => crate::providers::MessageRole::User,
-                MessageRole::Assistant => crate::providers::MessageRole::Assistant,
-                MessageRole::Tool => crate::providers::MessageRole::Tool,
-            },
-            content: self.message.content.clone(),
-            tool_calls: None,
-            tool_call_id: None,
+    pub fn to_llm_message(&self) -> LlmMessage {
+        let mut msg = self.message.clone();
+        // Ensure tool_call_id is populated from role_metadata for tool messages
+        if let RoleMetadata::Tool { tool_call_id } = &self.role_metadata {
+            msg.tool_call_id = Some(tool_call_id.clone());
         }
+        msg
+    }
+
+    /// Deprecated: use `to_llm_message()` instead
+    #[must_use]
+    pub fn to_chat_message(&self) -> LlmMessage {
+        self.to_llm_message()
     }
 }
 
@@ -302,9 +297,9 @@ mod tests {
     #[test]
     fn test_session_message_assistant() {
         let usage = TokenUsage {
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
+            input: 10,
+            output: 5,
+            total: 15,
         };
         let msg = SessionMessage::assistant_with_blocks(
             vec![ContentBlock::Text {
@@ -318,7 +313,7 @@ mod tests {
         assert_eq!(msg.text_content(), "Hi there");
         assert_eq!(msg.provider(), Some("openai"));
         assert_eq!(msg.model(), Some("gpt-4"));
-        assert_eq!(msg.usage().map(|u| u.total_tokens), Some(15));
+        assert_eq!(msg.usage().map(|u| u.total), Some(15));
     }
 
     #[test]
@@ -337,10 +332,10 @@ mod tests {
     }
 
     #[test]
-    fn test_session_message_to_chat_message() {
+    fn test_session_message_to_llm_message() {
         let msg = SessionMessage::user("Hello", MessageSource::User);
-        let chat = msg.to_chat_message();
-        assert_eq!(chat.role, crate::providers::MessageRole::User);
+        let chat = msg.to_llm_message();
+        assert_eq!(chat.role, MessageRole::User);
         assert_eq!(chat.content.len(), 1);
     }
 

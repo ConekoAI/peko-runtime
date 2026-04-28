@@ -4,7 +4,7 @@
 //! This is a thin wrapper around `OpenAiAdapter` that allows custom base URLs.
 
 use crate::providers::transport::AuthConfig;
-use crate::providers::types::{ChatOptions, ChatResponse, Message, StreamEvent, ToolDefinition};
+use crate::providers::types::{ChatOptions, ChatResponse, LlmMessage, StreamEvent, ToolDefinition};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -93,7 +93,7 @@ impl super::ApiAdapter for OpenAiCompatibleAdapter {
 
     fn build_request(
         &self,
-        messages: &[Message],
+        messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
         stream: bool,

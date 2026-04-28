@@ -14,7 +14,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Re-export unified message types
-pub use crate::session::message::{MessageSource, RoleMetadata, SessionMessage, TokenUsage};
+pub use crate::session::message::{MessageSource, RoleMetadata, SessionMessage};
+pub use crate::types::message::TokenUsage;
 
 /// Event envelope - every line in JSONL shares this structure
 ///

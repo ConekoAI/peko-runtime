@@ -442,7 +442,7 @@ impl Agent {
         &self,
         prompt: &str,
         session: Arc<tokio::sync::RwLock<crate::session::Session>>,
-        history: Option<Vec<crate::providers::ChatMessage>>,
+        history: Option<Vec<crate::types::message::LlmMessage>>,
         on_event: impl Fn(crate::engine::AgenticEvent) + Send + Sync + 'static,
     ) -> Result<crate::engine::AgenticResult> {
         let Some(provider) = self.provider_arc() else {
@@ -538,7 +538,7 @@ impl Agent {
         &self,
         prompt: &str,
         session: std::sync::Arc<tokio::sync::RwLock<crate::session::Session>>,
-        history: Option<Vec<crate::providers::ChatMessage>>,
+        history: Option<Vec<crate::types::message::LlmMessage>>,
         on_event: F,
     ) -> Result<crate::engine::AgenticResult>
     where

@@ -4,7 +4,8 @@
 //! Valid cut points: user messages, assistant messages, bash executions, custom messages.
 //! Never cut at: tool results (they must stay paired with their tool call).
 
-use crate::providers::{ChatMessage, MessageRole};
+use crate::providers::MessageRole;
+use crate::types::message::LlmMessage;
 use crate::types::message::ContentBlock;
 
 /// A message classification for boundary decisions.
@@ -25,7 +26,7 @@ pub enum MessageKind {
 }
 
 /// Classify a message for boundary decisions.
-pub fn classify_message(msg: &ChatMessage) -> MessageKind {
+pub fn classify_message(msg: &LlmMessage) -> MessageKind {
     match msg.role {
         MessageRole::System => {
             // Check if it's a compaction summary
@@ -51,7 +52,7 @@ pub fn classify_message(msg: &ChatMessage) -> MessageKind {
 ///
 /// Returns indices where compaction may split history from kept messages.
 /// Never returns indices of tool results (they must stay with their tool call).
-pub fn find_cut_points(messages: &[ChatMessage]) -> Vec<usize> {
+pub fn find_cut_points(messages: &[LlmMessage]) -> Vec<usize> {
     let mut cuts = Vec::new();
     for (i, msg) in messages.iter().enumerate() {
         match classify_message(msg) {
@@ -76,9 +77,9 @@ pub fn find_cut_points(messages: &[ChatMessage]) -> Vec<usize> {
 /// Never cuts at a tool result. If the token-based cut would land on a tool result,
 /// the cut is moved backward to the nearest valid cut point.
 pub fn select_messages_respecting_boundaries(
-    messages: &[ChatMessage],
+    messages: &[LlmMessage],
     keep_recent_tokens: usize,
-) -> (Vec<ChatMessage>, Vec<ChatMessage>, bool) {
+) -> (Vec<LlmMessage>, Vec<LlmMessage>, bool) {
     if messages.len() < 3 {
         return (vec![], messages.to_vec(), false);
     }
@@ -133,7 +134,7 @@ pub fn select_messages_respecting_boundaries(
 }
 
 /// Estimate tokens for a single message.
-pub fn estimate_message_tokens(msg: &ChatMessage) -> usize {
+pub fn estimate_message_tokens(msg: &LlmMessage) -> usize {
     let content_len: usize = msg
         .content
         .iter()
@@ -153,9 +154,9 @@ pub fn estimate_message_tokens(msg: &ChatMessage) -> usize {
 ///
 /// Returns `Some(turn_prefix_messages)` if there is a split turn, `None` otherwise.
 pub fn extract_turn_prefix(
-    messages: &[ChatMessage],
+    messages: &[LlmMessage],
     split_point: usize,
-) -> Option<Vec<ChatMessage>> {
+) -> Option<Vec<LlmMessage>> {
     if split_point == 0 || split_point >= messages.len() {
         return None;
     }
@@ -180,27 +181,12 @@ pub fn extract_turn_prefix(
 mod tests {
     use super::*;
 
-    fn make_msg(role: MessageRole, text: &str) -> ChatMessage {
-        ChatMessage {
-            role,
-            content: vec![ContentBlock::Text { text: text.to_string() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }
+    fn make_msg(role: MessageRole, text: &str) -> LlmMessage {
+        LlmMessage::text(role, text)
     }
 
-    fn make_tool_result(tool_call_id: &str, text: &str) -> ChatMessage {
-        ChatMessage {
-            role: MessageRole::Tool,
-            content: vec![ContentBlock::ToolResult {
-                tool_call_id: tool_call_id.to_string(),
-                name: "test_tool".to_string(),
-                content: vec![ContentBlock::Text { text: text.to_string() }],
-                is_error: false,
-            }],
-            tool_calls: None,
-            tool_call_id: Some(tool_call_id.to_string()),
-        }
+    fn make_tool_result(tool_call_id: &str, text: &str) -> LlmMessage {
+        LlmMessage::tool_result(tool_call_id, "test_tool", text)
     }
 
     #[test]

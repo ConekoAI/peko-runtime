@@ -16,7 +16,8 @@ pub mod turn_boundaries;
 #[cfg(test)]
 mod integration_tests;
 
-use crate::providers::{ChatMessage, MessageRole};
+use crate::providers::MessageRole;
+use crate::types::message::LlmMessage;
 use crate::types::message::ContentBlock;
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
@@ -213,10 +214,10 @@ pub struct ContextUsageEstimate {
 /// Find the last assistant message with usage data.
 /// Returns `(usage, index)` if found.
 ///
-/// TODO: Wire this up when ChatMessage carries usage metadata from provider responses.
+/// TODO: Wire this up when LlmMessage carries usage metadata from provider responses.
 /// For now, always returns None, causing fallback to heuristic estimation.
 fn find_last_assistant_usage(
-    _messages: &[ChatMessage],
+    _messages: &[LlmMessage],
 ) -> Option<(crate::providers::TokenUsage, usize)> {
     None
 }
@@ -225,7 +226,7 @@ fn find_last_assistant_usage(
 #[derive(Debug, Clone)]
 pub struct CompactionResult {
     /// Messages after compaction (summary + kept messages)
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<LlmMessage>,
     /// Compaction entry for persistence
     pub entry: CompactionEntry,
     /// State update
@@ -278,7 +279,7 @@ impl Compactor {
 
     /// Estimate token count for messages using simple heuristic.
     #[must_use]
-    pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
+    pub fn estimate_tokens(messages: &[LlmMessage]) -> usize {
         messages
             .iter()
             .map(|m| {
@@ -303,7 +304,7 @@ impl Compactor {
     ///
     /// Returns `ContextUsageEstimate` with detailed breakdown.
     #[must_use]
-    pub fn estimate_context_tokens(messages: &[ChatMessage]) -> ContextUsageEstimate {
+    pub fn estimate_context_tokens(messages: &[LlmMessage]) -> ContextUsageEstimate {
         // Find last assistant message with usage data
         if let Some((usage, index)) = find_last_assistant_usage(messages) {
             let usage_tokens = usage.input + usage.output;
@@ -367,7 +368,7 @@ impl Compactor {
     ///
     /// Never cuts at tool results — they must stay paired with their tool call.
     /// Returns (`messages_to_compact`, `messages_to_keep`, `is_split_turn`).
-    fn select_messages(&self, messages: &[ChatMessage]) -> (Vec<ChatMessage>, Vec<ChatMessage>, bool) {
+    fn select_messages(&self, messages: &[LlmMessage]) -> (Vec<LlmMessage>, Vec<LlmMessage>, bool) {
         turn_boundaries::select_messages_respecting_boundaries(
             messages,
             self.config.keep_recent_tokens,
@@ -375,7 +376,7 @@ impl Compactor {
     }
 
     /// Format messages for summarization prompt
-    fn format_history_for_summary(&self, messages: &[ChatMessage]) -> String {
+    fn format_history_for_summary(&self, messages: &[LlmMessage]) -> String {
         let mut formatted = String::new();
 
         for msg in messages {
@@ -414,7 +415,7 @@ impl Compactor {
     /// Generate summary using LLM (cumulative if previous summary exists)
     async fn generate_summary_with_llm(
         &self,
-        messages: &[ChatMessage],
+        messages: &[LlmMessage],
         provider: &Arc<crate::providers::Provider>,
     ) -> Result<String> {
         let history = self.format_history_for_summary(messages);
@@ -468,7 +469,7 @@ impl Compactor {
     /// Perform compaction using LLM for summarization
     pub async fn compact(
         &mut self,
-        messages: &[ChatMessage],
+        messages: &[LlmMessage],
         provider: &Arc<crate::providers::Provider>,
     ) -> Result<CompactionResult> {
         if messages.len() < 4 {
@@ -537,12 +538,13 @@ impl Compactor {
             to_compact.len(),
             summary_with_ops
         );
-        let summary_message = ChatMessage {
+        let summary_message = LlmMessage {
             role: MessageRole::System,
             content: vec![ContentBlock::Text {
                 text: summary_content,
             }],
-            tool_calls: None,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
             tool_call_id: None,
         };
 
@@ -620,39 +622,18 @@ impl Default for Compactor {
 mod tests {
     use super::*;
 
-    fn create_test_messages(count: usize) -> Vec<ChatMessage> {
+    fn create_test_messages(count: usize) -> Vec<LlmMessage> {
         let mut messages = vec![];
 
-        messages.push(ChatMessage {
-            role: MessageRole::System,
-            content: vec![ContentBlock::Text {
-                text: "You are a helpful assistant.".to_string(),
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        messages.push(LlmMessage::system("You are a helpful assistant."));
 
         for i in 0..count {
             if i % 2 == 0 {
-                messages.push(ChatMessage {
-                    role: MessageRole::User,
-                    content: vec![ContentBlock::Text {
-                        text: format!("User message {i}"),
-                    }],
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
+                messages.push(LlmMessage::user(format!("User message {i}")));
             } else {
-                messages.push(ChatMessage {
-                    role: MessageRole::Assistant,
-                    content: vec![ContentBlock::Text {
-                        text: format!(
-                            "Assistant response {i} with some additional text to make it longer"
-                        ),
-                    }],
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
+                messages.push(LlmMessage::assistant(format!(
+                    "Assistant response {i} with some additional text to make it longer"
+                )));
             }
         }
 
@@ -682,33 +663,16 @@ mod tests {
     #[test]
     fn test_select_messages() {
         // Create many long messages to force compaction
-        let mut messages = vec![ChatMessage {
-            role: MessageRole::System,
-            content: vec![ContentBlock::Text {
-                text: "You are a helpful assistant.".to_string(),
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let mut messages = vec![LlmMessage::system("You are a helpful assistant.")];
 
         // Add 30 very long messages to exceed keep_recent_tokens (20_000)
         // Each message: 3000 chars ≈ 750 tokens. 30 messages ≈ 22,500 tokens.
         for i in 0..30 {
             let text = "x".repeat(3000); // ~750 tokens each
             if i % 2 == 0 {
-                messages.push(ChatMessage {
-                    role: MessageRole::User,
-                    content: vec![ContentBlock::Text { text: format!("User {i}: {text}") }],
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
+                messages.push(LlmMessage::user(format!("User {i}: {text}")));
             } else {
-                messages.push(ChatMessage {
-                    role: MessageRole::Assistant,
-                    content: vec![ContentBlock::Text { text: format!("Assistant {i}: {text}") }],
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
+                messages.push(LlmMessage::assistant(format!("Assistant {i}: {text}")));
             }
         }
 
@@ -738,41 +702,11 @@ mod tests {
 
         let compactor = Compactor::new();
         let mut messages = vec![
-            ChatMessage {
-                role: MessageRole::User,
-                content: vec![ContentBlock::Text { text: "User 1".to_string() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                content: vec![ContentBlock::Text { text: "Assistant 1".to_string() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: MessageRole::User,
-                content: vec![ContentBlock::Text { text: "User 2".to_string() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                content: vec![ContentBlock::Text { text: "I'll use a tool".to_string() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: MessageRole::Tool,
-                content: vec![ContentBlock::ToolResult {
-                    tool_call_id: "tc1".to_string(),
-                    name: "read_file".to_string(),
-                    content: vec![ContentBlock::Text { text: "file content".to_string() }],
-                    is_error: false,
-                }],
-                tool_calls: None,
-                tool_call_id: Some("tc1".to_string()),
-            },
+            LlmMessage::user("User 1"),
+            LlmMessage::assistant("Assistant 1"),
+            LlmMessage::user("User 2"),
+            LlmMessage::assistant("I'll use a tool"),
+            LlmMessage::tool_result("tc1", "read_file", "file content"),
         ];
 
         let (to_compact, to_keep, _is_split) = compactor.select_messages(&messages);

@@ -16,7 +16,8 @@ use crate::agent::Agent;
 use crate::common::paths::PathResolver;
 use crate::common::services::{ConfigAuthority, ConfigAuthorityImpl};
 use crate::engine::AgenticEvent;
-use crate::providers::{ChatMessage, TokenUsage};
+use crate::providers::TokenUsage;
+use crate::types::message::LlmMessage;
 use crate::session::manager::SessionManager;
 use crate::session::types::{ChannelType, Peer};
 // Note: Session storage uses jsonl module directly
@@ -767,13 +768,13 @@ impl StatelessAgentService {
     async fn load_session_history(
         &self,
         session: Arc<RwLock<crate::session::Session>>,
-    ) -> Result<Vec<ChatMessage>> {
+    ) -> Result<Vec<LlmMessage>> {
         let messages = session.read().await.load_history().await?;
         Ok(messages)
     }
 
     /// Build prompt with conversation history
-    fn build_prompt(&self, message: &str, history: &[ChatMessage]) -> Result<String> {
+    fn build_prompt(&self, message: &str, history: &[LlmMessage]) -> Result<String> {
         // For now, just return the message
         // In a more complex implementation, this would format the full conversation
         // including system prompts, history, and the new message

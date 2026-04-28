@@ -5,7 +5,7 @@
 use super::{extract_text_content, ToolCallAccumulator};
 use crate::providers::transport::AuthConfig;
 use crate::providers::types::{
-    ChatOptions, ChatResponse, ContentBlock, Message, MessageRole, StopReason, StreamEvent,
+    ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
 };
 use anyhow::{Context, Result};
@@ -56,7 +56,7 @@ impl AnthropicAdapter {
     /// - System prompt is separate from messages
     /// - Messages only have "user" and "assistant" roles
     /// - Tool results are sent as user messages with `tool_result` content
-    fn convert_messages(&self, messages: &[Message]) -> (Option<String>, Vec<AnthropicMessage>) {
+    fn convert_messages(&self, messages: &[LlmMessage]) -> (Option<String>, Vec<AnthropicMessage>) {
         let mut system_prompt = None;
         let mut anthropic_messages = Vec::new();
 
@@ -193,7 +193,7 @@ impl super::ApiAdapter for AnthropicAdapter {
 
     fn build_request(
         &self,
-        messages: &[Message],
+        messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
         stream: bool,
@@ -579,20 +579,8 @@ mod tests {
     fn test_convert_messages_with_system() {
         let adapter = AnthropicAdapter::new("claude-3-sonnet");
         let messages = vec![
-            Message {
-                role: MessageRole::System,
-                content: vec![ContentBlock::Text {
-                    text: "You are helpful".to_string(),
-                }],
-                tool_call_id: None,
-            },
-            Message {
-                role: MessageRole::User,
-                content: vec![ContentBlock::Text {
-                    text: "Hello".to_string(),
-                }],
-                tool_call_id: None,
-            },
+            LlmMessage::system("You are helpful"),
+            LlmMessage::user("Hello"),
         ];
 
         let (system, anthropic_msgs) = adapter.convert_messages(&messages);

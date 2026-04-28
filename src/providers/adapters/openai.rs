@@ -5,7 +5,7 @@
 use super::{extract_text_content, role_to_string, ToolCallAccumulator};
 use crate::providers::transport::AuthConfig;
 use crate::providers::types::{
-    ChatOptions, ChatResponse, ContentBlock, Message, MessageRole, StopReason, StreamEvent,
+    ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StopReason, StreamEvent,
     TokenUsage, ToolDefinition,
 };
 use anyhow::{Context, Result};
@@ -39,7 +39,7 @@ impl OpenAiAdapter {
     }
 
     /// Convert unified messages to `OpenAI` format
-    fn convert_messages(&self, messages: &[Message]) -> Vec<OpenAiMessage> {
+    fn convert_messages(&self, messages: &[LlmMessage]) -> Vec<OpenAiMessage> {
         messages
             .iter()
             .map(|m| {
@@ -121,7 +121,7 @@ impl super::ApiAdapter for OpenAiAdapter {
 
     fn build_request(
         &self,
-        messages: &[Message],
+        messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
         stream: bool,
@@ -447,20 +447,8 @@ mod tests {
     fn test_convert_messages() {
         let adapter = OpenAiAdapter::new("gpt-4o-mini");
         let messages = vec![
-            Message {
-                role: MessageRole::System,
-                content: vec![ContentBlock::Text {
-                    text: "You are helpful".to_string(),
-                }],
-                tool_call_id: None,
-            },
-            Message {
-                role: MessageRole::User,
-                content: vec![ContentBlock::Text {
-                    text: "Hello".to_string(),
-                }],
-                tool_call_id: None,
-            },
+            LlmMessage::system("You are helpful"),
+            LlmMessage::user("Hello"),
         ];
 
         let (path, body) = adapter

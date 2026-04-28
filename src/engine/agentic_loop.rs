@@ -14,9 +14,11 @@
 use crate::agent::Agent;
 use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::prompt::{PromptMode, SystemPromptBuilder};
-use crate::providers::{ChatMessage, ChatOptions, MessageRole, StopReason, ToolDefinition};
+use crate::providers::{ChatOptions, MessageRole, StopReason, ToolDefinition, TokenUsage};
+use chrono::Utc;
+use std::collections::HashMap;
 use crate::session::Session;
-use crate::types::message::ContentBlock;
+use crate::types::message::{ContentBlock, LlmMessage};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,7 +44,7 @@ pub struct AgenticResult {
     /// Number of iterations
     pub iterations: usize,
     /// Token usage
-    pub usage: crate::providers::TokenUsage,
+    pub usage: TokenUsage,
 }
 
 /// A tool call for session storage compatibility
@@ -113,7 +115,7 @@ impl AgenticLoop {
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         session: Arc<RwLock<Session>>,
-        history: Option<Vec<ChatMessage>>,
+        history: Option<Vec<LlmMessage>>,
     ) -> Result<AgenticResult> {
         let config = crate::engine::OrchestratorConfig::final_only();
         self.run_streaming_with_resume(prompt, on_event, session, history, config)
@@ -131,7 +133,7 @@ impl AgenticLoop {
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         session: Arc<RwLock<Session>>,
-        history: Option<Vec<ChatMessage>>,
+        history: Option<Vec<LlmMessage>>,
         streaming_config: crate::engine::OrchestratorConfig,
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
@@ -170,12 +172,13 @@ impl AgenticLoop {
                 h
             } else {
                 // Prepend system prompt to history
-                let mut msgs = vec![ChatMessage {
+                let mut msgs = vec![LlmMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
                         text: self.system_prompt.clone(),
                     }],
-                    tool_calls: None,
+                    timestamp: Utc::now(),
+                    metadata: HashMap::new(),
                     tool_call_id: None,
                 }];
                 msgs.extend(h);
@@ -190,12 +193,13 @@ impl AgenticLoop {
             }
         } else {
             // Fresh start - add system prompt
-            let msgs = vec![ChatMessage {
+            let msgs = vec![LlmMessage {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
                     text: self.system_prompt.clone(),
                 }],
-                tool_calls: None,
+                timestamp: Utc::now(),
+                metadata: HashMap::new(),
                 tool_call_id: None,
             }];
 
@@ -209,14 +213,7 @@ impl AgenticLoop {
         };
 
         // Add user message
-        messages.push(ChatMessage {
-            role: MessageRole::User,
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        messages.push(LlmMessage::user(prompt.to_string()));
 
         // Add user message to session
         {
@@ -259,7 +256,7 @@ impl AgenticLoop {
     /// `DeliveryMode::Live` emits deltas for real-time display.
     async fn run_inner(
         &self,
-        mut messages: Vec<ChatMessage>,
+        mut messages: Vec<LlmMessage>,
         session: Arc<RwLock<Session>>,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         run_id: String,
@@ -287,7 +284,7 @@ impl AgenticLoop {
         }
 
         let mut iteration = 0;
-        let mut total_usage = crate::providers::TokenUsage::default();
+        let mut total_usage = TokenUsage::default();
 
         // Load previous compaction summary from session for cumulative updates
         let previous_summary = {
@@ -375,7 +372,7 @@ impl AgenticLoop {
 
         loop {
             iteration += 1;
-            let mut iteration_usage = crate::providers::TokenUsage::default();
+            let mut iteration_usage = TokenUsage::default();
             info!("Agent loop: iteration {}", iteration);
 
             // ADR-019 Phase 2: Build tool definitions dynamically each iteration
@@ -384,12 +381,7 @@ impl AgenticLoop {
             // ADR-019 Phase 3: Rebuild system prompt dynamically
             if !messages.is_empty() && matches!(messages[0].role, MessageRole::System) {
                 let fresh_prompt = self.build_system_prompt_fresh().await;
-                messages[0] = ChatMessage {
-                    role: MessageRole::System,
-                    content: vec![ContentBlock::Text { text: fresh_prompt }],
-                    tool_calls: None,
-                    tool_call_id: None,
-                };
+                messages[0] = LlmMessage::system(fresh_prompt);
             }
 
             // ============================================================
@@ -815,10 +807,11 @@ impl AgenticLoop {
                 }
 
                 // Add to messages
-                messages.push(ChatMessage {
+                messages.push(LlmMessage {
                     role: MessageRole::Assistant,
                     content: assistant_content,
-                    tool_calls: None,
+                    timestamp: chrono::Utc::now(),
+                    metadata: std::collections::HashMap::new(),
                     tool_call_id: None,
                 });
 
@@ -941,19 +934,7 @@ impl AgenticLoop {
                         });
 
                         // Add tool result to messages
-                        messages.push(ChatMessage {
-                            role: MessageRole::Tool,
-                            content: vec![ContentBlock::ToolResult {
-                                tool_call_id: id.clone(),
-                                name: name.clone(),
-                                content: vec![ContentBlock::Text {
-                                    text: tool_result_str.clone(),
-                                }],
-                                is_error: !success,
-                            }],
-                            tool_calls: None,
-                            tool_call_id: Some(id.clone()),
-                        });
+                        messages.push(LlmMessage::tool_result(id.clone(), name.clone(), tool_result_str.clone()).with_tool_call_id(id.clone()));
                     }
                 }
 
@@ -1051,7 +1032,7 @@ impl AgenticLoop {
     /// Fallback for providers without native tool support
     async fn fallback_chat_with_tools(
         &self,
-        messages: &[ChatMessage],
+        messages: &[LlmMessage],
         _prompt: &str,
     ) -> Result<crate::providers::ChatResponse> {
         // Convert messages to prompt
@@ -1084,7 +1065,7 @@ impl AgenticLoop {
             content: text_content,
             tool_calls,
             stop_reason,
-            usage: crate::providers::TokenUsage::default(),
+            usage: TokenUsage::default(),
             provider: self.provider.name().to_string(),
             model: "default".to_string(),
         })
@@ -1121,7 +1102,7 @@ impl AgenticLoop {
         prompt: &str,
         on_event: impl Fn(AgenticEvent) + Send + Sync + 'static,
         session: Arc<RwLock<Session>>,
-        history: Option<Vec<ChatMessage>>,
+        history: Option<Vec<LlmMessage>>,
         streaming_config: crate::engine::OrchestratorConfig,
     ) -> Result<AgenticResult> {
         let run_id = format!("run_{}", chrono::Utc::now().timestamp_millis());
@@ -1143,12 +1124,13 @@ impl AgenticLoop {
                 h
             } else {
                 // Prepend system prompt to history
-                let mut msgs = vec![ChatMessage {
+                let mut msgs = vec![LlmMessage {
                     role: MessageRole::System,
                     content: vec![ContentBlock::Text {
                         text: self.system_prompt.clone(),
                     }],
-                    tool_calls: None,
+                    timestamp: Utc::now(),
+                    metadata: HashMap::new(),
                     tool_call_id: None,
                 }];
                 msgs.extend(h);
@@ -1163,12 +1145,13 @@ impl AgenticLoop {
             }
         } else {
             // Fresh start - add system prompt
-            let msgs = vec![ChatMessage {
+            let msgs = vec![LlmMessage {
                 role: MessageRole::System,
                 content: vec![ContentBlock::Text {
                     text: self.system_prompt.clone(),
                 }],
-                tool_calls: None,
+                timestamp: Utc::now(),
+                metadata: HashMap::new(),
                 tool_call_id: None,
             }];
 
@@ -1182,14 +1165,7 @@ impl AgenticLoop {
         };
 
         // Add user message
-        messages.push(ChatMessage {
-            role: MessageRole::User,
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        messages.push(LlmMessage::user(prompt.to_string()));
 
         // Add user message to session
         {
@@ -1209,7 +1185,7 @@ impl AgenticLoop {
     /// exactly like real streaming events.
     async fn synthesize_stream_from_blocking(
         &self,
-        messages: &[ChatMessage],
+        messages: &[LlmMessage],
         tools: &[ToolDefinition],
         options: &ChatOptions,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = anyhow::Result<crate::providers::StreamEvent>> + Send>>>
@@ -1434,7 +1410,7 @@ async fn load_and_register_skills(
 }
 
 /// Convert chat messages to prompt string (fallback)
-fn messages_to_prompt(messages: &[ChatMessage]) -> String {
+fn messages_to_prompt(messages: &[LlmMessage]) -> String {
     messages
         .iter()
         .map(|m| {

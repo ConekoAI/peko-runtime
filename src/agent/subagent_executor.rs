@@ -785,22 +785,8 @@ async fn execute_subagent_task(
     // We pass this as `history` to execute_with_session so the agentic loop
     // sends the subagent context to the LLM instead of creating fresh messages.
     let subagent_history = vec![
-        crate::providers::ChatMessage {
-            role: crate::providers::MessageRole::System,
-            content: vec![crate::types::message::ContentBlock::Text {
-                text: system_prompt.to_string(),
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        },
-        crate::providers::ChatMessage {
-            role: crate::providers::MessageRole::User,
-            content: vec![crate::types::message::ContentBlock::Text {
-                text: task_message.to_string(),
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        },
+        crate::types::message::LlmMessage::system(system_prompt),
+        crate::types::message::LlmMessage::user(task_message),
     ];
 
     // Also add these messages to the child session for persistence

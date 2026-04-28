@@ -76,7 +76,7 @@ pub fn format_summary_with_file_ops(summary: &str, details: &CompactionDetails) 
 /// Scans tool calls for `read_file`, `write_file`, `edit_file`, etc.
 /// This is a best-effort heuristic — exact tracking depends on tool naming.
 pub fn extract_file_ops_from_messages(
-    messages: &[crate::providers::ChatMessage],
+    messages: &[crate::types::message::LlmMessage],
 ) -> CompactionDetails {
     use crate::providers::MessageRole;
     use crate::types::message::ContentBlock;
@@ -144,7 +144,7 @@ fn extract_path_from_args(args: &serde_json::Value) -> Option<String> {
 /// Build a cumulative details from previous details and new messages.
 pub fn compute_cumulative_details(
     previous: Option<&CompactionDetails>,
-    new_messages: &[crate::providers::ChatMessage],
+    new_messages: &[crate::types::message::LlmMessage],
 ) -> CompactionDetails {
     let mut details = previous.cloned().unwrap_or_default();
     let new_ops = extract_file_ops_from_messages(new_messages);
@@ -155,7 +155,8 @@ pub fn compute_cumulative_details(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ChatMessage, MessageRole};
+    use crate::providers::MessageRole;
+    use crate::types::message::LlmMessage;
     use crate::types::message::ContentBlock;
 
     #[test]
@@ -184,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_extract_file_ops_from_messages() {
-        let messages = vec![ChatMessage {
+        let messages = vec![LlmMessage {
             role: MessageRole::Assistant,
             content: vec![
                 ContentBlock::Text {
@@ -201,7 +202,8 @@ mod tests {
                     arguments: serde_json::json!({"path": "src/lib.rs", "content": "..."}),
                 },
             ],
-            tool_calls: None,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
             tool_call_id: None,
         }];
 
@@ -217,14 +219,15 @@ mod tests {
             modified_files: vec!["b.rs".to_string()],
         };
 
-        let messages = vec![ChatMessage {
+        let messages = vec![LlmMessage {
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolCall {
                 id: "tc1".to_string(),
                 name: "read_file".to_string(),
                 arguments: serde_json::json!({"path": "c.rs"}),
             }],
-            tool_calls: None,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
             tool_call_id: None,
         }];
 

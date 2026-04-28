@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::types::message::{ContentBlock, TokenUsage};
+
 /// Unique content block ID for streaming correlation
 pub type ContentBlockId = String;
 
@@ -148,29 +150,6 @@ pub enum StopReason {
     Aborted,
 }
 
-/// Chat message for native tool calling API
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    /// Message role: system, user, assistant, tool
-    pub role: MessageRole,
-    /// Message content blocks
-    pub content: Vec<crate::types::message::ContentBlock>,
-    /// Tool calls (for assistant messages)
-    pub tool_calls: Option<Vec<crate::types::provider::ToolCall>>,
-    /// Tool call ID (for tool messages)
-    pub tool_call_id: Option<String>,
-}
-
-/// Message role for chat API
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageRole {
-    System,
-    User,
-    Assistant,
-    Tool,
-}
-
 /// Options for chat completion
 #[derive(Debug, Clone, Default)]
 pub struct ChatOptions {
@@ -188,9 +167,9 @@ pub struct ChatOptions {
 #[derive(Debug, Clone)]
 pub struct ChatResponse {
     /// Message content blocks
-    pub content: Vec<crate::types::message::ContentBlock>,
+    pub content: Vec<ContentBlock>,
     /// Tool calls (if any)
-    pub tool_calls: Vec<crate::types::message::ContentBlock>,
+    pub tool_calls: Vec<ContentBlock>,
     /// Stop reason
     pub stop_reason: StopReason,
     /// Token usage
@@ -199,15 +178,4 @@ pub struct ChatResponse {
     pub provider: String,
     /// Model used
     pub model: String,
-}
-
-/// Token usage statistics
-#[derive(Debug, Clone, Default)]
-pub struct TokenUsage {
-    /// Input tokens
-    pub input: u64,
-    /// Output tokens
-    pub output: u64,
-    /// Total tokens
-    pub total: u64,
 }

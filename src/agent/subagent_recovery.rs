@@ -8,7 +8,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::providers::{ChatMessage, MessageRole};
+use crate::providers::MessageRole;
+use crate::types::message::LlmMessage;
 use crate::types::message::ContentBlock;
 
 /// Service for recovering meaningful output from subagent session history.
@@ -45,7 +46,7 @@ impl ResultRecovery {
     }
 
     /// Extract the last assistant message text from history.
-    fn extract_last_assistant(history: &[ChatMessage]) -> Option<String> {
+    fn extract_last_assistant(history: &[LlmMessage]) -> Option<String> {
         for msg in history.iter().rev() {
             if matches!(msg.role, MessageRole::Assistant) {
                 let text: String = msg
@@ -68,7 +69,7 @@ impl ResultRecovery {
     }
 
     /// Extract and process tool results from history.
-    fn extract_tool_results(history: &[ChatMessage]) -> Option<String> {
+    fn extract_tool_results(history: &[LlmMessage]) -> Option<String> {
         let mut tool_results: Vec<String> = Vec::new();
         for msg in history.iter().rev() {
             if matches!(msg.role, MessageRole::Tool) {
@@ -189,18 +190,8 @@ mod tests {
     #[test]
     fn test_extract_last_assistant_found() {
         let history = vec![
-            ChatMessage {
-                role: MessageRole::User,
-                content: vec![ContentBlock::Text { text: "hello".into() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                content: vec![ContentBlock::Text { text: "response".into() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            LlmMessage::user("hello"),
+            LlmMessage::assistant("response"),
         ];
         assert_eq!(
             ResultRecovery::extract_last_assistant(&history),
@@ -211,36 +202,27 @@ mod tests {
     #[test]
     fn test_extract_last_assistant_empty_text() {
         let history = vec![
-            ChatMessage {
-                role: MessageRole::Assistant,
-                content: vec![ContentBlock::Text { text: "   ".into() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            LlmMessage::assistant("   "),
         ];
         assert_eq!(ResultRecovery::extract_last_assistant(&history), None);
     }
 
     #[test]
     fn test_extract_last_assistant_no_assistant() {
-        let history = vec![ChatMessage {
-            role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: "hello".into() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let history = vec![LlmMessage::user("hello")];
         assert_eq!(ResultRecovery::extract_last_assistant(&history), None);
     }
 
     #[test]
     fn test_extract_last_assistant_multiple_blocks() {
-        let history = vec![ChatMessage {
+        let history = vec![LlmMessage {
             role: MessageRole::Assistant,
             content: vec![
                 ContentBlock::Text { text: "part1".into() },
                 ContentBlock::Text { text: "part2".into() },
             ],
-            tool_calls: None,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
             tool_call_id: None,
         }];
         assert_eq!(
@@ -252,18 +234,8 @@ mod tests {
     #[test]
     fn test_extract_last_assistant_skips_empty() {
         let history = vec![
-            ChatMessage {
-                role: MessageRole::Assistant,
-                content: vec![ContentBlock::Text { text: "".into() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatMessage {
-                role: MessageRole::Assistant,
-                content: vec![ContentBlock::Text { text: "real".into() }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            LlmMessage::assistant(""),
+            LlmMessage::assistant("real"),
         ];
         assert_eq!(
             ResultRecovery::extract_last_assistant(&history),
@@ -273,10 +245,11 @@ mod tests {
 
     #[test]
     fn test_extract_tool_results_found() {
-        let history = vec![ChatMessage {
+        let history = vec![LlmMessage {
             role: MessageRole::Tool,
             content: vec![ContentBlock::Text { text: "tool output".into() }],
-            tool_calls: None,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
             tool_call_id: None,
         }];
         assert_eq!(
@@ -287,17 +260,7 @@ mod tests {
 
     #[test]
     fn test_extract_tool_results_with_tool_result_block() {
-        let history = vec![ChatMessage {
-            role: MessageRole::Tool,
-            content: vec![ContentBlock::ToolResult {
-                tool_call_id: "id".into(),
-                name: "read_file".into(),
-                content: vec![ContentBlock::Text { text: "file content".into() }],
-                is_error: false,
-            }],
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let history = vec![LlmMessage::tool_result("id", "read_file", "file content")];
         assert_eq!(
             ResultRecovery::extract_tool_results(&history),
             Some("file content".to_string())
@@ -306,12 +269,7 @@ mod tests {
 
     #[test]
     fn test_extract_tool_results_no_tool_messages() {
-        let history = vec![ChatMessage {
-            role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: "hello".into() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let history = vec![LlmMessage::user("hello")];
         assert_eq!(ResultRecovery::extract_tool_results(&history), None);
     }
 
@@ -321,16 +279,18 @@ mod tests {
         // So if history = [newer, older], reverse iteration picks older first, then newer,
         // then .reverse() makes it [newer, older] again — which is chronological.
         let history = vec![
-            ChatMessage {
+            LlmMessage {
                 role: MessageRole::Tool,
                 content: vec![ContentBlock::Text { text: "second".into() }],
-                tool_calls: None,
+                timestamp: chrono::Utc::now(),
+                metadata: std::collections::HashMap::new(),
                 tool_call_id: None,
             },
-            ChatMessage {
+            LlmMessage {
                 role: MessageRole::Tool,
                 content: vec![ContentBlock::Text { text: "first".into() }],
-                tool_calls: None,
+                timestamp: chrono::Utc::now(),
+                metadata: std::collections::HashMap::new(),
                 tool_call_id: None,
             },
         ];
@@ -342,12 +302,13 @@ mod tests {
 
     #[test]
     fn test_extract_tool_results_json_processing() {
-        let history = vec![ChatMessage {
+        let history = vec![LlmMessage {
             role: MessageRole::Tool,
             content: vec![ContentBlock::Text {
                 text: r#"{"content": "extracted"}"#.into(),
             }],
-            tool_calls: None,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
             tool_call_id: None,
         }];
         assert_eq!(

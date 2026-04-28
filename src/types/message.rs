@@ -72,6 +72,14 @@ pub enum MessageRole {
     Tool,
 }
 
+/// Token usage statistics
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    pub total: u64,
+}
+
 /// Standard LLM message
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmMessage {
@@ -79,6 +87,10 @@ pub struct LlmMessage {
     pub content: Vec<ContentBlock>,
     pub timestamp: DateTime<Utc>,
     pub metadata: HashMap<String, Value>,
+    /// Tool call ID for tool-result messages
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl LlmMessage {
@@ -89,6 +101,7 @@ impl LlmMessage {
             content: vec![ContentBlock::Text { text: text.into() }],
             timestamp: Utc::now(),
             metadata: HashMap::new(),
+            tool_call_id: None,
         }
     }
 
@@ -113,10 +126,11 @@ impl LlmMessage {
         name: impl Into<String>,
         result: impl Into<String>,
     ) -> Self {
+        let tool_call_id_str = tool_call_id.into();
         Self {
             role: MessageRole::Tool,
             content: vec![ContentBlock::ToolResult {
-                tool_call_id: tool_call_id.into(),
+                tool_call_id: tool_call_id_str.clone(),
                 name: name.into(),
                 content: vec![ContentBlock::Text {
                     text: result.into(),
@@ -125,12 +139,19 @@ impl LlmMessage {
             }],
             timestamp: Utc::now(),
             metadata: HashMap::new(),
+            tool_call_id: Some(tool_call_id_str),
         }
     }
 
     /// Add metadata to the message
     pub fn with_metadata(mut self, key: impl Into<String>, value: Value) -> Self {
         self.metadata.insert(key.into(), value);
+        self
+    }
+
+    /// Set the tool call ID
+    pub fn with_tool_call_id(mut self, tool_call_id: impl Into<String>) -> Self {
+        self.tool_call_id = Some(tool_call_id.into());
         self
     }
 }

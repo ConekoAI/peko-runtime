@@ -10,7 +10,7 @@
 
 use crate::compaction::registry::should_auto_compact;
 use crate::compaction::{CompactionConfig, CompactionResult, Compactor};
-use crate::providers::ChatMessage;
+use crate::types::message::LlmMessage;
 use anyhow::Result;
 use std::sync::Arc;
 use std::time::Instant;
@@ -42,7 +42,7 @@ impl Default for CompactionQuota {
 #[derive(Debug)]
 pub struct CompactionRequest {
     /// Messages to potentially compact
-    pub messages: Vec<ChatMessage>,
+    pub messages: Vec<LlmMessage>,
     /// Previous summary for cumulative updates
     pub previous_summary: Option<String>,
     /// Response channel for result
@@ -186,7 +186,7 @@ impl BackgroundCompactor {
     /// Returns receiver for result
     pub async fn request_compaction(
         &self,
-        messages: Vec<ChatMessage>,
+        messages: Vec<LlmMessage>,
         previous_summary: Option<String>,
     ) -> Result<oneshot::Receiver<CompactionResponse>> {
         let (response_tx, response_rx) = oneshot::channel();

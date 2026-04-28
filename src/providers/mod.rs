@@ -25,9 +25,8 @@ pub use core::Provider;
 pub use registry::{create_provider, get_provider_metadata, list_providers, ProviderRegistry};
 pub use transport::{AuthConfig, HttpClient, SseParser};
 pub use types::{
-    BlockType, ChatMessage, ChatOptions, ChatResponse, ContentBlock, ContentBlockId, ContentDelta,
-    Message, MessageRole, ProviderConfig, StopReason, StreamEvent, ThinkingBlock, TokenUsage,
-    ToolCallBlock, ToolDefinition,
+    BlockType, ChatOptions, ChatResponse, ContentBlock, ContentBlockId, ContentDelta, LlmMessage,
+    MessageRole, ProviderConfig, StopReason, StreamEvent, TokenUsage, ToolDefinition,
 };
 
 // Types still defined in traits.rs for historical reasons; imported via types::*

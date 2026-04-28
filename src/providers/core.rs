@@ -7,8 +7,7 @@ use crate::engine::{AgenticEvent, LifecyclePhase};
 use crate::providers::adapters::{AnyAdapter, ApiAdapter};
 use crate::providers::transport::HttpClient;
 use crate::providers::types::{
-    ChatMessage, ChatOptions, ChatResponse, ContentBlock, Message, MessageRole, StopReason,
-    StreamEvent, TokenUsage, ToolDefinition,
+    ChatOptions, ChatResponse, ContentBlock, LlmMessage, StreamEvent, ToolDefinition,
 };
 use crate::types::provider::ProviderConfig;
 use futures::StreamExt;
@@ -114,31 +113,13 @@ impl Provider {
         _model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let messages = if let Some(system) = system_prompt {
+        let messages: Vec<LlmMessage> = if let Some(system) = system_prompt {
             vec![
-                Message {
-                    role: MessageRole::System,
-                    content: vec![ContentBlock::Text {
-                        text: system.to_string(),
-                    }],
-                    tool_call_id: None,
-                },
-                Message {
-                    role: MessageRole::User,
-                    content: vec![ContentBlock::Text {
-                        text: message.to_string(),
-                    }],
-                    tool_call_id: None,
-                },
+                LlmMessage::system(system),
+                LlmMessage::user(message),
             ]
         } else {
-            vec![Message {
-                role: MessageRole::User,
-                content: vec![ContentBlock::Text {
-                    text: message.to_string(),
-                }],
-                tool_call_id: None,
-            }]
+            vec![LlmMessage::user(message)]
         };
 
         let options = ChatOptions {
@@ -170,50 +151,28 @@ impl Provider {
     /// Chat with native tool calling support (blocking)
     pub async fn chat_with_tools(
         &self,
-        messages: &[ChatMessage],
+        messages: &[LlmMessage],
         tools: &[ToolDefinition],
         options: &ChatOptions,
     ) -> anyhow::Result<ChatResponse> {
-        let msgs = self.convert_chat_messages(messages);
-        let tool_defs = self.convert_tools(tools);
-
-        let opts = ChatOptions {
-            temperature: options.temperature,
-            max_tokens: options.max_tokens,
-            api_key: options.api_key.clone(),
-            headers: options.headers.clone(),
-        };
-
         let (path, body) = self
             .adapter
-            .build_request(&msgs, Some(&tool_defs), &opts, false)?;
+            .build_request(messages, Some(tools), options, false)?;
         let response: serde_json::Value = self.client.post_json(&path, &body).await?;
-        let parsed = self.adapter.parse_response(response)?;
-
-        Ok(self.convert_response(parsed))
+        self.adapter.parse_response(response)
     }
 
     /// Stream chat with native tool calling support
     pub async fn stream_with_tools(
         &self,
-        messages: &[ChatMessage],
+        messages: &[LlmMessage],
         tools: &[ToolDefinition],
         options: &ChatOptions,
     ) -> anyhow::Result<Pin<Box<dyn futures::Stream<Item = anyhow::Result<StreamEvent>> + Send>>>
     {
-        let msgs = self.convert_chat_messages(messages);
-        let tool_defs = self.convert_tools(tools);
-
-        let opts = ChatOptions {
-            temperature: options.temperature,
-            max_tokens: options.max_tokens,
-            api_key: options.api_key.clone(),
-            headers: options.headers.clone(),
-        };
-
         let (path, body) = self
             .adapter
-            .build_request(&msgs, Some(&tool_defs), &opts, true)?;
+            .build_request(messages, Some(tools), options, true)?;
         let stream = self.client.post_stream(&path, &body).await?;
 
         // Parse SSE and convert to StreamEvent using a channel-based approach
@@ -261,13 +220,7 @@ impl Provider {
             .await;
 
         // Build simple completion request
-        let messages = vec![Message {
-            role: MessageRole::User,
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-            }],
-            tool_call_id: None,
-        }];
+        let messages = vec![LlmMessage::user(prompt)];
 
         let options = ChatOptions {
             temperature: Some(0.7),
@@ -368,176 +321,6 @@ impl Provider {
             || self.adapter.default_model().to_string(),
             |m| m.name.clone(),
         )
-    }
-
-    /// Convert legacy `ChatMessage` to new Message format
-    fn convert_chat_messages(&self, messages: &[ChatMessage]) -> Vec<Message> {
-        messages
-            .iter()
-            .map(|m| {
-                let role = match m.role {
-                    super::MessageRole::System => MessageRole::System,
-                    super::MessageRole::User => MessageRole::User,
-                    super::MessageRole::Assistant => MessageRole::Assistant,
-                    super::MessageRole::Tool => MessageRole::Tool,
-                };
-
-                // Convert content blocks
-                let content: Vec<ContentBlock> = m
-                    .content
-                    .iter()
-                    .map(|cb| match cb {
-                        crate::types::message::ContentBlock::Text { text } => {
-                            ContentBlock::Text { text: text.clone() }
-                        }
-                        crate::types::message::ContentBlock::ToolCall {
-                            id,
-                            name,
-                            arguments,
-                        } => ContentBlock::ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            arguments: arguments.clone(),
-                        },
-                        crate::types::message::ContentBlock::ToolResult {
-                            tool_call_id,
-                            name,
-                            content,
-                            is_error,
-                        } => ContentBlock::ToolResult {
-                            tool_call_id: tool_call_id.clone(),
-                            name: name.clone(),
-                            content: content
-                                .iter()
-                                .map(|c| match c {
-                                    crate::types::message::ContentBlock::Text { text } => {
-                                        ContentBlock::Text { text: text.clone() }
-                                    }
-                                    _ => ContentBlock::Text {
-                                        text: String::new(),
-                                    },
-                                })
-                                .collect(),
-                            is_error: *is_error,
-                        },
-                        crate::types::message::ContentBlock::Thinking { text, signature } => {
-                            ContentBlock::Thinking {
-                                text: text.clone(),
-                                signature: signature.clone(),
-                            }
-                        }
-                        _ => ContentBlock::Text {
-                            text: String::new(),
-                        },
-                    })
-                    .collect();
-
-                Message {
-                    role,
-                    content,
-                    tool_call_id: m.tool_call_id.clone(),
-                }
-            })
-            .collect()
-    }
-
-    /// Convert `ToolDefinition`
-    fn convert_tools(&self, tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
-        tools
-            .iter()
-            .map(|t| ToolDefinition {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                parameters: t.parameters.clone(),
-            })
-            .collect()
-    }
-
-    /// Convert `ChatResponse` back to legacy format
-    fn convert_response(&self, response: ChatResponse) -> ChatResponse {
-        let content: Vec<crate::types::message::ContentBlock> = response
-            .content
-            .into_iter()
-            .map(|cb| match cb {
-                ContentBlock::Text { text } => crate::types::message::ContentBlock::Text { text },
-                ContentBlock::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                } => crate::types::message::ContentBlock::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                },
-                ContentBlock::ToolResult {
-                    tool_call_id,
-                    name,
-                    content,
-                    is_error,
-                } => crate::types::message::ContentBlock::ToolResult {
-                    tool_call_id,
-                    name: name.clone(),
-                    content: content
-                        .into_iter()
-                        .map(|c| match c {
-                            ContentBlock::Text { text } => {
-                                crate::types::message::ContentBlock::Text { text }
-                            }
-                            _ => crate::types::message::ContentBlock::Text {
-                                text: String::new(),
-                            },
-                        })
-                        .collect(),
-                    is_error,
-                },
-                ContentBlock::Thinking { text, signature } => {
-                    crate::types::message::ContentBlock::Thinking { text, signature }
-                }
-                _ => crate::types::message::ContentBlock::Text {
-                    text: String::new(),
-                },
-            })
-            .collect();
-
-        let tool_calls: Vec<crate::types::message::ContentBlock> = response
-            .tool_calls
-            .into_iter()
-            .map(|cb| match cb {
-                ContentBlock::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                } => crate::types::message::ContentBlock::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                },
-                _ => crate::types::message::ContentBlock::Text {
-                    text: String::new(),
-                },
-            })
-            .collect();
-
-        let stop_reason = match response.stop_reason {
-            StopReason::Stop => super::StopReason::Stop,
-            StopReason::Length => super::StopReason::Length,
-            StopReason::ToolUse => super::StopReason::ToolUse,
-            StopReason::Error => super::StopReason::Error,
-            StopReason::Aborted => super::StopReason::Aborted,
-        };
-
-        ChatResponse {
-            content,
-            tool_calls,
-            stop_reason,
-            usage: TokenUsage {
-                input: response.usage.input,
-                output: response.usage.output,
-                total: response.usage.total,
-            },
-            provider: response.provider,
-            model: response.model,
-        }
     }
 }
 

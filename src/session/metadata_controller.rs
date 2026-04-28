@@ -600,10 +600,10 @@ impl MetadataController {
         for event in &events {
             if let crate::session::events::SessionEvent::MessageV2(msg) = event {
                 if let Some(usage) = msg.usage() {
-                    total_input += usage.input_tokens as usize;
-                    total_output += usage.output_tokens as usize;
-                    // Last seen total_tokens becomes the context window
-                    context_window = usage.total_tokens as usize;
+                    total_input += usage.input as usize;
+                    total_output += usage.output as usize;
+                    // Last seen total becomes the context window
+                    context_window = usage.total as usize;
                 }
             }
         }

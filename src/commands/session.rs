@@ -944,7 +944,7 @@ async fn compact_session(
         format!("[{} messages summarized - conversation history]", to_compact.len())
     };
 
-    let summary_message = crate::providers::ChatMessage {
+    let summary_message = crate::types::message::LlmMessage {
         role: crate::providers::MessageRole::System,
         content: vec![crate::types::message::ContentBlock::Text {
             text: format!(
@@ -953,7 +953,8 @@ async fn compact_session(
                 summary_text
             ),
         }],
-        tool_calls: None,
+        timestamp: chrono::Utc::now(),
+        metadata: std::collections::HashMap::new(),
         tool_call_id: None,
     };
 

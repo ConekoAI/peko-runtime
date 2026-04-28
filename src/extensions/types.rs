@@ -209,8 +209,8 @@ pub enum HookOutput {
     /// Boolean result (for operations like cancel)
     Bool(bool),
 
-    /// Vector of ChatMessages (for compaction/context hooks)
-    MessageVec(Vec<crate::providers::ChatMessage>),
+    /// Vector of LlmMessages (for compaction/context hooks)
+    MessageVec(Vec<crate::types::message::LlmMessage>),
 }
 
 impl HookOutput {
@@ -301,7 +301,7 @@ impl HookOutput {
 
     /// Create a message vector output
     #[must_use]
-    pub fn message_vec(messages: Vec<crate::providers::ChatMessage>) -> Self {
+    pub fn message_vec(messages: Vec<crate::types::message::LlmMessage>) -> Self {
         Self::MessageVec(messages)
     }
 }
@@ -339,9 +339,9 @@ pub enum HookInput {
     /// Compaction preparation data (pre-compaction hook)
     CompactionPreparation {
         /// Messages that will be summarized
-        messages_to_summarize: Vec<crate::providers::ChatMessage>,
+        messages_to_summarize: Vec<crate::types::message::LlmMessage>,
         /// Recent messages preserved intact (turn prefix for split turns)
-        turn_prefix_messages: Vec<crate::providers::ChatMessage>,
+        turn_prefix_messages: Vec<crate::types::message::LlmMessage>,
         /// Whether the cut landed mid-turn
         is_split_turn: bool,
         /// Previous compaction summary (for cumulative updates)
@@ -373,7 +373,7 @@ pub enum HookInput {
         /// Tracked file operations from compacted messages
         details: Option<crate::compaction::summary_format::CompactionDetails>,
         /// Messages after compaction (summary + kept messages)
-        messages_after: Vec<crate::providers::ChatMessage>,
+        messages_after: Vec<crate::types::message::LlmMessage>,
     },
 
     /// Message envelope
@@ -728,22 +728,8 @@ mod tests {
     #[test]
     fn test_hook_output_message_vec() {
         let messages = vec![
-            crate::providers::ChatMessage {
-                role: crate::providers::MessageRole::System,
-                content: vec![crate::types::message::ContentBlock::Text {
-                    text: "System".to_string(),
-                }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            crate::providers::ChatMessage {
-                role: crate::providers::MessageRole::User,
-                content: vec![crate::types::message::ContentBlock::Text {
-                    text: "User".to_string(),
-                }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            crate::types::message::LlmMessage::system("System"),
+            crate::types::message::LlmMessage::user("User"),
         ];
         let output = HookOutput::message_vec(messages);
         match output {

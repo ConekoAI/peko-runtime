@@ -5,8 +5,7 @@
 //! - Hook triggers (cron, webhook, file watch, event)
 //! - A2A bus messages (agent-to-agent communication)
 
-use crate::providers::{ChatMessage, MessageRole};
-use crate::types::message::ContentBlock;
+use crate::types::message::{ContentBlock, LlmMessage, MessageRole};
 use serde::{Deserialize, Serialize};
 
 /// Input source for the agentic loop
@@ -169,16 +168,10 @@ impl AgentInput {
         }
     }
 
-    /// Convert to a `ChatMessage` for the LLM
+    /// Convert to an `LlmMessage` for the LLM
     #[must_use]
-    pub fn to_chat_message(&self) -> ChatMessage {
-        let content = self.content_string();
-        ChatMessage {
-            role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: content }],
-            tool_calls: None,
-            tool_call_id: None,
-        }
+    pub fn to_llm_message(&self) -> LlmMessage {
+        LlmMessage::user(self.content_string())
     }
 
     /// Get the source type name
@@ -337,20 +330,20 @@ mod tests {
     }
 
     #[test]
-    fn test_to_chat_message() {
+    fn test_to_llm_message() {
         let input = AgentInput::user_message("Test message");
-        let msg = input.to_chat_message();
+        let msg = input.to_llm_message();
         assert!(matches!(msg.role, MessageRole::User));
     }
 
     #[test]
-    fn test_to_chat_message_with_hook() {
+    fn test_to_llm_message_with_hook() {
         let input = AgentInput::hook_trigger(
             HookType::Cron,
             serde_json::json!({"task": "backup"}),
             "scheduler",
         );
-        let msg = input.to_chat_message();
+        let msg = input.to_llm_message();
         assert!(matches!(msg.role, MessageRole::User));
         match &msg.content[0] {
             ContentBlock::Text { text } => {

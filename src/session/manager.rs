@@ -297,7 +297,7 @@ impl SessionHandle {
     }
 
     /// Load conversation history
-    pub async fn load_history(&self) -> Result<Vec<crate::providers::ChatMessage>> {
+    pub async fn load_history(&self) -> Result<Vec<crate::types::message::LlmMessage>> {
         let base = self.base.read().await;
         base.load_history().await
     }
@@ -2051,19 +2051,29 @@ async fn copy_session_context(
                     })
                     .collect();
 
-                // Convert tool calls from provider::ToolCall to engine::ToolCall format
-                let tool_calls = msg.tool_calls.map(|calls| {
-                    calls
-                        .into_iter()
-                        .map(|call| crate::engine::ToolCall {
-                            name: call.function.name,
-                            parameters: serde_json::from_str(&call.function.arguments)
-                                .unwrap_or(serde_json::Value::Null),
-                        })
-                        .collect()
-                });
+                // Extract tool calls from content blocks (ContentBlock::ToolCall)
+                let tool_calls: Vec<crate::engine::ToolCall> = msg
+                    .content
+                    .iter()
+                    .filter_map(|c| {
+                        if let ContentBlock::ToolCall { name, arguments, .. } = c {
+                            Some(crate::engine::ToolCall {
+                                name: name.clone(),
+                                parameters: arguments.clone(),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
-                child_guard.add_assistant(&text, tool_calls, None).await?;
+                let tool_calls_opt = if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls)
+                };
+
+                child_guard.add_assistant(&text, tool_calls_opt, None).await?;
             }
             MessageRole::Tool => {
                 // Tool results - skip for now as they require tool_call_id linking

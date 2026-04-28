@@ -7,7 +7,7 @@
 
 use crate::providers::transport::AuthConfig;
 use crate::providers::types::{
-    ChatOptions, ChatResponse, ContentBlock, Message, MessageRole, StreamEvent, ToolDefinition,
+    ChatOptions, ChatResponse, ContentBlock, LlmMessage, MessageRole, StreamEvent, ToolDefinition,
 };
 use anyhow::Result;
 use serde_json::Value;
@@ -170,7 +170,7 @@ pub trait ApiAdapter: Send + Sync {
     /// Returns (path, body) where path is the API endpoint (e.g., "/chat/completions")
     fn build_request(
         &self,
-        messages: &[Message],
+        messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
         stream: bool,
@@ -258,7 +258,7 @@ impl ApiAdapter for AnyAdapter {
 
     fn build_request(
         &self,
-        messages: &[Message],
+        messages: &[LlmMessage],
         tools: Option<&[ToolDefinition]>,
         options: &ChatOptions,
         stream: bool,

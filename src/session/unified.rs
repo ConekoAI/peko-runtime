@@ -17,8 +17,8 @@
 //! External code should use `SessionHandle` obtained from `SessionManager`.
 
 use crate::engine::ToolCall;
-use crate::providers::ChatMessage;
 use crate::providers::TokenUsage as ProviderTokenUsage;
+use crate::types::message::LlmMessage;
 use crate::session::events::{
     generate_event_id, generate_message_id, EventEnvelope, SessionEvent, ToolCallBlock,
 };
@@ -34,56 +34,41 @@ use tracing::warn;
 // ====================================================================================
 use crate::session::NormalizedEntry;
 
-/// Convert a `SessionEvent` to a `ChatMessage`
+/// Convert a `SessionEvent` to an `LlmMessage`
 ///
 /// This function handles the conversion from internal event format to
-/// provider-agnostic `ChatMessage` format.
+/// provider-agnostic `LlmMessage` format.
 ///
 /// Uses the unified `as_message()` method to support both the new `MessageV2`
 /// format and all legacy formats seamlessly.
-pub(crate) fn event_to_chat_message(event: &SessionEvent) -> Option<ChatMessage> {
+pub(crate) fn event_to_llm_message(event: &SessionEvent) -> Option<LlmMessage> {
     // Use unified conversion for all message types (handles MessageV2 and legacy)
     if let Some(msg) = event.as_message() {
-        return Some(msg.to_chat_message());
+        return Some(msg.to_llm_message());
     }
 
     // Non-message events return None
     None
 }
 
-/// Convert a `NormalizedEntry` to a `ChatMessage`
+/// Convert a `NormalizedEntry` to an `LlmMessage`
 ///
 /// Used by `build_context()` to reconstruct the LLM message list from
 /// normalized session entries.
-pub(crate) fn normalized_entry_to_chat_message(entry: &NormalizedEntry) -> Option<ChatMessage> {
-    use crate::providers::MessageRole;
+pub(crate) fn normalized_entry_to_llm_message(entry: &NormalizedEntry) -> Option<LlmMessage> {
+    use crate::types::message::MessageRole;
     use crate::types::ContentBlock;
 
     match entry {
-        NormalizedEntry::UserMessage { content, .. } => Some(ChatMessage {
-            role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: content.clone() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }),
-        NormalizedEntry::AssistantMessage { content, .. } => Some(ChatMessage {
-            role: MessageRole::Assistant,
-            content: vec![ContentBlock::Text { text: content.clone() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }),
-        NormalizedEntry::SystemMessage { content, .. } => Some(ChatMessage {
-            role: MessageRole::System,
-            content: vec![ContentBlock::Text { text: content.clone() }],
-            tool_calls: None,
-            tool_call_id: None,
-        }),
+        NormalizedEntry::UserMessage { content, .. } => Some(LlmMessage::user(content)),
+        NormalizedEntry::AssistantMessage { content, .. } => Some(LlmMessage::assistant(content)),
+        NormalizedEntry::SystemMessage { content, .. } => Some(LlmMessage::system(content)),
         NormalizedEntry::ToolResult {
             tool_call_id,
             tool_name,
             content,
             is_error,
-        } => Some(ChatMessage {
+        } => Some(LlmMessage {
             role: MessageRole::Tool,
             content: vec![ContentBlock::ToolResult {
                 tool_call_id: tool_call_id.clone(),
@@ -91,7 +76,8 @@ pub(crate) fn normalized_entry_to_chat_message(entry: &NormalizedEntry) -> Optio
                 content: vec![ContentBlock::Text { text: content.clone() }],
                 is_error: *is_error,
             }],
-            tool_calls: None,
+            timestamp: chrono::Utc::now(),
+            metadata: std::collections::HashMap::new(),
             tool_call_id: Some(tool_call_id.clone()),
         }),
         // Session header, compaction, model change, custom — not chat messages
@@ -530,6 +516,7 @@ impl Session {
                     content: final_content_blocks,
                     timestamp: Utc::now(),
                     metadata: std::collections::HashMap::new(),
+                    tool_call_id: None,
                 },
                 message_id: msg_id.clone(),
                 role_metadata: crate::session::message::RoleMetadata::User {
@@ -538,15 +525,15 @@ impl Session {
             },
             "assistant" => {
                 let token_usage = usage.as_ref().map_or(
-                    crate::session::message::TokenUsage {
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        total_tokens: 0,
+                    crate::types::message::TokenUsage {
+                        input: 0,
+                        output: 0,
+                        total: 0,
                     },
-                    |u| crate::session::message::TokenUsage {
-                        input_tokens: u.input as u32,
-                        output_tokens: u.output as u32,
-                        total_tokens: (u.input + u.output) as u32,
+                    |u| crate::types::message::TokenUsage {
+                        input: u.input,
+                        output: u.output,
+                        total: u.input + u.output,
                     },
                 );
 
@@ -674,8 +661,8 @@ impl Session {
     /// backward compatibility.
     ///
     /// # Returns
-    /// Vector of `ChatMessage` with complete `ContentBlock` information
-    pub async fn load_history(&self) -> Result<Vec<ChatMessage>> {
+    /// Vector of `LlmMessage` with complete `ContentBlock` information
+    pub async fn load_history(&self) -> Result<Vec<LlmMessage>> {
         // Delegate to native loader for unified handling
         self.load_history_native().await
     }
@@ -683,10 +670,10 @@ impl Session {
     /// Load conversation history (internal implementation)
     ///
     /// Core implementation that handles all event formats and converts to
-    /// `ChatMessage` with full `ContentBlock` fidelity.
-    async fn load_history_native(&self) -> Result<Vec<ChatMessage>> {
+    /// `LlmMessage` with full `ContentBlock` fidelity.
+    async fn load_history_native(&self) -> Result<Vec<LlmMessage>> {
         let events = self.storage.load_events(&self.id).await?;
-        let messages: Vec<ChatMessage> = events.iter().filter_map(event_to_chat_message).collect();
+        let messages: Vec<LlmMessage> = events.iter().filter_map(event_to_llm_message).collect();
 
         Ok(messages)
     }
@@ -776,7 +763,7 @@ impl Session {
     /// preceded by a system message containing the compaction summary.
     ///
     /// This is called once at session load; the result is kept in memory for the run.
-    pub async fn build_context(&self) -> Result<Vec<ChatMessage>> {
+    pub async fn build_context(&self) -> Result<Vec<LlmMessage>> {
         use crate::session::NormalizedEntry;
 
         let entries = self.storage.load_normalized(&self.id).await?;
@@ -808,12 +795,7 @@ impl Session {
                 tokens_before.saturating_sub(*tokens_after),
                 summary
             );
-            messages.push(ChatMessage {
-                role: crate::providers::MessageRole::System,
-                content: vec![crate::types::ContentBlock::Text { text: summary_text }],
-                tool_calls: None,
-                tool_call_id: None,
-            });
+            messages.push(LlmMessage::system(summary_text));
 
             // Find the position of the compaction entry
             let compaction_idx = entries
@@ -823,14 +805,14 @@ impl Session {
 
             // Emit messages AFTER the compaction entry
             for entry in &entries[compaction_idx + 1..] {
-                if let Some(msg) = normalized_entry_to_chat_message(entry) {
+                if let Some(msg) = normalized_entry_to_llm_message(entry) {
                     messages.push(msg);
                 }
             }
         } else {
             // No compaction — emit all messages
             for entry in &entries {
-                if let Some(msg) = normalized_entry_to_chat_message(entry) {
+                if let Some(msg) = normalized_entry_to_llm_message(entry) {
                     messages.push(msg);
                 }
             }
@@ -843,7 +825,7 @@ impl Session {
     ///
     /// Falls back to `build_context()` if the cache is stale or missing,
     /// then writes a fresh cache for next time.
-    pub async fn load_context_fast(&self) -> Result<Vec<ChatMessage>> {
+    pub async fn load_context_fast(&self) -> Result<Vec<LlmMessage>> {
         // Compute checksum and entry count from JSONL
         let checksum = self.storage.compute_jsonl_checksum(&self.id).await?;
         let entry_count = self.storage.count_jsonl_entries(&self.id).await?;
@@ -876,7 +858,7 @@ impl Session {
     ///
     /// Call this after compaction produces a new message list. The cache
     /// is invalidated and rewritten with the latest JSONL checksum.
-    pub async fn update_context_cache(&self, messages: &[ChatMessage]) -> Result<()> {
+    pub async fn update_context_cache(&self, messages: &[LlmMessage]) -> Result<()> {
         let checksum = self.storage.compute_jsonl_checksum(&self.id).await?;
         let entry_count = self.storage.count_jsonl_entries(&self.id).await?;
         self.storage
@@ -971,21 +953,21 @@ mod tests {
     // ====================================================================================
 
     #[test]
-    fn test_event_to_chat_message_assistant() {
-        use crate::providers::MessageRole;
+    fn test_event_to_llm_message_assistant() {
+        use crate::types::message::MessageRole;
         use crate::session::SessionMessage;
 
         let event =
             SessionEvent::MessageV2(SessionMessage::assistant_text("Hello!", "openai", "gpt-4"));
 
-        let msg = event_to_chat_message(&event).unwrap();
+        let msg = event_to_llm_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::Assistant);
         assert_eq!(msg.content.len(), 1);
     }
 
     #[test]
-    fn test_event_to_chat_message_user() {
-        use crate::providers::MessageRole;
+    fn test_event_to_llm_message_user() {
+        use crate::types::message::MessageRole;
         use crate::session::SessionMessage;
 
         let event = SessionEvent::MessageV2(SessionMessage::user(
@@ -993,24 +975,24 @@ mod tests {
             crate::session::events::MessageSource::User,
         ));
 
-        let msg = event_to_chat_message(&event).unwrap();
+        let msg = event_to_llm_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::User);
         assert_eq!(msg.content.len(), 1);
     }
 
     #[test]
-    fn test_event_to_chat_message_system() {
-        use crate::providers::MessageRole;
+    fn test_event_to_llm_message_system() {
+        use crate::types::message::MessageRole;
         use crate::session::SessionMessage;
 
         let event = SessionEvent::MessageV2(SessionMessage::system("System prompt"));
 
-        let msg = event_to_chat_message(&event).unwrap();
+        let msg = event_to_llm_message(&event).unwrap();
         assert_eq!(msg.role, MessageRole::System);
     }
 
     #[test]
-    fn test_event_to_chat_message_unhandled() {
+    fn test_event_to_llm_message_unhandled() {
         use crate::session::events::{EventEnvelope, SessionCreatedEvent};
         use chrono::Utc;
 
@@ -1026,7 +1008,7 @@ mod tests {
         });
 
         // SessionCreated events should be ignored
-        assert!(event_to_chat_message(&event).is_none());
+        assert!(event_to_llm_message(&event).is_none());
     }
 
     #[test]
@@ -1150,7 +1132,7 @@ mod tests {
         let assistant = &history[0];
         assert!(matches!(
             assistant.role,
-            crate::providers::MessageRole::Assistant
+            crate::types::message::MessageRole::Assistant
         ));
         assert_eq!(
             assistant.content.len(),
@@ -1175,7 +1157,7 @@ mod tests {
 
         // Check tool result preserves tool_call_id
         let tool = &history[1];
-        assert!(matches!(tool.role, crate::providers::MessageRole::Tool));
+        assert!(matches!(tool.role, crate::types::message::MessageRole::Tool));
         assert_eq!(tool.content.len(), 1);
         if let ContentBlock::ToolResult {
             tool_call_id,
@@ -1348,22 +1330,8 @@ mod tests {
                 .unwrap();
 
         let compacted_messages = vec![
-            crate::providers::ChatMessage {
-                role: crate::providers::MessageRole::System,
-                content: vec![crate::types::ContentBlock::Text {
-                    text: "Summary message".to_string(),
-                }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            crate::providers::ChatMessage {
-                role: crate::providers::MessageRole::User,
-                content: vec![crate::types::ContentBlock::Text {
-                    text: "Recent user msg".to_string(),
-                }],
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            LlmMessage::system("Summary message"),
+            LlmMessage::user("Recent user msg"),
         ];
 
         session.update_context_cache(&compacted_messages).await.unwrap();
