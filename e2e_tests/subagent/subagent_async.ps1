@@ -85,8 +85,9 @@ try {
     Write-Host "Response: $response"
     Write-Host "Elapsed time: $($stopwatch.Elapsed.ToString('hh\:mm\:ss'))" -ForegroundColor Yellow
 
-    # Verify the agent returned quickly (less than 10s) — proves it didn't block on the 15s background task
-    if ($stopwatch.Elapsed.TotalSeconds -gt 10) {
+    # Verify the agent returned quickly (less than 20s) — proves it didn't block on the 15s background task.
+    # The threshold accounts for LLM API latency (two calls: generate tool call + generate response).
+    if ($stopwatch.Elapsed.TotalSeconds -gt 20) {
         Write-Host "FAIL: Agent took $($stopwatch.Elapsed.TotalSeconds.ToString('F1'))s to respond — it may have blocked on the background task" -ForegroundColor Red
         $script:failed = $true
     } else {

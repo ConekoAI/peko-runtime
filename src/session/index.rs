@@ -397,8 +397,6 @@ impl SessionIndex {
             .peers
             .get(peer_key)
             .map(|p| p.active_session_id.clone());
-        drop(peers); // Release borrow
-
         let Some(active_id) = active_id else {
             return Ok(None);
         };
@@ -424,8 +422,6 @@ impl SessionIndex {
             .get(peer_key)
             .map(|p| p.session_ids.clone())
             .unwrap_or_default();
-        drop(peers); // Release borrow
-
         let sessions = self.load_sessions().await?;
         Ok(session_ids
             .iter()
@@ -522,7 +518,6 @@ impl SessionIndex {
 
         let sessions = self.load_sessions().await?;
         let sessions_clone = sessions.clone();
-        drop(sessions); // Release borrow before calling internal method
         self.save_sessions_internal(&sessions_clone).await?;
         self.sessions_modified = false;
         Ok(())
@@ -536,7 +531,6 @@ impl SessionIndex {
 
         let peers = self.load_peers().await?;
         let peers_clone = peers.clone();
-        drop(peers); // Release borrow before calling internal method
         self.save_peers_internal(&peers_clone).await?;
         self.peers_modified = false;
         Ok(())
@@ -611,7 +605,6 @@ impl SessionIndex {
             // Remove from sessions
             let sessions = self.load_sessions_mut().await?;
             sessions.remove(&session_id);
-            drop(sessions); // Release borrow before setting flag
             self.sessions_modified = true;
 
             // Remove from peers
@@ -621,7 +614,6 @@ impl SessionIndex {
             }
             // Remove empty peers
             peers.peers.retain(|_, p| !p.session_ids.is_empty());
-            drop(peers); // Release borrow before setting flag
             self.peers_modified = true;
 
             // Delete transcript file
