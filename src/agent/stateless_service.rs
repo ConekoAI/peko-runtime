@@ -45,6 +45,8 @@ pub struct ExecutionRequest {
     pub timeout_secs: Option<u64>,
     /// User identifier for session isolation (defaults to "default")
     pub user: String,
+    /// Caller agent name for A2A messaging (optional)
+    pub caller_agent: Option<String>,
 }
 
 impl ExecutionRequest {
@@ -61,6 +63,7 @@ impl ExecutionRequest {
             context: None,
             timeout_secs: None,
             user: "default".to_string(),
+            caller_agent: None,
         }
     }
 
@@ -75,6 +78,20 @@ impl ExecutionRequest {
     #[must_use]
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
+        self
+    }
+
+    /// Set caller agent name for A2A messaging
+    #[must_use]
+    pub fn with_caller_agent(mut self, caller: impl Into<String>) -> Self {
+        self.caller_agent = Some(caller.into());
+        self
+    }
+
+    /// Set caller agent from Option, filtering out empty strings
+    #[must_use]
+    pub fn with_caller_agent_opt(mut self, caller: Option<String>) -> Self {
+        self.caller_agent = caller.filter(|s| !s.is_empty());
         self
     }
 }
@@ -108,6 +125,8 @@ pub struct MessageRequest {
     pub timeout_secs: Option<u64>,
     /// User identifier for session isolation (defaults to "default")
     pub user: String,
+    /// Caller agent name for A2A messaging (optional)
+    pub caller_agent: Option<String>,
 }
 
 impl MessageRequest {
@@ -121,6 +140,7 @@ impl MessageRequest {
             new_session: false,
             timeout_secs: None,
             user: "default".to_string(),
+            caller_agent: None,
         }
     }
 
@@ -149,6 +169,13 @@ impl MessageRequest {
         self
     }
 
+    /// Set team from Option (preserves None)
+    #[must_use]
+    pub fn with_team_opt(mut self, team: Option<String>) -> Self {
+        self.team = team;
+        self
+    }
+
     /// Set new session flag
     #[must_use]
     pub fn with_new_session(mut self, new: bool) -> Self {
@@ -160,6 +187,20 @@ impl MessageRequest {
     #[must_use]
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = Some(secs);
+        self
+    }
+
+    /// Set caller agent name for A2A messaging
+    #[must_use]
+    pub fn with_caller_agent(mut self, caller: impl Into<String>) -> Self {
+        self.caller_agent = Some(caller.into());
+        self
+    }
+
+    /// Set caller agent from Option, filtering out empty strings
+    #[must_use]
+    pub fn with_caller_agent_opt(mut self, caller: Option<String>) -> Self {
+        self.caller_agent = caller.filter(|s| !s.is_empty());
         self
     }
 }
@@ -248,6 +289,7 @@ pub struct ExecutionMetrics {
 }
 
 /// Stateless agent service - cold-start execution
+#[derive(Debug)]
 pub struct StatelessAgentService {
     /// Agent configuration service
     config_service: Arc<ConfigAuthorityImpl>,
@@ -362,6 +404,7 @@ impl StatelessAgentService {
             context: None,
             timeout_secs: request.timeout_secs,
             user: request.user.clone(),
+            caller_agent: request.caller_agent,
         };
 
         // Execute via stateless service
@@ -446,6 +489,7 @@ impl StatelessAgentService {
             context: None,
             timeout_secs: request.timeout_secs,
             user: request.user.clone(),
+            caller_agent: request.caller_agent,
         };
 
         // Get base session for execution
@@ -550,10 +594,20 @@ impl StatelessAgentService {
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
-        // 5. Execute agent with session and history
+        // 5. Build the prompt with optional caller annotation
+        // ADR-023 Phase 2: caller_agent is structured on ExecutionRequest;
+        // the annotation is prepended to the message so the target agent sees it.
+        let prompt = match request.caller_agent.as_deref() {
+            Some(caller) if !caller.is_empty() => {
+                format!("[Message from agent: {caller}]\n\n{}", request.message)
+            }
+            _ => request.message,
+        };
+
+        // 6. Execute agent with session and history
         // Use the new execute_with_session method that properly handles session resumption
         let execute_result = agent
-            .execute_with_session(&request.message, session.clone(), Some(history), |_event| {
+            .execute_with_session(&prompt, session.clone(), Some(history), |_event| {
                 // Events are ignored for non-streaming execution
                 // All data comes from the AgenticResult
             })
@@ -706,7 +760,13 @@ impl StatelessAgentService {
         request: ExecutionRequest,
         session: Arc<RwLock<crate::session::unified::Session>>,
     ) -> Result<crate::channels::EventStream> {
-        let prompt = self.build_prompt(&request.message, &[])?;
+        let message = match request.caller_agent.as_deref() {
+            Some(caller) if !caller.is_empty() => {
+                format!("[Message from agent: {caller}]\n\n{}", request.message)
+            }
+            _ => request.message,
+        };
+        let prompt = self.build_prompt(&message, &[])?;
 
         // Load history for the agent
         let history = self.load_session_history(session.clone()).await?;
@@ -917,6 +977,30 @@ mod tests {
         let team = service.get_team("non-existent-agent").await;
         assert!(team.is_ok());
         assert_eq!(team.unwrap(), None);
+    }
+
+    #[test]
+    fn test_message_request_caller_agent_opt_filters_empty() {
+        let req1 = MessageRequest::new("agent", "hi").with_caller_agent_opt(Some("researcher".to_string()));
+        assert_eq!(req1.caller_agent, Some("researcher".to_string()));
+
+        let req2 = MessageRequest::new("agent", "hi").with_caller_agent_opt(Some("".to_string()));
+        assert_eq!(req2.caller_agent, None);
+
+        let req3 = MessageRequest::new("agent", "hi").with_caller_agent_opt(None);
+        assert_eq!(req3.caller_agent, None);
+    }
+
+    #[test]
+    fn test_execution_request_caller_agent_opt_filters_empty() {
+        let req1 = ExecutionRequest::new("agent", "session", "hi").with_caller_agent_opt(Some("researcher".to_string()));
+        assert_eq!(req1.caller_agent, Some("researcher".to_string()));
+
+        let req2 = ExecutionRequest::new("agent", "session", "hi").with_caller_agent_opt(Some("".to_string()));
+        assert_eq!(req2.caller_agent, None);
+
+        let req3 = ExecutionRequest::new("agent", "session", "hi").with_caller_agent_opt(None);
+        assert_eq!(req3.caller_agent, None);
     }
 
     #[tokio::test]

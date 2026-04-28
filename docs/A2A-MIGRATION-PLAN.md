@@ -1,5 +1,12 @@
 # A2A and Async Tool Unification Migration Plan
 
+> **SUPERSEDED by ADR-023** (`docs/architecture/adr/ADR-023-minimal-a2a-messaging.md`)
+>
+> This document is kept for historical reference. The event-bus-centric approach described here
+> has been replaced by a minimal built-in tool (`a2a_send`) that delegates to the existing
+> `StatelessAgentService` execution path. The existing `EventBus` trait and `InMemoryBus`
+> implementation are kept but not wired into the agentic loop.
+
 ## Executive Summary
 
 Unify Pekobot's fragmented async delivery mechanisms (subagent_spawn, agent_invoke, process async) to match OpenClaw's clean single-queue architecture. This eliminates code duplication, simplifies mental models, and enables bidirectional A2A messaging.

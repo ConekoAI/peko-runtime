@@ -66,6 +66,12 @@ impl ExtensionCore {
         self.tool_registry.clone()
     }
 
+    /// Get the extension services
+    #[must_use]
+    pub fn services(&self) -> Arc<ExtensionServices> {
+        self.services.clone()
+    }
+
     /// Set the tool configuration (whitelist, etc.)
     pub async fn set_tool_config(&self, config: crate::types::agent::ExtensionConfig) {
         self.tool_registry.set_tool_config(config).await;

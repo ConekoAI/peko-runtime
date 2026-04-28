@@ -108,11 +108,26 @@ impl Agent {
             self.subagent_executor.registry().clone(),
         )));
 
-        // Add sessions_send tool for A2A messaging
-        tools.push(Arc::new(SessionsSendTool::new().with_session_context(
+        // Add a2a_send tool for agent-to-agent messaging (ADR-023)
+        if let Some(agent_service) = self.extension_core.services().agent_service() {
+            tools.push(Arc::new(
+                crate::tools::A2aSendTool::new(agent_service)
+                    .with_caller(&self.config.name),
+            ));
+        } else {
+            tracing::warn!("StatelessAgentService not available on ExtensionCore — a2a_send tool will not be registered");
+        }
+
+        // Add sessions_send tool for human-to-agent session messaging
+        let sessions_send_tool = SessionsSendTool::new().with_session_context(
             format!("agent:{}", self.config.name),
             &self.config.name,
-        )));
+        );
+        if let Some(agent_service) = self.extension_core.services().agent_service() {
+            tools.push(Arc::new(sessions_send_tool.with_agent_service(agent_service)));
+        } else {
+            tools.push(Arc::new(sessions_send_tool));
+        }
 
         // Filter based on agent config extension whitelist
         let whitelist = self.config.extension_whitelist();

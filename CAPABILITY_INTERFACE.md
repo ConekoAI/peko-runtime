@@ -67,7 +67,8 @@ These rules are enforced by the runtime and must not be violated by capability i
 
 - A tool may only access filesystem paths within its granted sandbox (see §7).
 - An agent tool call may not directly invoke another agent. Use `agent_spawn` instead.
-- `sessions_send` is for human-to-agent and tooling use only. Agent-to-agent communication within a team must use the event bus (A2A).
+- `a2a_send` is the primary tool for agent-to-agent delegation. It delegates to the same execution path as `pekobot send` and the HTTP API.
+- `sessions_send` is for human-to-agent and tooling use only.
 - Built-in agent tools (`agents_list`, `agent_info`, `agent_spawn*`) are scoped to the current team by default. Cross-team access requires an explicit capability grant.
 - Cron registrations are owned by the instance that created them and are persisted to disk (see §8).
 
@@ -645,39 +646,45 @@ Both filters are optional.
 
 ---
 
-### 3.9 `sessions_send`
+### 3.9 `a2a_send` (Agent-to-Agent Messaging)
 
 **Sync/Async:** Both
-**Purpose:** Send a message to another session. Intended for human-to-agent and tooling-to-agent communication. **Not for agent-to-agent communication within a team** — use the event bus (A2A) for that.
+**Purpose:** Send a message to another agent and receive its response. This is the primary mechanism for agent-to-agent (A2A) communication.
 
-> **Boundary rule:** An agent must not call `sessions_send` targeting another agent instance within the same team. The runtime enforces this: if the target session belongs to an agent instance in the same team as the caller, the call is rejected with `cross_agent_send_forbidden`. Agent-to-agent communication must go through the bus.
+> **ADR-023:** `a2a_send` delegates to `StatelessAgentService`, reusing the exact same execution path as `pekobot send` and the HTTP API. The target agent receives a normal user message via `execute_message()`. It does not need to know it was called by another agent.
 
 #### Arguments
 
 ```json
 {
-  "session_id": "sess_7qrstu3v",
-  "message":    "Please also check the EMEA region numbers.",
-  "async":      false,
-  "timeout_ms": 60000
+  "target_agent": "analyzer",
+  "message":      "Review this code for bugs",
+  "session_id":   "agent:analyzer:session:xyz",
+  "team":         "default"
 }
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `session_id` | string | required | Target session ID |
-| `message` | string | required | Message content |
-| `async` | boolean | `true` | If false, wait for a response turn to complete |
-| `timeout_ms` | integer | 60000 | Max wait for sync mode |
+| `target_agent` | string | required | Name of the target agent |
+| `message` | string | required | Message content to send |
+| `session_id` | string | `null` | Optional session ID to resume |
+| `team` | string | `null` | Optional team for the target agent |
+
+Reserved parameters (handled by the framework):
+| `_async` | boolean | `false` | If true, execute asynchronously and return a task receipt |
+| `_timeout` | integer | 120 (sync) / 300 (async) | Max wait in seconds |
 
 #### Sync response
 
 ```json
 {
-  "message_id": "msg_4xpwqr7n",
-  "response":   "EMEA region shows $1.1B, up 8% YoY.",
-  "session_id": "sess_7qrstu3v",
-  "duration_ms": 8200
+  "success": true,
+  "response": "I found 3 issues...",
+  "session_id": "agent:analyzer:session:xyz",
+  "iterations": 2,
+  "tool_calls": [...],
+  "duration_ms": 4200
 }
 ```
 
@@ -685,9 +692,46 @@ Both filters are optional.
 
 ```json
 {
-  "message_id":  "msg_4xpwqr7n",
-  "queued":      true,
-  "session_id":  "sess_7qrstu3v"
+  "_async_status": "queued",
+  "task_id": "a2a_send:abc123",
+  "status": "pending",
+  "task_file": "/path/to/data/async_tasks/a2a_send:abc123.json",
+  "timeout_requested": 120,
+  "callback_mode": "queue"
+}
+```
+
+---
+
+### 3.9a `sessions_send`
+
+**Sync/Async:** Both
+**Purpose:** Send a message to another session. Intended for human-to-agent and tooling-to-agent communication. **Not for agent-to-agent communication** — use `a2a_send` for that.
+
+> **Note:** The cross-team blocking rule is deprecated. Use `a2a_send` for all agent-to-agent delegation.
+
+#### Arguments
+
+```json
+{
+  "session_id": "sess_7qrstu3v",
+  "message":    "Please also check the EMEA region numbers."
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `session_id` | string | required | Target session ID |
+| `message` | string | required | Message content |
+
+#### Response
+
+```json
+{
+  "message_id": "msg_4xpwqr7n",
+  "response":   "EMEA region shows $1.1B, up 8% YoY.",
+  "session_id": "sess_7qrstu3v",
+  "duration_ms": 8200
 }
 ```
 
@@ -955,7 +999,8 @@ Response: `{ "cancelled": true, "job_id": "cron_7kxmnq" }`
 | `agent_spawn_list` | — | ✓ | Own spawns | List current session's spawns |
 | `agents_list` | — | ✓ | Team-scoped | Lists running instances in team |
 | `agent_info` | — | ✓ | Team-scoped | Detailed instance info |
-| `sessions_send` | ✓ | ✓ | Non-team only | No agent-to-agent within team |
+| `a2a_send` | ✓ | ✓ | Any agent | Agent-to-agent delegation |
+| `sessions_send` | ✓ | ✓ | Non-team only | Human-to-agent only |
 | `sessions_list` | — | ✓ | Own or team | |
 | `sessions_history` | — | ✓ | Own or team | |
 | `session_status` | — | ✓ | Current session | No args |

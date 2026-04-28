@@ -11,6 +11,7 @@
 /// Built-in tool registry for ExtensionCore integration
 pub mod builtin_registry;
 
+pub mod a2a_send;
 pub mod agent_management;
 pub mod agent_spawn;
 pub mod async_executor;
@@ -41,6 +42,7 @@ pub mod universal;
 /// to avoid code duplication and ensure consistent behavior.
 pub mod shared;
 
+pub use a2a_send::A2aSendTool;
 pub use sessions_send::SessionsSendTool;
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};

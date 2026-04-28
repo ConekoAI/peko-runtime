@@ -187,6 +187,7 @@ impl BuiltinToolRegistrar {
             "cron",
             "agent_spawn_status",
             "agent_spawn_list",
+            "a2a_send",
         ]
     }
 
@@ -197,6 +198,12 @@ impl BuiltinToolRegistrar {
         Self::all_tool_names()
             .iter()
             .any(|&n| n.to_lowercase() == name_lower)
+    }
+
+    /// Check if a tool name is an agent-specific built-in (registered per-agent)
+    #[must_use]
+    pub fn is_agent_specific_builtin(name: &str) -> bool {
+        matches!(name, "a2a_send" | "sessions_send" | "agent_spawn" | "agent_spawn_status" | "agent_spawn_list" | "session_status")
     }
 }
 

@@ -244,11 +244,18 @@ impl AppState {
             let router = AsyncExecutionRouter::with_transport(
                 crate::extensions::services::async_transport::create_local_transport(),
             );
-            let services = ExtensionServices::with_async_router(router);
+            let services = ExtensionServices::with_async_router_and_agent_service(
+                router,
+                Arc::clone(&agent_service),
+            );
             let core = Arc::new(ExtensionCore::with_services(Arc::new(services)));
             init_global_core(Arc::clone(&core));
             core
         };
+
+        // ADR-023: Ensure the agent service is set on the ExtensionCore for A2A messaging.
+        // If we reused an existing global core, it may not have the agent service yet.
+        global_core.services().set_agent_service(Arc::clone(&agent_service));
 
         // ADR-020: Initialize ToolRuntime with the global ExtensionCore so tools
         // are registered where Agent::new() can find them.

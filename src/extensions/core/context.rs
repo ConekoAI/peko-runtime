@@ -220,6 +220,9 @@ pub struct ExtensionServices {
 
     /// Async execution router
     async_router: crate::extensions::services::AsyncExecutionRouter,
+
+    /// Stateless agent service for A2A messaging (set by AppState after initialization)
+    agent_service: std::sync::RwLock<Option<Arc<crate::agent::StatelessAgentService>>>,
 }
 
 impl ExtensionServices {
@@ -227,6 +230,17 @@ impl ExtensionServices {
     #[must_use]
     pub fn new() -> Self {
         Self::with_async_router(crate::extensions::services::AsyncExecutionRouter::new())
+    }
+
+    /// Create with a custom async execution router and agent service
+    #[must_use]
+    pub fn with_async_router_and_agent_service(
+        async_router: crate::extensions::services::AsyncExecutionRouter,
+        agent_service: Arc<crate::agent::StatelessAgentService>,
+    ) -> Self {
+        let mut s = Self::with_async_router(async_router);
+        s.set_agent_service(agent_service);
+        s
     }
 
     /// Create with a custom async execution router (for custom transport)
@@ -240,6 +254,7 @@ impl ExtensionServices {
             tool_execution: crate::extensions::services::ToolExecutionService::new(),
             reserved_params: crate::extensions::services::ReservedParamsService::new(),
             async_router,
+            agent_service: std::sync::RwLock::new(None),
         }
     }
 
@@ -266,6 +281,19 @@ impl ExtensionServices {
     /// Get async execution router
     pub fn async_router(&self) -> &crate::extensions::services::AsyncExecutionRouter {
         &self.async_router
+    }
+
+    /// Set the stateless agent service (for A2A messaging)
+    pub fn set_agent_service(&self, service: Arc<crate::agent::StatelessAgentService>) {
+        if let Ok(mut guard) = self.agent_service.write() {
+            *guard = Some(service);
+        }
+    }
+
+    /// Get the stateless agent service (for A2A messaging)
+    #[must_use]
+    pub fn agent_service(&self) -> Option<Arc<crate::agent::StatelessAgentService>> {
+        self.agent_service.read().ok().and_then(|g| g.clone())
     }
 
     /// Record a hook invocation
