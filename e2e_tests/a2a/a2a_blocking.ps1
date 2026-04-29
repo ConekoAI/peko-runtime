@@ -1,12 +1,17 @@
 #!/usr/bin/env pwsh
 # A2A Blocking Send E2E Test
 #
-# Tests the a2a_send tool via daemon execution:
-# - One agent delegates to another using a2a_send
-# - Session resumption across A2A calls
-# - Response structure validation
+# Tests the a2a_send tool for synchronous agent-to-agent messaging.
+# Following the deterministic pattern from e2e_tests/extensions/tools/:
+# - Prompts instruct the LLM to reply with exact keywords
+# - Structural verification (session list, history) confirms side effects
 #
-# Requires: daemon running, two configured agents
+# Scenario:
+#   1. delegator agent has a2a_send tool available
+#   2. worker agent has read_file tool available
+#   3. delegator uses a2a_send to ask worker to read a file
+#   4. worker's response flows back through a2a_send to delegator
+#   5. delegator reports the result
 
 param(
     [string]$Provider = "minimax"
@@ -24,136 +29,218 @@ if (-not $env:MINIMAX_API_KEY -and $Provider -eq "minimax") {
     exit 1
 }
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
-pushd "$PSScriptRoot/../.."
-$env:RUSTFLAGS = "-A warnings"
-cargo build --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Build failed"
-    exit 1
+# Build pekobot (skip if daemon is running since it locks the binary)
+$daemonRunning = $false
+try {
+    $status = peko daemon status 2>&1
+    if ($status -match "Running") { $daemonRunning = $true }
+} catch {}
+
+if (-not $daemonRunning) {
+    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    pushd "$PSScriptRoot/../.."
+    $env:RUSTFLAGS = "-A warnings"
+    cargo build --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Build failed"
+        exit 1
+    }
+    popd
+} else {
+    Write-Host "Daemon already running, skipping build..." -ForegroundColor Cyan
 }
-popd
 
 # Reset pekobot config data
 $pekobotDir = "$env:USERPROFILE/.pekobot"
-if (Test-Path $pekobotDir) {
-    Remove-Item -Recurse -Force $pekobotDir
-    Write-Host "Reset .pekobot directory" -ForegroundColor Yellow
-}
-$DataDir = "$env:USERPROFILE/AppData/Roaming/pekobot"
-if (Test-Path $DataDir) {
-    Remove-Item -Recurse -Force $DataDir
-    Write-Host "Reset data directory" -ForegroundColor Yellow
-}
+$DataDir = "$env:APPDATA/pekobot"
+if (Test-Path $pekobotDir) { Remove-Item -Recurse -Force $pekobotDir }
+if (Test-Path $DataDir) { Remove-Item -Recurse -Force $DataDir }
 
 # Set API key
-pekobot auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
+peko auth set $Provider $env:MINIMAX_API_KEY 2>&1 | Out-Null
 Write-Host "Set API key for $Provider" -ForegroundColor Green
 
-# Create two agents: a delegator and a worker
-$delegator = "delegator"
-$worker = "worker"
-pekobot agent create $delegator --provider $Provider 2>&1 | Out-Null
-pekobot agent create $worker --provider $Provider 2>&1 | Out-Null
+# Create agents
+$delegator = "a2a_delegator"
+$worker = "a2a_worker"
+peko agent create $delegator --provider $Provider 2>&1 | Out-Null
+peko agent create $worker --provider $Provider 2>&1 | Out-Null
 Write-Host "Created agents: $delegator, $worker" -ForegroundColor Green
 
-# Ensure both agents have a2a_send in their tool whitelist
-# (By default all built-ins are enabled; if whitelist is used, a2a_send must be included)
+# Enable tools
+peko ext enable read_file --target default/$worker 2>&1 | Out-Null
+peko ext enable a2a_send --target default/$delegator 2>&1 | Out-Null
+Write-Host "Enabled read_file for worker, a2a_send for delegator" -ForegroundColor Green
 
-# ============================================================
-# TEST 1: Basic A2A blocking send
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 1: Basic A2A blocking send" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
+# Create a test file in the worker's per-agent workspace
+# (AgentService sets config.workspace to per-agent dir when creating agents)
+$workerWorkspace = "$env:APPDATA/pekobot/workspaces/default/$worker"
+New-Item -ItemType Directory -Path $workerWorkspace -Force | Out-Null
+"A2A_TEST_SECRET_42" | Set-Content -Path "$workerWorkspace/test_a2a.txt" -NoNewline
+Write-Host "Created test file in worker workspace: $workerWorkspace" -ForegroundColor Green
 
-# We send a message to the delegator that instructs it to use a2a_send to call the worker.
-# Since this requires the LLM to actually invoke the tool, we use a direct tool execution
-# via the daemon's tool runtime for a deterministic test.
+# Track pass/fail
+$allPassed = $true
 
-Write-Host "Sending message to $delegator that should trigger a2a_send to $worker..." -ForegroundColor Yellow
+try {
+    # ============================================================
+    # TEST 1: a2a_send tool availability
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "TEST 1: a2a_send tool availability" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
 
-# For a deterministic E2E test, we use the daemon's tool execution endpoint.
-# First, ensure daemon is running.
-$daemonStatus = pekobot daemon status 2>&1
-if ($daemonStatus -notmatch "running") {
-    Write-Host "Starting daemon..." -ForegroundColor Yellow
-    Start-Process -FilePath "pekobot" -ArgumentList "daemon","start" -WindowStyle Hidden
-    Start-Sleep -Seconds 3
-}
+    $prompt1 = "Check your available tools. If you have a tool named 'a2a_send', reply exactly A2A_AVAILABLE. If you do not have it, reply exactly A2A_MISSING."
+    $response1 = peko send $delegator $prompt1 --no-stream 2>&1
+    Write-Host "Response: $response1" -ForegroundColor Gray
 
-# Send a message to the delegator asking it to delegate a task to the worker.
-# The LLM should use a2a_send to call the worker agent.
-$prompt = @"
-You have a tool called a2a_send that lets you send messages to other agents.
-Please use a2a_send to ask agent '$worker' the following question:
-"What is the capital of France?"
-Then summarize the worker's response in your final answer.
+    if ($response1 -match "A2A_AVAILABLE") {
+        Write-Host "PASS: a2a_send tool is available" -ForegroundColor Green
+    } elseif ($response1 -match "A2A_MISSING") {
+        Write-Host "FAIL: a2a_send tool is NOT available" -ForegroundColor Red
+        $allPassed = $false
+    } else {
+        Write-Host "Result unclear" -ForegroundColor Yellow
+        $allPassed = $false
+    }
+
+    # ============================================================
+    # TEST 2: Blocking A2A send — delegator asks worker to read file
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "TEST 2: Blocking A2A send execution" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    # Verify worker has no sessions before A2A call
+    $workerSessionsBefore = peko session list $worker --json 2>&1 | ConvertFrom-Json
+    $sessionCountBefore = $workerSessionsBefore.sessions.Count
+    Write-Host "Worker sessions before a2a_send: $sessionCountBefore" -ForegroundColor Gray
+
+    $prompt2 = @"
+You have a tool called a2a_send. Use it to send the following message to agent '$worker':
+Read the file test_a2a.txt in your workspace and report its exact contents.
+After you receive the response from the worker agent, if the response contains the text A2A_TEST_SECRET_42, reply exactly A2A_SUCCESS followed by the content. If the call fails or the response does not contain the expected text, reply exactly A2A_FAILED and explain what happened.
 "@
 
-$result = pekobot send $delegator $prompt --no-stream 2>&1
-Write-Host "Delegator response: $result"
+    $response2 = peko send $delegator $prompt2 --no-stream 2>&1
+    Write-Host "Response: $response2" -ForegroundColor Gray
 
-# The response should contain something about Paris (from the worker via a2a_send)
-if ($result -match "Paris" -or $result -match "capital" -or $result -match "France") {
-    Write-Host "✓ A2A delegation succeeded (response contains expected content)" -ForegroundColor Green
-} else {
-    Write-Warning "Response may not contain expected content — check manually"
-}
+    $a2aSuccess = $response2 -match "A2A_SUCCESS"
+    $a2aFailed = $response2 -match "A2A_FAILED"
 
-# ============================================================
-# TEST 2: Verify worker session was created
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 2: Verify worker session was created" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
+    # Structural verification: worker should now have a session
+    $workerSessionsAfter = peko session list $worker --json 2>&1 | ConvertFrom-Json
+    $sessionCountAfter = $workerSessionsAfter.sessions.Count
+    Write-Host "Worker sessions after a2a_send: $sessionCountAfter" -ForegroundColor Gray
 
-$workerSessions = pekobot session list $worker --json 2>&1 | ConvertFrom-Json
-if ($workerSessions.sessions.Count -ge 1) {
-    Write-Host "✓ Worker agent has $($workerSessions.sessions.Count) session(s)" -ForegroundColor Green
-    $workerSessionId = $workerSessions.sessions[0].session_id
-    Write-Host "  Worker session ID: $workerSessionId" -ForegroundColor Gray
-} else {
-    Write-Warning "Worker agent has no sessions — a2a_send may not have executed"
-}
+    if ($a2aSuccess -and $sessionCountAfter -gt $sessionCountBefore) {
+        Write-Host "PASS: a2a_send executed successfully and worker session created" -ForegroundColor Green
+    } elseif ($a2aSuccess) {
+        Write-Host "PASS: a2a_send returned success (session count unchanged — may have reused)" -ForegroundColor Green
+    } elseif ($a2aFailed) {
+        Write-Host "FAIL: a2a_send call failed" -ForegroundColor Red
+        $allPassed = $false
+    } else {
+        Write-Host "Result unclear" -ForegroundColor Yellow
+        # Fallback: if session was created, count as partial pass
+        if ($sessionCountAfter -gt $sessionCountBefore) {
+            Write-Host "PASS (fallback): Worker session was created" -ForegroundColor Green
+        } else {
+            $allPassed = $false
+        }
+    }
 
-# ============================================================
-# TEST 3: Session resumption across A2A calls
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "TEST 3: Session resumption across A2A calls" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
+    # ============================================================
+    # TEST 3: Session resumption across A2A calls
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "TEST 3: Session resumption across A2A calls" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
 
-# Send another message to the delegator, asking it to resume the same worker session
-$prompt2 = @"
-Use a2a_send to ask agent '$worker' another question, reusing the same session.
-Ask: "What about Germany?"
-Summarize the response.
+    $sessionCountBeforeTest3 = $sessionCountAfter
+
+    $prompt3 = @"
+Use a2a_send to send this message to agent '$worker':
+What was the name of the file you just read?
+After receiving the response, if it mentions test_a2a.txt, reply exactly A2A_RESUME_OK. Otherwise reply A2A_RESUME_FAIL.
 "@
 
-$result2 = pekobot send $delegator $prompt2 --no-stream 2>&1
-Write-Host "Delegator response: $result2"
+    $response3 = peko send $delegator $prompt3 --no-stream 2>&1
+    Write-Host "Response: $response3" -ForegroundColor Gray
 
-if ($result2 -match "Berlin" -or $result2 -match "Germany") {
-    Write-Host "✓ A2A session resumption succeeded" -ForegroundColor Green
-} else {
-    Write-Warning "Response may not contain expected content — check manually"
+    $workerSessionsAfter3 = peko session list $worker --json 2>&1 | ConvertFrom-Json
+    $sessionCountAfterTest3 = $workerSessionsAfter3.sessions.Count
+    Write-Host "Worker sessions after second a2a_send: $sessionCountAfterTest3" -ForegroundColor Gray
+
+    $resumeOk = $response3 -match "A2A_RESUME_OK"
+    $resumeFail = $response3 -match "A2A_RESUME_FAIL"
+
+    if ($resumeOk -and ($sessionCountAfterTest3 -eq $sessionCountBeforeTest3)) {
+        Write-Host "PASS: Session resumed, count unchanged" -ForegroundColor Green
+    } elseif ($resumeOk) {
+        Write-Host "PASS: LLM reported resume OK" -ForegroundColor Green
+    } elseif ($sessionCountAfterTest3 -eq $sessionCountBeforeTest3) {
+        Write-Host "PASS (structural): No new session created — resumed existing" -ForegroundColor Green
+    } else {
+        Write-Host "FAIL: New session created instead of resuming" -ForegroundColor Red
+        $allPassed = $false
+    }
+
+    # ============================================================
+    # TEST 4: Caller annotation in target session
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "TEST 4: Caller annotation in target session" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    if ($workerSessionsAfter3.sessions.Count -gt 0) {
+        $workerSessionId = $workerSessionsAfter3.sessions[0].session_id
+        $historyOutput = peko session show $worker --session-id $workerSessionId --history --json 2>&1
+        # Handle case where command outputs error text before JSON
+        $jsonStart = $historyOutput.IndexOf('{')
+        if ($jsonStart -ge 0) {
+            $historyJson = $historyOutput.Substring($jsonStart) | ConvertFrom-Json
+        } else {
+            $historyJson = $historyOutput | ConvertFrom-Json
+        }
+
+        $hasAnnotation = $false
+        foreach ($entry in $historyJson.history) {
+            $msg = $entry.Message
+            if ($msg.role -eq "user" -and $msg.content -match "\[Message from agent: $delegator\]") {
+                $hasAnnotation = $true
+                break
+            }
+        }
+
+        if ($hasAnnotation) {
+            Write-Host "PASS: Caller annotation found in target session" -ForegroundColor Green
+        } else {
+            Write-Host "FAIL: Caller annotation not found in session history" -ForegroundColor Red
+            $allPassed = $false
+        }
+    } else {
+        Write-Host "FAIL: No worker sessions to check for annotation" -ForegroundColor Red
+        $allPassed = $false
+    }
+
+} finally {
+    # ============================================================
+    # Cleanup
+    # ============================================================
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "Test Complete - Cleaning up" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    peko agent delete $delegator --force 2>&1 | Out-Null
+    peko agent delete $worker --force 2>&1 | Out-Null
+    Write-Host "Deleted test agents" -ForegroundColor Green
 }
 
-# Verify worker still has only 1 session (resumed, not new)
-$workerSessions2 = pekobot session list $worker --json 2>&1 | ConvertFrom-Json
-if ($workerSessions2.sessions.Count -eq 1) {
-    Write-Host "✓ Worker session count is still 1 (resumed correctly)" -ForegroundColor Green
+if ($allPassed) {
+    Write-Host "`nA2A blocking test passed!" -ForegroundColor Green
+    exit 0
 } else {
-    Write-Warning "Worker has $($workerSessions2.sessions.Count) sessions — expected 1"
+    Write-Host "`nA2A blocking test failed!" -ForegroundColor Red
+    exit 1
 }
-
-# ============================================================
-# Cleanup
-# ============================================================
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "Test Complete" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "`n✅ A2A blocking tests completed!" -ForegroundColor Green

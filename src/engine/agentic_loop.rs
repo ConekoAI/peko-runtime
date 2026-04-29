@@ -720,6 +720,13 @@ impl AgenticLoop {
                                         AgenticEvent::AssistantDelta { text, .. } => {
                                             accumulated_text.push_str(text);
                                         }
+                                        AgenticEvent::AssistantText { text, .. } => {
+                                            accumulated_text.push_str(text);
+                                        }
+                                        #[allow(deprecated)]
+                                        AgenticEvent::Assistant { text, .. } => {
+                                            accumulated_text.push_str(text);
+                                        }
                                         AgenticEvent::Thinking { text, is_delta, .. } => {
                                             if *is_delta {
                                                 thinking_text.push_str(text);
@@ -775,6 +782,17 @@ impl AgenticLoop {
             // Finalize orchestrator and emit remaining events
             let final_events = orchestrator.finalize();
             for event in final_events {
+                // Also track text accumulation from final events (e.g., AssistantText in FinalOnly mode)
+                match &event {
+                    AgenticEvent::AssistantText { text, .. } => {
+                        accumulated_text.push_str(text);
+                    }
+                    #[allow(deprecated)]
+                    AgenticEvent::Assistant { text, .. } => {
+                        accumulated_text.push_str(text);
+                    }
+                    _ => {}
+                }
                 on_event(event);
             }
 
