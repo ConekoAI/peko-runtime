@@ -13,12 +13,8 @@ use std::sync::Arc;
 
 use crate::agent::subagent_error::SpawnError;
 use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
-use crate::agent::subagent_types::SubagentRunView;
 use crate::session::types::SpawnCleanupPolicy;
-use crate::tools::async_executor::{
-    find_run_across_all_registries, list_all_runs_across_all_registries,
-    SharedAsyncTaskRegistry, TaskMetadata,
-};
+use crate::tools::async_executor::TaskMetadata;
 use crate::tools::Tool;
 
 /// Maximum allowed spawn depth (safety limit)
@@ -221,7 +217,7 @@ impl AgentSpawnTool {
                     "status": "accepted",
                     "childSessionKey": child_session_key,
                     "runId": run_id,
-                    "note": "Subagent is running in the background. Use agent_spawn_status with the runId to check progress.",
+                    "note": "Subagent is running in the background. Use task_status with the runId to check progress.",
                     "label": label,
                     "isolated": isolated,
                     "timeout_seconds": timeout_seconds,
@@ -365,7 +361,7 @@ impl Tool for AgentSpawnTool {
 
 Default mode (blocking): The parent waits for the subagent to complete its agentic loop and returns the result inline.
 
-Async mode: Use `_async: true` to spawn the subagent in the background. A receipt is returned immediately. Use `agent_spawn_status` with the runId to check progress.
+Async mode: Use `_async: true` to spawn the subagent in the background. A receipt is returned immediately. Use `task_status` with the runId to check progress.
 
 Parameters:
 - task: Description of the task to execute (required)
@@ -480,215 +476,6 @@ Examples:
             )
             .await
         }
-    }
-}
-
-/// Tool for checking subagent run status
-///
-/// Allows checking the status of a previously spawned subagent.
-pub struct AgentSpawnStatusTool {
-    /// Optional bound registry for per-agent usage.
-    /// When `None`, the tool searches across all agent registries (global mode).
-    registry: Option<SharedAsyncTaskRegistry>,
-}
-
-impl AgentSpawnStatusTool {
-    /// Create a status tool bound to a specific agent's registry.
-    #[must_use]
-    pub fn with_registry(registry: SharedAsyncTaskRegistry) -> Self {
-        Self {
-            registry: Some(registry),
-        }
-    }
-
-    /// Create a global status tool that searches across all agent registries.
-    #[must_use]
-    pub fn global() -> Self {
-        Self { registry: None }
-    }
-
-    /// Look up a run by ID, either in the bound registry or across all registries.
-    async fn lookup_run(&self, run_id: &str) -> Option<SubagentRunView> {
-        let run_id = run_id.to_string();
-        match &self.registry {
-            Some(registry) => {
-                let reg = registry.read().await;
-                reg.get(&run_id).and_then(SubagentRunView::from_entry)
-            }
-            None => {
-                let entry = find_run_across_all_registries(&run_id).await?;
-                SubagentRunView::from_entry(&entry)
-            }
-        }
-    }
-}
-
-#[async_trait]
-impl Tool for AgentSpawnStatusTool {
-    fn name(&self) -> &'static str {
-        "agent_spawn_status"
-    }
-
-    fn description(&self) -> String {
-        r"Check the status of a previously spawned subagent.
-
-Parameters:
-- run_id: The run ID returned by agent_spawn (required)
-
-Returns the current status and result if complete."
-            .to_string()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "run_id": {
-                    "type": "string",
-                    "description": "The run ID returned by agent_spawn (required)"
-                }
-            },
-            "required": ["run_id"]
-        })
-    }
-
-    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let run_id = params
-            .get("run_id")
-            .and_then(|r| r.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing required 'run_id' parameter"))?;
-
-        match self.lookup_run(run_id).await {
-            Some(run) => {
-                let status_str = run.status.as_str();
-                let is_terminal = run.status.is_terminal();
-
-                let mut response = json!({
-                    "run_id": run_id,
-                    "status": status_str,
-                    "is_terminal": is_terminal,
-                    "child_session_key": run.child_session_key,
-                    "parent_session_key": run.parent_session_key,
-                    "task": run.task,
-                    "label": run.label,
-                    "depth": run.depth,
-                    "started_at": run.started_at.to_rfc3339(),
-                });
-
-                // Add result if terminal
-                if let Some(ref result) = run.result {
-                    if let Some(obj) = response.as_object_mut() {
-                        obj.insert("output".to_string(), json!(result.output));
-                        obj.insert("error".to_string(), json!(result.error));
-                        obj.insert(
-                            "completed_at".to_string(),
-                            json!(result.completed_at.to_rfc3339()),
-                        );
-                    }
-                }
-
-                // Add duration
-                if let Some(duration) = run.duration() {
-                    if let Some(obj) = response.as_object_mut() {
-                        obj.insert(
-                            "duration_seconds".to_string(),
-                            json!(duration.num_seconds()),
-                        );
-                    }
-                }
-
-                Ok(response)
-            }
-            None => Ok(json!({
-                "error": "Run not found",
-                "run_id": run_id
-            })),
-        }
-    }
-}
-
-/// Tool for listing active subagent runs
-///
-/// Shows all subagents spawned from the current session.
-pub struct AgentSpawnListTool {
-    /// Optional bound registry for per-agent usage.
-    /// When `None`, the tool lists runs across all agent registries (global mode).
-    registry: Option<SharedAsyncTaskRegistry>,
-}
-
-impl AgentSpawnListTool {
-    /// Create a list tool bound to a specific agent's registry.
-    #[must_use]
-    pub fn with_registry(registry: SharedAsyncTaskRegistry) -> Self {
-        Self {
-            registry: Some(registry),
-        }
-    }
-
-    /// Create a global list tool that searches across all agent registries.
-    #[must_use]
-    pub fn global() -> Self {
-        Self { registry: None }
-    }
-
-    /// List runs, either from the bound registry or across all registries.
-    async fn list_runs(&self) -> Vec<SubagentRunView> {
-        let entries = match &self.registry {
-            Some(registry) => {
-                let reg = registry.read().await;
-                reg.list_tasks(None)
-                    .into_iter()
-                    .filter(|e| matches!(e.metadata, TaskMetadata::Subagent(_)))
-                    .collect()
-            }
-            None => list_all_runs_across_all_registries().await,
-        };
-
-        entries
-            .into_iter()
-            .filter_map(|e| SubagentRunView::from_entry(&e))
-            .collect()
-    }
-}
-
-#[async_trait]
-impl Tool for AgentSpawnListTool {
-    fn name(&self) -> &'static str {
-        "agent_spawn_list"
-    }
-
-    fn description(&self) -> String {
-        "List all active subagent runs for the current session.".to_string()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {}
-        })
-    }
-
-    async fn execute(&self, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let runs = self.list_runs().await;
-        let run_jsons: Vec<_> = runs
-            .into_iter()
-            .map(|run| {
-                json!({
-                    "run_id": run.run_id,
-                    "status": run.status.as_str(),
-                    "task": run.task,
-                    "label": run.label,
-                    "depth": run.depth,
-                    "started_at": run.started_at.to_rfc3339(),
-                })
-            })
-            .collect();
-
-        Ok(json!({
-            "total": run_jsons.len(),
-            "active": run_jsons.iter().filter(|r| !r["status"].as_str().unwrap_or("").eq("completed") && !r["status"].as_str().unwrap_or("").eq("failed") && !r["status"].as_str().unwrap_or("").eq("cancelled") && !r["status"].as_str().unwrap_or("").eq("timed_out")).count(),
-            "runs": run_jsons
-        }))
     }
 }
 

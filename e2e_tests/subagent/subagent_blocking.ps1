@@ -174,7 +174,7 @@ try {
     # Use a task that requires a tool (read_file) to ensure the subagent produces output.
     # Pure text questions may return empty output due to LLM behavior in subagent context.
     $inlineFile = "inline_test.txt"
-    $prompt4 = 'First use write_file to create ' + $inlineFile + ' with content INLINE_RESULT_OK. Then use agent_spawn to ask a subagent to use read_file to read ' + $inlineFile + ' and return the content. You (the parent) should receive the file content directly as the result of agent_spawn. If the result contains INLINE_RESULT_OK, respond with INLINE_SUCCESS. If you get a receipt with run_id instead of the actual content, respond with INLINE_RECEIPT. If something else goes wrong, respond with INLINE_FAILED.'
+    $prompt4 = 'First use write_file to create ' + $inlineFile + ' with content INLINE_RESULT_OK. Then use agent_spawn in default blocking mode (do NOT add _async: true) to ask a subagent to use read_file to read ' + $inlineFile + ' and return the content. You (the parent) should receive the file content directly as the result of agent_spawn. If the result contains INLINE_RESULT_OK, respond with INLINE_SUCCESS. If you get a receipt with run_id instead of the actual content, respond with INLINE_RECEIPT. If something else goes wrong, respond with INLINE_FAILED.'
 
     Write-Host "Sending inline-result test..." -ForegroundColor Yellow
     $response4 = peko send $parentAgent $prompt4 --no-stream 2>&1

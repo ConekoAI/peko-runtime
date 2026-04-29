@@ -3,6 +3,7 @@
 use super::event_bus::AsyncTaskCompletionEvent;
 use super::types::{AsyncTaskId, AsyncTaskStatus, AsyncToolConfig, WaitResult};
 use crate::common::registry::SimpleRegistry;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -464,6 +465,60 @@ impl AsyncTaskRegistry {
             tracing::info!("Cleaned up {} old subagent runs from registry", count);
         }
         count
+    }
+}
+
+/// A generic, serializable view of any async task entry.
+///
+/// This is NOT stored — it is constructed on demand from the unified
+/// registry's `AsyncTaskEntry`. It works for ALL task types regardless
+/// of `TaskMetadata` variant.
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskView {
+    pub task_id: String,
+    pub tool_name: String,
+    pub status: AsyncTaskStatus,
+    pub parent_session_key: String,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub result: Option<Value>,
+    pub label: Option<String>,
+    pub metadata_type: String,
+}
+
+impl TaskView {
+    /// Project an `AsyncTaskEntry` into a universal `TaskView`.
+    #[must_use]
+    pub fn from_entry(entry: &AsyncTaskEntry) -> Self {
+        let metadata_type = match &entry.metadata {
+            TaskMetadata::None => "none",
+            TaskMetadata::Subagent(_) => "subagent",
+        };
+
+        Self {
+            task_id: entry.task_id.clone(),
+            tool_name: entry.tool_name.clone(),
+            status: entry.status.clone(),
+            parent_session_key: entry.parent_session_key.clone(),
+            created_at: entry.created_at,
+            completed_at: entry.completed_at,
+            result: entry.result.clone(),
+            label: entry.config.label.clone(),
+            metadata_type: metadata_type.to_string(),
+        }
+    }
+
+    /// Get duration of the task
+    #[must_use]
+    pub fn duration(&self) -> Option<chrono::Duration> {
+        let end = self.completed_at.unwrap_or_else(Utc::now);
+        Some(end.signed_duration_since(self.created_at))
+    }
+
+    /// Check if status is terminal
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.status.is_terminal()
     }
 }
 

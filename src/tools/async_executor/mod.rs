@@ -23,7 +23,7 @@ pub use executor::AsyncExecutor;
 pub use queue::{AsyncResultQueue, AsyncResultQueueManager, SharedAsyncResultQueueManager};
 pub use registry::{
     AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, SubagentMetadata, SubagentResult,
-    TaskMetadata, find_run_across_all_registries, find_task_across_all_registries,
+    TaskMetadata, TaskView, find_run_across_all_registries, find_task_across_all_registries,
     get_or_create_registry_for_agent, list_all_runs_across_all_registries,
     list_all_tasks_across_all_registries,
 };

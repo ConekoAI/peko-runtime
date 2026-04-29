@@ -12,9 +12,8 @@
 use crate::extensions::adapters::BuiltinToolAdapter;
 use crate::extensions::core::ExtensionCore;
 use crate::tools::{
-    AgentSpawnListTool, AgentSpawnStatusTool, CronTool, GlobTool, GrepTool, ReadFileTool,
-    SessionStatusTool, SessionsHistoryTool, SessionsListTool, ShellTool, StrReplaceFileTool,
-    WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool, SessionStatusTool, SessionsHistoryTool,
+    SessionsListTool, ShellTool, StrReplaceFileTool, TaskListTool, TaskStatusTool, WriteFileTool,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -35,8 +34,8 @@ pub struct BuiltinToolRegistrarConfig {
     pub enable_session_tools: bool,
     /// Enable cron tool
     pub enable_cron: bool,
-    /// Enable subagent spawn status/list tools
-    pub enable_subagent_tools: bool,
+    /// Enable universal task management tools (task_status, task_list)
+    pub enable_task_management: bool,
     /// Path to cron database
     pub cron_db_path: Option<PathBuf>,
     /// Instance ID for cron persistence
@@ -54,7 +53,7 @@ impl Default for BuiltinToolRegistrarConfig {
             enable_shell: true,
             enable_session_tools: true,
             enable_cron: true,
-            enable_subagent_tools: true,
+            enable_task_management: true,
             cron_db_path: None,
             instance_id: None,
             disabled_tools: Vec::new(),
@@ -153,17 +152,17 @@ impl BuiltinToolRegistrar {
             BuiltinToolAdapter::register_tool(core, tool).await?;
         }
 
-        // Subagent spawn status and list tools (global registrations)
+        // Universal task management tools (global registrations)
         // These are registered globally so they're available even before an agent
         // is created. They search across all per-agent registries at runtime.
-        if config.enable_subagent_tools {
-            if !disabled_set.contains("agent_spawn_status") {
-                let tool = Arc::new(AgentSpawnStatusTool::global());
+        if config.enable_task_management {
+            if !disabled_set.contains("task_status") {
+                let tool = Arc::new(TaskStatusTool::global());
                 BuiltinToolAdapter::register_tool(core, tool).await?;
             }
 
-            if !disabled_set.contains("agent_spawn_list") {
-                let tool = Arc::new(AgentSpawnListTool::global());
+            if !disabled_set.contains("task_list") {
+                let tool = Arc::new(TaskListTool::global());
                 BuiltinToolAdapter::register_tool(core, tool).await?;
             }
         }
@@ -185,8 +184,8 @@ impl BuiltinToolRegistrar {
             "sessions_history",
             "session_status",
             "cron",
-            "agent_spawn_status",
-            "agent_spawn_list",
+            "task_status",
+            "task_list",
             "a2a_send",
         ]
     }
@@ -203,7 +202,7 @@ impl BuiltinToolRegistrar {
     /// Check if a tool name is an agent-specific built-in (registered per-agent)
     #[must_use]
     pub fn is_agent_specific_builtin(name: &str) -> bool {
-        matches!(name, "a2a_send" | "sessions_send" | "agent_spawn" | "agent_spawn_status" | "agent_spawn_list" | "session_status")
+        matches!(name, "a2a_send" | "sessions_send" | "agent_spawn" | "task_status" | "task_list" | "session_status")
     }
 }
 

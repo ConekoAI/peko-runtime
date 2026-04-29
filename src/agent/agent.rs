@@ -68,8 +68,8 @@ impl Agent {
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::session_introspection::SessionIntrospector;
         use crate::tools::{
-            AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool, SessionStatusTool,
-            SessionsSendTool, Tool,
+            AgentSpawnTool, SessionStatusTool, SessionsSendTool, TaskListTool, TaskStatusTool,
+            Tool,
         };
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
@@ -100,11 +100,11 @@ impl Agent {
             Box::new(self.session_key_provider.clone()),
         )));
 
-        // Add spawn status and list tools (bound to this agent's shared registry)
-        tools.push(Arc::new(AgentSpawnStatusTool::with_registry(
+        // Add universal task management tools (bound to this agent's shared registry)
+        tools.push(Arc::new(TaskStatusTool::with_registry(
             self.subagent_executor.registry().clone(),
         )));
-        tools.push(Arc::new(AgentSpawnListTool::with_registry(
+        tools.push(Arc::new(TaskListTool::with_registry(
             self.subagent_executor.registry().clone(),
         )));
 

@@ -537,6 +537,8 @@ mod tests {
         assert!(tool_runtime.has_tool("glob").await, "glob tool not registered");
         assert!(tool_runtime.has_tool("grep").await, "grep tool not registered");
         assert!(tool_runtime.has_tool("str_replace_file").await, "str_replace_file tool not registered");
+        assert!(tool_runtime.has_tool("task_status").await, "task_status tool not registered");
+        assert!(tool_runtime.has_tool("task_list").await, "task_list tool not registered");
 
         // ExtensionCore should list the tools
         let core = tool_runtime.extension_core();

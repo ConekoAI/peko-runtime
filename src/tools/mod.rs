@@ -15,6 +15,7 @@ pub mod a2a_send;
 pub mod agent_management;
 pub mod agent_spawn;
 pub mod async_executor;
+pub mod task_management;
 pub mod context;
 pub mod cron_tool;
 pub mod factory;
@@ -46,7 +47,8 @@ pub use a2a_send::A2aSendTool;
 pub use sessions_send::SessionsSendTool;
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
-pub use agent_spawn::{AgentSpawnListTool, AgentSpawnStatusTool, AgentSpawnTool};
+pub use agent_spawn::AgentSpawnTool;
+pub use task_management::{TaskListTool, TaskStatusTool};
 pub use context::{AbortSignal, ToolContext, ToolWithContext};
 pub use cron_tool::CronTool;
 pub use factory::{McpDiscoveryResult, McpFactoryConfig, ToolFactory, ToolFactoryConfig};

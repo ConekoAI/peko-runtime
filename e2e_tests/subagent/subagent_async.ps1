@@ -76,7 +76,7 @@ try {
     Write-Host "========================================" -ForegroundColor Cyan
 
     $asyncFile = "async_subagent_result.txt"
-    $prompt = 'Use agent_spawn with _async=true to delegate this task to a subagent: Use the shell tool to run: Start-Sleep 15; echo ASYNC_TASK_COMPLETE > ' + $asyncFile + '. The agent_spawn tool should return a JSON receipt immediately (not wait 15 seconds). Read that receipt carefully. It should contain a task_file path. If you got a receipt with a task_file path, respond with ASYNC_RECEIPT_OK and include the task_file path. If you got the result immediately (no receipt), respond with ASYNC_NO_RECEIPT. If the tool failed or is unavailable, respond with ASYNC_FAILED and explain.'
+    $prompt = 'Use agent_spawn with _async=true to delegate this task to a subagent: Use the shell tool to run: Start-Sleep 15; echo ASYNC_TASK_COMPLETE > ' + $asyncFile + '. The agent_spawn tool should return a JSON receipt immediately (not wait 15 seconds). Read that receipt carefully. It should contain a task_file path and a runId (task_id). If you got a receipt with a task_file path, respond with ASYNC_RECEIPT_OK and include the task_file path. If you got the result immediately (no receipt), respond with ASYNC_NO_RECEIPT. If the tool failed or is unavailable, respond with ASYNC_FAILED and explain.'
 
     Write-Host "Sending async spawn request..." -ForegroundColor Yellow
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -120,7 +120,7 @@ try {
     Write-Host "Waiting for async task to complete (15s)..." -ForegroundColor Yellow
     Start-Sleep 15
 
-    $prompt2 = 'Check the task_file path from the async receipt you received earlier. Read the task_file using read_file or shell to see if the subagent task is complete. If the task_file shows status completed and the result contains ASYNC_TASK_COMPLETE, respond with POLLING_SUCCESS and include the result. If the task_file shows status running or pending, respond with POLLING_STILL_RUNNING. If the task_file shows failed or timed_out, respond with POLLING_FAILED and explain. If you cannot find or read the task_file, respond with POLLING_ERROR.'
+    $prompt2 = 'Check the task_file path from the async receipt you received earlier. Read the task_file using read_file or shell to see if the subagent task is complete. Alternatively, you can use task_status with the runId (task_id) to check progress. If the task shows status completed and the result contains ASYNC_TASK_COMPLETE, respond with POLLING_SUCCESS and include the result. If the task is still running or pending, respond with POLLING_STILL_RUNNING. If the task shows failed or timed_out, respond with POLLING_FAILED and explain. If you cannot find or read the task_file, respond with POLLING_ERROR.'
 
     Write-Host "Sending polling request..." -ForegroundColor Yellow
     $response2 = peko send $parentAgent $prompt2 --no-stream 2>&1
