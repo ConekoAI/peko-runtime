@@ -441,6 +441,24 @@ impl AsyncTaskRegistry {
         })
     }
 
+    /// Cancel a task by ID, returning structured result.
+    pub fn cancel(&mut self, task_id: &AsyncTaskId) -> CancelResult {
+        match self.tasks.get_mut(task_id) {
+            Some(entry) => {
+                let previous = entry.status.as_str().to_string();
+                if entry.status.is_terminal() {
+                    CancelResult::AlreadyTerminal { previous }
+                } else {
+                    entry.status = AsyncTaskStatus::Cancelled;
+                    entry.completed_at = Some(chrono::Utc::now());
+                    entry.notify_completion();
+                    CancelResult::Success { previous }
+                }
+            }
+            None => CancelResult::NotFound,
+        }
+    }
+
     /// Clean up terminal subagent runs older than a given duration
     pub fn cleanup_old_subagents(&mut self, max_age: chrono::Duration) -> usize {
         let now = chrono::Utc::now();
@@ -522,6 +540,17 @@ impl TaskView {
     }
 }
 
+/// Result of attempting to cancel a task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelResult {
+    /// Task was found and cancelled.
+    Success { previous: String },
+    /// Task was found but already in a terminal state.
+    AlreadyTerminal { previous: String },
+    /// Task was not found in the registry.
+    NotFound,
+}
+
 pub type SharedAsyncTaskRegistry = Arc<tokio::sync::RwLock<AsyncTaskRegistry>>;
 
 // ================================================================================
@@ -585,6 +614,23 @@ pub async fn list_all_tasks_across_all_registries() -> Vec<AsyncTaskEntry> {
 /// This is a convenience wrapper for subagent-specific lookups.
 pub async fn find_run_across_all_registries(run_id: &str) -> Option<AsyncTaskEntry> {
     find_task_across_all_registries(run_id).await
+}
+
+/// Cancel a task by ID across all agent registries.
+pub async fn cancel_task_across_all_registries(task_id: &str) -> CancelResult {
+    let task_id = task_id.to_string();
+    let registries: Vec<SharedAsyncTaskRegistry> = {
+        let map = global_registries().lock().unwrap();
+        map.values().cloned().collect()
+    };
+    for registry in registries {
+        let mut reg = registry.write().await;
+        match reg.cancel(&task_id) {
+            CancelResult::NotFound => continue,
+            other => return other,
+        }
+    }
+    CancelResult::NotFound
 }
 
 /// List all subagent runs across all agent registries.

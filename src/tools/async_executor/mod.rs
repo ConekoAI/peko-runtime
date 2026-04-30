@@ -22,8 +22,9 @@ pub use event_bus::{AsyncTaskCompletionEvent, AsyncTaskEventBus};
 pub use executor::AsyncExecutor;
 pub use queue::{AsyncResultQueue, AsyncResultQueueManager, SharedAsyncResultQueueManager};
 pub use registry::{
-    AsyncTaskEntry, AsyncTaskRegistry, SharedAsyncTaskRegistry, SubagentMetadata, SubagentResult,
-    TaskMetadata, TaskView, find_run_across_all_registries, find_task_across_all_registries,
+    AsyncTaskEntry, AsyncTaskRegistry, CancelResult, SharedAsyncTaskRegistry, SubagentMetadata,
+    SubagentResult, TaskMetadata, TaskView, cancel_task_across_all_registries,
+    find_run_across_all_registries, find_task_across_all_registries,
     get_or_create_registry_for_agent, list_all_runs_across_all_registries,
     list_all_tasks_across_all_registries,
 };

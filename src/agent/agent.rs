@@ -99,8 +99,8 @@ impl Agent {
             Box::new(self.session_key_provider.clone()),
         )));
 
-        // Note: task_status and task_list are registered globally by the daemon's
-        // ToolRuntime::register_builtins() and search across all registries at runtime.
+        // Note: `task` tool (status/list/cancel) is registered globally by the daemon's
+        // ToolRuntime::register_builtins() and searches across all registries at runtime.
         // We do NOT register per-agent versions here to avoid shadowing the global
         // registrations and breaking visibility of router async tasks.
 

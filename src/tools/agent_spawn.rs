@@ -217,7 +217,7 @@ impl AgentSpawnTool {
                     "status": "accepted",
                     "childSessionKey": child_session_key,
                     "runId": run_id,
-                    "note": "Subagent is running in the background. Use task_status with the runId to check progress.",
+                    "note": "Subagent is running in the background. Use the task tool with action=\"status\" and the runId to check progress.",
                     "label": label,
                     "isolated": isolated,
                     "timeout_seconds": timeout_seconds,
@@ -361,7 +361,7 @@ impl Tool for AgentSpawnTool {
 
 Default mode (blocking): The parent waits for the subagent to complete its agentic loop and returns the result inline.
 
-Async mode: Use `_async: true` to spawn the subagent in the background. A receipt is returned immediately. Use `task_status` with the runId to check progress.
+Async mode: Use `_async: true` to spawn the subagent in the background. A receipt is returned immediately. Use the `task` tool with action="status" and the runId to check progress.
 
 Parameters:
 - task: Description of the task to execute (required)

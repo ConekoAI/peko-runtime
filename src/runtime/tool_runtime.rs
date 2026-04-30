@@ -9,8 +9,8 @@ use crate::extensions::core::{ExtensionCore, ExtensionServices};
 use crate::extensions::types::{tool_result_from_hook, HookInput};
 use crate::extensions::HookPoint;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, TaskListTool,
-    TaskStatusTool, Tool, WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool, ShellTool, StrReplaceFileTool, TaskTool, Tool,
+    WriteFileTool,
 };
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -153,8 +153,7 @@ impl ToolRuntime {
             Arc::new(GrepTool::new().with_workspace(workspace.clone())),
             Arc::new(StrReplaceFileTool::new().with_workspace(workspace.clone())),
             Arc::new(CronTool::new()),
-            Arc::new(TaskStatusTool::global()),
-            Arc::new(TaskListTool::global()),
+            Arc::new(TaskTool::global()),
         ];
 
         // Enable all built-in tools by default in the daemon context

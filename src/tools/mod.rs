@@ -48,7 +48,7 @@ pub use sessions_send::SessionsSendTool;
 
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
 pub use agent_spawn::AgentSpawnTool;
-pub use task_management::{TaskListTool, TaskStatusTool};
+pub use task_management::TaskTool;
 pub use context::{AbortSignal, ToolContext, ToolWithContext};
 pub use cron_tool::CronTool;
 pub use factory::{McpDiscoveryResult, McpFactoryConfig, ToolFactory, ToolFactoryConfig};

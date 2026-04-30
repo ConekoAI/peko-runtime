@@ -13,7 +13,7 @@ use crate::extensions::adapters::BuiltinToolAdapter;
 use crate::extensions::core::ExtensionCore;
 use crate::tools::{
     CronTool, GlobTool, GrepTool, ReadFileTool, SessionStatusTool, SessionsHistoryTool,
-    SessionsListTool, ShellTool, StrReplaceFileTool, TaskListTool, TaskStatusTool, WriteFileTool,
+    SessionsListTool, ShellTool, StrReplaceFileTool, TaskTool, WriteFileTool,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -152,19 +152,12 @@ impl BuiltinToolRegistrar {
             BuiltinToolAdapter::register_tool(core, tool).await?;
         }
 
-        // Universal task management tools (global registrations)
-        // These are registered globally so they're available even before an agent
-        // is created. They search across all per-agent registries at runtime.
-        if config.enable_task_management {
-            if !disabled_set.contains("task_status") {
-                let tool = Arc::new(TaskStatusTool::global());
-                BuiltinToolAdapter::register_tool(core, tool).await?;
-            }
-
-            if !disabled_set.contains("task_list") {
-                let tool = Arc::new(TaskListTool::global());
-                BuiltinToolAdapter::register_tool(core, tool).await?;
-            }
+        // Universal task management tool (global registration)
+        // Registered globally so it's available even before an agent is created.
+        // It searches across all per-agent registries at runtime.
+        if config.enable_task_management && !disabled_set.contains("task") {
+            let tool = Arc::new(TaskTool::global());
+            BuiltinToolAdapter::register_tool(core, tool).await?;
         }
 
         Ok(())
@@ -184,8 +177,7 @@ impl BuiltinToolRegistrar {
             "sessions_history",
             "session_status",
             "cron",
-            "task_status",
-            "task_list",
+            "task",
             "a2a_send",
         ]
     }

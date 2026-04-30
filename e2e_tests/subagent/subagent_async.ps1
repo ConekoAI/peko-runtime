@@ -120,7 +120,7 @@ try {
     Write-Host "Waiting for async task to complete (15s)..." -ForegroundColor Yellow
     Start-Sleep 15
 
-    $prompt2 = 'Check the task_file path from the async receipt you received earlier. Read the task_file using read_file or shell to see if the subagent task is complete. Alternatively, you can use task_status with the runId (task_id) to check progress. If the task shows status completed and the result contains ASYNC_TASK_COMPLETE, respond with POLLING_SUCCESS and include the result. If the task is still running or pending, respond with POLLING_STILL_RUNNING. If the task shows failed or timed_out, respond with POLLING_FAILED and explain. If you cannot find or read the task_file, respond with POLLING_ERROR.'
+    $prompt2 = 'Check the task_file path from the async receipt you received earlier. Read the task_file using read_file or shell to see if the subagent task is complete. Alternatively, you can use the task tool with action="status" and the runId (task_id) to check progress. If the task shows status completed and the result contains ASYNC_TASK_COMPLETE, respond with POLLING_SUCCESS and include the result. If the task is still running or pending, respond with POLLING_STILL_RUNNING. If the task shows failed or timed_out, respond with POLLING_FAILED and explain. If you cannot find or read the task_file, respond with POLLING_ERROR.'
 
     Write-Host "Sending polling request..." -ForegroundColor Yellow
     $response2 = peko send $parentAgent $prompt2 --no-stream 2>&1
