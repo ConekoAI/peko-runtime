@@ -68,8 +68,7 @@ impl Agent {
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::session_introspection::SessionIntrospector;
         use crate::tools::{
-            AgentSpawnTool, SessionStatusTool, SessionsSendTool, TaskListTool, TaskStatusTool,
-            Tool,
+            AgentSpawnTool, SessionStatusTool, SessionsSendTool, Tool,
         };
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
@@ -100,13 +99,10 @@ impl Agent {
             Box::new(self.session_key_provider.clone()),
         )));
 
-        // Add universal task management tools (bound to this agent's shared registry)
-        tools.push(Arc::new(TaskStatusTool::with_registry(
-            self.subagent_executor.registry().clone(),
-        )));
-        tools.push(Arc::new(TaskListTool::with_registry(
-            self.subagent_executor.registry().clone(),
-        )));
+        // Note: task_status and task_list are registered globally by the daemon's
+        // ToolRuntime::register_builtins() and search across all registries at runtime.
+        // We do NOT register per-agent versions here to avoid shadowing the global
+        // registrations and breaking visibility of router async tasks.
 
         // Add a2a_send tool for agent-to-agent messaging (ADR-023)
         if let Some(agent_service) = self.extension_core.services().agent_service() {

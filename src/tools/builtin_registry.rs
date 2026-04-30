@@ -202,7 +202,7 @@ impl BuiltinToolRegistrar {
     /// Check if a tool name is an agent-specific built-in (registered per-agent)
     #[must_use]
     pub fn is_agent_specific_builtin(name: &str) -> bool {
-        matches!(name, "a2a_send" | "sessions_send" | "agent_spawn" | "task_status" | "task_list" | "session_status")
+        matches!(name, "a2a_send" | "sessions_send" | "agent_spawn" | "session_status")
     }
 }
 
