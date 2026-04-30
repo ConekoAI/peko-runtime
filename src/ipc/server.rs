@@ -218,6 +218,7 @@ impl IpcServer {
                 session_id,
                 new_session,
                 stream,
+                user,
             } => {
                 Self::handle_execute(
                     request_id,
@@ -227,6 +228,7 @@ impl IpcServer {
                     session_id,
                     new_session,
                     stream,
+                    user,
                     state,
                     socket,
                     addr,
@@ -399,6 +401,7 @@ impl IpcServer {
         session_id: Option<String>,
         new_session: bool,
         stream_enabled: bool,
+        user: String,
         state: AppState,
         socket: ServerSocket,
         addr: Option<std::net::SocketAddr>,
@@ -407,9 +410,10 @@ impl IpcServer {
         use crate::engine::{AgenticEvent, LifecyclePhase};
 
         tracing::info!(
-            "IPC handle_execute started: request_id={}, agent={}, stream={}",
+            "IPC handle_execute started: request_id={}, agent={}, user={}, stream={}",
             request_id,
             agent,
+            user,
             stream_enabled
         );
 
@@ -418,7 +422,8 @@ impl IpcServer {
         let request = MessageRequest::new(&agent, message)
             .with_team(&team)
             .with_session_opt(session_id)
-            .with_new_session(new_session);
+            .with_new_session(new_session)
+            .with_user(&user);
 
         // Start the agentic loop — wrap in catch_unwind-like error handling
         // so the client always gets a response even if execution fails

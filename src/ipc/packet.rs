@@ -41,6 +41,8 @@ pub enum RequestPacket {
         new_session: bool,
         /// Enable streaming response
         stream: bool,
+        /// User identifier for session isolation
+        user: String,
     },
 
     /// Spawn an async background task
@@ -257,6 +259,7 @@ mod tests {
             session_id: None,
             new_session: false,
             stream: true,
+            user: "default".to_string(),
         };
 
         let bytes = req.to_bytes().unwrap();

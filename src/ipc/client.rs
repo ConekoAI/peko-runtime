@@ -90,13 +90,15 @@ impl DaemonClient {
         session_id: Option<String>,
         new_session: bool,
         stream: bool,
+        user: impl Into<String>,
     ) -> anyhow::Result<PacketStream> {
         let request_id = self.next_id();
         let agent_str: String = agent.into();
         let team_str: String = team.into();
+        let user_str: String = user.into();
         debug!(
-            "Execute request {}: agent={} team={} stream={}",
-            request_id, agent_str, team_str, stream
+            "Execute request {}: agent={} team={} user={} stream={}",
+            request_id, agent_str, team_str, user_str, stream
         );
 
         let packet = RequestPacket::Execute {
@@ -107,6 +109,7 @@ impl DaemonClient {
             session_id,
             new_session,
             stream,
+            user: user_str,
         };
 
         self.send_request(packet).await

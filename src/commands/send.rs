@@ -88,6 +88,7 @@ pub async fn handle_send(args: SendArgs, _paths: &GlobalPaths, _json: bool) -> R
             args.session.clone(),
             args.new,
             !args.no_stream,
+            _paths.user(),
         )
         .await?;
 
