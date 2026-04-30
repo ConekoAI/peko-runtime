@@ -364,7 +364,8 @@ Returns structured data appropriate to the action."
                 let session_key = params
                     .get("session_key")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("'history' action requires 'session_key'"))?;
+                    .unwrap_or(&self.registry.current_session_key())
+                    .to_string();
                 let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
                 let include_tools = params
                     .get("include_tools")
@@ -372,9 +373,9 @@ Returns structured data appropriate to the action."
                     .unwrap_or(true);
 
                 let messages = self
-                    .get_history(session_key, limit, include_tools)
+                    .get_history(&session_key, limit, include_tools)
                     .await?;
-                Ok(Self::build_history_response(session_key, messages))
+                Ok(Self::build_history_response(&session_key, messages))
             }
         }
     }
