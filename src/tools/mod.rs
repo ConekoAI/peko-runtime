@@ -24,7 +24,7 @@ pub mod grep;
 pub mod message_tool;
 pub mod read_file;
 pub mod session_introspection;
-pub mod sessions_send;
+
 pub mod shell;
 pub mod str_replace_file;
 pub mod traits;
@@ -44,8 +44,6 @@ pub mod universal;
 pub mod shared;
 
 pub use a2a_send::A2aSendTool;
-pub use sessions_send::SessionsSendTool;
-
 pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
 pub use agent_spawn::AgentSpawnTool;
 pub use task_management::TaskTool;
@@ -57,9 +55,8 @@ pub use grep::GrepTool;
 pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};
 pub use read_file::ReadFileTool;
 pub use session_introspection::{
-    SessionCache, SessionInfo, SessionIntrospector,
-    SessionRegistry as SessionIntrospectionRegistry, SessionStatusTool, SessionsHistoryTool,
-    SessionsListTool,
+    SessionCache, SessionInfo, SessionIntrospector, SessionRegistry as SessionIntrospectionRegistry,
+    SessionTool,
 };
 
 /// Backward-compatible alias for `SessionIntrospector`.

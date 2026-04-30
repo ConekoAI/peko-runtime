@@ -271,6 +271,7 @@ impl Default for ExtensionConfig {
                 "glob".to_string(),
                 "grep".to_string(),
                 "str_replace_file".to_string(),
+                "session".to_string(),
                 "cron".to_string(),
                 "agent_spawn".to_string(),
                 "task".to_string(),
@@ -466,9 +467,7 @@ mod tests {
                 "glob".to_string(),
                 "grep".to_string(),
                 "str_replace_file".to_string(),
-                "sessions_list".to_string(),
-                "sessions_history".to_string(),
-                "session_status".to_string(),
+                "session".to_string(),
                 "cron".to_string(),
             ],
             ..Default::default()
@@ -481,14 +480,12 @@ mod tests {
         assert!(config.is_extension_enabled("glob"));
         assert!(config.is_extension_enabled("grep"));
         assert!(config.is_extension_enabled("str_replace_file"));
-        assert!(config.is_extension_enabled("sessions_list"));
-        assert!(config.is_extension_enabled("sessions_history"));
-        assert!(config.is_extension_enabled("session_status"));
+        assert!(config.is_extension_enabled("session"));
         assert!(config.is_extension_enabled("cron"));
 
         // Case-insensitive matching
         assert!(config.is_extension_enabled("SHELL"));
-        assert!(config.is_extension_enabled("Session_Status"));
+        assert!(config.is_extension_enabled("Session"));
 
         // Unknown extensions should not be enabled
         assert!(!config.is_extension_enabled("unknown_tool"));

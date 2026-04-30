@@ -149,7 +149,7 @@ impl Tool for AgentsListTool {
     }
 
     fn description(&self) -> String {
-        "List agent instances that can be targeted via agent_spawn or sessions_send. \
+        "List agent instances that can be targeted via agent_spawn. \
          Returns only instances within the current team (or empty list for standalone agents)."
             .to_string()
     }

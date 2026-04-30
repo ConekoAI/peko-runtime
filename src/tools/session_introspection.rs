@@ -1,34 +1,38 @@
 //! Session introspection tools
 //!
-//! Tools for listing sessions, viewing history, and checking session status.
+//! Provides `session` — a single unified tool for introspecting sessions.
+//! Replaces `session_status`, `sessions_list`, `sessions_history` (Issue 013).
+//!
+//! ## Architecture
+//!
+//! ```text
+//! SessionTool (LLM interface)
+//!        │
+//!        ▼
+//! SessionRegistry (trait)
+//!        │
+//!        ├─ SessionIntrospector ──► SessionManager (real data)
+//!        └─ SessionCache ─────────► In-memory (tests / placeholder)
+//! ```
 
 use crate::common::registry::SimpleRegistry;
+use crate::session::events::SessionEvent;
+use crate::session::jsonl::SessionStorage;
+use crate::session::message_conversion::event_to_llm_message;
+use crate::types::message::{ContentBlock, LlmMessage};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use tracing::debug;
+use serde::Deserialize;
+use serde_json::json;
+
 
 use crate::tools::traits::Tool;
 
-/// Session list arguments
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionsListArgs {
-    /// Filter by session kinds (e.g., "main", "spawned", "cron")
-    #[serde(default)]
-    pub kinds: Option<Vec<String>>,
-    /// Maximum number of sessions to return
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-    /// Only show sessions active in the last N minutes
-    #[serde(default)]
-    pub active_minutes: Option<i64>,
-}
-
-fn default_limit() -> usize {
-    50
-}
+// ====================================================================================
+// Data Types (shared across all actions)
+// ====================================================================================
 
 /// Session info
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     pub session_key: String,
     pub session_id: String,
@@ -41,36 +45,8 @@ pub struct SessionInfo {
     pub is_active: bool,
 }
 
-/// Session list result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionsListResult {
-    pub sessions: Vec<SessionInfo>,
-    pub total: usize,
-}
-
-/// Session history arguments
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionsHistoryArgs {
-    /// Session key or ID
-    pub session_key: String,
-    /// Maximum number of messages to return
-    #[serde(default = "default_history_limit")]
-    pub limit: usize,
-    /// Include tool calls/results
-    #[serde(default = "default_include_tools")]
-    pub include_tools: bool,
-}
-
-fn default_history_limit() -> usize {
-    100
-}
-
-fn default_include_tools() -> bool {
-    true
-}
-
 /// Message in session history
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HistoryMessage {
     pub role: String,
     pub content: String,
@@ -82,7 +58,7 @@ pub struct HistoryMessage {
 }
 
 /// Tool call info
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallInfo {
     pub id: String,
     pub name: String,
@@ -90,7 +66,7 @@ pub struct ToolCallInfo {
 }
 
 /// Tool result info
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ToolResultInfo {
     pub tool_call_id: String,
     pub success: bool,
@@ -100,28 +76,8 @@ pub struct ToolResultInfo {
     pub error: Option<String>,
 }
 
-/// Session history result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionsHistoryResult {
-    pub session_key: String,
-    pub messages: Vec<HistoryMessage>,
-    pub total_messages: usize,
-}
-
-/// Session status arguments
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionStatusArgs {
-    /// Session ID (defaults to current session)
-    #[serde(default)]
-    pub session_key: Option<String>,
-    /// Optional timezone for timestamp formatting (e.g., "`America/New_York`", "UTC")
-    /// If not provided, uses machine's local timezone
-    #[serde(default)]
-    pub timezone: Option<String>,
-}
-
 /// Usage stats
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UsageStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -129,7 +85,7 @@ pub struct UsageStats {
 }
 
 /// Session status result
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionStatusResult {
     pub session_id: String,
     pub agent_name: String,
@@ -150,6 +106,10 @@ pub struct SessionStatusResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_session: Option<String>,
 }
+
+// ====================================================================================
+// SessionRegistry Trait
+// ====================================================================================
 
 /// Registry for accessing session data
 #[async_trait]
@@ -177,191 +137,252 @@ pub trait SessionRegistry: Send + Sync {
     fn current_session_key(&self) -> String;
 }
 
-/// Sessions list tool
-pub struct SessionsListTool {
+// ====================================================================================
+// SessionAction — serde-driven, extensible
+// ====================================================================================
+
+/// Actions supported by the `session` tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionAction {
+    Status,
+    List,
+    History,
+}
+
+// ====================================================================================
+// SessionTool — unified interface
+// ====================================================================================
+
+/// Unified session introspection tool.
+pub struct SessionTool {
     registry: Box<dyn SessionRegistry>,
 }
 
-impl SessionsListTool {
+impl SessionTool {
     #[must_use]
     pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
         Self { registry }
     }
-}
 
-#[async_trait]
-impl Tool for SessionsListTool {
-    fn name(&self) -> &'static str {
-        "sessions_list"
-    }
+    // ------------------------------------------------------------------
+    // Internal helpers — DRY across all actions
+    // ------------------------------------------------------------------
 
-    fn description(&self) -> String {
-        "List active sessions with optional filtering".to_string()
-    }
-
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let args: SessionsListArgs =
-            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
-
-        debug!(
-            "Listing sessions: kinds={:?}, limit={}, active_minutes={:?}",
-            args.kinds, args.limit, args.active_minutes
-        );
-
-        let kinds_ref = args.kinds.as_deref();
-        let sessions = self
-            .registry
-            .list_sessions(kinds_ref, args.limit, args.active_minutes)
-            .await?;
-
-        let total = sessions.len();
-
-        Ok(serde_json::to_value(SessionsListResult {
-            sessions,
-            total,
-        })?)
-    }
-}
-
-/// Sessions history tool
-pub struct SessionsHistoryTool {
-    registry: Box<dyn SessionRegistry>,
-}
-
-impl SessionsHistoryTool {
-    #[must_use]
-    pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
-        Self { registry }
-    }
-}
-
-#[async_trait]
-impl Tool for SessionsHistoryTool {
-    fn name(&self) -> &'static str {
-        "sessions_history"
-    }
-
-    fn description(&self) -> String {
-        "Get message history for a specific session".to_string()
-    }
-
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let args: SessionsHistoryArgs =
-            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
-
-        if args.session_key.is_empty() {
-            return Err(anyhow::anyhow!("session_key is required"));
-        }
-
-        debug!(
-            "Getting history for session: {}, limit={}, include_tools={}",
-            args.session_key, args.limit, args.include_tools
-        );
-
-        let messages = self
-            .registry
-            .get_history(&args.session_key, args.limit, args.include_tools)
-            .await?;
-
-        let total_messages = messages.len();
-
-        Ok(serde_json::to_value(SessionsHistoryResult {
-            session_key: args.session_key,
-            messages,
-            total_messages,
-        })?)
-    }
-}
-
-/// Session status tool
-pub struct SessionStatusTool {
-    registry: Box<dyn SessionRegistry>,
-}
-
-impl SessionStatusTool {
-    #[must_use]
-    pub fn new(registry: Box<dyn SessionRegistry>) -> Self {
-        Self { registry }
-    }
-}
-
-#[async_trait]
-impl Tool for SessionStatusTool {
-    fn name(&self) -> &'static str {
-        "session_status"
-    }
-
-    fn description(&self) -> String {
-        "Returns current session status including timestamp, token usage, and model information. \
-         Use this tool when you need to know the current date and time. \
-         Optional timezone parameter allows formatting time for a specific timezone (e.g., 'America/New_York', 'Europe/London', 'UTC').".to_string()
-    }
-
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-        let args: SessionStatusArgs =
-            serde_json::from_value(args).map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
-
-        // Use provided session key/ID or default to current
-        let session_id = args
-            .session_key
-            .clone()
+    async fn get_status(&self, session_key: Option<&str>) -> anyhow::Result<SessionStatusResult> {
+        let session_id = session_key
+            .map(String::from)
             .unwrap_or_else(|| self.registry.current_session_key());
+        self.registry.get_status(&session_id).await
+    }
 
-        debug!("Getting status for session: {}", session_id);
+    async fn list_sessions(
+        &self,
+        kinds: Option<&[String]>,
+        limit: usize,
+        active_minutes: Option<i64>,
+    ) -> anyhow::Result<Vec<SessionInfo>> {
+        self.registry.list_sessions(kinds, limit, active_minutes).await
+    }
 
-        // Try to get existing status, or create minimal one for time queries
-        let mut status = match self.registry.get_status(&session_id).await {
-            Ok(s) => s,
-            Err(_) => {
-                // Session not in registry - create minimal status for time query
-                SessionStatusResult {
-                    session_id: session_id.clone(),
-                    agent_name: "unknown".to_string(),
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                    last_activity: chrono::Utc::now().to_rfc3339(),
-                    timestamp_utc: String::new(),
-                    timestamp: String::new(),
-                    message_count: 0,
-                    usage: UsageStats {
-                        prompt_tokens: 0,
-                        completion_tokens: 0,
-                        context_window: 0,
-                    },
-                    peer_type: None,
-                    peer_id: None,
-                    label: None,
-                    parent_session: None,
+    async fn get_history(
+        &self,
+        session_key: &str,
+        limit: usize,
+        include_tools: bool,
+    ) -> anyhow::Result<Vec<HistoryMessage>> {
+        self.registry.get_history(session_key, limit, include_tools).await
+    }
+
+    // ------------------------------------------------------------------
+    // Response builders — pure functions, keep execute() readable
+    // ------------------------------------------------------------------
+
+    fn build_status_response(status: &SessionStatusResult) -> serde_json::Value {
+        serde_json::to_value(status).unwrap_or_else(|_| json!({"error": "serialization failed"}))
+    }
+
+    fn build_list_response(sessions: Vec<SessionInfo>) -> serde_json::Value {
+        json!({
+            "total": sessions.len(),
+            "sessions": sessions,
+        })
+    }
+
+    fn build_history_response(
+        session_key: &str,
+        messages: Vec<HistoryMessage>,
+    ) -> serde_json::Value {
+        json!({
+            "session_key": session_key,
+            "total_messages": messages.len(),
+            "messages": messages,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for SessionTool {
+    fn name(&self) -> &'static str {
+        "session"
+    }
+
+    fn description(&self) -> String {
+        r"Manage and introspect sessions: check status, list sessions, or view conversation history.
+
+Parameters:
+- action: 'status', 'list', or 'history' (required)
+- session_key: Required for 'history'. Optional for 'status' (defaults to current session)
+- kinds: Optional for 'list' — filter by session kinds (e.g., ['main', 'spawned'])
+- limit: Optional — max results (default: 50 for list, 100 for history)
+- active_minutes: Optional for 'list' — only sessions active in last N minutes
+- include_tools: Optional for 'history' — include tool calls/results (default: true)
+- timezone: Optional for 'status' — timezone for timestamp formatting (e.g., 'America/New_York', 'UTC')
+
+Returns structured data appropriate to the action."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["status", "list", "history"],
+                    "description": "What to do: status (get one session), list (query sessions), history (get messages)"
+                },
+                "session_key": {
+                    "type": "string",
+                    "description": "Required for 'history'. Optional for 'status' (defaults to current session)"
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional filter for 'list': e.g., ['main', 'spawned', 'cron']"
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 50,
+                    "description": "Max results for 'list' or 'history'"
+                },
+                "active_minutes": {
+                    "type": "integer",
+                    "description": "Optional for 'list': only sessions active in last N minutes"
+                },
+                "include_tools": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Optional for 'history': include tool calls and results"
+                },
+                "timezone": {
+                    "type": "string",
+                    "description": "Optional for 'status': timezone for timestamp formatting (e.g., 'America/New_York', 'UTC')"
                 }
-            }
-        };
+            },
+            "required": ["action"]
+        })
+    }
 
-        // Add current timestamps
-        let now_utc = chrono::Utc::now();
-        status.timestamp_utc = now_utc.to_rfc3339();
+    async fn execute(&self, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        let action: SessionAction = serde_json::from_value(
+            params
+                .get("action")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Missing required 'action' parameter"))?,
+        )
+        .map_err(|e| anyhow::anyhow!("Invalid action: {e}"))?;
 
-        // Format timestamp based on requested timezone or default to local
-        status.timestamp = if let Some(tz_str) = args.timezone {
-            match tz_str.parse::<chrono_tz::Tz>() {
-                Ok(tz) => {
-                    let now_local = now_utc.with_timezone(&tz);
-                    now_local.format("%Y-%m-%d %H:%M:%S %Z").to_string()
-                }
-                Err(_) => {
-                    // Invalid timezone, fall back to local
+        match action {
+            SessionAction::Status => {
+                let session_key = params.get("session_key").and_then(|v| v.as_str());
+                let timezone = params.get("timezone").and_then(|v| v.as_str());
+
+                // Try to get existing status, or create minimal one for time queries
+                let mut status = match self.get_status(session_key).await {
+                    Ok(s) => s,
+                    Err(_) => {
+                        let session_id = session_key
+                            .unwrap_or(&self.registry.current_session_key())
+                            .to_string();
+                        SessionStatusResult {
+                            session_id,
+                            agent_name: "unknown".to_string(),
+                            created_at: chrono::Utc::now().to_rfc3339(),
+                            last_activity: chrono::Utc::now().to_rfc3339(),
+                            timestamp_utc: String::new(),
+                            timestamp: String::new(),
+                            message_count: 0,
+                            usage: UsageStats {
+                                prompt_tokens: 0,
+                                completion_tokens: 0,
+                                context_window: 0,
+                            },
+                            peer_type: None,
+                            peer_id: None,
+                            label: None,
+                            parent_session: None,
+                        }
+                    }
+                };
+
+                // Add current timestamps
+                let now_utc = chrono::Utc::now();
+                status.timestamp_utc = now_utc.to_rfc3339();
+                status.timestamp = if let Some(tz_str) = timezone {
+                    match tz_str.parse::<chrono_tz::Tz>() {
+                        Ok(tz) => now_utc
+                            .with_timezone(&tz)
+                            .format("%Y-%m-%d %H:%M:%S %Z")
+                            .to_string(),
+                        Err(_) => chrono::Local::now()
+                            .format("%Y-%m-%d %H:%M:%S %Z")
+                            .to_string(),
+                    }
+                } else {
                     chrono::Local::now()
                         .format("%Y-%m-%d %H:%M:%S %Z")
                         .to_string()
-                }
-            }
-        } else {
-            chrono::Local::now()
-                .format("%Y-%m-%d %H:%M:%S %Z")
-                .to_string()
-        };
+                };
 
-        Ok(serde_json::to_value(status)?)
+                Ok(Self::build_status_response(&status))
+            }
+            SessionAction::List => {
+                let kinds: Option<Vec<String>> = params
+                    .get("kinds")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+                let active_minutes = params.get("active_minutes").and_then(|v| v.as_i64());
+
+                let kinds_ref = kinds.as_deref();
+                let sessions = self
+                    .list_sessions(kinds_ref, limit, active_minutes)
+                    .await?;
+                Ok(Self::build_list_response(sessions))
+            }
+            SessionAction::History => {
+                let session_key = params
+                    .get("session_key")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("'history' action requires 'session_key'"))?;
+                let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+                let include_tools = params
+                    .get("include_tools")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                let messages = self
+                    .get_history(session_key, limit, include_tools)
+                    .await?;
+                Ok(Self::build_history_response(session_key, messages))
+            }
+        }
     }
 }
+
+// ====================================================================================
+// SessionIntrospector — backed by real SessionManager
+// ====================================================================================
 
 /// Session introspector backed by the real `SessionManager`.
 ///
@@ -389,15 +410,25 @@ impl SessionIntrospector {
 impl SessionRegistry for SessionIntrospector {
     async fn list_sessions(
         &self,
-        _kinds: Option<&[String]>,
-        _limit: usize,
-        _active_minutes: Option<i64>,
+        kinds: Option<&[String]>,
+        limit: usize,
+        active_minutes: Option<i64>,
     ) -> anyhow::Result<Vec<SessionInfo>> {
         let mut manager = self.session_manager.write().await;
         let metadatas = manager.list_all_sessions(false).await?;
 
-        let sessions = metadatas
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let cutoff_ms = active_minutes.map(|m| now.saturating_sub(m as u64 * 60 * 1000));
+
+        let sessions: Vec<SessionInfo> = metadatas
             .into_iter()
+            .filter(|m| {
+                let kind_match = kinds.map_or(true, |k| k.contains(&m.trigger));
+                let active_match =
+                    cutoff_ms.map_or(true, |cutoff| m.updated_at as u64 >= cutoff);
+                kind_match && active_match
+            })
+            .take(limit)
             .map(|m| SessionInfo {
                 session_key: m.session_id.clone(),
                 session_id: m.session_id,
@@ -420,13 +451,37 @@ impl SessionRegistry for SessionIntrospector {
 
     async fn get_history(
         &self,
-        _session_key: &str,
-        _limit: usize,
-        _include_tools: bool,
+        session_key: &str,
+        limit: usize,
+        include_tools: bool,
     ) -> anyhow::Result<Vec<HistoryMessage>> {
-        // TODO: implement history loading via SessionManager
-        debug!("SessionIntrospector::get_history not yet implemented");
-        Ok(vec![])
+        // Try to open the session to get a handle, then load history
+        let llm_messages: Vec<LlmMessage> = {
+            let mut manager = self.session_manager.write().await;
+            if let Ok(Some(handle)) = manager.open_session(session_key).await {
+                handle.load_history().await?
+            } else {
+                // Fallback: try loading directly from storage
+                let sessions_dir = manager.sessions_dir().cloned();
+                drop(manager); // drop lock before async storage ops
+
+                if let Some(dir) = sessions_dir {
+                    let storage = SessionStorage::new(dir);
+                    let events = storage.load_events(session_key).await?;
+                    events.iter().filter_map(event_to_llm_message).collect()
+                } else {
+                    vec![]
+                }
+            }
+        };
+
+        let messages: Vec<HistoryMessage> = llm_messages
+            .iter()
+            .filter_map(|m| llm_message_to_history(m, include_tools))
+            .take(limit)
+            .collect();
+
+        Ok(messages)
     }
 
     async fn get_status(&self, session_id: &str) -> anyhow::Result<SessionStatusResult> {
@@ -470,11 +525,11 @@ impl SessionRegistry for SessionIntrospector {
     }
 }
 
+// ====================================================================================
+// SessionCache — in-memory registry for testing and placeholder use
+// ====================================================================================
+
 /// In-memory session cache for testing and placeholder use.
-///
-/// Replaces the previous `InMemorySessionRegistry` which used 3 separate
-/// `Mutex<HashMap>` fields. This version uses [`SimpleRegistry`] for
-/// zero-overhead storage and eliminates lock boilerplate.
 #[derive(Debug)]
 pub struct SessionCache {
     current_session: String,
@@ -550,6 +605,97 @@ impl SessionRegistry for SessionCache {
 #[deprecated(since = "0.2.0", note = "Use SessionCache instead")]
 pub type InMemorySessionRegistry = SessionCache;
 
+// ====================================================================================
+// Helpers: LlmMessage → HistoryMessage conversion
+// ====================================================================================
+
+/// Convert an `LlmMessage` to a `HistoryMessage` for tool output.
+fn llm_message_to_history(msg: &LlmMessage, include_tools: bool) -> Option<HistoryMessage> {
+    let role = format!("{:?}", msg.role).to_lowercase();
+
+    // Extract text content
+    let content = msg
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let (tool_calls, tool_results) = if include_tools {
+        let calls: Vec<ToolCallInfo> = msg
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => Some(ToolCallInfo {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
+
+        let results: Vec<ToolResultInfo> = msg
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult {
+                    tool_call_id,
+                    name,
+                    content: result_content,
+                    is_error,
+                } => {
+                    let result_text = result_content
+                        .iter()
+                        .filter_map(|c| match c {
+                            ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Some(ToolResultInfo {
+                        tool_call_id: tool_call_id.clone(),
+                        success: !is_error,
+                        result: Some(json!({ "name": name, "content": result_text })),
+                        error: if *is_error {
+                            Some("Tool execution failed".to_string())
+                        } else {
+                            None
+                        },
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+
+        (
+            if calls.is_empty() { None } else { Some(calls) },
+            if results.is_empty() { None } else { Some(results) },
+        )
+    } else {
+        (None, None)
+    };
+
+    Some(HistoryMessage {
+        role,
+        content,
+        tool_calls,
+        tool_results,
+        timestamp: msg.timestamp.to_rfc3339(),
+    })
+}
+
+// ====================================================================================
+// Tests
+// ====================================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,65 +756,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sessions_list() {
+    async fn test_session_list() {
         let registry = create_test_registry();
-        let tool = SessionsListTool::new(Box::new(registry));
+        let tool = SessionTool::new(Box::new(registry));
 
         let result = tool
-            .execute(serde_json::json!({
-                "limit": 10
-            }))
+            .execute(json!({"action": "list", "limit": 10}))
             .await
             .unwrap();
 
-        let list_result: SessionsListResult = serde_json::from_value(result).unwrap();
-        assert_eq!(list_result.total, 1);
-        assert_eq!(list_result.sessions[0].session_key, "test-session");
+        assert_eq!(result["total"], 1);
+        assert_eq!(result["sessions"][0]["session_key"], "test-session");
     }
 
     #[tokio::test]
-    async fn test_sessions_history() {
+    async fn test_session_history() {
         let registry = create_test_registry();
-        let tool = SessionsHistoryTool::new(Box::new(registry));
+        let tool = SessionTool::new(Box::new(registry));
 
         let result = tool
-            .execute(serde_json::json!({
-                "session_key": "test-session",
-                "limit": 10
-            }))
+            .execute(json!({"action": "history", "session_key": "test-session", "limit": 10}))
             .await
             .unwrap();
 
-        let history_result: SessionsHistoryResult = serde_json::from_value(result).unwrap();
-        assert_eq!(history_result.total_messages, 2);
-        assert_eq!(history_result.messages[0].role, "user");
-        assert_eq!(history_result.messages[0].content, "Hello");
+        assert_eq!(result["total_messages"], 2);
+        assert_eq!(result["messages"][0]["role"], "user");
+        assert_eq!(result["messages"][0]["content"], "Hello");
     }
 
     #[tokio::test]
     async fn test_session_status() {
         let registry = create_test_registry();
-        let tool = SessionStatusTool::new(Box::new(registry));
+        let tool = SessionTool::new(Box::new(registry));
 
         let result = tool
-            .execute(serde_json::json!({
-                "session_key": "test-session"
-            }))
+            .execute(json!({"action": "status", "session_key": "test-session"}))
             .await
             .unwrap();
 
-        let status_result: SessionStatusResult = serde_json::from_value(result).unwrap();
-        assert_eq!(status_result.session_id, "abc123");
-        assert_eq!(status_result.usage.context_window, 1500);
-        assert_eq!(status_result.peer_type, Some("user".to_string()));
-        assert_eq!(status_result.peer_id, Some("alice".to_string()));
+        assert_eq!(result["session_id"], "abc123");
+        assert_eq!(result["usage"]["context_window"], 1500);
+        assert_eq!(result["peer_type"], "user");
+        assert_eq!(result["peer_id"], "alice");
     }
 
     #[tokio::test]
     async fn test_session_status_defaults_to_current() {
         let mut registry = SessionCache::new("current-session");
 
-        // Add current session
         let status = SessionStatusResult {
             session_id: "current123".to_string(),
             agent_name: "main".to_string(),
@@ -702,12 +837,47 @@ mod tests {
 
         registry.add_session("current-session".to_string(), session, vec![], status);
 
-        let tool = SessionStatusTool::new(Box::new(registry));
+        let tool = SessionTool::new(Box::new(registry));
 
         // Call without session_key - should default to current
-        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        let result = tool.execute(json!({"action": "status"})).await.unwrap();
 
-        let status_result: SessionStatusResult = serde_json::from_value(result).unwrap();
-        assert_eq!(status_result.session_id, "current123");
+        assert_eq!(result["session_id"], "current123");
+    }
+
+    #[tokio::test]
+    async fn test_session_list_empty() {
+        let registry = SessionCache::new("main");
+        let tool = SessionTool::new(Box::new(registry));
+
+        let result = tool.execute(json!({"action": "list"})).await.unwrap();
+        assert_eq!(result["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_history_not_found() {
+        let registry = SessionCache::new("main");
+        let tool = SessionTool::new(Box::new(registry));
+
+        let result = tool
+            .execute(json!({"action": "history", "session_key": "missing"}))
+            .await
+            .unwrap();
+
+        assert_eq!(result["total_messages"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_session_status_not_found_returns_minimal() {
+        let registry = SessionCache::new("main");
+        let tool = SessionTool::new(Box::new(registry));
+
+        let result = tool
+            .execute(json!({"action": "status", "session_key": "missing"}))
+            .await
+            .unwrap();
+
+        assert_eq!(result["session_id"], "missing");
+        assert_eq!(result["agent_name"], "unknown");
     }
 }

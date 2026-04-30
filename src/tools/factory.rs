@@ -27,8 +27,8 @@
 
 use crate::tools::traits::Tool;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, SessionStatusTool, SessionsHistoryTool,
-    SessionsListTool, ShellTool, StrReplaceFileTool, WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
+    WriteFileTool,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -348,22 +348,10 @@ impl ToolFactory {
             }
         }
 
-        // Session introspection tools (grouped)
+        // Session introspection tool (unified)
         if config.enable_session_tools {
-            registry.register("sessions_list", true, || {
-                Arc::new(SessionsListTool::new(Box::new(
-                    crate::tools::SessionCache::new("main"),
-                )))
-            });
-
-            registry.register("sessions_history", true, || {
-                Arc::new(SessionsHistoryTool::new(Box::new(
-                    crate::tools::SessionCache::new("main"),
-                )))
-            });
-
-            registry.register("session_status", true, || {
-                Arc::new(SessionStatusTool::new(Box::new(
+            registry.register("session", true, || {
+                Arc::new(SessionTool::new(Box::new(
                     crate::tools::SessionCache::new("main"),
                 )))
             });

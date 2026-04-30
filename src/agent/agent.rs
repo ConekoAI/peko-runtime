@@ -31,7 +31,7 @@ pub struct Agent {
     subagent_executor: Arc<SubagentExecutor>,
     /// Dynamic session key provider for `agent_spawn` tool
     session_key_provider: Arc<DynamicSessionKeyProvider>,
-    /// Current session ID for `session_status` tool lookups
+    /// Current session ID for `session` tool lookups
     current_session_id: Arc<tokio::sync::RwLock<Option<String>>>,
     /// Extension core for skill loading and hook integration
     extension_core: Arc<ExtensionCore>,
@@ -67,9 +67,7 @@ impl Agent {
     /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
         use crate::tools::session_introspection::SessionIntrospector;
-        use crate::tools::{
-            AgentSpawnTool, SessionStatusTool, SessionsSendTool, Tool,
-        };
+        use crate::tools::{AgentSpawnTool, SessionTool, Tool};
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.
         // AppState::new() calls ToolRuntime::with_workspace_and_core() which registers
@@ -86,12 +84,12 @@ impl Agent {
         // Agent-specific tools (not part of ToolRuntime::register_builtins)
         let mut tools: Vec<Arc<dyn Tool>> = vec![];
 
-        // Add session introspection tools backed by the real session manager
+        // Add session introspection tool backed by the real session manager
         let session_registry = SessionIntrospector::new(
             self.session_manager.clone(),
             self.current_session_id.clone(),
         );
-        tools.push(Arc::new(SessionStatusTool::new(Box::new(session_registry))));
+        tools.push(Arc::new(SessionTool::new(Box::new(session_registry))));
 
         // Add agent spawn tool v2 with executor and session provider
         tools.push(Arc::new(AgentSpawnTool::with_session_provider(
@@ -114,16 +112,7 @@ impl Agent {
             tracing::warn!("StatelessAgentService not available on ExtensionCore — a2a_send tool will not be registered");
         }
 
-        // Add sessions_send tool for human-to-agent session messaging
-        let sessions_send_tool = SessionsSendTool::new().with_session_context(
-            format!("agent:{}", self.config.name),
-            &self.config.name,
-        );
-        if let Some(agent_service) = self.extension_core.services().agent_service() {
-            tools.push(Arc::new(sessions_send_tool.with_agent_service(agent_service)));
-        } else {
-            tools.push(Arc::new(sessions_send_tool));
-        }
+
 
         // Filter based on agent config extension whitelist
         let whitelist = self.config.extension_whitelist();
@@ -564,7 +553,7 @@ impl Agent {
         ext_config.enabled = self.config.extension_whitelist();
         self.extension_core.set_tool_config(ext_config).await;
 
-        // Capture current session ID so session_status can look it up
+        // Capture current session ID so session tool can look it up
         {
             let session_id = session.read().await.id.clone();
             let mut current = self.current_session_id.write().await;

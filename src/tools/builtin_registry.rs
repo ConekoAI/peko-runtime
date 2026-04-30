@@ -12,8 +12,8 @@
 use crate::extensions::adapters::BuiltinToolAdapter;
 use crate::extensions::core::ExtensionCore;
 use crate::tools::{
-    CronTool, GlobTool, GrepTool, ReadFileTool, SessionStatusTool, SessionsHistoryTool,
-    SessionsListTool, ShellTool, StrReplaceFileTool, TaskTool, WriteFileTool,
+    CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
+    TaskTool, WriteFileTool,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -125,25 +125,11 @@ impl BuiltinToolRegistrar {
             }
         }
 
-        // Session introspection tools
-        if config.enable_session_tools {
-            if !disabled_set.contains("sessions_list") {
-                let registry = crate::tools::SessionCache::new("main");
-                let tool = Arc::new(SessionsListTool::new(Box::new(registry)));
-                BuiltinToolAdapter::register_tool(core, tool).await?;
-            }
-
-            if !disabled_set.contains("sessions_history") {
-                let registry = crate::tools::SessionCache::new("main");
-                let tool = Arc::new(SessionsHistoryTool::new(Box::new(registry)));
-                BuiltinToolAdapter::register_tool(core, tool).await?;
-            }
-
-            if !disabled_set.contains("session_status") {
-                let registry = crate::tools::SessionCache::new("main");
-                let tool = Arc::new(SessionStatusTool::new(Box::new(registry)));
-                BuiltinToolAdapter::register_tool(core, tool).await?;
-            }
+        // Session introspection tool (unified)
+        if config.enable_session_tools && !disabled_set.contains("session") {
+            let registry = crate::tools::SessionCache::new("main");
+            let tool = Arc::new(SessionTool::new(Box::new(registry)));
+            BuiltinToolAdapter::register_tool(core, tool).await?;
         }
 
         // Cron tool
@@ -173,9 +159,7 @@ impl BuiltinToolRegistrar {
             "glob",
             "grep",
             "str_replace_file",
-            "sessions_list",
-            "sessions_history",
-            "session_status",
+            "session",
             "cron",
             "task",
             "a2a_send",
@@ -194,7 +178,7 @@ impl BuiltinToolRegistrar {
     /// Check if a tool name is an agent-specific built-in (registered per-agent)
     #[must_use]
     pub fn is_agent_specific_builtin(name: &str) -> bool {
-        matches!(name, "a2a_send" | "sessions_send" | "agent_spawn" | "session_status")
+        matches!(name, "a2a_send" | "agent_spawn" | "session")
     }
 }
 

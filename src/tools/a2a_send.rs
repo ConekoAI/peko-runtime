@@ -119,7 +119,7 @@ Send a message to another agent and receive its response. This is the primary me
 - Resume a conversation with another agent using a known session_id
 
 ## When NOT to Use
-- For human-to-agent communication (use `sessions_send` or the CLI/API instead)
+- For human-to-agent communication (use the CLI/API instead)
 - For fire-and-forget notifications (A2A send is request/response)
 
 ## Parameters
