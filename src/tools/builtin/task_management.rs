@@ -8,11 +8,11 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::tools::async_executor::{
+use crate::tools::framework::async_executor::{
     cancel_task_across_all_registries, find_task_across_all_registries,
     list_all_tasks_across_all_registries, CancelResult, SharedAsyncTaskRegistry, TaskView,
 };
-use crate::tools::Tool;
+use crate::tools::core::Tool;
 
 // ------------------------------------------------------------------------------
 // TaskAction — serde-driven, extensible
@@ -268,7 +268,7 @@ Returns structured data appropriate to the action."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::async_executor::{AsyncTaskEntry, AsyncTaskStatus, AsyncToolConfig};
+    use crate::tools::framework::async_executor::{AsyncTaskEntry, AsyncTaskStatus, AsyncToolConfig};
 
     #[tokio::test]
     async fn test_task_status_not_found() {
@@ -292,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_status_with_registry() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::tools::async_executor::AsyncTaskRegistry::new(),
+            crate::tools::framework::async_executor::AsyncTaskRegistry::new()
         ));
         {
             let mut reg = registry.write().await;
@@ -321,7 +321,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_list_with_registry_filters() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::tools::async_executor::AsyncTaskRegistry::new(),
+            crate::tools::framework::async_executor::AsyncTaskRegistry::new()
         ));
         {
             let mut reg = registry.write().await;
@@ -333,7 +333,7 @@ mod tests {
                 AsyncToolConfig::default(),
             );
             entry1.status = AsyncTaskStatus::Completed {
-                result: crate::tools::traits::ToolResult::success(json!({"done": true})),
+                result: crate::tools::core::traits::ToolResult::success(json!({"done": true})),
             };
             reg.register(entry1);
 
@@ -374,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_cancel_success() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::tools::async_executor::AsyncTaskRegistry::new(),
+            crate::tools::framework::async_executor::AsyncTaskRegistry::new()
         ));
         {
             let mut reg = registry.write().await;
@@ -402,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn test_task_cancel_already_terminal() {
         let registry = Arc::new(tokio::sync::RwLock::new(
-            crate::tools::async_executor::AsyncTaskRegistry::new(),
+            crate::tools::framework::async_executor::AsyncTaskRegistry::new()
         ));
         {
             let mut reg = registry.write().await;
@@ -414,7 +414,7 @@ mod tests {
                 AsyncToolConfig::default(),
             );
             entry.status = AsyncTaskStatus::Completed {
-                result: crate::tools::traits::ToolResult::success(json!({})),
+                result: crate::tools::core::traits::ToolResult::success(json!({})),
             };
             reg.register(entry);
         }

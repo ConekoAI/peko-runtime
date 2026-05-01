@@ -25,8 +25,8 @@
 //!
 //! Note: Custom tools can also be disabled by name.
 
-use crate::tools::traits::Tool;
-use crate::tools::{
+use crate::tools::core::traits::Tool;
+use crate::tools::builtin::{
     CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
     WriteFileTool,
 };

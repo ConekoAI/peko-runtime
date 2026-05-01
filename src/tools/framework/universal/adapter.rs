@@ -6,7 +6,7 @@
 use super::manifest::Manifest;
 use super::protocol::{ExecuteParams, ExecuteResult, ExecutionContext, Request, ResponseResult};
 use super::transport::Transport;
-use crate::tools::{Tool, ToolContext};
+use crate::tools::core::{Tool, ToolContext};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};

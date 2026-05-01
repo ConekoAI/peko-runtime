@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::process::Command;
 
-use crate::tools::Tool;
+use crate::tools::core::Tool;
 
 /// Platform-specific shell configuration
 #[cfg(unix)]

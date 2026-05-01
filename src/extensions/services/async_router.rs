@@ -15,7 +15,7 @@
 //! ).await?;
 //! ```
 
-use crate::tools::async_executor::{
+use crate::tools::framework::async_executor::{
     AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget,
 };
 use crate::extensions::core::HookContext;
@@ -204,7 +204,7 @@ impl AsyncExecutionRouter {
     /// Create a new async execution router with default timeouts (local transport)
     #[must_use]
     pub fn new() -> Self {
-        use crate::tools::async_executor::AsyncExecutor;
+        use crate::tools::framework::async_executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
             default_sync_timeout: Duration::from_secs(120),
@@ -216,7 +216,7 @@ impl AsyncExecutionRouter {
     /// Create with custom timeouts (local transport)
     #[must_use]
     pub fn with_timeouts(sync_secs: u64, async_secs: u64) -> Self {
-        use crate::tools::async_executor::AsyncExecutor;
+        use crate::tools::framework::async_executor::AsyncExecutor;
         let executor = AsyncExecutor::new();
         Self {
             default_sync_timeout: Duration::from_secs(sync_secs),
@@ -238,7 +238,7 @@ impl AsyncExecutionRouter {
     /// Create with a shared local async executor (for sharing registries across routers)
     #[must_use]
     pub fn with_executor(
-        async_executor: crate::tools::async_executor::AsyncExecutor,
+        async_executor: crate::tools::AsyncExecutor,
     ) -> Self {
         Self {
             default_sync_timeout: Duration::from_secs(120),

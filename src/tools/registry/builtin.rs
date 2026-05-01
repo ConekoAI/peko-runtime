@@ -11,7 +11,7 @@
 
 use crate::extensions::adapters::BuiltinToolAdapter;
 use crate::extensions::core::ExtensionCore;
-use crate::tools::{
+use crate::tools::builtin::{
     CronTool, GlobTool, GrepTool, ReadFileTool, SessionTool, ShellTool, StrReplaceFileTool,
     TaskTool, WriteFileTool,
 };

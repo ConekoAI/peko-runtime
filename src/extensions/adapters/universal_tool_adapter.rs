@@ -125,7 +125,7 @@ impl UniversalToolAdapter {
             .await
             .with_context(|| format!("Failed to read manifest {manifest_path:?}"))?;
 
-        let tool_manifest: crate::tools::universal::Manifest = serde_json::from_str(&content)
+        let tool_manifest: crate::tools::framework::universal::Manifest = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse manifest {manifest_path:?}"))?;
 
         let mut manifest = ExtensionManifest::new(
@@ -264,7 +264,7 @@ impl ExtensionTypeAdapter for UniversalToolAdapter {
     ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
         use anyhow::Context;
 
-        let tool_manifest: crate::tools::universal::Manifest = serde_json::from_str(content)
+        let tool_manifest: crate::tools::framework::universal::Manifest = serde_json::from_str(content)
             .with_context(|| format!("Failed to parse universal tool manifest at {path:?}"))?;
 
         let tool_path = path.parent().unwrap_or(std::path::Path::new("."));
@@ -361,7 +361,7 @@ impl HookHandler for UniversalToolExecuteHandler {
                 &exec_config,
                 None::<fn(&mut serde_json::Value, Option<&str>)>,
                 move |merged_params| async move {
-                    let adapter = crate::tools::universal::UniversalToolAdapter::from_manifest(
+                    let adapter = crate::tools::framework::universal::UniversalToolAdapter::from_manifest(
                         &manifest_path,
                         &executable,
                     )

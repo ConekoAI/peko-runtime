@@ -602,7 +602,7 @@ impl IpcServer {
         socket: ServerSocket,
         addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<()> {
-        use crate::tools::async_executor::{AsyncTaskId, AsyncTaskResult, AsyncToolConfig};
+        use crate::tools::framework::async_executor::{AsyncTaskId, AsyncTaskResult, AsyncToolConfig};
 
         let tool_runtime = state.tool_runtime.clone();
         let executor = state.async_task_executor.clone();

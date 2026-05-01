@@ -9,7 +9,7 @@
 
 use crate::cron::{CronJob, DeliveryMode, ExecutionTarget, ScheduleKind};
 use crate::ipc::{DaemonClient, ResponsePacket};
-use crate::tools::traits::Tool;
+use crate::tools::core::traits::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

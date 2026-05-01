@@ -4,7 +4,7 @@
 //! `AsyncExecutionRouter` can work identically whether it is running inside the
 //! daemon (local execution) or inside the CLI (HTTP submission to daemon).
 
-use crate::tools::async_executor::{
+use crate::tools::framework::async_executor::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
 };
 use anyhow::Result;
@@ -78,7 +78,7 @@ pub trait AsyncTaskTransport: Send + Sync {
 // LocalAsyncTransport — used inside the daemon
 // ================================================================================
 
-use crate::tools::async_executor::AsyncExecutor;
+use crate::tools::framework::async_executor::AsyncExecutor;
 use std::sync::Arc;
 
 /// Local transport that executes tasks in-process via `AsyncExecutor`
@@ -345,13 +345,13 @@ pub async fn create_transport() -> anyhow::Result<std::sync::Arc<dyn AsyncTaskTr
 pub fn create_local_transport() -> std::sync::Arc<dyn AsyncTaskTransport> {
     // Use a shared registry from the global cache so that the `task` tool can
     // find async tasks created by the router.
-    let registry = crate::tools::async_executor::get_or_create_registry_for_agent("_global");
+    let registry = crate::tools::framework::async_executor::get_or_create_registry_for_agent("_global");
     let queue_manager =
         std::sync::Arc::new(tokio::sync::RwLock::new(
-            crate::tools::async_executor::AsyncResultQueueManager::new(),
+            crate::tools::AsyncResultQueueManager::new(),
         ));
     let executor =
-        crate::tools::async_executor::AsyncExecutor::with_registries(registry, queue_manager);
+        crate::tools::AsyncExecutor::with_registries(registry, queue_manager);
     std::sync::Arc::new(LocalAsyncTransport::from_executor(executor))
 }
 

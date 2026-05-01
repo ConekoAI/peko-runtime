@@ -40,7 +40,7 @@
 //! let cancelled = adapter.cancel("my_tool", &receipt.task_id).await?;
 //! ```
 
-use crate::tools::async_executor::{
+use crate::tools::framework::async_executor::{
     AsyncTaskReceipt, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, AsyncExecutor,
     WaitResult,
 };

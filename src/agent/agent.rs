@@ -8,7 +8,7 @@ use crate::identity::{did::DIDScope, storage::KeyStorage, Identity};
 use crate::session::context::SessionContext;
 use crate::session::manager::{ResolvedSession, SessionManager};
 use crate::session::types::{ChannelType, Peer};
-use crate::tools::agent_spawn::DynamicSessionKeyProvider;
+use crate::tools::builtin::messaging::agent_spawn::DynamicSessionKeyProvider;
 use crate::types::agent::{AgentConfig, AgentState};
 use anyhow::Result;
 use std::sync::{Arc, RwLock};
@@ -66,7 +66,7 @@ impl Agent {
     /// registered by the daemon's `AppState` startup via `ToolRuntime`.
     /// Extension tools (Universal and MCP) are registered via `ExtensionManager` hooks.
     pub(crate) async fn init_builtins_async(&self) -> anyhow::Result<()> {
-        use crate::tools::session_introspection::SessionIntrospector;
+        use crate::tools::builtin::session::SessionIntrospector;
         use crate::tools::{AgentSpawnTool, SessionTool, Tool};
 
         // Defensive check: common built-ins must be pre-registered by the daemon startup path.

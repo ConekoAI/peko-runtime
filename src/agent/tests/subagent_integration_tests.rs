@@ -11,7 +11,7 @@ use crate::agent::subagent_executor::{ExecutionConfig, SubagentExecutor};
 use crate::agent::subagent_types::SubagentStatus;
 use crate::session::manager::SessionManager;
 use crate::session::types::{Peer, SpawnCleanupPolicy};
-use crate::tools::async_executor::{
+use crate::tools::framework::async_executor::{
     get_or_create_registry_for_agent, SharedAsyncTaskRegistry,
 };
 use std::sync::Arc;

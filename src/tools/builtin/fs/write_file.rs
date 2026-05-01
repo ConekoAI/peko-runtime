@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
-use crate::tools::Tool;
+use crate::tools::core::Tool;
 
 /// `WriteFile` tool arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]

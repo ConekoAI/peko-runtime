@@ -3,7 +3,7 @@
 //! Shared state accessible to the daemon and IPC server.
 //! This is the daemon's composition root — all services are initialized here.
 
-use crate::tools::async_executor::AsyncExecutor;
+use crate::tools::framework::async_executor::AsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
 use crate::common::services::{

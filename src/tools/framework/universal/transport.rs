@@ -18,7 +18,7 @@ const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 /// This is a thin wrapper around the shared `ProcessTransport` that
 /// adds protocol-specific request/response handling.
 pub struct Transport {
-    inner: crate::tools::shared::ProcessTransport,
+    inner: crate::tools::framework::shared::ProcessTransport,
     request_timeout: Duration,
 }
 
@@ -28,7 +28,7 @@ impl Transport {
     /// Automatically detects script files (.py, .js) and uses appropriate interpreter.
     /// Uses the shared `ProcessTransport` for unified process management.
     pub async fn spawn(executable: impl AsRef<std::path::Path>) -> Result<Self> {
-        let inner = crate::tools::shared::ProcessTransport::spawn_default(executable).await?;
+        let inner = crate::tools::framework::shared::ProcessTransport::spawn_default(executable).await?;
 
         Ok(Self {
             inner,

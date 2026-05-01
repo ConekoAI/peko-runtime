@@ -42,7 +42,7 @@ pub mod subagent_types;
 pub use subagent_error::SpawnError;
 
 // Async tool framework (re-exported from tools::async_executor)
-pub use crate::tools::async_executor::{
+pub use crate::tools::framework::async_executor::{
     AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent, AsyncTaskEventBus,
     AsyncTaskReceipt, AsyncTaskRegistry, AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig,
     CallbackDelivery, ChannelDelivery, DeliveryTarget, QueueDelivery, ResultDelivery,

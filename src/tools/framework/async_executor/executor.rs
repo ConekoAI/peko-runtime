@@ -10,7 +10,7 @@ use super::types::{
     AsyncTaskId, AsyncTaskReceipt, AsyncTaskStatus, AsyncToolConfig,
     DeliveryTarget, WaitResult,
 };
-use crate::tools::traits::ToolResult;
+use crate::tools::core::traits::ToolResult;
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;

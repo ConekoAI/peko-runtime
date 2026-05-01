@@ -172,7 +172,7 @@ impl HookHandler for BuiltinExecuteHandler {
                         // Use execute_with_context for consistent metrics/timeout/abort handling.
                         // In the future, HookContext can be extended to carry abort signals and
                         // progress callbacks, which would be passed through here.
-                        let ctx = crate::tools::context::ToolContext::default_for_tool(&tool_name_for_ctx);
+                        let ctx = crate::tools::ToolContext::default_for_tool(&tool_name_for_ctx);
                         tool.execute_with_context(p, &ctx).await
                     }
                 },

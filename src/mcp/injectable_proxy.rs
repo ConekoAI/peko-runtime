@@ -19,7 +19,7 @@
 
 use crate::extensions::services::ReservedParamsConfig;
 use crate::mcp::{tool_proxy::McpToolProxy, types::Tool as McpTool};
-use crate::tools::shared::proxy_utils::execute_with_context_handling;
+use crate::tools::framework::shared::proxy_utils::execute_with_context_handling;
 use crate::tools::{Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -119,7 +119,7 @@ impl InjectableMcpToolProxy {
     ///
     /// Uses the shared schema filter for consistency with Universal Tools.
     fn filter_schema(schema: &Value, reserved: &ReservedParamsConfig) -> Value {
-        use crate::tools::shared::filter_reserved_params;
+        use crate::tools::framework::shared::filter_reserved_params;
         use std::collections::HashSet;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();

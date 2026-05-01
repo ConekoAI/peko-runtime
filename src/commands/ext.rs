@@ -166,7 +166,7 @@ async fn create_manager_with_adapters(storage: Option<ExtensionStorage>) -> Exte
         skill_adapter::SkillAdapter, universal_tool_adapter::UniversalToolAdapter,
     };
     use crate::extensions::core::global_core;
-    use crate::tools::builtin_registry::{BuiltinToolRegistrar, BuiltinToolRegistrarConfig};
+    use crate::tools::registry::builtin::{BuiltinToolRegistrar, BuiltinToolRegistrarConfig};
 
     // Global ExtensionCore is always initialized in main.rs before command dispatch.
     let core = global_core().expect("Global ExtensionCore not initialized");
@@ -504,7 +504,7 @@ async fn handle_enable(
     target: Option<String>,
 ) -> anyhow::Result<()> {
     // Normalize built-in IDs: accept both "shell" and "builtin:tool:shell"
-    let is_builtin = crate::tools::builtin_registry::BuiltinToolRegistrar::is_builtin(&id)
+    let is_builtin = crate::tools::BuiltinToolRegistrar::is_builtin(&id)
         || id.starts_with("builtin:");
     if is_builtin {
         let capability = if id.starts_with("builtin:") {
@@ -692,7 +692,7 @@ async fn handle_disable(
     target: Option<String>,
 ) -> anyhow::Result<()> {
     // Normalize built-in IDs: accept both "shell" and "builtin:tool:shell"
-    let is_builtin = crate::tools::builtin_registry::BuiltinToolRegistrar::is_builtin(&id)
+    let is_builtin = crate::tools::BuiltinToolRegistrar::is_builtin(&id)
         || id.starts_with("builtin:");
     if is_builtin {
         let capability = if id.starts_with("builtin:") {

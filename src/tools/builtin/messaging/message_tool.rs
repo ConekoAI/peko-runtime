@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::tools::Tool;
+use crate::tools::core::Tool;
 
 /// Channel types supported by the message tool
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,13 +1,13 @@
 //! Tool trait
 
 use crate::observability::performance::GLOBAL_METRICS;
-use crate::tools::context::ToolContext;
+use crate::tools::core::context::ToolContext;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Errors that can occur during tool execution
-pub use crate::tools::context::ToolError;
+pub use crate::tools::core::context::ToolError;
 
 /// Result of a tool execution
 ///

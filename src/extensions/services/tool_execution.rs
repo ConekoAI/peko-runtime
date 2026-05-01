@@ -321,7 +321,7 @@ impl ToolExecutionService {
     /// Filtered schema without reserved parameters
     #[must_use]
     pub fn filter_schema_for_llm(&self, schema: &Value, reserved: &ReservedParamsConfig) -> Value {
-        use crate::tools::shared::filter_reserved_params;
+        use crate::tools::framework::shared::filter_reserved_params;
 
         let reserved_set: HashSet<String> = reserved.names().cloned().collect();
         filter_reserved_params(schema, &reserved_set)

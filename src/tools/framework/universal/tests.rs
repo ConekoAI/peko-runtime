@@ -3,7 +3,7 @@
 //! These tests verify the full flow: manifest -> adapter -> protocol -> result
 
 use super::*;
-use crate::tools::traits::Tool;
+use crate::tools::core::traits::Tool;
 use serde_json::json;
 use tempfile::TempDir;
 

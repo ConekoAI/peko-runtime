@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs;
 
-use crate::tools::Tool;
+use crate::tools::core::Tool;
 
 /// Single replacement operation
 #[derive(Debug, Clone, Serialize, Deserialize)]

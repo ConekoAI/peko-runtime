@@ -5,12 +5,12 @@
 //! directly — they are read-only projections constructed on demand.
 
 use crate::session::types::SpawnCleanupPolicy;
-use crate::tools::async_executor::{AsyncTaskEntry, AsyncTaskStatus, TaskMetadata};
+use crate::tools::framework::async_executor::{AsyncTaskEntry, AsyncTaskStatus, TaskMetadata};
 use chrono::{DateTime, Utc};
 
 // Re-export SubagentResult and SubagentStatus from the unified registry to avoid duplication.
-pub use crate::tools::async_executor::SubagentResult;
-pub use crate::tools::async_executor::AsyncTaskStatus as SubagentStatus;
+pub use crate::tools::framework::async_executor::SubagentResult;
+pub use crate::tools::framework::async_executor::AsyncTaskStatus as SubagentStatus;
 
 /// A read-only view of an async task entry, projected into the
 /// subagent domain model.

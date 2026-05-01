@@ -157,7 +157,7 @@ impl AsyncReceipt {
 }
 
 /// Status of an async task (re-exported from `async_executor` for convenience)
-pub use crate::tools::async_executor::AsyncTaskStatus;
+pub use crate::tools::framework::async_executor::AsyncTaskStatus;
 
 /// Result of a hook handler invocation
 #[derive(Debug)]

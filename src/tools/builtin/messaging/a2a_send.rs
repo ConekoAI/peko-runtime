@@ -34,7 +34,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};
-use crate::tools::Tool;
+use crate::tools::core::Tool;
 
 /// Arguments for the `a2a_send` tool
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,77 +1,52 @@
 //! Tools for agents
 //!
-//! Core built-in tools only. Heavy tools (web_search, fetch, http, browser, memory)
-//! should be provided via external MCP servers or the extension system.
+//! This module is organized into four layers:
 //!
-//! Custom tools use the Universal Tool Protocol (see `universal` module).
+//! 1. **`core`** — Fundamental traits and types (`Tool`, `ToolContext`, `ToolResult`, `ToolError`)
+//! 2. **`framework`** — Reusable execution frameworks (`async_executor`, `universal` protocol, `shared` utilities)
+//! 3. **`registry`** — Tool discovery, factory, and registration (`factory`, `builtin` registrar)
+//! 4. **`builtin`** — Built-in tool implementations (filesystem, shell, cron, session, messaging, task management)
+//!
+//! Heavy tools (web_search, fetch, http, browser, memory) are provided via external MCP servers
+//! or the extension system.
 
-/// Built-in tool registry for ExtensionCore integration
-pub mod builtin_registry;
+pub mod builtin;
+pub mod core;
+pub mod framework;
+pub mod registry;
 
-pub mod a2a_send;
-pub mod agent_spawn;
-pub mod async_executor;
-pub mod task_management;
-pub mod context;
-pub mod cron_tool;
-pub mod factory;
-pub mod glob;
-pub mod grep;
-pub mod message_tool;
-pub mod read_file;
-pub mod session_introspection;
+// Re-exports from core for convenience — these are the most commonly imported types.
+pub use core::{AbortSignal, Tool, ToolContext, ToolError, ToolResult, ToolWithContext};
 
-pub mod shell;
-pub mod str_replace_file;
-pub mod traits;
-// pub mod wrapper;  // Removed in ADR-019 cleanup
-pub mod write_file;
-
-/// Universal Tool Protocol - Backend-agnostic tool integration
-///
-/// This module implements the custom tool system using JSON-RPC 2.0 over stdio.
-/// It supports reserved parameter injection and works with any language.
-pub mod universal;
-
-/// Shared utilities for tool implementations
-///
-/// Provides common functionality used by both Universal Tools and MCP tools
-/// to avoid code duplication and ensure consistent behavior.
-pub mod shared;
-
-pub use a2a_send::A2aSendTool;
-pub use agent_spawn::AgentSpawnTool;
-pub use task_management::TaskTool;
-pub use context::{AbortSignal, ToolContext, ToolWithContext};
-pub use cron_tool::CronTool;
-pub use factory::{McpDiscoveryResult, McpFactoryConfig, ToolFactory, ToolFactoryConfig};
-pub use glob::GlobTool;
-pub use grep::GrepTool;
-pub use message_tool::{ChannelType, MessageConfig, MessageResult, MessageTool};
-pub use read_file::ReadFileTool;
-pub use session_introspection::{
-    SessionCache, SessionInfo, SessionIntrospector, SessionRegistry as SessionIntrospectionRegistry,
-    SessionTool,
+// Re-exports from builtin for convenience.
+pub use builtin::{
+    A2aSendTool, AgentSpawnTool, ChannelType, CronTool, GlobTool, GrepTool, MessageConfig,
+    MessageResult, MessageTool, ReadFileTool, SessionCache, SessionInfo, SessionIntrospector,
+    SessionIntrospectionRegistry, SessionTool, ShellTool, StrReplaceFileTool, TaskTool,
+    WriteFileTool,
 };
 
-/// Backward-compatible alias for `SessionIntrospector`.
-#[deprecated(since = "0.2.0", note = "Use SessionIntrospector instead")]
-pub use session_introspection::SessionIntrospector as AgentSessionRegistry;
-// Backward compatibility — deprecated, use SessionCache
+// Backward-compatible aliases
 #[allow(deprecated)]
-pub use session_introspection::InMemorySessionRegistry;
-pub use shell::ShellTool;
-pub use str_replace_file::StrReplaceFileTool;
-pub use traits::{Tool, ToolError, ToolResult};
-pub use write_file::WriteFileTool;
+pub use builtin::AgentSessionRegistry;
+#[allow(deprecated)]
+pub use builtin::InMemorySessionRegistry;
 
-// Async tool trait re-exports
-// Async tool framework re-exports
-pub use async_executor::{
+// Re-exports from registry
+pub use registry::{
+    BuiltinToolRegistrar, BuiltinToolRegistrarConfig, McpDiscoveryResult, McpFactoryConfig,
+    ToolCreationResult, ToolFactory, ToolFactoryConfig,
+};
+
+// Async tool framework re-exports (commonly used across the codebase)
+pub use framework::{
     AsyncExecutor, AsyncResultDeliveryMode, AsyncResultQueueManager, AsyncTaskCompletionEvent,
     AsyncTaskEntry, AsyncTaskEventBus, AsyncTaskId, AsyncTaskReceipt, AsyncTaskRegistry,
     AsyncTaskResult, AsyncTaskStatus, AsyncToolConfig, CallbackDelivery, ChannelDelivery,
     DefaultResultFormatter, DeliveryTarget, FormatterRegistry, QueueDelivery, ResultDelivery,
     ResultFormatter, SessionMessageType, SharedAsyncResultQueueManager, SharedAsyncTaskRegistry,
     TaskFileRecord, TaskFileWriter, WaitResult,
+    build_completion_event, cancel_task_across_all_registries, find_run_across_all_registries,
+    find_task_across_all_registries, get_or_create_registry_for_agent,
+    list_all_runs_across_all_registries, list_all_tasks_across_all_registries,
 };
