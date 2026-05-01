@@ -26,11 +26,6 @@ pub use builtin::{
     WriteFileTool,
 };
 
-// Backward-compatible aliases
-#[allow(deprecated)]
-pub use builtin::AgentSessionRegistry;
-#[allow(deprecated)]
-pub use builtin::InMemorySessionRegistry;
 
 // Re-exports from registry
 pub use registry::{

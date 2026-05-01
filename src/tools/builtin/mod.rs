@@ -19,12 +19,9 @@ pub use cron::CronTool;
 pub use fs::{GlobTool, GrepTool, ReadFileTool, StrReplaceFileTool, WriteFileTool};
 pub use messaging::{A2aSendTool, AgentSpawnTool, ChannelType, MessageConfig, MessageResult, MessageTool};
 pub use session::{
-    InMemorySessionRegistry, SessionCache, SessionInfo, SessionIntrospector,
+    SessionCache, SessionInfo, SessionIntrospector,
     SessionRegistry as SessionIntrospectionRegistry, SessionTool,
 };
 pub use shell::ShellTool;
 pub use task_management::TaskTool;
 
-// Backward-compatible alias for `SessionIntrospector`.
-#[deprecated(since = "0.2.0", note = "Use SessionIntrospector instead")]
-pub use session::SessionIntrospector as AgentSessionRegistry;

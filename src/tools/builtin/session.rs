@@ -602,10 +602,6 @@ impl SessionRegistry for SessionCache {
     }
 }
 
-// Backward compatibility alias
-#[deprecated(since = "0.2.0", note = "Use SessionCache instead")]
-pub type InMemorySessionRegistry = SessionCache;
-
 // ====================================================================================
 // Helpers: LlmMessage → HistoryMessage conversion
 // ====================================================================================
