@@ -149,9 +149,12 @@ impl BuiltinToolRegistrar {
         Ok(())
     }
 
-    /// Get list of all built-in tool names
+    /// Get list of globally-registered built-in tool names.
+    ///
+    /// These tools are registered once at daemon startup by
+    /// `BuiltinToolRegistrar::register()` and are shared across all agents.
     #[must_use]
-    pub fn all_tool_names() -> Vec<&'static str> {
+    pub fn global_tool_names() -> Vec<&'static str> {
         vec![
             "shell",
             "read_file",
@@ -162,11 +165,28 @@ impl BuiltinToolRegistrar {
             "session",
             "cron",
             "task",
-            "a2a_send",
         ]
     }
 
-    /// Check if a tool name is a built-in tool
+    /// Get list of agent-specific built-in tool names.
+    ///
+    /// These tools require agent-specific runtime dependencies
+    /// (e.g. `SubagentExecutor`, caller identity) and are registered
+    /// per-agent in `Agent::init_builtins_async()`.
+    #[must_use]
+    pub fn agent_specific_tool_names() -> Vec<&'static str> {
+        vec!["agent_spawn", "a2a_send"]
+    }
+
+    /// Get list of ALL built-in tool names (global + agent-specific).
+    #[must_use]
+    pub fn all_tool_names() -> Vec<&'static str> {
+        let mut names = Self::global_tool_names();
+        names.extend(Self::agent_specific_tool_names());
+        names
+    }
+
+    /// Check if a tool name is a built-in tool (global or agent-specific).
     #[must_use]
     pub fn is_builtin(name: &str) -> bool {
         let name_lower = name.to_lowercase();
@@ -175,10 +195,13 @@ impl BuiltinToolRegistrar {
             .any(|&n| n.to_lowercase() == name_lower)
     }
 
-    /// Check if a tool name is an agent-specific built-in (registered per-agent)
+    /// Check if a tool name is an agent-specific built-in (registered per-agent).
     #[must_use]
     pub fn is_agent_specific_builtin(name: &str) -> bool {
-        matches!(name, "a2a_send" | "agent_spawn" | "session")
+        let name_lower = name.to_lowercase();
+        Self::agent_specific_tool_names()
+            .iter()
+            .any(|&n| n.to_lowercase() == name_lower)
     }
 }
 
@@ -188,9 +211,15 @@ mod tests {
 
     #[test]
     fn test_is_builtin() {
+        // Global tools
         assert!(BuiltinToolRegistrar::is_builtin("shell"));
         assert!(BuiltinToolRegistrar::is_builtin("read_file"));
         assert!(BuiltinToolRegistrar::is_builtin("SHELL")); // case insensitive
+        // Agent-specific tools
+        assert!(BuiltinToolRegistrar::is_builtin("agent_spawn"));
+        assert!(BuiltinToolRegistrar::is_builtin("a2a_send"));
+        assert!(BuiltinToolRegistrar::is_builtin("A2A_SEND")); // case insensitive
+        // Unknown
         assert!(!BuiltinToolRegistrar::is_builtin("unknown_tool"));
     }
 
@@ -199,6 +228,35 @@ mod tests {
         let names = BuiltinToolRegistrar::all_tool_names();
         assert!(names.contains(&"shell"));
         assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"agent_spawn"));
+        assert!(names.contains(&"a2a_send"));
+    }
+
+    #[test]
+    fn test_global_tool_names() {
+        let names = BuiltinToolRegistrar::global_tool_names();
+        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"task"));
+        assert!(!names.contains(&"agent_spawn")); // agent-specific, not global
+        assert!(!names.contains(&"a2a_send")); // agent-specific, not global
+    }
+
+    #[test]
+    fn test_agent_specific_tool_names() {
+        let names = BuiltinToolRegistrar::agent_specific_tool_names();
+        assert!(names.contains(&"agent_spawn"));
+        assert!(names.contains(&"a2a_send"));
+        assert!(!names.contains(&"shell")); // global, not agent-specific
+    }
+
+    #[test]
+    fn test_is_agent_specific_builtin() {
+        assert!(BuiltinToolRegistrar::is_agent_specific_builtin("agent_spawn"));
+        assert!(BuiltinToolRegistrar::is_agent_specific_builtin("a2a_send"));
+        assert!(BuiltinToolRegistrar::is_agent_specific_builtin("AGENT_SPAWN")); // case insensitive
+        assert!(!BuiltinToolRegistrar::is_agent_specific_builtin("shell"));
+        assert!(!BuiltinToolRegistrar::is_agent_specific_builtin("session"));
+        assert!(!BuiltinToolRegistrar::is_agent_specific_builtin("unknown"));
     }
 }
 
