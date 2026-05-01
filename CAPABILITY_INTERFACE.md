@@ -1010,17 +1010,17 @@ Response: `{ "cancelled": true, "job_id": "cron_7kxmnq" }`
 
 ## 4. MCP Integration
 
-### 4.1 Bundled MCP Servers
+### 4.1 External MCP Servers
 
-These MCP servers are maintained by the Pekobot project and distributed separately from the runtime binary. They are installable via the capability ecosystem.
+Pekobot does not bundle or maintain MCP servers. Agents obtain MCP servers from the community ecosystem (e.g., [github.com/modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers)) or external projects.
 
-| Package | Provides | Notes |
+| Example Package | Provides | Notes |
 |---------|----------|-------|
-| `mcp-web` | `web_search`, `fetch`, `http` | Web search, URL fetch, raw HTTP |
-| `mcp-browser` | `browser_navigate`, `browser_click`, `browser_type`, `browser_screenshot` | Playwright-based browser automation |
-| `mcp-memory` | `memory_store`, `memory_retrieve`, `memory_search`, `memory_delete` | Persistent vector memory |
+| `@anthropic/mcp-filesystem-server` | File system operations | Read/write files |
+| `@anthropic/mcp-browser-server` | Browser automation | Playwright-based |
+| `@anthropic/mcp-sqlite-server` | SQLite database access | Query databases |
 
-These are not built into the runtime. An agent that needs `web_search` must declare `mcps = ["mcp-web"]` in `config.toml`.
+These are not built into the runtime. An agent that needs external tools must declare them as MCP dependencies in `config.toml`.
 
 ### 4.2 Tool Name Conflict Resolution
 
@@ -1039,9 +1039,10 @@ By default all tools exposed by an MCP server are registered with the LLM. To re
 ```json
 {
   "mcpServers": {
-    "mcp-web": {
-      "command": "pekobot-mcp-web",
-      "allow_tools": ["web_search", "fetch"]
+    "filesystem": {
+      "command": "mcp-filesystem-server",
+      "args": ["/home/user/docs"],
+      "allow_tools": ["read_file", "write_file"]
     }
   }
 }

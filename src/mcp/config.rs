@@ -548,13 +548,13 @@ mod tests {
     #[test]
     fn test_stdio_config() {
         let config =
-            McpServerConfig::stdio("browser", "mcp-browser", vec!["--headless".to_string()])
+            McpServerConfig::stdio("my-server", "my-server-cmd", vec!["--verbose".to_string()])
                 .with_env(HashMap::from([("KEY".to_string(), "value".to_string())]));
 
-        assert_eq!(config.name, "browser");
+        assert_eq!(config.name, "my-server");
         assert_eq!(config.transport, TransportType::Stdio);
-        assert_eq!(config.command, Some("mcp-browser".to_string()));
-        assert_eq!(config.args, vec!["--headless"]);
+        assert_eq!(config.command, Some("my-server-cmd".to_string()));
+        assert_eq!(config.args, vec!["--verbose"]);
         assert_eq!(config.env.get("KEY"), Some(&"value".to_string()));
         assert!(config.validate().is_ok());
     }
@@ -597,9 +597,9 @@ mod tests {
     fn test_config_roundtrip() {
         let mut config = McpConfig::new();
         config.add_server(McpServerConfig::stdio(
-            "browser",
-            "mcp-browser",
-            vec!["--headless".to_string()],
+            "my-server",
+            "my-server-cmd",
+            vec!["--verbose".to_string()],
         ));
         config.add_server(McpServerConfig::sse("remote", "https://example.com/mcp"));
 
@@ -607,7 +607,7 @@ mod tests {
         let parsed = McpConfig::from_toml(&toml).unwrap();
 
         assert_eq!(parsed.servers.len(), 2);
-        assert_eq!(parsed.servers[0].name, "browser");
+        assert_eq!(parsed.servers[0].name, "my-server");
         assert_eq!(parsed.servers[1].name, "remote");
     }
 
@@ -615,33 +615,33 @@ mod tests {
     fn test_config_from_toml() {
         let toml = r#"
 [[server]]
-name = "browser"
+name = "my-server"
 transport = "stdio"
-command = "mcp-browser"
-args = ["--headless"]
+command = "my-server-cmd"
+args = ["--verbose"]
 auto_start = true
 
 [[server]]
-name = "memory"
+name = "remote"
 transport = "sse"
-endpoint = "https://memory.example.com/mcp"
+endpoint = "https://remote.example.com/mcp"
 health_check_interval_secs = 60
 "#;
 
         let config = McpConfig::from_toml(toml).unwrap();
         assert_eq!(config.servers.len(), 2);
 
-        let browser = config.get_server("browser").unwrap();
-        assert_eq!(browser.transport, TransportType::Stdio);
-        assert_eq!(browser.command, Some("mcp-browser".to_string()));
+        let my_server = config.get_server("my-server").unwrap();
+        assert_eq!(my_server.transport, TransportType::Stdio);
+        assert_eq!(my_server.command, Some("my-server-cmd".to_string()));
 
-        let memory = config.get_server("memory").unwrap();
-        assert_eq!(memory.transport, TransportType::Sse);
+        let remote = config.get_server("remote").unwrap();
+        assert_eq!(remote.transport, TransportType::Sse);
         assert_eq!(
-            memory.endpoint,
-            Some("https://memory.example.com/mcp".to_string())
+            remote.endpoint,
+            Some("https://remote.example.com/mcp".to_string())
         );
-        assert_eq!(memory.health_check_interval_secs, 60);
+        assert_eq!(remote.health_check_interval_secs, 60);
     }
 
     #[test]
@@ -657,9 +657,9 @@ health_check_interval_secs = 60
     fn test_config_with_reserved_params_from_toml() {
         let toml = r#"
 [[server]]
-name = "memory"
+name = "my-server"
 transport = "stdio"
-command = "mcp-memory"
+command = "my-server-cmd"
 
 [server.reserved_parameters]
 agent_id = { source = "runtime", field = "agent_id" }
@@ -671,19 +671,19 @@ environment = { source = "static", value = "production" }
         let config = McpConfig::from_toml(toml).unwrap();
         assert_eq!(config.servers.len(), 1);
 
-        let memory = config.get_server("memory").unwrap();
-        assert_eq!(memory.reserved_parameters.len(), 4);
+        let server = config.get_server("my-server").unwrap();
+        assert_eq!(server.reserved_parameters.len(), 4);
 
         // Check runtime param
-        let agent_id = memory.reserved_parameters.get("agent_id").unwrap();
+        let agent_id = server.reserved_parameters.get("agent_id").unwrap();
         assert!(matches!(agent_id, ParamSource::Runtime { field } if field == "agent_id"));
 
         // Check env param
-        let api_key = memory.reserved_parameters.get("api_key").unwrap();
+        let api_key = server.reserved_parameters.get("api_key").unwrap();
         assert!(matches!(api_key, ParamSource::Env { var } if var == "API_KEY"));
 
         // Check static param
-        let env = memory.reserved_parameters.get("environment").unwrap();
+        let env = server.reserved_parameters.get("environment").unwrap();
         assert!(matches!(env, ParamSource::Static { value } if value == "production"));
     }
 }

@@ -140,9 +140,9 @@ Extend `mcp.toml` to declare reserved params per server:
 
 ```toml
 [[server]]
-name = "memory"
+name = "my-server"
 transport = "stdio"
-command = "mcp-memory"
+command = "my-server-cmd"
 
 [server.reserved_parameters]
 agent_id = { source = "runtime", field = "agent_id" }
@@ -321,7 +321,7 @@ server.setRequestHandler(InitializeRequestSchema, () => ({
 
 2. **Phase 2**: Sidecar manifest for complex cases
    ```json
-   // mcp-memory.pekobot.json
+   // my-server.pekobot.json
    {
      "reserved_parameters": { ... },
      "transforms": { ... }

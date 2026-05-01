@@ -8,9 +8,9 @@
 //!
 //! ```toml
 //! [[server]]
-//! name = "memory"
+//! name = "my-server"
 //! transport = "stdio"
-//! command = "mcp-memory"
+//! command = "my-server-cmd"
 //!
 //! [server.reserved_parameters]
 //! agent_id = { source = "runtime", field = "agent_id" }

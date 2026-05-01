@@ -4,6 +4,8 @@
 
 Starting with v0.7.0, Pekobot has migrated heavy tools (web_search, fetch, http, browser, memory) from embedded core to standalone MCP servers. This guide helps you understand and navigate this change.
 
+> **Note:** The built-in MCP servers (`mcp-web`, `mcp-browser`, `mcp-memory`) have been removed from the main repository. They should be maintained as separate external projects or obtained from the community MCP servers ecosystem.
+
 ## What Changed
 
 ### Before (v0.6.x)
@@ -24,7 +26,7 @@ pekobot (single binary, ~20MB)
 
 ### After (v0.7.0+)
 
-Core tools are minimal; heavy tools are external:
+Core tools are minimal; heavy tools are provided by external MCP servers:
 
 ```
 pekobot (core binary, ~20MB)
@@ -33,27 +35,28 @@ pekobot (core binary, ~20MB)
 ├── apply_patch
 └── cron
 
-MCP Servers (separate binaries)
-├── mcp-web (9.1MB) - web_search, fetch, http
-├── mcp-browser (13MB) - browser automation
-└── mcp-memory (4MB) - persistent memory
+MCP Servers (external binaries — install separately)
+├── @anthropic/mcp-filesystem-server
+├── @anthropic/mcp-browser-server
+├── @anthropic/mcp-sqlite-server
+└── community MCP servers
 ```
 
 ## Migration Steps
 
 ### 1. Install MCP Servers
 
-Install the servers you need:
+Install the servers you need from the community ecosystem:
 
 ```bash
-# Install web tools (search, fetch, HTTP)
-pekobot mcp install web
+# Example: install filesystem server via npm
+npm install -g @anthropic/mcp-filesystem-server
 
-# Install browser automation
-pekobot mcp install browser
+# Example: install browser server via npm
+npm install -g @anthropic/mcp-browser-server
 
-# Install memory storage
-pekobot mcp install memory
+# Example: install SQLite server via npm
+npm install -g @anthropic/mcp-sqlite-server
 ```
 
 ### 2. Verify Installation
@@ -72,9 +75,8 @@ Config: /home/user/.pekobot/mcp.toml
 
 NAME            STATUS       TOOLS      BINARY
 ------------------------------------------------------------
-web             ✅           0          installed
-browser         ✅           0          installed
-memory          ✅           0          installed
+filesystem      ✅           3          installed
+browser         ✅           4          installed
 ```
 
 ### 3. Test Servers
@@ -82,9 +84,8 @@ memory          ✅           0          installed
 Test each server to ensure it works:
 
 ```bash
-pekobot mcp test web
+pekobot mcp test filesystem
 pekobot mcp test browser
-pekobot mcp test memory
 ```
 
 ### 4. Verify Tool Loading
@@ -119,23 +120,19 @@ pekobot mcp config --edit
 ### Config Format
 
 ```toml
-[servers.web]
-command = "mcp-web"
-args = []
-env = {}
-description = "Web search, fetch, and HTTP tools"
+[[server]]
+name = "filesystem"
+transport = "stdio"
+command = "mcp-filesystem-server"
+args = ["/home/user/docs"]
+auto_start = true
 
-[servers.browser]
-command = "mcp-browser"
-args = []
-env = {}
-description = "Browser automation tools"
-
-[servers.memory]
-command = "mcp-memory"
-args = []
-env = {}
-description = "Memory and knowledge storage"
+[[server]]
+name = "browser"
+transport = "stdio"
+command = "mcp-browser-server"
+args = ["--headless"]
+env = { "BROWSER_TIMEOUT" = "30" }
 ```
 
 ## CLI Commands
@@ -143,14 +140,11 @@ description = "Memory and knowledge storage"
 ### Installation
 
 ```bash
-# Install a server
-pekobot mcp install web
+# Add a server manually
+pekobot mcp add filesystem stdio --command mcp-filesystem-server --args /home/user/docs
 
-# Force reinstall
-pekobot mcp install web --force
-
-# Build from source (for development)
-pekobot mcp install web --build
+# Remove a server
+pekobot mcp remove filesystem
 ```
 
 ### Status & Discovery
@@ -200,10 +194,7 @@ pekobot mcp call web http --kv method=GET --kv url=https://api.example.com
 
 **Problem**: MCP server binary is missing.
 
-**Solution**: Install the server:
-```bash
-pekobot mcp install <web|browser|memory>
-```
+**Solution**: Install the server from the community ecosystem (e.g., via npm, cargo, etc.) and ensure it is in your PATH.
 
 ### "No MCP tools loaded"
 
@@ -211,8 +202,8 @@ pekobot mcp install <web|browser|memory>
 
 **Solution**: 
 1. Check status: `pekobot mcp status`
-2. Test server: `pekobot mcp test web`
-3. Check binary exists: `ls ~/.pekobot/mcp-servers/`
+2. Test server: `pekobot mcp test filesystem`
+3. Check binary exists: `which mcp-filesystem-server`
 
 ### "Failed to initialize MCP manager"
 
@@ -221,12 +212,9 @@ pekobot mcp install <web|browser|memory>
 **Solution**:
 1. Check server binary works directly:
    ```bash
-   ~/.pekobot/mcp-servers/mcp-web --help
+   mcp-filesystem-server --help
    ```
-2. Rebuild from source:
-   ```bash
-   pekobot mcp install web --force --build
-   ```
+2. Reinstall from the community ecosystem if needed.
 
 ### Backward Compatibility
 
@@ -260,14 +248,14 @@ pekobot mcp add my-server stdio --command /path/to/server
 
 ### Q: Where are MCP binaries stored?
 
-**A**: `~/.pekobot/mcp-servers/`
+**A**: MCP binaries are installed via your system package manager (npm, cargo, etc.) and should be in your PATH. Pekobot does not manage or store MCP server binaries internally.
 
 ### Q: How do I uninstall an MCP server?
 
-**A**: Remove the binary and config:
+**A**: Remove the server from Pekobot's config and uninstall via your package manager:
 ```bash
-rm ~/.pekobot/mcp-servers/mcp-web
-# Edit ~/.pekobot/mcp.toml to remove server section
+pekobot mcp remove filesystem
+npm uninstall -g @anthropic/mcp-filesystem-server
 ```
 
 ## Performance Impact
@@ -275,7 +263,7 @@ rm ~/.pekobot/mcp-servers/mcp-web
 | Metric | Before | After |
 |--------|--------|-------|
 | Core binary size | ~20MB | ~20MB |
-| With all MCP servers | N/A | +26MB (web + browser + memory) |
+| With MCP servers | N/A | Varies by server |
 | Startup time | ~50ms | ~50ms + MCP connection |
 | Tool latency | 1-10ms | 5-50ms (cross-process) |
 

@@ -1,10 +1,7 @@
 //! Tools for agents
 //!
-//! Core tools only. Heavy tools (web_search, fetch, http, browser, memory)
-//! have been migrated to standalone MCP servers:
-//! - mcp-web: web_search, fetch, http
-//! - mcp-browser: browser automation  
-//! - mcp-memory: persistent memory storage
+//! Core built-in tools only. Heavy tools (web_search, fetch, http, browser, memory)
+//! should be provided via external MCP servers or the extension system.
 //!
 //! Custom tools use the Universal Tool Protocol (see `universal` module).
 

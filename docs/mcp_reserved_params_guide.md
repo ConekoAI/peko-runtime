@@ -17,9 +17,9 @@ In your `mcp.toml` configuration:
 
 ```toml
 [[server]]
-name = "memory"
+name = "my-server"
 transport = "stdio"
-command = "mcp-memory"
+command = "my-server-cmd"
 
 [server.reserved_parameters]
 agent_id = { source = "runtime", field = "agent_id" }
@@ -279,5 +279,5 @@ Potential future improvements:
 ## See Also
 
 - [MCP Reserved Parameters Proposal](./mcp_reserved_params_proposal.md) - Original design document
-- [MCP Memory Server Example](../examples/mcp-memory-server/) - Working implementation
+- [MCP Memory Server Example](../examples/mcp-memory-server/) - Example third-party MCP server
 - [Universal Tools Documentation](./universal_tools.md) - Similar feature for native tools

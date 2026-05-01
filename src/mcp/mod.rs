@@ -14,8 +14,8 @@
 //! async fn main() -> anyhow::Result<()> {
 //!     // Create transport
 //!     let transport = StdioTransport::spawn(
-//!         "mcp-browser",
-//!         &["--headless".to_string()],
+//!         "my-mcp-server",
+//!         &["--verbose".to_string()],
 //!         &HashMap::new(),
 //!         None,
 //!     ).await?;
@@ -37,8 +37,8 @@
 //!     }
 //!
 //!     // Call a tool
-//!     let result = client.call_tool("navigate", serde_json::json!({
-//!         "url": "https://example.com"
+//!     let result = client.call_tool("my_tool", serde_json::json!({
+//!         "arg": "value"
 //!     })).await?;
 //!
 //!     Ok(())

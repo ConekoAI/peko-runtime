@@ -1015,10 +1015,10 @@ CLI commands shall support structured output for scripting and CI integration.
 **Scenario:** Coordinator delegates research tasks to worker agents in parallel; writer synthesises results.
 
 **Flow:**
-1. `team.toml` defines coordinator (×1), researcher (×4), writer (×1) with shared `mcp-browser` and in-memory bus
+1. `team.toml` defines coordinator (×1), researcher (×4), writer (×1) with shared browser MCP server and in-memory bus
 2. `pekobot team deploy -f team.toml`
 3. Coordinator receives task, sends `Task` messages to researcher instances via bus
-4. Researchers use `mcp-browser` (shared, one process) to gather information; send `TaskResult` back via bus
+4. Researchers use a shared browser MCP server (one process) to gather information; send `TaskResult` back via bus
 5. Coordinator aggregates, sends to writer; writer produces final document in shared file workspace
 6. `pekobot team scale research-team researcher 8` doubles researchers mid-run
 
@@ -1220,7 +1220,7 @@ CLI commands shall support structured output for scripting and CI integration.
 
 **Removed from v1.0:**
 - `team.yaml` references updated to `team.toml` (TOML is primary; YAML also accepted)
-- `web_search` removed from built-in tools list — migrated to `mcp-web` MCP server
+- `web_search` removed from built-in tools list — provided by external MCP servers
 - Coordination pattern requirement (REQ-TR-004 in v1.0) removed — patterns are emergent from bus message types, not explicitly configured
 
 ---

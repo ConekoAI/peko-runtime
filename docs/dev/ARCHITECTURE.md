@@ -107,15 +107,15 @@ graph LR
     end
     
     subgraph "External MCP Servers"
-        WEB[mcp-web]
-        BROWSER[mcp-browser]
-        MEMORY[mcp-memory]
+        FSrv[mcp-filesystem-server]
+        BSrv[mcp-browser-server]
+        RSrv[remote MCP servers]
     end
     
     MANAGER --> CLIENT
-    CLIENT --> WEB
-    CLIENT --> BROWSER
-    CLIENT --> MEMORY
+    CLIENT --> FSrv
+    CLIENT --> BSrv
+    CLIENT --> RSrv
     PROXY --> CLIENT
 ```
 
