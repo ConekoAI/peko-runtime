@@ -25,7 +25,8 @@ Write-Host ""
 $testDir = $PSScriptRoot
 $tests = @(
     @{ Name = "Blocking A2A Send"; Script = "a2a_blocking.ps1" },
-    @{ Name = "Async A2A Send"; Script = "a2a_async.ps1" }
+    @{ Name = "Async A2A Send"; Script = "a2a_async.ps1" },
+    @{ Name = "A2A Session Isolation"; Script = "a2a_isolation.ps1" }
 )
 
 $results = @()

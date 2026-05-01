@@ -184,9 +184,14 @@ For long-running delegation, use the framework-level async parameter:
         let args: A2aSendArgs = serde_json::from_value(params)
             .map_err(|e| anyhow::anyhow!("Invalid arguments: {e}"))?;
 
+        // Use caller_agent as the user identity so each (caller, target) pair
+        // gets its own isolated session namespace. Without this, all A2A calls
+        // would share the "default" user session.
+        let caller = self.caller_agent.as_deref().unwrap_or("default");
         let request = MessageRequest::new(&args.target_agent, args.message)
             .with_session_opt(args.session_id)
             .with_team_opt(args.team)
+            .with_user(caller)
             .with_caller_agent_opt(self.caller_agent.clone());
 
         let result = self.agent_service.execute_message(request).await;
