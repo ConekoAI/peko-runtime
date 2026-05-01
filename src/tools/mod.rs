@@ -12,7 +12,6 @@
 pub mod builtin_registry;
 
 pub mod a2a_send;
-pub mod agent_management;
 pub mod agent_spawn;
 pub mod async_executor;
 pub mod task_management;
@@ -44,7 +43,6 @@ pub mod universal;
 pub mod shared;
 
 pub use a2a_send::A2aSendTool;
-pub use agent_management::{AgentInfoTool, AgentsListTool, ManagerCommand};
 pub use agent_spawn::AgentSpawnTool;
 pub use task_management::TaskTool;
 pub use context::{AbortSignal, ToolContext, ToolWithContext};
