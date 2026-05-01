@@ -18,8 +18,8 @@
 use crate::tools::framework::async_executor::{
     AsyncResultDeliveryMode, AsyncTaskResult, AsyncToolConfig, DeliveryTarget,
 };
-use crate::extensions::core::HookContext;
-use crate::extensions::services::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
+use crate::extensions::core::context::HookContext;
+use crate::extensions::transport::async_transport::{AsyncTaskTransport, LocalAsyncTransport};
 use crate::extensions::services::tool_execution::{ToolExecutionConfig, ToolExecutionService};
 use crate::extensions::types::{HookOutput, HookResult};
 use anyhow::Result;

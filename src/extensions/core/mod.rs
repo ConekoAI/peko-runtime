@@ -51,14 +51,20 @@
 // Re-export hook point definitions
 pub use hook_points::{common, HookPoint, HookPointBuilder};
 
-// Re-export async adapter
-pub use async_adapter::ExtensionAsyncAdapter;
+// Re-export async bridge
+pub use async_bridge::ExtensionAsyncAdapter;
 
 // Re-export context types
-pub use context::{
-    ClosureHookHandler, ExtensionConfig, ExtensionServices, HookBinding, HookBindingBuilder,
-    HookContext, HookHandler, HookHandlerFactory, HookState, TelemetryService,
-};
+pub use context::{HookContext, HookState};
+
+// Re-export handler types
+pub use handler::{ClosureHookHandler, HookHandler, HookHandlerFactory};
+
+// Re-export binding types
+pub use binding::{HookBinding, HookBindingBuilder};
+
+// Re-export config/services types
+pub use config::{ExtensionConfig, ExtensionServices, TelemetryService};
 
 // Re-export registry types
 pub use registry::{
@@ -82,8 +88,11 @@ pub use crate::extensions::services::{
 };
 
 // Submodules
-pub mod async_adapter;
+pub mod async_bridge;
+pub mod binding;
+pub mod config;
 pub mod context;
+pub mod handler;
 pub mod hook_points;
 pub mod hook_registry;
 pub mod registry;

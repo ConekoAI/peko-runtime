@@ -4,23 +4,7 @@
 //! These services handle cross-cutting concerns like parameter injection,
 //! validation, and tool execution.
 //!
-//! # Architecture
-//!
-//! ```text
-//! +--------------------- EXTENSION SERVICES ------------------------+
-//! |                                                                 |
-//! |  ReservedParamsService    ToolExecutionService                  |
-//! |  - Config parsing         - Parameter injection                 |
-//! |  - Validation             - Schema filtering                    |
-//! |  - Resolution             - Execution pipeline                  |
-//! |                                                                 |
-//! +---------------------------+-------------------------------------+
-//!                             |
-//!                             v
-//! +--------------------- EXTENSION ADAPTERS ------------------------+
-//! |  (Universal Tool, MCP, etc. - thin wrappers around services)    |
-//! +-----------------------------------------------------------------+
-//! ```
+//! Async transport infrastructure has been moved to [`crate::extensions::transport`].
 
 // Reserved parameters module
 pub mod reserved_params;
@@ -28,17 +12,19 @@ pub mod reserved_params;
 // Tool execution module
 pub mod tool_execution;
 
-// Async execution router module
-pub mod async_router;
+// Re-export transport modules for backward compatibility
+pub use crate::extensions::transport::async_router;
+pub use crate::extensions::transport::async_transport;
 
-// Async task transport abstraction (ADR-020)
-pub mod async_transport;
-
-// Re-export main types
-pub use async_router::{AsyncExecutionRouter, AsyncReservedParams, ToolExecutionContext};
-pub use async_transport::{
-    AsyncTaskTransport, DaemonIpcTransport, LocalAsyncTransport, UnavailableAsyncTransport,
+// Re-export transport types for backward compatibility
+pub use crate::extensions::transport::async_router::{
+    AsyncExecutionRouter, AsyncReservedParams, ToolExecutionContext,
 };
+pub use crate::extensions::transport::async_transport::{
+    create_local_transport, create_transport, AsyncTaskTransport, DaemonIpcTransport,
+    LocalAsyncTransport, UnavailableAsyncTransport,
+};
+
 pub use reserved_params::{ParamSource, ReservedParamsConfig, ReservedParamsService};
 pub use tool_execution::{ToolExecutionConfig, ToolExecutionService};
 
@@ -52,14 +38,14 @@ pub struct Services {
     /// Tool execution service (with panic isolation and timeout)
     tool_execution: Arc<tool_execution::ToolExecutionService>,
     /// Async execution router (for _async parameter handling)
-    async_router: Arc<async_router::AsyncExecutionRouter>,
+    async_router: Arc<AsyncExecutionRouter>,
 }
 
 impl Services {
     /// Create new services container with default local transport
     #[must_use]
     pub fn new() -> Self {
-        Self::with_transport(async_transport::create_local_transport())
+        Self::with_transport(crate::extensions::transport::async_transport::create_local_transport())
     }
 
     /// Create services with a custom async task transport
@@ -68,9 +54,7 @@ impl Services {
         Self {
             reserved_params: Arc::new(reserved_params::ReservedParamsService::new()),
             tool_execution: Arc::new(tool_execution::ToolExecutionService::new()),
-            async_router: Arc::new(async_router::AsyncExecutionRouter::with_transport(
-                transport,
-            )),
+            async_router: Arc::new(AsyncExecutionRouter::with_transport(transport)),
         }
     }
 
@@ -79,7 +63,7 @@ impl Services {
     /// - If daemon is reachable, uses `DaemonHttpTransport`
     /// - Otherwise, returns an error — async tool execution requires the daemon
     pub async fn new_auto() -> anyhow::Result<Self> {
-        let transport = async_transport::create_transport().await?;
+        let transport = crate::extensions::transport::async_transport::create_transport().await?;
         Ok(Self::with_transport(transport))
     }
 
@@ -109,13 +93,13 @@ impl Services {
 
     /// Get the async execution router
     #[must_use]
-    pub fn async_router(&self) -> &async_router::AsyncExecutionRouter {
+    pub fn async_router(&self) -> &AsyncExecutionRouter {
         &self.async_router
     }
 
     /// Get arc to async execution router
     #[must_use]
-    pub fn async_router_arc(&self) -> Arc<async_router::AsyncExecutionRouter> {
+    pub fn async_router_arc(&self) -> Arc<AsyncExecutionRouter> {
         self.async_router.clone()
     }
 }

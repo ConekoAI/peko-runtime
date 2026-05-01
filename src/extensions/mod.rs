@@ -69,10 +69,10 @@
 // Re-export core types
 pub use core::{
     common,
-    context::{
-        ExtensionConfig, ExtensionServices, HookBinding, HookBindingBuilder, HookContext,
-        HookHandler, HookHandlerFactory, HookState, TelemetryService,
-    },
+    binding::{HookBinding, HookBindingBuilder},
+    config::{ExtensionConfig, ExtensionServices, TelemetryService},
+    context::{HookContext, HookState},
+    handler::{HookHandler, HookHandlerFactory},
     hook_points::{HookPoint, HookPointBuilder},
     registry::{global_core, init_global_core, ExtensionCore, RegisteredHook},
 };
@@ -93,11 +93,12 @@ pub use services::{
 
 // Submodules
 pub mod adapters;
-pub mod async_integration;
 pub mod core;
+pub mod integration;
 pub mod manager;
 pub mod migration;
 pub mod services;
+pub mod transport;
 pub mod types;
 
 /// Extension type identifiers

@@ -8,12 +8,20 @@
 
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter};
 use crate::extensions::core::ExtensionCore;
+// Re-export storage types for backward compatibility
+pub use crate::extensions::manager::storage::ExtensionStorage;
+
+use crate::extensions::manager::discovery::{DiscoveredExtension, discovery_paths};
 use crate::extensions::types::{ExtensionId, ExtensionManifest, HookId};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+
+// Re-export submodules
+pub mod discovery;
+pub mod storage;
 
 /// Extension Manager - Central management for all extensions
 #[derive(Debug)]
@@ -36,104 +44,6 @@ pub struct LoadedExtension {
     pub extension_type: String,
     pub hook_ids: Vec<HookId>,
     pub path: PathBuf,
-}
-
-/// Storage backend for extension metadata
-#[derive(Debug)]
-pub struct ExtensionStorage {
-    storage_dir: Option<PathBuf>,
-}
-
-impl ExtensionStorage {
-    #[must_use]
-    pub fn new() -> Self {
-        Self { storage_dir: None }
-    }
-
-    #[must_use]
-    pub fn with_dir(storage_dir: PathBuf) -> Self {
-        Self {
-            storage_dir: Some(storage_dir),
-        }
-    }
-
-    #[must_use]
-    pub fn dir(&self) -> Option<&Path> {
-        self.storage_dir.as_deref()
-    }
-
-    pub fn copy_to_storage(&self, source: &Path, extension_id: &ExtensionId) -> Result<PathBuf> {
-        let storage_dir = self
-            .storage_dir
-            .as_ref()
-            .context("Storage directory not configured")?;
-
-        let target_dir = storage_dir.join(&extension_id.0);
-
-        if target_dir.exists() {
-            std::fs::remove_dir_all(&target_dir).with_context(|| {
-                format!("Failed to remove existing extension at {target_dir:?}")
-            })?;
-        }
-
-        // Handle single file (e.g., MCP config.toml) vs directory
-        if source.is_file() {
-            // Create target directory and copy the file into it
-            std::fs::create_dir_all(&target_dir)
-                .with_context(|| format!("Failed to create target directory {target_dir:?}"))?;
-            let file_name = source.file_name().context("Invalid source file name")?;
-            let target_file = target_dir.join(file_name);
-            std::fs::copy(source, &target_file).with_context(|| {
-                format!("Failed to copy file from {source:?} to {target_file:?}")
-            })?;
-        } else {
-            copy_dir_recursive(source, &target_dir).with_context(|| {
-                format!("Failed to copy extension from {source:?} to {target_dir:?}")
-            })?;
-        }
-
-        Ok(target_dir)
-    }
-
-    pub fn remove_from_storage(&self, extension_id: &ExtensionId) -> Result<()> {
-        let storage_dir = self
-            .storage_dir
-            .as_ref()
-            .context("Storage directory not configured")?;
-
-        let target_dir = storage_dir.join(&extension_id.0);
-
-        if target_dir.exists() {
-            std::fs::remove_dir_all(&target_dir)
-                .with_context(|| format!("Failed to remove extension at {target_dir:?}"))?;
-        }
-
-        Ok(())
-    }
-}
-
-impl Default for ExtensionStorage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
-    }
-
-    Ok(())
 }
 
 /// Result of a load operation
@@ -801,72 +711,9 @@ impl ExtensionManager {
     // hooks; ExtensionManager is strictly a lifecycle manager.
 }
 
-/// Discovered extension before loading
-#[derive(Debug, Clone)]
-pub struct DiscoveredExtension {
-    pub path: PathBuf,
-    pub manifest_path: PathBuf,
-    pub extension_type: String,
-}
-
 impl Default for ExtensionManager {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub mod discovery_paths {
-    use std::path::PathBuf;
-
-    #[must_use]
-    pub fn user_config() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("pekobot/extensions"))
-    }
-
-    #[must_use]
-    pub fn user_data() -> Option<PathBuf> {
-        dirs::data_dir().map(|d| d.join("pekobot/extensions"))
-    }
-
-    #[must_use]
-    pub fn project_local() -> PathBuf {
-        PathBuf::from(".pekobot/extensions")
-    }
-
-    #[must_use]
-    pub fn system_wide() -> Option<PathBuf> {
-        #[cfg(target_os = "linux")]
-        {
-            Some(PathBuf::from("/usr/share/pekobot/extensions"))
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Some(PathBuf::from(
-                "/Library/Application Support/pekobot/extensions",
-            ))
-        }
-        #[cfg(target_os = "windows")]
-        {
-            Some(PathBuf::from("C:\\ProgramData\\pekobot\\extensions"))
-        }
-    }
-
-    #[must_use]
-    pub fn all() -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-
-        if let Some(p) = user_config() {
-            paths.push(p);
-        }
-        if let Some(p) = user_data() {
-            paths.push(p);
-        }
-        paths.push(project_local());
-        if let Some(p) = system_wide() {
-            paths.push(p);
-        }
-
-        paths
     }
 }
 
@@ -878,13 +725,6 @@ mod tests {
     fn test_extension_manager_creation() {
         let manager = ExtensionManager::new();
         assert!(manager.list_extensions().is_empty());
-    }
-
-    #[test]
-    fn test_discovery_paths() {
-        let paths = discovery_paths::all();
-        assert!(!paths.is_empty());
-        assert!(paths.contains(&PathBuf::from(".pekobot/extensions")));
     }
 
     #[test]

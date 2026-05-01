@@ -3,7 +3,8 @@
 //! This module implements the registry for hook handlers.
 //! It manages registration, enable/disable, and invocation of hooks.
 
-use crate::extensions::core::context::{ExtensionServices, HookContext};
+use crate::extensions::core::config::ExtensionServices;
+use crate::extensions::core::context::HookContext;
 use crate::extensions::core::hook_points::HookPoint;
 use crate::extensions::types::{
     ExtensionId, HookId, HookInput, HookOutput, HookPriority, HookResult, ToolMetadata,
@@ -27,7 +28,7 @@ pub struct RegisteredHook {
     pub point: HookPoint,
 
     /// The handler implementation
-    pub handler: Arc<dyn super::context::HookHandler>,
+    pub handler: Arc<dyn super::handler::HookHandler>,
 
     /// Priority (higher = earlier execution)
     pub priority: HookPriority,
@@ -45,7 +46,7 @@ impl RegisteredHook {
         id: HookId,
         extension_id: ExtensionId,
         point: HookPoint,
-        handler: Arc<dyn super::context::HookHandler>,
+        handler: Arc<dyn super::handler::HookHandler>,
         priority: HookPriority,
     ) -> Self {
         Self {
@@ -64,7 +65,7 @@ impl RegisteredHook {
         id: HookId,
         extension_id: ExtensionId,
         point: HookPoint,
-        handler: Arc<dyn super::context::HookHandler>,
+        handler: Arc<dyn super::handler::HookHandler>,
         priority: HookPriority,
         tool_metadata: ToolMetadata,
     ) -> Self {
@@ -156,7 +157,7 @@ impl HookRegistry {
     pub async fn register_hook(
         &self,
         point: HookPoint,
-        handler: Arc<dyn super::context::HookHandler>,
+        handler: Arc<dyn super::handler::HookHandler>,
         extension_id: &ExtensionId,
     ) -> Result<RegisteredHook> {
         let hook_id = HookId::new();

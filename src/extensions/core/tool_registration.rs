@@ -13,7 +13,8 @@
 //! These handlers are intentionally simple and generic. Adapters that need custom
 //! behaviour should provide their own execution handler; the registry handles the rest.
 
-use crate::extensions::core::context::{HookContext, HookHandler};
+use crate::extensions::core::context::HookContext;
+use crate::extensions::core::handler::HookHandler;
 use crate::extensions::core::hook_points::HookPoint;
 use crate::extensions::types::{
     AsyncReceipt, AsyncTaskStatus, ExtensionId, HookId, HookOutput, HookResult, ToolMetadata,
@@ -312,7 +313,7 @@ impl HookHandler for AutoCancelHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::core::context::ExtensionServices;
+    use crate::extensions::core::config::ExtensionServices;
 
     fn sample_metadata(name: &str) -> ToolMetadata {
         ToolMetadata::new(

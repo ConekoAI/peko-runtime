@@ -3,7 +3,9 @@
 //! This module implements the central facade for extension hooks and tools.
 //! It composes `HookRegistry` and `ToolRegistry` to provide a unified interface.
 
-use crate::extensions::core::context::{ExtensionServices, HookContext, HookHandler};
+use crate::extensions::core::config::ExtensionServices;
+use crate::extensions::core::context::HookContext;
+use crate::extensions::core::handler::HookHandler;
 use crate::extensions::core::hook_points::HookPoint;
 use crate::extensions::core::hook_registry::HookRegistry;
 use crate::extensions::core::tool_registry::ToolRegistry;
@@ -100,7 +102,7 @@ impl ExtensionCore {
     pub async fn register_hook(
         &self,
         point: HookPoint,
-        handler: Arc<dyn super::context::HookHandler>,
+        handler: Arc<dyn super::handler::HookHandler>,
         extension_id: &ExtensionId,
     ) -> Result<RegisteredHook> {
         self.hook_registry.register_hook(point, handler, extension_id).await
@@ -248,7 +250,7 @@ impl ExtensionCore {
     pub async fn register_tool(
         &self,
         metadata: ToolMetadata,
-        handler: Arc<dyn super::context::HookHandler>,
+        handler: Arc<dyn super::handler::HookHandler>,
         extension_id: &ExtensionId,
     ) -> Result<super::tool_registration::ToolRegistration> {
         use super::tool_registration::{
@@ -480,7 +482,7 @@ pub fn global_core() -> Option<Arc<ExtensionCore>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::core::context::HookHandler;
+    use crate::extensions::core::handler::HookHandler;
     use crate::extensions::types::HookOutput;
 
     /// Mock handler for testing

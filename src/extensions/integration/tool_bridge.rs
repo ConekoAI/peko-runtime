@@ -1,8 +1,7 @@
 //! Integration between `ExtensionAsyncAdapter` and the async executor framework
 //!
-//! This module provides helpers for using `ExtensionAsyncAdapter` with the
-//! unified async executor. The `AsyncTool` trait (Framework 2) has been
-//! deleted per Issue 006.
+//! This module provides the [`ExtensionAsyncTool`] wrapper that implements the
+//! [`Tool`] trait by delegating to an [`ExtensionAsyncAdapter`].
 
 use crate::extensions::core::ExtensionAsyncAdapter;
 use crate::tools::Tool;
