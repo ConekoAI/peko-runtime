@@ -1054,10 +1054,18 @@ async fn handle_config(
 }
 
 /// Handle validate command
+///
+/// Uses the ADR-024 three-tier detection hierarchy:
+/// Tier 1: Ecosystem standards (SKILL.md, server.json)
+/// Tier 2: Unified manifest (manifest.yaml with `extension_type`)
+/// Tier 3: Legacy fallback (manifest.json, config.toml, untyped manifest.yaml)
 async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
     use crate::extensions::adapters::{
-        general_adapter::GeneralExtensionAdapter, mcp_adapter::McpAdapter,
-        skill_adapter::SkillAdapter, universal_tool_adapter::UniversalToolAdapter,
+        extract_extension_type_from_yaml,
+        general_adapter::{discover_general_extensions, GeneralExtensionAdapter},
+        mcp_adapter::McpAdapter,
+        skill_adapter::SkillAdapter,
+        universal_tool_adapter::UniversalToolAdapter,
     };
 
     println!("Validating extension at: {}", path.display());
@@ -1067,217 +1075,245 @@ async fn handle_validate(path: PathBuf, verbose: bool) -> anyhow::Result<()> {
         anyhow::bail!("Path does not exist: {}", path.display());
     }
 
-    // Try to detect extension type
-    let mut detected = false;
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    // Check for Skill (SKILL.md)
-    let skill_adapter = SkillAdapter::new();
-    if skill_adapter.manifest_format().detect(&path) {
-        detected = true;
+    // ─── TIER 1: Ecosystem Standards ─────────────────────────────────────────
+
+    if path.join("SKILL.md").exists() {
         if verbose {
-            println!("✓ Detected as: skill extension (SKILL.md)");
+            println!("✓ Detected as: skill extension (SKILL.md) [Tier 1 ecosystem standard]");
         }
 
+        let skill_adapter = SkillAdapter::new();
         let skills = skill_adapter.discover_skills(&path);
         if skills.is_empty() {
             errors.push("No valid skills found in directory".to_string());
-        } else {
-            if verbose {
-                for skill in &skills {
-                    println!(
-                        "  ✓ Skill: {} - {}",
-                        skill.manifest.name, skill.manifest.description
-                    );
-                }
-            }
-
-            // Validate hook resolution
+        } else if verbose {
             for skill in &skills {
-                let bindings = skill_adapter.resolve_hooks(&skill.manifest);
-                if bindings.is_empty() {
-                    warnings.push(format!(
-                        "Skill '{}' has no hook bindings",
-                        skill.manifest.name
-                    ));
-                } else if verbose {
-                    println!("  ✓ Resolved {} hook(s)", bindings.len());
-                }
+                println!(
+                    "  ✓ Skill: {} - {}",
+                    skill.manifest.name, skill.manifest.description
+                );
             }
         }
+
+        print_summary(&errors, &warnings)?;
+        return Ok(());
     }
 
-    // Check for Universal Tool (manifest.json)
-    let universal_adapter = UniversalToolAdapter::new();
-    if universal_adapter.manifest_format().detect(&path) {
-        detected = true;
+    if path.join("server.json").exists() {
         if verbose {
-            println!("✓ Detected as: universal tool extension (manifest.json)");
+            println!("✓ Detected as: MCP server extension (server.json) [Tier 1 ecosystem standard]");
         }
 
-        let tools = universal_adapter.discover_tools(&path).await;
-        if tools.is_empty() {
-            errors.push("No valid tools found in directory".to_string());
-        } else {
-            if verbose {
-                for tool in &tools {
-                    println!(
-                        "  ✓ Tool: {} - {}",
-                        tool.manifest.name, tool.manifest.description
-                    );
+        // server.json is a registry metadata file; basic validation
+        let server_json_path = path.join("server.json");
+        match std::fs::read_to_string(&server_json_path) {
+            Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(manifest) => {
+                    if manifest.get("name").is_none() {
+                        warnings.push("server.json missing 'name' field".to_string());
+                    }
+                    if verbose {
+                        if let Some(name) = manifest.get("name").and_then(|v| v.as_str()) {
+                            println!("  ✓ Server: {}", name);
+                        }
+                    }
                 }
-            }
-
-            // Validate hook resolution
-            for tool in &tools {
-                let bindings = universal_adapter.resolve_hooks(&tool.manifest);
-                if bindings.is_empty() {
-                    warnings.push(format!(
-                        "Tool '{}' has no hook bindings",
-                        tool.manifest.name
-                    ));
-                } else if verbose {
-                    println!("  ✓ Resolved {} hook(s)", bindings.len());
-                }
-            }
+                Err(e) => errors.push(format!("Invalid server.json: {}", e)),
+            },
+            Err(e) => errors.push(format!("Failed to read server.json: {}", e)),
         }
+
+        print_summary(&errors, &warnings)?;
+        return Ok(());
     }
 
-    // Check for MCP Server (config.toml/config.json)
-    let mcp_adapter = McpAdapter::with_default_manager();
-    if mcp_adapter.manifest_format().detect(&path) {
-        detected = true;
-        if verbose {
-            println!("✓ Detected as: MCP server extension");
-        }
+    // ─── TIER 2: Unified Manifest ────────────────────────────────────────────
 
-        let servers = mcp_adapter.discover_servers(&path).await;
-        if servers.is_empty() {
-            errors.push("No valid MCP servers found in directory".to_string());
-        } else {
-            if verbose {
-                for server in &servers {
-                    println!("  ✓ Server: {}", server.manifest.name);
-                }
-            }
-
-            // Validate hook resolution
-            for server in &servers {
-                let bindings = mcp_adapter.resolve_hooks(&server.manifest);
-                if bindings.is_empty() {
-                    warnings.push(format!(
-                        "Server '{}' has no hook bindings",
-                        server.manifest.name
-                    ));
-                } else if verbose {
-                    println!("  ✓ Resolved {} hook(s)", bindings.len());
-                }
-            }
-        }
-    }
-
-    // Check for General Extension (manifest.yaml with hooks)
-    let general_adapter = GeneralExtensionAdapter::new();
-    if general_adapter.manifest_format().detect(&path) {
-        detected = true;
-        if verbose {
-            println!("✓ Detected as: general extension");
-        }
-
-        let extensions = general_adapter::discover_general_extensions(&path).await?;
-        if extensions.is_empty() {
-            errors.push("No valid general extensions found in directory".to_string());
-        } else {
-            for ext in &extensions {
+    let manifest_yaml = path.join("manifest.yaml");
+    if manifest_yaml.exists() {
+        match extract_extension_type_from_yaml(&manifest_yaml) {
+            Ok(Some(ext_type)) => {
                 if verbose {
                     println!(
-                        "  ✓ Extension: {} - {}",
-                        ext.manifest.name, ext.manifest.description
+                        "✓ Detected as: {} extension (manifest.yaml) [Tier 2 unified manifest]",
+                        ext_type
                     );
-                    println!("    Hooks declared: {}", ext.hooks.len());
                 }
 
-                // Validate each hook declaration
-                for hook in &ext.hooks {
-                    // Check if the hook point is valid
-                    let valid_points = [
-                        "prompt.system_section",
-                        "prompt.pre_process",
-                        "prompt.post_process",
-                        "tool.register",
-                        "tool.execute",
-                        "tool.execute_async",
-                        "tool.check_status",
-                        "tool.cancel",
-                        "tool.result_transform",
-                        "session.state_change",
-                        "session.compaction",
-                        "session.context_build",
-                        "io.channel_input",
-                        "io.channel_output",
-                        "io.message_pre_send",
-                        "io.message_post_receive",
-                        "event.subscribe",
-                        "event.emit",
-                        "agent.init",
-                        "agent.shutdown",
-                        "agent.iteration",
-                    ];
-
-                    if !valid_points.contains(&hook.point.as_str()) {
+                match ext_type.as_str() {
+                    "universal-tool" => {
+                        let adapter = UniversalToolAdapter::new();
+                        let tools = adapter.discover_tools(&path).await;
+                        if tools.is_empty() {
+                            errors.push("No valid tools found in directory".to_string());
+                        } else if verbose {
+                            for tool in &tools {
+                                println!(
+                                    "  ✓ Tool: {} - {}",
+                                    tool.manifest.name, tool.manifest.description
+                                );
+                            }
+                        }
+                    }
+                    "mcp" => {
+                        let adapter = McpAdapter::with_default_manager();
+                        let servers = adapter.discover_servers(&path).await;
+                        if servers.is_empty() {
+                            errors.push("No valid MCP servers found in directory".to_string());
+                        } else if verbose {
+                            for server in &servers {
+                                println!("  ✓ Server: {}", server.manifest.name);
+                            }
+                        }
+                    }
+                    "gateway" => {
+                        if verbose {
+                            println!("  ✓ Gateway extension validated");
+                        }
+                    }
+                    "general" => {
+                        let extensions = discover_general_extensions(&path).await?;
+                        if extensions.is_empty() {
+                            errors.push("No valid general extensions found in directory".to_string());
+                        } else if verbose {
+                            for ext in &extensions {
+                                println!(
+                                    "  ✓ Extension: {} - {}",
+                                    ext.manifest.name, ext.manifest.description
+                                );
+                            }
+                        }
+                    }
+                    custom if custom.starts_with("custom:") => {
+                        if verbose {
+                            println!("  ✓ Custom extension type: {}", custom);
+                        }
+                    }
+                    other => {
                         warnings.push(format!(
-                            "Extension '{}' has unknown hook point: {}",
-                            ext.manifest.name, hook.point
+                            "Unknown extension_type '{}'. Supported: universal-tool, mcp, gateway, general, custom:*",
+                            other
                         ));
-                    } else if verbose {
-                        println!("    ✓ Hook: {} -> {}", hook.point, hook.handler);
                     }
                 }
 
-                // Validate hook resolution
-                let bindings = general_adapter.resolve_hooks(&ext.manifest);
-                if bindings.is_empty() {
-                    warnings.push(format!(
-                        "Extension '{}' has no valid hook bindings",
-                        ext.manifest.name
-                    ));
-                } else if verbose {
-                    println!("  ✓ Resolved {} hook binding(s)", bindings.len());
-                }
+                print_summary(&errors, &warnings)?;
+                return Ok(());
+            }
+            Ok(None) => {
+                // manifest.yaml exists but has no extension_type — fall through to Tier 3
+            }
+            Err(e) => {
+                warnings.push(format!("Failed to parse manifest.yaml: {}", e));
             }
         }
     }
 
-    println!();
+    // ─── TIER 3: Legacy Fallback ─────────────────────────────────────────────
 
-    if !detected {
-        anyhow::bail!(
-            "Could not detect extension type. Expected one of:\n\
-             - SKILL.md (skill extension)\n\
-             - manifest.json (universal tool)\n\
-             - config.toml/config.json (MCP server)\n\
-             - manifest.yaml with hooks (general extension)"
+    if path.join("manifest.json").exists() {
+        warnings.push(
+            "Legacy manifest.json detected. Use manifest.yaml with extension_type: 'universal-tool' instead.".to_string()
         );
+        if verbose {
+            println!("✓ Detected as: universal tool extension (manifest.json) [Tier 3 legacy fallback]");
+        }
+
+        let adapter = UniversalToolAdapter::new();
+        let tools = adapter.discover_tools(&path).await;
+        if tools.is_empty() {
+            errors.push("No valid tools found in directory".to_string());
+        } else if verbose {
+            for tool in &tools {
+                println!(
+                    "  ✓ Tool: {} - {}",
+                    tool.manifest.name, tool.manifest.description
+                );
+            }
+        }
+
+        print_summary(&errors, &warnings)?;
+        return Ok(());
     }
 
-    // Print summary
+    if path.join("config.toml").exists() || path.join("config.json").exists() {
+        warnings.push(
+            "Legacy config.toml/config.json detected. Use manifest.yaml with extension_type: 'mcp' or ship a server.json for bare MCP servers instead.".to_string()
+        );
+        if verbose {
+            println!("✓ Detected as: MCP server extension (config.toml/config.json) [Tier 3 legacy fallback]");
+        }
+
+        let adapter = McpAdapter::with_default_manager();
+        let servers = adapter.discover_servers(&path).await;
+        if servers.is_empty() {
+            errors.push("No valid MCP servers found in directory".to_string());
+        } else if verbose {
+            for server in &servers {
+                println!("  ✓ Server: {}", server.manifest.name);
+            }
+        }
+
+        print_summary(&errors, &warnings)?;
+        return Ok(());
+    }
+
+    if manifest_yaml.exists() {
+        warnings.push(
+            "Untyped manifest.yaml detected. Add extension_type: 'general' (or the appropriate type) to silence this warning.".to_string()
+        );
+        if verbose {
+            println!("✓ Detected as: general extension (untyped manifest.yaml) [Tier 3 legacy fallback]");
+        }
+
+        let extensions = discover_general_extensions(&path).await?;
+        if extensions.is_empty() {
+            errors.push("No valid general extensions found in directory".to_string());
+        } else if verbose {
+            for ext in &extensions {
+                println!(
+                    "  ✓ Extension: {} - {}",
+                    ext.manifest.name, ext.manifest.description
+                );
+            }
+        }
+
+        print_summary(&errors, &warnings)?;
+        return Ok(());
+    }
+
+    // Nothing detected
+    anyhow::bail!(
+        "Could not detect extension type. Expected one of:\n\
+         - SKILL.md (skill extension) [Tier 1]\n\
+         - server.json (bare MCP server) [Tier 1]\n\
+         - manifest.yaml with extension_type (unified manifest) [Tier 2]\n\
+         - manifest.json / config.toml / config.json (legacy fallback) [Tier 3]"
+    );
+}
+
+fn print_summary(errors: &[String], warnings: &[String]) -> anyhow::Result<()> {
+    println!();
+
     if errors.is_empty() && warnings.is_empty() {
         println!("✓ Validation passed! Extension is valid and ready to install.");
     } else if errors.is_empty() {
         println!("⚠ Validation passed with warnings:");
-        for warning in &warnings {
+        for warning in warnings {
             println!("  ⚠ {warning}");
         }
     } else {
         println!("✗ Validation failed with errors:");
-        for error in &errors {
+        for error in errors {
             println!("  ✗ {error}");
         }
         if !warnings.is_empty() {
             println!();
             println!("Additional warnings:");
-            for warning in &warnings {
+            for warning in warnings {
                 println!("  ⚠ {warning}");
             }
         }

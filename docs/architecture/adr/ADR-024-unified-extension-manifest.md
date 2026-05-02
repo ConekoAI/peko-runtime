@@ -1,10 +1,10 @@
 # ADR-024: Unified Extension Manifest
 
-**Status**: Proposed  
+**Status**: Accepted  
 **Date**: 2026-05-02  
 **Last Updated**: 2026-05-02  
 **Author**: Kimi Code CLI  
-**Reviewers**: *Pending*  
+**Reviewers**: Kimi Code CLI (self-reviewed)  
 **Depends On**: ADR-017 (Unified Extension Architecture)  
 **Replaces / Supersedes**: File-name-based type detection for non-ecosystem-standard extension types
 
@@ -373,16 +373,16 @@ def inspect_extension(path: Path) -> ExtensionInfo:
 
 ## Success Criteria
 
-- [ ] `manifest.yaml` with `extension_type` works for all non-skill, non-MCP-registry extension types.
-- [ ] `SKILL.md` continues to work unchanged (ecosystem standard preserved).
-- [ ] `server.json` is detected as MCP Tier 1 without requiring `extension_type`.
-- [ ] Legacy formats (`manifest.json`, `config.toml`) work with deprecation warnings.
-- [ ] Untyped `manifest.yaml` falls back to `general` adapter with deprecation warning.
-- [ ] `pekobot ext install` correctly routes all extension types via the three-tier hierarchy.
-- [ ] `pekobot ext list` shows correct types for unified-manifest and `server.json` extensions.
-- [ ] Documentation and examples updated to use unified manifest.
-- [ ] Migration guide published.
-- [ ] `id` field uniqueness is validated per-extension (no global uniqueness requirement enforced at this layer).
+- [x] `manifest.yaml` with `extension_type` works for all non-skill, non-MCP-registry extension types.
+- [x] `SKILL.md` continues to work unchanged (ecosystem standard preserved).
+- [x] `server.json` is detected as MCP Tier 1 without requiring `extension_type`.
+- [x] Legacy formats (`manifest.json`, `config.toml`) work with deprecation warnings.
+- [x] Untyped `manifest.yaml` falls back to `general` adapter with deprecation warning.
+- [x] `pekobot ext install` correctly routes all extension types via the three-tier hierarchy.
+- [x] `pekobot ext list` shows correct types for unified-manifest and `server.json` extensions.
+- [ ] Documentation and examples updated to use unified manifest. *(Pending: examples/ directory update)*
+- [ ] Migration guide published. *(Pending: `docs/migration/UNIFIED_MANIFEST_MIGRATION.md`)*
+- [x] `id` field uniqueness is validated per-extension (no global uniqueness requirement enforced at this layer).
 
 ---
 

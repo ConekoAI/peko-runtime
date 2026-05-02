@@ -89,6 +89,8 @@ pub use general_adapter::{
     GeneralExtensionConfig, HookDeclaration,
 };
 
+use std::sync::Arc;
+
 // Re-export the adapter trait when implemented
 // pub use adapter_trait::ExtensionTypeAdapter;
 
@@ -199,6 +201,9 @@ pub trait ExtensionTypeAdapter: Send + Sync + std::fmt::Debug {
             ManifestFormat::YamlFrontmatterMarkdown { .. } => {
                 parse_yaml_frontmatter_markdown(path, content)
             }
+            ManifestFormat::Yaml { .. } => {
+                parse_pure_yaml_manifest(path, content)
+            }
             ManifestFormat::Json { .. } => serde_json::from_str(content)
                 .with_context(|| format!("Failed to parse JSON manifest at {path:?}")),
             ManifestFormat::Toml { .. } => toml::from_str(content)
@@ -252,6 +257,29 @@ fn parse_yaml_frontmatter_markdown(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
+
+    Ok(manifest)
+}
+
+/// Parse a pure YAML manifest file (no frontmatter delimiters required).
+///
+/// This is the default implementation for `ManifestFormat::Yaml`.
+fn parse_pure_yaml_manifest(
+    path: &std::path::Path,
+    content: &str,
+) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+    use anyhow::Context;
+
+    let yaml: serde_yaml::Value = serde_yaml::from_str(content)
+        .with_context(|| format!("Failed to parse YAML manifest at {path:?}"))?;
+
+    let mut manifest = parsing::build_manifest_from_yaml(&yaml, "", path)
+        .with_context(|| format!("Failed to build manifest from YAML at {path:?}"))?;
+
+    // If extension_type was parsed from YAML, override the empty string
+    if let Some(ext_type) = yaml.get("extension_type").and_then(|v| v.as_str()) {
+        manifest.extension_type = ext_type.to_string();
+    }
 
     Ok(manifest)
 }
@@ -721,10 +749,18 @@ pub mod parsing {
 /// Manifest format definitions
 #[derive(Debug, Clone)]
 pub enum ManifestFormat {
-    /// YAML frontmatter in markdown file
+    /// YAML frontmatter in markdown file (e.g., SKILL.md)
     YamlFrontmatterMarkdown {
         /// Required frontmatter fields
         required_fields: Vec<&'static str>,
+        /// File name to look for
+        file_name: &'static str,
+    },
+
+    /// Pure YAML file (e.g., manifest.yaml)
+    Yaml {
+        /// Schema identifier
+        schema: String,
         /// File name to look for
         file_name: &'static str,
     },
@@ -758,6 +794,7 @@ impl ManifestFormat {
     pub fn detect(&self, path: &std::path::Path) -> bool {
         match self {
             Self::YamlFrontmatterMarkdown { file_name, .. } => path.join(file_name).exists(),
+            Self::Yaml { file_name, .. } => path.join(file_name).exists(),
             Self::Json { file_name, .. } => path.join(file_name).exists(),
             Self::Toml { file_name, .. } => path.join(file_name).exists(),
             Self::Custom { detector } => detector(path),
@@ -769,11 +806,28 @@ impl ManifestFormat {
     pub fn manifest_path(&self, base_path: &std::path::Path) -> Option<std::path::PathBuf> {
         match self {
             Self::YamlFrontmatterMarkdown { file_name, .. }
+            | Self::Yaml { file_name, .. }
             | Self::Json { file_name, .. }
             | Self::Toml { file_name, .. } => Some(base_path.join(file_name)),
             Self::Custom { .. } => None,
         }
     }
+}
+
+/// Extract `extension_type` from a pure YAML manifest file.
+///
+/// Returns `Ok(Some(type))` if the field exists, `Ok(None)` if the file is valid YAML
+/// but lacks the field, and `Err` if the file cannot be parsed.
+pub fn extract_extension_type_from_yaml(path: &std::path::Path) -> anyhow::Result<Option<String>> {
+    use anyhow::Context;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read manifest at {path:?}"))?;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&content)
+        .with_context(|| format!("Failed to parse YAML manifest at {path:?}"))?;
+    Ok(yaml
+        .get("extension_type")
+        .and_then(serde_yaml::Value::as_str)
+        .map(std::string::ToString::to_string))
 }
 
 /// Extension state for stateful extensions
@@ -825,15 +879,16 @@ impl BuiltInAdapters {
     /// - `SkillAdapter`: For SKILL.md based extensions
     /// - `UniversalToolAdapter`: For universal tool protocol extensions
     /// - `McpAdapter`: For MCP server extensions
-    /// - `GatewayAdapter`: For gateway plugin extensions (includes I/O channels)
+    /// - `GatewayAdapter`: For gateway plugin extensions
+    /// - `GeneralExtensionAdapter`: For general-purpose hook-based extensions
     #[must_use]
     pub fn adapters(&self) -> Vec<Box<dyn ExtensionTypeAdapter>> {
         vec![
             Box::new(SkillAdapter::new()),
             Box::new(UniversalToolAdapter::new()),
             Box::new(McpAdapter::with_default_manager()),
-            // Note: GatewayAdapter requires ExtensionCore
-            // and is registered by the ExtensionManager when needed
+            Box::new(GatewayAdapter::new(Arc::new(crate::extensions::ExtensionCore::new()))),
+            Box::new(GeneralExtensionAdapter::new()),
         ]
     }
 }
@@ -848,6 +903,7 @@ impl Default for BuiltInAdapters {
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
 
     #[test]
     fn test_manifest_format_yaml_detection() {
@@ -874,7 +930,56 @@ mod tests {
     fn test_built_in_adapters() {
         let provider = BuiltInAdapters::new();
         let adapters = provider.adapters();
-        assert!(!adapters.is_empty()); // Should have Skill, MCP, UniversalTool adapters
-        assert_eq!(adapters.len(), 3); // Currently 3 adapters registered
+        assert!(!adapters.is_empty()); // Should have all built-in adapters
+        assert_eq!(adapters.len(), 5); // Skill, UniversalTool, Mcp, Gateway, General
+    }
+
+    // ─── ADR-024: extract_extension_type_from_yaml tests ───────────────────
+
+    #[test]
+    fn test_extract_extension_type_from_yaml_with_type() {
+        let temp = TempDir::new().unwrap();
+        let manifest = temp.path().join("manifest.yaml");
+        std::fs::write(&manifest, "id: test\nname: Test\nextension_type: universal-tool\n").unwrap();
+
+        let result = extract_extension_type_from_yaml(&manifest).unwrap();
+        assert_eq!(result, Some("universal-tool".to_string()));
+    }
+
+    #[test]
+    fn test_extract_extension_type_from_yaml_without_type() {
+        let temp = TempDir::new().unwrap();
+        let manifest = temp.path().join("manifest.yaml");
+        std::fs::write(&manifest, "id: test\nname: Test\n").unwrap();
+
+        let result = extract_extension_type_from_yaml(&manifest).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_extension_type_from_yaml_custom_prefix() {
+        let temp = TempDir::new().unwrap();
+        let manifest = temp.path().join("manifest.yaml");
+        std::fs::write(&manifest, "id: test\nname: Test\nextension_type: custom:my-org/type\n").unwrap();
+
+        let result = extract_extension_type_from_yaml(&manifest).unwrap();
+        assert_eq!(result, Some("custom:my-org/type".to_string()));
+    }
+
+    #[test]
+    fn test_extract_extension_type_from_yaml_invalid_yaml() {
+        let temp = TempDir::new().unwrap();
+        let manifest = temp.path().join("manifest.yaml");
+        std::fs::write(&manifest, "not: valid: yaml: : :").unwrap();
+
+        assert!(extract_extension_type_from_yaml(&manifest).is_err());
+    }
+
+    #[test]
+    fn test_extract_extension_type_from_yaml_missing_file() {
+        let temp = TempDir::new().unwrap();
+        let manifest = temp.path().join("manifest.yaml");
+
+        assert!(extract_extension_type_from_yaml(&manifest).is_err());
     }
 }

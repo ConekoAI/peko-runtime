@@ -126,38 +126,87 @@ impl ExtensionManager {
     }
 
     fn detect_extension_type(&self, path: &Path) -> Option<&dyn ExtensionTypeAdapter> {
-        tracing::debug!(
-            "detect_extension_type: checking {} with {} adapters",
-            path.display(),
-            self.adapters.len()
-        );
-        for adapter in self.adapters.values() {
-            let format = adapter.manifest_format();
-            let detected = format.detect(path);
-            tracing::debug!(
-                "  Adapter '{}': detected = {}",
-                adapter.extension_type(),
-                detected
-            );
-            if detected {
-                debug!(
-                    "Detected extension type '{}' at {:?}",
-                    adapter.extension_type(),
-                    path
-                );
-                return Some(adapter.as_ref());
-            }
-        }
-        None
+        self.detect_extension_type_string(path)
+            .and_then(|ext_type| self.adapters.get(&ext_type).map(|a| a.as_ref()))
     }
 
+    /// Detect extension type using the three-tier hierarchy (ADR-024).
+    ///
+    /// Tier 1: Ecosystem standards (SKILL.md, server.json)
+    /// Tier 2: Unified manifest (manifest.yaml with `extension_type`)
+    /// Tier 3: Legacy fallback (manifest.json, config.toml, untyped manifest.yaml)
     fn detect_extension_type_string(&self, path: &Path) -> Option<String> {
-        for adapter in self.adapters.values() {
-            let format = adapter.manifest_format();
-            if format.detect(path) {
-                return Some(adapter.extension_type().to_string());
+        use crate::extensions::adapters::extract_extension_type_from_yaml;
+        use tracing::warn;
+
+        // ─── TIER 1: Ecosystem Standards ─────────────────────────────────────
+
+        // SKILL.md → skill adapter
+        if path.join("SKILL.md").exists() {
+            tracing::debug!("Detected Tier 1 ecosystem standard: SKILL.md -> skill");
+            return Some("skill".to_string());
+        }
+
+        // server.json → mcp adapter (bare MCP Registry standard)
+        if path.join("server.json").exists() {
+            tracing::debug!("Detected Tier 1 ecosystem standard: server.json -> mcp");
+            return Some("mcp".to_string());
+        }
+
+        // ─── TIER 2: Unified Manifest ────────────────────────────────────────
+
+        let manifest_yaml = path.join("manifest.yaml");
+        if manifest_yaml.exists() {
+            match extract_extension_type_from_yaml(&manifest_yaml) {
+                Ok(Some(ext_type)) => {
+                    tracing::debug!(
+                        "Detected Tier 2 unified manifest: manifest.yaml -> {}",
+                        ext_type
+                    );
+                    return Some(ext_type);
+                }
+                Ok(None) => {
+                    // manifest.yaml exists but has no extension_type — fall through to Tier 3
+                    tracing::debug!(
+                        "manifest.yaml exists but has no extension_type; checking Tier 3 fallback"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse manifest.yaml: {}; checking Tier 3 fallback", e);
+                }
             }
         }
+
+        // ─── TIER 3: Legacy Fallback (deprecated) ────────────────────────────
+
+        // manifest.json → universal-tool adapter (legacy)
+        if path.join("manifest.json").exists() {
+            warn!(
+                "Legacy manifest.json detected at {}. Use manifest.yaml with extension_type: 'universal-tool' instead.",
+                path.display()
+            );
+            return Some("universal-tool".to_string());
+        }
+
+        // config.toml / config.json → mcp adapter (legacy)
+        if path.join("config.toml").exists() || path.join("config.json").exists() {
+            warn!(
+                "Legacy config.toml/config.json detected at {}. Use manifest.yaml with extension_type: 'mcp' or ship a server.json for bare MCP servers instead.",
+                path.display()
+            );
+            return Some("mcp".to_string());
+        }
+
+        // Untyped manifest.yaml → general adapter (the natural default)
+        if manifest_yaml.exists() {
+            warn!(
+                "Untyped manifest.yaml detected at {}. Add extension_type: 'general' (or the appropriate type) to silence this warning.",
+                path.display()
+            );
+            return Some("general".to_string());
+        }
+
+        tracing::debug!("No extension manifest detected at {}", path.display());
         None
     }
 
@@ -720,6 +769,7 @@ impl Default for ExtensionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_extension_manager_creation() {
@@ -741,5 +791,199 @@ mod tests {
         };
 
         assert_eq!(bundle.name, "test-bundle");
+    }
+
+    // ─── ADR-024: Three-tier detection hierarchy tests ─────────────────────
+
+    #[test]
+    fn test_detect_tier1_skill_md() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("my-skill");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("SKILL.md"), "---\nname: My Skill\n---\n").unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("skill".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier1_server_json() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("my-mcp");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("server.json"), r#"{"name": "test"}"#).unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("mcp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier2_manifest_yaml_with_extension_type() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("my-gateway");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(
+            ext_dir.join("manifest.yaml"),
+            "id: gw\nname: Gateway\nextension_type: gateway\ngateway_type: pubsub\n",
+        )
+        .unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("gateway".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier2_universal_tool_yaml() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("my-tool");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(
+            ext_dir.join("manifest.yaml"),
+            "id: calc\nname: Calculator\nextension_type: universal-tool\n",
+        )
+        .unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("universal-tool".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier2_general_yaml() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("my-general");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(
+            ext_dir.join("manifest.yaml"),
+            "id: gen\nname: General\nextension_type: general\n",
+        )
+        .unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("general".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier2_custom_type() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("my-custom");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(
+            ext_dir.join("manifest.yaml"),
+            "id: custom\nname: Custom\nextension_type: custom:my-org/type\n",
+        )
+        .unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("custom:my-org/type".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier3_legacy_manifest_json() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("legacy-tool");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("manifest.json"), r#"{"name": "legacy"}"#).unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("universal-tool".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier3_legacy_config_toml() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("legacy-mcp");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("config.toml"), "[[servers]]\nname = \"legacy\"\n").unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("mcp".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier3_untyped_manifest_yaml() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("untyped");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("manifest.yaml"), "id: untyped\nname: Untyped\n").unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("general".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier1_skill_takes_precedence_over_tier2() {
+        // If both SKILL.md and manifest.yaml exist, Tier 1 wins
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("hybrid");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(ext_dir.join("SKILL.md"), "---\nname: Skill\n---\n").unwrap();
+        std::fs::write(
+            ext_dir.join("manifest.yaml"),
+            "id: hybrid\nname: Hybrid\nextension_type: general\n",
+        )
+        .unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("skill".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_tier2_takes_precedence_over_tier3() {
+        // If both manifest.yaml (typed) and manifest.json exist, Tier 2 wins
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("hybrid2");
+        std::fs::create_dir(&ext_dir).unwrap();
+        std::fs::write(
+            ext_dir.join("manifest.yaml"),
+            "id: hybrid\nname: Hybrid\nextension_type: gateway\ngateway_type: http\n",
+        )
+        .unwrap();
+        std::fs::write(ext_dir.join("manifest.json"), r#"{"name": "legacy"}"#).unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(
+            manager.detect_extension_type_string(&ext_dir),
+            Some("gateway".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_nothing_found() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("empty");
+        std::fs::create_dir(&ext_dir).unwrap();
+
+        let manager = ExtensionManager::new();
+        assert_eq!(manager.detect_extension_type_string(&ext_dir), None);
     }
 }

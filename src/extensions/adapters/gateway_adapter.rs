@@ -18,25 +18,29 @@
 //! - `ChannelInput`/`ChannelOutput`: Gateway as I/O channel
 //!
 //! # Extension Manifest Format
+//!
+//! ADR-024: `manifest.yaml` is **pure YAML** — no frontmatter delimiters required.
+//! The `---` below is an optional YAML document-start marker, not frontmatter.
+//!
 //! ```yaml
-//! ---
 //! id: "redis-gateway"
 //! name: "Redis Pub/Sub Gateway"
 //! version: "1.0.0"
+//! extension_type: "gateway"
 //! gateway_type: "pubsub"
 //! config:
 //!   redis_url: "redis://localhost:6379"
 //!   channels:
 //!     - "pekobot:events"
 //!     - "pekobot:commands"
-//!   hooks:
-//!     - point: "agent.init"
-//!       handler: "init_redis"
-//!     - point: "agent.shutdown"
-//!       handler: "cleanup_redis"
-//!     - point: "event.subscribe"
-//!       handler: "forward_to_redis"
-//!       topic: "instance.*"
+//! hooks:
+//!   - point: "agent.init"
+//!     handler: "init_redis"
+//!   - point: "agent.shutdown"
+//!     handler: "cleanup_redis"
+//!   - point: "event.subscribe"
+//!     handler: "forward_to_redis"
+//!     topic: "instance.*"
 //! ```
 
 use crate::extensions::adapters::{ExtensionState, ExtensionTypeAdapter, HookBinding};
@@ -120,10 +124,63 @@ impl ExtensionTypeAdapter for GatewayAdapter {
     }
 
     fn manifest_format(&self) -> super::ManifestFormat {
-        super::ManifestFormat::YamlFrontmatterMarkdown {
-            required_fields: vec!["id", "name", "gateway_type"],
+        // ADR-024: Gateway uses pure YAML manifest.yaml with extension_type: "gateway".
+        // gateway_type remains a required type-specific field for transport selection.
+        super::ManifestFormat::Yaml {
+            schema: "gateway".to_string(),
             file_name: "manifest.yaml",
         }
+    }
+
+    fn parse_manifest(
+        &self,
+        path: &std::path::Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        use anyhow::Context;
+
+        let yaml: serde_yaml::Value = serde_yaml::from_str(content)
+            .with_context(|| format!("Failed to parse gateway manifest at {path:?}"))?;
+
+        let (id, name, version, description) = super::parsing::extract_extension_fields(&yaml)?;
+
+        // Validate extension_type
+        let ext_type = super::parsing::require_string_field(&yaml, "extension_type")
+            .with_context(|| format!("Gateway manifest at {path:?} is missing required field 'extension_type'"))?;
+        if ext_type != "gateway" {
+            anyhow::bail!(
+                "Gateway manifest at {path:?} has extension_type '{}' but expected 'gateway'",
+                ext_type
+            );
+        }
+
+        // Validate gateway_type (required type-specific transport discriminator)
+        let gateway_type = super::parsing::require_string_field(&yaml, "gateway_type")
+            .with_context(|| format!("Gateway manifest at {path:?} is missing required field 'gateway_type'"))?;
+
+        let mut manifest = ExtensionManifest::new(
+            &id,
+            "gateway",
+            &name,
+            &description,
+            &version,
+            path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+        );
+
+        // Store gateway-specific config
+        manifest.set("gateway_type", gateway_type);
+
+        if let Some(config) = yaml.get("config") {
+            manifest.set("config", super::parsing::yaml_to_json(config.clone()));
+        }
+        if let Some(hooks) = yaml.get("hooks") {
+            manifest.set("hooks", super::parsing::yaml_to_json(hooks.clone()));
+        }
+        if let Some(tools) = yaml.get("tools") {
+            manifest.set("tools", super::parsing::yaml_to_json(tools.clone()));
+        }
+
+        Ok(manifest)
     }
 
     async fn initialize(&self, manifest: &ExtensionManifest) -> Result<ExtensionState> {
@@ -412,13 +469,29 @@ fn parse_gateway_manifest(
     content: &str,
     path: &Path,
 ) -> Option<(ExtensionManifest, GatewayExtensionConfig)> {
-    let parts: Vec<&str> = content.splitn(3, "---").collect();
-    let frontmatter = if parts.len() >= 2 {
-        parts[1].trim()
-    } else {
-        content.trim()
-    };
-    let yaml: serde_yaml::Value = serde_yaml::from_str(frontmatter).ok()?;
+    // ADR-024: manifest.yaml is pure YAML. We try parsing the whole content first.
+    // For backward compatibility with old frontmatter-style manifests, if pure YAML
+    // parsing fails we fall back to extracting content between --- delimiters.
+    let yaml: serde_yaml::Value = serde_yaml::from_str(content).ok().or_else(|| {
+        // Fallback: try frontmatter-style (content between --- delimiters)
+        let mut lines = content.lines().peekable();
+        if lines.next() != Some("---") {
+            return None;
+        }
+        let mut frontmatter_lines = Vec::new();
+        let mut found_end = false;
+        for line in lines {
+            if line == "---" {
+                found_end = true;
+                break;
+            }
+            frontmatter_lines.push(line);
+        }
+        if !found_end {
+            return None;
+        }
+        serde_yaml::from_str(&frontmatter_lines.join("\n")).ok()
+    })?;
 
     let id = yaml.get("id")?.as_str()?;
     let name = yaml.get("name")?.as_str()?;

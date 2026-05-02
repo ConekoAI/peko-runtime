@@ -329,6 +329,138 @@ impl McpAdapter {
         Ok(registered_count)
     }
 
+    /// Parse official MCP Registry `server.json` format (Tier 1).
+    fn parse_server_json(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        use anyhow::Context;
+
+        let registry_manifest: serde_json::Value = serde_json::from_str(content)
+            .with_context(|| format!("Failed to parse server.json at {path:?}"))?;
+
+        let name = registry_manifest
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let description = registry_manifest
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let version = registry_manifest
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("1.0.0")
+            .to_string();
+
+        let mut manifest = ExtensionManifest::new(
+            &name,
+            MCP_EXTENSION_TYPE,
+            &name,
+            &description,
+            &version,
+            path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        );
+
+        manifest.set("registry_manifest", registry_manifest.clone());
+        manifest.set("server_json_path", path.to_string_lossy().to_string());
+
+        Ok(manifest)
+    }
+
+    /// Parse unified manifest.yaml with extension_type: "mcp" (Tier 2).
+    fn parse_unified_yaml_manifest(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        use anyhow::Context;
+
+        let yaml: serde_yaml::Value = serde_yaml::from_str(content)
+            .with_context(|| format!("Failed to parse MCP YAML manifest at {path:?}"))?;
+
+        let (id, name, version, description) = super::parsing::extract_extension_fields(&yaml)?;
+
+        let mut manifest = ExtensionManifest::new(
+            &id,
+            MCP_EXTENSION_TYPE,
+            &name,
+            &description,
+            &version,
+            path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        );
+
+        // Store mcp_servers config if present
+        if let Some(mcp_servers) = yaml.get("mcp_servers") {
+            manifest.set("mcp_servers", super::parsing::yaml_to_json(mcp_servers.clone()));
+        }
+
+        // Store any additional metadata
+        if let serde_yaml::Value::Mapping(map) = &yaml {
+            for (k, v) in map {
+                if let Some(key) = k.as_str() {
+                    if !["id", "name", "version", "description", "extension_type", "mcp_servers"]
+                        .contains(&key)
+                    {
+                        manifest.set(key, super::parsing::yaml_to_json(v.clone()));
+                    }
+                }
+            }
+        }
+
+        Ok(manifest)
+    }
+
+    /// Parse legacy config.toml / config.json (Tier 3 fallback).
+    fn parse_legacy_config(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
+        use anyhow::Context;
+
+        let server_configs: Vec<crate::mcp::McpServerConfig> =
+            if path.extension().is_some_and(|e| e == "toml") {
+                let config: crate::mcp::McpConfig = toml::from_str(content)
+                    .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
+                config.servers
+            } else {
+                let config: crate::mcp::McpConfig = serde_json::from_str(content)
+                    .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
+                config.servers
+            };
+
+        let server_config = server_configs
+            .into_iter()
+            .next()
+            .context("No server configurations found in config file")?;
+
+        let mut manifest = ExtensionManifest::new(
+            &server_config.name,
+            MCP_EXTENSION_TYPE,
+            &server_config.name,
+            format!("MCP server: {}", server_config.name),
+            "1.0.0",
+            path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        );
+
+        manifest.set("config_path", path.to_string_lossy().to_string());
+        manifest.set("transport", format!("{:?}", server_config.transport));
+        manifest.set("command", server_config.command.unwrap_or_default());
+
+        if !server_config.reserved_parameters.is_empty() {
+            manifest.set(
+                "reserved_parameters",
+                serde_json::to_value(&server_config.reserved_parameters)?,
+            );
+        }
+
+        Ok(manifest)
+    }
+
     /// Create Tool trait instances for all tools provided by an MCP server
     ///
     /// This is a **separate concern** from the Extension registry — it creates
@@ -383,12 +515,16 @@ impl ExtensionTypeAdapter for McpAdapter {
     }
 
     fn manifest_format(&self) -> ManifestFormat {
+        // ADR-024: MCP adapter supports three input paths:
+        // Tier 1: server.json (MCP Registry standard)
+        // Tier 2: manifest.yaml with extension_type: "mcp"
+        // Tier 3: config.toml / config.json (legacy fallback)
+        // We use Custom detection because the adapter must handle all three.
         ManifestFormat::Custom {
-            detector: |path| {
-                if path.extension().is_some_and(|e| e == "toml" || e == "json") {
-                    return path.exists();
-                }
-                path.join("config.toml").exists() || path.join("config.json").exists()
+            detector: |_path| {
+                // Detection is now handled centrally by ExtensionManager's
+                // three-tier hierarchy. This detector is a no-op placeholder.
+                true
             },
         }
     }
@@ -398,43 +534,16 @@ impl ExtensionTypeAdapter for McpAdapter {
         path: &Path,
         content: &str,
     ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
-        let server_configs: Vec<crate::mcp::McpServerConfig> =
-            if path.extension().is_some_and(|e| e == "toml") {
-                let config: crate::mcp::McpConfig = toml::from_str(content)
-                    .with_context(|| format!("Failed to parse TOML config {path:?}"))?;
-                config.servers
-            } else {
-                let config: crate::mcp::McpConfig = serde_json::from_str(content)
-                    .with_context(|| format!("Failed to parse JSON config {path:?}"))?;
-                config.servers
-            };
-
-        let server_config = server_configs
-            .into_iter()
-            .next()
-            .context("No server configurations found in config file")?;
-
-        let mut manifest = ExtensionManifest::new(
-            &server_config.name,
-            MCP_EXTENSION_TYPE,
-            &server_config.name,
-            format!("MCP server: {}", server_config.name),
-            "1.0.0",
-            path.parent().unwrap_or(Path::new(".")).to_path_buf(),
-        );
-
-        manifest.set("config_path", path.to_string_lossy().to_string());
-        manifest.set("transport", format!("{:?}", server_config.transport));
-        manifest.set("command", server_config.command.unwrap_or_default());
-
-        if !server_config.reserved_parameters.is_empty() {
-            manifest.set(
-                "reserved_parameters",
-                serde_json::to_value(&server_config.reserved_parameters)?,
-            );
+        // Dispatch to the appropriate parser based on file name
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if file_name == "server.json" {
+            self.parse_server_json(path, content)
+        } else if file_name == "manifest.yaml" {
+            self.parse_unified_yaml_manifest(path, content)
+        } else {
+            // Legacy config.toml / config.json
+            self.parse_legacy_config(path, content)
         }
-
-        Ok(manifest)
     }
 
     fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding> {

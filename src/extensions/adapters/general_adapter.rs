@@ -213,8 +213,9 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
     }
 
     fn manifest_format(&self) -> super::ManifestFormat {
-        super::ManifestFormat::YamlFrontmatterMarkdown {
-            required_fields: vec!["id", "name", "hooks"],
+        // ADR-024: General extensions use pure YAML manifest.yaml with extension_type: "general".
+        super::ManifestFormat::Yaml {
+            schema: "general".to_string(),
             file_name: "manifest.yaml",
         }
     }
@@ -225,12 +226,50 @@ impl ExtensionTypeAdapter for GeneralExtensionAdapter {
         content: &str,
     ) -> anyhow::Result<crate::extensions::ExtensionManifest> {
         use anyhow::Context;
-        let (frontmatter, _) = super::parsing::parse_yaml_frontmatter(content)
-            .with_context(|| format!("Failed to parse YAML frontmatter in {path:?}"))?;
-        let yaml: serde_yaml::Value = serde_yaml::from_str(&frontmatter)
-            .with_context(|| format!("Failed to parse YAML in {path:?}"))?;
-        super::parsing::build_manifest_from_yaml(&yaml, GENERAL_EXTENSION_TYPE, path)
-            .with_context(|| format!("Failed to build manifest from YAML in {path:?}"))
+
+        let yaml: serde_yaml::Value = serde_yaml::from_str(content)
+            .with_context(|| format!("Failed to parse general extension manifest at {path:?}"))?;
+
+        let (id, name, version, description) = super::parsing::extract_extension_fields(&yaml)?;
+
+        // Validate extension_type if present (absence is allowed for legacy fallback)
+        if let Some(ext_type) = yaml.get("extension_type").and_then(|v| v.as_str()) {
+            if ext_type != "general" {
+                anyhow::bail!(
+                    "General extension manifest at {path:?} has extension_type '{}' but expected 'general'",
+                    ext_type
+                );
+            }
+        }
+
+        let mut manifest = ExtensionManifest::new(
+            &id,
+            GENERAL_EXTENSION_TYPE,
+            &name,
+            &description,
+            &version,
+            path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf(),
+        );
+
+        // Store hooks in manifest metadata
+        if let Some(hooks) = yaml.get("hooks") {
+            manifest.set("hooks", super::parsing::yaml_to_json(hooks.clone()));
+        }
+
+        // Store any additional metadata
+        if let serde_yaml::Value::Mapping(map) = &yaml {
+            for (k, v) in map {
+                if let Some(key) = k.as_str() {
+                    if !["id", "name", "version", "description", "extension_type", "hooks"]
+                        .contains(&key)
+                    {
+                        manifest.set(key, super::parsing::yaml_to_json(v.clone()));
+                    }
+                }
+            }
+        }
+
+        Ok(manifest)
     }
 
     fn resolve_hooks(&self, manifest: &ExtensionManifest) -> Vec<HookBinding> {
@@ -595,7 +634,7 @@ mod tests {
 
         assert!(matches!(
             format,
-            super::super::ManifestFormat::YamlFrontmatterMarkdown { .. }
+            super::super::ManifestFormat::Yaml { .. }
         ));
     }
 
