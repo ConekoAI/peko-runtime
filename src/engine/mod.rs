@@ -13,9 +13,11 @@ pub mod agentic_loop;
 pub mod state;
 pub mod stream_buffer;
 pub mod stream_orchestrator;
+pub mod stream_types;
 pub mod tool_stream;
 
 pub use chunker::{BlockChunker, BreakPreference, ChunkerConfig, CoalescingChunker};
+pub use stream_types::{ChannelOutput, EventStream, StreamingConfig, default_process_stream};
 pub use event_processor::{ChannelAction, EventProcessor, ProcessorConfig};
 pub use events::{AgenticEvent, EventRouter, LifecyclePhase};
 pub use execution::{ExecutionMode, TaskExecutor, TaskId, TaskStatus, TaskSummary};

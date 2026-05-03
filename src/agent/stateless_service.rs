@@ -455,7 +455,7 @@ impl StatelessAgentService {
     pub async fn execute_message_streaming(
         &self,
         request: MessageRequest,
-    ) -> Result<crate::channels::EventStream> {
+    ) -> Result<crate::engine::EventStream> {
         let start = Instant::now();
 
         // Resolve session using SessionManager (single authority)
@@ -506,7 +506,7 @@ impl StatelessAgentService {
             request.agent_name, duration_ms
         );
 
-        Ok(crate::channels::EventStream {
+        Ok(crate::engine::EventStream {
             receiver: event_stream.receiver,
             completion: event_stream.completion,
             session_id,
@@ -604,7 +604,20 @@ impl StatelessAgentService {
             _ => request.message,
         };
 
-        // 6. Execute agent with session and history
+        // 6. Invoke ChannelInput hook — extensions may transform the prompt or session
+        let channel_input_result = agent
+            .extension_core()
+            .invoke_hook(
+                crate::extensions::core::HookPoint::ChannelInput,
+                crate::extensions::types::HookInput::Unit,
+            )
+            .await;
+        debug!(
+            "ChannelInput hook result: {:?}",
+            std::mem::discriminant(&channel_input_result)
+        );
+
+        // 7. Execute agent with session and history
         // Use the new execute_with_session method that properly handles session resumption
         let execute_result = agent
             .execute_with_session(&prompt, session.clone(), Some(history), |_event| {
@@ -612,6 +625,19 @@ impl StatelessAgentService {
                 // All data comes from the AgenticResult
             })
             .await;
+
+        // 8. Invoke ChannelOutput hook — extensions may transform the result
+        let channel_output_result = agent
+            .extension_core()
+            .invoke_hook(
+                crate::extensions::core::HookPoint::ChannelOutput,
+                crate::extensions::types::HookInput::Unit,
+            )
+            .await;
+        debug!(
+            "ChannelOutput hook result: {:?}",
+            std::mem::discriminant(&channel_output_result)
+        );
 
         let (success, final_response, token_usage, iterations, tool_calls, error_msg) =
             match execute_result {
@@ -701,7 +727,7 @@ impl StatelessAgentService {
     pub async fn execute_streaming(
         &self,
         request: ExecutionRequest,
-    ) -> Result<crate::channels::EventStream> {
+    ) -> Result<crate::engine::EventStream> {
         // Load config, history, agent, session - these are all Send-safe
         let config_entry = self
             .config_service
@@ -759,7 +785,7 @@ impl StatelessAgentService {
         &self,
         request: ExecutionRequest,
         session: Arc<RwLock<crate::session::unified::Session>>,
-    ) -> Result<crate::channels::EventStream> {
+    ) -> Result<crate::engine::EventStream> {
         let message = match request.caller_agent.as_deref() {
             Some(caller) if !caller.is_empty() => {
                 format!("[Message from agent: {caller}]\n\n{}", request.message)
@@ -779,12 +805,26 @@ impl StatelessAgentService {
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
+        // Invoke ChannelInput hook — extensions may set up input transformation
+        let channel_input_result = agent
+            .extension_core()
+            .invoke_hook(
+                crate::extensions::core::HookPoint::ChannelInput,
+                crate::extensions::types::HookInput::Unit,
+            )
+            .await;
+        debug!(
+            "ChannelInput hook result: {:?}",
+            std::mem::discriminant(&channel_input_result)
+        );
+
         // Create channels
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(1000);
         let (completion_tx, completion_rx) = tokio::sync::oneshot::channel::<Result<()>>();
 
         // Spawn task on main runtime (NOT spawn_blocking)
         // This ensures session writes complete before completion signal
+        let extension_core = agent.extension_core();
         tokio::spawn(async move {
             let on_event = move |event: AgenticEvent| {
                 tracing::info!(
@@ -799,6 +839,18 @@ impl StatelessAgentService {
                 .execute_streaming_with_session(&prompt, session, Some(history.clone()), on_event)
                 .await;
 
+            // Invoke ChannelOutput hook — extensions may process or log the result
+            let channel_output_result = extension_core
+                .invoke_hook(
+                    crate::extensions::core::HookPoint::ChannelOutput,
+                    crate::extensions::types::HookInput::Unit,
+                )
+                .await;
+            debug!(
+                "ChannelOutput hook result: {:?}",
+                std::mem::discriminant(&channel_output_result)
+            );
+
             // At this point, all session writes have completed because
             // add_assistant/add_tool_result are synchronous
 
@@ -808,7 +860,7 @@ impl StatelessAgentService {
             // event_tx is dropped here, signaling end of stream
         });
 
-        Ok(crate::channels::EventStream {
+        Ok(crate::engine::EventStream {
             receiver: event_rx,
             completion: completion_rx,
             session_id: request.session_id,

@@ -1,20 +1,19 @@
-//! Communication channels for agent I/O
+//! Stream types for agent execution output
 //!
-//! This module provides the CLI channel for agents to communicate.
-//! Additional channels (Discord, HTTP, Telegram, Slack, Matrix, WhatsApp)
-//! are implemented as Gateway extensions.
-
-pub mod cli;
+//! These types bridge the engine's event production with presentation-layer
+//! consumers (CLI, HTTP, gateway extensions). They were migrated from
+//! `src/channels/` as part of ADR-017 — channels are now external gateway
+//! extensions, but the core stream types remain part of the engine.
 
 use anyhow::Result;
-use async_trait::async_trait;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::oneshot;
 
 /// Event stream returned by `StatelessAgentService`
 ///
-/// This is the unified interface between service and presentation layers.
-/// Channels consume this stream to produce appropriate output.
+/// This is the unified interface between the engine and presentation layers.
+/// Consumers (channels, gateways, CLI) read from this stream to produce
+/// appropriate output.
 ///
 /// The `completion` field provides a signal that ensures all session
 /// persistence operations complete before the stream is considered done.
@@ -33,10 +32,10 @@ pub struct EventStream {
     pub is_new_session: bool,
 }
 
-/// Output from channel processing
+/// Output from stream processing
 ///
 /// Contains the final result after processing all events.
-/// Used by blocking channels to return collected output.
+/// Used by blocking consumers to return collected output.
 #[derive(Debug, Clone)]
 pub struct ChannelOutput {
     /// Final text response
@@ -70,10 +69,10 @@ impl ChannelOutput {
     }
 }
 
-/// Streaming configuration for channels
+/// Streaming configuration for presentation layers
 ///
 /// Controls how streaming output is chunked and presented.
-/// This lives at the channel layer (presentation), not the agent layer.
+/// This lives at the presentation layer, not the agent layer.
 #[derive(Debug, Clone)]
 pub struct StreamingConfig {
     /// Enable streaming mode
@@ -112,94 +111,9 @@ impl Default for StreamingConfig {
     }
 }
 
-/// Channel trait for bidirectional communication
-///
-/// Implement this trait to create new communication channels.
-/// Channels are used by agents to communicate.
-#[async_trait]
-pub trait Channel: Send + Sync {
-    /// Get the channel name
-    fn name(&self) -> &str;
-
-    /// Send a message through the channel
-    async fn send(&mut self, message: &str) -> Result<()>;
-
-    /// Receive a message from the channel
-    /// Returns None if no message is available (non-blocking)
-    async fn receive(&mut self) -> Result<Option<String>>;
-
-    /// Get the streaming configuration for this channel
-    ///
-    /// Channels can override agent defaults based on their capabilities.
-    fn streaming_config(&self) -> StreamingConfig {
-        StreamingConfig::default()
-    }
-
-    /// Handle a streaming event receiver (legacy method)
-    ///
-    /// **DEPRECATED:** Use `process_stream` instead.
-    /// This method will be removed in a future version.
-    #[deprecated(since = "0.2.0", note = "Use process_stream instead")]
-    async fn handle_stream(
-        &mut self,
-        mut event_rx: Receiver<crate::engine::AgenticEvent>,
-    ) -> Result<()> {
-        use crate::engine::AgenticEvent;
-
-        while let Some(event) = event_rx.recv().await {
-            match event {
-                // New event type with clear semantics
-                AgenticEvent::AssistantText {
-                    text,
-                    is_interstitial,
-                    ..
-                } => {
-                    // Only send final answers in default impl
-                    if !is_interstitial {
-                        self.send(&text).await?;
-                    }
-                }
-                // Deprecated: legacy event type (backward compatibility)
-                #[allow(deprecated)]
-                AgenticEvent::Assistant { text, is_final, .. } => {
-                    if is_final {
-                        self.send(&text).await?;
-                    }
-                    // Deltas are ignored in default impl
-                }
-                AgenticEvent::Lifecycle { phase, error, .. } => match phase {
-                    crate::engine::LifecyclePhase::End => break,
-                    crate::engine::LifecyclePhase::Error => {
-                        if let Some(err) = error {
-                            eprintln!("Stream error: {err}");
-                        }
-                        break;
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// Process an event stream and return collected output
-    ///
-    /// This is the unified interface for consuming agent execution events.
-    /// Channels implement this to handle presentation:
-    /// - CLI channels can stream to stdout or collect for blocking mode
-    /// - HTTP channels convert to SSE
-    /// - WebSocket channels convert to WS messages
-    ///
-    /// Default implementation collects events into `ChannelOutput`.
-    async fn process_stream(&self, event_stream: EventStream) -> Result<ChannelOutput> {
-        default_process_stream(event_stream).await
-    }
-}
-
 /// Default event stream processing (shared implementation)
 ///
-/// This is a helper function that channels can use to get the default
+/// This is a helper function that consumers can use to get the default
 /// behavior without duplicating the implementation.
 ///
 /// This implementation awaits the completion signal to ensure session
@@ -279,56 +193,4 @@ pub async fn default_process_stream(event_stream: EventStream) -> Result<Channel
     }
 
     Ok(output)
-}
-
-// Re-exports for convenience
-pub use cli::{CliChannel, CliMode};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Mock channel for testing
-    pub struct MockChannel {
-        name: String,
-        messages: Vec<String>,
-    }
-
-    impl MockChannel {
-        pub fn new(name: impl Into<String>) -> Self {
-            Self {
-                name: name.into(),
-                messages: Vec::new(),
-            }
-        }
-
-        pub fn add_message(&mut self, msg: impl Into<String>) {
-            self.messages.push(msg.into());
-        }
-    }
-
-    #[async_trait]
-    impl Channel for MockChannel {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        async fn send(&mut self, _message: &str) -> Result<()> {
-            Ok(())
-        }
-
-        async fn receive(&mut self) -> Result<Option<String>> {
-            Ok(self.messages.pop())
-        }
-    }
-
-    #[tokio::test]
-    async fn test_mock_channel() {
-        let mut channel = MockChannel::new("test");
-        assert_eq!(channel.name(), "test");
-
-        channel.add_message("hello");
-        let msg = channel.receive().await.unwrap();
-        assert_eq!(msg, Some("hello".to_string()));
-    }
 }

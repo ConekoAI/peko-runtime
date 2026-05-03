@@ -82,9 +82,6 @@ pub mod watcher;
 // External Interfaces
 // ============================================================================
 
-/// Built-in communication channels (CLI, HTTP, etc.)
-pub mod channels;
-
 /// LLM provider integrations
 pub mod providers;
 

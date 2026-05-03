@@ -339,6 +339,20 @@ impl Agent {
     /// Stop the agent
     pub async fn stop(&self) -> Result<()> {
         info!("Stopping agent: {}", self.config.name);
+
+        // Invoke AgentShutdown hook so extensions can clean up
+        let shutdown_result = self
+            .extension_core
+            .invoke_hook(
+                crate::extensions::core::HookPoint::AgentShutdown,
+                crate::extensions::types::HookInput::Unit,
+            )
+            .await;
+        tracing::info!(
+            "AgentShutdown hook result: {:?}",
+            std::mem::discriminant(&shutdown_result)
+        );
+
         Ok(())
     }
 

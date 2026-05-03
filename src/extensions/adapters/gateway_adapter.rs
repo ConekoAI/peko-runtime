@@ -51,7 +51,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// Discovered gateway extension
 #[derive(Debug, Clone)]
@@ -200,6 +200,7 @@ impl ExtensionTypeAdapter for GatewayAdapter {
                 "websocket" => debug!("Initializing WebSocket gateway"),
                 "pubsub" => debug!("Initializing Pub/Sub gateway"),
                 "grpc" => debug!("Initializing gRPC gateway"),
+                "cli" => debug!("Initializing CLI gateway"),
                 "custom" => debug!("Initializing custom gateway"),
                 _ => warn!("Unknown gateway type: {}", config.gateway_type),
             }
@@ -319,17 +320,23 @@ impl std::fmt::Debug for GatewayHookHandler {
 #[async_trait]
 impl HookHandler for GatewayHookHandler {
     async fn handle(&self, ctx: HookContext) -> HookResult {
-        debug!("Gateway handler '{}' invoked", self.handler_name);
+        debug!(
+            "Gateway handler '{}' invoked at point: {}",
+            self.handler_name,
+            ctx.point.name()
+        );
 
-        // Gateway handlers pass through by default
-        // In a real implementation, this would dispatch to gateway-specific logic
-        match ctx.input {
-            HookInput::ToolRegistry(access) => {
-                HookResult::Continue(HookOutput::Json(serde_json::json!({
-                    "tools": access.tools
-                })))
+        // Dispatch based on hook point category — gateway extensions handle
+        // I/O lifecycle, agent lifecycle, and event hooks.
+        match ctx.point.category() {
+            "io" => self.handle_io_hook(&ctx).await,
+            "agent" => self.handle_agent_hook(&ctx).await,
+            "event" => self.handle_event_hook(&ctx).await,
+            "tool" => self.handle_tool_hook(&ctx).await,
+            _ => {
+                trace!("Gateway handler passing through for category: {}", ctx.point.category());
+                HookResult::PassThrough
             }
-            _ => HookResult::PassThrough,
         }
     }
 
@@ -340,6 +347,128 @@ impl HookHandler for GatewayHookHandler {
 
     fn name(&self) -> String {
         format!("gateway:{}", self.handler_name)
+    }
+}
+
+impl GatewayHookHandler {
+    /// Handle I/O lifecycle hooks (ChannelInput, ChannelOutput, MessagePreSend, MessagePostReceive)
+    async fn handle_io_hook(&self, ctx: &HookContext) -> HookResult {
+        use crate::extensions::core::hook_points::HookPoint;
+
+        match ctx.point {
+            HookPoint::ChannelInput => {
+                // Extensions return channel configuration JSON
+                debug!("Gateway ChannelInput: registering input channel '{}'", self.handler_name);
+                HookResult::Continue(HookOutput::Json(serde_json::json!({
+                    "channel": self.handler_name,
+                    "type": "input",
+                    "registered": true
+                })))
+            }
+            HookPoint::ChannelOutput => {
+                // Extensions return output handler configuration
+                debug!("Gateway ChannelOutput: registering output handler '{}'", self.handler_name);
+                HookResult::Continue(HookOutput::Json(serde_json::json!({
+                    "channel": self.handler_name,
+                    "type": "output",
+                    "registered": true
+                })))
+            }
+            HookPoint::MessagePreSend => {
+                // Extensions may transform outgoing messages
+                if let Some(msg) = ctx.as_message() {
+                    debug!("Gateway MessagePreSend: processing message for '{}'", self.handler_name);
+                    HookResult::Continue(HookOutput::Json(serde_json::json!({
+                        "channel": self.handler_name,
+                        "action": "pre_send",
+                        "message_id": msg.metadata.get("id").unwrap_or(&serde_json::Value::Null)
+                    })))
+                } else {
+                    HookResult::PassThrough
+                }
+            }
+            HookPoint::MessagePostReceive => {
+                // Extensions may transform incoming messages
+                if let Some(msg) = ctx.as_message() {
+                    debug!("Gateway MessagePostReceive: processing message for '{}'", self.handler_name);
+                    HookResult::Continue(HookOutput::Json(serde_json::json!({
+                        "channel": self.handler_name,
+                        "action": "post_receive",
+                        "message_id": msg.metadata.get("id").unwrap_or(&serde_json::Value::Null)
+                    })))
+                } else {
+                    HookResult::PassThrough
+                }
+            }
+            _ => HookResult::PassThrough,
+        }
+    }
+
+    /// Handle agent lifecycle hooks (AgentInit, AgentShutdown, AgentIteration)
+    async fn handle_agent_hook(&self, ctx: &HookContext) -> HookResult {
+        use crate::extensions::core::hook_points::HookPoint;
+
+        match ctx.point {
+            HookPoint::AgentInit => {
+                debug!("Gateway AgentInit: initializing gateway '{}'", self.handler_name);
+                HookResult::Continue(HookOutput::Json(serde_json::json!({
+                    "gateway": self.handler_name,
+                    "status": "initialized"
+                })))
+            }
+            HookPoint::AgentShutdown => {
+                debug!("Gateway AgentShutdown: cleaning up gateway '{}'", self.handler_name);
+                HookResult::Continue(HookOutput::Json(serde_json::json!({
+                    "gateway": self.handler_name,
+                    "status": "shutdown"
+                })))
+            }
+            HookPoint::AgentIteration { iteration } => {
+                debug!(
+                    "Gateway AgentIteration: iteration {} for '{}'",
+                    iteration, self.handler_name
+                );
+                HookResult::PassThrough
+            }
+            _ => HookResult::PassThrough,
+        }
+    }
+
+    /// Handle event lifecycle hooks (EventSubscribe, EventEmit)
+    async fn handle_event_hook(&self, ctx: &HookContext) -> HookResult {
+        use crate::extensions::core::hook_points::HookPoint;
+
+        match ctx.point {
+            HookPoint::EventSubscribe { ref topic_pattern } => {
+                debug!(
+                    "Gateway EventSubscribe: '{}' subscribing to topic '{}'",
+                    self.handler_name, topic_pattern
+                );
+                HookResult::Continue(HookOutput::Json(serde_json::json!({
+                    "gateway": self.handler_name,
+                    "topic": topic_pattern,
+                    "subscribed": true
+                })))
+            }
+            HookPoint::EventEmit => {
+                debug!("Gateway EventEmit: '{}' emitting event", self.handler_name);
+                HookResult::PassThrough
+            }
+            _ => HookResult::PassThrough,
+        }
+    }
+
+    /// Handle tool lifecycle hooks (ToolRegister, etc.)
+    async fn handle_tool_hook(&self, ctx: &HookContext) -> HookResult {
+        match ctx.input {
+            HookInput::ToolRegistry(ref access) => {
+                HookResult::Continue(HookOutput::Json(serde_json::json!({
+                    "gateway": self.handler_name,
+                    "tools": access.tools
+                })))
+            }
+            _ => HookResult::PassThrough,
+        }
     }
 }
 
