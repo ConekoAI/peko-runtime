@@ -605,17 +605,49 @@ impl StatelessAgentService {
         };
 
         // 6. Invoke ChannelInput hook — extensions may transform the prompt or session
-        let channel_input_result = agent
+        // ADR-025 Phase 4: Consume ChannelInput result to transform the prompt
+        let prompt = match agent
             .extension_core()
             .invoke_hook(
                 crate::extensions::core::HookPoint::ChannelInput,
                 crate::extensions::types::HookInput::Unit,
             )
-            .await;
-        debug!(
-            "ChannelInput hook result: {:?}",
-            std::mem::discriminant(&channel_input_result)
-        );
+            .await
+        {
+            crate::extensions::types::HookResult::Continue(
+                crate::extensions::types::HookOutput::Text(transformed),
+            )
+            | crate::extensions::types::HookResult::Replace(
+                crate::extensions::types::HookOutput::Text(transformed),
+            ) => {
+                debug!("ChannelInput hook transformed prompt");
+                transformed
+            }
+            crate::extensions::types::HookResult::Continue(
+                crate::extensions::types::HookOutput::Json(json),
+            )
+            | crate::extensions::types::HookResult::Replace(
+                crate::extensions::types::HookOutput::Json(json),
+            ) => {
+                // If the hook returns JSON with a "message" or "prompt" field, use it
+                if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
+                    debug!("ChannelInput hook transformed prompt from JSON");
+                    msg.to_string()
+                } else if let Some(p) = json.get("prompt").and_then(|v| v.as_str()) {
+                    debug!("ChannelInput hook transformed prompt from JSON");
+                    p.to_string()
+                } else {
+                    prompt
+                }
+            }
+            other => {
+                debug!(
+                    "ChannelInput hook result: {:?}",
+                    std::mem::discriminant(&other)
+                );
+                prompt
+            }
+        };
 
         // 7. Execute agent with session and history
         // Use the new execute_with_session method that properly handles session resumption
@@ -625,19 +657,6 @@ impl StatelessAgentService {
                 // All data comes from the AgenticResult
             })
             .await;
-
-        // 8. Invoke ChannelOutput hook — extensions may transform the result
-        let channel_output_result = agent
-            .extension_core()
-            .invoke_hook(
-                crate::extensions::core::HookPoint::ChannelOutput,
-                crate::extensions::types::HookInput::Unit,
-            )
-            .await;
-        debug!(
-            "ChannelOutput hook result: {:?}",
-            std::mem::discriminant(&channel_output_result)
-        );
 
         let (success, final_response, token_usage, iterations, tool_calls, error_msg) =
             match execute_result {
@@ -683,6 +702,50 @@ impl StatelessAgentService {
                     )
                 }
             };
+
+        // 8. Invoke ChannelOutput hook — extensions may transform the result
+        // ADR-025 Phase 4: Consume ChannelOutput result to transform the response
+        let final_response = match agent
+            .extension_core()
+            .invoke_hook(
+                crate::extensions::core::HookPoint::ChannelOutput,
+                crate::extensions::types::HookInput::Unit,
+            )
+            .await
+        {
+            crate::extensions::types::HookResult::Continue(
+                crate::extensions::types::HookOutput::Text(transformed),
+            )
+            | crate::extensions::types::HookResult::Replace(
+                crate::extensions::types::HookOutput::Text(transformed),
+            ) => {
+                debug!("ChannelOutput hook transformed response");
+                transformed
+            }
+            crate::extensions::types::HookResult::Continue(
+                crate::extensions::types::HookOutput::Json(json),
+            )
+            | crate::extensions::types::HookResult::Replace(
+                crate::extensions::types::HookOutput::Json(json),
+            ) => {
+                if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
+                    debug!("ChannelOutput hook transformed response from JSON");
+                    msg.to_string()
+                } else if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
+                    debug!("ChannelOutput hook transformed response from JSON");
+                    text.to_string()
+                } else {
+                    final_response
+                }
+            }
+            other => {
+                debug!(
+                    "ChannelOutput hook result: {:?}",
+                    std::mem::discriminant(&other)
+                );
+                final_response
+            }
+        };
 
         // Note: Session persistence is handled by the engine loop via Session.
         // The engine loop's session.add_user() and session.add_assistant() methods
@@ -805,18 +868,49 @@ impl StatelessAgentService {
             .await
             .with_context(|| format!("Failed to create agent: {}", request.agent_name))?;
 
-        // Invoke ChannelInput hook — extensions may set up input transformation
-        let channel_input_result = agent
+        // Invoke ChannelInput hook — extensions may transform the prompt
+        // ADR-025 Phase 4: Consume ChannelInput result for streaming path
+        let prompt = match agent
             .extension_core()
             .invoke_hook(
                 crate::extensions::core::HookPoint::ChannelInput,
                 crate::extensions::types::HookInput::Unit,
             )
-            .await;
-        debug!(
-            "ChannelInput hook result: {:?}",
-            std::mem::discriminant(&channel_input_result)
-        );
+            .await
+        {
+            crate::extensions::types::HookResult::Continue(
+                crate::extensions::types::HookOutput::Text(transformed),
+            )
+            | crate::extensions::types::HookResult::Replace(
+                crate::extensions::types::HookOutput::Text(transformed),
+            ) => {
+                debug!("ChannelInput hook transformed prompt (streaming)");
+                transformed
+            }
+            crate::extensions::types::HookResult::Continue(
+                crate::extensions::types::HookOutput::Json(json),
+            )
+            | crate::extensions::types::HookResult::Replace(
+                crate::extensions::types::HookOutput::Json(json),
+            ) => {
+                if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
+                    debug!("ChannelInput hook transformed prompt from JSON (streaming)");
+                    msg.to_string()
+                } else if let Some(p) = json.get("prompt").and_then(|v| v.as_str()) {
+                    debug!("ChannelInput hook transformed prompt from JSON (streaming)");
+                    p.to_string()
+                } else {
+                    prompt
+                }
+            }
+            other => {
+                debug!(
+                    "ChannelInput hook result (streaming): {:?}",
+                    std::mem::discriminant(&other)
+                );
+                prompt
+            }
+        };
 
         // Create channels
         let (event_tx, event_rx) = tokio::sync::mpsc::channel::<AgenticEvent>(1000);
@@ -840,6 +934,8 @@ impl StatelessAgentService {
                 .await;
 
             // Invoke ChannelOutput hook — extensions may process or log the result
+            // Note: For streaming, the response has already been sent via events.
+            // The hook can still perform side effects (logging, metrics, etc.)
             let channel_output_result = extension_core
                 .invoke_hook(
                     crate::extensions::core::HookPoint::ChannelOutput,
@@ -847,7 +943,7 @@ impl StatelessAgentService {
                 )
                 .await;
             debug!(
-                "ChannelOutput hook result: {:?}",
+                "ChannelOutput hook result (streaming): {:?}",
                 std::mem::discriminant(&channel_output_result)
             );
 

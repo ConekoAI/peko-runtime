@@ -8,6 +8,7 @@
 //! - Session maintenance (prune, cap, rotate)
 //! - Graceful shutdown
 
+pub mod background_runtime;
 pub mod state;
 
 use crate::agent::stateless_service::{MessageRequest, StatelessAgentService};

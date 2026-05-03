@@ -3,6 +3,7 @@
 //! Shared state accessible to the daemon and IPC server.
 //! This is the daemon's composition root — all services are initialized here.
 
+use crate::daemon::background_runtime::{BackgroundRuntimeManager, GatewayRouter};
 use crate::tools::framework::async_executor::AsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
@@ -82,6 +83,12 @@ pub struct AppState {
     /// Async task executor for daemon-side background execution (ADR-020)
     pub async_task_executor: Arc<AsyncExecutor>,
 
+    /// Background runtime manager for MCP servers and gateways (ADR-025)
+    background_runtime_manager: Arc<BackgroundRuntimeManager>,
+
+    /// Gateway router for channel→agent mapping (ADR-025)
+    gateway_router: Arc<GatewayRouter>,
+
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
 
@@ -104,6 +111,8 @@ impl std::fmt::Debug for AppState {
             .field("team_service", &"<TeamManagementService>")
             .field("tool_runtime", &"<ToolRuntime>")
             .field("async_task_executor", &"<AsyncExecutor>")
+            .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
+            .field("gateway_router", &"<GatewayRouter>")
             .finish()
     }
 }
@@ -270,6 +279,10 @@ impl AppState {
         );
         let async_task_executor = Arc::new(AsyncExecutor::new());
 
+        // ADR-025: Initialize BackgroundRuntimeManager and GatewayRouter
+        let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
+        let gateway_router = Arc::new(GatewayRouter::new(Arc::clone(&agent_service)));
+
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
@@ -293,6 +306,8 @@ impl AppState {
             team_service,
             tool_runtime,
             async_task_executor,
+            background_runtime_manager,
+            gateway_router,
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
@@ -435,6 +450,18 @@ impl AppState {
     #[must_use]
     pub fn agent_mgmt_service(&self) -> &Arc<AgentService> {
         &self.agent_mgmt_service
+    }
+
+    /// Get the background runtime manager (ADR-025)
+    #[must_use]
+    pub fn background_runtime_manager(&self) -> &Arc<BackgroundRuntimeManager> {
+        &self.background_runtime_manager
+    }
+
+    /// Get the gateway router (ADR-025)
+    #[must_use]
+    pub fn gateway_router(&self) -> &Arc<GatewayRouter> {
+        &self.gateway_router
     }
 
     /// Get the count of registered agents

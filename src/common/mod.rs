@@ -6,6 +6,7 @@
 pub mod config_path;
 pub mod identifiers;
 pub mod paths;
+pub mod process;
 pub mod registry;
 pub mod services;
 pub mod time;
