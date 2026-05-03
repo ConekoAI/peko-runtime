@@ -6,6 +6,7 @@
 **Author**: Kimi Code CLI  
 **Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-024 (Unified Extension Manifest)  
 **Replaces / Supersedes**: `gateways/` workspace at project root (legacy plugin approach)
+**Superseded In Part By**: ADR-026 (Separate Extension Runtime Lifecycle from Access Control) — redefines the CLI semantics for `pekobot ext enable` / `disable` vs `start` / `stop`
 
 ---
 
@@ -128,7 +129,10 @@ pub enum RuntimeKind {
         stdin: tokio::process::ChildStdin,
         stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
     },
-    /// In-process async task (Rust-native HTTP server, TUI)
+    /// In-process async task (Rust-native HTTP server, TUI, MCP client loop)
+    ///
+    /// Used by adapters that need a tokio task rather than a child process.
+    /// Not used by gateways — gateways are extensions and run out-of-process.
     Task {
         handle: tokio::task::JoinHandle<()>,
         abort_tx: tokio::sync::oneshot::Sender<()>,
@@ -294,9 +298,12 @@ pub struct GatewayRuntimeAdapter {
     flavor: GatewayFlavor,
 }
 
+/// Gateway flavor — how the gateway is implemented
+///
+/// Gateways are **extensions** — they run outside the daemon process.
+/// There is no "in-process" variant because built-in code cannot be
+/// installed/updated/uninstalled like an extension.
 pub enum GatewayFlavor {
-    /// Async task inside daemon (Rust-native, direct method calls)
-    InProcess { task_factory: Box<dyn GatewayTaskFactory> },
     /// Child process communicating via stdio-line JSON protocol
     OutOfProcess { command: String, args: Vec<String> },
     /// External HTTP/webhook endpoint the daemon polls or connects to
@@ -307,11 +314,6 @@ pub enum GatewayFlavor {
 impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
     async fn initialize(&self, runtime: &mut ManagedRuntime) -> Result<()> {
         match &self.flavor {
-            GatewayFlavor::InProcess { task_factory } => {
-                // RuntimeKind::Task is created by the supervisor before initialize()
-                // The adapter just sets up routing config
-                self.router.register_gateway(&runtime.id, &self.flavor).await;
-            }
             GatewayFlavor::OutOfProcess { .. } => {
                 // RuntimeKind::Process already spawned by supervisor
                 // Send routing config via GatewayPacket::Config on stdin
@@ -324,10 +326,9 @@ impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
         }
         Ok(())
     }
-    
+
     async fn health_check(&self, runtime: &ManagedRuntime) -> bool {
         match &runtime.kind {
-            RuntimeKind::Task { handle, .. } => !handle.is_finished(),
             RuntimeKind::Process { .. } => {
                 // Send GatewayPacket::Ping via stdio, expect Pong
                 self.gateway_ping(runtime).await.is_ok()
@@ -337,7 +338,7 @@ impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
             }
         }
     }
-    
+
     async fn on_crash(&self, runtime: &mut ManagedRuntime) -> CrashAction {
         self.router.mark_offline(&runtime.id).await;
         CrashAction::Restart
@@ -411,17 +412,13 @@ name: "Discord Gateway"
 version: "1.0.0"
 description: "Connect Pekobot to Discord servers"
 extension_type: "gateway"
-gateway_type: "out-of-process"     # "in-process" | "out-of-process" | "external"
+gateway_type: "out-of-process"     # "out-of-process" | "external"
 config:
   # For out-of-process: command to spawn the gateway process
   command: "node"
   args: ["./discord_bot.js"]
   env:
     DISCORD_TOKEN: "${secret:DISCORD_TOKEN}"
-  
-  # For in-process: module and factory function
-  # module: "pekobot_gateway_discord"
-  # factory: "create_discord_gateway"
   
   # For external: HTTP webhook endpoint
   # endpoint: "https://discord-bridge.example.com/webhook"
@@ -510,9 +507,13 @@ Gateway extensions **also** register hooks (`ChannelInput`, `ChannelOutput`, `Me
 ### 11. No Dynamic Library Loading
 
 Rejected the `cdylib` / FFI approach. Gateways run as:
-- **In-process async tasks** (Rust-native, direct method calls)
 - **Child processes** (Node.js, Python, etc.) communicating via stdio-line JSON
 - **External services** the daemon connects to (HTTP/webhook gateways)
+
+There is no "in-process" gateway variant because gateways are **extensions** —
+they must be installable, updatable, and uninstallable independently of the
+daemon binary. Built-in transport code (e.g., an embedded HTTP server for
+testing) belongs in the daemon, not in the gateway extension system.
 
 ---
 
@@ -526,12 +527,17 @@ Rejected the `cdylib` / FFI approach. Gateways run as:
 
 **Future-Proof.** New background runtime types (persistent universal tools, custom integrations) only need to implement `BackgroundRuntimeAdapter`.
 
-**Single Mental Model.** Users learn one set of commands:
+**Single Mental Model.** Users learn one set of commands. Note: per ADR-026, runtime lifecycle (`start`/`stop`) is separated from access control (`enable`/`disable`):
 
 ```bash
-# Install and enable a gateway
+# Install a gateway
 pekobot ext install ./discord-gateway
-pekobot ext enable discord-gateway
+
+# Start the background runtime (daemon-scoped)
+pekobot ext start discord-gateway
+
+# Grant agent access (agent-scoped)
+pekobot ext enable discord-gateway --target myteam/myagent
 
 # Background runtimes appear in daemon status
 pekobot daemon status
@@ -609,9 +615,8 @@ pekobot ext config discord-gateway --set routing.channel_map.#general=assistant
 
 ### Phase 5: Reference Gateway Implementations (Medium Term)
 
-1. **HTTP API gateway** (in-process): Axum server spawned as async task.
-2. **Discord gateway** (out-of-process): Node.js bot using `discord.js` that talks to daemon via stdio-line JSON.
-3. Place examples and E2E tests: `e2e_tests/extensions/gateway/http_basics/test.ps1`, `discord_basics/test.ps1`. Reference patterns: `e2e_tests\extensions\universal`
+1. **HTTP API gateway** (out-of-process): Axum server spawned as child process.
+2. Place examples and E2E tests: `e2e_tests/extensions/gateway/http_basics/test.ps1`. Reference patterns: `e2e_tests\extensions\universal`
 
 ---
 
@@ -644,7 +649,7 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 - **McpManager shrinks from 600+ to ~150 lines.** MCP-specific code only.
 - **Gateway gets supervision for free.** Automatic restart, health checks, crash reporting.
 - **Users can talk to agents through Discord, TUI, HTTP, etc.** — any channel is pluggable.
-- **Unified lifecycle.** All background runtimes installed/enabled via `pekobot ext`.
+- **Unified lifecycle.** All background runtimes installed via `pekobot ext`, started via `pekobot ext start`, and access-controlled via `pekobot ext enable` (per ADR-026).
 - **No core bloat.** Only used platforms are loaded.
 - **Third-party extensible.** Community maintains channels without core PRs.
 - **Safe runtime.** No `unsafe` FFI or dynamic loading.
@@ -658,7 +663,7 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 | BackgroundRuntimeManager is new critical component | Extensive tests; health checks; graceful degradation |
 | Adapter API stability | Versioned trait; default methods; clear stability docs |
 | Agent changes required (hook consumption) | Bounded changes in `stateless_service.rs`; behavioral change noted |
-| No working reference implementation | Phase 5 delivers HTTP and Discord examples |
+| No working reference implementation | Phase 5 delivers HTTP examples |
 
 ---
 
@@ -672,7 +677,7 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 | `GatewayRuntimeAdapter` implemented and registered in CLI | 🟡 Partial | `GatewayRuntimeAdapter` + `GatewayFlavor` implemented in `src/daemon/background_runtime/gateway_adapter.rs`. CLI registration (e.g. `peko ext enable` → start gateway) not yet wired. |
 | Out-of-process gateway can be started (spawns child process) and stopped | 🟡 Partial | `BackgroundRuntimeManager::start()` with `RuntimeSpawnConfig::Process` works. Gateway-specific spawn/stop via CLI not yet wired. |
 | `GatewayPacket`/`GatewayResponse` stdio-line protocol handled end-to-end | ✅ Done | Types + encode/decode in `src/daemon/background_runtime/protocol.rs`. Stdout read loop routes `Receive` messages to `GatewayRouter`. |
-| HTTP API gateway (in-process) accepts POST and routes to agent | ⏸️ Pending | Phase 5 — requires reference implementation |
+| HTTP API gateway (out-of-process) accepts POST and routes to agent | ⏸️ Pending | Phase 5 — requires reference implementation |
 | Agent response is delivered back to the originating channel | 🟡 Partial | `GatewayRouter::route_incoming()` executes agent and returns response. Delivery back to gateway process via `GatewayPacket::Deliver` requires stdin access from router (not yet wired). |
 | `ChannelInput`/`ChannelOutput` hook results are consumed by the agent runtime | ✅ Done | Both streaming and non-streaming paths in `stateless_service.rs` now consume hook results. **Behavioral change**: extensions that return values are now effective. |
 | E2E tests verify gateway lifecycle | ⏸️ Pending | Phase 5 |
@@ -696,3 +701,4 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 - `src/daemon/background_runtime/gateway_adapter.rs` — GatewayRuntimeAdapter implementation
 - `src/daemon/background_runtime/router.rs` — GatewayRouter for channel→agent mapping
 - `docs/migration/MIGRATION-EXTENSIONS-2.0.md` — Extension system migration plan
+- ADR-026: Separate Extension Runtime Lifecycle from Access Control — redefines CLI semantics for `enable`/`disable` vs `start`/`stop`

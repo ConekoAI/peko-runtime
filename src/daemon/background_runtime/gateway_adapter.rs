@@ -1,9 +1,12 @@
 //! GatewayRuntimeAdapter — BackgroundRuntimeAdapter implementation for gateways
 //!
-//! Handles the lifecycle of gateway extensions:
-//! - In-process async tasks (Rust-native HTTP servers, TUI)
+//! Handles the lifecycle of gateway **extensions**:
 //! - Out-of-process child processes (Node.js Discord bot, Python bridge)
 //! - External HTTP/webhook endpoints
+//!
+//! There is no "in-process" variant because gateways are extensions — they
+//! must be installable, updatable, and uninstallable independently of the
+//! daemon binary. Built-in transport code belongs in the daemon, not here.
 //!
 //! See ADR-025 Section 6 for the full specification.
 
@@ -11,7 +14,6 @@ use super::adapter::{BackgroundRuntimeAdapter, CrashAction};
 use super::protocol::{encode_packet, GatewayPacket, GatewayResponse, GatewayRoutingConfig};
 use super::router::GatewayRouter;
 use super::supervisor::ManagedRuntime;
-use crate::common::process::ProcessSpawnConfig;
 use crate::daemon::background_runtime::supervisor::RuntimeKind;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -22,13 +24,12 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Gateway flavor — how the gateway is implemented
+///
+/// Gateways are **extensions** — they run outside the daemon process.
+/// There is no "in-process" variant because built-in code cannot be
+/// installed/updated/uninstalled like an extension.
 #[derive(Debug, Clone)]
 pub enum GatewayFlavor {
-    /// Async task inside daemon (Rust-native, direct method calls)
-    InProcess {
-        /// Factory that creates the gateway task
-        task_factory: Arc<dyn GatewayTaskFactory>,
-    },
     /// Child process communicating via stdio-line JSON protocol
     OutOfProcess {
         command: String,
@@ -41,20 +42,6 @@ pub enum GatewayFlavor {
         endpoint: String,
         webhook_secret: Option<String>,
     },
-}
-
-/// Factory for creating in-process gateway tasks
-#[async_trait]
-pub trait GatewayTaskFactory: Send + Sync + std::fmt::Debug {
-    /// Create the gateway task
-    ///
-    /// The task should run until the abort signal is received.
-    async fn create_task(
-        &self,
-        gateway_id: String,
-        router: Arc<GatewayRouter>,
-        abort_rx: tokio::sync::oneshot::Receiver<()>,
-    ) -> tokio::task::JoinHandle<()>;
 }
 
 /// Runtime adapter for gateway extensions
@@ -293,14 +280,6 @@ impl GatewayRuntimeAdapter {
 impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
     async fn initialize(&self, runtime: &mut ManagedRuntime) -> Result<()> {
         match &self.flavor {
-            GatewayFlavor::InProcess { .. } => {
-                // RuntimeKind::Task is created by the supervisor before initialize()
-                // The adapter just sets up routing config
-                self.router
-                    .register_gateway(&runtime.id, GatewayRoutingConfig::default())
-                    .await?;
-                info!("In-process gateway '{}' initialized", runtime.id);
-            }
             GatewayFlavor::OutOfProcess { .. } => {
                 // RuntimeKind::Process already spawned by supervisor
                 // Send routing config via GatewayPacket::Config on stdin
@@ -326,11 +305,11 @@ impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
 
     async fn health_check(&self, runtime: &ManagedRuntime) -> bool {
         match &runtime.kind {
-            RuntimeKind::Task { handle, .. } => !handle.is_finished(),
             RuntimeKind::Process { child, .. } => child.id().is_some(),
             RuntimeKind::External { endpoint, .. } => {
                 self.external_health_check(endpoint).await.is_ok()
             }
+            RuntimeKind::Task { handle, .. } => !handle.is_finished(),
         }
     }
 
