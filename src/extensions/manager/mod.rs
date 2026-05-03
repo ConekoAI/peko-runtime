@@ -225,16 +225,18 @@ impl ExtensionManager {
                 if path.is_file() {
                     path.to_path_buf()
                 } else if path.is_dir() {
-                    // Try to find config.toml or config.json in the directory
-                    let toml_path = path.join("config.toml");
-                    let json_path = path.join("config.json");
-                    if toml_path.exists() {
-                        toml_path
-                    } else if json_path.exists() {
-                        json_path
-                    } else {
-                        anyhow::bail!("Could not determine manifest path for {path:?}")
-                    }
+                    // Try to find manifest files in the directory (ADR-024 unified manifest first)
+                    let candidates = [
+                        path.join("manifest.yaml"),
+                        path.join("server.json"),
+                        path.join("config.toml"),
+                        path.join("config.json"),
+                        path.join("manifest.json"),
+                    ];
+                    candidates
+                        .into_iter()
+                        .find(|p| p.exists())
+                        .context(format!("Could not determine manifest path for {path:?}"))?
                 } else {
                     anyhow::bail!("Could not determine manifest path for {path:?}")
                 }
@@ -408,7 +410,10 @@ impl ExtensionManager {
                     path.to_path_buf()
                 } else if path.is_dir() {
                     // For directories with Custom format, look for manifest files
+                    // ADR-024: unified manifest.yaml first, then legacy fallbacks
                     let candidates = vec![
+                        path.join("manifest.yaml"),
+                        path.join("server.json"),
                         path.join("config.toml"),
                         path.join("config.json"),
                         path.join("manifest.json"),
@@ -685,7 +690,10 @@ impl ExtensionManager {
                     p
                 } else {
                     // For Custom formats, check common manifest file names
+                    // ADR-024: unified manifest.yaml first, then legacy fallbacks
                     let candidates = vec![
+                        path.join("manifest.yaml"),
+                        path.join("server.json"),
                         path.join("config.toml"),
                         path.join("config.json"),
                         path.join("manifest.json"),
@@ -694,7 +702,7 @@ impl ExtensionManager {
                     candidates
                         .into_iter()
                         .find(|p| p.exists())
-                        .unwrap_or_else(|| path.join("config.toml"))
+                        .unwrap_or_else(|| path.join("manifest.yaml"))
                 };
 
                 discovered.push(DiscoveredExtension {
@@ -718,20 +726,30 @@ impl ExtensionManager {
     /// Returns the IDs of loaded extensions.
     pub async fn load_from_directory(&mut self, path: &Path) -> Result<Vec<ExtensionId>> {
         tracing::info!("Scanning directory for extensions: {}", path.display());
-        let discovered = self.scan_directory(path).await?;
+        let discovered = self.scan_directory(path).await
+            .with_context(|| format!("Failed to scan directory: {}", path.display()))?;
         tracing::info!("Discovered {} extensions", discovered.len());
         let mut loaded_ids = Vec::new();
 
         for discovered_ext in discovered {
+            tracing::info!(
+                "Loading extension from {} (manifest: {}, type: {})",
+                discovered_ext.path.display(),
+                discovered_ext.manifest_path.display(),
+                discovered_ext.extension_type
+            );
+
             // Check if already loaded
-            let manifest_content = tokio::fs::read_to_string(&discovered_ext.manifest_path).await?;
+            let manifest_content = tokio::fs::read_to_string(&discovered_ext.manifest_path).await
+                .with_context(|| format!("Failed to read manifest: {}", discovered_ext.manifest_path.display()))?;
             let adapter = self
                 .adapters
                 .get(&discovered_ext.extension_type)
-                .context("Adapter not found for extension type")?;
+                .with_context(|| format!("Adapter not found for extension type: {}", discovered_ext.extension_type))?;
 
             let manifest =
-                adapter.parse_manifest(&discovered_ext.manifest_path, &manifest_content)?;
+                adapter.parse_manifest(&discovered_ext.manifest_path, &manifest_content)
+                    .with_context(|| format!("Failed to parse manifest: {}", discovered_ext.manifest_path.display()))?;
 
             if self.extensions.contains_key(&manifest.id) {
                 debug!("Extension '{}' already loaded, skipping", manifest.id);
@@ -745,7 +763,7 @@ impl ExtensionManager {
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to load extension from {:?}: {}",
+                        "Failed to load extension from {:?}: {:#}",
                         discovered_ext.path, e
                     );
                 }

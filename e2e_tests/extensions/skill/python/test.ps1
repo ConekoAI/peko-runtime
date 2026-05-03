@@ -33,16 +33,22 @@ if (-not $pythonCmd) {
 }
 Write-Host "Using Python: $pythonCmd" -ForegroundColor Green
 
-# Build pekobot
-Write-Host "Building pekobot..." -ForegroundColor Cyan
-pushd "$PSScriptRoot/../../../"
-$env:RUSTFLAGS = "-A warnings"
-cargo build --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Build failed"
-    exit 1
+# Build pekobot (skip if binary exists to avoid locking issues with daemon)
+$projectRoot = Resolve-Path "$PSScriptRoot/../../../../"
+$pekoBinary = Join-Path $projectRoot "target/debug/peko.exe"
+if (-not (Test-Path $pekoBinary)) {
+    Write-Host "Building pekobot..." -ForegroundColor Cyan
+    pushd $projectRoot
+    $env:RUSTFLAGS = "-A warnings"
+    cargo build --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Build failed"
+        exit 1
+    }
+    popd
+} else {
+    Write-Host "Using existing pekobot binary" -ForegroundColor Green
 }
-popd
 
 # Reset pekobot config data
 $pekobotDir = "$env:USERPROFILE/.pekobot"
@@ -243,7 +249,7 @@ pekobot agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted test agent" -ForegroundColor Green
 
 # Uninstall skill extension
-pekobot ext uninstall calculator-skill --force 2>&1 | Out-Null
+pekobot ext uninstall calculator-skill 2>&1 | Out-Null
 Write-Host "Uninstalled calculator-skill extension" -ForegroundColor Green
 
 Write-Host "`n✅ Skill Extension E2E test completed!" -ForegroundColor Green

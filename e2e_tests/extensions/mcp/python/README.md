@@ -89,7 +89,7 @@ pekobot agent delete myagent --force
 |------|---------|
 | `test.ps1` | Main E2E test script using CLI commands |
 | `mcp_server.py` | Python MCP server demonstrating reserved params |
-| `mcp-config.toml` | Example MCP configuration (legacy - now configured via CLI) |
+| `manifest.yaml` | Unified MCP manifest with `extension_type: mcp` (ADR-024) |
 | `README.md` | This file |
 
 ## MCP Server Implementation
@@ -191,11 +191,11 @@ The test should output something like:
 
 | Task | Old Workflow | New Workflow |
 |------|--------------|--------------|
-| Add MCP server | Copy config file manually | `pekobot cap mcp add` |
-| Configure reserved params | Edit TOML file | `--reserved` flag |
-| Enable tools for agent | Edit agent config.toml | `pekobot cap enable` |
-| Check status | N/A | `pekobot cap status` |
-| Remove server | Delete config file | `pekobot cap mcp remove` |
+| Add MCP server | Copy config file manually | `pekobot ext install ./my-mcp --type mcp` |
+| Configure reserved params | Edit TOML file | Embed in `manifest.yaml` |
+| Enable tools for agent | Edit agent config.toml | `pekobot ext enable <id> --target <team>/<agent>` |
+| Check status | N/A | `pekobot ext info <id>` |
+| Remove server | Delete config file | `pekobot ext uninstall <id>` |
 
 ## Troubleshooting
 

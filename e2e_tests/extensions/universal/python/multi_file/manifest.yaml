@@ -1,0 +1,19 @@
+id: "multi_file_calc"
+name: "multi_file_calc"
+version: "1.0.0"
+description: "Calculator tool with multi-file structure (demonstrates subdirectory support)"
+extension_type: "universal-tool"
+parameters:
+  type: object
+  properties:
+    operation:
+      type: string
+      enum: ["add", "subtract", "multiply", "divide"]
+      description: "The arithmetic operation to perform"
+    a:
+      type: number
+      description: "First operand"
+    b:
+      type: number
+      description: "Second operand"
+  required: ["operation", "a", "b"]

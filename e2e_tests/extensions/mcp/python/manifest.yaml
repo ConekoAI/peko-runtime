@@ -1,0 +1,17 @@
+id: "identity"
+name: "identity"
+version: "1.0.0"
+description: "MCP server demonstrating reserved parameter injection for E2E testing"
+extension_type: "mcp"
+mcp_servers:
+  identity:
+    command: "python"
+    args: ["mcp_server.py"]
+    auto_start: true
+    reserved_parameters:
+      agent_id:
+        source: "runtime"
+        field: "agent_id"
+      session_id:
+        source: "runtime"
+        field: "session_id"

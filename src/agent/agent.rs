@@ -176,7 +176,7 @@ impl Agent {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("❌ Failed to load extensions: {}", e);
+                    tracing::warn!("❌ Failed to load extensions from {}: {:#}", extensions_dir.display(), e);
                     // Continue without extensions
                 }
             }

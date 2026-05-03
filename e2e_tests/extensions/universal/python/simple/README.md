@@ -7,7 +7,7 @@ This E2E test demonstrates creating and using a Python-based Universal Tool with
 | File | Purpose |
 |------|---------|
 | `calculator_simple.py` | Python tool using the SDK (`@tool` decorator) |
-| `calculator_simple.json` | JSON manifest (required by Pekobot for discovery) |
+| `manifest.yaml` | Unified YAML manifest with `extension_type: universal-tool` |
 | `simple_test.ps1` | Simplified E2E test using CLI commands only |
 
 ## Quick Start
@@ -83,23 +83,40 @@ if __name__ == "__main__":
     calculator_simple.run()
 ```
 
-### JSON Manifest (calculator_simple.json)
+### Unified YAML Manifest (manifest.yaml)
 
-**Required** for Pekobot discovery (must match the name in the decorator):
+**Required** for Pekobot discovery under ADR-024 (must match the name in the decorator):
 
-```json
-{
-  "name": "calculator_simple",
-  "description": "Perform arithmetic calculations",
-  "parameters": {...},
-  "reserved_parameters": {...}
-}
+```yaml
+id: "calculator_simple"
+name: "calculator_simple"
+version: "1.0.0"
+description: "Perform arithmetic calculations"
+extension_type: "universal-tool"
+parameters:
+  type: object
+  properties:
+    operation:
+      type: string
+      enum: ["add", "subtract", "multiply", "divide"]
+    a:
+      type: number
+    b:
+      type: number
+  required: ["operation", "a", "b"]
+reserved_parameters:
+  session_id:
+    source: "runtime"
+    field: "session_id"
+  agent_id:
+    source: "runtime"
+    field: "agent_id"
 ```
 
 ## Important Notes
 
-1. **JSON manifest is optional** - Pekobot can auto-generate it from the tool's `tool/describe` response
-2. **Names must match** - The `name` in the JSON must match the `name` in the `@tool` decorator
+1. **Unified YAML manifest is required** - Pekobot uses `manifest.yaml` with `extension_type` per ADR-024
+2. **Names must match** - The `name` in the manifest must match the `name` in the `@tool` decorator
 3. **pekobot_adapter.py is NOT needed** - The SDK handles protocol communication internally
 4. **Multi-file tools supported** - Subdirectories are copied recursively during install
 5. **Use CLI commands** - `cap universal install`, `cap enable`, etc. (no manual file copying needed)
@@ -138,7 +155,7 @@ pekobot cap universal install ./my_tool.py --force
 #   ✅ Generated manifest for 'my_tool'
 ```
 
-The generated manifest is cached in `~/.pekobot/tools/{tool_name}/manifest.json`.
+The generated manifest is cached in `~/.pekobot/tools/{tool_name}/manifest.yaml`.
 
 ## SDK Installation
 

@@ -14,7 +14,7 @@ Demonstrates and tests:
 ```
 multi_file/
 ├── multi_file_calc.py      # Main executable
-├── multi_file_calc.json    # Manifest
+├── manifest.yaml           # Unified manifest (ADR-024)
 ├── utils/                  # Subdirectory with helper modules
 │   ├── __init__.py
 │   ├── calculator.py       # Math operations
@@ -64,11 +64,11 @@ You can also test manually:
 
 ```bash
 # Install the tool
-pekobot cap universal install ./multi_file --force
+pekobot ext install ./multi_file --type universal-tool --force
 
 # Create agent and enable tool
 pekobot agent create calc --provider kimi
-pekobot cap enable default/calc multi_file_calc
+pekobot ext enable multi_file_calc --target default/calc
 
 # Use it
 pekobot send calc "Calculate 10 + 20 using multi_file_calc"

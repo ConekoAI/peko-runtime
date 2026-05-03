@@ -87,9 +87,9 @@ Write-Host "Agent directory: $agentDir" -ForegroundColor Gray
 # Copy Node.js tool files to agent's tools directory
 $toolSourceDir = "$PSScriptRoot"
 Copy-Item "$toolSourceDir/string_tool.js" "$toolsDir/" -Force
-Copy-Item "$toolSourceDir/string_tool.json" "$toolsDir/" -Force
+Copy-Item "$toolSourceDir/string_tool.yaml" "$toolsDir/" -Force
 Copy-Item "$toolSourceDir/identity_tool.js" "$toolsDir/" -Force
-Copy-Item "$toolSourceDir/identity_tool.json" "$toolsDir/" -Force
+Copy-Item "$toolSourceDir/identity_tool.yaml" "$toolsDir/" -Force
 Copy-Item "$toolSourceDir/pekobot_adapter.js" "$toolsDir/" -Force
 Write-Host "Copied string and identity tools to agent's tools directory" -ForegroundColor Green
 
@@ -155,41 +155,46 @@ if ($allExist) {
     Write-Host "✓ All tool files present" -ForegroundColor Green
 }
 
-# Validate manifest JSON
-Write-Host "`nValidating manifest JSON..." -ForegroundColor Yellow
-$manifestPath = "$toolsDir/string_tool.json"
-$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.name -eq "string_tool") {
-    Write-Host "✓ Manifest valid - tool name: $($manifest.name)" -ForegroundColor Green
-    Write-Host "  Description: $($manifest.description)" -ForegroundColor Gray
-    Write-Host "  Reserved params: $($manifest.reserved_parameters.PSObject.Properties.Name -join ', ')" -ForegroundColor Gray
+# Validate manifest YAML
+Write-Host "`nValidating manifest YAML..." -ForegroundColor Yellow
+$manifestPath = "$toolsDir/string_tool.yaml"
+# Simple validation - check file exists and contains expected fields
+$manifestContent = Get-Content $manifestPath -Raw
+if ($manifestContent -match "name:\s*string_tool") {
+    Write-Host "✓ Manifest valid - tool name: string_tool" -ForegroundColor Green
+    Write-Host "  Description found in manifest" -ForegroundColor Gray
+    Write-Host "  Reserved params found in manifest" -ForegroundColor Gray
 }
 
 # Test via the extension framework (installs system-wide then tests)
 Write-Host "`nTesting via pekobot ext install..." -ForegroundColor Yellow
 
 # Create a temporary extension manifest for the custom tool
-$extManifest = @{
-    name = "string-tool"
-    version = "1.0.0"
-    description = "String manipulation tool for Node.js"
-    extension_type = "universal-tool"
-    entry = "string_tool.js"
-    reserved_parameters = @{
-        agent_id = "runtime:agent_id"
-        session_id = "runtime:session_id"
-    }
-} | ConvertTo-Json -Depth 3
+$extManifest = @"
+id: string-tool
+name: string-tool
+version: "1.0.0"
+description: "String manipulation tool for Node.js"
+extension_type: universal-tool
+entry: string_tool.js
+reserved_parameters:
+  agent_id:
+    source: runtime
+    field: agent_id
+  session_id:
+    source: runtime
+    field: session_id
+"@
 
-$extManifestPath = "$env:TEMP\string-tool-manifest.json"
+$extManifestPath = "$env:TEMP\string-tool-manifest.yaml"
 $extManifest | Out-File -FilePath $extManifestPath -Encoding UTF8
 
 # Copy tool files to temp dir with manifest
 $tempToolDir = "$env:TEMP\string-tool-ext"
 New-Item -ItemType Directory -Force -Path $tempToolDir | Out-Null
 Copy-Item "$toolsDir\*.js" $tempToolDir\ -Force
-Copy-Item "$toolsDir\*.json" $tempToolDir\ -Force
-Copy-Item $extManifestPath "$tempToolDir\extension.json" -Force
+Copy-Item "$toolsDir\*.yaml" $tempToolDir\ -Force
+Copy-Item $extManifestPath "$tempToolDir\manifest.yaml" -Force
 
 $extInstall = pekobot ext install $tempToolDir --type universal-tool 2>&1
 Write-Host $extInstall

@@ -64,17 +64,74 @@ pub enum TransportType {
 
 impl Manifest {
     /// Load manifest from file
+    ///
+    /// Supports both JSON (legacy tool protocol format) and YAML (ADR-024 unified manifest).
     pub async fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let content = tokio::fs::read_to_string(path).await?;
-        let manifest: Self = serde_json::from_str(&content)?;
-        Ok(manifest)
+        let content = tokio::fs::read_to_string(&path).await?;
+        Self::from_str(&content, path.as_ref())
     }
 
     /// Load manifest from file (sync version)
+    ///
+    /// Supports both JSON (legacy tool protocol format) and YAML (ADR-024 unified manifest).
     pub fn from_file_sync(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let manifest: Self = serde_json::from_str(&content)?;
-        Ok(manifest)
+        let content = std::fs::read_to_string(&path)?;
+        Self::from_str(&content, path.as_ref())
+    }
+
+    /// Parse manifest from string, auto-detecting JSON vs YAML.
+    fn from_str(content: &str, path: &Path) -> anyhow::Result<Self> {
+        // Try JSON first (legacy tool protocol format)
+        if let Ok(manifest) = serde_json::from_str::<Self>(content) {
+            return Ok(manifest);
+        }
+
+        // Fall back to YAML (ADR-024 unified manifest format)
+        let yaml: serde_yaml::Value = serde_yaml::from_str(content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse manifest as JSON or YAML at {:?}: {}", path, e))?;
+
+        let name = yaml.get("name")
+            .or_else(|| yaml.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Manifest missing 'name' or 'id' field at {:?}", path))?
+            .to_string();
+
+        let description = yaml.get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let llm_description = yaml.get("llm_description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let parameters = yaml.get("parameters")
+            .map(|v| crate::extensions::adapters::parsing::yaml_to_json(v.clone()))
+            .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+
+        let reserved_parameters: ReservedParamsConfig = yaml.get("reserved_parameters")
+            .and_then(|v| {
+                let json_val = crate::extensions::adapters::parsing::yaml_to_json(v.clone());
+                serde_json::from_value(json_val).ok()
+            })
+            .unwrap_or_default();
+
+        let protocol = yaml.get("protocol")
+            .and_then(|v| {
+                let json_val = crate::extensions::adapters::parsing::yaml_to_json(v.clone());
+                serde_json::from_value(json_val).ok()
+            })
+            .unwrap_or_default();
+
+        Ok(Self {
+            name,
+            description,
+            llm_description,
+            parameters,
+            reserved_parameters,
+            protocol,
+            extra: std::collections::HashMap::new(),
+        })
     }
 
     /// Get the parameter schema exposed to LLM (no reserved params)

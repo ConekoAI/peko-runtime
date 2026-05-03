@@ -257,7 +257,8 @@ struct SkillPromptHandler {
 impl HookHandler for SkillPromptHandler {
     async fn handle(&self, _ctx: HookContext) -> HookResult {
         // Format the skill entry for the prompt
-        let path_display = compact_skill_path(&self.file_path);
+        // Use full path (not compacted with ~) so the agent can read the file
+        let path_display = self.file_path.to_string_lossy();
         let text = format!(
             "- {}: {} (location: {})",
             self.skill_name, self.description, path_display
@@ -313,7 +314,8 @@ pub fn format_skills_for_prompt(skills: &[&DiscoveredSkill]) -> String {
     let mut lines = vec!["<available_skills>".to_string()];
 
     for skill in skills {
-        let path_display = compact_skill_path(&skill.file_path);
+        // Use full path (not compacted with ~) so the agent can read the file
+        let path_display = skill.file_path.to_string_lossy();
         lines.push(format!(
             "- {}: {} (location: {})",
             skill.manifest.name, skill.manifest.description, path_display

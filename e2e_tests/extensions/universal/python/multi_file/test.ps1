@@ -67,7 +67,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 $toolDir = "$PSScriptRoot"
 $expectedFiles = @(
     "multi_file_calc.py",
-    "manifest.json",
+    "manifest.yaml",
     "utils/__init__.py",
     "utils/validators.py",
     "utils/calculator.py",
@@ -134,7 +134,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 $installedDir = "$env:APPDATA/pekobot/extensions/multi_file_calc"
 $expectedInstalledFiles = @(
-    "manifest.json",
+    "manifest.yaml",
     "multi_file_calc.py",
     "utils/__init__.py",
     "utils/validators.py",
