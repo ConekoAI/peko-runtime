@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-03-26/server.schema.json",
+  "name": "standard-echo",
+  "version": "1.0.0",
+  "description": "A standard MCP server demonstrating Tier 1 server.json detection. Provides a simple echo tool for E2E testing.",
+  "license": "MIT",
+  "transport": {
+    "type": "stdio",
+    "command": "python",
+    "args": ["mcp_server.py"]
+  },
+  "packages": [
+    {
+      "name": "standard-echo",
+      "description": "Standard echo MCP server for Pekobot E2E testing",
+      "transport": {
+        "type": "stdio",
+        "command": "python",
+        "args": ["mcp_server.py"]
+      }
+    }
+  ]
+}

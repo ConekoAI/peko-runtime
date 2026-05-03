@@ -381,6 +381,9 @@ impl McpAdapter {
     }
 
     /// Parse official MCP Registry `server.json` format (Tier 1).
+    ///
+    /// Normalizes the registry manifest into an `mcp_servers` compatible structure
+    /// so that downstream hooks and tool registration work the same way as Tier 2.
     fn parse_server_json(
         &self,
         path: &Path,
@@ -416,10 +419,99 @@ impl McpAdapter {
             path.parent().unwrap_or(Path::new(".")).to_path_buf(),
         );
 
+        // Normalize registry transport config into mcp_servers format so that
+        // register_tools() and the init hook can consume it the same way as
+        // Tier 2 unified manifests.
+        let mcp_servers = Self::registry_manifest_to_mcp_servers(&registry_manifest, path);
+        if let Some(ref servers) = mcp_servers {
+            manifest.set("mcp_servers", servers.clone());
+        }
+
         manifest.set("registry_manifest", registry_manifest.clone());
         manifest.set("server_json_path", path.to_string_lossy().to_string());
 
         Ok(manifest)
+    }
+
+    /// Convert an MCP Registry `server.json` into the `mcp_servers` structure
+    /// used by Tier 2 unified manifests.
+    ///
+    /// Looks at `transport` (top-level) or `packages[].transport` to build the
+    /// server config map: `{ "server_name": { "command": "...", "args": [...] } }`.
+    fn registry_manifest_to_mcp_servers(
+        registry_manifest: &serde_json::Value,
+        server_json_path: &Path,
+    ) -> Option<serde_json::Value> {
+        let server_name = registry_manifest
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        // Try top-level transport first
+        let transport = registry_manifest.get("transport");
+        // Fall back to first package's transport
+        let transport = transport.or_else(|| {
+            registry_manifest
+                .get("packages")
+                .and_then(|p| p.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|pkg| pkg.get("transport"))
+        });
+
+        let transport = transport?;
+        let transport_type = transport
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("stdio");
+
+        if transport_type != "stdio" {
+            // Non-stdio transports (SSE, etc.) are not yet supported for
+            // auto-start via the extension adapter.
+            warn!(
+                server_name = %server_name,
+                transport_type = %transport_type,
+                "Non-stdio transport in server.json is not yet auto-started by the MCP adapter"
+            );
+            return None;
+        }
+
+        let command = transport
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let args = transport
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut server_config = serde_json::Map::new();
+        server_config.insert("name".to_string(), serde_json::json!(server_name));
+        server_config.insert("transport".to_string(), serde_json::json!(transport_type));
+        if let Some(cmd) = command {
+            server_config.insert("command".to_string(), serde_json::json!(cmd));
+        }
+        if !args.is_empty() {
+            server_config.insert("args".to_string(), serde_json::json!(args));
+        }
+        server_config.insert("auto_start".to_string(), serde_json::json!(true));
+
+        // Set cwd to the directory containing server.json so relative paths work
+        if let Some(parent) = server_json_path.parent() {
+            server_config.insert(
+                "cwd".to_string(),
+                serde_json::json!(parent.to_string_lossy().to_string()),
+            );
+        }
+
+        let mut mcp_servers = serde_json::Map::new();
+        mcp_servers.insert(server_name.to_string(), serde_json::Value::Object(server_config));
+
+        Some(serde_json::Value::Object(mcp_servers))
     }
 
     /// Parse unified manifest.yaml with extension_type: "mcp" (Tier 2).
