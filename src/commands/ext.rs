@@ -612,13 +612,6 @@ async fn handle_enable(
         (ext.manifest.name.clone(), ext.extension_type.clone())
     };
 
-    // ADR-026 Phase 1: Deprecation warning for runtime extensions
-    let is_runtime_extension = ext_type == "gateway" || ext_type == "mcp";
-    if is_runtime_extension {
-        eprintln!("Warning: 'pekobot ext enable {id}' will soon only control access.");
-        eprintln!("         Use 'pekobot ext start {id}' to launch the background runtime.");
-    }
-
     match manager.enable(&ext_id).await {
         Ok(()) => {
             println!("Extension '{id}' enabled");
@@ -802,16 +795,6 @@ async fn handle_disable(
     // Check if extension exists
     if manager.get_extension(&ext_id).is_none() {
         anyhow::bail!("Extension '{id}' not found");
-    }
-
-    // ADR-026 Phase 1: Deprecation warning for runtime extensions
-    if let Some(ext) = manager.get_extension(&ext_id) {
-        let ext_type = ext.extension_type.clone();
-        let is_runtime_extension = ext_type == "gateway" || ext_type == "mcp";
-        if is_runtime_extension {
-            eprintln!("Warning: 'pekobot ext disable {id}' will soon only control access.");
-            eprintln!("         Use 'pekobot ext stop {id}' to stop the background runtime.");
-        }
     }
 
     match manager.disable(&ext_id).await {

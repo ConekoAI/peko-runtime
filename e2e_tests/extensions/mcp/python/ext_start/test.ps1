@@ -298,11 +298,11 @@ if ($daemonProc -and -not $daemonProc.HasExited) {
 }
 
 # Uninstall extension
-pekobot ext uninstall identity --yes 2>&1 | Out-Null
+pekobot ext uninstall identity 2>&1 | Out-Null
 Write-Host "Uninstalled MCP extension" -ForegroundColor Green
 
 # Delete agent
-pekobot agent delete $agentName --yes 2>&1 | Out-Null
+pekobot agent delete $agentName --force 2>&1 | Out-Null
 Write-Host "Deleted agent" -ForegroundColor Green
 
 # Show any daemon errors for debugging

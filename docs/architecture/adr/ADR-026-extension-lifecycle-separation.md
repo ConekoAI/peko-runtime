@@ -1,8 +1,8 @@
 # ADR-026: Separate Extension Runtime Lifecycle from Access Control
 
-**Status**: Accepted — Phase 1 Implemented  
+**Status**: Accepted — Phase 2 Complete  
 **Date**: 2026-05-03  
-**Last Updated**: 2026-05-03  
+**Last Updated**: 2026-05-04  
 **Author**: Kimi Code CLI  
 **Depends On**: ADR-017 (Unified Extension Architecture), ADR-021 (Daemon as Central Runtime), ADR-025 (Gateway Extension Architecture)  
 **Replaces / Supersedes**: The overloaded semantics of `pekobot ext enable` / `pekobot ext disable` as defined in ADR-017 and ADR-025
@@ -141,19 +141,12 @@ Background Runtimes:
   gateway:discord   Running    (task id 7, initializing)
 ```
 
-### 5. Backward Compatibility Path
+### 5. Backward Compatibility
 
-To avoid breaking existing workflows during the transition:
+The separation is now complete. `enable`/`disable` are pure access control for **all** extension types. Runtime extensions must use `start`/`stop`.
 
-1. **Phase 1 (Deprecation):** Keep `enable`/`disable` as convenience aliases.
-   - For **stateless** extensions (skill, general, universal-tool): behavior is unchanged.
-   - For **runtime** extensions (mcp, gateway): `enable` performs `start` + global `enable`; `disable` performs `stop` + global `disable`. Print a deprecation warning:
-     ```
-     Warning: 'pekobot ext enable <runtime-ext>' will soon only control access.
-     Use 'pekobot ext start <runtime-ext>' to launch the background runtime.
-     ```
-
-2. **Phase 2 (Removal):** Remove the convenience alias. `enable`/`disable` become pure access control for all extension types. Runtime extensions must use `start`/`stop`.
+- For **stateless** extensions (skill, general, universal-tool, built-in): `enable`/`disable` control hook state and tool whitelisting — unchanged.
+- For **runtime** extensions (mcp, gateway): `enable`/`disable` control hook state and tool whitelisting only. They do **not** start or stop background processes. Use `ext start`/`ext stop` for lifecycle management.
 
 ---
 
@@ -183,22 +176,20 @@ To avoid breaking existing workflows during the transition:
 
 ## Migration Path
 
-### Phase 1: Add New Commands + Deprecation Warnings (Immediate)
+### Phase 1: Add New Commands ✅ Complete
 
-1. Implement `ExtCommands::Start`, `Stop`, `Restart`, `Status` in `src/commands/ext.rs`.
-2. Wire commands to `BackgroundRuntimeManager::start()` / `stop()` / `restart()` / `get_state()`.
-3. Modify `handle_enable` and `handle_disable`:
-   - For runtime extensions: perform the old combined behavior but print deprecation warning.
-   - For stateless extensions: unchanged.
-4. Update `pekobot ext list` to show both runtime and access status.
+1. Implemented `ExtCommands::Start`, `Stop`, `Restart`, `Status` in `src/commands/ext.rs`.
+2. Wired commands to `BackgroundRuntimeManager::start()` / `stop()` / `restart()` / `get_state()` via daemon IPC.
+3. Updated `pekobot ext list` to show both runtime and access status.
 
-### Phase 2: Remove Convenience Alias (Next Minor Release)
+### Phase 2: Pure Access Control Semantics ✅ Complete
 
-1. `handle_enable`/`handle_disable` for runtime extensions no longer call `BackgroundRuntimeManager`.
-2. `enable`/`disable` become pure access control for all types.
-3. Update all documentation and E2E tests.
+1. `handle_enable`/`handle_disable` for runtime extensions no longer trigger any background runtime side-effects.
+2. `enable`/`disable` are pure access control (hook state + tool whitelist) for all extension types.
+3. Deprecation warnings removed — the separation is now the canonical behavior.
+4. E2E tests updated to use `start`/`stop` for runtime lifecycle and `enable`/`disable` for access control.
 
-### Phase 3: Update ADR-025 Reference (Short Term)
+### Phase 3: Documentation Update (Short Term)
 
 1. Update ADR-025 Section 11 ("Single Mental Model") to reference ADR-026 commands.
 2. Update `docs/architecture/EXTENSION_SYSTEM.md` and `README.md` CLI examples.
@@ -238,11 +229,11 @@ To avoid breaking existing workflows during the transition:
 | `pekobot ext start <id>` works for **MCP extensions** | ✅ Done | `McpRuntimeStarter` registered in `ExtensionRuntimeStarterRegistry`; parses unified manifest and legacy config |
 | `pekobot ext start <id>` works for **Gateway extensions** | ✅ Done | `GatewayRuntimeStarter` registered in `ExtensionRuntimeStarterRegistry` |
 | IPC server has **no hardcoded type checks** for extension runtime dispatch | ✅ Done | `handle_ext_start`/`stop`/`restart` delegate to `ExtensionRuntimeStarterRegistry` |
-| `pekobot ext enable` no longer starts processes for any extension type | ⏸️ Pending | After deprecation phase (Phase 2) |
-| `pekobot ext disable` no longer stops processes for any extension type | ⏸️ Pending | After deprecation phase (Phase 2) |
+| `pekobot ext enable` no longer starts processes for any extension type | ✅ Done | `manager.enable()` only toggles hooks |
+| `pekobot ext disable` no longer stops processes for any extension type | ✅ Done | `manager.disable()` only toggles hooks |
 | `pekobot ext list` shows both runtime and access status | ✅ Done | Enhanced output with RUNTIME column |
-| Deprecation warnings printed when `enable`/`disable` trigger runtime side-effects | ✅ Done | Phase 1 — warns for gateway/mcp extensions |
-| All E2E tests updated to use `start`/`stop` for runtime extensions | ⏸️ Pending | Phase 2 |
+| Deprecation warnings removed | ✅ Done | Phase 2 — warnings removed, clean semantics |
+| All E2E tests updated to use `start`/`stop` for runtime extensions | ✅ Done | MCP E2E tests use `ext start`/`ext stop` |
 | Documentation updated across ADR-025, EXTENSION_SYSTEM.md, README.md | ⏸️ Pending | Phase 3 |
 
 ---
