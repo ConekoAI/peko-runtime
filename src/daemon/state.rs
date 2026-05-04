@@ -3,7 +3,11 @@
 //! Shared state accessible to the daemon and IPC server.
 //! This is the daemon's composition root — all services are initialized here.
 
-use crate::daemon::background_runtime::{BackgroundRuntimeManager, GatewayRouter};
+use crate::daemon::background_runtime::{
+    BackgroundRuntimeManager, ExtensionRuntimeStarterRegistry, GatewayRouter, GatewayRuntimeStarter,
+    McpRuntimeStarter, StarterContext,
+};
+use crate::mcp::runtime_adapter::McpClientRegistry;
 use crate::tools::framework::async_executor::AsyncExecutor;
 use crate::agent::lifecycle::LifecycleManager;
 use crate::agent::stateless_service::StatelessAgentService;
@@ -89,6 +93,12 @@ pub struct AppState {
     /// Gateway router for channel→agent mapping (ADR-025)
     gateway_router: Arc<GatewayRouter>,
 
+    /// Shared MCP client registry — populated by McpRuntimeAdapter (ADR-025)
+    mcp_client_registry: Arc<McpClientRegistry>,
+
+    /// Extension runtime starter registry — dispatches ext start/stop by type (ADR-025/026)
+    runtime_starter_registry: Arc<ExtensionRuntimeStarterRegistry>,
+
     /// Shutdown broadcast channel - send () to trigger graceful shutdown
     shutdown_tx: Arc<broadcast::Sender<()>>,
 
@@ -113,6 +123,8 @@ impl std::fmt::Debug for AppState {
             .field("async_task_executor", &"<AsyncExecutor>")
             .field("background_runtime_manager", &"<BackgroundRuntimeManager>")
             .field("gateway_router", &"<GatewayRouter>")
+            .field("mcp_client_registry", &"<McpClientRegistry>")
+            .field("runtime_starter_registry", &"<ExtensionRuntimeStarterRegistry>")
             .finish()
     }
 }
@@ -283,6 +295,15 @@ impl AppState {
         let background_runtime_manager = Arc::new(BackgroundRuntimeManager::new());
         let gateway_router = Arc::new(GatewayRouter::new(Arc::clone(&agent_service)));
 
+        // ADR-025: Shared MCP client registry — populated by McpRuntimeAdapter
+        let mcp_client_registry = Arc::new(McpClientRegistry::new());
+
+        // ADR-025/026: Extension runtime starter registry
+        let mut runtime_starter_registry = ExtensionRuntimeStarterRegistry::new();
+        runtime_starter_registry.register(Box::new(GatewayRuntimeStarter::new()));
+        runtime_starter_registry.register(Box::new(McpRuntimeStarter::new()));
+        let runtime_starter_registry = Arc::new(runtime_starter_registry);
+
         // Create shutdown broadcast channel
         let (shutdown_tx, _) = broadcast::channel(1);
 
@@ -308,6 +329,8 @@ impl AppState {
             async_task_executor,
             background_runtime_manager,
             gateway_router,
+            mcp_client_registry,
+            runtime_starter_registry,
             shutdown_tx: Arc::new(shutdown_tx),
             inner: Arc::new(RwLock::new(AppStateInner::default())),
         })
@@ -462,6 +485,32 @@ impl AppState {
     #[must_use]
     pub fn gateway_router(&self) -> &Arc<GatewayRouter> {
         &self.gateway_router
+    }
+
+    /// Get the shared MCP client registry (ADR-025)
+    #[must_use]
+    pub fn mcp_client_registry(&self) -> &Arc<McpClientRegistry> {
+        &self.mcp_client_registry
+    }
+
+    /// Get the extension runtime starter registry (ADR-025/026)
+    #[must_use]
+    pub fn runtime_starter_registry(&self) -> &Arc<ExtensionRuntimeStarterRegistry> {
+        &self.runtime_starter_registry
+    }
+
+    /// Build a `StarterContext` for use by runtime starters.
+    ///
+    /// This bundles all daemon-scoped services that starters may need.
+    #[must_use]
+    pub fn starter_context(&self) -> StarterContext {
+        StarterContext {
+            background_runtime_manager: Arc::clone(&self.background_runtime_manager),
+            agent_service: Arc::clone(&self.agent_service),
+            gateway_router: Arc::clone(&self.gateway_router),
+            mcp_client_registry: Arc::clone(&self.mcp_client_registry),
+            data_dir: self.data_dir.clone(),
+        }
     }
 
     /// Get the count of registered agents

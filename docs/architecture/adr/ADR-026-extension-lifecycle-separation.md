@@ -235,6 +235,9 @@ To avoid breaking existing workflows during the transition:
 | `pekobot ext stop <id>` gracefully stops background runtime | ✅ Done | New command; delegates to daemon IPC |
 | `pekobot ext restart <id>` restarts with backoff | ✅ Done | New command; delegates to daemon IPC |
 | `pekobot ext status <id>` shows `RuntimeState` | ✅ Done | New command; delegates to daemon IPC |
+| `pekobot ext start <id>` works for **MCP extensions** | ✅ Done | `McpRuntimeStarter` registered in `ExtensionRuntimeStarterRegistry`; parses unified manifest and legacy config |
+| `pekobot ext start <id>` works for **Gateway extensions** | ✅ Done | `GatewayRuntimeStarter` registered in `ExtensionRuntimeStarterRegistry` |
+| IPC server has **no hardcoded type checks** for extension runtime dispatch | ✅ Done | `handle_ext_start`/`stop`/`restart` delegate to `ExtensionRuntimeStarterRegistry` |
 | `pekobot ext enable` no longer starts processes for any extension type | ⏸️ Pending | After deprecation phase (Phase 2) |
 | `pekobot ext disable` no longer stops processes for any extension type | ⏸️ Pending | After deprecation phase (Phase 2) |
 | `pekobot ext list` shows both runtime and access status | ✅ Done | Enhanced output with RUNTIME column |

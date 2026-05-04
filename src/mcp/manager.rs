@@ -106,6 +106,16 @@ struct ServerHandle {
 ///
 /// Internally delegates process-based servers to `BackgroundRuntimeManager`
 /// via `McpRuntimeAdapter`. SSE servers are still managed directly.
+///
+/// # Shared vs Standalone Mode
+///
+/// In **standalone mode** (default, `McpManager::new`), the manager owns its
+/// own `BackgroundRuntimeManager` and `McpClientRegistry`. This is used by
+/// tests and legacy code paths.
+///
+/// In **shared mode** (`McpManager::with_shared_resources`), the manager uses
+/// a daemon-wide `BackgroundRuntimeManager` and `McpClientRegistry` injected
+/// from `AppState`. This is the production path (ADR-025 Phase 2+).
 #[derive(Clone)]
 pub struct McpManager {
     /// Server configurations
@@ -114,34 +124,92 @@ pub struct McpManager {
     servers: Arc<RwLock<HashMap<String, ServerHandle>>>,
     /// Default working directory for stdio servers
     default_cwd: Option<PathBuf>,
-    /// Background runtime manager for process-based MCP servers
-    runtime_manager: Arc<BackgroundRuntimeManager>,
-    /// Shared client registry — populated by McpRuntimeAdapter
-    client_registry: Arc<McpClientRegistry>,
+    /// Background runtime manager for process-based MCP servers.
+    /// `None` in standalone mode (owns its own); `Some` in shared mode.
+    shared_runtime_manager: Option<Arc<BackgroundRuntimeManager>>,
+    /// Owned runtime manager for standalone mode.
+    owned_runtime_manager: Arc<BackgroundRuntimeManager>,
+    /// Shared client registry — populated by McpRuntimeAdapter.
+    /// `None` in standalone mode (owns its own); `Some` in shared mode.
+    shared_client_registry: Option<Arc<McpClientRegistry>>,
+    /// Owned client registry for standalone mode.
+    owned_client_registry: Arc<McpClientRegistry>,
 }
 
 impl McpManager {
-    /// Create a new MCP manager with the given configuration
+    /// Create a new MCP manager in **standalone mode**.
+    ///
+    /// The manager owns its own `BackgroundRuntimeManager` and
+    /// `McpClientRegistry`. Use this for tests and isolated usage.
     #[must_use]
     pub fn new(config: McpConfig) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
             servers: Arc::new(RwLock::new(HashMap::new())),
             default_cwd: None,
-            runtime_manager: Arc::new(BackgroundRuntimeManager::new()),
-            client_registry: Arc::new(McpClientRegistry::new()),
+            shared_runtime_manager: None,
+            owned_runtime_manager: Arc::new(BackgroundRuntimeManager::new()),
+            shared_client_registry: None,
+            owned_client_registry: Arc::new(McpClientRegistry::new()),
         }
     }
 
-    /// Create a new MCP manager with a default working directory
+    /// Create a new MCP manager with a default working directory (standalone mode).
     pub fn with_cwd(config: McpConfig, cwd: impl Into<PathBuf>) -> Self {
         Self {
             config: Arc::new(RwLock::new(config)),
             servers: Arc::new(RwLock::new(HashMap::new())),
             default_cwd: Some(cwd.into()),
-            runtime_manager: Arc::new(BackgroundRuntimeManager::new()),
-            client_registry: Arc::new(McpClientRegistry::new()),
+            shared_runtime_manager: None,
+            owned_runtime_manager: Arc::new(BackgroundRuntimeManager::new()),
+            shared_client_registry: None,
+            owned_client_registry: Arc::new(McpClientRegistry::new()),
         }
+    }
+
+    /// Create a new MCP manager in **shared mode**.
+    ///
+    /// Uses the daemon-wide `BackgroundRuntimeManager` and `McpClientRegistry`
+    /// so that MCP servers started by this manager are visible to
+    /// `pekobot ext status` and can be controlled via `pekobot ext start/stop`.
+    ///
+    /// # Arguments
+    /// * `config` — Initial MCP server configurations
+    /// * `runtime_manager` — Shared background runtime manager from `AppState`
+    /// * `client_registry` — Shared client registry from `AppState`
+    #[must_use]
+    pub fn with_shared_resources(
+        config: McpConfig,
+        runtime_manager: Arc<BackgroundRuntimeManager>,
+        client_registry: Arc<McpClientRegistry>,
+    ) -> Self {
+        Self {
+            config: Arc::new(RwLock::new(config)),
+            servers: Arc::new(RwLock::new(HashMap::new())),
+            default_cwd: None,
+            shared_runtime_manager: Some(runtime_manager),
+            owned_runtime_manager: Arc::new(BackgroundRuntimeManager::new()),
+            shared_client_registry: Some(client_registry),
+            owned_client_registry: Arc::new(McpClientRegistry::new()),
+        }
+    }
+
+    /// Get the effective background runtime manager.
+    ///
+    /// Returns the shared one if in shared mode, otherwise the owned one.
+    fn runtime_manager(&self) -> Arc<BackgroundRuntimeManager> {
+        self.shared_runtime_manager
+            .clone()
+            .unwrap_or_else(|| self.owned_runtime_manager.clone())
+    }
+
+    /// Get the effective client registry.
+    ///
+    /// Returns the shared one if in shared mode, otherwise the owned one.
+    fn client_registry(&self) -> Arc<McpClientRegistry> {
+        self.shared_client_registry
+            .clone()
+            .unwrap_or_else(|| self.owned_client_registry.clone())
     }
 
     /// Initialize the manager and start auto-start servers
@@ -300,7 +368,7 @@ impl McpManager {
         if handle.managed {
             // Stop via BackgroundRuntimeManager
             drop(servers); // release lock before async call
-            if let Err(e) = self.runtime_manager.stop(name).await {
+            if let Err(e) = self.runtime_manager().stop(name).await {
                 warn!("Error stopping managed runtime '{}': {}", name, e);
             }
             // Re-acquire lock to update state
@@ -363,7 +431,7 @@ impl McpManager {
         if handle.managed {
             // Client lives in the shared registry
             drop(servers);
-            self.client_registry
+            self.client_registry()
                 .get_client(name)
                 .await
                 .ok_or_else(|| ManagerError::ServerNotRunning(name.to_string()))
@@ -386,7 +454,7 @@ impl McpManager {
 
         // For managed servers, sync state from BackgroundRuntimeManager
         if handle.managed && handle.state.running {
-            if let Some(runtime_state) = self.runtime_manager.get_state(name).await {
+            if let Some(runtime_state) = self.runtime_manager().get_state(name).await {
                 match runtime_state {
                     RuntimeState::Healthy => {
                         handle.state.healthy = true;
@@ -403,7 +471,7 @@ impl McpManager {
 
             // Sync tools and server_info from registry if not already populated
             if handle.state.tools.is_empty() || handle.state.server_info.is_none() {
-                if let Some(info) = self.client_registry.get(name).await {
+                if let Some(info) = self.client_registry().get(name).await {
                     if handle.state.tools.is_empty() {
                         handle.state.tools = info.tools;
                     }
@@ -428,7 +496,7 @@ impl McpManager {
         let mut all_tools = Vec::new();
 
         // Tools from managed servers (via registry)
-        let managed_tools = self.client_registry.list_all_tools().await;
+        let managed_tools = self.client_registry().list_all_tools().await;
         all_tools.extend(managed_tools);
 
         // Tools from directly-managed servers (SSE)
@@ -470,7 +538,7 @@ impl McpManager {
 
             let server_tools = if handle.managed {
                 // Get tools from registry for managed servers
-                if let Some(info) = self.client_registry.get(server_name).await {
+                if let Some(info) = self.client_registry().get(server_name).await {
                     info.tools
                 } else {
                     Vec::new()
@@ -572,7 +640,7 @@ impl McpManager {
 
         let adapter = Arc::new(McpRuntimeAdapter::new(
             config.clone(),
-            Arc::clone(&self.client_registry),
+            self.client_registry(),
         ));
 
         let restart_policy = RestartPolicy {
@@ -584,7 +652,7 @@ impl McpManager {
             ..Default::default()
         };
 
-        self.runtime_manager
+        self.runtime_manager()
             .start(name.to_string(), spawn_config, adapter, restart_policy)
             .await
             .map_err(|e| ManagerError::RuntimeManager(e.to_string()))?;

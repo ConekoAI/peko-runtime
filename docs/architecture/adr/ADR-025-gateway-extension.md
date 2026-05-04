@@ -527,6 +527,31 @@ testing) belongs in the daemon, not in the gateway extension system.
 
 **Future-Proof.** New background runtime types (persistent universal tools, custom integrations) only need to implement `BackgroundRuntimeAdapter`.
 
+**Generic Runtime Starter Registry (Phase 6).** The IPC server no longer hardcodes type checks (`if gateway { ... } else if mcp { ... }`). Instead, `ExtensionRuntimeStarterRegistry` dispatches to type-specific `ExtensionRuntimeStarter` implementations:
+
+```rust
+// IPC server — ONE LINE, no type knowledge
+registry.start(extension_id, &ctx).await?;
+
+// Gateway starter — knows how to parse gateway manifests
+pub struct GatewayRuntimeStarter;
+impl ExtensionRuntimeStarter for GatewayRuntimeStarter { ... }
+
+// MCP starter — knows how to parse mcp_servers config
+pub struct McpRuntimeStarter;
+impl ExtensionRuntimeStarter for McpRuntimeStarter { ... }
+
+// Future starter — third-party extensible without touching IPC server
+pub struct MyCustomStarter;
+impl ExtensionRuntimeStarter for MyCustomStarter { ... }
+```
+
+Adding a new runtime-bearing extension type now requires **only**:
+1. Implement `ExtensionRuntimeStarter` for the new type
+2. Register it in `AppState::build()`
+
+No changes to `ipc/server.rs`, `commands/ext.rs`, or the CLI protocol.
+
 **Single Mental Model.** Users learn one set of commands. Note: per ADR-026, runtime lifecycle (`start`/`stop`) is separated from access control (`enable`/`disable`):
 
 ```bash
@@ -646,6 +671,9 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
            │
            ▼
       Phase 5 (reference implementations) ──► depends on Phase 4 (functional hooks for transformation)
+           │
+           ▼
+      Phase 6 (generic ExtensionRuntimeStarter registry) ──► eliminates hardcoded type dispatch
 ```
 
 ---
@@ -681,7 +709,7 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 | Criterion | Status | Notes |
 |-----------|--------|-------|
 | `BackgroundRuntimeManager` exists and is initialized in `Daemon::run()` | ✅ Done | Initialized in `AppState::build()`; accessible via `app_state.background_runtime_manager()` |
-| `McpManager` refactored to use `BackgroundRuntimeManager` + `McpRuntimeAdapter` | ✅ Done | `McpManager` now delegates stdio transport servers to `BackgroundRuntimeManager` via `McpRuntimeAdapter`. SSE servers still handled directly. Public API unchanged. |
+| `McpManager` refactored to use `BackgroundRuntimeManager` + `McpRuntimeAdapter` | ✅ Done | `McpManager` now accepts shared `BackgroundRuntimeManager` and `McpClientRegistry` via `with_shared_resources()`. Standalone mode (`new()`) still works for tests. SSE servers still handled directly. |
 | All existing MCP E2E tests pass after refactoring | ✅ Done | 940 unit tests pass; all MCP-specific tests pass. |
 | `GatewayRuntimeAdapter` implemented and registered in CLI | ✅ Done | `GatewayRuntimeAdapter` + `GatewayFlavor` implemented in `src/daemon/background_runtime/gateway_adapter.rs`. CLI registration via `pekobot ext start <id>` wired through IPC (ADR-026 Phase 1). |
 | Out-of-process gateway can be started (spawns child process) and stopped | ✅ Done | `BackgroundRuntimeManager::start()` with `RuntimeSpawnConfig::Process` works. Gateway-specific spawn/stop via `pekobot ext start/stop` wired through daemon IPC (ADR-026 Phase 1). |
@@ -691,6 +719,10 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 | `ChannelInput`/`ChannelOutput` hook results are consumed by the agent runtime | ✅ Done | Both streaming and non-streaming paths in `stateless_service.rs` now consume hook results. **Behavioral change**: extensions that return values are now effective. |
 | E2E tests verify gateway lifecycle | ✅ Done | PowerShell test at `e2e_tests/extensions/gateway/http_basics/test.ps1` validates: install → start → config → Receive → agent execution → Deliver → stop → restart stub. |
 | Legacy `gateways/` workspace is removed | ✅ Done | Confirmed non-existent at project root |
+| **Generic ExtensionRuntimeStarter registry** | ✅ Done | `ExtensionRuntimeStarterRegistry` in `src/daemon/background_runtime/starter_registry.rs` dispatches `ext start` by extension type. No hardcoded type checks in IPC server. |
+| **`McpRuntimeStarter` implements `ext start` for MCP** | ✅ Done | `McpRuntimeStarter` in `src/daemon/background_runtime/mcp_starter.rs` parses unified manifest and legacy config, creates `McpRuntimeAdapter`, starts via shared `BackgroundRuntimeManager`. |
+| **`GatewayRuntimeStarter` extracted from IPC server** | ✅ Done | `GatewayRuntimeStarter` in `src/daemon/background_runtime/gateway_starter.rs` — extracted from `ipc/server.rs` to eliminate hardcoded gateway dispatch. |
+| **Single `BackgroundRuntimeManager` instance** | ✅ Done | `AppState` owns one shared `BackgroundRuntimeManager`. `McpManager` receives it via `with_shared_resources()`. No more duplicate managers. |
 
 ---
 
@@ -708,6 +740,10 @@ Phase 1 (common/process + daemon/background_runtime skeleton)
 - `src/daemon/mod.rs` — Daemon main loop (integration site)
 - `src/daemon/background_runtime/protocol.rs` — GatewayPacket/GatewayResponse stdio-line JSON protocol
 - `src/daemon/background_runtime/gateway_adapter.rs` — GatewayRuntimeAdapter implementation
+- `src/daemon/background_runtime/gateway_starter.rs` — GatewayRuntimeStarter (ExtensionRuntimeStarter impl)
+- `src/daemon/background_runtime/mcp_starter.rs` — McpRuntimeStarter (ExtensionRuntimeStarter impl)
+- `src/daemon/background_runtime/starter.rs` — ExtensionRuntimeStarter trait + StarterContext
+- `src/daemon/background_runtime/starter_registry.rs` — ExtensionRuntimeStarterRegistry (type-agnostic dispatch)
 - `src/daemon/background_runtime/router.rs` — GatewayRouter for channel→agent mapping
 - `docs/migration/MIGRATION-EXTENSIONS-2.0.md` — Extension system migration plan
 - ADR-026: Separate Extension Runtime Lifecycle from Access Control — redefines CLI semantics for `enable`/`disable` vs `start`/`stop`
