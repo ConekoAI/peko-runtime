@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Gateway flavor — how the gateway is implemented
@@ -51,8 +51,14 @@ pub struct GatewayRuntimeAdapter {
     flavor: GatewayFlavor,
     /// Request counter for gateway protocol messages
     request_counter: Arc<std::sync::atomic::AtomicU64>,
-    /// For out-of-process: pending responses from gateway
+    /// For out-of-process: pending responses from gateway (ping/pong, etc.)
     pending_responses: Arc<RwLock<HashMap<u64, tokio::sync::oneshot::Sender<GatewayResponse>>>>,
+    /// Channel for sending packets TO the gateway process.
+    ///
+    /// Initialized during `initialize()` when the stdin writer task is spawned.
+    /// All outgoing communication (config, deliver, ping, shutdown) goes through
+    /// this channel, decoupling senders from direct I/O.
+    packet_tx: Arc<Mutex<Option<mpsc::UnboundedSender<GatewayPacket>>>>,
 }
 
 impl std::fmt::Debug for GatewayRuntimeAdapter {
@@ -71,6 +77,7 @@ impl GatewayRuntimeAdapter {
             flavor,
             request_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             pending_responses: Arc::new(RwLock::new(HashMap::new())),
+            packet_tx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -80,54 +87,64 @@ impl GatewayRuntimeAdapter {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Send a packet to the gateway process via the internal channel.
+    ///
+    /// This is the primary way to send packets. It does not require
+    /// `&mut ManagedRuntime` because it uses the channel instead of
+    /// direct stdin access.
+    async fn send_packet(&self, packet: GatewayPacket) -> Result<()> {
+        let tx_guard = self.packet_tx.lock().await;
+        let Some(tx) = tx_guard.as_ref() else {
+            anyhow::bail!("Gateway packet channel not initialized — call initialize() first");
+        };
+        tx.send(packet)
+            .map_err(|_| anyhow::anyhow!("Gateway packet channel closed"))?;
+        Ok(())
+    }
+
     /// Send a config packet to an out-of-process gateway
-    async fn send_gateway_config(&self, runtime: &mut ManagedRuntime) -> Result<()> {
-        let gateway_id = runtime.id.clone();
+    async fn send_gateway_config(&self, gateway_id: &str) -> Result<()> {
         let config = self
             .router
-            .get_routing(&gateway_id)
+            .get_routing(gateway_id)
             .await
             .unwrap_or_default();
 
         let packet = GatewayPacket::Config {
-            gateway_id: gateway_id.clone(),
+            gateway_id: gateway_id.to_string(),
             routing: config,
         };
 
-        self.send_packet(runtime, packet).await
+        self.send_packet(packet).await
     }
 
-    /// Send a packet to the gateway process
-    async fn send_packet(&self, runtime: &mut ManagedRuntime, packet: GatewayPacket) -> Result<()> {
-        if let RuntimeKind::Process { ref mut stdin, .. } = runtime.kind {
-            let Some(stdin) = stdin.as_mut() else {
-                anyhow::bail!("Gateway '{}': stdin already taken by adapter", runtime.id);
-            };
-            let line = encode_packet(&packet)?;
-            stdin.write_all(line.as_bytes()).await?;
-            stdin.flush().await?;
-            debug!("Sent packet to gateway '{}': {:?}", runtime.id, packet);
-            Ok(())
-        } else {
-            anyhow::bail!("Cannot send packet to non-process runtime")
-        }
-    }
-
-    /// Send a ping and wait for pong
-    async fn gateway_ping(&self, runtime: &ManagedRuntime) -> Result<()> {
+    /// Send a ping packet to the gateway process
+    async fn gateway_ping(&self) -> Result<()> {
         let request_id = self.next_request_id();
         let packet = GatewayPacket::Ping { request_id };
+        self.send_packet(packet).await
+    }
 
-        if let RuntimeKind::Process { ref stdin, ref stdout, .. } = runtime.kind {
-            // We need to send ping and read pong, but stdin/stdout may have been
-            // taken by an adapter. For now, we just check if the process is still
-            // alive by checking its PID.
-            let _ = stdin;
-            let _ = stdout;
-            Ok(())
-        } else {
-            anyhow::bail!("Cannot ping non-process runtime")
-        }
+    /// Deliver an agent response back to the gateway process
+    async fn deliver_response(
+        &self,
+        gateway_id: &str,
+        channel_id: &str,
+        message: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        let request_id = self.next_request_id();
+        let packet = GatewayPacket::Deliver {
+            request_id,
+            channel_id: channel_id.to_string(),
+            message: message.to_string(),
+            session_id: session_id.to_string(),
+        };
+        debug!(
+            "Delivering agent response to gateway '{}' channel '{}' (req {})",
+            gateway_id, channel_id, request_id
+        );
+        self.send_packet(packet).await
     }
 
     /// Verify external endpoint connectivity
@@ -163,6 +180,49 @@ impl GatewayRuntimeAdapter {
         }
     }
 
+    /// Spawn the stdin writer task that drains outgoing packets to the gateway process.
+    ///
+    /// This task owns the `ChildStdin` and runs for the lifetime of the gateway.
+    /// It exits when the channel sender is dropped (during shutdown).
+    fn spawn_stdin_writer(
+        &self,
+        gateway_id: String,
+        stdin: tokio::process::ChildStdin,
+        mut packet_rx: mpsc::UnboundedReceiver<GatewayPacket>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut stdin = stdin;
+            while let Some(packet) = packet_rx.recv().await {
+                match encode_packet(&packet) {
+                    Ok(line) => {
+                        if let Err(e) = stdin.write_all(line.as_bytes()).await {
+                            warn!(
+                                "Failed to write packet to gateway '{}': {}",
+                                gateway_id, e
+                            );
+                            break;
+                        }
+                        if let Err(e) = stdin.flush().await {
+                            warn!(
+                                "Failed to flush stdin for gateway '{}': {}",
+                                gateway_id, e
+                            );
+                            break;
+                        }
+                        debug!("Sent packet to gateway '{}': {:?}", gateway_id, packet);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to encode packet for gateway '{}': {}",
+                            gateway_id, e
+                        );
+                    }
+                }
+            }
+            debug!("Gateway '{}' stdin writer task ended", gateway_id);
+        })
+    }
+
     /// Start the stdout read loop for an out-of-process gateway
     ///
     /// This reads GatewayResponse messages from the gateway's stdout and
@@ -170,21 +230,22 @@ impl GatewayRuntimeAdapter {
     pub fn start_stdout_loop(
         &self,
         gateway_id: String,
-        stdout: tokio::process::ChildStdout,
+        stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
     ) -> tokio::task::JoinHandle<()> {
         let router = self.router.clone();
         let pending = self.pending_responses.clone();
+        let adapter = self.clone();
 
         tokio::spawn(async move {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
+            let mut lines = stdout.lines();
 
             while let Ok(Some(line)) = lines.next_line().await {
                 debug!("Gateway '{}' stdout: {}", gateway_id, line.trim());
 
                 match super::protocol::decode_response(&line) {
                     Ok(response) => {
-                        Self::handle_gateway_response(&gateway_id, response, &router, &pending)
+                        adapter
+                            .handle_gateway_response(&gateway_id, response, &router, &pending)
                             .await;
                     }
                     Err(e) => {
@@ -202,6 +263,7 @@ impl GatewayRuntimeAdapter {
 
     /// Handle a single gateway response
     async fn handle_gateway_response(
+        &self,
         gateway_id: &str,
         response: GatewayResponse,
         router: &GatewayRouter,
@@ -226,14 +288,22 @@ impl GatewayRuntimeAdapter {
                     .await
                 {
                     Ok(agent_response) => {
-                        // Deliver response back to gateway
-                        // Note: This requires access to the gateway's stdin, which we don't
-                        // have in this context. A full implementation would use a channel
-                        // to send the delivery back to the adapter.
-                        debug!(
-                            "Agent response for gateway '{}': {}",
-                            gateway_id, agent_response
-                        );
+                        // Deliver response back to gateway via the packet channel
+                        let session_id = format!("{}:{}:{}", gateway_id, channel_id, user_id);
+                        if let Err(e) = self
+                            .deliver_response(
+                                gateway_id,
+                                &channel_id,
+                                &agent_response,
+                                &session_id,
+                            )
+                            .await
+                        {
+                            warn!(
+                                "Failed to deliver agent response to gateway '{}': {}",
+                                gateway_id, e
+                            );
+                        }
                     }
                     Err(e) => {
                         error!("Failed to route message from gateway '{}': {}", gateway_id, e);
@@ -285,14 +355,55 @@ impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
     async fn initialize(&self, runtime: &mut ManagedRuntime) -> Result<()> {
         match &self.flavor {
             GatewayFlavor::OutOfProcess { .. } => {
-                // RuntimeKind::Process already spawned by supervisor
-                // Send routing config via GatewayPacket::Config on stdin
-                if let Err(e) = self.send_gateway_config(runtime).await {
+                // Extract stdin/stdout from the runtime and spawn I/O tasks.
+                // The supervisor placed them in RuntimeKind::Process; we take
+                // ownership here so the adapter controls all gateway I/O.
+                let (stdin, stdout) = match &mut runtime.kind {
+                    RuntimeKind::Process { stdin, stdout, .. } => {
+                        let stdin = stdin.take().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Gateway '{}': stdin already taken",
+                                runtime.id
+                            )
+                        })?;
+                        let stdout = stdout.take().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Gateway '{}': stdout already taken",
+                                runtime.id
+                            )
+                        })?;
+                        (stdin, stdout)
+                    }
+                    _ => {
+                        anyhow::bail!(
+                            "GatewayRuntimeAdapter expected RuntimeKind::Process, got {:?}",
+                            runtime.kind
+                        );
+                    }
+                };
+
+                // Create the packet channel and store the sender
+                let (packet_tx, packet_rx) = mpsc::unbounded_channel::<GatewayPacket>();
+                {
+                    let mut tx_guard = self.packet_tx.lock().await;
+                    *tx_guard = Some(packet_tx);
+                }
+
+                // Spawn stdin writer task (owns ChildStdin)
+                let _stdin_handle =
+                    self.spawn_stdin_writer(runtime.id.clone(), stdin, packet_rx);
+
+                // Spawn stdout read loop (owns ChildStdout)
+                let _stdout_handle = self.start_stdout_loop(runtime.id.clone(), stdout);
+
+                // Send routing config via the packet channel
+                if let Err(e) = self.send_gateway_config(&runtime.id).await {
                     warn!(
                         "Failed to send config to gateway '{}': {}",
                         runtime.id, e
                     );
                 }
+
                 info!("Out-of-process gateway '{}' initialized", runtime.id);
             }
             GatewayFlavor::External { endpoint, .. } => {
@@ -309,7 +420,14 @@ impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
 
     async fn health_check(&self, runtime: &ManagedRuntime) -> bool {
         match &runtime.kind {
-            RuntimeKind::Process { child, .. } => child.id().is_some(),
+            RuntimeKind::Process { child, .. } => {
+                // First check if the OS process is still alive
+                if child.id().is_none() {
+                    return false;
+                }
+                // Then try a protocol-level ping
+                self.gateway_ping().await.is_ok()
+            }
             RuntimeKind::External { endpoint, .. } => {
                 self.external_health_check(endpoint).await.is_ok()
             }
@@ -331,11 +449,18 @@ impl BackgroundRuntimeAdapter for GatewayRuntimeAdapter {
                 // Try to send graceful shutdown packet
                 let request_id = self.next_request_id();
                 let packet = GatewayPacket::Shutdown { request_id };
-                if let Err(e) = self.send_packet(runtime, packet).await {
+                if let Err(e) = self.send_packet(packet).await {
                     debug!(
                         "Failed to send shutdown packet to gateway '{}': {}",
                         runtime.id, e
                     );
+                }
+
+                // Drop the packet sender to signal the stdin writer task to exit.
+                // The task will finish writing any queued packets and then close.
+                {
+                    let mut tx_guard = self.packet_tx.lock().await;
+                    *tx_guard = None;
                 }
             }
             _ => {}
@@ -361,13 +486,6 @@ mod tests {
 
     #[test]
     fn test_next_request_id() {
-        use crate::agent::stateless_service::StatelessAgentService;
-        use crate::common::paths::PathResolver;
-        use crate::common::services::ConfigAuthorityImpl;
-        use std::sync::Arc;
-
-        // We can't easily create a GatewayRouter without full setup,
-        // so just test the counter logic indirectly
         let counter = std::sync::atomic::AtomicU64::new(1);
         let id1 = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let id2 = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
