@@ -186,7 +186,7 @@ Write-Host "Sending message to agent requesting identity echo..." -ForegroundCol
 Write-Host "(This will demonstrate reserved parameter injection)" -ForegroundColor Gray
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-$response = pekobot send $agentName "We are testing your access and functionality of the MCP echo_identity tool. Please use the echo_identity tool with message 'Hello MCP'. Report back TOOL_SUCCESS if the tool works and shows injected identity, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
+$response = pekobot send $agentName "We are testing your access and functionality of the MCP echo_identity tool. Please use the echo_identity tool with message 'Hello MCP'. Report back TOOL_SUCCESS with the result if the tool works and shows injected identity, otherwise respond TOOL_FAILED with an explanation" --no-stream 2>&1
 $sw.Stop()
 Write-Host "Response time: $($sw.Elapsed.TotalSeconds)s"
 Write-Host "Agent response: $response"

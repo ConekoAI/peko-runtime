@@ -169,6 +169,10 @@ pub enum HookInput {
         params: serde_json::Value,
         /// Workspace directory for tool execution (optional)
         workspace: Option<String>,
+        /// Agent identifier for reserved parameter injection (optional)
+        agent_id: Option<String>,
+        /// Session identifier for reserved parameter injection (optional)
+        session_id: Option<String>,
     },
 
     /// Async task status check

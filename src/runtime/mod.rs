@@ -5,4 +5,4 @@
 //! instantiating a full agent.
 
 pub mod tool_runtime;
-pub use tool_runtime::{execute_tool_via_core, ToolRuntime};
+pub use tool_runtime::{execute_tool_via_core, execute_tool_via_core_with_context, ToolRuntime};

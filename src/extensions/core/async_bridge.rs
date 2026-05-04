@@ -172,6 +172,8 @@ impl ExtensionAsyncAdapter {
                     tool_name: tool_name.to_string(),
                     params: params.clone(),
                     workspace: self.workspace.clone(),
+                    agent_id: None,
+                    session_id: None,
                 },
             )
             .await;
@@ -230,6 +232,8 @@ impl ExtensionAsyncAdapter {
                                 tool_name: tool_name_clone,
                                 params,
                                 workspace,
+                                agent_id: None,
+                                session_id: None,
                             },
                         )
                         .await;

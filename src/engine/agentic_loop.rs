@@ -910,12 +910,16 @@ impl AgenticLoop {
                             .as_ref()
                             .map(|p| p.to_string_lossy().to_string());
 
+                        let agent_id = self.agent.name().to_string();
+
                         let (tool_result_str, tool_result_json, success) =
-                            match crate::runtime::execute_tool_via_core(
+                            match crate::runtime::execute_tool_via_core_with_context(
                                 &self.extension_core,
                                 name,
                                 arguments.clone(),
                                 workspace,
+                                Some(agent_id),
+                                Some(session_id.clone()),
                             )
                             .await
                             {

@@ -78,6 +78,7 @@ impl HookContext {
                 tool_name,
                 params,
                 workspace,
+                ..
             } => Some((tool_name, params, workspace.as_deref())),
             _ => None,
         }
@@ -140,6 +141,11 @@ impl HookContext {
     #[must_use]
     pub fn as_tool_context(&self) -> Option<&crate::tools::ToolContext> {
         self.state.get::<crate::tools::ToolContext>("tool_context")
+    }
+
+    /// Set tool context in state for runtime parameter resolution
+    pub fn set_tool_context(&mut self, ctx: crate::tools::ToolContext) {
+        self.state.insert("tool_context", ctx);
     }
 }
 

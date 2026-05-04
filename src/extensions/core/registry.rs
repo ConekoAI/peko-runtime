@@ -735,6 +735,8 @@ mod tests {
                     tool_name: "test_tool".to_string(),
                     params: serde_json::json!({}),
                     workspace: None,
+                    agent_id: None,
+                    session_id: None,
                 },
             )
             .await;
@@ -793,6 +795,8 @@ mod tests {
                     tool_name: "enabled_tool".to_string(),
                     params: serde_json::json!({}),
                     workspace: None,
+                    agent_id: None,
+                    session_id: None,
                 },
             )
             .await;

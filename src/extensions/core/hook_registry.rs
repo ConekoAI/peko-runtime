@@ -427,7 +427,22 @@ impl HookRegistry {
             let start = std::time::Instant::now();
 
             // Create context
-            let ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
+            let mut ctx = HookContext::new(point.clone(), input.clone(), self.services.clone());
+
+            // For tool calls, inject ToolContext into state for reserved parameter resolution
+            if let HookInput::ToolCall { ref agent_id, ref session_id, ref workspace, ref tool_name, .. } = input {
+                let abort_signal = crate::tools::AbortSignal::new();
+                let tool_ctx = abort_signal
+                    .create_context("hook_run", &hook_id.to_string(), tool_name)
+                    .with_agent_id(agent_id.clone().unwrap_or_else(|| "unknown".to_string()))
+                    .with_session_id(session_id.clone().unwrap_or_else(|| "unknown".to_string()));
+                let tool_ctx = if let Some(ref ws) = workspace {
+                    tool_ctx.with_workspace(ws.clone())
+                } else {
+                    tool_ctx
+                };
+                ctx.set_tool_context(tool_ctx);
+            }
 
             // Invoke handler
             trace!(handler_id = %hook_id, "Calling handler");

@@ -361,6 +361,8 @@ mod tests {
                 tool_name: "test_tool".to_string(),
                 params: serde_json::json!({}),
                 workspace: None,
+                agent_id: None,
+                session_id: None,
             },
             Arc::new(ExtensionServices::new()),
         );
@@ -387,6 +389,8 @@ mod tests {
                 tool_name: "other_tool".to_string(),
                 params: serde_json::json!({}),
                 workspace: None,
+                agent_id: None,
+                session_id: None,
             },
             Arc::new(ExtensionServices::new()),
         );
